@@ -1,0 +1,5 @@
+*.elf
+*.o
+deps/limine
+deps/stivale
+*.iso
