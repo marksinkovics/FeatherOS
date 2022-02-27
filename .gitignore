@@ -3,3 +3,5 @@
 deps/limine
 deps/stivale
 *.iso
+**/build
+**/iso_root
