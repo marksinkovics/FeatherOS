@@ -6,6 +6,7 @@
 
 // We need to tell the stivale bootloader where we want our stack to be.
 // We are going to allocate our stack as an array in .bss.
+__attribute__((aligned(16)))
 static uint8_t stack[8192];
 
 // stivale2 uses a linked list of tags for both communicating TO the

@@ -20,7 +20,7 @@ SET(CMAKE_EXE_LINKER_FLAGS      "${COMMON_LDFLAGS} --sysroot=${CMAKE_FIND_ROOT_P
 SET(CMAKE_SHARED_LINKER_FLAGS   "--sysroot=${CMAKE_FIND_ROOT_PATH}")
 SET(CMAKE_MODULE_LINKER_FLAGS   "--sysroot=${CMAKE_FIND_ROOT_PATH}")
 
-set(COMMON_FLAGS               "-g -ffreestanding -falign-jumps -falign-functions -falign-labels -falign-loops -fstrength-reduce -fomit-frame-pointer -finline-functions -Wno-unused-function -fno-builtin -Werror -Wno-unused-label -Wno-cpp -Wno-unused-parameter -nostdlib -nostartfiles -nodefaultlibs -Wall -Wextra -O0 -Iinc -fno-stack-protector -fno-pic -fno-pie -mcmodel=kernel")
+set(COMMON_FLAGS               "-g -ffreestanding -falign-jumps -falign-functions -falign-labels -falign-loops -fstrength-reduce -fomit-frame-pointer -finline-functions -Wno-unused-function -fno-builtin -Werror -Wno-unused-label -Wno-cpp -Wno-unused-parameter -nostdlib -nostartfiles -nodefaultlibs -Wall -Wextra -O0 -Iinc -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -mcmodel=kernel")
 set(COMMON_FLAGS_DEBUG         "-Os -g")
 set(COMMON_FLAGS_RELEASE       "-Os -DNDEBUG")
 

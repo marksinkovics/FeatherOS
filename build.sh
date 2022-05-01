@@ -18,7 +18,7 @@ build() {
 
     if [ ! -d "$SCRIPT_DIR/deps/limine" ]; then
     _print "Fetching limine"
-        git clone -b v2.0-branch-binary https://github.com/limine-bootloader/limine.git deps/limine
+        git clone -b v3.0-branch-binary https://github.com/limine-bootloader/limine.git deps/limine
         make -C deps/limine
     fi
 
@@ -31,7 +31,7 @@ build() {
 
     cmake .. -G "Unix Makefiles" -DARCH=x86_64 #--debug-output
 
-    make
+    time make
 }
 
 clean() {
@@ -51,18 +51,30 @@ clean() {
     fi
 }
 
+clean_deps() {
+    if [ -d "$SCRIPT_DIR/deps/stivale" ]; then
+        _print "Cleaning stivale"
+        rm -rf "$SCRIPT_DIR/deps/stivale"
+    fi
+
+    if [ -d "$SCRIPT_DIR/deps/limine" ]; then
+        _print "Cleaning limine"
+        rm -rf "$SCRIPT_DIR/deps/limine"
+    fi
+}
+
 iso() {
     _print "Creating ISO"
 	rm -rf "$SCRIPT_DIR/iso_root"
 	mkdir -p "$SCRIPT_DIR/iso_root"
-	cp 	"$SCRIPT_DIR/build/kernel.elf" "$SCRIPT_DIR/limine.cfg" "$SCRIPT_DIR/deps/limine/limine.sys" "$SCRIPT_DIR/deps/limine/limine-cd.bin" "$SCRIPT_DIR/deps/limine/limine-eltorito-efi.bin" "$SCRIPT_DIR/iso_root/"
+	cp 	"$SCRIPT_DIR/build/kernel.elf" "$SCRIPT_DIR/limine.cfg" "$SCRIPT_DIR/deps/limine/limine.sys" "$SCRIPT_DIR/deps/limine/limine-cd.bin" "$SCRIPT_DIR/deps/limine/limine-cd-efi.bin" "$SCRIPT_DIR/iso_root/"
 
     xorriso -as mkisofs -b limine-cd.bin \
 		-no-emul-boot -boot-load-size 4 -boot-info-table \
-		--efi-boot limine-eltorito-efi.bin \
+		--efi-boot limine-cd-efi.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
 		"$SCRIPT_DIR/iso_root" -o "$SCRIPT_DIR/barebones.iso"
-	"$SCRIPT_DIR/deps/limine/limine-install" "$SCRIPT_DIR/barebones.iso"
+	"$SCRIPT_DIR/deps/limine/limine-deploy" "$SCRIPT_DIR/barebones.iso"
 	rm -rf "$SCRIPT_DIR/iso_root"
 }
 
@@ -85,6 +97,10 @@ else
         case "$1" in
             clean)
                 clean
+                ;;
+            fullclean)
+                clean
+                clean_deps
                 ;;
             build)
                 build
