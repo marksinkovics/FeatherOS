@@ -2,33 +2,10 @@
 #include <stddef.h>
 #include <stivale2.h>
 
-#include <sample/sample.h>
+#include "kernel/config.h"
+#include "kernel/framebuffer/framebuffer.h"
 
-// We need to tell the stivale bootloader where we want our stack to be.
-// We are going to allocate our stack as an array in .bss.
-__attribute__((aligned(16)))
-static uint8_t stack[8192];
-
-// stivale2 uses a linked list of tags for both communicating TO the
-// bootloader, or receiving info FROM it. More information about these tags
-// is found in the stivale2 specification.
-
-// stivale2 offers a runtime terminal service which can be ditched at any
-// time, but it provides an easy way to print out to graphical terminal,
-// especially during early boot.
-static struct stivale2_header_tag_terminal terminal_hdr_tag = {
-    // All tags need to begin with an identifier and a pointer to the next tag.
-    .tag = {
-        // Identification constant defined in stivale2.h and the specification.
-        .identifier = STIVALE2_HEADER_TAG_TERMINAL_ID,
-        // If next is 0, it marks the end of the linked list of header tags.
-        .next = 0
-    },
-    // The terminal header tag possesses a flags field, leave it as 0 for now
-    // as it is unused.
-    .flags = 0,
-    .callback = 0
-};
+static uint8_t stack[4096];
 
 // We are now going to define a framebuffer header tag.
 // This tag tells the bootloader that we want a graphical framebuffer instead
@@ -38,15 +15,11 @@ static struct stivale2_header_tag_framebuffer framebuffer_hdr_tag = {
     // Same as above.
     .tag = {
         .identifier = STIVALE2_HEADER_TAG_FRAMEBUFFER_ID,
-        // Instead of 0, we now point to the previous header tag. The order in
-        // which header tags are linked does not matter.
-        .next = (uint64_t)&terminal_hdr_tag
+        .next = 0
     },
-    // We set all the framebuffer specifics to 0 as we want the bootloader
-    // to pick the best it can.
-    .framebuffer_width  = 0,
-    .framebuffer_height = 0,
-    .framebuffer_bpp    = 0,
+    .framebuffer_width  = FeatherOS::Config::Width,
+    .framebuffer_height = FeatherOS::Config::Height,
+    .framebuffer_bpp    = FeatherOS::Config::Bpp,
     .unused             = 0
 };
 
@@ -74,7 +47,7 @@ static struct stivale2_header stivale_hdr = {
     // available to load the kernel, rather than relying on us telling it where
     // to load it.
     // Bit 4 disables a deprecated feature and should always be set.
-    .flags = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4),
+    .flags =  (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4),
     // This header structure is the root of the linked list of header tags and
     // points to the first one in the linked list.
     .tags = (uintptr_t)&framebuffer_hdr_tag
@@ -102,35 +75,19 @@ void *stivale2_get_tag(struct stivale2_struct *stivale2_struct, uint64_t id) {
     }
 }
 
-// The following will be our kernel's entry point.
+static Framebuffer framebuffer;
+
 extern "C" void _start(struct stivale2_struct *stivale2_struct) {
-    // Let's get the terminal structure tag from the bootloader.
-    struct stivale2_struct_tag_terminal *term_str_tag;
-    term_str_tag = (stivale2_struct_tag_terminal*)stivale2_get_tag(stivale2_struct, STIVALE2_STRUCT_TAG_TERMINAL_ID);
 
-    // Check if the tag was actually found.
-    if (term_str_tag == NULL) {
-        // It wasn't found, just hang...
-        for (;;) {
-            asm ("hlt");
-        }
-    }
+    struct stivale2_struct_tag_framebuffer* fb_tag = (struct stivale2_struct_tag_framebuffer*)stivale2_get_tag(stivale2_struct, STIVALE2_STRUCT_TAG_FRAMEBUFFER_ID);
 
-    // Let's get the address of the terminal write function.
-    void *term_write_ptr = (void *)term_str_tag->term_write;
-
-    // Now, let's assign this pointer to a function pointer which
-    // matches the prototype described in the stivale2 specification for
-    // the stivale2_term_write function.
-    void (*term_write)(const char *string, size_t length) = (void (*)(const char*, size_t))term_write_ptr;
-
-    // We should now be able to call the above function pointer to print out
-    // a simple "Hello World" to screen.
-    term_write("FeatherOS, version 1.0, Macaw edition\n", 39);
-    term_write(Sample::S_VALUE, 7);
-    #ifdef ARCH_x86_64
-        term_write("\nCompiled for x86_64 architecture", 34);
-    #endif
+    framebuffer.init(fb_tag);
+    framebuffer.clear(FeatherOS::Color::White);
+    framebuffer.drawRectangle(100, 100, 30, 30, FeatherOS::Color::Red);
+    framebuffer.drawRectangle(150, 100, 30, 30, FeatherOS::Color::Green);
+    framebuffer.drawRectangle(200, 100, 30, 30, FeatherOS::Color::Blue);
+    framebuffer.drawRectangle(250, 100, 30, 30, FeatherOS::Color::Yellow);
+    framebuffer.draw();
 
     // We're done, just hang...
     for (;;) {
