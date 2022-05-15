@@ -15,6 +15,7 @@ public:
     void drawPixel(uint32_t x, uint32_t y, uint32_t color);
     void draw();
     void drawRectangle(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
+    void drawCharacter(uint8_t ch, uint32_t x, uint32_t y, uint32_t bg_color, uint32_t fg_color);
 private:
     uint8_t* m_addr;
     uint32_t m_width;

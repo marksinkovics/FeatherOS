@@ -14,8 +14,8 @@ namespace FeatherOS
         static const uint32_t Blue = 0x0000FF;
         static const uint32_t White = 0xFFFFFF;
 
-        static const uint32_t FGColor = Black;
-        static const uint32_t BGColor = White;
+        static const uint32_t FGColor = White;
+        static const uint32_t BGColor = Black;
     };
 
     struct Config

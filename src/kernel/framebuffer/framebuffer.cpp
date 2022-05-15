@@ -1,6 +1,7 @@
 #include <stivale2.h>
 
 #include "kernel/framebuffer/framebuffer.h"
+#include "kernel/framebuffer/font.h"
 
 void Framebuffer::init(stivale2_struct_tag_framebuffer* fb)
 {
@@ -48,6 +49,25 @@ void Framebuffer::drawRectangle(uint32_t x, uint32_t y, uint32_t w, uint32_t h, 
         for (uint32_t j = y; j < y + h; j++)
         {
             drawPixel(i, j, color);
+        }
+    }
+}
+
+void Framebuffer::drawCharacter(uint8_t ch_index, uint32_t x, uint32_t y, uint32_t bg_color, uint32_t fg_color)
+{
+    uint32_t offset = ((uint32_t)ch_index) * 16;
+    for (uint32_t i = 0; i < 16; i++)
+    {
+        for (uint32_t j = 0; j < 8; j++)
+        {
+            if (font16_8[offset + i] & (1 << j))
+            {
+                drawPixel(x + j, y + i, fg_color);
+            }
+            else
+            {
+                drawPixel(x + j, y + i, bg_color);
+            }
         }
     }
 }

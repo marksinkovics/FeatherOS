@@ -75,6 +75,7 @@ void *stivale2_get_tag(struct stivale2_struct *stivale2_struct, uint64_t id) {
     }
 }
 
+
 static Framebuffer framebuffer;
 
 extern "C" void _start(struct stivale2_struct *stivale2_struct) {
@@ -82,11 +83,17 @@ extern "C" void _start(struct stivale2_struct *stivale2_struct) {
     struct stivale2_struct_tag_framebuffer* fb_tag = (struct stivale2_struct_tag_framebuffer*)stivale2_get_tag(stivale2_struct, STIVALE2_STRUCT_TAG_FRAMEBUFFER_ID);
 
     framebuffer.init(fb_tag);
-    framebuffer.clear(FeatherOS::Color::White);
+    framebuffer.clear(FeatherOS::Color::BGColor);
     framebuffer.drawRectangle(100, 100, 30, 30, FeatherOS::Color::Red);
     framebuffer.drawRectangle(150, 100, 30, 30, FeatherOS::Color::Green);
     framebuffer.drawRectangle(200, 100, 30, 30, FeatherOS::Color::Blue);
     framebuffer.drawRectangle(250, 100, 30, 30, FeatherOS::Color::Yellow);
+    framebuffer.drawRectangle(300, 100, 30, 30, FeatherOS::Color::FGColor);
+
+    for (uint8_t i = 0; i < 94; i++) {
+        framebuffer.drawCharacter(i, 50 + (i * 8), 50, FeatherOS::Color::BGColor, FeatherOS::Color::FGColor);
+    }
+
     framebuffer.draw();
 
     // We're done, just hang...
