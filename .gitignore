@@ -6,3 +6,4 @@ deps/stivale
 **/build
 **/iso_root
 *xbm
+.cache

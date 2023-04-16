@@ -4,10 +4,11 @@ if (ARCH STREQUAL "x86_64")
     set(CMAKE_TOOLCHAIN_FILE "toolchains/x86_64.cmake")
 endif()
 
-project(FeatherOS LANGUAGES CXX ASM_NASM)
+project(FeatherOS LANGUAGES C CXX ASM_NASM)
 
 set(KERNEL_BINARY "kernel.elf")
 set(CMAKE_ASM_NASM_OBJECT_FORMAT elf64)
+set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
 
 # Enable nasm
 enable_language(ASM_NASM)

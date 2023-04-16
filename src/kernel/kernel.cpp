@@ -91,7 +91,7 @@ extern "C" void _start(struct stivale2_struct *stivale2_struct) {
     framebuffer.drawRectangle(300, 100, 30, 30, FeatherOS::Color::FGColor);
 
     for (uint8_t i = 0; i < 94; i++) {
-        framebuffer.drawCharacter(i, 50 + (i * 8), 50, FeatherOS::Color::BGColor, FeatherOS::Color::FGColor);
+        framebuffer.drawCharacter(i, 50 + (i * 8) + 2, 50, FeatherOS::Color::BGColor, FeatherOS::Color::FGColor);
     }
 
     framebuffer.draw();

@@ -1,7 +1,10 @@
 #include <stivale2.h>
 
 #include "kernel/framebuffer/framebuffer.h"
-#include "kernel/framebuffer/font.h"
+
+extern "C" {
+    #include "kernel/framebuffer/font.h"
+}
 
 void Framebuffer::init(stivale2_struct_tag_framebuffer* fb)
 {
