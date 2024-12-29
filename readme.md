@@ -1,6 +1,6 @@
 # Feather OS
 
- Hobby x86-64 bit operating system with the purpose to learn about how an operating system work, especially a kernel work, and more.
+ Hobby x86-64 bit operating system with the purpose of learning about kernel and operating system development.
 
 ## Tech stack
 

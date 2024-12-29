@@ -29,7 +29,7 @@ build() {
 
     cd "$SCRIPT_DIR/build"
 
-    cmake .. -G "Unix Makefiles" -DARCH=x86_64 #--debug-output
+    cmake --fresh .. -G "Unix Makefiles" -DARCH=x86_64 #--debug-output
 
     time make
 }
