@@ -7,3 +7,4 @@ deps/stivale
 **/iso_root
 *xbm
 .cache
+.DS_Store

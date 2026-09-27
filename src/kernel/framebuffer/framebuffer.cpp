@@ -1,4 +1,4 @@
-#include <stivale2.h>
+#include <limine.h>
 
 #include "kernel/framebuffer/framebuffer.h"
 
@@ -6,12 +6,12 @@ extern "C" {
     #include "kernel/framebuffer/font.h"
 }
 
-void Framebuffer::init(stivale2_struct_tag_framebuffer* fb)
+void Framebuffer::init(limine_framebuffer *framebuffer)
 {
-    m_addr = (uint8_t*)fb->framebuffer_addr;
-    m_width = fb->framebuffer_width;
-    m_height = fb->framebuffer_height;
-    m_pitch = fb->framebuffer_pitch;
+    m_addr = (uint8_t*)framebuffer->address;
+    m_width = framebuffer->width;
+    m_height = framebuffer->height;
+    m_pitch = framebuffer->pitch;
     m_backbuffer_len = m_height * m_pitch;
 }
 

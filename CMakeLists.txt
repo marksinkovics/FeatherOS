@@ -10,9 +10,6 @@ set(KERNEL_BINARY "kernel.elf")
 set(CMAKE_ASM_NASM_OBJECT_FORMAT elf64)
 set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
 
-# Enable nasm
-enable_language(ASM_NASM)
-
 add_executable(${KERNEL_BINARY})
 
 set(SRCROOT ${PROJECT_SOURCE_DIR})
@@ -25,3 +22,5 @@ target_include_directories(${KERNEL_BINARY} PRIVATE ${SRCROOT} ${SRCROOT}/deps/s
 
 add_subdirectory(${SRCROOT}/deps)
 add_subdirectory(${SRCROOT}/src)
+
+target_link_libraries(${KERNEL_BINARY} PRIVATE limine)

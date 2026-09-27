@@ -3,14 +3,14 @@
 
 #include <stdint.h>
 
-struct stivale2_struct_tag_framebuffer;
+struct limine_framebuffer;
 
 #include "kernel/config.h"
 
 class Framebuffer
 {
 public:
-    void init(stivale2_struct_tag_framebuffer* fb);
+    void init(limine_framebuffer *framebuffer);
     void clear(uint32_t color = FeatherOS::Color::Black);
     void drawPixel(uint32_t x, uint32_t y, uint32_t color);
     void draw();

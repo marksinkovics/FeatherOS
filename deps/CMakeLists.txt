@@ -1,8 +1,4 @@
-set(KERNEL_BINARY "kernel.elf")
-set(SRCROOT ${PROJECT_SOURCE_DIR}/deps)
+set(DEPS_SOURCE_DIR ${PROJECT_SOURCE_DIR}/deps)
 
-set(SRC
-    ${SRCROOT}/stivale/stivale2.h
-)
-
-target_sources(${KERNEL_BINARY} PRIVATE ${SRC})
+add_library(limine INTERFACE)
+target_include_directories(limine INTERFACE ${DEPS_SOURCE_DIR}/limine)
