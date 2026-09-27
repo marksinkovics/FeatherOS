@@ -60,6 +60,7 @@ clean_deps() {
 
 iso() {
     _print "Creating ISO"
+    make -B -C "$SCRIPT_DIR/deps/limine" limine
 	rm -rf "$SCRIPT_DIR/iso_root"
 	mkdir -p "$SCRIPT_DIR/iso_root"
 	cp 	"$SCRIPT_DIR/build/kernel.elf" "$SCRIPT_DIR/limine.conf" "$SCRIPT_DIR/deps/limine/limine-bios.sys" "$SCRIPT_DIR/deps/limine/limine-bios-cd.bin" "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" "$SCRIPT_DIR/iso_root/"
@@ -72,7 +73,7 @@ iso() {
 		-apm-block-size 2048 --efi-boot limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
 		"$SCRIPT_DIR/iso_root" -o "$SCRIPT_DIR/barebones.iso"
-    $SCRIPT_DIR/deps/limine/limine bios-install "$SCRIPT_DIR/barebones.iso"
+	"$SCRIPT_DIR/deps/limine/limine" bios-install "$SCRIPT_DIR/barebones.iso"
 	rm -rf "$SCRIPT_DIR/iso_root"
 }
 
