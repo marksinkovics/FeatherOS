@@ -4,6 +4,7 @@ set(SRCROOT ${PROJECT_SOURCE_DIR}/src/kernel)
 set(SRC
     ${SRCROOT}/framebuffer/font.c
     ${SRCROOT}/framebuffer/framebuffer.cpp
+    ${SRCROOT}/framebuffer/term.cpp
     ${SRCROOT}/kernel.cpp
 )
 

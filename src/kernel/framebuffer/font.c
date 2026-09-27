@@ -98,3 +98,21 @@ uint8_t font16_8[] =
     0x00, 0x00, 0x00, 0x0E, 0x18, 0x18, 0x18, 0x10, 0x30, 0x10, 0x18, 0x18, 0x18, 0x18, 0x0E, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4E, 0x7A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
+
+
+int8_t indexForCharacter(char character, uint8_t* index)
+{
+    static const char* character_map = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_'abcdefghijklmnopqrstuvwxyz{|}~";
+    static const uint8_t character_map_size = 96;
+    int status = -1;
+    for (uint8_t i = 0; i < character_map_size; ++i)
+    {
+        if (character_map[i] == character)
+        {
+            status = 0;
+            *index = i;
+        }
+    }
+
+    return status;
+}
