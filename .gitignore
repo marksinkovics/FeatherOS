@@ -5,3 +5,6 @@ deps/stivale
 *.iso
 **/build
 **/iso_root
+*xbm
+.cache
+.DS_Store

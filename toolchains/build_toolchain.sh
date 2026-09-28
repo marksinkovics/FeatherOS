@@ -4,7 +4,7 @@ PREFIX_BASE="/usr/local/cross"
 BIN_PATH="/usr/local/bin"
 
 BINUTILS_VERSION="2.37"
-GCC_VERSION="11.2.0"
+GCC_VERSION="14.1.0"
 GRUB_VERSION="2.06"
 
 # TARGETS=(i686-elf x86_64-elf aarch64-elf i386-elf)
@@ -76,7 +76,7 @@ install-binutils()
 
     # link to /usr/local/bin
     cd /usr/local/bin
-    ln -sf ../cross/binutils/bin/* ./
+    sudo ln -sf ../cross/binutils/bin/* ./
 }
 
 validate-gcc()
@@ -110,8 +110,17 @@ install-gcc()
 
     which -- "$TARGET-as" || exit 1
 
+    _print "Download prerequisites"
+    _print "$(pwd)"
+    cd "$TMP/$TARGET"/gcc-$GCC_VERSION
+    _print "$(pwd)"
+    ./contrib/download_prerequisites
+    cd "$TMP/$TARGET"
+    _print "$(pwd)"
+
     mkdir build-gcc
     cd build-gcc || exit 1
+    _print "Compile GCC"
     ../gcc-$GCC_VERSION/configure \
         --target="$TARGET" \
         --prefix="$PREFIX" \
@@ -129,7 +138,7 @@ install-gcc()
 
     _print "Linking gcc"
     cd "$BIN_PATH" || exit 1
-    ln -sf ../cross/gcc/bin/* ./
+    sudo ln -sf ../cross/gcc/bin/* ./
 }
 
 #
@@ -160,8 +169,6 @@ usage()
     echo "    -v,--verbose"
     echo ""
 }
-
-__prepare
 
 while [[ "$1" == -* ]]; do
     case "$1" in
@@ -200,9 +207,12 @@ while [[ "$1" == -* ]]; do
     shift
 done
 
+__prepare
+
 if [ "$BINUTILS" == "1" ]; then
     for arch in "${ARCHS[@]}"; do
-        if ! validate-binutils "$arch"; then
+        validate-binutils "$arch"
+        if [ $? ] || [[ "$FORCE" == 1 ]]; then
             _print "Installing binutils for $arch"
             install-binutils "$arch"
         else
@@ -213,7 +223,8 @@ fi
 
 if [ "$GCC" == "1" ]; then
     for arch in "${ARCHS[@]}"; do
-        if ! validate-gcc "$arch"; then
+        validate-gcc "$arch"
+        if [ $? ] || [[ "$FORCE" == 1 ]]; then
             _print "Installing gcc for $arch"
             install-gcc "$arch"
         else

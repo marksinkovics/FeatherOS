@@ -11,14 +11,9 @@ _print() {
 }
 
 build() {
-    if [ ! -d "$SCRIPT_DIR/deps/stivale" ]; then
-        _print "Fetching stivale"
-        git clone -b master https://github.com/stivale/stivale.git deps/stivale
-    fi
-
     if [ ! -d "$SCRIPT_DIR/deps/limine" ]; then
     _print "Fetching limine"
-        git clone -b v3.0-branch-binary https://github.com/limine-bootloader/limine.git deps/limine
+        git clone --branch=v8.x-binary --depth=1 https://github.com/limine-bootloader/limine.git deps/limine
         make -C deps/limine
     fi
 
@@ -29,7 +24,7 @@ build() {
 
     cd "$SCRIPT_DIR/build"
 
-    cmake .. -G "Unix Makefiles" -DARCH=x86_64 #--debug-output
+    cmake --fresh .. -G "Unix Makefiles" -DARCH=x86_64 #--debug-output
 
     time make
 }
@@ -65,22 +60,28 @@ clean_deps() {
 
 iso() {
     _print "Creating ISO"
+    make -B -C "$SCRIPT_DIR/deps/limine" limine
 	rm -rf "$SCRIPT_DIR/iso_root"
 	mkdir -p "$SCRIPT_DIR/iso_root"
-	cp 	"$SCRIPT_DIR/build/kernel.elf" "$SCRIPT_DIR/limine.cfg" "$SCRIPT_DIR/deps/limine/limine.sys" "$SCRIPT_DIR/deps/limine/limine-cd.bin" "$SCRIPT_DIR/deps/limine/limine-cd-efi.bin" "$SCRIPT_DIR/iso_root/"
+	cp 	"$SCRIPT_DIR/build/kernel.elf" "$SCRIPT_DIR/limine.conf" "$SCRIPT_DIR/deps/limine/limine-bios.sys" "$SCRIPT_DIR/deps/limine/limine-bios-cd.bin" "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" "$SCRIPT_DIR/iso_root/"
+	mkdir -p "$SCRIPT_DIR/iso_root/EFI/BOOT"
+	cp -v $SCRIPT_DIR/deps/limine/BOOTX64.EFI "$SCRIPT_DIR/iso_root/EFI/BOOT/"
+	cp -v $SCRIPT_DIR/deps/limine/BOOTIA32.EFI "$SCRIPT_DIR/iso_root/EFI/BOOT/"
 
-    xorriso -as mkisofs -b limine-cd.bin \
-		-no-emul-boot -boot-load-size 4 -boot-info-table \
-		--efi-boot limine-cd-efi.bin \
+	xorriso -as mkisofs -R -r -J -b limine-bios-cd.bin \
+		-no-emul-boot -boot-load-size 4 -boot-info-table -hfsplus \
+		-apm-block-size 2048 --efi-boot limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
 		"$SCRIPT_DIR/iso_root" -o "$SCRIPT_DIR/barebones.iso"
-	"$SCRIPT_DIR/deps/limine/limine-deploy" "$SCRIPT_DIR/barebones.iso"
+	"$SCRIPT_DIR/deps/limine/limine" bios-install "$SCRIPT_DIR/barebones.iso"
 	rm -rf "$SCRIPT_DIR/iso_root"
 }
 
 run() {
     _print "Run in QEMU"
 	qemu-system-x86_64 -m 2G -cdrom "$SCRIPT_DIR/barebones.iso"
+    # qemu-system-x86_64 -enable-kvm -cpu host -serial stdio -M q35,smm=off -m 2G -smp 2 -no-reboot -rtc base=localtime -cdrom $SCRIPT_DIR/barebones.iso
+
 }
 
 __exit()
@@ -109,6 +110,11 @@ else
                 iso
                 ;;
             run)
+                run
+                ;;
+            debug)
+                build
+                iso
                 run
                 ;;
             all)
