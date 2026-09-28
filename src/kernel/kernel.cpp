@@ -1,6 +1,7 @@
 #include "kernel/config.h"
 #include "kernel/framebuffer/framebuffer.h"
 #include "kernel/framebuffer/term.h"
+#include "kernel/klogger.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -66,6 +67,7 @@ void hcf() {
 
 static Framebuffer framebuffer;
 static FeatherOS::Term term;
+static FeatherOS::KLogger klogger;
 
 // Extern declarations for global constructors array.
 extern void (*__init_array[])();
@@ -98,6 +100,11 @@ extern "C" void kmain() {
     term.PrintLn("Hello World!");
     term.PrintLn("This is a line\nthis is another line :)");
     term.PrintLn("Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book. It has survived not only five centuries, but also the leap into electronic typesetting, remaining essentially unchanged. It was popularised in the 1960s with the release of Letraset sheets containing Lorem Ipsum passages, and more recently with desktop publishing software like Aldus PageMaker including versions of Lorem Ipsum");
+    klogger.Init(&term);
+    klogger.Debug("Bootloader handoff received");
+    klogger.Info("Framebuffer console initialized");
+    klogger.Info("Kernel initialization complete");
+    klogger.Info("Lorem Ipsum is simply dummy text of the printing and typesetting industry. Lorem Ipsum has been the industry's standard dummy text ever since the 1500s, when an unknown printer took a galley of type and scrambled it to make a type specimen book. It has survived not only five centuries, but also the leap into electronic typesetting, remaining essentially unchanged. It was popularised in the 1960s with the release of Letraset sheets containing Lorem Ipsum passages, and more recently with desktop publishing software like Aldus PageMaker including versions of Lorem Ipsum");
 
     hcf();
 }

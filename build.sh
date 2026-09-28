@@ -112,6 +112,11 @@ else
             run)
                 run
                 ;;
+            debug)
+                build
+                iso
+                run
+                ;;
             all)
                 clean
                 build
