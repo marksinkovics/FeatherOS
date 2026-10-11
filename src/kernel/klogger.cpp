@@ -1,11 +1,17 @@
 #include "klogger.h"
 
+#include "kernel/arch/x86_64/serial.h"
 #include "kernel/framebuffer/term.h"
 
 namespace FeatherOS
 {
 
-void KLogger::Init(Term* term)
+void KLogger::Init()
+{
+    Serial::Init();
+}
+
+void KLogger::AttachTerminal(Term* term)
 {
     m_term = term;
 }
@@ -32,7 +38,7 @@ void KLogger::Error(const char* message)
 
 void KLogger::Write(const char* level, const char* message)
 {
-    if (m_term == nullptr || message == nullptr)
+    if (message == nullptr)
     {
         return;
     }
@@ -63,7 +69,12 @@ void KLogger::Write(const char* level, const char* message)
         length = sizeof(line) - 1;
     }
     line[length] = '\0';
-    m_term->PrintLn(line);
+    Serial::Write(line);
+    Serial::Write("\n");
+    if (m_term != nullptr)
+    {
+        m_term->PrintLn(line);
+    }
 }
 
-}
+} // namespace FeatherOS

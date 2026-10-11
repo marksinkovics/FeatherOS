@@ -9,7 +9,8 @@ class Term;
 class KLogger
 {
 public:
-    void Init(Term* term);
+    void Init();
+    void AttachTerminal(Term* term);
     void Debug(const char* message);
     void Info(const char* message);
     void Warning(const char* message);
@@ -21,6 +22,6 @@ private:
     Term* m_term = nullptr;
 };
 
-}
+} // namespace FeatherOS
 
 #endif

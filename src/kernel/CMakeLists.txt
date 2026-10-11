@@ -3,6 +3,8 @@ set(SRCROOT ${PROJECT_SOURCE_DIR}/src/kernel)
 
 set(SRC
     ${SRCROOT}/klogger.cpp
+    ${SRCROOT}/panic.cpp
+    ${SRCROOT}/arch/x86_64/serial.cpp
     ${SRCROOT}/framebuffer/font.c
     ${SRCROOT}/framebuffer/framebuffer.cpp
     ${SRCROOT}/framebuffer/term.cpp

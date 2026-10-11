@@ -1,0 +1,18 @@
+minimum_pre_commit_version: "3.0.0"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+
+  - repo: local
+    hooks:
+      - id: featheros-quality
+        name: FeatherOS format and lint checks
+        entry: bash tools/quality.sh check
+        language: system
+        pass_filenames: false
+        always_run: true
+        verbose: true
+        stages: [pre-commit]

@@ -5,10 +5,7 @@ BIN_PATH="/usr/local/bin"
 
 BINUTILS_VERSION="2.37"
 GCC_VERSION="14.1.0"
-GRUB_VERSION="2.06"
-
-# TARGETS=(i686-elf x86_64-elf aarch64-elf i386-elf)
-TARGETS=(x86_64-elf)
+# Supported architectures can be passed with -a/--arch.
 # GRUB_TARGETS=(x86_64)
 
 ORIGIN="$(pwd)"
@@ -18,8 +15,7 @@ TMP="$(mktemp -d /tmp/cross-compiler.XXXXXX)"
 #   Preparation & Cleanup
 #
 
-__prepare()
-{
+__prepare() {
     echo "Validation prefix folder ($PREFIX_BASE)"
     if [ ! -d "$PREFIX_BASE" ]; then
         echo "Folder doesn't exist. Creating ($PREFIX_BASE)"
@@ -36,8 +32,7 @@ __prepare()
     cd "$TMP" || return
 }
 
-__cleanup ()
-{
+__cleanup() {
     echo "Cleaning up... $TMP"
     [[ -d "$TMP" ]] && rm -rf "$TMP"
     echo "Navigate back to $ORIGIN"
@@ -45,7 +40,7 @@ __cleanup ()
 }
 
 _print() {
-    echo "[DEBUG] $@"
+    printf '[DEBUG] %s\n' "$*"
 }
 
 trap __cleanup EXIT
@@ -54,39 +49,35 @@ trap __cleanup EXIT
 #   Installation steps
 #
 
-validate-binutils()
-{
+validate-binutils() {
     TARGET="$1"
     test -L "$BIN_PATH/$TARGET-as" && test -L "$BIN_PATH/$TARGET-ld"
 }
 
-install-binutils()
-{
+install-binutils() {
     TARGET="$1"
     PREFIX="$PREFIX_BASE/binutils"
     mkdir -p "$TMP/$TARGET"
-    cd "$TMP/$TARGET"
+    cd "$TMP/$TARGET" || exit 1
     wget https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VERSION.tar.xz
     tar Jxf binutils-$BINUTILS_VERSION.tar.xz
     mkdir build-binutils
-    cd build-binutils
+    cd build-binutils || exit 1
     ../binutils-$BINUTILS_VERSION/configure --target="$TARGET" --prefix="$PREFIX" --with-sysroot --disable-nls --disable-werror
     make
     make install
 
     # link to /usr/local/bin
-    cd /usr/local/bin
+    cd /usr/local/bin || exit 1
     sudo ln -sf ../cross/binutils/bin/* ./
 }
 
-validate-gcc()
-{
+validate-gcc() {
     TARGET="$1"
     test -L "$BIN_PATH/$TARGET-gcc"
 }
 
-install-gcc()
-{
+install-gcc() {
     TARGET="$1"
 
     REQUIREMENTS=(
@@ -112,10 +103,10 @@ install-gcc()
 
     _print "Download prerequisites"
     _print "$(pwd)"
-    cd "$TMP/$TARGET"/gcc-$GCC_VERSION
+    cd "$TMP/$TARGET"/gcc-$GCC_VERSION || exit 1
     _print "$(pwd)"
     ./contrib/download_prerequisites
-    cd "$TMP/$TARGET"
+    cd "$TMP/$TARGET" || exit 1
     _print "$(pwd)"
 
     mkdir build-gcc
@@ -145,15 +136,13 @@ install-gcc()
 #   Command line argument handlers
 #
 
-MODES=()
 ARCHS=()
 FORCE=0
 VERBOSE=0
 GCC=0
 BINUTILS=0
 
-usage()
-{
+usage() {
     echo "$(basename "$0") [-h] [--gcc] [--binutils] [-a|--arch arch] [-v*] [-f|--force] -- program to build and installcross-platform developer tools from scratch"
     echo "where:"
     echo "    -h,help      show this help text"
@@ -172,16 +161,16 @@ usage()
 
 while [[ "$1" == -* ]]; do
     case "$1" in
-        -f|--force)
+        -f | --force)
             FORCE=1
             ;;
         -v*)
-            (( VERBOSE += ${#1} - 1 ))
+            ((VERBOSE += ${#1} - 1))
             ;;
         --verbose)
-            (( VERBOSE++ ))
+            ((VERBOSE++))
             ;;
-        -h|--help)
+        -h | --help)
             usage
             exit 0
             ;;
@@ -191,7 +180,7 @@ while [[ "$1" == -* ]]; do
         --binutils)
             BINUTILS=1
             ;;
-        -a|--arch)
+        -a | --arch)
             shift
             ARCHS+=("$1")
             ;;
@@ -202,7 +191,8 @@ while [[ "$1" == -* ]]; do
         *)
             echo "Unrecognized option $1."
             usage
-            exit 1;
+            exit 1
+            ;;
     esac
     shift
 done

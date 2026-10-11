@@ -10,7 +10,7 @@ struct limine_framebuffer;
 class Framebuffer
 {
 public:
-    bool init(limine_framebuffer *framebuffer);
+    bool init(limine_framebuffer* framebuffer);
     void clear(uint32_t color = FeatherOS::Color::Black);
     void drawPixel(uint32_t x, uint32_t y, uint32_t color);
     void draw();
@@ -35,7 +35,7 @@ private:
     uint8_t m_green_mask_shift;
     uint8_t m_blue_mask_size;
     uint8_t m_blue_mask_shift;
-    uint8_t  m_backbuffer[FeatherOS::Config::BackBufferLen];
+    uint8_t m_backbuffer[FeatherOS::Config::BackBufferLen];
     uint32_t m_backbuffer_len;
 };
 

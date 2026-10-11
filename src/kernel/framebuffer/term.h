@@ -5,8 +5,9 @@
 
 #include "kernel/config.h"
 
-extern "C" {
-    #include "kernel/framebuffer/font.h"
+extern "C"
+{
+#include "kernel/framebuffer/font.h"
 }
 
 class Framebuffer;
@@ -30,8 +31,9 @@ public:
     void PrintLn(const char* str);
 
     void Refresh();
+
 private:
-    Framebuffer *m_framebuffer;
+    Framebuffer* m_framebuffer;
     uint8_t m_buffer[FeatherOS::TermConfig::Row][FeatherOS::TermConfig::Column];
     uint32_t m_bg_color = FeatherOS::Color::BGColor;
     uint32_t m_fg_color = FeatherOS::Color::FGColor;
@@ -44,6 +46,6 @@ private:
     void Scroll();
 };
 
-};
+}; // namespace FeatherOS
 
 #endif

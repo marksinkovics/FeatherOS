@@ -1,0 +1,12 @@
+[tool.ruff]
+line-length = 79
+target-version = "py38"
+
+[tool.ruff.format]
+skip-magic-trailing-comma = true
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

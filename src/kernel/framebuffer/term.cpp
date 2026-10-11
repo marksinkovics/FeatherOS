@@ -25,7 +25,7 @@ void Term::Init(Framebuffer* framebuffer)
         for (uint32_t column = 0; column < TermConfig::Column; ++column)
         {
             // uint32_t index = (row * TermConfig::Row) + column;
-            //char c = 'A' + (index % ('Z' - 'A' + 1));
+            // char c = 'A' + (index % ('Z' - 'A' + 1));
             m_buffer[row][column] = ' ';
         }
     }
@@ -128,4 +128,4 @@ void Term::Refresh()
     m_framebuffer->draw();
 }
 
-};
+}; // namespace FeatherOS
