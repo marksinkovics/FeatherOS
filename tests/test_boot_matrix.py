@@ -8,9 +8,17 @@ BUILD_SCRIPT = REPO_ROOT / "build.sh"
 
 
 class BootMatrixTests(unittest.TestCase):
-    def run_boot_case(self, arch, panic_test):
+    def run_boot_case(
+        self,
+        arch,
+        panic_test=False,
+        exception_test=False,
+        interrupt_test=False,
+    ):
         environment = os.environ.copy()
         environment["PANIC_TEST"] = "ON" if panic_test else "OFF"
+        environment["EXCEPTION_TEST"] = "ON" if exception_test else "OFF"
+        environment["INTERRUPT_TEST"] = "ON" if interrupt_test else "OFF"
         command = ["bash", str(BUILD_SCRIPT), "--arch", arch, "test"]
 
         result = subprocess.run(
@@ -30,11 +38,23 @@ class BootMatrixTests(unittest.TestCase):
     def test_02_aarch64_panic_reporting(self):
         self.run_boot_case("aarch64", panic_test=True)
 
-    def test_03_x86_64_normal_boot(self):
+    def test_03_x86_64_divide_error_reporting(self):
+        self.run_boot_case("x86_64", exception_test=True)
+
+    def test_04_aarch64_undefined_instruction_reporting(self):
+        self.run_boot_case("aarch64", exception_test=True)
+
+    def test_05_x86_64_normal_boot(self):
         self.run_boot_case("x86_64", panic_test=False)
 
-    def test_04_aarch64_normal_boot(self):
+    def test_06_x86_64_pit_interrupt(self):
+        self.run_boot_case("x86_64", interrupt_test=True)
+
+    def test_07_aarch64_normal_boot(self):
         self.run_boot_case("aarch64", panic_test=False)
+
+    def test_08_aarch64_gic_interrupt(self):
+        self.run_boot_case("aarch64", interrupt_test=True)
 
 
 if __name__ == "__main__":

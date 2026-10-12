@@ -119,7 +119,9 @@ build() {
     cd "$build_dir"
 
     cmake --fresh "$SCRIPT_DIR" -G "Unix Makefiles" -DARCH="$ARCH" \
-        -DFEATHEROS_PANIC_TEST="${PANIC_TEST:-OFF}"
+        -DFEATHEROS_PANIC_TEST="${PANIC_TEST:-OFF}" \
+        -DFEATHEROS_EXCEPTION_TEST="${EXCEPTION_TEST:-OFF}" \
+        -DFEATHEROS_INTERRUPT_TEST="${INTERRUPT_TEST:-OFF}"
 
     time make
 }
@@ -162,16 +164,27 @@ iso() {
     fi
 
     if [ "$ARCH" = "aarch64" ]; then
-        _require_tools mcopy mdel
+        _require_tools mcopy mdel qemu-system-aarch64
         local iso_path
+        local dtb_path
         iso_path=$(_kernel_iso)
+        dtb_path="$(_build_dir)/virt.dtb"
         local arm_uefi_image="$SCRIPT_DIR/iso_root/limine-uefi-aarch64.bin"
         _print "Creating AArch64 UEFI ISO"
+        qemu-system-aarch64 \
+            -machine "virt,dumpdtb=$dtb_path" \
+            -cpu cortex-a72 \
+            -m 2G
+        if [ ! -s "$dtb_path" ]; then
+            _err "QEMU did not generate the AArch64 device tree."
+            exit 1
+        fi
         make -B -C "$SCRIPT_DIR/deps/limine" limine
         rm -rf "$SCRIPT_DIR/iso_root"
         mkdir -p "$SCRIPT_DIR/iso_root/EFI/BOOT"
-        cp "$build_dir/kernel.elf" "$SCRIPT_DIR/limine.conf" \
+        cp "$build_dir/kernel.elf" "$SCRIPT_DIR/configs/aarch64/limine.conf" \
             "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" "$SCRIPT_DIR/iso_root/"
+        cp "$dtb_path" "$SCRIPT_DIR/iso_root/virt.dtb"
         cp "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" "$arm_uefi_image"
         mcopy -o -i "$arm_uefi_image" "$SCRIPT_DIR/deps/limine/BOOTAA64.EFI" \
             ::/EFI/BOOT/BOOTAA64.EFI
@@ -190,7 +203,7 @@ iso() {
         make -B -C "$SCRIPT_DIR/deps/limine" limine
         rm -rf "$SCRIPT_DIR/iso_root"
         mkdir -p "$SCRIPT_DIR/iso_root"
-        cp "$build_dir/kernel.elf" "$SCRIPT_DIR/limine.conf" "$SCRIPT_DIR/deps/limine/limine-bios.sys" "$SCRIPT_DIR/deps/limine/limine-bios-cd.bin" "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" "$SCRIPT_DIR/iso_root/"
+        cp "$build_dir/kernel.elf" "$SCRIPT_DIR/configs/x86_64/limine.conf" "$SCRIPT_DIR/deps/limine/limine-bios.sys" "$SCRIPT_DIR/deps/limine/limine-bios-cd.bin" "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" "$SCRIPT_DIR/iso_root/"
         mkdir -p "$SCRIPT_DIR/iso_root/EFI/BOOT"
         cp -v "$SCRIPT_DIR/deps/limine/BOOTX64.EFI" "$SCRIPT_DIR/iso_root/EFI/BOOT/"
         cp -v "$SCRIPT_DIR/deps/limine/BOOTIA32.EFI" "$SCRIPT_DIR/iso_root/EFI/BOOT/"
@@ -257,6 +270,12 @@ smoke_test() {
     local -a smoke_args=(--arch "$ARCH")
     if [[ "${PANIC_TEST:-OFF}" == ON || "${PANIC_TEST:-OFF}" == 1 ]]; then
         smoke_args+=(--expect-panic)
+    fi
+    if [[ "${EXCEPTION_TEST:-OFF}" == ON || "${EXCEPTION_TEST:-OFF}" == 1 ]]; then
+        smoke_args+=(--expect-exception)
+    fi
+    if [[ "${INTERRUPT_TEST:-OFF}" == ON || "${INTERRUPT_TEST:-OFF}" == 1 ]]; then
+        smoke_args+=(--expect-interrupt)
     fi
 
     iso_path=$(_kernel_iso)

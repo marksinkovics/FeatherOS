@@ -12,6 +12,14 @@ import time
 READY_MESSAGE = "KERN/I: Kernel initialization complete"
 PANIC_MARKER = "KERN/PANIC:"
 EXPECTED_PANIC = "KERN/PANIC: Intentional panic test"
+EXPECTED_EXCEPTION = {
+    "x86_64": "KERN/EXCEPTION: Divide error",
+    "aarch64": "KERN/EXCEPTION: AArch64 undefined instruction",
+}
+EXPECTED_INTERRUPT = {
+    "x86_64": "KERN/IRQ: PIT interrupt acknowledged",
+    "aarch64": "KERN/IRQ: GIC software interrupt acknowledged",
+}
 QEMU_TIMEOUT_SECONDS = 10
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
 ANSI_ESCAPE_BYTES = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
@@ -30,8 +38,23 @@ def main():
         action="store_true",
         help="Expect the intentional panic test",
     )
+    parser.add_argument(
+        "--expect-exception",
+        action="store_true",
+        help="Expect an intentional CPU exception",
+    )
+    parser.add_argument(
+        "--expect-interrupt",
+        action="store_true",
+        help="Expect the architecture-specific hardware interrupt test",
+    )
     parser.add_argument("iso", help="Path to the bootable FeatherOS ISO")
     args = parser.parse_args()
+    if (
+        sum((args.expect_panic, args.expect_exception, args.expect_interrupt))
+        > 1
+    ):
+        parser.error("select at most one expected result")
 
     qemu_name = (
         "qemu-system-aarch64"
@@ -88,6 +111,8 @@ def main():
         READY_MESSAGE.encode(),
         PANIC_MARKER.encode(),
         EXPECTED_PANIC.encode(),
+        EXPECTED_EXCEPTION[args.arch].encode(),
+        EXPECTED_INTERRUPT[args.arch].encode(),
     )
 
     while process.poll() is None:
@@ -129,6 +154,24 @@ def main():
             )
             return 1
         print("PASS: expected panic was reported over serial")
+        return 0
+    if args.expect_exception:
+        if EXPECTED_EXCEPTION[args.arch] not in output:
+            print(
+                "FAIL: expected CPU exception was not reported",
+                file=sys.stderr,
+            )
+            return 1
+        print("PASS: expected CPU exception was reported over serial")
+        return 0
+    if args.expect_interrupt:
+        if EXPECTED_INTERRUPT[args.arch] not in output:
+            print(
+                "FAIL: expected hardware interrupt was not acknowledged",
+                file=sys.stderr,
+            )
+            return 1
+        print("PASS: hardware interrupt was acknowledged over serial")
         return 0
     if PANIC_MARKER in output:
         print("FAIL: kernel panicked during startup", file=sys.stderr)

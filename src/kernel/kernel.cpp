@@ -1,8 +1,14 @@
 #include "kernel/config.h"
+#include "kernel/arch/serial.h"
+#include "kernel/exception.h"
 #include "kernel/framebuffer/framebuffer.h"
 #include "kernel/framebuffer/term.h"
+#include "kernel/halt.h"
 #include "kernel/klogger.h"
 #include "kernel/panic.h"
+#if defined(FEATHEROS_KERNEL_TEST)
+#include "kernel/kernel_test.h"
+#endif
 
 #include <stdint.h>
 #include <stddef.h>
@@ -52,26 +58,6 @@ __attribute__((used, section(".limine_requests_end"))) volatile LIMINE_REQUESTS_
 
 } // namespace
 
-// Halt and catch fire function.
-namespace
-{
-
-void hcf()
-{
-    for (;;)
-    {
-#if defined(ARCH_x86_64)
-        asm("hlt");
-#elif defined(ARCH_aarch64)
-        asm("wfi");
-#else
-#error "Unsupported architecture halt instruction"
-#endif
-    }
-}
-
-} // namespace
-
 static Framebuffer framebuffer;
 static FeatherOS::Term term;
 static FeatherOS::KLogger klogger;
@@ -91,14 +77,16 @@ extern "C" void kmain()
 
     if (hhdm_request.response == nullptr)
     {
-        hcf();
+        FeatherOS::HaltForever();
     }
 
     klogger.Init(hhdm_request.response->offset);
     klogger.Info("Limine transferred control to the kernel");
 
-#if defined(FEATHEROS_PANIC_TEST)
-    FeatherOS::Panic("Intentional panic test");
+    FeatherOS::InitializeExceptions();
+
+#if defined(FEATHEROS_KERNEL_TEST)
+    FeatherOS::KernelTest::Run();
 #endif
 
     // Ensure the bootloader actually understands our base revision (see spec).
@@ -128,5 +116,5 @@ extern "C" void kmain()
 
     klogger.Info("Kernel initialization complete");
 
-    hcf();
+    FeatherOS::HaltForever();
 }

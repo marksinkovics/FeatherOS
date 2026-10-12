@@ -25,7 +25,7 @@ Grow FeatherOS from its current Limine-booted x86-64 framebuffer kernel into a s
 
 **Complete:** clean builds produce bootable images for both targets; both boot in QEMU and report readiness over serial; deliberate panic tests report on both targets.
 
-### 2. CPU Exceptions And Interrupts
+### 2. CPU Exceptions And Interrupts (Complete)
 
 - Define a shared exception-reporting interface and architecture-specific saved-context structures.
 - On x86-64, establish the GDT, 64-bit TSS, kernel/IST stacks, 16-byte IDT gates, and assembly exception stubs.
@@ -33,7 +33,7 @@ Grow FeatherOS from its current Limine-booted x86-64 framebuffer kernel into a s
 - Add fatal exception reporting before enabling hardware interrupts.
 - Configure the x86 interrupt controller and the AArch64 Generic Interrupt Controller (GIC) in their respective backends.
 
-**Complete when:** architecture-appropriate divide-by-zero/undefined-instruction tests report useful context on both targets, and hardware interrupts can be registered and acknowledged without losing control of the kernel.
+**Complete:** x86-64 and AArch64 use architecture-specific saved contexts with a shared fatal exception-reporting interface. QEMU verifies x86 divide errors, AArch64 undefined instructions, and registered/acknowledged x86 PIC/PIT IRQ0 and AArch64 GICv2 SGI0 interrupts.
 
 ### 3. Physical And Virtual Memory
 
@@ -82,6 +82,59 @@ Grow FeatherOS from its current Limine-booted x86-64 framebuffer kernel into a s
 - Build a shared shell and compile it for each supported userspace ABI.
 
 **Complete when:** each kernel can launch multiple matching user programs, switch tasks without corrupting state, and run the shell from the initramfs or VFS.
+
+## Future Milestones (Provisional Order)
+
+The milestones below capture possible work after M7. Their order is intentionally provisional and can change as implementation experience clarifies dependencies and priorities.
+
+### 8. SMP And Concurrency
+
+- Bring up multiple processors on x86-64 and AArch64, with architecture-specific startup and per-CPU state.
+- Add synchronization primitives and inter-processor interrupts (IPIs) for shared kernel state and cross-CPU coordination.
+- Extend scheduling to run work across CPUs while preserving the shared process and thread interfaces.
+- Exercise concurrency and scheduling under multi-CPU QEMU configurations.
+
+**Complete when:** both targets boot with multiple CPUs, schedule work on more than one CPU, and pass synchronization and cross-CPU coordination tests.
+
+### 9. Persistent Storage
+
+- Extend block-device and VFS support to allow writes as well as reads.
+- Add a small writable filesystem and define clear behavior for errors and filesystem inconsistencies.
+- Test persistence across kernel and QEMU restarts.
+
+**Complete when:** both targets can create, write, read, and delete files on disk, with data surviving a reboot.
+
+### 10. Networking
+
+- Add a QEMU virtio network driver with architecture-appropriate device discovery and DMA handling.
+- Build the network stack in stages: Ethernet, IP, ICMP, UDP, then TCP.
+- Add basic socket interfaces and simple diagnostic and client/server programs.
+
+**Complete when:** both targets can exchange packets in QEMU, pass basic ICMP/UDP/TCP tests, and run a small network client and server.
+
+### 11. System Services And Compatibility
+
+- Add an init process and define service startup and shutdown behavior.
+- Expand the userspace runtime and libc around a documented, deliberately scoped POSIX subset.
+- Add useful shell utilities and a way to package and launch programs.
+
+**Complete when:** init starts and supervises basic services, and users can run a documented set of utilities and programs through the shell on both targets.
+
+### 12. Security And Hardening
+
+- Audit syscall argument validation, ELF loading, address-space isolation, and resource cleanup.
+- Enforce writable/executable memory policy and tighten privilege transitions.
+- Add negative tests for invalid syscalls, malformed binaries, and attempts to access protected memory.
+
+**Complete when:** security invariants are documented and automated tests demonstrate that malformed inputs and user programs cannot access or corrupt protected kernel state.
+
+## Optional Tracks
+
+These are separately tracked directions and are not prerequisites for the core milestones above:
+
+- **Graphical desktop:** build windowing and user-facing graphics on top of the framebuffer and input systems.
+- **Broader hardware support:** add devices and platforms beyond the initial QEMU targets, prioritizing reusable driver interfaces.
+- **Installation and updates:** produce an installable image and define a reliable system update and recovery workflow.
 
 ## Architecture Boundaries
 
