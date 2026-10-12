@@ -1,6 +1,6 @@
 # Feather OS
 
- Hobby x86-64 bit operating system with the purpose of learning about kernel and operating system development.
+ Hobby operating system targeting x86-64 and AArch64, built to learn kernel and operating system development.
 
 ## Tech stack
 
@@ -17,10 +17,10 @@ See the [FeatherOS roadmap](docs/roadmap.md) for planned kernel milestones.
 1. Clone the project
    `git clone https://github.com/marksinkovics/FeatherOS.git`
 2. Build the project with all components
-   `./build.sh all`
+   `./build.sh --arch x86_64 all`
    In the case of successful build the script will run the build kernel in QEMU
 3. Run the built kernel in QEMU
-   `./build.sh run`
+   `./build.sh --arch x86_64 run`
 
 ## Code Quality
 

@@ -8,14 +8,18 @@
 #include <stddef.h>
 #include <limine.h>
 
-// Set the base revision to 3, this is recommended as this is the latest
-// base revision described by the Limine boot protocol specification.
-// See specification for further info.
+// AArch64 uses revision 0 temporarily for the identity map needed by early PL011 MMIO.
+#if defined(ARCH_aarch64)
+__attribute__((used, section(".limine_requests"))) volatile LIMINE_BASE_REVISION(0);
+#elif defined(ARCH_x86_64)
+// Revision 3 is the latest revision supported by the x86-64 boot path.
+__attribute__((used, section(".limine_requests"))) volatile LIMINE_BASE_REVISION(3);
+#else
+#error "Unsupported architecture: define ARCH_x86_64 or ARCH_aarch64"
+#endif
 
 namespace
 {
-
-__attribute__((used, section(".limine_requests"))) volatile LIMINE_BASE_REVISION(3);
 
 }
 
@@ -27,11 +31,14 @@ __attribute__((used, section(".limine_requests"))) volatile LIMINE_BASE_REVISION
 namespace
 {
 
+__attribute__((used, section(".limine_requests"))) volatile limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST, .revision = 0, .response = nullptr};
+
 __attribute__((
     used, section(".limine_requests"))) volatile limine_framebuffer_request framebuffer_request = {
     .id = LIMINE_FRAMEBUFFER_REQUEST, .revision = 0, .response = nullptr};
 
-}
+} // namespace
 
 // Finally, define the start and end markers for the Limine requests.
 // These can also be moved anywhere, to any .cpp file, as seen fit.
@@ -53,12 +60,12 @@ void hcf()
 {
     for (;;)
     {
-#if defined(__x86_64__)
+#if defined(ARCH_x86_64)
         asm("hlt");
-#elif defined(__aarch64__) || defined(__riscv)
+#elif defined(ARCH_aarch64)
         asm("wfi");
-#elif defined(__loongarch64)
-        asm("idle 0");
+#else
+#error "Unsupported architecture halt instruction"
 #endif
     }
 }
@@ -82,7 +89,12 @@ extern "C" void kmain()
         __init_array[i]();
     }
 
-    klogger.Init();
+    if (hhdm_request.response == nullptr)
+    {
+        hcf();
+    }
+
+    klogger.Init(hhdm_request.response->offset);
     klogger.Info("Limine transferred control to the kernel");
 
     // Ensure the bootloader actually understands our base revision (see spec).
@@ -91,19 +103,25 @@ extern "C" void kmain()
         FeatherOS::Panic("Unsupported Limine base revision");
     }
 
-    FEATHEROS_ASSERT(framebuffer_request.response != nullptr);
-    FEATHEROS_ASSERT(framebuffer_request.response->framebuffer_count > 0);
-
-    // Fetch the first framebuffer.
-    limine_framebuffer* l_framebuffer = framebuffer_request.response->framebuffers[0];
-
-    if (!framebuffer.init(l_framebuffer))
+    bool framebuffer_ready = false;
+    if (framebuffer_request.response != nullptr &&
+        framebuffer_request.response->framebuffer_count > 0)
     {
-        FeatherOS::Panic("Framebuffer mode is unsupported");
+        limine_framebuffer* l_framebuffer = framebuffer_request.response->framebuffers[0];
+        framebuffer_ready = framebuffer.init(l_framebuffer);
     }
-    term.Init(&framebuffer);
-    klogger.AttachTerminal(&term);
-    klogger.Info("Framebuffer console initialized");
+
+    if (framebuffer_ready)
+    {
+        term.Init(&framebuffer);
+        klogger.AttachTerminal(&term);
+        klogger.Info("Framebuffer console initialized");
+    }
+    else
+    {
+        klogger.Warning("No supported framebuffer; using serial console only");
+    }
+
     klogger.Info("Kernel initialization complete");
 
     hcf();

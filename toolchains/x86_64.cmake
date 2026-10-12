@@ -14,7 +14,7 @@ set(CMAKE_RANLIB                x86_64-elf-ranlib${CMAKE_EXECUTABLE_SUFFIX} CACH
 set(CMAKE_SIZE                  x86_64-elf-size${CMAKE_EXECUTABLE_SUFFIX} CACHE INTERNAL "")
 set(CMAKE_STRIP                 x86_64-elf-strip${CMAKE_EXECUTABLE_SUFFIX} CACHE INTERNAL "")
 
-SET(COMMON_LDFLAGS "-T ${PROJECT_SOURCE_DIR}/src/linker.ld -nostdlib -zmax-page-size=0x1000 -static")
+SET(COMMON_LDFLAGS "-T ${PROJECT_SOURCE_DIR}/src/linker_x86_64.ld -nostdlib -zmax-page-size=0x1000 -static")
 
 SET(CMAKE_EXE_LINKER_FLAGS      "${COMMON_LDFLAGS} --sysroot=${CMAKE_FIND_ROOT_PATH}")
 SET(CMAKE_SHARED_LINKER_FLAGS   "--sysroot=${CMAKE_FIND_ROOT_PATH}")

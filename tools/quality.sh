@@ -65,9 +65,21 @@ check_clang_format() {
 }
 
 check_clang_tidy() {
-    find "$REPO_ROOT/src" -type f \
-        \( -name '*.c' -o -name '*.cpp' \) \
-        -print0 | xargs -0 clang-tidy -p "$REPO_ROOT/build"
+    local arch
+    arch="$(sed -n 's/^ARCH:[^=]*=//p' "$REPO_ROOT/build/CMakeCache.txt" | tail -n 1)"
+    if [[ -z "$arch" || ! -d "$REPO_ROOT/src/kernel/arch/$arch" ]]; then
+        fail "could not determine active ARCH from build/CMakeCache.txt"
+    fi
+
+    {
+        find "$REPO_ROOT/src" -type f \
+            \( -name '*.c' -o -name '*.cpp' \) \
+            ! -path "$REPO_ROOT/src/kernel/arch/*" \
+            -print0
+        find "$REPO_ROOT/src/kernel/arch/$arch" -type f \
+            \( -name '*.c' -o -name '*.cpp' \) \
+            -print0
+    } | xargs -0 clang-tidy -p "$REPO_ROOT/build"
 }
 
 check_sources() {

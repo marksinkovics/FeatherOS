@@ -1,6 +1,6 @@
 #include <stdint.h>
 
-#include "serial.h"
+#include "kernel/arch/serial.h"
 
 namespace FeatherOS
 {
@@ -40,8 +40,10 @@ void WriteCharacter(char character)
 
 } // namespace
 
-void Init()
+void Init(uint64_t hhdm_offset)
 {
+    (void)hhdm_offset;
+
     // Disable UART interrupts while configuring the device.
     Out(Port + 1, 0x00);
 
