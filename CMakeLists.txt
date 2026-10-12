@@ -21,8 +21,12 @@ endif ()
 
 set(KERNEL_BINARY "kernel.elf")
 set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
+option(FEATHEROS_PANIC_TEST "Trigger an intentional kernel panic for smoke testing" OFF)
 
 add_executable(${KERNEL_BINARY})
+if (FEATHEROS_PANIC_TEST)
+    target_compile_definitions(${KERNEL_BINARY} PRIVATE FEATHEROS_PANIC_TEST)
+endif ()
 
 set(SRCROOT ${PROJECT_SOURCE_DIR})
 

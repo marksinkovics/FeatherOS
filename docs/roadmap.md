@@ -6,14 +6,14 @@ Grow FeatherOS from its current Limine-booted x86-64 framebuffer kernel into a s
 
 ## Current Foundation
 
-- Limine boot protocol and x86-64 kernel entry
-- Freestanding C and C++ build for x86-64
+- Limine boot protocol and x86-64/AArch64 kernel entry
+- Freestanding C and C++ builds for x86-64 and AArch64
 - Framebuffer drawing, text terminal, and screen logger
-- COM1 serial logging, panic/assert helpers, and an x86-64 QEMU smoke test
+- COM1/PL011 serial logging, panic/assert helpers, and QEMU smoke tests for both architectures
 
 ## Milestones
 
-### 1. Multi-Architecture Build And Debugging
+### 1. Multi-Architecture Build And Debugging (Complete)
 
 - Keep the existing x86-64 build and add an AArch64 cross-compile target with its own toolchain, entry code, and linker script.
 - Select architecture-specific assembly and linker inputs in CMake instead of requiring NASM for every target.
@@ -23,7 +23,7 @@ Grow FeatherOS from its current Limine-booted x86-64 framebuffer kernel into a s
 - Keep panic/assert output allocation-free and available before framebuffer setup.
 - Add a headless serial smoke test for each architecture.
 
-**Complete when:** clean builds produce bootable images for both targets, both boot in QEMU and report readiness over serial, and a deliberate panic is visible for each target.
+**Complete:** clean builds produce bootable images for both targets; both boot in QEMU and report readiness over serial; deliberate panic tests report on both targets.
 
 ### 2. CPU Exceptions And Interrupts
 

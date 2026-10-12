@@ -20,7 +20,7 @@ _err() {
 _usage() {
     printf 'Usage: %s [--arch <x86_64|aarch64>] <action> [actions...]\n' "$0"
     printf '   or: ARCH=<x86_64|aarch64> %s <action> [actions...]\n' "$0"
-    printf 'Actions: build, iso, run, test, debug, all, clean, fullclean\n'
+    printf 'Actions: build, iso, run, test, test-all, debug, all, clean, fullclean\n'
 }
 
 _require_arch() {
@@ -68,6 +68,10 @@ _kernel_iso() {
     esac
 }
 
+_build_dir() {
+    printf '%s/build/%s\n' "$SCRIPT_DIR" "$ARCH"
+}
+
 _aarch64_firmware() {
     if [ -n "${QEMU_EFI:-}" ] && [ -f "$QEMU_EFI" ]; then
         printf '%s\n' "$QEMU_EFI"
@@ -109,14 +113,13 @@ build() {
         make -C deps/limine
     fi
 
-    if [ ! -d "$SCRIPT_DIR/build" ]; then
-        _print "Creating build folder"
-        mkdir -p "$SCRIPT_DIR/build"
-    fi
+    local build_dir
+    build_dir=$(_build_dir)
+    mkdir -p "$build_dir"
+    cd "$build_dir"
 
-    cd "$SCRIPT_DIR/build"
-
-    cmake --fresh .. -G "Unix Makefiles" -DARCH="$ARCH"
+    cmake --fresh "$SCRIPT_DIR" -G "Unix Makefiles" -DARCH="$ARCH" \
+        -DFEATHEROS_PANIC_TEST="${PANIC_TEST:-OFF}"
 
     time make
 }
@@ -151,7 +154,9 @@ iso() {
     _require_arch
     _require_tools make cc xorriso
 
-    if [ ! -f "$SCRIPT_DIR/build/kernel.elf" ]; then
+    local build_dir
+    build_dir=$(_build_dir)
+    if [ ! -f "$build_dir/kernel.elf" ]; then
         _err "kernel.elf not found, run './build.sh build' first."
         exit 1
     fi
@@ -165,7 +170,7 @@ iso() {
         make -B -C "$SCRIPT_DIR/deps/limine" limine
         rm -rf "$SCRIPT_DIR/iso_root"
         mkdir -p "$SCRIPT_DIR/iso_root/EFI/BOOT"
-        cp "$SCRIPT_DIR/build/kernel.elf" "$SCRIPT_DIR/limine.conf" \
+        cp "$build_dir/kernel.elf" "$SCRIPT_DIR/limine.conf" \
             "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" "$SCRIPT_DIR/iso_root/"
         cp "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" "$arm_uefi_image"
         mcopy -o -i "$arm_uefi_image" "$SCRIPT_DIR/deps/limine/BOOTAA64.EFI" \
@@ -185,7 +190,7 @@ iso() {
         make -B -C "$SCRIPT_DIR/deps/limine" limine
         rm -rf "$SCRIPT_DIR/iso_root"
         mkdir -p "$SCRIPT_DIR/iso_root"
-        cp "$SCRIPT_DIR/build/kernel.elf" "$SCRIPT_DIR/limine.conf" "$SCRIPT_DIR/deps/limine/limine-bios.sys" "$SCRIPT_DIR/deps/limine/limine-bios-cd.bin" "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" "$SCRIPT_DIR/iso_root/"
+        cp "$build_dir/kernel.elf" "$SCRIPT_DIR/limine.conf" "$SCRIPT_DIR/deps/limine/limine-bios.sys" "$SCRIPT_DIR/deps/limine/limine-bios-cd.bin" "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" "$SCRIPT_DIR/iso_root/"
         mkdir -p "$SCRIPT_DIR/iso_root/EFI/BOOT"
         cp -v "$SCRIPT_DIR/deps/limine/BOOTX64.EFI" "$SCRIPT_DIR/iso_root/EFI/BOOT/"
         cp -v "$SCRIPT_DIR/deps/limine/BOOTIA32.EFI" "$SCRIPT_DIR/iso_root/EFI/BOOT/"
@@ -221,18 +226,22 @@ run() {
             exit 1
         }
         _require_tools python3
-        _print "Run AArch64 in QEMU (serial log: build/aarch64-serial.log)"
+        local build_dir
+        build_dir=$(_build_dir)
+        _print "Run AArch64 in QEMU (serial log: build/aarch64/serial.log)"
         python3 "$SCRIPT_DIR/tools/qemu_run.py" \
             --arch aarch64 \
             --firmware "$firmware" \
-            --log-file "$SCRIPT_DIR/build/aarch64-serial.log" \
+            --log-file "$build_dir/serial.log" \
             "$iso_path"
     elif [ "$ARCH" = "x86_64" ]; then
         _require_tools qemu-system-x86_64 python3
-        _print "Run x86_64 in QEMU (serial log: build/x86_64-serial.log)"
+        local build_dir
+        build_dir=$(_build_dir)
+        _print "Run x86_64 in QEMU (serial log: build/x86_64/serial.log)"
         python3 "$SCRIPT_DIR/tools/qemu_run.py" \
             --arch x86_64 \
-            --log-file "$SCRIPT_DIR/build/x86_64-serial.log" \
+            --log-file "$build_dir/serial.log" \
             "$iso_path"
     else
         _err "QEMU launch is not supported for ARCH='$ARCH'."
@@ -245,6 +254,11 @@ smoke_test() {
     _require_tools python3
 
     local iso_path
+    local -a smoke_args=(--arch "$ARCH")
+    if [[ "${PANIC_TEST:-OFF}" == ON || "${PANIC_TEST:-OFF}" == 1 ]]; then
+        smoke_args+=(--expect-panic)
+    fi
+
     iso_path=$(_kernel_iso)
     if [ ! -f "$iso_path" ]; then
         _err "$(basename "$iso_path") not found, run './build.sh test' to build and test."
@@ -258,11 +272,11 @@ smoke_test() {
             _err "Set QEMU_EFI to an AArch64 UEFI firmware image."
             exit 1
         }
-        python3 "$SCRIPT_DIR/tools/smoke_test.py" --arch aarch64 \
-            --firmware "$firmware" "$iso_path"
+        smoke_args+=(--firmware "$firmware")
+        python3 "$SCRIPT_DIR/tools/smoke_test.py" "${smoke_args[@]}" "$iso_path"
     elif [ "$ARCH" = "x86_64" ]; then
         _require_tools qemu-system-x86_64
-        python3 "$SCRIPT_DIR/tools/smoke_test.py" --arch x86_64 "$iso_path"
+        python3 "$SCRIPT_DIR/tools/smoke_test.py" "${smoke_args[@]}" "$iso_path"
     else
         _err "Smoke test is not supported for ARCH='$ARCH'."
         exit 1
@@ -330,6 +344,11 @@ for action in "${ACTIONS[@]}"; do
             build
             iso
             smoke_test
+            ;;
+        test-all)
+            _require_tools python3
+            cd "$SCRIPT_DIR"
+            python3 -m unittest discover -s tests -p 'test_*.py' -v
             ;;
         debug)
             build

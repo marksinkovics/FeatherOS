@@ -97,6 +97,10 @@ extern "C" void kmain()
     klogger.Init(hhdm_request.response->offset);
     klogger.Info("Limine transferred control to the kernel");
 
+#if defined(FEATHEROS_PANIC_TEST)
+    FeatherOS::Panic("Intentional panic test");
+#endif
+
     // Ensure the bootloader actually understands our base revision (see spec).
     if (LIMINE_BASE_REVISION_SUPPORTED == false)
     {

@@ -22,9 +22,11 @@ See the [FeatherOS roadmap](docs/roadmap.md) for planned kernel milestones.
 3. Run the built kernel in QEMU
    `./build.sh --arch x86_64 run`
 
+Run the unittest-based QEMU boot and panic integration matrix for both x86-64 and AArch64 with `./build.sh test-all`.
+
 ## Code Quality
 
-Install the formatting and lint tools listed in [development requirements](docs/development.md). Format the source with `bash tools/quality.sh format`, then run `bash tools/quality.sh check`. Install the pre-commit hook with `pre-commit install`; it blocks commits unless the configured checks pass.
+Install the formatting and lint tools listed in [development requirements](docs/development.md). Run `bash tools/quality.sh --fix` to apply available fixes. Install the pre-commit hook with `pre-commit install`; it quietly blocks commits when checks fail and shows diagnostics for issues that need manual repair.
 
 ## Screenshot
 

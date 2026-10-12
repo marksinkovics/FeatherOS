@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import re
+import select
 import shutil
 import subprocess
 import sys
+import time
 
 READY_MESSAGE = "KERN/I: Kernel initialization complete"
 PANIC_MARKER = "KERN/PANIC:"
+EXPECTED_PANIC = "KERN/PANIC: Intentional panic test"
 QEMU_TIMEOUT_SECONDS = 10
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
+ANSI_ESCAPE_BYTES = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
 
 
 def main():
@@ -20,6 +25,11 @@ def main():
         "--arch", choices=("x86_64", "aarch64"), default="x86_64"
     )
     parser.add_argument("--firmware", help="AArch64 UEFI firmware image")
+    parser.add_argument(
+        "--expect-panic",
+        action="store_true",
+        help="Expect the intentional panic test",
+    )
     parser.add_argument("iso", help="Path to the bootable FeatherOS ISO")
     args = parser.parse_args()
 
@@ -69,25 +79,57 @@ def main():
         ]
     )
 
-    try:
-        result = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=QEMU_TIMEOUT_SECONDS,
-            check=False,
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0
+    )
+    captured = bytearray()
+    deadline = time.monotonic() + QEMU_TIMEOUT_SECONDS
+    markers = (
+        READY_MESSAGE.encode(),
+        PANIC_MARKER.encode(),
+        EXPECTED_PANIC.encode(),
+    )
+
+    while process.poll() is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        readable, _, _ = select.select(
+            [process.stdout], [], [], min(0.1, remaining)
         )
-        output = result.stdout
-    except subprocess.TimeoutExpired as error:
-        output = error.stdout or ""
-        if isinstance(output, bytes):
-            output = output.decode("utf-8", errors="replace")
+        if not readable:
+            continue
+
+        chunk = os.read(process.stdout.fileno(), 4096)
+        if not chunk:
+            break
+        captured.extend(chunk)
+        clean_output = ANSI_ESCAPE_BYTES.sub(b"", captured)
+        if any(marker in clean_output for marker in markers):
+            break
+
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    captured.extend(process.stdout.read() or b"")
+    output = captured.decode("utf-8", errors="replace")
 
     output = ANSI_ESCAPE.sub("", output)
     serial_lines = [line for line in output.splitlines() if "KERN/" in line]
     if serial_lines:
         print("\n".join(serial_lines))
+    if args.expect_panic:
+        if EXPECTED_PANIC not in output:
+            print(
+                "FAIL: expected panic record was not observed", file=sys.stderr
+            )
+            return 1
+        print("PASS: expected panic was reported over serial")
+        return 0
     if PANIC_MARKER in output:
         print("FAIL: kernel panicked during startup", file=sys.stderr)
         return 1
