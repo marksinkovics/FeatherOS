@@ -5,7 +5,12 @@
 #include "kernel/framebuffer/term.h"
 #include "kernel/halt.h"
 #include "kernel/klogger.h"
+#include "kernel/memory/heap.h"
+#include "kernel/memory/memory_map.h"
+#include "kernel/memory/page_allocator.h"
+#include "kernel/memory/virtual_memory.h"
 #include "kernel/panic.h"
+#include "kernel/string/format.h"
 #if defined(FEATHEROS_KERNEL_TEST)
 #include "kernel/kernel_test.h"
 #endif
@@ -23,11 +28,6 @@ __attribute__((used, section(".limine_requests"))) volatile LIMINE_BASE_REVISION
 #else
 #error "Unsupported architecture: define ARCH_x86_64 or ARCH_aarch64"
 #endif
-
-namespace
-{
-
-}
 
 // The Limine requests can be placed anywhere, but it is important that
 // the compiler does not optimise them away, so, usually, they should
@@ -68,32 +68,52 @@ extern void (*__init_array_end[])();
 
 extern "C" void kmain()
 {
-
-    // Call global constructors.
-    for (size_t i = 0; &__init_array[i] != __init_array_end; i++)
-    {
-        __init_array[i]();
-    }
-
     if (hhdm_request.response == nullptr)
     {
         FeatherOS::HaltForever();
     }
 
-    klogger.Init(hhdm_request.response->offset);
-    klogger.Info("Limine transferred control to the kernel");
-
-    FeatherOS::InitializeExceptions();
-
-#if defined(FEATHEROS_KERNEL_TEST)
-    FeatherOS::KernelTest::Run();
-#endif
-
-    // Ensure the bootloader actually understands our base revision (see spec).
+    FeatherOS::Serial::Init(hhdm_request.response->offset);
     if (LIMINE_BASE_REVISION_SUPPORTED == false)
     {
         FeatherOS::Panic("Unsupported Limine base revision");
     }
+
+    if (!FeatherOS::Memory::InitializeMemoryMap())
+    {
+        FeatherOS::Panic("Limine memory map is missing or invalid");
+    }
+    FeatherOS::Memory::Summary memory_summary;
+    if (!FeatherOS::Memory::GetSummary(&memory_summary))
+    {
+        FeatherOS::Panic("Limine memory map summary is unavailable");
+    }
+    if (!FeatherOS::Memory::InitializePageAllocator(hhdm_request.response->offset))
+    {
+        FeatherOS::Panic("Physical page-frame allocator initialization failed");
+    }
+    if (!FeatherOS::Memory::InitializeVirtualMemory(hhdm_request.response->offset))
+    {
+        FeatherOS::Panic("Virtual-memory initialization failed");
+    }
+    if (!FeatherOS::Memory::InitializeHeap())
+    {
+        FeatherOS::Panic("Kernel heap initialization failed");
+    }
+
+    FeatherOS::InitializeExceptions();
+
+    for (size_t i = 0; &__init_array[i] != __init_array_end; i++)
+    {
+        __init_array[i]();
+    }
+
+    klogger.Init(hhdm_request.response->offset);
+    klogger.Info("Limine transferred control to the kernel");
+
+#if defined(FEATHEROS_KERNEL_TEST)
+    FeatherOS::KernelTest::Run();
+#endif
 
     bool framebuffer_ready = false;
     if (framebuffer_request.response != nullptr &&
@@ -114,6 +134,20 @@ extern "C" void kmain()
         klogger.Warning("No supported framebuffer; using serial console only");
     }
 
+#if defined(ARCH_x86_64)
+    klogger.Info("Architecture: x86_64");
+#elif defined(ARCH_aarch64)
+    klogger.Info("Architecture: aarch64");
+#endif
+    char memory_message[96];
+    if (!FeatherOS::String::FormatTo(memory_message, sizeof(memory_message),
+                                     "Memory map coverage: {} MiB, usable RAM: {} MiB",
+                                     memory_summary.total_bytes / (1024 * 1024),
+                                     memory_summary.usable_bytes / (1024 * 1024)))
+    {
+        FeatherOS::Panic("Memory summary formatting failed");
+    }
+    klogger.Info(memory_message);
     klogger.Info("Kernel initialization complete");
 
     FeatherOS::HaltForever();

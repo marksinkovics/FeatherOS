@@ -75,6 +75,7 @@ alignas(16) uint8_t test_exception_stack[16384];
 
 extern "C" void* x86_64_exception_stub_table[];
 extern "C" void* x86_64_irq_stub_table[];
+extern "C" void x86_64_enable_sse();
 extern "C" void x86_64_load_gdt(const IdtRegister* descriptor);
 extern "C" void FeatherOS_x86_64_HandleHardwareInterrupt(uint64_t vector);
 
@@ -135,6 +136,7 @@ void SetEntry(size_t vector, uintptr_t handler, uint16_t selector, uint8_t ist)
 void InitializeExceptions()
 {
     asm volatile("cli" ::: "memory");
+    x86_64_enable_sse();
 
     tss.rsp0 = reinterpret_cast<uint64_t>(kernel_stack + sizeof(kernel_stack));
     tss.ist[0] = reinterpret_cast<uint64_t>(double_fault_stack + sizeof(double_fault_stack));
@@ -192,7 +194,7 @@ void InitializeExceptions()
     asm volatile("lidt %0" : : "m"(idt_register));
 }
 
-extern "C" void FeatherOS_x86_64_ExceptionDispatch(const ExceptionContext* context)
+extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
 {
     if (context->vector >= 32 && context->vector < 48)
     {
@@ -208,6 +210,17 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(const ExceptionContext* conte
     report.error_code = context->error_code;
     report.syndrome = 0;
     report.fault_address = 0;
+#if defined(FEATHEROS_MEMORY_TEST)
+    if (context->vector == 14)
+    {
+        asm volatile("mov %%cr2, %0" : "=r"(report.fault_address));
+    }
+    if (FeatherOS::TryRecoverTestException(&report))
+    {
+        context->instruction_pointer = report.instruction_pointer;
+        return;
+    }
+#endif
     FeatherOS::ReportFatalException(report);
 }
 

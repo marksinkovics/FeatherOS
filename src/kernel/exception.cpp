@@ -15,6 +15,10 @@ namespace FeatherOS
 namespace
 {
 
+#if defined(FEATHEROS_MEMORY_TEST)
+TestExceptionHandler test_exception_handler = nullptr;
+#endif
+
 void WriteHex(uint64_t value)
 {
     static constexpr char digits[] = "0123456789ABCDEF";
@@ -39,6 +43,18 @@ void InitializeExceptions()
 #error "Unsupported architecture for exception initialization"
 #endif
 }
+
+#if defined(FEATHEROS_MEMORY_TEST)
+void SetTestExceptionHandler(TestExceptionHandler handler)
+{
+    test_exception_handler = handler;
+}
+
+bool TryRecoverTestException(ExceptionReport* report)
+{
+    return test_exception_handler != nullptr && report != nullptr && test_exception_handler(report);
+}
+#endif
 
 [[noreturn]] void ReportFatalException(const ExceptionReport& report)
 {

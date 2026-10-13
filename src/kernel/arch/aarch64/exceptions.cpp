@@ -37,7 +37,7 @@ void InitializeExceptions()
     asm volatile("msr VBAR_EL1, %0\n\tisb" : : "r"(vector_address) : "memory");
 }
 
-extern "C" [[noreturn]] void FeatherOS_AArch64_ExceptionDispatch(const ExceptionContext* context)
+extern "C" void FeatherOS_AArch64_ExceptionDispatch(ExceptionContext* context)
 {
     const uint64_t exception_class = (context->esr >> 26) & 0x3F;
     const char* name =
@@ -51,6 +51,13 @@ extern "C" [[noreturn]] void FeatherOS_AArch64_ExceptionDispatch(const Exception
     report.error_code = 0;
     report.syndrome = context->esr;
     report.fault_address = context->far;
+#if defined(FEATHEROS_MEMORY_TEST)
+    if (FeatherOS::TryRecoverTestException(&report))
+    {
+        context->elr = report.instruction_pointer;
+        return;
+    }
+#endif
     FeatherOS::ReportFatalException(report);
 }
 

@@ -121,7 +121,8 @@ build() {
     cmake --fresh "$SCRIPT_DIR" -G "Unix Makefiles" -DARCH="$ARCH" \
         -DFEATHEROS_PANIC_TEST="${PANIC_TEST:-OFF}" \
         -DFEATHEROS_EXCEPTION_TEST="${EXCEPTION_TEST:-OFF}" \
-        -DFEATHEROS_INTERRUPT_TEST="${INTERRUPT_TEST:-OFF}"
+        -DFEATHEROS_INTERRUPT_TEST="${INTERRUPT_TEST:-OFF}" \
+        -DFEATHEROS_MEMORY_TEST="${MEMORY_TEST:-OFF}"
 
     time make
 }
@@ -276,6 +277,9 @@ smoke_test() {
     fi
     if [[ "${INTERRUPT_TEST:-OFF}" == ON || "${INTERRUPT_TEST:-OFF}" == 1 ]]; then
         smoke_args+=(--expect-interrupt)
+    fi
+    if [[ "${MEMORY_TEST:-OFF}" == ON || "${MEMORY_TEST:-OFF}" == 1 ]]; then
+        smoke_args+=(--expect-memory)
     fi
 
     iso_path=$(_kernel_iso)

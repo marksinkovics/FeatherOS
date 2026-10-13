@@ -26,6 +26,12 @@ struct ExceptionReport
 void InitializeExceptions();
 [[noreturn]] void ReportFatalException(const ExceptionReport& report);
 
+#if defined(FEATHEROS_MEMORY_TEST)
+using TestExceptionHandler = bool (*)(ExceptionReport* report);
+void SetTestExceptionHandler(TestExceptionHandler handler);
+bool TryRecoverTestException(ExceptionReport* report);
+#endif
+
 } // namespace FeatherOS
 
 #endif

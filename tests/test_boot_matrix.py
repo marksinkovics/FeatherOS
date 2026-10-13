@@ -14,11 +14,13 @@ class BootMatrixTests(unittest.TestCase):
         panic_test=False,
         exception_test=False,
         interrupt_test=False,
+        memory_test=False,
     ):
         environment = os.environ.copy()
         environment["PANIC_TEST"] = "ON" if panic_test else "OFF"
         environment["EXCEPTION_TEST"] = "ON" if exception_test else "OFF"
         environment["INTERRUPT_TEST"] = "ON" if interrupt_test else "OFF"
+        environment["MEMORY_TEST"] = "ON" if memory_test else "OFF"
         command = ["bash", str(BUILD_SCRIPT), "--arch", arch, "test"]
 
         result = subprocess.run(
@@ -55,6 +57,12 @@ class BootMatrixTests(unittest.TestCase):
 
     def test_08_aarch64_gic_interrupt(self):
         self.run_boot_case("aarch64", interrupt_test=True)
+
+    def test_09_x86_64_memory(self):
+        self.run_boot_case("x86_64", memory_test=True)
+
+    def test_10_aarch64_memory(self):
+        self.run_boot_case("aarch64", memory_test=True)
 
 
 if __name__ == "__main__":

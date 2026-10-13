@@ -4,8 +4,21 @@ section .text
 
 extern FeatherOS_x86_64_ExceptionDispatch
 global x86_64_load_gdt
+global x86_64_enable_sse
 global x86_64_exception_stub_table
 global x86_64_irq_stub_table
+
+x86_64_enable_sse:
+    mov rax, cr0
+    and eax, 0xfffffff3
+    or eax, 0x22
+    mov cr0, rax
+    mov rax, cr4
+    or rax, 0x600
+    mov cr4, rax
+    fninit
+    ldmxcsr [rel default_mxcsr]
+    ret
 
 x86_64_load_gdt:
     lgdt [rdi]
@@ -124,6 +137,10 @@ x86_64_exception_common:
 
 section .rodata
 align 8
+align 4
+default_mxcsr:
+    dd 0x1F80
+
 x86_64_exception_stub_table:
     dq x86_64_exception_0, x86_64_exception_1, x86_64_exception_2, x86_64_exception_3
     dq x86_64_exception_4, x86_64_exception_5, x86_64_exception_6, x86_64_exception_7

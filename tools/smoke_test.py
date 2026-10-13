@@ -20,6 +20,11 @@ EXPECTED_INTERRUPT = {
     "x86_64": "KERN/IRQ: PIT interrupt acknowledged",
     "aarch64": "KERN/IRQ: GIC software interrupt acknowledged",
 }
+EXPECTED_ARCHITECTURE = {
+    "x86_64": "KERN/I: Architecture: x86_64",
+    "aarch64": "KERN/I: Architecture: aarch64",
+}
+EXPECTED_MEMORY = "KERN/MEMORY: tests passed"
 QEMU_TIMEOUT_SECONDS = 10
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
 ANSI_ESCAPE_BYTES = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
@@ -48,10 +53,22 @@ def main():
         action="store_true",
         help="Expect the architecture-specific hardware interrupt test",
     )
+    parser.add_argument(
+        "--expect-memory",
+        action="store_true",
+        help="Expect the physical and virtual memory tests to pass",
+    )
     parser.add_argument("iso", help="Path to the bootable FeatherOS ISO")
     args = parser.parse_args()
     if (
-        sum((args.expect_panic, args.expect_exception, args.expect_interrupt))
+        sum(
+            (
+                args.expect_panic,
+                args.expect_exception,
+                args.expect_interrupt,
+                args.expect_memory,
+            )
+        )
         > 1
     ):
         parser.error("select at most one expected result")
@@ -113,6 +130,7 @@ def main():
         EXPECTED_PANIC.encode(),
         EXPECTED_EXCEPTION[args.arch].encode(),
         EXPECTED_INTERRUPT[args.arch].encode(),
+        EXPECTED_MEMORY.encode(),
     )
 
     while process.poll() is None:
@@ -173,6 +191,12 @@ def main():
             return 1
         print("PASS: hardware interrupt was acknowledged over serial")
         return 0
+    if args.expect_memory:
+        if EXPECTED_MEMORY not in output:
+            print("FAIL: memory tests did not report success", file=sys.stderr)
+            return 1
+        print("PASS: memory tests reported success over serial")
+        return 0
     if PANIC_MARKER in output:
         print("FAIL: kernel panicked during startup", file=sys.stderr)
         return 1
@@ -189,6 +213,21 @@ def main():
         ]
         for line in diagnostics[-8:]:
             print(line[:240], file=sys.stderr)
+        return 1
+    if EXPECTED_ARCHITECTURE[args.arch] not in output:
+        print("FAIL: kernel did not report its architecture", file=sys.stderr)
+        return 1
+    if (
+        re.search(
+            r"KERN/I: Memory map coverage: \d+ MiB, usable RAM: \d+ MiB",
+            output,
+        )
+        is None
+    ):
+        print(
+            "FAIL: kernel did not report total and usable memory",
+            file=sys.stderr,
+        )
         return 1
 
     print("PASS: kernel reached the ready state")

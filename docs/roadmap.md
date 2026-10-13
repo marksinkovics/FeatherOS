@@ -35,7 +35,7 @@ Grow FeatherOS from its current Limine-booted x86-64 framebuffer kernel into a s
 
 **Complete:** x86-64 and AArch64 use architecture-specific saved contexts with a shared fatal exception-reporting interface. QEMU verifies x86 divide errors, AArch64 undefined instructions, and registered/acknowledged x86 PIC/PIT IRQ0 and AArch64 GICv2 SGI0 interrupts.
 
-### 3. Physical And Virtual Memory
+### 3. Physical And Virtual Memory (Complete)
 
 - Parse Limine's memory map and reserve memory used by the kernel, bootloader, modules, and framebuffer.
 - Implement an architecture-neutral physical page-frame allocator with allocation/free tests and accounting.
@@ -44,7 +44,7 @@ Grow FeatherOS from its current Limine-booted x86-64 framebuffer kernel into a s
 - Add a kernel heap on top of page allocation only after page allocation and mapping are reliable.
 - Track physical addresses separately from virtual addresses using 64-bit types.
 
-**Complete when:** both backends allocate/free page frames, create/remove mappings, enforce permissions, and report expected page/translation faults for unmapped and protected addresses.
+**Complete:** Both targets validate the Limine memory map, report architecture and memory-map coverage/usable RAM at startup, allocate and free physical frames with accounting, and create/remove 4 KiB mappings with permission checks and TLB invalidation. Dedicated QEMU tests verify adjacent mappings, read-only and NX protections, unmapped faults, and stale-translation invalidation. A page-backed, coalescing heap provides `malloc`, `calloc`, `free`, and C++ `new`/`delete`, with alignment, zeroing, overflow, and multi-page allocation tests.
 
 ### 4. Timers And Input
 
