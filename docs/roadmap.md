@@ -53,6 +53,8 @@ Grow FeatherOS from its current Limine-booted x86-64 framebuffer kernel into a s
 - Buffer input in a shared event queue; keep interrupt handlers short and consume events in normal kernel context.
 - Add terminal input and basic line editing.
 
+**Progress:** A shared periodic tick API is implemented and QEMU-tested on both targets, using x86 PIT IRQ0 and the AArch64 Generic Timer PPI 30. Dedicated tests verify increasing ticks without polling. Keyboard drivers, the shared input event queue, and terminal line editing remain.
+
 **Complete when:** both targets produce monotonic timer ticks and deliver keyboard events without polling or lost input during normal testing.
 
 ### 5. Storage, VFS, And Filesystem
@@ -106,7 +108,7 @@ The milestones below capture possible work after M7. Their order is intentionall
 
 ### 10. Networking
 
-- Add a QEMU virtio network driver with architecture-appropriate device discovery and DMA handling.
+- Add the first network driver for QEMU virtio-net, with architecture-appropriate device discovery and DMA handling.
 - Build the network stack in stages: Ethernet, IP, ICMP, UDP, then TCP.
 - Add basic socket interfaces and simple diagnostic and client/server programs.
 
@@ -128,12 +130,20 @@ The milestones below capture possible work after M7. Their order is intentionall
 
 **Complete when:** security invariants are documented and automated tests demonstrate that malformed inputs and user programs cannot access or corrupt protected kernel state.
 
+### 13. USB Host And HID Input
+
+- Add xHCI host-controller support and enumerate USB devices on both architectures.
+- Implement USB HID keyboard reports and route key events through the shared input queue from M4.
+- Add QEMU xHCI keyboard devices to both machine configurations for repeatable tests.
+
+**Complete when:** both targets enumerate a QEMU USB keyboard and deliver key events through the shared input path.
+
 ## Optional Tracks
 
 These are separately tracked directions and are not prerequisites for the core milestones above:
 
 - **Graphical desktop:** build windowing and user-facing graphics on top of the framebuffer and input systems.
-- **Broader hardware support:** add devices and platforms beyond the initial QEMU targets, prioritizing reusable driver interfaces.
+- **Broader hardware support:** add devices and platforms beyond the initial QEMU targets, including network adapters beyond QEMU virtio-net, prioritizing reusable driver interfaces.
 - **Installation and updates:** produce an installable image and define a reliable system update and recovery workflow.
 
 ## Architecture Boundaries

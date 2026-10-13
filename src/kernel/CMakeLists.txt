@@ -3,6 +3,7 @@ set(SRCROOT ${PROJECT_SOURCE_DIR}/src/kernel)
 
 if (ARCH STREQUAL "x86_64")
     set(SERIAL_SRC ${SRCROOT}/arch/x86_64/serial.cpp)
+    set(TIMER_SRC ${SRCROOT}/arch/x86_64/timer.cpp)
     set(VIRTUAL_MEMORY_SRC ${SRCROOT}/arch/x86_64/virtual_memory.cpp)
     set(EXCEPTION_SRC
         ${SRCROOT}/arch/x86_64/exceptions.cpp
@@ -11,6 +12,7 @@ if (ARCH STREQUAL "x86_64")
     )
 elseif (ARCH STREQUAL "aarch64")
     set(SERIAL_SRC ${SRCROOT}/arch/aarch64/serial.cpp)
+    set(TIMER_SRC ${SRCROOT}/arch/aarch64/timer.cpp)
     set(VIRTUAL_MEMORY_SRC ${SRCROOT}/arch/aarch64/virtual_memory.cpp)
     set(EXCEPTION_SRC
         ${SRCROOT}/arch/aarch64/exceptions.cpp
@@ -31,7 +33,9 @@ set(SRC
     ${SRCROOT}/memory/virtual_memory.cpp
     ${SRCROOT}/panic.cpp
     ${SRCROOT}/string/format.cpp
+    ${SRCROOT}/time/timer.cpp
     ${SERIAL_SRC}
+    ${TIMER_SRC}
     ${VIRTUAL_MEMORY_SRC}
     ${EXCEPTION_SRC}
     ${SRCROOT}/framebuffer/font.c

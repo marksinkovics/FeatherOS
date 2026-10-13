@@ -22,6 +22,13 @@ void WritePort(uint16_t port, uint8_t value)
     asm volatile("outb %0, %1" : : "a"(value), "Nd"(port));
 }
 
+uint8_t ReadPort(uint16_t port)
+{
+    uint8_t value;
+    asm volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+}
+
 void WaitForIo()
 {
     WritePort(0x80, 0);
@@ -81,6 +88,12 @@ void StartPit(uint32_t frequency_hz)
     WritePort(PitCommand, 0x36);
     WritePort(PitChannel0, divisor & 0xFF);
     WritePort(PitChannel0, divisor >> 8);
+}
+
+void StopPit()
+{
+    asm volatile("cli" ::: "memory");
+    WritePort(PicMasterData, ReadPort(PicMasterData) | 1);
 }
 
 extern "C" void FeatherOS_x86_64_HandleHardwareInterrupt(uint64_t vector)

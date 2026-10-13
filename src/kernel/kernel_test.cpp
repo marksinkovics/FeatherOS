@@ -7,11 +7,17 @@
 #include "kernel/memory/virtual_memory.h"
 #include "kernel/panic.h"
 #include "kernel/string/format.h"
+#if defined(FEATHEROS_TIMER_TEST)
+#include "kernel/time/timer.h"
+#endif
 
 #if defined(ARCH_x86_64) && defined(FEATHEROS_INTERRUPT_TEST)
 #include "kernel/arch/x86_64/interrupts.h"
 #elif defined(ARCH_aarch64) && defined(FEATHEROS_INTERRUPT_TEST)
 #include "kernel/arch/aarch64/interrupts.h"
+#endif
+
+#if defined(ARCH_aarch64) && (defined(FEATHEROS_INTERRUPT_TEST) || defined(FEATHEROS_TIMER_TEST))
 #include <limine.h>
 #endif
 
@@ -189,19 +195,21 @@ bool RecoverExpectedMemoryFault(FeatherOS::ExceptionReport* report)
 } // namespace
 #endif
 
-#if defined(ARCH_aarch64) && defined(FEATHEROS_INTERRUPT_TEST)
+#if defined(ARCH_aarch64) && (defined(FEATHEROS_INTERRUPT_TEST) || defined(FEATHEROS_TIMER_TEST))
 namespace
 {
 
 __attribute__((used, section(".limine_requests"))) volatile limine_dtb_request dtb_request = {
     .id = LIMINE_DTB_REQUEST, .revision = 0, .response = nullptr};
 
+#if defined(FEATHEROS_INTERRUPT_TEST)
 volatile uint64_t gic_interrupt_count = 0;
 
 void OnGicInterrupt()
 {
     ++gic_interrupt_count;
 }
+#endif
 
 } // namespace
 #elif defined(ARCH_x86_64) && defined(FEATHEROS_INTERRUPT_TEST)
@@ -216,6 +224,59 @@ void OnPitInterrupt()
 }
 
 } // namespace
+#endif
+
+#if defined(FEATHEROS_TIMER_TEST)
+namespace FeatherOS::KernelTest
+{
+namespace
+{
+
+void RunTimerTests()
+{
+    const void* device_tree = nullptr;
+#if defined(ARCH_aarch64)
+    if (dtb_request.response == nullptr || dtb_request.response->dtb_ptr == nullptr)
+    {
+        Panic("AArch64 timer test requires a device tree");
+    }
+    const auto* dtb = static_cast<const uint8_t*>(dtb_request.response->dtb_ptr);
+    const uint32_t dtb_magic = (static_cast<uint32_t>(dtb[0]) << 24) |
+                               (static_cast<uint32_t>(dtb[1]) << 16) |
+                               (static_cast<uint32_t>(dtb[2]) << 8) | dtb[3];
+    if (dtb_magic != 0xD00DFEED)
+    {
+        Panic("AArch64 timer test received an invalid device tree");
+    }
+    device_tree = dtb;
+#endif
+
+    if (!Time::InitializeTimer(100, device_tree))
+    {
+        Panic("Periodic timer initialization failed");
+    }
+    uint64_t previous_tick = Time::TickCount();
+    const uint64_t start_tick = previous_tick;
+    for (uint32_t tick = 0; tick < 5; ++tick)
+    {
+        Time::WaitForNextTick();
+        const uint64_t current_tick = Time::TickCount();
+        if (current_tick <= previous_tick)
+        {
+            Panic("Timer ticks did not increase");
+        }
+        previous_tick = current_tick;
+    }
+    Time::StopTimer();
+    if (previous_tick - start_tick < 5)
+    {
+        Panic("Timer lost periodic ticks");
+    }
+    Serial::Write("KERN/TIMER: periodic ticks passed\n");
+}
+
+} // namespace
+} // namespace FeatherOS::KernelTest
 #endif
 
 namespace FeatherOS::KernelTest
@@ -429,6 +490,10 @@ void RunMemoryTests()
 
 void Run()
 {
+#if defined(FEATHEROS_TIMER_TEST)
+    RunTimerTests();
+#endif
+
 #if defined(FEATHEROS_MEMORY_TEST)
     RunMemoryTests();
 #endif

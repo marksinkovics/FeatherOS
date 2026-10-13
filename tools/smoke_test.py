@@ -25,6 +25,7 @@ EXPECTED_ARCHITECTURE = {
     "aarch64": "KERN/I: Architecture: aarch64",
 }
 EXPECTED_MEMORY = "KERN/MEMORY: tests passed"
+EXPECTED_TIMER = "KERN/TIMER: periodic ticks passed"
 QEMU_TIMEOUT_SECONDS = 10
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
 ANSI_ESCAPE_BYTES = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
@@ -58,6 +59,11 @@ def main():
         action="store_true",
         help="Expect the physical and virtual memory tests to pass",
     )
+    parser.add_argument(
+        "--expect-timer",
+        action="store_true",
+        help="Expect the architecture-specific periodic timer test",
+    )
     parser.add_argument("iso", help="Path to the bootable FeatherOS ISO")
     args = parser.parse_args()
     if (
@@ -67,6 +73,7 @@ def main():
                 args.expect_exception,
                 args.expect_interrupt,
                 args.expect_memory,
+                args.expect_timer,
             )
         )
         > 1
@@ -131,6 +138,7 @@ def main():
         EXPECTED_EXCEPTION[args.arch].encode(),
         EXPECTED_INTERRUPT[args.arch].encode(),
         EXPECTED_MEMORY.encode(),
+        EXPECTED_TIMER.encode(),
     )
 
     while process.poll() is None:
@@ -196,6 +204,15 @@ def main():
             print("FAIL: memory tests did not report success", file=sys.stderr)
             return 1
         print("PASS: memory tests reported success over serial")
+        return 0
+    if args.expect_timer:
+        if EXPECTED_TIMER not in output:
+            print(
+                "FAIL: periodic timer test did not report success",
+                file=sys.stderr,
+            )
+            return 1
+        print("PASS: periodic timer test reported success over serial")
         return 0
     if PANIC_MARKER in output:
         print("FAIL: kernel panicked during startup", file=sys.stderr)

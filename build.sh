@@ -122,7 +122,8 @@ build() {
         -DFEATHEROS_PANIC_TEST="${PANIC_TEST:-OFF}" \
         -DFEATHEROS_EXCEPTION_TEST="${EXCEPTION_TEST:-OFF}" \
         -DFEATHEROS_INTERRUPT_TEST="${INTERRUPT_TEST:-OFF}" \
-        -DFEATHEROS_MEMORY_TEST="${MEMORY_TEST:-OFF}"
+        -DFEATHEROS_MEMORY_TEST="${MEMORY_TEST:-OFF}" \
+        -DFEATHEROS_TIMER_TEST="${TIMER_TEST:-OFF}"
 
     time make
 }
@@ -280,6 +281,9 @@ smoke_test() {
     fi
     if [[ "${MEMORY_TEST:-OFF}" == ON || "${MEMORY_TEST:-OFF}" == 1 ]]; then
         smoke_args+=(--expect-memory)
+    fi
+    if [[ "${TIMER_TEST:-OFF}" == ON || "${TIMER_TEST:-OFF}" == 1 ]]; then
+        smoke_args+=(--expect-timer)
     fi
 
     iso_path=$(_kernel_iso)

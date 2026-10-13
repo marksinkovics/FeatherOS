@@ -15,12 +15,14 @@ class BootMatrixTests(unittest.TestCase):
         exception_test=False,
         interrupt_test=False,
         memory_test=False,
+        timer_test=False,
     ):
         environment = os.environ.copy()
         environment["PANIC_TEST"] = "ON" if panic_test else "OFF"
         environment["EXCEPTION_TEST"] = "ON" if exception_test else "OFF"
         environment["INTERRUPT_TEST"] = "ON" if interrupt_test else "OFF"
         environment["MEMORY_TEST"] = "ON" if memory_test else "OFF"
+        environment["TIMER_TEST"] = "ON" if timer_test else "OFF"
         command = ["bash", str(BUILD_SCRIPT), "--arch", arch, "test"]
 
         result = subprocess.run(
@@ -63,6 +65,12 @@ class BootMatrixTests(unittest.TestCase):
 
     def test_10_aarch64_memory(self):
         self.run_boot_case("aarch64", memory_test=True)
+
+    def test_11_x86_64_timer(self):
+        self.run_boot_case("x86_64", timer_test=True)
+
+    def test_12_aarch64_timer(self):
+        self.run_boot_case("aarch64", timer_test=True)
 
 
 if __name__ == "__main__":

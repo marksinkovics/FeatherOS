@@ -11,6 +11,7 @@ using InterruptHandler = void (*)();
 void InitializeInterruptController();
 void RegisterInterruptHandler(uint8_t irq, InterruptHandler handler);
 void StartPit(uint32_t frequency_hz);
+void StopPit();
 
 } // namespace FeatherOS::Arch::X86_64
 

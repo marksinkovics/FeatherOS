@@ -17,7 +17,8 @@ constexpr uint32_t FdtProperty = 3;
 constexpr uint32_t FdtNoOp = 4;
 constexpr uint32_t FdtEnd = 9;
 constexpr size_t MaxFdtDepth = 24;
-constexpr uint32_t GicInterruptCount = 16;
+constexpr uint32_t GicSoftwareInterruptCount = 16;
+constexpr uint32_t GicArchitectedMaximumInterruptCount = 1020;
 
 constexpr uint32_t GicDistributorControl = 0x000;
 constexpr uint32_t GicDistributorType = 0x004;
@@ -51,9 +52,11 @@ struct GicV2Registers
     uintptr_t cpu_interface;
 };
 
-InterruptHandler handlers[GicInterruptCount] = {};
+InterruptHandler handlers[GicArchitectedMaximumInterruptCount] = {};
 uintptr_t distributor_base = 0;
 uintptr_t cpu_interface_base = 0;
+uint32_t supported_interrupt_count = 0;
+bool use_group1 = false;
 
 uint32_t ReadBigEndian32(const uint8_t* data)
 {
@@ -309,6 +312,28 @@ volatile uint32_t& CpuRegister(uint32_t offset)
     return *reinterpret_cast<volatile uint32_t*>(cpu_interface_base + offset);
 }
 
+void ConfigureInterrupt(uint32_t interrupt_id)
+{
+    const uint32_t register_group = interrupt_id / 32;
+    const uint32_t bit = 1U << (interrupt_id % 32);
+    volatile uint32_t& group = DistributorRegister(GicDistributorGroup + register_group * 4);
+    if (use_group1)
+    {
+        group |= bit;
+    }
+    else
+    {
+        group &= ~bit;
+    }
+
+    const uint32_t priority_offset = GicDistributorPriority + (interrupt_id / 4) * 4;
+    const uint32_t priority_shift = (interrupt_id % 4) * 8;
+    volatile uint32_t& priority = DistributorRegister(priority_offset);
+    priority = (priority & ~(0xFFU << priority_shift)) | (0xA0U << priority_shift);
+
+    DistributorRegister(GicDistributorEnable + register_group * 4) = bit;
+}
+
 } // namespace
 
 bool InitializeInterruptController(const void* device_tree)
@@ -326,7 +351,13 @@ bool InitializeInterruptController(const void* device_tree)
     asm volatile("msr daifset, #2" ::: "memory");
     DistributorRegister(GicDistributorControl) = 0;
     CpuRegister(GicCpuControl) = 0;
-    if ((DistributorRegister(GicDistributorType) & (1U << 10)) != 0)
+    const uint32_t distributor_type = DistributorRegister(GicDistributorType);
+    const uint32_t implemented_interrupts = 32 * ((distributor_type & 0x1F) + 1);
+    supported_interrupt_count = implemented_interrupts < GicArchitectedMaximumInterruptCount
+                                    ? implemented_interrupts
+                                    : GicArchitectedMaximumInterruptCount;
+    use_group1 = (distributor_type & (1U << 10)) != 0;
+    if (use_group1)
     {
         DistributorRegister(GicDistributorGroup) |= 1;
     }
@@ -334,27 +365,36 @@ bool InitializeInterruptController(const void* device_tree)
     {
         DistributorRegister(GicDistributorGroup) &= ~1U;
     }
-    DistributorRegister(GicDistributorPriority) = 0xA0A0A0A0;
-    DistributorRegister(GicDistributorEnable) = 1;
-    DistributorRegister(GicDistributorControl) = 1;
+    DistributorRegister(GicDistributorControl) = use_group1 ? 3 : 1;
     CpuRegister(GicCpuPriorityMask) = 0xFF;
-    CpuRegister(GicCpuControl) = 1;
+    CpuRegister(GicCpuControl) = use_group1 ? 3 : 1;
+    for (uint32_t interrupt_id = 0; interrupt_id < supported_interrupt_count; ++interrupt_id)
+    {
+        if (handlers[interrupt_id] != nullptr)
+        {
+            ConfigureInterrupt(interrupt_id);
+        }
+    }
     asm volatile("dsb sy\n\tisb" ::: "memory");
     return true;
 }
 
 void RegisterInterruptHandler(uint32_t interrupt_id, InterruptHandler handler)
 {
-    if (interrupt_id >= GicInterruptCount || handler == nullptr)
+    if (interrupt_id >= GicArchitectedMaximumInterruptCount || handler == nullptr)
     {
         Panic("Invalid AArch64 interrupt handler registration");
     }
     handlers[interrupt_id] = handler;
+    if (distributor_base != 0 && interrupt_id < supported_interrupt_count)
+    {
+        ConfigureInterrupt(interrupt_id);
+    }
 }
 
 void TriggerSoftwareInterrupt(uint8_t interrupt_id)
 {
-    if (interrupt_id >= GicInterruptCount || distributor_base == 0)
+    if (interrupt_id >= GicSoftwareInterruptCount || distributor_base == 0)
     {
         Panic("Invalid AArch64 software interrupt request");
     }
@@ -370,7 +410,7 @@ extern "C" void FeatherOS_AArch64_IrqDispatch()
     {
         return;
     }
-    if (interrupt_id < GicInterruptCount && handlers[interrupt_id] != nullptr)
+    if (interrupt_id < supported_interrupt_count && handlers[interrupt_id] != nullptr)
     {
         handlers[interrupt_id]();
     }
