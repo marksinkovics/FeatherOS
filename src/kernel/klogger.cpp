@@ -1,14 +1,14 @@
 #include "klogger.h"
 
-#include "kernel/arch/x86_64/serial.h"
+#include "kernel/arch/serial.h"
 #include "kernel/framebuffer/term.h"
 
 namespace FeatherOS
 {
 
-void KLogger::Init()
+void KLogger::Init(uint64_t hhdm_offset)
 {
-    Serial::Init();
+    Serial::Init(hhdm_offset);
 }
 
 void KLogger::AttachTerminal(Term* term)

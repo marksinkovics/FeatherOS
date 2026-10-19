@@ -8,6 +8,35 @@ extern "C"
 #include "kernel/framebuffer/font.h"
 }
 
+namespace
+{
+
+// The back buffer is a byte array; these types let it be accessed in wider units.
+typedef uint32_t __attribute__((may_alias)) AliasedUint32;
+typedef uint64_t __attribute__((may_alias)) AliasedUint64;
+
+void CopyBytes(uint8_t* destination, const uint8_t* source, size_t length)
+{
+    size_t index = 0;
+    if (((reinterpret_cast<uintptr_t>(destination) | reinterpret_cast<uintptr_t>(source)) & 7) == 0)
+    {
+        auto* destination_words = reinterpret_cast<AliasedUint64*>(destination);
+        const auto* source_words = reinterpret_cast<const AliasedUint64*>(source);
+        const size_t words = length / 8;
+        for (; index < words; ++index)
+        {
+            destination_words[index] = source_words[index];
+        }
+        index *= 8;
+    }
+    for (; index < length; ++index)
+    {
+        destination[index] = source[index];
+    }
+}
+
+} // namespace
+
 bool Framebuffer::init(limine_framebuffer* framebuffer)
 {
     if (framebuffer == nullptr || framebuffer->address == nullptr || framebuffer->width == 0 ||
@@ -54,12 +83,10 @@ bool Framebuffer::init(limine_framebuffer* framebuffer)
 
 void Framebuffer::clear(uint32_t color)
 {
-    for (uint32_t x = 0; x < m_width; x++)
+    const uint32_t pixel = packColor(color);
+    for (uint32_t y = 0; y < m_height; ++y)
     {
-        for (uint32_t y = 0; y < m_height; y++)
-        {
-            drawPixel(x, y, color);
-        }
+        fillSpan(m_backbuffer + static_cast<size_t>(m_pitch) * y, m_width, pixel);
     }
 }
 
@@ -71,28 +98,29 @@ void Framebuffer::drawPixel(uint32_t x, uint32_t y, uint32_t color)
     if (y >= m_height)
         return;
 
-    uint32_t pixel = packColor(color);
     size_t pixel_offset =
         static_cast<size_t>(m_pitch) * y + static_cast<size_t>(m_bytes_per_pixel) * x;
-    uint8_t* destination = m_backbuffer + pixel_offset;
-    for (uint32_t byte = 0; byte < m_bytes_per_pixel; ++byte)
-    {
-        destination[byte] = (uint8_t)(pixel >> (byte * 8));
-    }
+    writePixel(m_backbuffer + pixel_offset, packColor(color));
 }
 
 void Framebuffer::draw()
 {
-    for (uint32_t row = 0; row < m_height; ++row)
+    draw(0, m_height);
+}
+
+void Framebuffer::draw(uint32_t y, uint32_t height)
+{
+    if (y >= m_height)
     {
-        size_t row_offset = static_cast<size_t>(m_pitch) * row;
-        uint8_t* source = m_backbuffer + row_offset;
-        uint8_t* destination = m_addr + row_offset;
-        for (uint32_t byte = 0; byte < m_pitch; ++byte)
-        {
-            destination[byte] = source[byte];
-        }
+        return;
     }
+    if (height > m_height - y)
+    {
+        height = m_height - y;
+    }
+    // Rows are contiguous, so the requested band is one copy.
+    const size_t offset = static_cast<size_t>(m_pitch) * y;
+    CopyBytes(m_addr + offset, m_backbuffer + offset, static_cast<size_t>(m_pitch) * height);
 }
 
 uint32_t Framebuffer::packColor(uint32_t color) const
@@ -106,34 +134,108 @@ uint32_t Framebuffer::packColor(uint32_t color) const
     return red | green | blue;
 }
 
+void Framebuffer::writePixel(uint8_t* destination, uint32_t pixel) const
+{
+    if (m_bytes_per_pixel == 4)
+    {
+        *reinterpret_cast<AliasedUint32*>(destination) = pixel;
+        return;
+    }
+    for (uint32_t byte = 0; byte < m_bytes_per_pixel; ++byte)
+    {
+        destination[byte] = (uint8_t)(pixel >> (byte * 8));
+    }
+}
+
+void Framebuffer::fillSpan(uint8_t* destination, uint32_t count, uint32_t pixel) const
+{
+    if (m_bytes_per_pixel == 4)
+    {
+        auto* pixels = reinterpret_cast<AliasedUint32*>(destination);
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            pixels[index] = pixel;
+        }
+        return;
+    }
+    for (uint32_t index = 0; index < count; ++index)
+    {
+        writePixel(destination + index * m_bytes_per_pixel, pixel);
+    }
+}
+
 void Framebuffer::drawRectangle(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color)
 {
-    for (uint32_t i = x; i < x + w; i++)
+    if (x >= m_width || y >= m_height)
     {
-        for (uint32_t j = y; j < y + h; j++)
-        {
-            drawPixel(i, j, color);
-        }
+        return;
+    }
+    if (w > m_width - x)
+    {
+        w = m_width - x;
+    }
+    if (h > m_height - y)
+    {
+        h = m_height - y;
+    }
+    const uint32_t pixel = packColor(color);
+    for (uint32_t row = y; row < y + h; ++row)
+    {
+        fillSpan(m_backbuffer + static_cast<size_t>(m_pitch) * row +
+                     static_cast<size_t>(m_bytes_per_pixel) * x,
+                 w, pixel);
     }
 }
 
 void Framebuffer::drawCharacter(uint8_t ch_index, uint32_t x, uint32_t y, uint32_t bg_color,
                                 uint32_t fg_color)
 {
-    uint32_t offset = ((uint32_t)ch_index) * 16;
-    for (uint32_t i = 0; i < 16; i++)
+    if (x >= m_width || y >= m_height)
     {
-        for (uint32_t j = 0; j < 8; j++)
+        return;
+    }
+    const uint32_t columns = m_width - x < FONT_WIDTH ? m_width - x : FONT_WIDTH;
+    const uint32_t rows = m_height - y < FONT_HEIGHT ? m_height - y : FONT_HEIGHT;
+    const uint32_t fg_pixel = packColor(fg_color);
+    const uint32_t bg_pixel = packColor(bg_color);
+    const uint8_t* glyph = font16_8 + static_cast<uint32_t>(ch_index) * FONT_HEIGHT;
+    for (uint32_t i = 0; i < rows; i++)
+    {
+        uint8_t* destination = m_backbuffer + static_cast<size_t>(m_pitch) * (y + i) +
+                               static_cast<size_t>(m_bytes_per_pixel) * x;
+        const uint8_t bits = glyph[i];
+        for (uint32_t j = 0; j < columns; j++)
         {
-            if (font16_8[offset + i] & (1U << j))
-            {
-                drawPixel(x + j, y + i, fg_color);
-            }
-            else
-            {
-                drawPixel(x + j, y + i, bg_color);
-            }
+            writePixel(destination + j * m_bytes_per_pixel,
+                       (bits & (1U << j)) != 0 ? fg_pixel : bg_pixel);
         }
+    }
+}
+
+void Framebuffer::scrollUp(uint32_t y, uint32_t height, uint32_t distance, uint32_t color)
+{
+    if (y >= m_height)
+    {
+        return;
+    }
+    if (height > m_height - y)
+    {
+        height = m_height - y;
+    }
+    if (distance > height)
+    {
+        distance = height;
+    }
+    // Copying forward is safe because each destination row lies above its source row.
+    for (uint32_t row = y; row + distance < y + height; ++row)
+    {
+        CopyBytes(m_backbuffer + static_cast<size_t>(m_pitch) * row,
+                  m_backbuffer + static_cast<size_t>(m_pitch) * (row + distance), m_pitch);
+    }
+    const uint32_t pixel = packColor(color);
+    for (uint32_t row = y + height - distance; row < y + height; ++row)
+    {
+        fillSpan(m_backbuffer + static_cast<size_t>(m_pitch) * row, m_width, pixel);
     }
 }
 

@@ -1,12 +1,31 @@
 #!/bin/bash
 
-PREFIX_BASE="/usr/local/cross"
-BIN_PATH="/usr/local/bin"
+set -e
+
+PREFIX_BASE="${PREFIX_BASE:-$HOME/.local/cross}"
+BIN_PATH="${BIN_PATH:-$HOME/.local/bin}"
 
 BINUTILS_VERSION="2.37"
 GCC_VERSION="14.1.0"
-# Supported architectures can be passed with -a/--arch.
-# GRUB_TARGETS=(x86_64)
+SUPPORTED_ARCHS=(i686-elf x86_64-elf aarch64-elf i386-elf)
+HOST_CC="${HOST_CC:-${CC:-}}"
+HOST_CFLAGS="${HOST_CFLAGS:-${CFLAGS:-}}"
+if [[ "$(uname -s)" == Darwin ]]; then
+    HOST_CC="${HOST_CC:-clang}"
+    if [[ -z "${SDKROOT:-}" ]]; then
+        if ! command -v xcrun >/dev/null 2>&1; then
+            echo "ERROR: xcrun is required to locate the macOS SDK." >&2
+            exit 1
+        fi
+        SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+    fi
+    export SDKROOT
+    if [[ -z "$HOST_CFLAGS" && ("$HOST_CC" == cc || "$HOST_CC" == clang) ]]; then
+        HOST_CFLAGS="-O2 -std=gnu89"
+    fi
+else
+    HOST_CC="${HOST_CC:-cc}"
+fi
 
 ORIGIN="$(pwd)"
 TMP="$(mktemp -d /tmp/cross-compiler.XXXXXX)"
@@ -17,12 +36,7 @@ TMP="$(mktemp -d /tmp/cross-compiler.XXXXXX)"
 
 __prepare() {
     echo "Validation prefix folder ($PREFIX_BASE)"
-    if [ ! -d "$PREFIX_BASE" ]; then
-        echo "Folder doesn't exist. Creating ($PREFIX_BASE)"
-        sudo mkdir -p "$PREFIX_BASE"
-        sudo chown -R "$(whoami)" "$PREFIX_BASE"
-        sudo chmod 775 "$PREFIX_BASE"
-    fi
+    mkdir -p "$PREFIX_BASE" "$BIN_PATH"
 
     echo "Prepare $TMP"
     mkdir -p "$TMP"
@@ -33,10 +47,16 @@ __prepare() {
 }
 
 __cleanup() {
-    echo "Cleaning up... $TMP"
-    [[ -d "$TMP" ]] && rm -rf "$TMP"
+    local exit_code=$?
+    if [[ "$exit_code" -ne 0 && "${KEEP_TMP_ON_FAILURE:-0}" == 1 ]]; then
+        echo "Preserving failed build files at $TMP"
+    else
+        echo "Cleaning up... $TMP"
+        [[ -d "$TMP" ]] && rm -rf "$TMP"
+    fi
     echo "Navigate back to $ORIGIN"
-    cd "$ORIGIN" || return
+    cd "$ORIGIN" || true
+    return "$exit_code"
 }
 
 _print() {
@@ -50,35 +70,45 @@ trap __cleanup EXIT
 #
 
 validate-binutils() {
-    TARGET="$1"
-    test -L "$BIN_PATH/$TARGET-as" && test -L "$BIN_PATH/$TARGET-ld"
+    local target="$1"
+    test -x "$BIN_PATH/$target-as" && test -x "$BIN_PATH/$target-ld"
 }
 
 install-binutils() {
     TARGET="$1"
     PREFIX="$PREFIX_BASE/binutils"
+
+    local configure_args=(--target="$TARGET" --prefix="$PREFIX" --with-sysroot --disable-nls --disable-werror)
+    local compiler_env=("CC=$HOST_CC")
+    if [[ "$(uname -s)" == Darwin ]]; then
+        configure_args+=(--with-system-zlib)
+    fi
+    if [[ -n "$HOST_CFLAGS" ]]; then
+        compiler_env+=("CFLAGS=$HOST_CFLAGS")
+    fi
+
+    _print "Using host C compiler: $HOST_CC"
     mkdir -p "$TMP/$TARGET"
     cd "$TMP/$TARGET" || exit 1
     wget https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VERSION.tar.xz
     tar Jxf binutils-$BINUTILS_VERSION.tar.xz
     mkdir build-binutils
     cd build-binutils || exit 1
-    ../binutils-$BINUTILS_VERSION/configure --target="$TARGET" --prefix="$PREFIX" --with-sysroot --disable-nls --disable-werror
+    env "${compiler_env[@]}" ../binutils-$BINUTILS_VERSION/configure "${configure_args[@]}"
     make
     make install
 
-    # link to /usr/local/bin
-    cd /usr/local/bin || exit 1
-    sudo ln -sf ../cross/binutils/bin/* ./
+    ln -sf "$PREFIX_BASE/binutils/bin/"* "$BIN_PATH/"
 }
 
 validate-gcc() {
-    TARGET="$1"
-    test -L "$BIN_PATH/$TARGET-gcc"
+    local target="$1"
+    test -x "$BIN_PATH/$target-gcc" && test -x "$BIN_PATH/$target-g++"
 }
 
 install-gcc() {
     TARGET="$1"
+    _print "Using host C compiler: $HOST_CC"
 
     REQUIREMENTS=(
         "$BIN_PATH/$TARGET-as"
@@ -99,7 +129,10 @@ install-gcc() {
     wget https://ftp.lip6.fr/pub/gcc/releases/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.xz
     tar Jxf gcc-$GCC_VERSION.tar.xz
 
-    which -- "$TARGET-as" || exit 1
+    if [ ! -x "$BIN_PATH/$TARGET-as" ]; then
+        echo "Aborted. Missing assembler: $BIN_PATH/$TARGET-as" >&2
+        exit 1
+    fi
 
     _print "Download prerequisites"
     _print "$(pwd)"
@@ -112,15 +145,25 @@ install-gcc() {
     mkdir build-gcc
     cd build-gcc || exit 1
     _print "Compile GCC"
-    ../gcc-$GCC_VERSION/configure \
-        --target="$TARGET" \
-        --prefix="$PREFIX" \
-        --disable-nls \
-        --without-isl \
-        --without-header \
-        --with-as="$BIN_PATH/$TARGET-as" \
-        --with-ld="$BIN_PATH/$TARGET-ld" \
-        --enable-languages=c,c++
+    local compiler_env=("CC=$HOST_CC")
+    if [[ -n "$HOST_CFLAGS" ]]; then
+        compiler_env+=("CFLAGS=$HOST_CFLAGS")
+    fi
+    local languages="c,c++"
+    local configure_args=(
+        --target="$TARGET"
+        --prefix="$PREFIX"
+        --disable-nls
+        --without-isl
+        --without-header
+        --with-as="$BIN_PATH/$TARGET-as"
+        --with-ld="$BIN_PATH/$TARGET-ld"
+        "--enable-languages=$languages"
+    )
+    if [[ "$(uname -s)" == Darwin ]]; then
+        configure_args+=(--with-system-zlib)
+    fi
+    env "${compiler_env[@]}" ../gcc-$GCC_VERSION/configure "${configure_args[@]}"
 
     make all-gcc
     make install-gcc
@@ -128,8 +171,7 @@ install-gcc() {
     make install-target-libgcc
 
     _print "Linking gcc"
-    cd "$BIN_PATH" || exit 1
-    sudo ln -sf ../cross/gcc/bin/* ./
+    ln -sf "$PREFIX_BASE/gcc/bin/"* "$BIN_PATH/"
 }
 
 #
@@ -143,7 +185,8 @@ GCC=0
 BINUTILS=0
 
 usage() {
-    echo "$(basename "$0") [-h] [--gcc] [--binutils] [-a|--arch arch] [-v*] [-f|--force] -- program to build and installcross-platform developer tools from scratch"
+    echo "$(basename "$0") [-h] [--gcc] [--binutils] [-a|--arch arch] [-v*] [-f|--force]"
+    echo "Build and install a cross-toolchain for the selected target."
     echo "where:"
     echo "    -h,help      show this help text"
     echo "    --gcc         build and install version $GCC_VERSION"
@@ -151,10 +194,8 @@ usage() {
     echo "    -f,-force     force the installation even if the program with the given version is installed"
     echo "    -a,--arch     architecture"
     echo "          OPTIONS:"
-    echo "              - i686-elf"
-    echo "              - x86_64-elf"
-    echo "              - aarch64-elf"
-    echo "              - i386-elf"
+    printf '              - %s\n' "${SUPPORTED_ARCHS[@]}"
+    echo "    Example: $0 --binutils --gcc --arch aarch64-elf"
     echo "    -v,--verbose"
     echo ""
 }
@@ -168,7 +209,7 @@ while [[ "$1" == -* ]]; do
             ((VERBOSE += ${#1} - 1))
             ;;
         --verbose)
-            ((VERBOSE++))
+            ((VERBOSE += 1))
             ;;
         -h | --help)
             usage
@@ -197,12 +238,38 @@ while [[ "$1" == -* ]]; do
     shift
 done
 
+if ((${#ARCHS[@]} == 0)); then
+    echo "ERROR: select at least one target with --arch." >&2
+    usage >&2
+    exit 1
+fi
+
+if [[ "$BINUTILS" == 0 && "$GCC" == 0 ]]; then
+    echo "ERROR: select --binutils, --gcc, or both." >&2
+    usage >&2
+    exit 1
+fi
+
+for arch in "${ARCHS[@]}"; do
+    supported=false
+    for supported_arch in "${SUPPORTED_ARCHS[@]}"; do
+        if [[ "$arch" == "$supported_arch" ]]; then
+            supported=true
+            break
+        fi
+    done
+    if [[ "$supported" == false ]]; then
+        echo "ERROR: unsupported target: $arch" >&2
+        usage >&2
+        exit 1
+    fi
+done
+
 __prepare
 
 if [ "$BINUTILS" == "1" ]; then
     for arch in "${ARCHS[@]}"; do
-        validate-binutils "$arch"
-        if [ $? ] || [[ "$FORCE" == 1 ]]; then
+        if [[ "$FORCE" == 1 ]] || ! validate-binutils "$arch"; then
             _print "Installing binutils for $arch"
             install-binutils "$arch"
         else
@@ -213,8 +280,7 @@ fi
 
 if [ "$GCC" == "1" ]; then
     for arch in "${ARCHS[@]}"; do
-        validate-gcc "$arch"
-        if [ $? ] || [[ "$FORCE" == 1 ]]; then
+        if [[ "$FORCE" == 1 ]] || ! validate-gcc "$arch"; then
             _print "Installing gcc for $arch"
             install-gcc "$arch"
         else

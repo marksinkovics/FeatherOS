@@ -14,5 +14,4 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
-        verbose: true
         stages: [pre-commit]

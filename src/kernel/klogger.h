@@ -1,6 +1,8 @@
 #ifndef KLOGGER_H
 #define KLOGGER_H
 
+#include <stdint.h>
+
 namespace FeatherOS
 {
 
@@ -9,7 +11,7 @@ class Term;
 class KLogger
 {
 public:
-    void Init();
+    void Init(uint64_t hhdm_offset);
     void AttachTerminal(Term* term);
     void Debug(const char* message);
     void Info(const char* message);

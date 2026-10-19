@@ -8,17 +8,18 @@ On macOS with Homebrew:
 
 ```sh
 brew install llvm ruff shellcheck shfmt pre-commit
+brew install ninja
 export PATH="$(brew --prefix llvm)/bin:$PATH"
 ```
 
 On Ubuntu:
 
 ```sh
-sudo apt-get install clang-format clang-tidy shellcheck shfmt pre-commit pipx
+sudo apt-get install clang-format clang-tidy shellcheck shfmt pre-commit pipx ninja-build
 pipx install ruff
 ```
 
-Apply formatting with `bash tools/quality.sh format`, then verify with `bash tools/quality.sh check`. Run `pre-commit install` once per clone to block commits that fail the checks. Run `./build.sh build` before the checks so clang-tidy can use the generated compilation database.
+Run `bash tools/quality.sh --fix` to apply available formatting and lint fixes, then install the pre-commit hook with `pre-commit install` once per clone. The hook quietly runs the quality checks before each commit and prints diagnostics only on failure. Build at least one architecture first so clang-tidy can use `build/<arch>/compile_commands.json`; issues without automatic fixes are reported for manual repair.
 
 ## Prerequisite for the GCC + Binutils
 
@@ -27,10 +28,113 @@ Apply formatting with `bash tools/quality.sh format`, then verify with `bash too
 
 ## Prerequisite for Running
 
+On macOS:
+
+```sh
+brew install xorriso qemu mtools
+```
+
+Install Ninja as well; kernel and unit-test CMake builds use the Ninja generator. GNU Make is still used to build Limine.
+
 - sudo apt-get install -y xorriso
 - sudo apt-get install -y qemu-system-x86-64
+- sudo apt-get install -y qemu-system-arm
+- sudo apt-get install -y mtools
 - sudo apt-get install -y python3
+
+## Architecture Builds
+
+An architecture must be specified for `build`, `iso`, `run`, `test`, `debug`, and `all`; there is no implicit architecture default. Select it with `--arch <x86_64|aarch64>` or the `ARCH` environment variable. The command-line option takes precedence if both are supplied.
+
+```sh
+./build.sh --arch x86_64 test
+ARCH=x86_64 ./build.sh test
+./build.sh test-all
+```
 
 ## Smoke Test
 
-Run `./build.sh test` to configure and build the kernel, create the bootable ISO, and boot it in QEMU without a display. The test passes when the kernel emits its ready message over serial without reporting a panic.
+Run `./build.sh --arch x86_64 test` to configure and build the kernel, create the bootable ISO, and boot it in QEMU without a display. The test passes when the kernel emits its ready message over serial without reporting a panic. Build artifacts and compile databases are isolated under `build/x86_64` and `build/aarch64`.
+
+The integration tests use Python's built-in `unittest` framework and keep QEMU as the execution backend. `./build.sh test-all` runs 22 cases across x86-64 and AArch64, covering panic and exception reporting, normal startup, interrupts, memory, timers, cooperative scheduling, user-mode preemption, UART input, window-keyboard input, and shell sessions that run user programs. Both keyboard cases inject keys through QEMU's QMP interface. Each case builds its kernel and ISO, boots QEMU, and validates serial output. QEMU is stopped as soon as the expected record appears, with a timeout as a fallback. Failures include the captured QEMU output.
+
+## Unit Tests
+
+Run `./build.sh unit-test` for native host tests of USTAR, FAT16, VFS, ELF loading, terminal rendering, syscall dispatch, program-argument parsing, and calendar conversion. CMake fetches the pinned Catch2 `v3.7.1` release on the first run, then CTest runs the cases from `build/unit-tests-ninja`. These tests use an in-memory block device; QEMU remains responsible for exercising real PCI/MMIO and boot integration.
+
+## Initramfs
+
+The ISO build packages `initramfs/hello.txt` as `build/<arch>/initramfs.tar` and adds it as a Limine module on both architectures. The kernel mounts the read-only USTAR archive; the shared VFS supports open, read, seek, stat, and close over it. The build also creates `build/<arch>/virtio-disk.img` with an MBR-partitioned FAT16 volume and a known `BLOCK.TXT`; x86-64 attaches the disk through virtio-PCI and AArch64 through virtio-MMIO. Normal startup reads and verifies the test file through VFS. Run `./build.sh --arch x86_64 test` or `./build.sh --arch aarch64 test` to check the full boot path.
+
+## User Programs And Syscalls
+
+ISO generation cross-compiles each program listed in the user-program loop in `build.sh` (`src/user/<name>.cpp`) with the matching freestanding cross-compiler and architecture-specific user linker script, then packages it in the initramfs as `<name>-<arch>.elf`. x86-64 programs are built with `-mgeneral-regs-only` because context switches do not save SSE state. Each ELF has separate RX, RO, and RW load segments. `src/kernel/process.cpp` loads a program into its own address space, maps a user stack, and enters ring 3 on x86-64 or EL0 on AArch64. A CPU exception in user mode terminates only that program; the kernel reports it with the `ExitStatusFault` or `ExitStatusKernelAccessFault` status from `src/user/syscall_abi.h`.
+
+`src/user/syscall_abi.h` defines the syscall ABI shared by the kernel and programs, and `src/user/syscall.h` wraps it. x86-64 enters through `int 0x80` with the number in `rax` and arguments in `rdi`, `rsi`, and `rdx`; AArch64 uses `svc #0` with the number in `x8` and arguments in `x0`-`x2`. The result returns in `rax` or `x0`, and values at or above `SyscallErrorBase` are errors.
+
+| Number | Syscall | Behavior |
+|---|---|---|
+| 0 | `Exit(status)` | Ends the program with an exit status |
+| 1 | `WriteCharacter(character)` | Writes printable ASCII or `\n` to the console |
+| 2 | `ReadLine(buffer, capacity, prompt)` | Shows the prompt and blocks until Enter; only the foreground process may read |
+| 3 | `Spawn(command_line)` | Starts the program named by the first word and returns its process ID |
+| 4 | `Wait(process_id, status_pointer)` | Blocks until a child exits, stores its status, and releases it |
+| 5 | `ReadClock()` | Returns the current UTC time in seconds since 1970-01-01 |
+
+The kernel resolves every user pointer through the caller's page tables before touching it, so unmapped, read-only, or kernel addresses fail with `SyscallErrorInvalidArgument` instead of faulting. Blocking syscalls re-enable interrupts and yield to other tasks while they wait.
+
+At entry, each program receives a pointer to a read-only `FeatherOS::User::ProgramArguments` block containing its process ID, the full command line, and `argument_count`/`argument_values` (the line split at spaces, at most 8 arguments in 63 characters). After a program exits, `Memory::DestroyAddressSpace` frees its user-mapped frames, private page-table frames, and root frame; it refuses to destroy an active address space and preserves shared kernel mappings. QEMU memory tests verify that free-frame accounting returns to its pre-test value on both architectures.
+
+Normal boot first runs `src/user/test_program.cpp` twice as scheduled tasks to verify console output, exit statuses, and that user mode cannot read a mapped kernel address.
+
+## Scheduler And Processes
+
+The scheduler supports up to four tasks with fixed 16 KiB kernel stacks and per-task user exception state; context switches also preserve the AArch64 user stack pointer (`SP_EL0`), and x86-64 restores the TSS kernel stack after blocking syscalls. Tasks yield cooperatively or are preempted by periodic timer interrupts when preemption is enabled; the kernel can wait for exit statuses and reap completed tasks for slot reuse. The process table in `src/kernel/process.cpp` holds up to three processes, each with a parent and its own address space. Spawning a process makes it the foreground process for console input; waiting for it returns the foreground to its parent. Run `SCHEDULER_TEST=ON ./build.sh --arch x86_64 test` or `SCHEDULER_TEST=ON ./build.sh --arch aarch64 test` for kernel-task lifecycle checks. Run `USER_PREEMPTION_TEST=ON ./build.sh --arch x86_64 test` or `USER_PREEMPTION_TEST=ON ./build.sh --arch aarch64 test` to verify timer preemption while user code is executing. SMP scheduling is not implemented yet.
+
+## Wall Clock
+
+The kernel reads UTC wall-clock time from the platform real-time clock with one-second resolution: the CMOS RTC on x86-64 (`src/kernel/arch/x86_64/rtc.cpp`, BCD or binary and 12- or 24-hour formats, century register `0x32`) and the PL031 at its fixed QEMU `virt` address on AArch64 (`src/kernel/arch/aarch64/rtc.cpp`). QEMU initializes both from the host clock in UTC. Startup logs the time as `Wall clock: YYYY-MM-DD HH:MM:SS UTC`, and programs read it with the `ReadClock` syscall. `src/user/calendar.h` converts between UNIX seconds and UTC dates for both the kernel and user programs; there is no time-zone support.
+
+## Shell And Console Input
+
+After startup, the kernel spawns `src/user/shell.cpp` from the initramfs and restarts it if it exits. The shell reads lines with the `FeatherOS> ` prompt and runs each line's first word as the initramfs program `<name>-<arch>.elf` (names are limited to 32 letters, digits, `_`, or `-`), waits for it, and prints `exit status N` for nonzero statuses. Missing programs report `Unknown command: <name>`; `help` lists the bundled programs:
+
+- `calc <number> <number>` prints the sum of two unsigned numbers.
+- `date` prints the current UTC time, such as `2026-10-19 03:07:39 UTC`.
+- `echo <words...>` prints its arguments.
+- `upper` reads one line as the foreground process and prints it in upper case.
+
+To add a program, create `src/user/<name>.cpp` with a `_start(const ProgramArguments*)` entry point and add `<name>:<name>` to the user-program list in `build.sh`.
+
+Interactive runs accept keys from the QEMU window on both architectures. x86-64 uses PS/2; AArch64 uses virtio-input on QEMU `virt`. The launching terminal's serial console also remains available. The kernel console (`src/kernel/console.cpp`) handles line editing for `ReadLine`: it shows the program's prompt on the framebuffer input row, supports printable ASCII, Backspace, and Enter, and echoes input to serial. Program output appears on both serial and the framebuffer console.
+
+`CALC_TEST=ON` checks a calculator command, an unknown command, and a blank line; `SHELL_TEST=ON` checks `echo` arguments, foreground input in `upper`, a nonzero exit status, and that `date` is within two minutes of the host clock. `INPUT_TEST=ON` runs the keyboard test. Pass each with `./build.sh test --arch x86_64` or `--arch aarch64`.
+
+To run only one architecture's panic check, use `PANIC_TEST=ON`; this intentionally panics during startup, and the smoke test passes only when it observes the expected panic record:
+
+```sh
+PANIC_TEST=ON ./build.sh test --arch x86_64
+PANIC_TEST=ON QEMU_EFI=/path/to/AAVMF_CODE.fd ./build.sh test --arch aarch64
+```
+
+## AArch64 Target
+
+The cross-toolchain builder installs under `~/.local` by default and does not need `sudo`. It adds `~/.local/bin` to `PATH` when building. Build the AArch64 cross-compiler, then select that target for each build action:
+
+```sh
+./toolchains/build_toolchain.sh --binutils --gcc --arch aarch64-elf
+ARCH=aarch64 ./build.sh build
+ARCH=aarch64 ./build.sh iso
+QEMU_EFI=/path/to/AAVMF_CODE.fd ARCH=aarch64 ./build.sh test
+```
+
+The AArch64 ISO is UEFI-only and uses Limine's `BOOTAA64.EFI`. QEMU runs with the `virt` machine. Interactive runs for both architectures mirror raw serial output to `build/<arch>/serial.log` and print it to the launching terminal with firmware terminal-control sequences removed. Set `QEMU_EFI` to an AArch64 UEFI firmware image if the script cannot find one in a common system location.
+
+On macOS, the toolchain builder automatically selects Apple Clang, the active Xcode SDK, GNU89 host flags, and system zlib for Binutils. Build each stage separately:
+
+```sh
+./toolchains/build_toolchain.sh --binutils --arch aarch64-elf
+./toolchains/build_toolchain.sh --gcc --arch aarch64-elf
+```
+
+The builder accepts `HOST_CC`, `HOST_CFLAGS`, and `SDKROOT` overrides if needed.
