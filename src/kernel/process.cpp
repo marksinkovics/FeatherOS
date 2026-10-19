@@ -26,6 +26,7 @@ namespace
 
 // Covers every user page: ELF segments, the stack, and the arguments block.
 constexpr uint32_t DefaultProcessPageLimit = 1024;
+constexpr uint32_t MaximumChildrenPerProcess = 16;
 constexpr size_t MaximumCommandNameLength = 32;
 constexpr size_t MaximumPromptLength = 32;
 
@@ -42,6 +43,7 @@ struct ProcessRecord
     ProcessRecord* next;
     ProcessId id;
     ProcessId parent;
+    uint32_t live_children;
     Scheduler::TaskId task;
     UserProgram program;
 };
@@ -100,8 +102,9 @@ bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_siz
     {
         return true;
     }
+    // Segments are copied through their own addresses, so they must lie in user space.
     if (program == nullptr || (segment_flags & ELF::SegmentFlagRead) == 0 ||
-        virtual_address > UINT64_MAX - memory_size)
+        virtual_address >= UserAddressLimit || memory_size > UserAddressLimit - virtual_address)
     {
         return false;
     }
@@ -109,10 +112,6 @@ bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_siz
     const uint64_t page_size = Memory::PageSize;
     uint64_t page_address = virtual_address & ~(page_size - 1);
     const uint64_t segment_end = virtual_address + memory_size;
-    if (segment_end > UINT64_MAX - (page_size - 1))
-    {
-        return false;
-    }
     const uint64_t page_end = (segment_end + page_size - 1) & ~(page_size - 1);
     const Memory::PageFlags page_flags =
         Memory::PageFlags::Read | Memory::PageFlags::Write | Memory::PageFlags::User;
@@ -288,6 +287,13 @@ void RemoveProcess(ProcessRecord* process)
 {
     {
         Sync::SpinLockGuard guard(process_lock);
+        for (ProcessRecord* parent = process_list; parent != nullptr; parent = parent->next)
+        {
+            if (parent->id == process->parent && parent->live_children > 0)
+            {
+                --parent->live_children;
+            }
+        }
         for (ProcessRecord** link = &process_list; *link != nullptr; link = &(*link)->next)
         {
             if (*link == process)
@@ -671,6 +677,24 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
     ProcessId id = 0;
     {
         Sync::SpinLockGuard guard(process_lock);
+        ProcessRecord* parent_record = nullptr;
+        for (ProcessRecord* candidate = process_list; candidate != nullptr;
+             candidate = candidate->next)
+        {
+            if (candidate->id == parent)
+            {
+                parent_record = candidate;
+            }
+        }
+        if (parent_record != nullptr)
+        {
+            if (parent_record->live_children == MaximumChildrenPerProcess)
+            {
+                Memory::Deallocate(process);
+                return SpawnStatus::NoResources;
+            }
+            ++parent_record->live_children;
+        }
         id = next_process_id++;
         process->id = id;
         process->parent = parent;
