@@ -15,6 +15,20 @@ constexpr uint64_t MaximumTimerValue = 0x7FFFFFFF;
 TimerInterruptHandler timer_handler = nullptr;
 uint64_t timer_interval = 0;
 
+void ArmTimer()
+{
+    const uint64_t disabled = 0;
+    const uint64_t enabled = 1;
+    asm volatile("msr CNTP_CTL_EL0, %0\n\t"
+                 "msr CNTP_TVAL_EL0, %1\n\t"
+                 "msr CNTP_CTL_EL0, %2\n\t"
+                 "dsb sy\n\t"
+                 "isb"
+                 :
+                 : "r"(disabled), "r"(timer_interval), "r"(enabled)
+                 : "memory");
+}
+
 void OnPhysicalTimerInterrupt()
 {
     asm volatile("msr CNTP_TVAL_EL0, %0" : : "r"(timer_interval) : "memory");
@@ -48,18 +62,24 @@ bool StartPeriodicTimer(uint32_t frequency_hz, const void* device_tree,
 
     timer_handler = handler;
     RegisterInterruptHandler(PhysicalTimerInterruptId, OnPhysicalTimerInterrupt);
-
-    const uint64_t disabled = 0;
-    const uint64_t enabled = 1;
-    asm volatile("msr CNTP_CTL_EL0, %0\n\t"
-                 "msr CNTP_TVAL_EL0, %1\n\t"
-                 "msr CNTP_CTL_EL0, %2\n\t"
-                 "dsb sy\n\t"
-                 "isb"
-                 :
-                 : "r"(disabled), "r"(timer_interval), "r"(enabled)
-                 : "memory");
+    ArmTimer();
     asm volatile("msr daifclr, #2" ::: "memory");
+    return true;
+}
+
+bool PrepareSecondaryCpuTimers()
+{
+    return timer_interval != 0;
+}
+
+// Each core has its own physical timer and PPI 30, enabled by InitializeSecondaryCpu.
+bool StartSecondaryCpuTimer()
+{
+    if (timer_interval == 0)
+    {
+        return false;
+    }
+    ArmTimer();
     return true;
 }
 

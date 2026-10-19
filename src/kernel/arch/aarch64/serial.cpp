@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #include "kernel/arch/serial.h"
+#include "kernel/sync/spinlock.h"
 
 namespace FeatherOS
 {
@@ -9,6 +10,8 @@ namespace Serial
 
 namespace
 {
+
+Sync::SpinLock write_lock;
 
 const uint64_t UartPhysicalAddress = 0x09000000;
 
@@ -51,6 +54,7 @@ void Write(const char* text)
         return;
     }
 
+    Sync::SpinLockGuard guard(write_lock);
     while (*text != '\0')
     {
         if (*text == '\n')
@@ -59,6 +63,11 @@ void Write(const char* text)
         }
         WriteCharacter(*text++);
     }
+}
+
+void ForceUnlock()
+{
+    write_lock.Unlock();
 }
 
 bool ReadCharacter(char* character)

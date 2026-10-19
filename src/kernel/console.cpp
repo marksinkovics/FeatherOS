@@ -7,6 +7,7 @@
 #include "kernel/klogger.h"
 #include "kernel/panic.h"
 #include "kernel/string/format.h"
+#include "kernel/sync/spinlock.h"
 #include "kernel/time/timer.h"
 
 namespace FeatherOS::Console
@@ -19,6 +20,8 @@ constexpr uint64_t TicksPerSecond = 100;
 KLogger* console_logger = nullptr;
 Term* console_term = nullptr;
 uint64_t last_reported_second = 0;
+// Programs on different CPUs share one terminal.
+Sync::SpinLock display_lock;
 
 } // namespace
 
@@ -36,6 +39,7 @@ void Initialize(KLogger* logger, Term* term)
 void WriteCharacter(char character)
 {
     const char text[] = {character, '\0'};
+    Sync::SpinLockGuard guard(display_lock);
     Serial::Write(text);
     if (console_term != nullptr)
     {
@@ -63,6 +67,7 @@ void Service()
     {
         Panic("Uptime status formatting failed");
     }
+    Sync::SpinLockGuard guard(display_lock);
     if (console_term != nullptr)
     {
         console_term->SetUptimeText(status_message);
@@ -82,10 +87,13 @@ size_t ReadLine(const char* prompt, char* buffer, size_t capacity)
     {
         prompt = "";
     }
-    Serial::Write(prompt);
-    if (console_term != nullptr)
     {
-        console_term->BeginInput(prompt);
+        Sync::SpinLockGuard guard(display_lock);
+        Serial::Write(prompt);
+        if (console_term != nullptr)
+        {
+            console_term->BeginInput(prompt);
+        }
     }
 
     size_t length = 0;
@@ -125,6 +133,7 @@ size_t ReadLine(const char* prompt, char* buffer, size_t capacity)
                 Serial::Write("\n");
                 line_complete = true;
             }
+            Sync::SpinLockGuard guard(display_lock);
             if (console_term != nullptr)
             {
                 console_term->HandleInputEvent(event);
@@ -136,13 +145,16 @@ size_t ReadLine(const char* prompt, char* buffer, size_t capacity)
             Input::WaitForEvent((Time::TickCount() / TicksPerSecond + 1) * TicksPerSecond);
         }
     }
-    if (console_logger != nullptr)
     {
-        console_logger->Info("Input line accepted");
-    }
-    if (console_term != nullptr)
-    {
-        console_term->EndInput();
+        Sync::SpinLockGuard guard(display_lock);
+        if (console_logger != nullptr)
+        {
+            console_logger->Info("Input line accepted");
+        }
+        if (console_term != nullptr)
+        {
+            console_term->EndInput();
+        }
     }
     Arch::Interrupts::SaveAndDisable();
     Arch::Interrupts::Restore(interrupt_state);

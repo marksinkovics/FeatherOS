@@ -24,6 +24,7 @@ struct ExceptionReport
 };
 
 void InitializeExceptions();
+void InitializeSecondaryCpuExceptions(uint32_t cpu_index);
 [[noreturn]] void ReportFatalException(const ExceptionReport& report);
 
 #if defined(FEATHEROS_MEMORY_TEST)

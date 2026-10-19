@@ -27,6 +27,7 @@ struct WaitQueue
 };
 
 bool Initialize();
+[[noreturn]] void RunSecondaryCpu();
 bool CreateTask(TaskEntry entry, void* context, TaskId* task_id);
 bool Yield();
 bool Wait(TaskId task_id, uint64_t* exit_status);

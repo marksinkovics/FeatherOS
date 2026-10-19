@@ -1,5 +1,7 @@
 #include "interrupts.h"
 
+#include "kernel/arch/interrupts.h"
+#include "kernel/cpu.h"
 #include "kernel/panic.h"
 
 #include <stddef.h>
@@ -25,7 +27,10 @@ constexpr uint32_t GicDistributorType = 0x004;
 constexpr uint32_t GicDistributorGroup = 0x080;
 constexpr uint32_t GicDistributorEnable = 0x100;
 constexpr uint32_t GicDistributorPriority = 0x0400;
+constexpr uint32_t GicDistributorTargets = 0x0800;
 constexpr uint32_t GicSoftwareInterrupt = 0x0F00;
+constexpr uint32_t GicSoftwareInterruptSelf = 2U << 24;
+constexpr uint32_t IpiInterruptId = 1;
 constexpr uint32_t GicCpuControl = 0x000;
 constexpr uint32_t GicCpuPriorityMask = 0x004;
 constexpr uint32_t GicCpuInterruptAcknowledge = 0x00C;
@@ -57,6 +62,7 @@ uintptr_t distributor_base = 0;
 uintptr_t cpu_interface_base = 0;
 uint32_t supported_interrupt_count = 0;
 bool use_group1 = false;
+uint32_t cpu_target_masks[Cpu::MaximumCpus] = {};
 
 uint32_t ReadBigEndian32(const uint8_t* data)
 {
@@ -334,10 +340,23 @@ void ConfigureInterrupt(uint32_t interrupt_id)
     DistributorRegister(GicDistributorEnable + register_group * 4) = bit;
 }
 
+void EnableCpuInterface()
+{
+    CpuRegister(GicCpuPriorityMask) = 0xFF;
+    CpuRegister(GicCpuControl) = use_group1 ? 3 : 1;
+    // The banked target register for SGI 0 reads back this CPU's own target bit.
+    cpu_target_masks[Cpu::CurrentIndex()] = DistributorRegister(GicDistributorTargets) & 0xFF;
+}
+
 } // namespace
 
 bool InitializeInterruptController(const void* device_tree)
 {
+    if (distributor_base != 0)
+    {
+        return true;
+    }
+
     GicV2Registers registers;
     registers.distributor = 0;
     registers.cpu_interface = 0;
@@ -366,8 +385,7 @@ bool InitializeInterruptController(const void* device_tree)
         DistributorRegister(GicDistributorGroup) &= ~1U;
     }
     DistributorRegister(GicDistributorControl) = use_group1 ? 3 : 1;
-    CpuRegister(GicCpuPriorityMask) = 0xFF;
-    CpuRegister(GicCpuControl) = use_group1 ? 3 : 1;
+    EnableCpuInterface();
     for (uint32_t interrupt_id = 0; interrupt_id < supported_interrupt_count; ++interrupt_id)
     {
         if (handlers[interrupt_id] != nullptr)
@@ -398,7 +416,7 @@ void TriggerSoftwareInterrupt(uint8_t interrupt_id)
     {
         Panic("Invalid AArch64 software interrupt request");
     }
-    DistributorRegister(GicSoftwareInterrupt) = (1U << 16) | interrupt_id;
+    DistributorRegister(GicSoftwareInterrupt) = GicSoftwareInterruptSelf | interrupt_id;
     asm volatile("dsb sy" ::: "memory");
 }
 
@@ -440,6 +458,36 @@ void Restore(uint64_t flags)
 void Enable()
 {
     asm volatile("msr daifclr, #2" : : : "memory");
+}
+
+void InitializeSecondaryCpu()
+{
+    // SGI and PPI configuration is banked per CPU, so each CPU enables the ones with handlers.
+    for (uint32_t interrupt_id = 0; interrupt_id < 32; ++interrupt_id)
+    {
+        if (AArch64::handlers[interrupt_id] != nullptr)
+        {
+            AArch64::ConfigureInterrupt(interrupt_id);
+        }
+    }
+    AArch64::EnableCpuInterface();
+    asm volatile("dsb sy\n\tisb" ::: "memory");
+}
+
+void SetIpiHandler(IpiHandler handler)
+{
+    AArch64::RegisterInterruptHandler(AArch64::IpiInterruptId, handler);
+}
+
+void SendIpi(uint32_t cpu_index)
+{
+    if (cpu_index >= Cpu::MaximumCpus || AArch64::cpu_target_masks[cpu_index] == 0)
+    {
+        Panic("IPI target CPU has no GIC interface");
+    }
+    asm volatile("dsb ishst" ::: "memory");
+    AArch64::DistributorRegister(AArch64::GicSoftwareInterrupt) =
+        (AArch64::cpu_target_masks[cpu_index] << 16) | AArch64::IpiInterruptId;
 }
 
 void WaitForInterrupt()

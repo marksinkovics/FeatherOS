@@ -1,6 +1,8 @@
 #include "virtual_memory.h"
 
+#include "kernel/cpu.h"
 #include "kernel/memory/page_allocator.h"
+#include "kernel/sync/spinlock.h"
 
 #include <stddef.h>
 
@@ -21,7 +23,21 @@ constexpr uint64_t EferNoExecuteEnable = 1U << 11;
 uint64_t hhdm_offset = 0;
 volatile uint64_t* root_table = nullptr;
 uint64_t kernel_root_physical_address = 0;
-uint64_t active_root_physical_address = 0;
+// Kernel tables are shared by every address space and CPU; held while any table is edited.
+FeatherOS::Sync::SpinLock page_table_lock;
+uint64_t active_root_physical_addresses[FeatherOS::Cpu::MaximumCpus] = {};
+
+bool IsActiveOnAnyCpu(uint64_t root_physical_address)
+{
+    for (const uint64_t active_root : active_root_physical_addresses)
+    {
+        if (active_root == root_physical_address)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 bool IsCanonical(uint64_t address)
 {
@@ -177,7 +193,7 @@ bool InitializeVirtualMemory(uint64_t offset)
     uint64_t cr3;
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
     kernel_root_physical_address = cr3 & PageAddressMask;
-    active_root_physical_address = kernel_root_physical_address;
+    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = kernel_root_physical_address;
     root_table = PhysicalTable(kernel_root_physical_address);
     if (root_table == nullptr)
     {
@@ -198,11 +214,13 @@ bool InitializeVirtualMemory(uint64_t offset)
 
 bool MapPage(uint64_t virtual_address, uint64_t physical_address, PageFlags flags)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     return MapPageInRoot(root_table, virtual_address, physical_address, flags, false);
 }
 
 bool CreateAddressSpace(AddressSpace* address_space)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     if (address_space == nullptr || root_table == nullptr)
     {
         return false;
@@ -229,9 +247,10 @@ bool CreateAddressSpace(AddressSpace* address_space)
 
 bool DestroyAddressSpace(AddressSpace* address_space)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     if (address_space == nullptr || address_space->root_physical_address == 0 ||
         address_space->root_physical_address == kernel_root_physical_address ||
-        address_space->root_physical_address == active_root_physical_address ||
+        IsActiveOnAnyCpu(address_space->root_physical_address) ||
         (address_space->root_physical_address & ~PageAddressMask) != 0)
     {
         return false;
@@ -271,6 +290,7 @@ bool DestroyAddressSpace(AddressSpace* address_space)
 bool MapPage(AddressSpace& address_space, uint64_t virtual_address, uint64_t physical_address,
              PageFlags flags)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     if (virtual_address >= 0x0000800000000000 || address_space.root_physical_address == 0 ||
         (address_space.root_physical_address & ~PageAddressMask) != 0)
     {
@@ -282,6 +302,7 @@ bool MapPage(AddressSpace& address_space, uint64_t virtual_address, uint64_t phy
 
 bool ProtectPage(AddressSpace& address_space, uint64_t virtual_address, PageFlags flags)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     if (virtual_address >= 0x0000800000000000 || !IsCanonical(virtual_address) ||
         virtual_address % PageSize != 0 || address_space.root_physical_address == 0 ||
         (address_space.root_physical_address & ~PageAddressMask) != 0)
@@ -381,7 +402,7 @@ bool ActivateAddressSpace(const AddressSpace& address_space)
     }
     const uint64_t root = address_space.root_physical_address;
     asm volatile("mov %0, %%cr3" : : "r"(root) : "memory");
-    active_root_physical_address = root;
+    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = root;
     return true;
 }
 
@@ -389,11 +410,12 @@ void ActivateKernelAddressSpace()
 {
     const uint64_t root = kernel_root_physical_address;
     asm volatile("mov %0, %%cr3" : : "r"(root) : "memory");
-    active_root_physical_address = root;
+    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = root;
 }
 
 bool UnmapPage(uint64_t virtual_address)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     if (root_table == nullptr || !IsCanonical(virtual_address) || virtual_address % PageSize != 0)
     {
         return false;

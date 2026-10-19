@@ -44,6 +44,17 @@ void InitializeExceptions()
 #endif
 }
 
+void InitializeSecondaryCpuExceptions(uint32_t cpu_index)
+{
+#if defined(ARCH_x86_64)
+    Arch::X86_64::InitializeSecondaryCpu(cpu_index);
+#elif defined(ARCH_aarch64)
+    Arch::AArch64::InitializeSecondaryCpu(cpu_index);
+#else
+#error "Unsupported architecture for exception initialization"
+#endif
+}
+
 #if defined(FEATHEROS_MEMORY_TEST)
 void SetTestExceptionHandler(TestExceptionHandler handler)
 {
@@ -58,6 +69,7 @@ bool TryRecoverTestException(ExceptionReport* report)
 
 [[noreturn]] void ReportFatalException(const ExceptionReport& report)
 {
+    Serial::ForceUnlock();
     if (report.architecture == ExceptionArchitecture::X86_64)
     {
         Serial::Write("KERN/EXCEPTION RIP: ");

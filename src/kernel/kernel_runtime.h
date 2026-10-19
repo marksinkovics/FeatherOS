@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 struct limine_framebuffer;
+struct limine_smp_response;
 
 namespace FeatherOS
 {
@@ -23,6 +24,7 @@ struct BootInfo
     limine_framebuffer* framebuffer;
     const void* initramfs_data;
     uint64_t initramfs_size;
+    limine_smp_response* smp;
 };
 
 [[noreturn]] void Run(KLogger& logger, const BootInfo& boot_info);

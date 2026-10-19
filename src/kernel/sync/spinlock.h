@@ -8,6 +8,15 @@
 namespace FeatherOS::Sync
 {
 
+inline void CpuRelax()
+{
+#if defined(__x86_64__)
+    asm volatile("pause" ::: "memory");
+#elif defined(__aarch64__)
+    asm volatile("yield" ::: "memory");
+#endif
+}
+
 class SpinLock
 {
 public:
@@ -56,15 +65,6 @@ public:
     }
 
 private:
-    static void CpuRelax()
-    {
-#if defined(__x86_64__)
-        asm volatile("pause" ::: "memory");
-#elif defined(__aarch64__)
-        asm volatile("yield" ::: "memory");
-#endif
-    }
-
     uint32_t locked = 0;
 };
 

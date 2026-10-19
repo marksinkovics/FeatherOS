@@ -1,5 +1,6 @@
 #include "kernel/config.h"
 #include "kernel/arch/serial.h"
+#include "kernel/cpu.h"
 #include "kernel/exception.h"
 #include "kernel/halt.h"
 #include "kernel/kernel_runtime.h"
@@ -50,6 +51,9 @@ __attribute__((used,
     .internal_module_count = 0,
     .internal_modules = nullptr};
 
+__attribute__((used, section(".limine_requests"))) volatile limine_smp_request smp_request = {
+    .id = LIMINE_SMP_REQUEST, .revision = 0, .response = nullptr, .flags = 0};
+
 #if defined(ARCH_aarch64)
 __attribute__((used, section(".limine_requests"))) volatile limine_dtb_request dtb_request = {
     .id = LIMINE_DTB_REQUEST, .revision = 0, .response = nullptr};
@@ -77,6 +81,7 @@ extern void (*__init_array_end[])();
 
 extern "C" void kmain()
 {
+    FeatherOS::Cpu::InstallLocalState(0);
     if (hhdm_request.response == nullptr)
     {
         FeatherOS::HaltForever();
@@ -163,6 +168,7 @@ extern "C" void kmain()
         .framebuffer = framebuffer,
         .initramfs_data = initramfs_module == nullptr ? nullptr : initramfs_module->address,
         .initramfs_size = initramfs_module == nullptr ? 0 : initramfs_module->size,
+        .smp = smp_request.response,
     };
     FeatherOS::KernelRuntime::Run(klogger, boot_info);
 }

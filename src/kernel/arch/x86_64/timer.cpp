@@ -1,6 +1,7 @@
 #include "timer.h"
 
 #include "interrupts.h"
+#include "local_apic.h"
 
 namespace FeatherOS::Arch::X86_64
 {
@@ -31,6 +32,17 @@ bool StartPeriodicTimer(uint32_t frequency_hz, TimerInterruptHandler handler)
     StartPit(frequency_hz);
     asm volatile("sti" ::: "memory");
     return true;
+}
+
+bool PrepareSecondaryCpuTimers()
+{
+    constexpr uint32_t CalibrationTicks = 10;
+    return LocalApic::CalibrateTimer(CalibrationTicks);
+}
+
+bool StartSecondaryCpuTimer()
+{
+    return LocalApic::StartPeriodicTimer(OnPitInterrupt);
 }
 
 void StopPeriodicTimer()

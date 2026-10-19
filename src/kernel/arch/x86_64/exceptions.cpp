@@ -1,8 +1,11 @@
 #include "exceptions.h"
 
+#include "local_apic.h"
+
 #include "kernel/arch/serial.h"
 #include "kernel/exception.h"
 #include "kernel/scheduler.h"
+#include "kernel/cpu.h"
 #include "kernel/syscall.h"
 #include "kernel/user_context.h"
 
@@ -70,17 +73,29 @@ struct ExceptionContext
     uint64_t user_stack_segment;
 };
 
+// Each CPU needs its own TSS, so its own GDT for the TSS descriptor; the IDT is shared.
+struct CpuTables
+{
+    alignas(16) uint64_t gdt[7];
+    TaskStateSegment tss;
+    alignas(16) uint8_t kernel_stack[16384];
+    alignas(16) uint8_t double_fault_stack[16384];
+    alignas(16) uint8_t nmi_stack[16384];
+    alignas(16) uint8_t machine_check_stack[16384];
+    alignas(16) uint8_t test_exception_stack[16384];
+};
+
 IdtEntry idt[256];
-alignas(16) uint64_t gdt[7];
-TaskStateSegment tss;
-alignas(16) uint8_t kernel_stack[16384];
-alignas(16) uint8_t double_fault_stack[16384];
-alignas(16) uint8_t nmi_stack[16384];
-alignas(16) uint8_t machine_check_stack[16384];
-alignas(16) uint8_t test_exception_stack[16384];
+CpuTables cpu_tables[FeatherOS::Cpu::MaximumCpus];
+
+TaskStateSegment& CurrentTss()
+{
+    return cpu_tables[FeatherOS::Cpu::CurrentIndex()].tss;
+}
 
 extern "C" void* x86_64_exception_stub_table[];
 extern "C" void* x86_64_irq_stub_table[];
+extern "C" void x86_64_spurious_interrupt();
 extern "C" void x86_64_enable_sse();
 extern "C" void x86_64_enter_user(uint64_t entry_point, uint64_t stack_pointer,
                                   uint64_t argument_pointer,
@@ -154,35 +169,54 @@ bool WriteSyscallCharacter(void*, char character)
 constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {WriteSyscallCharacter, nullptr,
                                                                 nullptr, nullptr, nullptr};
 
+template <size_t Size> uint64_t StackTop(uint8_t (&stack)[Size])
+{
+    return reinterpret_cast<uint64_t>(stack + Size);
+}
+
+void LoadCpuTables(CpuTables& cpu)
+{
+    TaskStateSegment& cpu_tss = cpu.tss;
+    cpu_tss.rsp0 = StackTop(cpu.kernel_stack);
+    cpu_tss.ist[0] = StackTop(cpu.double_fault_stack);
+    cpu_tss.ist[1] = StackTop(cpu.nmi_stack);
+    cpu_tss.ist[2] = StackTop(cpu.machine_check_stack);
+    cpu_tss.ist[3] = StackTop(cpu.test_exception_stack);
+    cpu_tss.iomap_base = sizeof(cpu_tss);
+
+    uint64_t* gdt = cpu.gdt;
+    gdt[1] = 0x00AF9A000000FFFF;
+    gdt[2] = 0x00CF92000000FFFF;
+    gdt[3] = 0x00CFF2000000FFFF;
+    gdt[4] = 0x00AFFA000000FFFF;
+    const uint64_t tss_base = reinterpret_cast<uint64_t>(&cpu_tss);
+    const uint64_t tss_limit = sizeof(cpu_tss) - 1;
+    gdt[5] = (tss_limit & 0xFFFF) | ((tss_base & 0xFFFFFF) << 16) | (0x89ULL << 40) |
+             (((tss_limit >> 16) & 0xF) << 48) | (((tss_base >> 24) & 0xFF) << 56);
+    gdt[6] = tss_base >> 32;
+    const IdtRegister gdt_register = {
+        .limit = sizeof(cpu.gdt) - 1,
+        .base = reinterpret_cast<uint64_t>(gdt),
+    };
+    x86_64_load_gdt(&gdt_register);
+}
+
+void LoadIdt()
+{
+    const IdtRegister idt_register = {
+        .limit = sizeof(idt) - 1,
+        .base = reinterpret_cast<uint64_t>(idt),
+    };
+    asm volatile("lidt %0" : : "m"(idt_register));
+}
+
 } // namespace
 
 void InitializeExceptions()
 {
     asm volatile("cli" ::: "memory");
     x86_64_enable_sse();
-
-    tss.rsp0 = reinterpret_cast<uint64_t>(kernel_stack + sizeof(kernel_stack));
-    tss.ist[0] = reinterpret_cast<uint64_t>(double_fault_stack + sizeof(double_fault_stack));
-    tss.ist[1] = reinterpret_cast<uint64_t>(nmi_stack + sizeof(nmi_stack));
-    tss.ist[2] = reinterpret_cast<uint64_t>(machine_check_stack + sizeof(machine_check_stack));
-    tss.ist[3] = reinterpret_cast<uint64_t>(test_exception_stack + sizeof(test_exception_stack));
-    tss.iomap_base = sizeof(tss);
-    FeatherOS_x86_64_SetKernelStack(tss.rsp0);
-
-    gdt[1] = 0x00AF9A000000FFFF;
-    gdt[2] = 0x00CF92000000FFFF;
-    gdt[3] = 0x00CFF2000000FFFF;
-    gdt[4] = 0x00AFFA000000FFFF;
-    const uint64_t tss_base = reinterpret_cast<uint64_t>(&tss);
-    const uint64_t tss_limit = sizeof(tss) - 1;
-    gdt[5] = (tss_limit & 0xFFFF) | ((tss_base & 0xFFFFFF) << 16) | (0x89ULL << 40) |
-             (((tss_limit >> 16) & 0xF) << 48) | (((tss_base >> 24) & 0xFF) << 56);
-    gdt[6] = tss_base >> 32;
-    const IdtRegister gdt_register = {
-        .limit = sizeof(gdt) - 1,
-        .base = reinterpret_cast<uint64_t>(gdt),
-    };
-    x86_64_load_gdt(&gdt_register);
+    LoadCpuTables(cpu_tables[0]);
 
     for (size_t vector = 0; vector < 32; ++vector)
     {
@@ -208,22 +242,30 @@ void InitializeExceptions()
         SetEntry(vector, reinterpret_cast<uintptr_t>(x86_64_exception_stub_table[vector]), 0x08,
                  ist);
     }
-    for (size_t irq = 0; irq < 16; ++irq)
+    // Vectors 32-47 are the legacy PIC; 48 and 49 are the local APIC IPI and timer.
+    for (size_t irq = 0; irq < 18; ++irq)
     {
         SetEntry(32 + irq, reinterpret_cast<uintptr_t>(x86_64_irq_stub_table[irq]), 0x08, 0);
     }
+    SetEntry(LocalApic::SpuriousVector, reinterpret_cast<uintptr_t>(x86_64_spurious_interrupt),
+             0x08, 0);
     SetEntry(128, reinterpret_cast<uintptr_t>(x86_64_syscall_stub), 0x08, 0, 0xEE);
+    LoadIdt();
+}
 
-    const IdtRegister idt_register = {
-        .limit = sizeof(idt) - 1,
-        .base = reinterpret_cast<uint64_t>(idt),
-    };
-    asm volatile("lidt %0" : : "m"(idt_register));
+void InitializeSecondaryCpu(uint32_t cpu_index)
+{
+    asm volatile("cli" ::: "memory");
+    x86_64_enable_sse();
+    LoadCpuTables(cpu_tables[cpu_index]);
+    LoadIdt();
+    // Drop translations cached before the kernel edited the shared page tables.
+    asm volatile("mov %%cr3, %%rax\n\tmov %%rax, %%cr3" ::: "rax", "memory");
 }
 
 extern "C" void FeatherOS_x86_64_SetKernelStack(uint64_t stack_pointer)
 {
-    tss.rsp0 = stack_pointer;
+    CurrentTss().rsp0 = stack_pointer;
 }
 
 void RestoreCurrentUserKernelStack()
@@ -232,7 +274,7 @@ void RestoreCurrentUserKernelStack()
         static_cast<FeatherOS::UserExecutionContext*>(FeatherOS::Scheduler::CurrentUserContext());
     if (user_context != nullptr && user_context->active && user_context->kernel_stack_pointer != 0)
     {
-        tss.rsp0 = user_context->kernel_stack_pointer;
+        CurrentTss().rsp0 = user_context->kernel_stack_pointer;
     }
 }
 
@@ -254,7 +296,7 @@ bool RunUserTest(uint64_t entry_point, uint64_t stack_pointer, uint64_t argument
     user_context->exit_requested = false;
     FeatherOS::Scheduler::SetCurrentUserContext(user_context);
     x86_64_enter_user(entry_point, stack_pointer, argument_pointer, user_context);
-    tss.rsp0 = user_context->previous_kernel_stack_pointer;
+    CurrentTss().rsp0 = user_context->previous_kernel_stack_pointer;
     user_context->active = false;
     FeatherOS::Scheduler::SetCurrentUserContext(nullptr);
     return user_context->exit_status == 0;
@@ -268,7 +310,7 @@ extern "C" uint64_t FeatherOS_x86_64_GetUserReturnStack()
     {
         return 0;
     }
-    tss.rsp0 = user_context->previous_kernel_stack_pointer;
+    CurrentTss().rsp0 = user_context->previous_kernel_stack_pointer;
     user_context->active = false;
     return user_context->kernel_stack_pointer;
 }
@@ -278,6 +320,13 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
     if (context->vector >= 32 && context->vector < 48)
     {
         FeatherOS_x86_64_HandleHardwareInterrupt(context->vector);
+        RestoreCurrentUserKernelStack();
+        return;
+    }
+    if (context->vector == LocalApic::IpiVector || context->vector == LocalApic::TimerVector ||
+        context->vector == LocalApic::SpuriousVector)
+    {
+        LocalApic::HandleInterrupt(context->vector);
         RestoreCurrentUserKernelStack();
         return;
     }

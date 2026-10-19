@@ -12,6 +12,7 @@ global x86_64_user_test_return
 global x86_64_syscall_stub
 global x86_64_exception_stub_table
 global x86_64_irq_stub_table
+global x86_64_spurious_interrupt
 
 x86_64_enable_sse:
     mov rax, cr0
@@ -32,11 +33,11 @@ x86_64_load_gdt:
     push rax
     retfq
 .reload_cs:
+    ; GS is not reloaded: that would clear its base, which holds the per-CPU state pointer.
     mov ax, 0x10
     mov ds, ax
     mov es, ax
     mov fs, ax
-    mov gs, ax
     mov ss, ax
     mov ax, 0x28
     ltr ax
@@ -66,6 +67,7 @@ x86_64_enter_user:
     pushfq
     push qword 0x23
     push rax
+    swapgs
     iretq
 
 x86_64_user_test_return:
@@ -133,7 +135,7 @@ ISR_ERROR 30
 ISR_NO_ERROR 31
 
 %assign irq_vector 32
-%rep 16
+%rep 18
 global x86_64_irq_%+irq_vector
 x86_64_irq_%+irq_vector:
     push qword 0
@@ -142,7 +144,17 @@ x86_64_irq_%+irq_vector:
 %assign irq_vector irq_vector + 1
 %endrep
 
+x86_64_spurious_interrupt:
+    push qword 0
+    push qword 255
+    jmp x86_64_exception_common
+
 x86_64_exception_common:
+    ; Only entries from ring 3 swap GS; the saved CS is above the vector and error code.
+    test qword [rsp + 24], 3
+    jz .kernel_entry
+    swapgs
+.kernel_entry:
     cld
     push rax
     push rbx
@@ -183,6 +195,10 @@ x86_64_exception_common:
     pop rbx
     pop rax
     add rsp, 16
+    test qword [rsp + 8], 3
+    jz .kernel_return
+    swapgs
+.kernel_return:
     iretq
 
 section .rodata
@@ -207,3 +223,4 @@ x86_64_irq_stub_table:
     dq x86_64_irq_36, x86_64_irq_37, x86_64_irq_38, x86_64_irq_39
     dq x86_64_irq_40, x86_64_irq_41, x86_64_irq_42, x86_64_irq_43
     dq x86_64_irq_44, x86_64_irq_45, x86_64_irq_46, x86_64_irq_47
+    dq x86_64_irq_48, x86_64_irq_49

@@ -83,7 +83,7 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 
 **Complete:** A fixed-capacity scheduler switches up to four tasks on both architectures; tasks can be preempted by periodic timer IRQs, return exit statuses, be waited on, and be reaped, and context switches preserve per-task user state (the AArch64 `SP_EL0` and the x86-64 TSS kernel stack). A shared process table spawns initramfs programs into separate address spaces with `argc`/`argv`-style arguments, tracks parents, and gives console input to the foreground process. Spawn, wait, read-line, and newline-capable output syscalls validate every user pointer through the caller's page tables, and a CPU exception in user mode terminates only that program. The kernel starts a shell from the initramfs that runs `calc`, `echo`, and `upper` and reports their exit statuses; host tests cover syscall dispatch and argument parsing, and QEMU shell sessions verify arguments, foreground input in a child process, and exit statuses on both targets.
 
-### 8. SMP And Concurrency
+### 8. SMP And Concurrency (Complete)
 
 - Bring up multiple processors on x86-64 and AArch64, with architecture-specific startup and per-CPU state.
 - Add synchronization primitives and inter-processor interrupts (IPIs) for shared kernel state and cross-CPU coordination.
@@ -91,9 +91,11 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 - Exercise concurrency and scheduling under multi-CPU QEMU configurations.
 - Make the scheduler, process table, and page allocator SMP-safe with per-CPU run queues and locking.
 
-**Single-CPU groundwork (complete):** An interrupt-saving `Sync::SpinLock` protects the scheduler, input queue, page allocator, heap, and process table, and the scheduler lock is handed across context switches. The boot thread is a schedulable task, an idle task halts the CPU when nothing is ready, and tasks block on wait queues (with optional deadlines) or sleep until a tick instead of busy-yielding; `Wait` and console `ReadLine` use them. QEMU scheduler tests verify blocking and wakeup, timed sleep, and wait deadlines on both targets. Remaining for M8: CPU bring-up, per-CPU state and idle tasks, IPIs, per-CPU run queues, and page-table locking.
+**Single-CPU groundwork (complete):** An interrupt-saving `Sync::SpinLock` protects the scheduler, input queue, page allocator, heap, and process table, and the scheduler lock is handed across context switches. The boot thread is a schedulable task, an idle task halts the CPU when nothing is ready, and tasks block on wait queues (with optional deadlines) or sleep until a tick instead of busy-yielding; `Wait` and console `ReadLine` use them. QEMU scheduler tests verify blocking and wakeup, timed sleep, and wait deadlines on both targets.
 
-**Complete when:** both targets boot with multiple CPUs, schedule work on more than one CPU, and pass synchronization and cross-CPU coordination tests.
+**CPU bring-up (complete):** Both targets start every Limine-reported CPU (up to eight), give each its own exception state (x86-64 GDT/TSS/IST stacks, AArch64 vector base), and park it. QEMU boots with four CPUs, and the normal-boot test requires all of them to come online. Each CPU has a register-based CPU index (x86-64 `GS` base with `SWAPGS` on ring transitions, AArch64 `TPIDR_EL1`), per-CPU current and idle tasks, active page-table roots, and TSS, and serial output is locked. Every CPU takes IPIs and runs its own timer (AArch64 GICv2 SGIs and Generic Timer; x86-64 local APIC with a PIT-calibrated timer, keeping the legacy PIC for device interrupts), verified at boot on both targets.
+
+**Complete:** Every CPU schedules from a shared run queue under the scheduler lock, with per-CPU idle tasks and IPI wakeups of idle CPUs, so tasks and user programs run on any CPU. The framebuffer console and page-table edits are locked, and AArch64 kernel code runs on `SP_EL1` so exception frames stay on each task's stack. QEMU tests verify that tasks run concurrently on three CPUs with an exact shared locked counter, and every shell and user-mode test runs with four CPUs. Follow-on work: per-CPU run queues and load balancing, TLB shootdown once kernel pages are unmapped or address spaces are shared, I/O APIC routing for x86-64 device interrupts, and a lock for `KLogger`.
 
 ### 9. Persistent Storage
 
