@@ -44,6 +44,10 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return, handlers.extend_heap(context, arguments[0])};
     }
+    if (request.number == static_cast<uint64_t>(Number::Sleep) && handlers.sleep != nullptr)
+    {
+        return {Action::Return, handlers.sleep(context, arguments[0])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

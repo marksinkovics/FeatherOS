@@ -147,6 +147,8 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 
 **Part 2 (complete):** User stacks grow on demand through a 64-page region whose lowest page is a guard, and the `ExtendHeap` syscall grows a program break above the ELF image. The shell test's `memtest` checks deep recursion and heap reads and writes, and `memtest overflow` is terminated at the guard page.
 
+**Part 3 (complete):** Tasks have Low, Normal, or High priority, and the scheduler runs the highest-priority ready task, round-robin within a level. The `Sleep` syscall blocks a program without using a CPU. A scheduler test checks priority order, and the shell test runs `sleep 1100`. Remaining for M13: copy-on-write/demand paging beyond the stack, PIE/relocations, `PT_TLS`, and a dynamic-linking policy.
+
 **Complete when:** more than four processes can run with independently growing memory on both targets, sleeping tasks do not consume CPU, and QEMU tests cover allocation failure and resource reclamation under load.
 
 ### 14. USB Host And HID Input

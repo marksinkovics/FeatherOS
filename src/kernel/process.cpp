@@ -10,6 +10,7 @@
 #include "kernel/scheduler.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/syscall.h"
+#include "kernel/time/timer.h"
 #if defined(ARCH_x86_64)
 #include "kernel/arch/x86_64/exceptions.h"
 #elif defined(ARCH_aarch64)
@@ -523,6 +524,20 @@ uint64_t ExtendHeapSyscall(void* context, uint64_t increment)
     return previous_break;
 }
 
+uint64_t SleepSyscall(void*, uint64_t milliseconds)
+{
+    const uint64_t ticks_per_second = Time::TicksPerSecond();
+    constexpr uint64_t MaximumMilliseconds = 24ULL * 60 * 60 * 1000;
+    if (ticks_per_second == 0 || milliseconds > MaximumMilliseconds)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    // Round up so the program sleeps at least as long as it asked.
+    const uint64_t ticks = (milliseconds * ticks_per_second + 999) / 1000;
+    Scheduler::SleepUntil(Time::TickCount() + ticks);
+    return 0;
+}
+
 uint64_t ReadClockSyscall(void*)
 {
     uint64_t seconds;
@@ -530,8 +545,8 @@ uint64_t ReadClockSyscall(void*)
 }
 
 constexpr Syscall::Handlers ProcessSyscallHandlers = {
-    WriteCharacterSyscall, ReadLineSyscall,  SpawnSyscall,
-    WaitSyscall,           ReadClockSyscall, ExtendHeapSyscall,
+    WriteCharacterSyscall, ReadLineSyscall,   SpawnSyscall, WaitSyscall,
+    ReadClockSyscall,      ExtendHeapSyscall, SleepSyscall,
 };
 
 } // namespace

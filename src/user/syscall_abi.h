@@ -17,6 +17,7 @@ enum class SyscallNumber : uint64_t
     Wait = 4,           // (process_id, status_pointer) -> 0 once the child has exited
     ReadClock = 5,      // () -> current UTC time in seconds since 1970-01-01
     ExtendHeap = 6,     // (increment) -> previous program break; 0 queries it
+    Sleep = 7,          // (milliseconds) -> 0 after at least that long
 };
 
 // Results at or above SyscallErrorBase report failures instead of values.

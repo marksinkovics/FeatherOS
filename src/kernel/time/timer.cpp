@@ -19,6 +19,7 @@ namespace
 volatile uint64_t ticks = 0;
 volatile uint64_t cpu_ticks[Cpu::MaximumCpus] = {};
 bool initialized = false;
+uint32_t ticks_per_second = 0;
 
 void OnTimerInterrupt()
 {
@@ -57,6 +58,7 @@ bool InitializeTimer(uint32_t frequency_hz, const void* platform_data)
 #else
 #error "Unsupported architecture for timer initialization"
 #endif
+    ticks_per_second = frequency_hz;
     initialized = true;
     return true;
 }
@@ -104,6 +106,11 @@ bool StartSecondaryCpuTimer()
 uint64_t TickCount()
 {
     return ticks;
+}
+
+uint32_t TicksPerSecond()
+{
+    return ticks_per_second;
 }
 
 uint64_t CpuTickCount(uint32_t cpu_index)

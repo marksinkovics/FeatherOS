@@ -408,6 +408,44 @@ void RunBlockingTests(const void* platform_data)
     }
 }
 
+uint64_t PriorityTask(void* context)
+{
+    scheduler_sequence = scheduler_sequence * 10 + reinterpret_cast<uint64_t>(context);
+    return 0;
+}
+
+void RunPriorityTests()
+{
+    // Only the boot CPU schedules here, so the order is deterministic.
+    constexpr Scheduler::TaskPriority Priorities[] = {
+        Scheduler::TaskPriority::Low,
+        Scheduler::TaskPriority::Normal,
+        Scheduler::TaskPriority::High,
+    };
+    Scheduler::TaskId task_ids[3];
+    scheduler_sequence = 0;
+    for (uint64_t index = 0; index < 3; ++index)
+    {
+        if (!Scheduler::CreateTask(PriorityTask, reinterpret_cast<void*>(index + 1),
+                                   &task_ids[index]) ||
+            !Scheduler::SetPriority(task_ids[index], Priorities[index]))
+        {
+            Panic("Could not create priority test task");
+        }
+    }
+    for (const Scheduler::TaskId task_id : task_ids)
+    {
+        if (!Scheduler::Wait(task_id, nullptr) || !Scheduler::ReapTask(task_id))
+        {
+            Panic("Priority test task did not finish");
+        }
+    }
+    if (scheduler_sequence != 321)
+    {
+        Panic("Higher-priority tasks did not run first");
+    }
+}
+
 uint64_t ScalingTask(void* context)
 {
     Scheduler::Yield();
@@ -517,7 +555,9 @@ void RunSchedulerTests(const void* platform_data)
     }
     RunBlockingTests(platform_data);
     RunTaskScalingTests();
-    Serial::Write("KERN/SCHEDULER: preemption, wait, exit, reap, blocking, and sleep passed\n");
+    RunPriorityTests();
+    Serial::Write(
+        "KERN/SCHEDULER: preemption, wait, exit, reap, blocking, sleep, and priorities passed\n");
 }
 
 } // namespace

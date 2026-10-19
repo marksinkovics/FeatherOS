@@ -26,6 +26,7 @@ struct Task
     void* context;
     TaskId id;
     TaskState state;
+    TaskPriority priority;
     uint64_t exit_status;
     // 0 = no deadline.
     uint64_t wake_tick;
@@ -77,6 +78,7 @@ void ResetTask(Task& task)
     task.context = nullptr;
     task.id = 0;
     task.state = TaskState::Empty;
+    task.priority = TaskPriority::Normal;
     task.exit_status = 0;
     task.wake_tick = 0;
     task.wait_queue = nullptr;
@@ -103,16 +105,18 @@ Task* FindReadyTask(const Task* after)
 {
     // Idle tasks are outside the ring, so their search starts at the boot task.
     Task* start = after->next != nullptr ? after->next : &boot_task;
+    Task* best = nullptr;
     Task* candidate = start;
     do
     {
-        if (candidate != after && candidate->state == TaskState::Ready)
+        if (candidate != after && candidate->state == TaskState::Ready &&
+            (best == nullptr || candidate->priority > best->priority))
         {
-            return candidate;
+            best = candidate;
         }
         candidate = candidate->next;
     } while (candidate != start);
-    return nullptr;
+    return best;
 }
 
 // An idle CPU halts until an interrupt, so new work would otherwise wait for its next tick.
@@ -174,13 +178,14 @@ bool Schedule()
 {
     Task* previous = CurrentTask();
     Task* next = FindReadyTask(previous);
+    if (previous->state == TaskState::Ready &&
+        (next == nullptr || next->priority < previous->priority))
+    {
+        previous->state = TaskState::Running;
+        return false;
+    }
     if (next == nullptr)
     {
-        if (previous->state == TaskState::Ready)
-        {
-            previous->state = TaskState::Running;
-            return false;
-        }
         if (previous == &IdleTask())
         {
             return false;
@@ -452,6 +457,23 @@ bool ReapTask(TaskId task_id)
     // A complete task's CPU switched away under the scheduler lock, so its stack is unused.
     Memory::FreeKernelStack(task->stack);
     Memory::Deallocate(task);
+    return true;
+}
+
+bool SetPriority(TaskId task_id, TaskPriority priority)
+{
+    if (!initialized)
+    {
+        return false;
+    }
+
+    Sync::SpinLockGuard guard(scheduler_lock);
+    Task* task = FindTask(task_id);
+    if (task == nullptr)
+    {
+        return false;
+    }
+    task->priority = priority;
     return true;
 }
 
