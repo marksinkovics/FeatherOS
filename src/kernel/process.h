@@ -16,18 +16,32 @@ using ProcessId = uint64_t;
 #if defined(ARCH_x86_64)
 constexpr uint64_t UserStackAddress = 0x800000;
 constexpr uint64_t UserAddressLimit = 0x0000800000000000;
+constexpr uint64_t RandomStackWindowBase = 0x0000700000000000;
 #elif defined(ARCH_aarch64)
 constexpr uint64_t UserStackAddress = 0x0000400000800000;
-constexpr uint64_t UserAddressLimit = 0x0001000000000000;
+// The page-table code treats addresses with bit 47 set as kernel-half, as on x86-64.
+constexpr uint64_t UserAddressLimit = 0x0000800000000000;
+constexpr uint64_t RandomStackWindowBase = 0x0000600000000000;
 #else
 #error "Unsupported architecture for user processes"
 #endif
 constexpr uint64_t UserStackTop = UserStackAddress + 4096;
 // The stack grows down on demand through this region; its lowest page always stays unmapped.
 constexpr uint64_t UserStackRegionPages = 64;
-constexpr uint64_t UserStackRegionBase = UserStackTop - UserStackRegionPages * 4096;
 // Every program sees its read-only ProgramArguments block here, one guard page above its stack.
 constexpr uint64_t ArgumentsAddress = UserStackAddress + 2 * 4096;
+constexpr uint64_t RandomStackWindowPages = 1ULL << 28;
+constexpr uint64_t RandomHeapOffsetPages = 1ULL << 16;
+
+struct UserLayout
+{
+    uint64_t stack_top;
+    uint64_t arguments_address;
+    uint64_t heap_offset;
+};
+
+UserLayout DefaultUserLayout();
+UserLayout RandomUserLayout();
 
 // An ELF image loaded into its own address space, ready to run as a scheduler task.
 struct UserProgram
@@ -40,6 +54,7 @@ struct UserProgram
     uint64_t argument_pointer;
     uint64_t heap_start;
     uint64_t heap_break;
+    UserLayout layout;
     UserExecutionContext execution_context;
 };
 

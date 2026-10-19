@@ -132,12 +132,14 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 
 **Part 2 (complete):** AArch64 device registers (UART, RTC, GIC, virtio-mmio) are mapped in the kernel half through `Memory::MapDevice`, as is the x86-64 local APIC, and AArch64 user page tables no longer copy the kernel's low `TTBR0` mappings. The memory test maps a user page at the UART's identity address to prove the slot is free.
 
+**Part 3 (complete):** Spawned processes get a randomized stack, arguments page, and heap start, using a cycle-counter-seeded generator. The shell test runs `aslr` twice and requires different addresses. AArch64 user space now ends at `2^47` to match its canonical-address check. Remaining for M12: randomizing the program image (needs PIE from M13), x86-64 SMEP/SMAP when the CPU supports them, and a cryptographic entropy source.
+
 
 - Audit syscall argument validation, ELF loading, address-space isolation, and resource cleanup.
 - Enforce writable/executable memory policy and tighten privilege transitions.
 - Add negative tests for invalid syscalls, malformed binaries, and attempts to access protected memory.
 - Remove kernel low-address mappings (such as the UART identity map) from AArch64 user roots by moving them to the higher half.
-- Add user stack guard pages, per-process resource limits (pages, tasks, open files), and address-space layout randomization.
+- Add user stack guard pages, per-process resource limits (pages, tasks, open files), and address-space layout randomization. Randomizing the program image depends on PIE support in M13.
 
 **Complete when:** security invariants are documented and automated tests demonstrate that malformed inputs and user programs cannot access or corrupt protected kernel state.
 
@@ -145,7 +147,7 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 
 - Replace fixed limits with dynamic ones: a growable task table, heap-allocated kernel stacks, and a per-process page limit instead of the fixed ELF page cap.
 - Give user programs a growable stack, a heap (`brk` or `mmap`-style syscall), and optional demand paging with copy-on-write.
-- Extend the ELF loader beyond static executables: PIE/relocations, `PT_TLS`, and a documented policy for dynamic linking.
+- Extend the ELF loader beyond static executables: PIE/relocations (which also enables image ASLR for M12), `PT_TLS`, and a documented policy for dynamic linking.
 - Add scheduler policy beyond round-robin, such as priorities; blocked/sleeping states, timed sleep, and an idle task already exist.
 
 **Part 1 (complete):** Tasks and process records are heap-allocated. Kernel stacks come from a guard-paged pool, and a per-process page limit replaces the fixed ELF page cap. QEMU tests run 12 concurrent tasks for three rounds without leaking frames, check that a guard page faults, and have the shell's `fanout 6` run six children at once.

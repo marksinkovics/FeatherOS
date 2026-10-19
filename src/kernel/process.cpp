@@ -7,6 +7,7 @@
 #include "kernel/memory/page_allocator.h"
 #include "kernel/panic.h"
 #include "kernel/process_arguments.h"
+#include "kernel/random.h"
 #include "kernel/scheduler.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/syscall.h"
@@ -240,7 +241,8 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     {
         return false;
     }
-    if (!Memory::MapPage(program->address_space, UserStackAddress, stack_physical_address,
+    if (!Memory::MapPage(program->address_space, program->layout.stack_top - Memory::PageSize,
+                         stack_physical_address,
                          Memory::PageFlags::Read | Memory::PageFlags::Write |
                              Memory::PageFlags::User))
     {
@@ -259,7 +261,8 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     {
         arguments_page[index] = source[index];
     }
-    if (!Memory::MapPage(program->address_space, ArgumentsAddress, arguments_physical_address,
+    if (!Memory::MapPage(program->address_space, program->layout.arguments_address,
+                         arguments_physical_address,
                          Memory::PageFlags::Read | Memory::PageFlags::User))
     {
         Memory::FreePageFrame(arguments_physical_address);
@@ -267,9 +270,10 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     }
 
     program->entry_point = image.entry_point;
-    program->stack_pointer = UserStackTop;
+    program->stack_pointer = program->layout.stack_top;
+    program->heap_start += program->layout.heap_offset * Memory::PageSize;
     program->heap_break = program->heap_start;
-    program->argument_pointer = ArgumentsAddress;
+    program->argument_pointer = program->layout.arguments_address;
     return true;
 }
 
@@ -502,7 +506,9 @@ uint64_t ExtendHeapSyscall(void* context, uint64_t increment)
     UserProgram& program = static_cast<ProcessRecord*>(context)->program;
     const uint64_t previous_break = program.heap_break;
     // The heap may grow up to, but never into, the stack region's guard page.
-    if (increment > UserStackRegionBase - previous_break)
+    const uint64_t stack_region_base =
+        program.layout.stack_top - UserStackRegionPages * Memory::PageSize;
+    if (previous_break > stack_region_base || increment > stack_region_base - previous_break)
     {
         return User::SyscallErrorInvalidArgument;
     }
@@ -557,6 +563,22 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
 
 } // namespace
 
+UserLayout DefaultUserLayout()
+{
+    return {UserStackTop, ArgumentsAddress, 0};
+}
+
+UserLayout RandomUserLayout()
+{
+    // Keep the whole stack region inside the window and leave room for the guard and arguments
+    // pages above the stack top.
+    constexpr uint64_t SlotCount = RandomStackWindowPages - UserStackRegionPages - 2;
+    const uint64_t stack_top =
+        RandomStackWindowBase +
+        (UserStackRegionPages + Random::Next() % SlotCount) * Memory::PageSize;
+    return {stack_top, stack_top + Memory::PageSize, Random::Next() % RandomHeapOffsetPages};
+}
+
 void Initialize(uint64_t offset)
 {
     hhdm_offset = offset;
@@ -576,6 +598,7 @@ void InitializeUserProgram(UserProgram* program)
     program->argument_pointer = 0;
     program->heap_start = 0;
     program->heap_break = 0;
+    program->layout = DefaultUserLayout();
     program->execution_context.address_space_root_physical_address = 0;
     program->execution_context.kernel_stack_pointer = 0;
     program->execution_context.previous_kernel_stack_pointer = 0;
@@ -604,12 +627,17 @@ bool LoadUserProgram(const ELF::Image& image, const User::ProgramArguments& argu
 
 bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address)
 {
-    if (context == nullptr || context->program == nullptr ||
-        fault_address < UserStackRegionBase + Memory::PageSize || fault_address >= UserStackTop)
+    if (context == nullptr || context->program == nullptr)
     {
         return false;
     }
     auto* program = static_cast<UserProgram*>(context->program);
+    const uint64_t stack_top = program->layout.stack_top;
+    const uint64_t stack_region_base = stack_top - UserStackRegionPages * Memory::PageSize;
+    if (fault_address < stack_region_base + Memory::PageSize || fault_address >= stack_top)
+    {
+        return false;
+    }
     const uint64_t page_address = fault_address & ~(Memory::PageSize - 1);
     uint64_t physical_address;
     if (!AllocateProgramPage(program, &physical_address))
@@ -663,8 +691,10 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
     {
         return SpawnStatus::InvalidExecutable;
     }
+    // The arguments block holds pointers into itself, so its address is chosen first.
+    const UserLayout layout = RandomUserLayout();
     User::ProgramArguments arguments;
-    if (!BuildProgramArguments(command_line, ArgumentsAddress, &arguments))
+    if (!BuildProgramArguments(command_line, layout.arguments_address, &arguments))
     {
         return SpawnStatus::InvalidArguments;
     }
@@ -704,6 +734,7 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
 
     arguments.process_id = id;
     InitializeUserProgram(&process->program);
+    process->program.layout = layout;
     process->program.execution_context.syscall_handlers = &ProcessSyscallHandlers;
     process->program.execution_context.syscall_context = process;
     if (!LoadUserProgram(image, arguments, &process->program) ||
