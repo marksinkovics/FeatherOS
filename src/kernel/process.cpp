@@ -3,6 +3,7 @@
 #include "kernel/arch/rtc.h"
 #include "kernel/console.h"
 #include "kernel/filesystem/initramfs.h"
+#include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/panic.h"
 #include "kernel/process_arguments.h"
@@ -22,9 +23,8 @@ namespace FeatherOS::Process
 namespace
 {
 
-constexpr uint32_t MaximumProgramPages = 256;
-// One slot each for the shell and a child, plus one spare; the scheduler has four tasks.
-constexpr size_t MaximumProcesses = 3;
+// Covers every user page: ELF segments, the stack, and the arguments block.
+constexpr uint32_t DefaultProcessPageLimit = 1024;
 constexpr size_t MaximumCommandNameLength = 32;
 constexpr size_t MaximumPromptLength = 32;
 
@@ -38,7 +38,7 @@ constexpr char UserProgramSuffix[] = "-aarch64.elf";
 
 struct ProcessRecord
 {
-    bool in_use;
+    ProcessRecord* next;
     ProcessId id;
     ProcessId parent;
     Scheduler::TaskId task;
@@ -47,7 +47,7 @@ struct ProcessRecord
 
 uint64_t hhdm_offset = 0;
 Sync::SpinLock process_lock;
-ProcessRecord processes[MaximumProcesses];
+ProcessRecord* process_list = nullptr;
 ProcessId next_process_id = 1;
 // Only this process may read console input; zero means the kernel itself.
 ProcessId foreground_process = 0;
@@ -81,6 +81,16 @@ bool AllocateZeroedPage(uint64_t* physical_address)
     return true;
 }
 
+bool AllocateProgramPage(UserProgram* program, uint64_t* physical_address)
+{
+    if (program->mapped_page_count >= program->page_limit || !AllocateZeroedPage(physical_address))
+    {
+        return false;
+    }
+    ++program->mapped_page_count;
+    return true;
+}
+
 bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_size,
                     uint32_t segment_flags)
 {
@@ -109,8 +119,7 @@ bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_siz
     while (page_address < page_end)
     {
         uint64_t physical_address;
-        if (program->mapped_page_count == MaximumProgramPages ||
-            !AllocateZeroedPage(&physical_address))
+        if (!AllocateProgramPage(program, &physical_address))
         {
             return false;
         }
@@ -119,7 +128,6 @@ bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_siz
             Memory::FreePageFrame(physical_address);
             return false;
         }
-        ++program->mapped_page_count;
         page_address += page_size;
     }
     return true;
@@ -224,7 +232,7 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     }
 
     uint64_t stack_physical_address;
-    if (!AllocateZeroedPage(&stack_physical_address))
+    if (!AllocateProgramPage(program, &stack_physical_address))
     {
         return false;
     }
@@ -237,7 +245,7 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     }
 
     uint64_t arguments_physical_address;
-    if (!AllocateZeroedPage(&arguments_physical_address))
+    if (!AllocateProgramPage(program, &arguments_physical_address))
     {
         return false;
     }
@@ -270,14 +278,30 @@ void ReleaseUserProgram(UserProgram* program)
     program->address_space.root_physical_address = 0;
 }
 
+void RemoveProcess(ProcessRecord* process)
+{
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        for (ProcessRecord** link = &process_list; *link != nullptr; link = &(*link)->next)
+        {
+            if (*link == process)
+            {
+                *link = process->next;
+                break;
+            }
+        }
+    }
+    Memory::Deallocate(process);
+}
+
 ProcessRecord* FindProcess(ProcessId process_id)
 {
     Sync::SpinLockGuard guard(process_lock);
-    for (ProcessRecord& process : processes)
+    for (ProcessRecord* process = process_list; process != nullptr; process = process->next)
     {
-        if (process.in_use && process.id == process_id)
+        if (process->id == process_id)
         {
-            return &process;
+            return process;
         }
     }
     return nullptr;
@@ -477,10 +501,7 @@ void Initialize(uint64_t offset)
 {
     hhdm_offset = offset;
     Sync::SpinLockGuard guard(process_lock);
-    for (ProcessRecord& process : processes)
-    {
-        process.in_use = false;
-    }
+    process_list = nullptr;
     next_process_id = 1;
     foreground_process = 0;
 }
@@ -489,6 +510,7 @@ void InitializeUserProgram(UserProgram* program)
 {
     program->address_space.root_physical_address = 0;
     program->mapped_page_count = 0;
+    program->page_limit = DefaultProcessPageLimit;
     program->entry_point = 0;
     program->stack_pointer = 0;
     program->argument_pointer = 0;
@@ -559,27 +581,19 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
         return SpawnStatus::InvalidArguments;
     }
 
-    ProcessRecord* process = nullptr;
+    auto* process = static_cast<ProcessRecord*>(Memory::AllocateZeroed(1, sizeof(ProcessRecord)));
+    if (process == nullptr)
+    {
+        return SpawnStatus::NoResources;
+    }
     ProcessId id = 0;
     {
-        // Claim before loading so a concurrent spawn cannot take the slot.
         Sync::SpinLockGuard guard(process_lock);
-        for (ProcessRecord& candidate : processes)
-        {
-            if (!candidate.in_use)
-            {
-                process = &candidate;
-                break;
-            }
-        }
-        if (process == nullptr)
-        {
-            return SpawnStatus::NoResources;
-        }
         id = next_process_id++;
-        process->in_use = true;
         process->id = id;
         process->parent = parent;
+        process->next = process_list;
+        process_list = process;
     }
 
     arguments.process_id = id;
@@ -590,8 +604,7 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
         !Scheduler::CreateTask(RunUserProgram, &process->program, &process->task))
     {
         ReleaseUserProgram(&process->program);
-        Sync::SpinLockGuard guard(process_lock);
-        process->in_use = false;
+        RemoveProcess(process);
         return SpawnStatus::NoResources;
     }
     {
@@ -615,12 +628,14 @@ bool Wait(ProcessId process_id, uint64_t* exit_status)
         *exit_status = process->program.execution_context.exit_status;
     }
     ReleaseUserProgram(&process->program);
-    Sync::SpinLockGuard guard(process_lock);
-    if (foreground_process == process_id)
     {
-        foreground_process = process->parent;
+        Sync::SpinLockGuard guard(process_lock);
+        if (foreground_process == process_id)
+        {
+            foreground_process = process->parent;
+        }
     }
-    process->in_use = false;
+    RemoveProcess(process);
     return true;
 }
 
