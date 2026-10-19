@@ -1,0 +1,39 @@
+#ifndef FEATHEROS_USER_SYSCALL_ABI_H
+#define FEATHEROS_USER_SYSCALL_ABI_H
+
+#include <stdint.h>
+
+// Syscall numbers and result codes shared by the kernel and user programs.
+// x86-64 passes the number in rax and arguments in rdi, rsi, rdx; AArch64 uses x8 and x0-x2.
+namespace FeatherOS::User
+{
+
+enum class SyscallNumber : uint64_t
+{
+    Exit = 0,           // (status) -> does not return
+    WriteCharacter = 1, // (character) -> 0; printable ASCII or '\n'
+    ReadLine = 2,       // (buffer, capacity, prompt) -> line length; foreground process only
+    Spawn = 3,          // (command_line) -> process ID of the started child
+    Wait = 4,           // (process_id, status_pointer) -> 0 once the child has exited
+    ReadClock = 5,      // () -> current UTC time in seconds since 1970-01-01
+};
+
+// Results at or above SyscallErrorBase report failures instead of values.
+constexpr uint64_t SyscallErrorBase = UINT64_MAX - 15;
+constexpr uint64_t SyscallErrorFailed = UINT64_MAX;
+constexpr uint64_t SyscallErrorNotFound = UINT64_MAX - 1;
+constexpr uint64_t SyscallErrorInvalidArgument = UINT64_MAX - 2;
+constexpr uint64_t SyscallErrorNotForeground = UINT64_MAX - 3;
+
+constexpr bool IsSyscallError(uint64_t value)
+{
+    return value >= SyscallErrorBase;
+}
+
+// Exit statuses the kernel reports for programs it terminated because of a CPU exception.
+constexpr uint64_t ExitStatusFault = UINT64_MAX;
+constexpr uint64_t ExitStatusKernelAccessFault = UINT64_MAX - 1;
+
+} // namespace FeatherOS::User
+
+#endif

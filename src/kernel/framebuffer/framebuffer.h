@@ -13,16 +13,22 @@ public:
     bool init(limine_framebuffer* framebuffer);
     void clear(uint32_t color = FeatherOS::Color::Black);
     void drawPixel(uint32_t x, uint32_t y, uint32_t color);
+    // Copies the whole back buffer, or only rows [y, y + height), to the visible framebuffer.
     void draw();
+    void draw(uint32_t y, uint32_t height);
     void drawRectangle(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
     void drawCharacter(uint8_t ch, uint32_t x, uint32_t y, uint32_t bg_color, uint32_t fg_color);
     void drawString(const char* str, uint32_t x, uint32_t y, uint32_t bg_color, uint32_t fg_color);
+    // Moves back-buffer rows [y + distance, y + height) up by distance and fills the vacated rows.
+    void scrollUp(uint32_t y, uint32_t height, uint32_t distance, uint32_t color);
 
     uint32_t GetHeight() const;
     uint32_t GetWidth() const;
 
 private:
     uint32_t packColor(uint32_t color) const;
+    void writePixel(uint8_t* destination, uint32_t pixel) const;
+    void fillSpan(uint8_t* destination, uint32_t count, uint32_t pixel) const;
 
     uint8_t* m_addr;
     uint32_t m_width;
@@ -35,7 +41,7 @@ private:
     uint8_t m_green_mask_shift;
     uint8_t m_blue_mask_size;
     uint8_t m_blue_mask_shift;
-    uint8_t m_backbuffer[FeatherOS::Config::BackBufferLen];
+    alignas(8) uint8_t m_backbuffer[FeatherOS::Config::BackBufferLen];
     uint32_t m_backbuffer_len;
 };
 
