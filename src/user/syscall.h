@@ -71,6 +71,11 @@ inline uint64_t ExtendHeap(uint64_t increment)
     return Syscall(SyscallNumber::ExtendHeap, increment);
 }
 
+inline uint64_t Sleep(uint64_t milliseconds)
+{
+    return Syscall(SyscallNumber::Sleep, milliseconds);
+}
+
 } // namespace FeatherOS::User
 
 #endif

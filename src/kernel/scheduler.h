@@ -21,6 +21,13 @@ enum class TaskState : uint8_t
     Complete,
 };
 
+enum class TaskPriority : uint8_t
+{
+    Low,
+    Normal,
+    High,
+};
+
 // Identified by address only; waiters are tracked in the task table.
 struct WaitQueue
 {
@@ -32,6 +39,7 @@ bool CreateTask(TaskEntry entry, void* context, TaskId* task_id);
 bool Yield();
 bool Wait(TaskId task_id, uint64_t* exit_status);
 bool ReapTask(TaskId task_id);
+bool SetPriority(TaskId task_id, TaskPriority priority);
 void EnablePreemption();
 void DisablePreemption();
 void OnTimerTick(uint64_t tick);
