@@ -82,6 +82,8 @@ void Write(const char* text)
     }
 }
 
+void InitializeMapping() {}
+
 void ForceUnlock()
 {
     write_lock.Unlock();

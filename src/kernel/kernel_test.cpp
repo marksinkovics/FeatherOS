@@ -785,6 +785,16 @@ void RunMemoryTests()
     {
         Panic("User address-space setup failed");
     }
+    // User page tables share nothing with the kernel's low mappings, so a user page can use
+    // the address where the kernel's early UART identity map sits.
+    constexpr uint64_t low_device_address = 0x09000000;
+    uint64_t low_frame;
+    if (!Memory::AllocatePageFrame(&low_frame) ||
+        !Memory::MapPage(user_address_space, low_device_address, low_frame,
+                         Memory::PageFlags::Read | Memory::PageFlags::User))
+    {
+        Panic("User page at a kernel identity-mapped address was rejected");
+    }
     auto* user_value = reinterpret_cast<volatile uint64_t*>(user_test_address);
     *user_value = 0xA11CE55A1234FEDC;
     const volatile uint64_t observed_user_value = *user_value;

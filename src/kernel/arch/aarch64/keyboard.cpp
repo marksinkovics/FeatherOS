@@ -3,6 +3,7 @@
 #include "kernel/arch/keyboard.h"
 #include "interrupts.h"
 #include "kernel/input/input.h"
+#include "kernel/memory/device_memory.h"
 #include "kernel/memory/page_allocator.h"
 
 #include <stddef.h>
@@ -196,8 +197,9 @@ bool ReadDeviceRegisters(const FdtNode& node, DeviceRegisters* registers)
     {
         return false;
     }
-    registers->base = static_cast<uintptr_t>(address);
-    return true;
+    constexpr uint64_t VirtioMmioRegisterSize = 0x200;
+    registers->base = Memory::MapDevice(address, VirtioMmioRegisterSize);
+    return registers->base != 0;
 }
 
 volatile uint32_t* Registers(uintptr_t base)

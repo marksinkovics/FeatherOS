@@ -130,6 +130,8 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 
 **Part 1 (complete):** The security invariants are documented in `docs/development.md`. The loader checks that segments lie in user space, AArch64 user pages are privileged-execute-never, and each process may have at most 16 live children. The shell test's `hardening` program runs 44 negative checks: bad syscall pointers and arguments, a kernel-half ELF, heap execution, code writes, kernel reads, an invalid syscall, and the child limit.
 
+**Part 2 (complete):** AArch64 device registers (UART, RTC, GIC, virtio-mmio) are mapped in the kernel half through `Memory::MapDevice`, as is the x86-64 local APIC, and AArch64 user page tables no longer copy the kernel's low `TTBR0` mappings. The memory test maps a user page at the UART's identity address to prove the slot is free.
+
 
 - Audit syscall argument validation, ELF loading, address-space isolation, and resource cleanup.
 - Enforce writable/executable memory policy and tighten privilege transitions.

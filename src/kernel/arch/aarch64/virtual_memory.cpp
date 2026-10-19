@@ -13,6 +13,7 @@ namespace
 
 constexpr uint64_t PageAddressMask = 0x0000FFFFFFFFF000;
 constexpr uint64_t MairNormalWriteBack = 0xFF;
+constexpr uint64_t MairDeviceNgnrne = 0x00;
 constexpr uint64_t DescriptorValid = 1;
 constexpr uint64_t DescriptorTableOrPage = 1U << 1;
 constexpr uint64_t AccessFlag = 1U << 10;
@@ -41,6 +42,7 @@ bool IsActiveOnAnyCpu(uint64_t root_physical_address)
     return false;
 }
 uint8_t normal_memory_attribute_index = 0;
+uint8_t device_memory_attribute_index = 0;
 
 bool IsCanonical(uint64_t address)
 {
@@ -126,9 +128,13 @@ bool MapPageInRoot(volatile uint64_t* selected_root, uint64_t virtual_address,
         return false;
     }
 
+    const bool device =
+        (static_cast<uint8_t>(flags) & static_cast<uint8_t>(PageFlags::Device)) != 0;
+    const uint64_t attribute_index =
+        device ? device_memory_attribute_index : normal_memory_attribute_index;
     uint64_t descriptor = (physical_address & PageAddressMask) | DescriptorValid |
                           DescriptorTableOrPage | AccessFlag | InnerShareable |
-                          (static_cast<uint64_t>(normal_memory_attribute_index) << 2);
+                          (attribute_index << 2);
     if ((static_cast<uint8_t>(flags) & static_cast<uint8_t>(PageFlags::Write)) == 0)
     {
         descriptor |= AccessPermissionReadOnly;
@@ -194,16 +200,22 @@ bool InitializeVirtualMemory(uint64_t offset)
     uint64_t mair;
     asm volatile("mrs %0, MAIR_EL1" : "=r"(mair));
     bool found_normal_memory_attribute = false;
+    bool found_device_memory_attribute = false;
     for (uint8_t index = 0; index < 8; ++index)
     {
-        if (((mair >> (index * 8)) & 0xFF) == MairNormalWriteBack)
+        const uint64_t attribute = (mair >> (index * 8)) & 0xFF;
+        if (!found_normal_memory_attribute && attribute == MairNormalWriteBack)
         {
             normal_memory_attribute_index = index;
             found_normal_memory_attribute = true;
-            break;
+        }
+        else if (!found_device_memory_attribute && attribute == MairDeviceNgnrne)
+        {
+            device_memory_attribute_index = index;
+            found_device_memory_attribute = true;
         }
     }
-    if (!found_normal_memory_attribute)
+    if (!found_normal_memory_attribute || !found_device_memory_attribute)
     {
         return false;
     }
@@ -236,15 +248,15 @@ bool CreateAddressSpace(AddressSpace* address_space)
         return false;
     }
     volatile uint64_t* new_root = PhysicalTable(root_physical_address);
-    volatile uint64_t* kernel_root = PhysicalTable(kernel_ttbr0 & PageAddressMask);
-    if (new_root == nullptr || kernel_root == nullptr)
+    if (new_root == nullptr)
     {
         FreePageFrame(root_physical_address);
         return false;
     }
+    // The kernel lives in TTBR1 and maps devices there, so user roots hold only user pages.
     for (size_t index = 0; index < 512; ++index)
     {
-        new_root[index] = kernel_root[index];
+        new_root[index] = 0;
     }
     address_space->root_physical_address = root_physical_address;
     return true;
@@ -261,15 +273,14 @@ bool DestroyAddressSpace(AddressSpace* address_space)
         return false;
     }
     volatile uint64_t* user_root = PhysicalTable(address_space->root_physical_address);
-    volatile uint64_t* kernel_root = PhysicalTable(kernel_ttbr0 & PageAddressMask);
-    if (user_root == nullptr || kernel_root == nullptr)
+    if (user_root == nullptr)
     {
         return false;
     }
     for (size_t index = 0; index < 512; ++index)
     {
         const uint64_t descriptor = user_root[index];
-        if (descriptor == kernel_root[index] || (descriptor & DescriptorValid) == 0)
+        if ((descriptor & DescriptorValid) == 0)
         {
             continue;
         }
@@ -303,13 +314,7 @@ bool MapPage(AddressSpace& address_space, uint64_t virtual_address, uint64_t phy
         return false;
     }
     volatile uint64_t* user_root = PhysicalTable(address_space.root_physical_address);
-    volatile uint64_t* kernel_root = PhysicalTable(kernel_ttbr0 & PageAddressMask);
-    if (user_root == nullptr || kernel_root == nullptr)
-    {
-        return false;
-    }
-    const size_t level0_index = (virtual_address >> 39) & 0x1FF;
-    if ((kernel_root[level0_index] & DescriptorValid) != 0)
+    if (user_root == nullptr)
     {
         return false;
     }
