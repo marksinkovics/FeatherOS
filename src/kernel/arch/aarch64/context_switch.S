@@ -2,6 +2,8 @@
 .global FeatherOS_Arch_SwitchContext
 .type FeatherOS_Arch_SwitchContext, %function
 
+// Interrupts stay masked; the switched-in task restores them after releasing the scheduler lock.
+
 FeatherOS_Arch_SwitchContext:
     stp x29, x30, [sp, #-16]!
     stp x27, x28, [sp, #-16]!
@@ -31,5 +33,4 @@ FeatherOS_Arch_SwitchContext:
     ldp x25, x26, [sp], #16
     ldp x27, x28, [sp], #16
     ldp x29, x30, [sp], #16
-    msr DAIF, x2
     ret

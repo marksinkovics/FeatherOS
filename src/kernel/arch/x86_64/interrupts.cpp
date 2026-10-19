@@ -152,4 +152,10 @@ void Enable()
     asm volatile("sti" : : : "memory");
 }
 
+void WaitForInterrupt()
+{
+    // STI takes effect after the next instruction, so no interrupt can slip in before HLT.
+    asm volatile("sti; hlt" : : : "memory");
+}
+
 } // namespace FeatherOS::Arch::Interrupts

@@ -69,7 +69,9 @@ EXPECTED_SHELL_OUTPUT = (
     "usage: calc <number> <number>",
     "exit status 1",
 )
-EXPECTED_SCHEDULER = "KERN/SCHEDULER: preemption, wait, exit, and reap passed"
+EXPECTED_SCHEDULER = (
+    "KERN/SCHEDULER: preemption, wait, exit, reap, blocking, and sleep passed"
+)
 EXPECTED_USER_PREEMPTION = "KERN/SCHEDULER: user-mode preemption passed"
 USER_PREEMPTION_OUTPUTS = {"x86_64": b"UIu", "aarch64": b"AIa"}
 INPUT_ACCEPTED_MESSAGE = "KERN/I: Input line accepted"

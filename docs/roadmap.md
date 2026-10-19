@@ -91,6 +91,8 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 - Exercise concurrency and scheduling under multi-CPU QEMU configurations.
 - Make the scheduler, process table, and page allocator SMP-safe with per-CPU run queues and locking.
 
+**Single-CPU groundwork (complete):** An interrupt-saving `Sync::SpinLock` protects the scheduler, input queue, page allocator, heap, and process table, and the scheduler lock is handed across context switches. The boot thread is a schedulable task, an idle task halts the CPU when nothing is ready, and tasks block on wait queues (with optional deadlines) or sleep until a tick instead of busy-yielding; `Wait` and console `ReadLine` use them. QEMU scheduler tests verify blocking and wakeup, timed sleep, and wait deadlines on both targets. Remaining for M8: CPU bring-up, per-CPU state and idle tasks, IPIs, per-CPU run queues, and page-table locking.
+
 **Complete when:** both targets boot with multiple CPUs, schedule work on more than one CPU, and pass synchronization and cross-CPU coordination tests.
 
 ### 9. Persistent Storage
@@ -137,7 +139,7 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 - Replace fixed limits with dynamic ones: a growable task table, heap-allocated kernel stacks, and a per-process page limit instead of the fixed ELF page cap.
 - Give user programs a growable stack, a heap (`brk` or `mmap`-style syscall), and optional demand paging with copy-on-write.
 - Extend the ELF loader beyond static executables: PIE/relocations, `PT_TLS`, and a documented policy for dynamic linking.
-- Add scheduler policy beyond round-robin (priorities, sleeping/blocked states, timed sleep) and replace the busy idle loop with a true idle task.
+- Add scheduler policy beyond round-robin, such as priorities; blocked/sleeping states, timed sleep, and an idle task already exist.
 
 **Complete when:** more than four processes can run with independently growing memory on both targets, sleeping tasks do not consume CPU, and QEMU tests cover allocation failure and resource reclamation under load.
 

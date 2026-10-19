@@ -267,6 +267,10 @@ namespace
 
 uint32_t scheduler_sequence = 0;
 volatile uint64_t preemption_progress[2] = {};
+Sync::SpinLock blocking_test_lock;
+Scheduler::WaitQueue blocking_test_queue;
+Scheduler::WaitQueue timeout_test_queue;
+bool blocking_test_signaled = false;
 
 uint64_t FirstCooperativeTask(void*)
 {
@@ -312,6 +316,91 @@ uint64_t SecondPreemptedTask(void*)
         ++preemption_progress[1];
     } while (preemption_progress[0] == 0);
     return 67;
+}
+
+uint64_t BlockedWaiterTask(void*)
+{
+    const uint64_t flags = blocking_test_lock.LockIrqSave();
+    while (!blocking_test_signaled)
+    {
+        Scheduler::WaitOn(blocking_test_queue, blocking_test_lock);
+    }
+    blocking_test_lock.UnlockIrqRestore(flags);
+    scheduler_sequence = scheduler_sequence * 10 + 7;
+    return 71;
+}
+
+uint64_t SignalingTask(void*)
+{
+    scheduler_sequence = scheduler_sequence * 10 + 6;
+    const uint64_t flags = blocking_test_lock.LockIrqSave();
+    blocking_test_signaled = true;
+    Scheduler::WakeAll(blocking_test_queue);
+    blocking_test_lock.UnlockIrqRestore(flags);
+    return 83;
+}
+
+uint64_t SleepingTask(void*)
+{
+    const uint64_t start = Time::TickCount();
+    if (!Scheduler::SleepUntil(start + 5))
+    {
+        return UINT64_MAX;
+    }
+    return Time::TickCount() - start;
+}
+
+uint64_t TimedWaiterTask(void*)
+{
+    // Nothing wakes this queue; only the deadline ends the wait.
+    const uint64_t flags = blocking_test_lock.LockIrqSave();
+    const uint64_t start = Time::TickCount();
+    Scheduler::WaitOn(timeout_test_queue, blocking_test_lock, start + 3);
+    const uint64_t elapsed = Time::TickCount() - start;
+    blocking_test_lock.UnlockIrqRestore(flags);
+    return elapsed;
+}
+
+bool RunAndReap(Scheduler::TaskEntry entry, uint64_t* exit_status)
+{
+    Scheduler::TaskId task;
+    return Scheduler::CreateTask(entry, nullptr, &task) && Scheduler::Wait(task, exit_status) &&
+           Scheduler::ReapTask(task);
+}
+
+void RunBlockingTests(const void* platform_data)
+{
+    Scheduler::TaskId waiter_task;
+    Scheduler::TaskId signaling_task;
+    uint64_t waiter_status = 0;
+    uint64_t signaling_status = 0;
+    scheduler_sequence = 0;
+    blocking_test_signaled = false;
+    if (!Scheduler::CreateTask(BlockedWaiterTask, nullptr, &waiter_task) ||
+        !Scheduler::CreateTask(SignalingTask, nullptr, &signaling_task) ||
+        !Scheduler::Wait(waiter_task, &waiter_status) ||
+        !Scheduler::Wait(signaling_task, &signaling_status) || !Scheduler::ReapTask(waiter_task) ||
+        !Scheduler::ReapTask(signaling_task) || scheduler_sequence != 67 || waiter_status != 71 ||
+        signaling_status != 83)
+    {
+        Panic("Wait-queue blocking and wakeup test failed");
+    }
+
+    // Exercises the idle task: nothing is ready until a tick.
+    if (!Time::InitializeTimer(100, platform_data))
+    {
+        Panic("Could not initialize timer for scheduler sleep test");
+    }
+    uint64_t slept_ticks = 0;
+    uint64_t waited_ticks = 0;
+    const bool sleep_finished = RunAndReap(SleepingTask, &slept_ticks);
+    const bool timed_wait_finished = RunAndReap(TimedWaiterTask, &waited_ticks);
+    Time::StopTimer();
+    if (!sleep_finished || slept_ticks < 5 || slept_ticks > 50 || !timed_wait_finished ||
+        waited_ticks < 3 || waited_ticks > 50)
+    {
+        Panic("Scheduler sleep or wait timeout test failed");
+    }
 }
 
 void RunSchedulerTests(const void* platform_data)
@@ -373,7 +462,8 @@ void RunSchedulerTests(const void* platform_data)
     {
         Panic("Timer-driven task preemption test failed");
     }
-    Serial::Write("KERN/SCHEDULER: preemption, wait, exit, and reap passed\n");
+    RunBlockingTests(platform_data);
+    Serial::Write("KERN/SCHEDULER: preemption, wait, exit, reap, blocking, and sleep passed\n");
 }
 
 } // namespace

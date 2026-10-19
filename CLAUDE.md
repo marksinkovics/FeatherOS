@@ -5,17 +5,17 @@ Hobby kernel for **x86-64 and AArch64**, booted by Limine, freestanding C/C++ + 
 ## Status (keep this section current)
 
 - Milestones **M1–M7 complete** on both architectures: multi-arch build, exceptions/IRQs, physical/virtual memory + heap, timers + keyboard input, initramfs/VFS/FAT16 over virtio-blk, ELF64 + user mode + syscalls, preemptive scheduler + processes + shell.
-- **Next: M8 SMP and concurrency.** Later milestones are in `docs/roadmap.md` (their order is provisional).
-- Known hard limits: 4 tasks, 3 processes, fixed 16 KiB kernel stacks, ≤8 program args in 63 chars, no SSE state saved on x86-64 (user code builds with `-mgeneral-regs-only`), no SMP.
+- **In progress: M8 SMP and concurrency.** Single-CPU groundwork is done on `feat/smp_groundwork`: spinlocks, blocking/sleeping tasks with wait queues, an idle task, and a scheduler lock handed across context switches. Next comes CPU bring-up. Later milestones are in `docs/roadmap.md` (their order is provisional).
+- Known hard limits: 4 tasks, 3 processes, fixed 16 KiB kernel stacks, ≤8 program args in 63 chars, no SSE state saved on x86-64 (user code builds with `-mgeneral-regs-only`), no SMP, page tables not locked.
 
 ## Branches
 
-- `feat/multi_arch` — **active branch; has all current work** (M1–M7). It is 10 commits ahead of `main`.
-- `main` — stale (stops at "kernel diagnostics and quality tooling").
+- `main` — default branch with M1–M7, squash-merged from `feat/multi_arch`.
+- Do feature work on `feat/<topic>` branches cut from `main`, and squash-merge each one back into `main`.
 
 ## Layout
 
-- `src/kernel/` — architecture-neutral kernel: `kernel.cpp` (startup), `scheduler.*`, `process.*`, `syscall.*`, `console.*`, `exception.*`, `panic.*`, `klogger.*`, `kernel_test.*` (in-kernel QEMU test hooks), plus `memory/`, `filesystem/` (USTAR, FAT16, VFS), `elf/`, `framebuffer/`, `input/`, `storage/`, `time/`, `string/`.
+- `src/kernel/` — architecture-neutral kernel: `kernel.cpp` (startup), `scheduler.*`, `process.*`, `syscall.*`, `console.*`, `exception.*`, `panic.*`, `klogger.*`, `kernel_test.*` (in-kernel QEMU test hooks), plus `memory/`, `filesystem/` (USTAR, FAT16, VFS), `elf/`, `framebuffer/`, `input/`, `storage/`, `sync/` (spinlocks), `time/`, `string/`.
 - `src/kernel/arch/{x86_64,aarch64}/` — entry, GDT/IDT/TSS or vectors/GIC, paging, context switch, syscall entry, UART, RTC, PIC/PIT or Generic Timer, virtio PCI/MMIO.
 - `src/user/` — userspace programs (`shell`, `calc`, `date`, `echo`, `upper`, `test_program`) and the shared ABI (`syscall_abi.h`, `syscall.h`, `runtime.h`).
 - `tests/test_boot_matrix.py` — QEMU integration matrix (Python `unittest`). `tests/unit/` — Catch2 host tests.
@@ -46,6 +46,7 @@ Get the code lint-clean **before** running any QEMU smoke test or `test-all`. Al
 ## Conventions
 
 - Shared code goes in `src/kernel/`. Anything CPU- or board-specific goes under `arch/<arch>/`. Never share GDT/TSS/IDT concepts with AArch64. Full rules: "Architecture Boundaries" in `docs/roadmap.md`.
+- Keep comments minimal: only for education (hardware quirks, non-obvious invariants) or when the code can't be understood without them. Never describe what a function does; that goes stale when the code changes.
 - Namespaces are `FeatherOS::<Subsystem>`, with PascalCase functions. clang-format uses LLVM style, 4-space indent, 100 columns.
 - Early logging and panic must not allocate. Physical addresses use explicit 64-bit types, and code must not hard-code physical memory addresses (obtain them from the Limine memory map).
 - Every feature should land with tests on **both** architectures: a QEMU case in `test_boot_matrix.py` and, where logic is host-testable, a unit test.
