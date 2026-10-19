@@ -51,8 +51,25 @@ void InitializeExceptions()
         FeatherOS::Panic("AArch64 exception setup requires EL1");
     }
 
+    // Limine enters on SP_EL0 (and leaves SP_EL1 zero on secondary CPUs). Exceptions always push
+    // onto SP_EL1, so the kernel moves its stack there; then every frame lands on the current
+    // task's kernel stack, and SP_EL0 only ever holds user stack pointers.
+    uint64_t stack_select;
+    asm volatile("mrs %0, SPSel" : "=r"(stack_select));
+    if (stack_select == 0)
+    {
+        asm volatile("mov x9, sp\n\tmsr SPSel, #1\n\tmov sp, x9" ::: "x9", "memory");
+    }
+
     const uint64_t vector_address = reinterpret_cast<uint64_t>(aarch64_exception_vectors);
     asm volatile("msr VBAR_EL1, %0\n\tisb" : : "r"(vector_address) : "memory");
+}
+
+void InitializeSecondaryCpu(uint32_t)
+{
+    InitializeExceptions();
+    // Drop translations cached before the kernel edited the shared page tables.
+    asm volatile("dsb ishst\n\ttlbi vmalle1\n\tdsb nsh\n\tisb" ::: "memory");
 }
 
 bool RunUserTest(uint64_t entry_point, uint64_t stack_pointer, uint64_t argument_pointer,

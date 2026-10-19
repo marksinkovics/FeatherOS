@@ -11,8 +11,8 @@ FeatherOS_Arch_SwitchContext:
     stp x23, x24, [sp, #-16]!
     stp x21, x22, [sp, #-16]!
     stp x19, x20, [sp, #-16]!
-    // SP_EL0 is the interrupted user stack pointer; each task keeps its own. The kernel boots
-    // with SPSel=0, where SP_EL0 is the current stack and cannot be named, so skip it then.
+    // SP_EL0 is the task's user stack pointer. Before exception setup moves the kernel to SPSel=1,
+    // SP_EL0 is the current stack and cannot be named, so skip it then.
     mov x9, xzr
     mrs x10, SPSel
     cbz x10, 1f

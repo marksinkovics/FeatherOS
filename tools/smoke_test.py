@@ -73,11 +73,16 @@ EXPECTED_SCHEDULER = (
     "KERN/SCHEDULER: preemption, wait, exit, reap, blocking, and sleep passed"
 )
 EXPECTED_USER_PREEMPTION = "KERN/SCHEDULER: user-mode preemption passed"
+EXPECTED_SMP = (
+    "KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact"
+)
 USER_PREEMPTION_OUTPUTS = {"x86_64": b"UIu", "aarch64": b"AIa"}
 INPUT_ACCEPTED_MESSAGE = "KERN/I: Input line accepted"
 INPUT_PROMPT = b"FeatherOS> "
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
+QEMU_CPU_COUNT = 4
+SMP_MESSAGE = f"KERN/I: SMP: {QEMU_CPU_COUNT} CPUs online with IPIs and timers"
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
 ANSI_ESCAPE_BYTES = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
 
@@ -148,6 +153,11 @@ def main():
         help="Expect cooperative task switching to pass",
     )
     parser.add_argument(
+        "--expect-smp",
+        action="store_true",
+        help="Expect tasks to run concurrently on several CPUs",
+    )
+    parser.add_argument(
         "--expect-user-preemption",
         action="store_true",
         help="Expect timer-driven user-task switching to pass",
@@ -178,6 +188,7 @@ def main():
                 args.expect_memory,
                 args.expect_timer,
                 args.expect_scheduler,
+                args.expect_smp,
                 args.expect_user_preemption,
                 args.expect_input,
                 args.expect_calc,
@@ -220,6 +231,8 @@ def main():
                 "cortex-a72",
                 "-m",
                 "2G",
+                "-smp",
+                str(QEMU_CPU_COUNT),
                 "-global",
                 "virtio-mmio.force-legacy=false",
                 "-bios",
@@ -231,7 +244,9 @@ def main():
             ]
         )
     else:
-        command.extend(["-m", "2G", "-boot", "order=d"])
+        command.extend(
+            ["-m", "2G", "-smp", str(QEMU_CPU_COUNT), "-boot", "order=d"]
+        )
     command.extend(
         [
             "-drive",
@@ -285,6 +300,7 @@ def main():
             args.expect_memory,
             args.expect_timer,
             args.expect_scheduler,
+            args.expect_smp,
             args.expect_user_preemption,
             args.expect_input,
             args.expect_calc,
@@ -301,6 +317,8 @@ def main():
             markers = (EXPECTED_MEMORY.encode(),)
         elif args.expect_scheduler:
             markers = (EXPECTED_SCHEDULER.encode(),)
+        elif args.expect_smp:
+            markers = (EXPECTED_SMP.encode(), PANIC_MARKER.encode())
         elif args.expect_user_preemption:
             markers = (EXPECTED_USER_PREEMPTION.encode(),)
         elif args.expect_input:
@@ -459,6 +477,14 @@ def main():
             return 1
         print("PASS: timer preemption and task lifecycle passed")
         return 0
+    if args.expect_smp:
+        if EXPECTED_SMP not in output:
+            print(
+                "FAIL: multi-CPU scheduling test did not pass", file=sys.stderr
+            )
+            return 1
+        print("PASS: tasks ran concurrently on several CPUs")
+        return 0
     if args.expect_calc:
         if EXPECTED_CALC not in output:
             print(
@@ -568,6 +594,24 @@ def main():
         return 1
     if TIMER_STARTED_MESSAGE not in output:
         print("FAIL: production timer did not start", file=sys.stderr)
+        return 1
+    if SMP_MESSAGE not in output:
+        print(
+            f"FAIL: kernel did not start all {QEMU_CPU_COUNT} CPUs",
+            file=sys.stderr,
+        )
+        return 1
+    serial_line_set = set(output.splitlines())
+    missing_cpus = [
+        cpu
+        for cpu in range(1, QEMU_CPU_COUNT)
+        if f"KERN/I: CPU {cpu} online" not in serial_line_set
+    ]
+    if missing_cpus:
+        print(
+            f"FAIL: CPUs {missing_cpus} did not report a complete online line",
+            file=sys.stderr,
+        )
         return 1
     if VFS_MESSAGE not in output:
         print(

@@ -4,9 +4,9 @@ Hobby kernel for **x86-64 and AArch64**, booted by Limine, freestanding C/C++ + 
 
 ## Status (keep this section current)
 
-- Milestones **M1–M7 complete** on both architectures: multi-arch build, exceptions/IRQs, physical/virtual memory + heap, timers + keyboard input, initramfs/VFS/FAT16 over virtio-blk, ELF64 + user mode + syscalls, preemptive scheduler + processes + shell.
-- **In progress: M8 SMP and concurrency.** Single-CPU groundwork is done on `feat/smp_groundwork`: spinlocks, blocking/sleeping tasks with wait queues, an idle task, and a scheduler lock handed across context switches. Next comes CPU bring-up. Later milestones are in `docs/roadmap.md` (their order is provisional).
-- Known hard limits: 4 tasks, 3 processes, fixed 16 KiB kernel stacks, ≤8 program args in 63 chars, no SSE state saved on x86-64 (user code builds with `-mgeneral-regs-only`), no SMP, page tables not locked.
+- Milestones **M1–M8 complete** on both architectures: multi-arch build, exceptions/IRQs, physical/virtual memory + heap, timers + keyboard input, initramfs/VFS/FAT16 over virtio-blk, ELF64 + user mode + syscalls, preemptive scheduler + processes + shell, SMP (4 CPUs in QEMU).
+- **M8 (on `feat/smp_bringup`):** every CPU schedules from one shared run queue (scheduler lock held across switches, per-CPU idle tasks, IPI wakeups). Per-CPU index via x86-64 `GS` + `SWAPGS` / AArch64 `TPIDR_EL1`. x86-64 uses the local APIC for IPIs and timers, with the legacy PIC kept for devices. The AArch64 kernel runs on `SP_EL1`. Next milestone: M9 persistent storage (order provisional).
+- Known hard limits: 4 tasks, 3 processes, fixed 16 KiB kernel stacks, ≤8 program args in 63 chars, no SSE state saved on x86-64 (user code builds with `-mgeneral-regs-only`), no TLB shootdown or per-CPU run queues, `KLogger` not locked.
 
 ## Branches
 
@@ -15,7 +15,7 @@ Hobby kernel for **x86-64 and AArch64**, booted by Limine, freestanding C/C++ + 
 
 ## Layout
 
-- `src/kernel/` — architecture-neutral kernel: `kernel.cpp` (startup), `scheduler.*`, `process.*`, `syscall.*`, `console.*`, `exception.*`, `panic.*`, `klogger.*`, `kernel_test.*` (in-kernel QEMU test hooks), plus `memory/`, `filesystem/` (USTAR, FAT16, VFS), `elf/`, `framebuffer/`, `input/`, `storage/`, `sync/` (spinlocks), `time/`, `string/`.
+- `src/kernel/` — architecture-neutral kernel: `kernel.cpp` (startup), `scheduler.*`, `process.*`, `syscall.*`, `console.*`, `exception.*`, `panic.*`, `klogger.*`, `smp.*` (secondary CPU startup), `cpu.*` (per-CPU index), `kernel_test.*` (in-kernel QEMU test hooks), plus `memory/`, `filesystem/` (USTAR, FAT16, VFS), `elf/`, `framebuffer/`, `input/`, `storage/`, `sync/` (spinlocks), `time/`, `string/`.
 - `src/kernel/arch/{x86_64,aarch64}/` — entry, GDT/IDT/TSS or vectors/GIC, paging, context switch, syscall entry, UART, RTC, PIC/PIT or Generic Timer, virtio PCI/MMIO.
 - `src/user/` — userspace programs (`shell`, `calc`, `date`, `echo`, `upper`, `test_program`) and the shared ABI (`syscall_abi.h`, `syscall.h`, `runtime.h`).
 - `tests/test_boot_matrix.py` — QEMU integration matrix (Python `unittest`). `tests/unit/` — Catch2 host tests.
@@ -31,7 +31,7 @@ Hobby kernel for **x86-64 and AArch64**, booted by Limine, freestanding C/C++ + 
 bash tools/quality.sh --fix         # clang-format/tidy, ruff, shellcheck/shfmt
 ```
 
-You must always pass an architecture (`--arch` or `ARCH=`). Feature tests are env toggles, e.g. `SHELL_TEST=ON`, `SCHEDULER_TEST=ON`, `PANIC_TEST=ON`, which map to `FEATHEROS_*_TEST` CMake options. Outputs go under `build/<arch>/`.
+You must always pass an architecture (`--arch` or `ARCH=`). Feature tests are env toggles, e.g. `SHELL_TEST=ON`, `SCHEDULER_TEST=ON`, `SMP_TEST=ON`, `PANIC_TEST=ON`, which map to `FEATHEROS_*_TEST` CMake options. Outputs go under `build/<arch>/`.
 
 ## Change workflow: lint before testing
 

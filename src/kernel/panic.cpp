@@ -7,6 +7,8 @@ namespace FeatherOS
 
 __attribute__((noreturn)) void Panic(const char* reason)
 {
+    // The panicking code may already hold the serial lock.
+    Serial::ForceUnlock();
     Serial::Write("KERN/PANIC: ");
     Serial::Write(reason == nullptr ? "Unknown reason" : reason);
     Serial::Write("\n");

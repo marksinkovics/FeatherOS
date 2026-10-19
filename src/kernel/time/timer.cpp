@@ -6,6 +6,7 @@
 #include "kernel/arch/aarch64/timer.h"
 #endif
 
+#include "kernel/cpu.h"
 #include "kernel/input/input.h"
 #include "kernel/panic.h"
 #include "kernel/scheduler.h"
@@ -16,13 +17,20 @@ namespace
 {
 
 volatile uint64_t ticks = 0;
+volatile uint64_t cpu_ticks[Cpu::MaximumCpus] = {};
 bool initialized = false;
 
 void OnTimerInterrupt()
 {
-    ++ticks;
-    // The UART has no receive interrupt here.
-    Input::Poll();
+    const uint32_t cpu_index = Cpu::CurrentIndex();
+    ++cpu_ticks[cpu_index];
+    // Every CPU ticks at the same rate, so one of them is enough to keep global time.
+    if (cpu_index == 0)
+    {
+        ++ticks;
+        // The UART has no receive interrupt here.
+        Input::Poll();
+    }
     Scheduler::OnTimerTick(ticks);
 }
 
@@ -67,9 +75,40 @@ void StopTimer()
     initialized = false;
 }
 
+bool PrepareSecondaryCpuTimers()
+{
+    if (!initialized)
+    {
+        return false;
+    }
+#if defined(ARCH_x86_64)
+    return Arch::X86_64::PrepareSecondaryCpuTimers();
+#elif defined(ARCH_aarch64)
+    return Arch::AArch64::PrepareSecondaryCpuTimers();
+#endif
+}
+
+bool StartSecondaryCpuTimer()
+{
+    if (!initialized)
+    {
+        return false;
+    }
+#if defined(ARCH_x86_64)
+    return Arch::X86_64::StartSecondaryCpuTimer();
+#elif defined(ARCH_aarch64)
+    return Arch::AArch64::StartSecondaryCpuTimer();
+#endif
+}
+
 uint64_t TickCount()
 {
     return ticks;
+}
+
+uint64_t CpuTickCount(uint32_t cpu_index)
+{
+    return cpu_index < Cpu::MaximumCpus ? cpu_ticks[cpu_index] : 0;
 }
 
 void WaitForNextTick()

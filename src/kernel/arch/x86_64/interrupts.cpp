@@ -1,5 +1,9 @@
 #include "interrupts.h"
 
+#include "local_apic.h"
+
+#include "kernel/arch/interrupts.h"
+
 #include "kernel/panic.h"
 
 namespace FeatherOS::Arch::X86_64
@@ -156,6 +160,25 @@ void WaitForInterrupt()
 {
     // STI takes effect after the next instruction, so no interrupt can slip in before HLT.
     asm volatile("sti; hlt" : : : "memory");
+}
+
+void InitializeSecondaryCpu()
+{
+    X86_64::LocalApic::InitializeSecondaryCpu();
+}
+
+void SetIpiHandler(IpiHandler handler)
+{
+    if (!X86_64::LocalApic::InitializeBootCpu())
+    {
+        Panic("Could not map the local APIC");
+    }
+    X86_64::LocalApic::SetIpiHandler(handler);
+}
+
+void SendIpi(uint32_t cpu_index)
+{
+    X86_64::LocalApic::SendIpi(cpu_index);
 }
 
 } // namespace FeatherOS::Arch::Interrupts

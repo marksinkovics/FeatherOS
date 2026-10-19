@@ -1,6 +1,7 @@
 #include "scheduler.h"
 
 #include "kernel/arch/interrupts.h"
+#include "kernel/cpu.h"
 #include "kernel/memory/virtual_memory.h"
 #include "kernel/panic.h"
 #include "kernel/time/timer.h"
@@ -39,15 +40,27 @@ Sync::SpinLock scheduler_lock;
 Task tasks[MaximumTasks];
 alignas(16) uint8_t task_stacks[MaximumTasks][TaskStackSize];
 Task boot_task;
-Task idle_task;
-alignas(16) uint8_t idle_stack[TaskStackSize];
-Task* current_task = nullptr;
+// Secondary CPUs run their idle task on the stack they started on; only the boot CPU needs one.
+Task idle_tasks[Cpu::MaximumCpus];
+alignas(16) uint8_t boot_idle_stack[TaskStackSize];
+Task* current_tasks[Cpu::MaximumCpus];
+bool cpu_scheduling[Cpu::MaximumCpus];
 TaskId next_task_id = 1;
 bool initialized = false;
 volatile bool preemption_enabled = false;
 
 extern "C" void FeatherOS_Arch_SwitchContext(uint64_t* old_stack_pointer,
                                              uint64_t new_stack_pointer);
+
+Task*& CurrentTask()
+{
+    return current_tasks[Cpu::CurrentIndex()];
+}
+
+Task& IdleTask()
+{
+    return idle_tasks[Cpu::CurrentIndex()];
+}
 
 [[noreturn]] void TaskReturnFailure()
 {
@@ -116,11 +129,26 @@ Task* FindReadyTask(const Task* after)
     return nullptr;
 }
 
+// An idle CPU halts until an interrupt, so new work would otherwise wait for its next tick.
+void WakeIdleCpu()
+{
+    const uint32_t self = Cpu::CurrentIndex();
+    for (uint32_t cpu = 0; cpu < Cpu::MaximumCpus; ++cpu)
+    {
+        if (cpu != self && cpu_scheduling[cpu] && current_tasks[cpu] == &idle_tasks[cpu])
+        {
+            Arch::Interrupts::SendIpi(cpu);
+            return;
+        }
+    }
+}
+
 void MakeReady(Task& task)
 {
     task.state = TaskState::Ready;
     task.wake_tick = 0;
     task.wait_queue = nullptr;
+    WakeIdleCpu();
 }
 
 void WakeAllLocked(const WaitQueue& queue)
@@ -157,7 +185,7 @@ void ActivateTaskAddressSpace(const Task* task)
 
 bool Schedule()
 {
-    Task* previous = current_task;
+    Task* previous = CurrentTask();
     Task* next = FindReadyTask(previous);
     if (next == nullptr)
     {
@@ -166,17 +194,17 @@ bool Schedule()
             previous->state = TaskState::Running;
             return false;
         }
-        if (previous == &idle_task)
+        if (previous == &IdleTask())
         {
             return false;
         }
-        next = &idle_task;
+        next = &IdleTask();
     }
     else
     {
         next->state = TaskState::Running;
     }
-    current_task = next;
+    CurrentTask() = next;
     ActivateTaskAddressSpace(next);
     FeatherOS_Arch_SwitchContext(&previous->stack_pointer, next->stack_pointer);
     return true;
@@ -188,7 +216,7 @@ void TaskBootstrap()
     scheduler_lock.Unlock();
     Arch::Interrupts::Enable();
 
-    Task* task = current_task;
+    Task* task = CurrentTask();
     if (task == nullptr || task->entry == nullptr)
     {
         FeatherOS::Panic("Task bootstrap has no current task");
@@ -240,7 +268,7 @@ uint64_t IdleTaskMain(void*)
     {
         Arch::Interrupts::SaveAndDisable();
         scheduler_lock.Lock();
-        const bool work_ready = FindReadyTask(&idle_task) != nullptr;
+        const bool work_ready = FindReadyTask(&IdleTask()) != nullptr;
         scheduler_lock.Unlock();
         if (work_ready)
         {
@@ -266,11 +294,17 @@ bool Initialize()
     ResetTask(boot_task);
     boot_task.state = TaskState::Running;
     boot_task.stack = nullptr;
+    Task& idle_task = IdleTask();
     ResetTask(idle_task);
     idle_task.entry = IdleTaskMain;
     idle_task.state = TaskState::Running;
-    PrepareTaskStack(idle_task, idle_stack);
-    current_task = &boot_task;
+    PrepareTaskStack(idle_task, boot_idle_stack);
+    CurrentTask() = &boot_task;
+    for (bool& scheduling : cpu_scheduling)
+    {
+        scheduling = false;
+    }
+    cpu_scheduling[Cpu::CurrentIndex()] = true;
     next_task_id = 1;
     preemption_enabled = false;
     initialized = true;
@@ -306,9 +340,29 @@ bool CreateTask(TaskEntry entry, void* context, TaskId* task_id)
     task.context = context;
     task.id = next_task_id++;
     PrepareTaskStack(task, task_stacks[task_index]);
-    task.state = TaskState::Ready;
+    MakeReady(task);
     *task_id = task.id;
     return true;
+}
+
+void RunSecondaryCpu()
+{
+    if (!initialized)
+    {
+        Panic("Secondary CPU started before the scheduler");
+    }
+    Arch::Interrupts::SaveAndDisable();
+    scheduler_lock.Lock();
+    Task& idle_task = IdleTask();
+    ResetTask(idle_task);
+    idle_task.entry = IdleTaskMain;
+    idle_task.state = TaskState::Running;
+    idle_task.stack = nullptr;
+    CurrentTask() = &idle_task;
+    cpu_scheduling[Cpu::CurrentIndex()] = true;
+    scheduler_lock.Unlock();
+    IdleTaskMain(nullptr);
+    Panic("Secondary CPU idle task returned");
 }
 
 bool Yield()
@@ -319,9 +373,9 @@ bool Yield()
     }
 
     const uint64_t flags = scheduler_lock.LockIrqSave();
-    if (current_task != &idle_task && current_task->state == TaskState::Running)
+    if (CurrentTask() != &IdleTask() && CurrentTask()->state == TaskState::Running)
     {
-        current_task->state = TaskState::Ready;
+        CurrentTask()->state = TaskState::Ready;
     }
     const bool switched = Schedule();
     scheduler_lock.UnlockIrqRestore(flags);
@@ -340,7 +394,7 @@ void DisablePreemption()
 
 void OnTimerTick(uint64_t tick)
 {
-    if (!initialized)
+    if (!initialized || CurrentTask() == nullptr)
     {
         return;
     }
@@ -356,11 +410,11 @@ void OnTimerTick(uint64_t tick)
             MakeReady(*task);
         }
     }
-    if (current_task == &idle_task || preemption_enabled)
+    if (CurrentTask() == &IdleTask() || preemption_enabled)
     {
-        if (current_task != &idle_task && current_task->state == TaskState::Running)
+        if (CurrentTask() != &IdleTask() && CurrentTask()->state == TaskState::Running)
         {
-            current_task->state = TaskState::Ready;
+            CurrentTask()->state = TaskState::Ready;
         }
         Schedule();
     }
@@ -376,16 +430,16 @@ bool Wait(TaskId task_id, uint64_t* exit_status)
 
     const uint64_t flags = scheduler_lock.LockIrqSave();
     Task* task = FindTask(task_id);
-    while (task != nullptr && task != current_task && task->state != TaskState::Complete)
+    while (task != nullptr && task != CurrentTask() && task->state != TaskState::Complete)
     {
-        current_task->state = TaskState::Blocked;
-        current_task->wait_queue = &task->exit_queue;
-        current_task->wake_tick = 0;
+        CurrentTask()->state = TaskState::Blocked;
+        CurrentTask()->wait_queue = &task->exit_queue;
+        CurrentTask()->wake_tick = 0;
         Schedule();
         // Another waiter may have reaped the task while this one was blocked.
         task = FindTask(task_id);
     }
-    const bool completed = task != nullptr && task != current_task;
+    const bool completed = task != nullptr && task != CurrentTask();
     if (completed && exit_status != nullptr)
     {
         *exit_status = task->exit_status;
@@ -403,7 +457,7 @@ bool ReapTask(TaskId task_id)
 
     Sync::SpinLockGuard guard(scheduler_lock);
     Task* task = FindTask(task_id);
-    if (task == nullptr || task->state != TaskState::Complete || task == current_task)
+    if (task == nullptr || task->state != TaskState::Complete || task == CurrentTask())
     {
         return false;
     }
@@ -425,7 +479,7 @@ TaskState GetState(TaskId task_id)
 
 void WaitOn(WaitQueue& queue, Sync::SpinLock& lock, uint64_t deadline_tick)
 {
-    if (!initialized || current_task == &idle_task)
+    if (!initialized || CurrentTask() == &IdleTask())
     {
         // Without a scheduler, any interrupt counts as a spurious wakeup.
         lock.Unlock();
@@ -441,9 +495,9 @@ void WaitOn(WaitQueue& queue, Sync::SpinLock& lock, uint64_t deadline_tick)
         scheduler_lock.Unlock();
         return;
     }
-    current_task->state = TaskState::Blocked;
-    current_task->wait_queue = &queue;
-    current_task->wake_tick = deadline_tick;
+    CurrentTask()->state = TaskState::Blocked;
+    CurrentTask()->wait_queue = &queue;
+    CurrentTask()->wake_tick = deadline_tick;
     lock.Unlock();
     Schedule();
     scheduler_lock.Unlock();
@@ -463,7 +517,7 @@ void WakeAll(WaitQueue& queue)
 
 bool SleepUntil(uint64_t tick)
 {
-    if (!initialized || current_task == &idle_task)
+    if (!initialized || CurrentTask() == &IdleTask())
     {
         return false;
     }
@@ -471,8 +525,8 @@ bool SleepUntil(uint64_t tick)
     const uint64_t flags = scheduler_lock.LockIrqSave();
     if (Time::TickCount() < tick)
     {
-        current_task->state = TaskState::Sleeping;
-        current_task->wake_tick = tick;
+        CurrentTask()->state = TaskState::Sleeping;
+        CurrentTask()->wake_tick = tick;
         Schedule();
     }
     scheduler_lock.UnlockIrqRestore(flags);
@@ -481,34 +535,34 @@ bool SleepUntil(uint64_t tick)
 
 void ActivateCurrentAddressSpace()
 {
-    ActivateTaskAddressSpace(current_task);
+    ActivateTaskAddressSpace(CurrentTask());
 }
 
 void* CurrentUserContext()
 {
-    return current_task == nullptr ? nullptr : current_task->user_context;
+    return CurrentTask() == nullptr ? nullptr : CurrentTask()->user_context;
 }
 
 void* SetCurrentUserContext(void* context)
 {
-    if (current_task == nullptr)
+    if (CurrentTask() == nullptr)
     {
         return nullptr;
     }
     const uint64_t flags = Arch::Interrupts::SaveAndDisable();
-    void* previous_context = current_task->user_context;
-    current_task->user_context = context;
+    void* previous_context = CurrentTask()->user_context;
+    CurrentTask()->user_context = context;
     Arch::Interrupts::Restore(flags);
     return previous_context;
 }
 
 uint64_t CurrentKernelStackTop()
 {
-    if (current_task == nullptr || current_task->stack == nullptr)
+    if (CurrentTask() == nullptr || CurrentTask()->stack == nullptr)
     {
         return 0;
     }
-    uintptr_t stack_top = reinterpret_cast<uintptr_t>(current_task->stack + TaskStackSize);
+    uintptr_t stack_top = reinterpret_cast<uintptr_t>(CurrentTask()->stack + TaskStackSize);
     stack_top &= ~static_cast<uintptr_t>(0xF);
     return stack_top;
 }

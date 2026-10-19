@@ -6,11 +6,15 @@
 #include "kernel/memory/page_allocator.h"
 #include "kernel/memory/virtual_memory.h"
 #include "kernel/panic.h"
-#if defined(FEATHEROS_SCHEDULER_TEST)
+#if defined(FEATHEROS_SCHEDULER_TEST) || defined(FEATHEROS_SMP_TEST)
 #include "kernel/scheduler.h"
 #endif
+#if defined(FEATHEROS_SMP_TEST)
+#include "kernel/cpu.h"
+#endif
 #include "kernel/string/format.h"
-#if defined(FEATHEROS_TIMER_TEST) || defined(FEATHEROS_SCHEDULER_TEST)
+#if defined(FEATHEROS_TIMER_TEST) || defined(FEATHEROS_SCHEDULER_TEST) ||                          \
+    defined(FEATHEROS_SMP_TEST)
 #include "kernel/time/timer.h"
 #endif
 
@@ -714,6 +718,76 @@ void RunMemoryTests()
 }
 
 } // namespace
+#endif
+
+#if defined(FEATHEROS_SMP_TEST)
+namespace
+{
+
+constexpr uint32_t SmpTestTasks = 3;
+constexpr uint64_t SmpCounterIterations = 20000;
+constexpr uint64_t SmpStartTimeoutTicks = 200;
+
+Sync::SpinLock smp_counter_lock;
+uint64_t smp_counter = 0;
+uint32_t smp_started_tasks = 0;
+uint32_t smp_concurrent_tasks = 0;
+uint32_t smp_cpus_seen = 0;
+
+uint64_t SmpTask(void*)
+{
+    __atomic_fetch_or(&smp_cpus_seen, 1U << Cpu::CurrentIndex(), __ATOMIC_RELAXED);
+    __atomic_fetch_add(&smp_started_tasks, 1U, __ATOMIC_ACQ_REL);
+    // Preemption is off, so every task is running at once only if each has its own CPU.
+    const uint64_t deadline = Time::TickCount() + SmpStartTimeoutTicks;
+    while (__atomic_load_n(&smp_started_tasks, __ATOMIC_ACQUIRE) < SmpTestTasks &&
+           Time::TickCount() < deadline)
+    {
+        Sync::CpuRelax();
+    }
+    if (__atomic_load_n(&smp_started_tasks, __ATOMIC_ACQUIRE) == SmpTestTasks)
+    {
+        __atomic_fetch_add(&smp_concurrent_tasks, 1U, __ATOMIC_RELAXED);
+    }
+    for (uint64_t iteration = 0; iteration < SmpCounterIterations; ++iteration)
+    {
+        Sync::SpinLockGuard guard(smp_counter_lock);
+        ++smp_counter;
+    }
+    return 0;
+}
+
+} // namespace
+
+void RunSmpTests()
+{
+    Scheduler::TaskId task_ids[SmpTestTasks];
+    for (Scheduler::TaskId& task_id : task_ids)
+    {
+        if (!Scheduler::CreateTask(SmpTask, nullptr, &task_id))
+        {
+            Panic("Could not create SMP test task");
+        }
+    }
+    for (const Scheduler::TaskId task_id : task_ids)
+    {
+        if (!Scheduler::Wait(task_id, nullptr) || !Scheduler::ReapTask(task_id))
+        {
+            Panic("SMP test task did not finish");
+        }
+    }
+    uint32_t cpus_used = 0;
+    for (uint32_t cpus = smp_cpus_seen; cpus != 0; cpus &= cpus - 1)
+    {
+        ++cpus_used;
+    }
+    if (smp_concurrent_tasks != SmpTestTasks || cpus_used != SmpTestTasks ||
+        smp_counter != SmpTestTasks * SmpCounterIterations)
+    {
+        Panic("Tasks did not run concurrently on separate CPUs");
+    }
+    Serial::Write("KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact\n");
+}
 #endif
 
 void Run(const void* platform_data)

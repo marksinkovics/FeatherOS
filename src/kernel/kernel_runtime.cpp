@@ -17,6 +17,10 @@
 #include "kernel/process.h"
 #include "kernel/process_arguments.h"
 #include "kernel/scheduler.h"
+#if defined(FEATHEROS_SMP_TEST)
+#include "kernel/kernel_test.h"
+#endif
+#include "kernel/smp.h"
 #include "kernel/string/format.h"
 #include "kernel/storage/block_device.h"
 #include "kernel/time/timer.h"
@@ -286,16 +290,33 @@ void LogBootSummary(KLogger& logger, const Memory::Summary& memory_summary)
     logger.Info(message);
 }
 
-[[noreturn]] void RunConsole(KLogger& logger, const void* platform_data, uint64_t hhdm_offset)
+void StartSecondaryCpus(KLogger& logger, limine_smp_response* smp)
 {
-    if (!Time::InitializeTimer(100, platform_data))
+    const uint32_t cpu_count = Smp::StartSecondaryCpus(smp);
+    char message[64];
+    if (!String::FormatTo(message, sizeof(message), "SMP: {} CPUs online with IPIs and timers",
+                          cpu_count))
+    {
+        Panic("SMP summary formatting failed");
+    }
+    logger.Info(message);
+#if defined(FEATHEROS_SMP_TEST)
+    KernelTest::RunSmpTests();
+#endif
+}
+
+[[noreturn]] void RunConsole(KLogger& logger, const BootInfo& boot_info)
+{
+    if (!Time::InitializeTimer(100, boot_info.platform_data))
     {
         Panic("Periodic timer initialization failed");
     }
     Time::WaitForNextTick();
     logger.Info("Timer started at 100 Hz");
+    // Secondary CPUs start their timers at the boot CPU's rate.
+    StartSecondaryCpus(logger, boot_info.smp);
     logger.Info("Kernel initialization complete");
-    if (!Arch::Keyboard::Initialize(platform_data, hhdm_offset))
+    if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
     {
         logger.Warning("Keyboard device unavailable; use serial input");
     }
@@ -334,7 +355,7 @@ void LogBootSummary(KLogger& logger, const Memory::Summary& memory_summary)
     LoadTestExecutable(logger, boot_info);
     MountAndVerifyDisk(logger, boot_info);
     LogBootSummary(logger, boot_info.memory_summary);
-    RunConsole(logger, boot_info.platform_data, boot_info.hhdm_offset);
+    RunConsole(logger, boot_info);
 }
 
 } // namespace FeatherOS::KernelRuntime

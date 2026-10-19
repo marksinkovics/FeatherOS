@@ -126,7 +126,8 @@ build() {
         -DFEATHEROS_MEMORY_TEST="${MEMORY_TEST:-OFF}" \
         -DFEATHEROS_TIMER_TEST="${TIMER_TEST:-OFF}" \
         -DFEATHEROS_SCHEDULER_TEST="${SCHEDULER_TEST:-OFF}" \
-        -DFEATHEROS_USER_PREEMPTION_TEST="${USER_PREEMPTION_TEST:-OFF}"
+        -DFEATHEROS_USER_PREEMPTION_TEST="${USER_PREEMPTION_TEST:-OFF}" \
+        -DFEATHEROS_SMP_TEST="${SMP_TEST:-OFF}"
 
     time cmake --build . --parallel
 }
@@ -326,6 +327,12 @@ smoke_test() {
     fi
     if [[ "${TIMER_TEST:-OFF}" == ON || "${TIMER_TEST:-OFF}" == 1 ]]; then
         smoke_args+=(--expect-timer)
+    fi
+    if [[ "${SCHEDULER_TEST:-OFF}" == ON || "${SCHEDULER_TEST:-OFF}" == 1 ]]; then
+        smoke_args+=(--expect-scheduler)
+    fi
+    if [[ "${SMP_TEST:-OFF}" == ON || "${SMP_TEST:-OFF}" == 1 ]]; then
+        smoke_args+=(--expect-smp)
     fi
     if [[ "${USER_PREEMPTION_TEST:-OFF}" == ON || "${USER_PREEMPTION_TEST:-OFF}" == 1 ]]; then
         smoke_args+=(--expect-user-preemption)

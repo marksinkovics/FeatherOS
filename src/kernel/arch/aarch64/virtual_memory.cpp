@@ -1,6 +1,8 @@
 #include "virtual_memory.h"
 
+#include "kernel/cpu.h"
 #include "kernel/memory/page_allocator.h"
+#include "kernel/sync/spinlock.h"
 
 #include <stddef.h>
 
@@ -23,7 +25,21 @@ constexpr uint64_t UnprivilegedExecuteNever = 1ULL << 54;
 uint64_t hhdm_offset = 0;
 volatile uint64_t* root_table = nullptr;
 uint64_t kernel_ttbr0 = 0;
-uint64_t active_root_physical_address = 0;
+// Kernel tables are shared by every address space and CPU; held while any table is edited.
+FeatherOS::Sync::SpinLock page_table_lock;
+uint64_t active_root_physical_addresses[FeatherOS::Cpu::MaximumCpus] = {};
+
+bool IsActiveOnAnyCpu(uint64_t root_physical_address)
+{
+    for (const uint64_t active_root : active_root_physical_addresses)
+    {
+        if (active_root == root_physical_address)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 uint8_t normal_memory_attribute_index = 0;
 
 bool IsCanonical(uint64_t address)
@@ -195,17 +211,19 @@ bool InitializeVirtualMemory(uint64_t offset)
     asm volatile("mrs %0, TTBR1_EL1" : "=r"(ttbr1));
     root_table = PhysicalTable(ttbr1 & PageAddressMask);
     asm volatile("mrs %0, TTBR0_EL1" : "=r"(kernel_ttbr0));
-    active_root_physical_address = kernel_ttbr0 & PageAddressMask;
+    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = kernel_ttbr0 & PageAddressMask;
     return root_table != nullptr;
 }
 
 bool MapPage(uint64_t virtual_address, uint64_t physical_address, PageFlags flags)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     return MapPageInRoot(root_table, virtual_address, physical_address, flags, false);
 }
 
 bool CreateAddressSpace(AddressSpace* address_space)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     if (address_space == nullptr || root_table == nullptr)
     {
         return false;
@@ -233,8 +251,9 @@ bool CreateAddressSpace(AddressSpace* address_space)
 
 bool DestroyAddressSpace(AddressSpace* address_space)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     if (address_space == nullptr || address_space->root_physical_address == 0 ||
-        address_space->root_physical_address == active_root_physical_address ||
+        IsActiveOnAnyCpu(address_space->root_physical_address) ||
         address_space->root_physical_address == (kernel_ttbr0 & PageAddressMask) ||
         (address_space->root_physical_address & ~PageAddressMask) != 0)
     {
@@ -276,6 +295,7 @@ bool DestroyAddressSpace(AddressSpace* address_space)
 bool MapPage(AddressSpace& address_space, uint64_t virtual_address, uint64_t physical_address,
              PageFlags flags)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     if (address_space.root_physical_address == 0 ||
         (address_space.root_physical_address & ~PageAddressMask) != 0)
     {
@@ -297,6 +317,7 @@ bool MapPage(AddressSpace& address_space, uint64_t virtual_address, uint64_t phy
 
 bool ProtectPage(AddressSpace& address_space, uint64_t virtual_address, PageFlags flags)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     if (address_space.root_physical_address == 0 ||
         (address_space.root_physical_address & ~PageAddressMask) != 0 ||
         !IsCanonical(virtual_address) || virtual_address >= (1ULL << 48) ||
@@ -424,7 +445,7 @@ bool ActivateAddressSpace(const AddressSpace& address_space)
                  :
                  : "r"(root)
                  : "memory");
-    active_root_physical_address = root;
+    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = root;
     return true;
 }
 
@@ -436,11 +457,12 @@ void ActivateKernelAddressSpace()
                  :
                  : "r"(root)
                  : "memory");
-    active_root_physical_address = root & PageAddressMask;
+    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = root & PageAddressMask;
 }
 
 bool UnmapPage(uint64_t virtual_address)
 {
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
     if (root_table == nullptr || !IsCanonical(virtual_address) || virtual_address % PageSize != 0)
     {
         return false;

@@ -18,6 +18,7 @@ class BootMatrixTests(unittest.TestCase):
         timer_test=False,
         scheduler_test=False,
         user_preemption_test=False,
+        smp_test=False,
         calc_test=False,
         shell_test=False,
         input_test=False,
@@ -32,6 +33,7 @@ class BootMatrixTests(unittest.TestCase):
         environment["USER_PREEMPTION_TEST"] = (
             "ON" if user_preemption_test else "OFF"
         )
+        environment["SMP_TEST"] = "ON" if smp_test else "OFF"
         environment["CALC_TEST"] = "ON" if calc_test else "OFF"
         environment["SHELL_TEST"] = "ON" if shell_test else "OFF"
         environment["INPUT_TEST"] = "ON" if input_test else "OFF"
@@ -113,6 +115,12 @@ class BootMatrixTests(unittest.TestCase):
 
     def test_22_aarch64_shell_programs(self):
         self.run_boot_case("aarch64", shell_test=True)
+
+    def test_23_x86_64_smp_scheduling(self):
+        self.run_boot_case("x86_64", smp_test=True)
+
+    def test_24_aarch64_smp_scheduling(self):
+        self.run_boot_case("aarch64", smp_test=True)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 ANSI_ESCAPE = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
+QEMU_CPU_COUNT = 4
 
 
 def main():
@@ -45,6 +46,8 @@ def main():
                 "cortex-a72",
                 "-m",
                 "2G",
+                "-smp",
+                str(QEMU_CPU_COUNT),
                 "-global",
                 "virtio-mmio.force-legacy=false",
                 "-bios",
@@ -56,7 +59,9 @@ def main():
             ]
         )
     else:
-        command.extend(["-m", "2G", "-boot", "order=d"])
+        command.extend(
+            ["-m", "2G", "-smp", str(QEMU_CPU_COUNT), "-boot", "order=d"]
+        )
     command.extend(
         [
             "-drive",

@@ -9,6 +9,7 @@ if (ARCH STREQUAL "x86_64")
         ${SRCROOT}/arch/x86_64/exceptions.cpp
         ${SRCROOT}/arch/x86_64/exceptions.asm
         ${SRCROOT}/arch/x86_64/interrupts.cpp
+        ${SRCROOT}/arch/x86_64/local_apic.cpp
         ${SRCROOT}/arch/x86_64/keyboard.cpp
         ${SRCROOT}/arch/x86_64/block_device.cpp
         ${SRCROOT}/arch/x86_64/rtc.cpp
@@ -44,6 +45,8 @@ set(SRC
     ${SRCROOT}/process.cpp
     ${SRCROOT}/process_arguments.cpp
     ${SRCROOT}/scheduler.cpp
+    ${SRCROOT}/smp.cpp
+    ${SRCROOT}/cpu.cpp
     ${SRCROOT}/syscall.cpp
     ${SRCROOT}/string/format.cpp
     ${SRCROOT}/time/timer.cpp

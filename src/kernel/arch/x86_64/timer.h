@@ -10,6 +10,8 @@ using TimerInterruptHandler = void (*)();
 
 bool StartPeriodicTimer(uint32_t frequency_hz, TimerInterruptHandler handler);
 void StopPeriodicTimer();
+bool PrepareSecondaryCpuTimers();
+bool StartSecondaryCpuTimer();
 
 } // namespace FeatherOS::Arch::X86_64
 

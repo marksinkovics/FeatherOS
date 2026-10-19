@@ -9,6 +9,7 @@ namespace FeatherOS::Arch::X86_64
 {
 
 void InitializeExceptions();
+void InitializeSecondaryCpu(uint32_t cpu_index);
 bool RunUserTest(uint64_t entry_point, uint64_t stack_pointer, uint64_t argument_pointer,
                  UserExecutionContext* user_context);
 

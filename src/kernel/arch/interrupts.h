@@ -12,6 +12,11 @@ void Restore(uint64_t flags);
 void Enable();
 void WaitForInterrupt();
 
+using IpiHandler = void (*)();
+void InitializeSecondaryCpu();
+void SetIpiHandler(IpiHandler handler);
+void SendIpi(uint32_t cpu_index);
+
 } // namespace FeatherOS::Arch::Interrupts
 
 #endif
