@@ -48,6 +48,7 @@ set(SRC
     ${SRCROOT}/process_arguments.cpp
     ${SRCROOT}/scheduler.cpp
     ${SRCROOT}/smp.cpp
+    ${SRCROOT}/random.cpp
     ${SRCROOT}/cpu.cpp
     ${SRCROOT}/syscall.cpp
     ${SRCROOT}/string/format.cpp

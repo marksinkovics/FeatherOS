@@ -57,11 +57,14 @@ CALC_INPUT = b"nope\n\ncalc 2 3\n"
 # Covers argv, foreground input in a child, and nonzero exit statuses.
 SHELL_INPUT = (
     b"echo hello   feather os\nupper\nmixed Case\ndate\nfanout 6\n"
-    b"memtest\nmemtest overflow\nsleep 1100\nhardening\ncalc 1\n"
+    b"memtest\nmemtest overflow\nsleep 1100\nhardening\naslr\naslr\ncalc 1\n"
 )
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
+)
+ASLR_OUTPUT = re.compile(
+    r"^aslr: stack=(\d+) args=(\d+) heap=(\d+)\r?$", re.MULTILINE
 )
 # QEMU's RTC follows the host clock; allow for boot time and slow hosts.
 MAXIMUM_CLOCK_SKEW_SECONDS = 120
@@ -516,6 +519,15 @@ def main():
         ]
         if missing:
             print(f"FAIL: shell output is missing {missing}", file=sys.stderr)
+            return 1
+        layouts = ASLR_OUTPUT.findall(output)
+        if len(layouts) != 2 or any(
+            first == second for first, second in zip(*layouts)
+        ):
+            print(
+                f"FAIL: two aslr runs did not get distinct layouts: {layouts}",
+                file=sys.stderr,
+            )
             return 1
         date_match = DATE_OUTPUT.search(output)
         if date_match is None:
