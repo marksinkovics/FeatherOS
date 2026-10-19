@@ -1,5 +1,6 @@
 #include "kernel/storage/block_device.h"
 
+#include "kernel/memory/device_memory.h"
 #include "kernel/memory/page_allocator.h"
 
 #include <stddef.h>
@@ -10,6 +11,7 @@ namespace FeatherOS::BlockDevice
 namespace
 {
 
+constexpr uint64_t VirtioMmioRegisterSize = 0x200;
 constexpr uint32_t FdtMagic = 0xD00DFEED;
 constexpr uint32_t FdtBeginNode = 1;
 constexpr uint32_t FdtEndNode = 2;
@@ -227,12 +229,12 @@ bool FindDevice(const void* device_tree, uintptr_t* base)
                 if (tuple_cells != 0 && node.reg_length >= tuple_cells * 4 &&
                     ReadCells(node.reg, node.address_cells, &address) && address <= UINTPTR_MAX)
                 {
-                    auto* registers =
-                        reinterpret_cast<volatile uint32_t*>(static_cast<uintptr_t>(address));
-                    if (registers[0] == VirtioMagic && registers[1] >= 2 &&
+                    const uintptr_t mapped = Memory::MapDevice(address, VirtioMmioRegisterSize);
+                    auto* registers = reinterpret_cast<volatile uint32_t*>(mapped);
+                    if (mapped != 0 && registers[0] == VirtioMagic && registers[1] >= 2 &&
                         registers[2] == VirtioBlockDeviceId)
                     {
-                        *base = static_cast<uintptr_t>(address);
+                        *base = mapped;
                         return true;
                     }
                 }

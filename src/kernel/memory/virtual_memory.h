@@ -12,6 +12,8 @@ enum class PageFlags : uint8_t
     Write = 2,
     Execute = 4,
     User = 8,
+    // Uncached, strongly ordered device registers; kernel mappings only.
+    Device = 16,
 };
 
 struct AddressSpace

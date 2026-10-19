@@ -2,7 +2,7 @@
 
 #include "kernel/arch/interrupts.h"
 #include "kernel/cpu.h"
-#include "kernel/memory/virtual_memory.h"
+#include "kernel/memory/device_memory.h"
 #include "kernel/panic.h"
 #include "kernel/time/timer.h"
 
@@ -13,8 +13,7 @@ namespace
 
 constexpr uint32_t ApicBaseMsr = 0x1B;
 constexpr uint64_t ApicBaseAddressMask = 0x000FFFFFFFFFF000;
-// Above the kernel heap. The PTE is write-back; firmware MTRRs make this range uncacheable.
-constexpr uint64_t VirtualBase = 0xFFFFFE8000000000;
+constexpr uint64_t ApicRegisterSize = 0x1000;
 
 constexpr uint32_t IdRegister = 0x020;
 constexpr uint32_t EndOfInterruptRegister = 0x0B0;
@@ -37,7 +36,7 @@ constexpr uint32_t DeliveryExtInt = 0x700;
 constexpr uint32_t DeliveryNmi = 0x400;
 constexpr uint32_t TimerDivideBy16 = 0x3;
 
-bool mapped = false;
+uintptr_t register_base = 0;
 uint32_t timer_initial_count = 0;
 uint32_t apic_ids[Cpu::MaximumCpus] = {};
 Handler ipi_handler = nullptr;
@@ -45,7 +44,7 @@ Handler timer_handler = nullptr;
 
 volatile uint32_t& Register(uint32_t offset)
 {
-    return *reinterpret_cast<volatile uint32_t*>(VirtualBase + offset);
+    return *reinterpret_cast<volatile uint32_t*>(register_base + offset);
 }
 
 uint64_t ReadMsr(uint32_t msr)
@@ -66,17 +65,15 @@ void EnableCurrentCpu()
 
 bool InitializeBootCpu()
 {
-    if (mapped)
+    if (register_base != 0)
     {
         return true;
     }
-    const uint64_t physical_base = ReadMsr(ApicBaseMsr) & ApicBaseAddressMask;
-    if (!Memory::MapPage(VirtualBase, physical_base,
-                         Memory::PageFlags::Read | Memory::PageFlags::Write))
+    register_base = Memory::MapDevice(ReadMsr(ApicBaseMsr) & ApicBaseAddressMask, ApicRegisterSize);
+    if (register_base == 0)
     {
         return false;
     }
-    mapped = true;
     EnableCurrentCpu();
     // Virtual-wire mode: the legacy PIC still reaches the boot CPU through LINT0.
     Register(Lint0Register) = DeliveryExtInt;
@@ -86,7 +83,7 @@ bool InitializeBootCpu()
 
 void InitializeSecondaryCpu()
 {
-    if (!mapped)
+    if (register_base == 0)
     {
         Panic("Local APIC is not mapped before secondary CPU startup");
     }
@@ -118,7 +115,7 @@ void SendIpi(uint32_t cpu_index)
 
 bool CalibrateTimer(uint32_t calibration_ticks)
 {
-    if (!mapped || calibration_ticks == 0)
+    if (register_base == 0 || calibration_ticks == 0)
     {
         return false;
     }

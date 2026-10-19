@@ -128,6 +128,7 @@ extern "C" void kmain()
     {
         FeatherOS::Panic("Virtual-memory initialization failed");
     }
+    FeatherOS::Serial::InitializeMapping();
     if (!FeatherOS::Memory::InitializeHeap())
     {
         FeatherOS::Panic("Kernel heap initialization failed");
