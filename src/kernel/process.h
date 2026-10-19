@@ -15,8 +15,10 @@ using ProcessId = uint64_t;
 
 #if defined(ARCH_x86_64)
 constexpr uint64_t UserStackAddress = 0x800000;
+constexpr uint64_t UserAddressLimit = 0x0000800000000000;
 #elif defined(ARCH_aarch64)
 constexpr uint64_t UserStackAddress = 0x0000400000800000;
+constexpr uint64_t UserAddressLimit = 0x0001000000000000;
 #else
 #error "Unsupported architecture for user processes"
 #endif

@@ -57,7 +57,7 @@ CALC_INPUT = b"nope\n\ncalc 2 3\n"
 # Covers argv, foreground input in a child, and nonzero exit statuses.
 SHELL_INPUT = (
     b"echo hello   feather os\nupper\nmixed Case\ndate\nfanout 6\n"
-    b"memtest\nmemtest overflow\nsleep 1100\ncalc 1\n"
+    b"memtest\nmemtest overflow\nsleep 1100\nhardening\ncalc 1\n"
 )
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
@@ -74,6 +74,7 @@ EXPECTED_SHELL_OUTPUT = (
     # memtest overflow ends at the stack guard page with ExitStatusFault.
     "shell: program terminated by a CPU exception",
     "sleep: slept 1100 ms",
+    "hardening: 44 checks passed",
     "usage: calc <number> <number>",
     "exit status 1",
 )

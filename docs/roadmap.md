@@ -128,6 +128,9 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 
 ### 12. Security And Hardening
 
+**Part 1 (complete):** The security invariants are documented in `docs/development.md`. The loader checks that segments lie in user space, AArch64 user pages are privileged-execute-never, and each process may have at most 16 live children. The shell test's `hardening` program runs 44 negative checks: bad syscall pointers and arguments, a kernel-half ELF, heap execution, code writes, kernel reads, an invalid syscall, and the child limit.
+
+
 - Audit syscall argument validation, ELF loading, address-space isolation, and resource cleanup.
 - Enforce writable/executable memory policy and tighten privilege transitions.
 - Add negative tests for invalid syscalls, malformed binaries, and attempts to access protected memory.

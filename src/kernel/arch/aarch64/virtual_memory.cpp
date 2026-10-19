@@ -135,7 +135,8 @@ bool MapPageInRoot(volatile uint64_t* selected_root, uint64_t virtual_address,
     }
     if (user_accessible)
     {
-        descriptor |= AccessPermissionUser;
+        // The kernel never runs user code, so EL1 may not execute any user page.
+        descriptor |= AccessPermissionUser | PrivilegedExecuteNever;
     }
     if ((static_cast<uint8_t>(flags) & static_cast<uint8_t>(PageFlags::Execute)) == 0)
     {
@@ -378,7 +379,8 @@ bool ProtectPage(AddressSpace& address_space, uint64_t virtual_address, PageFlag
     {
         return false;
     }
-    descriptor &= ~(AccessPermissionReadOnly | PrivilegedExecuteNever | UnprivilegedExecuteNever);
+    descriptor &= ~(AccessPermissionReadOnly | UnprivilegedExecuteNever);
+    descriptor |= PrivilegedExecuteNever;
     if ((static_cast<uint8_t>(flags) & static_cast<uint8_t>(PageFlags::Write)) == 0)
     {
         descriptor |= AccessPermissionReadOnly;

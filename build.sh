@@ -187,7 +187,7 @@ iso() {
     fi
     tar -cf "$initramfs_path" -C "$SCRIPT_DIR/initramfs" hello.txt
     local user_program
-    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout memtest:memtest sleep:sleep; do
+    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout memtest:memtest sleep:sleep hardening:hardening; do
         local user_elf="${user_program%%:*}-$ARCH.elf"
         "$user_compiler" \
             -ffreestanding -fno-builtin -fno-exceptions -fno-rtti -fno-stack-protector \
@@ -198,6 +198,8 @@ iso() {
             -o "$build_dir/$user_elf"
         tar -rf "$initramfs_path" -C "$build_dir" "$user_elf"
     done
+    python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$build_dir/badelf-$ARCH.elf"
+    tar -rf "$initramfs_path" -C "$build_dir" "badelf-$ARCH.elf"
     python3 "$SCRIPT_DIR/tools/create_test_disk.py" "$block_image" \
         "$SCRIPT_DIR/initramfs/block.txt"
 
