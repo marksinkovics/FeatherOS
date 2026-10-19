@@ -6,7 +6,6 @@
 #include "kernel/input/input.h"
 #include "kernel/klogger.h"
 #include "kernel/panic.h"
-#include "kernel/scheduler.h"
 #include "kernel/string/format.h"
 #include "kernel/time/timer.h"
 
@@ -97,7 +96,6 @@ size_t ReadLine(const char* prompt, char* buffer, size_t capacity)
     bool line_complete = false;
     while (!line_complete)
     {
-        Time::WaitForNextTick();
         Service();
         Input::Poll();
         Input::Event event;
@@ -134,7 +132,8 @@ size_t ReadLine(const char* prompt, char* buffer, size_t capacity)
         }
         if (!line_complete)
         {
-            Scheduler::Yield();
+            // The deadline keeps the uptime display updating.
+            Input::WaitForEvent((Time::TickCount() / TicksPerSecond + 1) * TicksPerSecond);
         }
     }
     if (console_logger != nullptr)

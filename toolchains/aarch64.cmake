@@ -18,7 +18,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${COMMON_LDFLAGS} --sysroot=${CMAKE_FIND_ROOT_PATH}"
 set(CMAKE_SHARED_LINKER_FLAGS "--sysroot=${CMAKE_FIND_ROOT_PATH}")
 set(CMAKE_MODULE_LINKER_FLAGS "--sysroot=${CMAKE_FIND_ROOT_PATH}")
 
-set(COMMON_FLAGS "-g -ffreestanding -mcpu=generic -march=armv8-a+nofp+nosimd -mcmodel=small -fno-builtin -Wall -Wextra -Werror -O0 -nostdlib -nodefaultlibs -fno-stack-protector -fno-pic -fno-pie")
+set(COMMON_FLAGS "-g -ffreestanding -mcpu=generic -march=armv8-a+nofp+nosimd -mno-outline-atomics -mcmodel=small -fno-builtin -Wall -Wextra -Werror -O0 -nostdlib -nodefaultlibs -fno-stack-protector -fno-pic -fno-pie")
 set(CMAKE_C_FLAGS "${COMMON_FLAGS} -std=gnu11" CACHE INTERNAL "")
 set(CMAKE_CXX_FLAGS "${COMMON_FLAGS} -fno-exceptions -fno-rtti" CACHE INTERNAL "")
 set(CMAKE_C_STANDARD 11)

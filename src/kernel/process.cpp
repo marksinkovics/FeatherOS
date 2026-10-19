@@ -7,6 +7,7 @@
 #include "kernel/panic.h"
 #include "kernel/process_arguments.h"
 #include "kernel/scheduler.h"
+#include "kernel/sync/spinlock.h"
 #include "kernel/syscall.h"
 #if defined(ARCH_x86_64)
 #include "kernel/arch/x86_64/exceptions.h"
@@ -45,6 +46,7 @@ struct ProcessRecord
 };
 
 uint64_t hhdm_offset = 0;
+Sync::SpinLock process_lock;
 ProcessRecord processes[MaximumProcesses];
 ProcessId next_process_id = 1;
 // Only this process may read console input; zero means the kernel itself.
@@ -270,6 +272,7 @@ void ReleaseUserProgram(UserProgram* program)
 
 ProcessRecord* FindProcess(ProcessId process_id)
 {
+    Sync::SpinLockGuard guard(process_lock);
     for (ProcessRecord& process : processes)
     {
         if (process.in_use && process.id == process_id)
@@ -473,6 +476,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
 void Initialize(uint64_t offset)
 {
     hhdm_offset = offset;
+    Sync::SpinLockGuard guard(process_lock);
     for (ProcessRecord& process : processes)
     {
         process.in_use = false;
@@ -556,20 +560,28 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
     }
 
     ProcessRecord* process = nullptr;
-    for (ProcessRecord& candidate : processes)
+    ProcessId id = 0;
     {
-        if (!candidate.in_use)
+        // Claim before loading so a concurrent spawn cannot take the slot.
+        Sync::SpinLockGuard guard(process_lock);
+        for (ProcessRecord& candidate : processes)
         {
-            process = &candidate;
-            break;
+            if (!candidate.in_use)
+            {
+                process = &candidate;
+                break;
+            }
         }
-    }
-    if (process == nullptr)
-    {
-        return SpawnStatus::NoResources;
+        if (process == nullptr)
+        {
+            return SpawnStatus::NoResources;
+        }
+        id = next_process_id++;
+        process->in_use = true;
+        process->id = id;
+        process->parent = parent;
     }
 
-    const ProcessId id = next_process_id;
     arguments.process_id = id;
     InitializeUserProgram(&process->program);
     process->program.execution_context.syscall_handlers = &ProcessSyscallHandlers;
@@ -578,13 +590,14 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
         !Scheduler::CreateTask(RunUserProgram, &process->program, &process->task))
     {
         ReleaseUserProgram(&process->program);
+        Sync::SpinLockGuard guard(process_lock);
+        process->in_use = false;
         return SpawnStatus::NoResources;
     }
-    ++next_process_id;
-    process->id = id;
-    process->parent = parent;
-    process->in_use = true;
-    foreground_process = id;
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        foreground_process = id;
+    }
     *process_id = id;
     return SpawnStatus::Started;
 }
@@ -602,6 +615,7 @@ bool Wait(ProcessId process_id, uint64_t* exit_status)
         *exit_status = process->program.execution_context.exit_status;
     }
     ReleaseUserProgram(&process->program);
+    Sync::SpinLockGuard guard(process_lock);
     if (foreground_process == process_id)
     {
         foreground_process = process->parent;

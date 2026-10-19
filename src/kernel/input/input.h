@@ -22,6 +22,7 @@ struct Event
 void SubmitEvent(Event event);
 void Poll();
 bool TryReadEvent(Event* event);
+void WaitForEvent(uint64_t deadline_tick);
 
 } // namespace FeatherOS::Input
 

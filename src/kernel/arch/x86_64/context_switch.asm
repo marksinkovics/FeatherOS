@@ -3,6 +3,7 @@ BITS 64
 section .text
 global FeatherOS_Arch_SwitchContext
 
+; Interrupts stay masked; the switched-in task restores them after releasing the scheduler lock.
 FeatherOS_Arch_SwitchContext:
     push rbx
     push rbp
@@ -18,6 +19,4 @@ FeatherOS_Arch_SwitchContext:
     pop r12
     pop rbp
     pop rbx
-    push rdx
-    popfq
     ret

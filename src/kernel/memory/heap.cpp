@@ -4,11 +4,14 @@
 #include "kernel/memory/page_allocator.h"
 #include "kernel/memory/virtual_memory.h"
 #include "kernel/panic.h"
+#include "kernel/sync/spinlock.h"
 
 #include <stdint.h>
 
 namespace
 {
+
+FeatherOS::Sync::SpinLock heap_lock;
 
 constexpr uintptr_t HeapBase = 0xFFFFFD0000000000;
 constexpr size_t HeapAlignment = 16;
@@ -181,6 +184,7 @@ bool InitializeHeap()
 
 void* Allocate(size_t size)
 {
+    Sync::SpinLockGuard guard(heap_lock);
     size_t aligned_size;
     if (!initialized || !AlignSize(size, &aligned_size))
     {
@@ -226,6 +230,7 @@ void* AllocateZeroed(size_t count, size_t size)
 
 bool Deallocate(void* pointer)
 {
+    Sync::SpinLockGuard guard(heap_lock);
     if (pointer == nullptr)
     {
         return true;

@@ -10,6 +10,7 @@ uint64_t SaveAndDisable();
 void Restore(uint64_t flags);
 // Unmasks interrupts, e.g. while a syscall handler waits for input.
 void Enable();
+void WaitForInterrupt();
 
 } // namespace FeatherOS::Arch::Interrupts
 

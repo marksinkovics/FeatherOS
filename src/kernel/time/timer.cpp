@@ -6,6 +6,7 @@
 #include "kernel/arch/aarch64/timer.h"
 #endif
 
+#include "kernel/input/input.h"
 #include "kernel/panic.h"
 #include "kernel/scheduler.h"
 
@@ -20,7 +21,9 @@ bool initialized = false;
 void OnTimerInterrupt()
 {
     ++ticks;
-    Scheduler::OnTimerTick();
+    // The UART has no receive interrupt here.
+    Input::Poll();
+    Scheduler::OnTimerTick(ticks);
 }
 
 } // namespace
@@ -76,6 +79,10 @@ void WaitForNextTick()
         Panic("Cannot wait for an uninitialized timer");
     }
     const uint64_t previous = TickCount();
+    if (Scheduler::SleepUntil(previous + 1))
+    {
+        return;
+    }
     while (TickCount() == previous)
     {
 #if defined(ARCH_x86_64)

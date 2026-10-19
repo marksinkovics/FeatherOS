@@ -2,11 +2,14 @@
 
 #include "memory_map.h"
 
+#include "kernel/sync/spinlock.h"
+
 #include <stddef.h>
 
 namespace
 {
 
+FeatherOS::Sync::SpinLock allocator_lock;
 volatile uint8_t* allocation_bitmap = nullptr;
 uint64_t frame_count = 0;
 uint64_t free_frame_count = 0;
@@ -252,6 +255,7 @@ bool InitializePageAllocator(uint64_t hhdm_offset)
 
 bool AllocatePageFrame(uint64_t* physical_address)
 {
+    Sync::SpinLockGuard guard(allocator_lock);
     if (!initialized || physical_address == nullptr || free_frame_count == 0)
     {
         return false;
@@ -294,6 +298,7 @@ bool AllocatePageFrame(uint64_t* physical_address)
 
 bool FreePageFrame(uint64_t physical_address)
 {
+    Sync::SpinLockGuard guard(allocator_lock);
     if (!initialized || physical_address % PageSize != 0 ||
         (physical_address >= bitmap_physical_address &&
          physical_address - bitmap_physical_address < bitmap_frame_count * PageSize))
@@ -317,6 +322,7 @@ bool FreePageFrame(uint64_t physical_address)
 
 bool GetPageAllocatorStats(PageAllocatorStats* stats)
 {
+    Sync::SpinLockGuard guard(allocator_lock);
     if (!initialized || stats == nullptr)
     {
         return false;

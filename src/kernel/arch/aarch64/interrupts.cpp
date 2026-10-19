@@ -442,4 +442,15 @@ void Enable()
     asm volatile("msr daifclr, #2" : : : "memory");
 }
 
+void WaitForInterrupt()
+{
+    // WFI wakes on a pending interrupt even while IRQs are masked; unmasking then takes it.
+    asm volatile("wfi\n\t"
+                 "msr daifclr, #2\n\t"
+                 "isb"
+                 :
+                 :
+                 : "memory");
+}
+
 } // namespace FeatherOS::Arch::Interrupts
