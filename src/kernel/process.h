@@ -20,6 +20,10 @@ constexpr uint64_t UserStackAddress = 0x0000400000800000;
 #else
 #error "Unsupported architecture for user processes"
 #endif
+constexpr uint64_t UserStackTop = UserStackAddress + 4096;
+// The stack grows down on demand through this region; its lowest page always stays unmapped.
+constexpr uint64_t UserStackRegionPages = 64;
+constexpr uint64_t UserStackRegionBase = UserStackTop - UserStackRegionPages * 4096;
 // Every program sees its read-only ProgramArguments block here, one guard page above its stack.
 constexpr uint64_t ArgumentsAddress = UserStackAddress + 2 * 4096;
 
@@ -32,6 +36,8 @@ struct UserProgram
     uint64_t entry_point;
     uint64_t stack_pointer;
     uint64_t argument_pointer;
+    uint64_t heap_start;
+    uint64_t heap_break;
     UserExecutionContext execution_context;
 };
 
@@ -52,6 +58,8 @@ void InitializeUserProgram(UserProgram* program);
 // program->address_space if its root is set.
 bool LoadUserProgram(const ELF::Image& image, const User::ProgramArguments& arguments,
                      UserProgram* program);
+// Maps a stack page for a not-present user fault in the growable stack region.
+bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address);
 // Scheduler task entry: runs a loaded program in user mode and returns its exit status.
 uint64_t RunUserProgram(void* program);
 

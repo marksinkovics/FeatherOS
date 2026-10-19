@@ -2,6 +2,7 @@
 
 #include "kernel/arch/serial.h"
 #include "kernel/exception.h"
+#include "kernel/process.h"
 #include "kernel/panic.h"
 #include "kernel/scheduler.h"
 #include "kernel/syscall.h"
@@ -31,8 +32,8 @@ bool WriteSyscallCharacter(void*, char character)
     return true;
 }
 
-constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {WriteSyscallCharacter, nullptr,
-                                                                nullptr, nullptr, nullptr};
+constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {
+    WriteSyscallCharacter, nullptr, nullptr, nullptr, nullptr, nullptr};
 
 } // namespace
 
@@ -123,6 +124,12 @@ extern "C" void FeatherOS_AArch64_ExceptionDispatch(ExceptionContext* context)
     {
         // A synchronous exception in EL0 terminates the program instead of the kernel.
         const uint64_t fault_status = context->esr & 0x3F;
+        const bool translation_fault = fault_status >= 0x04 && fault_status <= 0x07;
+        if (exception_class == 0x24 && translation_fault &&
+            FeatherOS::Process::HandleUserPageFault(user_context, context->far))
+        {
+            return;
+        }
         const bool permission_fault = fault_status >= 0x0D && fault_status <= 0x0F;
         const bool kernel_mapping_isolated =
             exception_class == 0x24 && permission_fault && context->far >= 0xFFFF800000000000;

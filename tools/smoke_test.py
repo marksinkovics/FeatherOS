@@ -56,7 +56,8 @@ EXPECTED_UNKNOWN_COMMAND = "Unknown command: nope"
 CALC_INPUT = b"nope\n\ncalc 2 3\n"
 # Covers argv, foreground input in a child, and nonzero exit statuses.
 SHELL_INPUT = (
-    b"echo hello   feather os\nupper\nmixed Case\ndate\nfanout 6\ncalc 1\n"
+    b"echo hello   feather os\nupper\nmixed Case\ndate\nfanout 6\n"
+    b"memtest\nmemtest overflow\ncalc 1\n"
 )
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
@@ -69,6 +70,9 @@ EXPECTED_SHELL_OUTPUT = (
     "upper> ",
     "MIXED CASE",
     "fanout: 6 children exited",
+    "memtest: stack and heap ok",
+    # memtest overflow ends at the stack guard page with ExitStatusFault.
+    "shell: program terminated by a CPU exception",
     "usage: calc <number> <number>",
     "exit status 1",
 )
