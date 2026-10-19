@@ -199,6 +199,16 @@ bool InitializeVirtualMemory(uint64_t offset)
     {
         return false;
     }
+    // Address spaces copy the kernel's top-level entries when created, so every kernel-half
+    // entry must exist now; later kernel mappings then appear in every address space.
+    for (size_t index = 256; index < 512; ++index)
+    {
+        volatile uint64_t* table;
+        if (!GetOrCreateTable(root_table, index, &table, false))
+        {
+            return false;
+        }
+    }
 
     uint32_t msr = EferMsr;
     uint32_t low;

@@ -14,7 +14,7 @@ namespace
 constexpr uint32_t ApicBaseMsr = 0x1B;
 constexpr uint64_t ApicBaseAddressMask = 0x000FFFFFFFFFF000;
 // Above the kernel heap. The PTE is write-back; firmware MTRRs make this range uncacheable.
-constexpr uint64_t VirtualBase = 0xFFFFFE0000000000;
+constexpr uint64_t VirtualBase = 0xFFFFFE8000000000;
 
 constexpr uint32_t IdRegister = 0x020;
 constexpr uint32_t EndOfInterruptRegister = 0x0B0;

@@ -3,6 +3,7 @@
 #include "kernel/arch/serial.h"
 #include "kernel/exception.h"
 #include "kernel/memory/heap.h"
+#include "kernel/memory/kernel_stack.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/memory/virtual_memory.h"
 #include "kernel/panic.h"
@@ -407,6 +408,54 @@ void RunBlockingTests(const void* platform_data)
     }
 }
 
+uint64_t ScalingTask(void* context)
+{
+    Scheduler::Yield();
+    return reinterpret_cast<uint64_t>(context);
+}
+
+void RunTaskScalingTests()
+{
+    constexpr uint64_t TaskCount = 12;
+    constexpr uint32_t Rounds = 3;
+    uint64_t free_frames_after_first_round = 0;
+    for (uint32_t round = 0; round < Rounds; ++round)
+    {
+        Scheduler::TaskId task_ids[TaskCount];
+        for (uint64_t index = 0; index < TaskCount; ++index)
+        {
+            if (!Scheduler::CreateTask(ScalingTask, reinterpret_cast<void*>(index),
+                                       &task_ids[index]))
+            {
+                Panic("Could not create more than the old fixed number of tasks");
+            }
+        }
+        for (uint64_t index = 0; index < TaskCount; ++index)
+        {
+            uint64_t exit_status;
+            if (!Scheduler::Wait(task_ids[index], &exit_status) || exit_status != index ||
+                !Scheduler::ReapTask(task_ids[index]))
+            {
+                Panic("Dynamically allocated task did not finish");
+            }
+        }
+        // Later rounds reuse the pooled stacks and freed heap blocks, so no frames go missing.
+        Memory::PageAllocatorStats stats;
+        if (!Memory::GetPageAllocatorStats(&stats))
+        {
+            Panic("Page allocator stats unavailable");
+        }
+        if (round == 0)
+        {
+            free_frames_after_first_round = stats.free_frames;
+        }
+        else if (stats.free_frames != free_frames_after_first_round)
+        {
+            Panic("Creating and reaping tasks leaked page frames");
+        }
+    }
+}
+
 void RunSchedulerTests(const void* platform_data)
 {
     Scheduler::TaskId first_task;
@@ -467,6 +516,7 @@ void RunSchedulerTests(const void* platform_data)
         Panic("Timer-driven task preemption test failed");
     }
     RunBlockingTests(platform_data);
+    RunTaskScalingTests();
     Serial::Write("KERN/SCHEDULER: preemption, wait, exit, reap, blocking, and sleep passed\n");
 }
 
@@ -713,6 +763,24 @@ void RunMemoryTests()
         frames_after_user_space.free_frames != frames_before_user_space.free_frames)
     {
         Panic("Destroying a user address space leaked page frames");
+    }
+
+    uint8_t* kernel_stack = Memory::AllocateKernelStack();
+    if (kernel_stack == nullptr)
+    {
+        Panic("Kernel stack allocation failed");
+    }
+    kernel_stack[0] = 0x5A;
+    kernel_stack[Memory::KernelStackSize - 1] = 0xA5;
+    expected_fault_address = reinterpret_cast<uint64_t>(kernel_stack) - 1;
+    expected_memory_fault = ExpectedMemoryFault::ReadFromUnmapped;
+    SetTestExceptionHandler(RecoverExpectedMemoryFault);
+    FeatherOSMemoryTestReadUnmapped(reinterpret_cast<volatile uint8_t*>(expected_fault_address));
+    SetTestExceptionHandler(nullptr);
+    Memory::FreeKernelStack(kernel_stack);
+    if (recovered_memory_fault_count != 5 || Memory::AllocateKernelStack() != kernel_stack)
+    {
+        Panic("Kernel stack guard page or reuse test failed");
     }
     Serial::Write("KERN/MEMORY: tests passed\n");
 }

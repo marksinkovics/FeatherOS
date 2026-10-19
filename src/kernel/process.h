@@ -28,6 +28,7 @@ struct UserProgram
 {
     Memory::AddressSpace address_space;
     uint32_t mapped_page_count;
+    uint32_t page_limit;
     uint64_t entry_point;
     uint64_t stack_pointer;
     uint64_t argument_pointer;

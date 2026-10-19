@@ -55,7 +55,9 @@ EXPECTED_CALC = "calc: 2 + 3 = 5"
 EXPECTED_UNKNOWN_COMMAND = "Unknown command: nope"
 CALC_INPUT = b"nope\n\ncalc 2 3\n"
 # Covers argv, foreground input in a child, and nonzero exit statuses.
-SHELL_INPUT = b"echo hello   feather os\nupper\nmixed Case\ndate\ncalc 1\n"
+SHELL_INPUT = (
+    b"echo hello   feather os\nupper\nmixed Case\ndate\nfanout 6\ncalc 1\n"
+)
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
@@ -66,6 +68,7 @@ EXPECTED_SHELL_OUTPUT = (
     "hello feather os",
     "upper> ",
     "MIXED CASE",
+    "fanout: 6 children exited",
     "usage: calc <number> <number>",
     "exit status 1",
 )

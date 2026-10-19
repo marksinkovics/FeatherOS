@@ -143,6 +143,8 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 - Extend the ELF loader beyond static executables: PIE/relocations, `PT_TLS`, and a documented policy for dynamic linking.
 - Add scheduler policy beyond round-robin, such as priorities; blocked/sleeping states, timed sleep, and an idle task already exist.
 
+**Part 1 (complete):** Tasks and process records are heap-allocated. Kernel stacks come from a guard-paged pool, and a per-process page limit replaces the fixed ELF page cap. QEMU tests run 12 concurrent tasks for three rounds without leaking frames, check that a guard page faults, and have the shell's `fanout 6` run six children at once.
+
 **Complete when:** more than four processes can run with independently growing memory on both targets, sleeping tasks do not consume CPU, and QEMU tests cover allocation failure and resource reclamation under load.
 
 ### 14. USB Host And HID Input

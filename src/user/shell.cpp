@@ -79,7 +79,7 @@ extern "C" [[noreturn]] void _start(const ProgramArguments*)
         }
         if (StringEquals(command, "help"))
         {
-            WriteLine("Commands: calc <a> <b>, date, echo <words...>, upper, help");
+            WriteLine("Commands: calc <a> <b>, date, echo <words...>, fanout <n>, upper, help");
             continue;
         }
         RunCommand(command);
