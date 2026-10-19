@@ -130,6 +130,10 @@ bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_siz
         }
         page_address += page_size;
     }
+    if (page_end > program->heap_start)
+    {
+        program->heap_start = page_end;
+    }
     return true;
 }
 
@@ -263,7 +267,8 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     }
 
     program->entry_point = image.entry_point;
-    program->stack_pointer = UserStackAddress + Memory::PageSize;
+    program->stack_pointer = UserStackTop;
+    program->heap_break = program->heap_start;
     program->argument_pointer = ArgumentsAddress;
     return true;
 }
@@ -485,6 +490,39 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
     return 0;
 }
 
+uint64_t ExtendHeapSyscall(void* context, uint64_t increment)
+{
+    UserProgram& program = static_cast<ProcessRecord*>(context)->program;
+    const uint64_t previous_break = program.heap_break;
+    // The heap may grow up to, but never into, the stack region's guard page.
+    if (increment > UserStackRegionBase - previous_break)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    const uint64_t page_size = Memory::PageSize;
+    const uint64_t new_break = previous_break + increment;
+    uint64_t page_address = (previous_break + page_size - 1) & ~(page_size - 1);
+    const uint64_t page_end = (new_break + page_size - 1) & ~(page_size - 1);
+    for (; page_address < page_end; page_address += page_size)
+    {
+        uint64_t physical_address;
+        if (!AllocateProgramPage(&program, &physical_address))
+        {
+            return User::SyscallErrorFailed;
+        }
+        if (!Memory::MapPage(program.address_space, page_address, physical_address,
+                             Memory::PageFlags::Read | Memory::PageFlags::Write |
+                                 Memory::PageFlags::User))
+        {
+            Memory::FreePageFrame(physical_address);
+            --program.mapped_page_count;
+            return User::SyscallErrorFailed;
+        }
+    }
+    program.heap_break = new_break;
+    return previous_break;
+}
+
 uint64_t ReadClockSyscall(void*)
 {
     uint64_t seconds;
@@ -492,7 +530,8 @@ uint64_t ReadClockSyscall(void*)
 }
 
 constexpr Syscall::Handlers ProcessSyscallHandlers = {
-    WriteCharacterSyscall, ReadLineSyscall, SpawnSyscall, WaitSyscall, ReadClockSyscall,
+    WriteCharacterSyscall, ReadLineSyscall,  SpawnSyscall,
+    WaitSyscall,           ReadClockSyscall, ExtendHeapSyscall,
 };
 
 } // namespace
@@ -514,6 +553,8 @@ void InitializeUserProgram(UserProgram* program)
     program->entry_point = 0;
     program->stack_pointer = 0;
     program->argument_pointer = 0;
+    program->heap_start = 0;
+    program->heap_break = 0;
     program->execution_context.address_space_root_physical_address = 0;
     program->execution_context.kernel_stack_pointer = 0;
     program->execution_context.previous_kernel_stack_pointer = 0;
@@ -523,6 +564,7 @@ void InitializeUserProgram(UserProgram* program)
     program->execution_context.preemption_enabled = false;
     program->execution_context.syscall_handlers = nullptr;
     program->execution_context.syscall_context = nullptr;
+    program->execution_context.program = program;
 }
 
 bool LoadUserProgram(const ELF::Image& image, const User::ProgramArguments& arguments,
@@ -537,6 +579,31 @@ bool LoadUserProgram(const ELF::Image& image, const User::ProgramArguments& argu
     // Loading may run inside a syscall, so restore the caller's address space, not the kernel's.
     Scheduler::ActivateCurrentAddressSpace();
     return loaded;
+}
+
+bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address)
+{
+    if (context == nullptr || context->program == nullptr ||
+        fault_address < UserStackRegionBase + Memory::PageSize || fault_address >= UserStackTop)
+    {
+        return false;
+    }
+    auto* program = static_cast<UserProgram*>(context->program);
+    const uint64_t page_address = fault_address & ~(Memory::PageSize - 1);
+    uint64_t physical_address;
+    if (!AllocateProgramPage(program, &physical_address))
+    {
+        return false;
+    }
+    if (!Memory::MapPage(program->address_space, page_address, physical_address,
+                         Memory::PageFlags::Read | Memory::PageFlags::Write |
+                             Memory::PageFlags::User))
+    {
+        Memory::FreePageFrame(physical_address);
+        --program->mapped_page_count;
+        return false;
+    }
+    return true;
 }
 
 uint64_t RunUserProgram(void* context)

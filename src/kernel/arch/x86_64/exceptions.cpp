@@ -4,6 +4,7 @@
 
 #include "kernel/arch/serial.h"
 #include "kernel/exception.h"
+#include "kernel/process.h"
 #include "kernel/scheduler.h"
 #include "kernel/cpu.h"
 #include "kernel/syscall.h"
@@ -166,8 +167,8 @@ bool WriteSyscallCharacter(void*, char character)
     return true;
 }
 
-constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {WriteSyscallCharacter, nullptr,
-                                                                nullptr, nullptr, nullptr};
+constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {
+    WriteSyscallCharacter, nullptr, nullptr, nullptr, nullptr, nullptr};
 
 template <size_t Size> uint64_t StackTop(uint8_t (&stack)[Size])
 {
@@ -364,6 +365,11 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
         {
             uint64_t fault_address;
             asm volatile("mov %%cr2, %0" : "=r"(fault_address));
+            const bool not_present = (context->error_code & 1) == 0;
+            if (not_present && FeatherOS::Process::HandleUserPageFault(user_context, fault_address))
+            {
+                return;
+            }
             kernel_mapping_isolated = (context->error_code & 1) != 0 &&
                                       (context->error_code & 4) != 0 &&
                                       fault_address >= 0xFFFF800000000000;

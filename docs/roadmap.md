@@ -145,6 +145,8 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 
 **Part 1 (complete):** Tasks and process records are heap-allocated. Kernel stacks come from a guard-paged pool, and a per-process page limit replaces the fixed ELF page cap. QEMU tests run 12 concurrent tasks for three rounds without leaking frames, check that a guard page faults, and have the shell's `fanout 6` run six children at once.
 
+**Part 2 (complete):** User stacks grow on demand through a 64-page region whose lowest page is a guard, and the `ExtendHeap` syscall grows a program break above the ELF image. The shell test's `memtest` checks deep recursion and heap reads and writes, and `memtest overflow` is terminated at the guard page.
+
 **Complete when:** more than four processes can run with independently growing memory on both targets, sleeping tasks do not consume CPU, and QEMU tests cover allocation failure and resource reclamation under load.
 
 ### 14. USB Host And HID Input

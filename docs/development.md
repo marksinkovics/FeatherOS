@@ -80,8 +80,11 @@ ISO generation cross-compiles each program listed in the user-program loop in `b
 | 3 | `Spawn(command_line)` | Starts the program named by the first word and returns its process ID |
 | 4 | `Wait(process_id, status_pointer)` | Blocks until a child exits, stores its status, and releases it |
 | 5 | `ReadClock()` | Returns the current UTC time in seconds since 1970-01-01 |
+| 6 | `ExtendHeap(increment)` | Grows the program break by `increment` bytes and returns the previous break; `0` returns the current one |
 
 The kernel resolves every user pointer through the caller's page tables before touching it, so unmapped, read-only, or kernel addresses fail with `SyscallErrorInvalidArgument` instead of faulting. Blocking syscalls re-enable interrupts and yield to other tasks while they wait.
+
+User memory grows on demand within the per-process page limit. The stack occupies a 64-page region ending at `Process::UserStackTop`: one page is mapped at load, and a not-present user page fault inside the region maps another zeroed page and resumes the program. The region's lowest page is never mapped, so a stack overflow faults there and terminates only that program. The heap starts at the page after the highest ELF segment; `ExtendHeap` maps whole pages eagerly up to the stack region's guard page.
 
 At entry, each program receives a pointer to a read-only `FeatherOS::User::ProgramArguments` block containing its process ID, the full command line, and `argument_count`/`argument_values` (the line split at spaces, at most 8 arguments in 63 characters). After a program exits, `Memory::DestroyAddressSpace` frees its user-mapped frames, private page-table frames, and root frame; it refuses to destroy an active address space and preserves shared kernel mappings. QEMU memory tests verify that free-frame accounting returns to its pre-test value on both architectures.
 
@@ -119,6 +122,7 @@ After startup, the kernel spawns `src/user/shell.cpp` from the initramfs and res
 - `date` prints the current UTC time, such as `2026-10-19 03:07:39 UTC`.
 - `echo <words...>` prints its arguments.
 - `fanout <n>` starts `n` (1–16) `echo` children before waiting for any of them.
+- `memtest [overflow]` grows its stack and heap and checks them, or recurses into the stack guard page to show that the kernel terminates it.
 - `upper` reads one line as the foreground process and prints it in upper case.
 
 To add a program, create `src/user/<name>.cpp` with a `_start(const ProgramArguments*)` entry point and add `<name>:<name>` to the user-program list in `build.sh`.
