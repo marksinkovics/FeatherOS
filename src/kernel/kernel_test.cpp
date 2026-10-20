@@ -1,8 +1,10 @@
 #include "kernel_test.h"
 
+#include "kernel/arch/cpu_features.h"
 #include "kernel/arch/serial.h"
 #include "kernel/exception.h"
 #include "kernel/memory/heap.h"
+#include "kernel/memory/kernel_stack.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/memory/virtual_memory.h"
 #include "kernel/panic.h"
@@ -407,6 +409,92 @@ void RunBlockingTests(const void* platform_data)
     }
 }
 
+uint64_t PriorityTask(void* context)
+{
+    scheduler_sequence = scheduler_sequence * 10 + reinterpret_cast<uint64_t>(context);
+    return 0;
+}
+
+void RunPriorityTests()
+{
+    // Only the boot CPU schedules here, so the order is deterministic.
+    constexpr Scheduler::TaskPriority Priorities[] = {
+        Scheduler::TaskPriority::Low,
+        Scheduler::TaskPriority::Normal,
+        Scheduler::TaskPriority::High,
+    };
+    Scheduler::TaskId task_ids[3];
+    scheduler_sequence = 0;
+    for (uint64_t index = 0; index < 3; ++index)
+    {
+        if (!Scheduler::CreateTask(PriorityTask, reinterpret_cast<void*>(index + 1),
+                                   &task_ids[index]) ||
+            !Scheduler::SetPriority(task_ids[index], Priorities[index]))
+        {
+            Panic("Could not create priority test task");
+        }
+    }
+    for (const Scheduler::TaskId task_id : task_ids)
+    {
+        if (!Scheduler::Wait(task_id, nullptr) || !Scheduler::ReapTask(task_id))
+        {
+            Panic("Priority test task did not finish");
+        }
+    }
+    if (scheduler_sequence != 321)
+    {
+        Panic("Higher-priority tasks did not run first");
+    }
+}
+
+uint64_t ScalingTask(void* context)
+{
+    Scheduler::Yield();
+    return reinterpret_cast<uint64_t>(context);
+}
+
+void RunTaskScalingTests()
+{
+    constexpr uint64_t TaskCount = 12;
+    constexpr uint32_t Rounds = 3;
+    uint64_t free_frames_after_first_round = 0;
+    for (uint32_t round = 0; round < Rounds; ++round)
+    {
+        Scheduler::TaskId task_ids[TaskCount];
+        for (uint64_t index = 0; index < TaskCount; ++index)
+        {
+            if (!Scheduler::CreateTask(ScalingTask, reinterpret_cast<void*>(index),
+                                       &task_ids[index]))
+            {
+                Panic("Could not create more than the old fixed number of tasks");
+            }
+        }
+        for (uint64_t index = 0; index < TaskCount; ++index)
+        {
+            uint64_t exit_status;
+            if (!Scheduler::Wait(task_ids[index], &exit_status) || exit_status != index ||
+                !Scheduler::ReapTask(task_ids[index]))
+            {
+                Panic("Dynamically allocated task did not finish");
+            }
+        }
+        // Later rounds reuse the pooled stacks and freed heap blocks, so no frames go missing.
+        Memory::PageAllocatorStats stats;
+        if (!Memory::GetPageAllocatorStats(&stats))
+        {
+            Panic("Page allocator stats unavailable");
+        }
+        if (round == 0)
+        {
+            free_frames_after_first_round = stats.free_frames;
+        }
+        else if (stats.free_frames != free_frames_after_first_round)
+        {
+            Panic("Creating and reaping tasks leaked page frames");
+        }
+    }
+}
+
 void RunSchedulerTests(const void* platform_data)
 {
     Scheduler::TaskId first_task;
@@ -467,7 +555,10 @@ void RunSchedulerTests(const void* platform_data)
         Panic("Timer-driven task preemption test failed");
     }
     RunBlockingTests(platform_data);
-    Serial::Write("KERN/SCHEDULER: preemption, wait, exit, reap, blocking, and sleep passed\n");
+    RunTaskScalingTests();
+    RunPriorityTests();
+    Serial::Write(
+        "KERN/SCHEDULER: preemption, wait, exit, reap, blocking, sleep, and priorities passed\n");
 }
 
 } // namespace
@@ -695,9 +786,23 @@ void RunMemoryTests()
     {
         Panic("User address-space setup failed");
     }
+    // User page tables share nothing with the kernel's low mappings, so a user page can use
+    // the address where the kernel's early UART identity map sits.
+    constexpr uint64_t low_device_address = 0x09000000;
+    uint64_t low_frame;
+    if (!Memory::AllocatePageFrame(&low_frame) ||
+        !Memory::MapPage(user_address_space, low_device_address, low_frame,
+                         Memory::PageFlags::Read | Memory::PageFlags::User))
+    {
+        Panic("User page at a kernel identity-mapped address was rejected");
+    }
     auto* user_value = reinterpret_cast<volatile uint64_t*>(user_test_address);
-    *user_value = 0xA11CE55A1234FEDC;
-    const volatile uint64_t observed_user_value = *user_value;
+    uint64_t observed_user_value;
+    {
+        const Arch::CpuFeatures::UserAccessWindow user_access;
+        *user_value = 0xA11CE55A1234FEDC;
+        observed_user_value = *user_value;
+    }
     if (Memory::DestroyAddressSpace(&user_address_space))
     {
         Panic("Active user address space was destroyed");
@@ -713,6 +818,24 @@ void RunMemoryTests()
         frames_after_user_space.free_frames != frames_before_user_space.free_frames)
     {
         Panic("Destroying a user address space leaked page frames");
+    }
+
+    uint8_t* kernel_stack = Memory::AllocateKernelStack();
+    if (kernel_stack == nullptr)
+    {
+        Panic("Kernel stack allocation failed");
+    }
+    kernel_stack[0] = 0x5A;
+    kernel_stack[Memory::KernelStackSize - 1] = 0xA5;
+    expected_fault_address = reinterpret_cast<uint64_t>(kernel_stack) - 1;
+    expected_memory_fault = ExpectedMemoryFault::ReadFromUnmapped;
+    SetTestExceptionHandler(RecoverExpectedMemoryFault);
+    FeatherOSMemoryTestReadUnmapped(reinterpret_cast<volatile uint8_t*>(expected_fault_address));
+    SetTestExceptionHandler(nullptr);
+    Memory::FreeKernelStack(kernel_stack);
+    if (recovered_memory_fault_count != 5 || Memory::AllocateKernelStack() != kernel_stack)
+    {
+        Panic("Kernel stack guard page or reuse test failed");
     }
     Serial::Write("KERN/MEMORY: tests passed\n");
 }
@@ -754,6 +877,13 @@ uint64_t SmpTask(void*)
         Sync::SpinLockGuard guard(smp_counter_lock);
         ++smp_counter;
     }
+    // Stay on the CPU across two of its timer ticks so the scheduler records it as busy.
+    const uint32_t cpu = Cpu::CurrentIndex();
+    const uint64_t busy_until = Time::CpuTickCount(cpu) + 2;
+    while (Time::CpuTickCount(cpu) < busy_until)
+    {
+        Sync::CpuRelax();
+    }
     return 0;
 }
 
@@ -761,6 +891,11 @@ uint64_t SmpTask(void*)
 
 void RunSmpTests()
 {
+    uint64_t busy_before[Cpu::MaximumCpus];
+    for (uint32_t cpu = 0; cpu < Cpu::MaximumCpus; ++cpu)
+    {
+        busy_before[cpu] = Scheduler::BusyTickCount(cpu);
+    }
     Scheduler::TaskId task_ids[SmpTestTasks];
     for (Scheduler::TaskId& task_id : task_ids)
     {
@@ -777,16 +912,26 @@ void RunSmpTests()
         }
     }
     uint32_t cpus_used = 0;
-    for (uint32_t cpus = smp_cpus_seen; cpus != 0; cpus &= cpus - 1)
+    uint32_t cpus_counted_busy = 0;
+    for (uint32_t cpu = 0; cpu < Cpu::MaximumCpus; ++cpu)
     {
-        ++cpus_used;
+        if ((smp_cpus_seen & (1U << cpu)) != 0)
+        {
+            ++cpus_used;
+            cpus_counted_busy += Scheduler::BusyTickCount(cpu) > busy_before[cpu] ? 1 : 0;
+        }
     }
     if (smp_concurrent_tasks != SmpTestTasks || cpus_used != SmpTestTasks ||
         smp_counter != SmpTestTasks * SmpCounterIterations)
     {
         Panic("Tasks did not run concurrently on separate CPUs");
     }
-    Serial::Write("KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact\n");
+    if (cpus_counted_busy != SmpTestTasks)
+    {
+        Panic("Busy CPUs were not counted");
+    }
+    Serial::Write("KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact; busy CPUs "
+                  "counted\n");
 }
 #endif
 

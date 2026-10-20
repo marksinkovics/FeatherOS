@@ -4,9 +4,12 @@
 
 using namespace FeatherOS::User;
 
-// date: prints the current UTC wall-clock time with seconds.
-extern "C" [[noreturn]] void _start(const ProgramArguments*)
+constexpr char Help[] = "usage: date\n"
+                        "Prints the current UTC date and time.";
+
+extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     const uint64_t seconds = ReadClock();
     char text[FormattedCalendarTimeLength];
     if (IsSyscallError(seconds) || !FormatCalendarTime(CalendarFromUnixSeconds(seconds), text))

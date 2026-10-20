@@ -153,3 +153,39 @@ TEST_CASE("waiting for input blocks only while the queue is empty")
     REQUIRE(wait_count == 1);
     DrainEvents();
 }
+
+TEST_CASE("Ctrl+C goes to the interrupt handler, or is queued when it declines")
+{
+    DrainEvents();
+    static int handler_calls = 0;
+    static bool consume = true;
+    FeatherOS::Input::SetInterruptHandler(
+        []
+        {
+            ++handler_calls;
+            return consume;
+        });
+
+    serial_input = {'a', '\x03', 'b'};
+    FeatherOS::Input::Poll();
+    REQUIRE(handler_calls == 1);
+    FeatherOS::Input::Event event;
+    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
+    REQUIRE(event.character == 'a');
+    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
+    REQUIRE(event.character == 'b');
+    REQUIRE_FALSE(FeatherOS::Input::TryReadEvent(&event));
+
+    consume = false;
+    FeatherOS::Input::SubmitEvent({FeatherOS::Input::EventType::Interrupt, '\0'});
+    REQUIRE(handler_calls == 2);
+    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
+    REQUIRE(event.type == FeatherOS::Input::EventType::Interrupt);
+
+    FeatherOS::Input::SetInterruptHandler(nullptr);
+    serial_input = {'\x03'};
+    FeatherOS::Input::Poll();
+    REQUIRE(handler_calls == 2);
+    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
+    REQUIRE(event.type == FeatherOS::Input::EventType::Interrupt);
+}

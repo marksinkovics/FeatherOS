@@ -5,6 +5,7 @@ section .text
 extern FeatherOS_x86_64_ExceptionDispatch
 extern FeatherOS_x86_64_GetUserReturnStack
 extern FeatherOS_x86_64_SetKernelStack
+extern FeatherOS_x86_64_SmapEnabled
 global x86_64_load_gdt
 global x86_64_enable_sse
 global x86_64_enter_user
@@ -155,6 +156,11 @@ x86_64_exception_common:
     jz .kernel_entry
     swapgs
 .kernel_entry:
+    ; Close any open user-access window so handlers never inherit one; CLAC needs SMAP.
+    cmp byte [rel FeatherOS_x86_64_SmapEnabled], 0
+    je .access_closed
+    clac
+.access_closed:
     cld
     push rax
     push rbx

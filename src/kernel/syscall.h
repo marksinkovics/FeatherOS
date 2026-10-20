@@ -40,6 +40,10 @@ struct Handlers
     uint64_t (*spawn)(void* context, uint64_t command_line);
     uint64_t (*wait)(void* context, uint64_t process_id, uint64_t status_pointer);
     uint64_t (*read_clock)(void* context);
+    uint64_t (*extend_heap)(void* context, uint64_t increment);
+    uint64_t (*sleep)(void* context, uint64_t milliseconds);
+    uint64_t (*read_uptime)(void* context);
+    uint64_t (*current_cpu)(void* context);
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

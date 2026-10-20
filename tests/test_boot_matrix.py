@@ -22,6 +22,7 @@ class BootMatrixTests(unittest.TestCase):
         calc_test=False,
         shell_test=False,
         input_test=False,
+        qemu_cpu=None,
     ):
         environment = os.environ.copy()
         environment["PANIC_TEST"] = "ON" if panic_test else "OFF"
@@ -37,6 +38,9 @@ class BootMatrixTests(unittest.TestCase):
         environment["CALC_TEST"] = "ON" if calc_test else "OFF"
         environment["SHELL_TEST"] = "ON" if shell_test else "OFF"
         environment["INPUT_TEST"] = "ON" if input_test else "OFF"
+        environment.pop("QEMU_CPU", None)
+        if qemu_cpu is not None:
+            environment["QEMU_CPU"] = qemu_cpu
         command = ["bash", str(BUILD_SCRIPT), "--arch", arch, "test"]
 
         result = subprocess.run(
@@ -121,6 +125,14 @@ class BootMatrixTests(unittest.TestCase):
 
     def test_24_aarch64_smp_scheduling(self):
         self.run_boot_case("aarch64", smp_test=True)
+
+    # QEMU's max CPU has SMEP/SMAP/RDRAND or PAN/RNDR, so user programs
+    # run under them.
+    def test_25_x86_64_shell_with_cpu_protections(self):
+        self.run_boot_case("x86_64", shell_test=True, qemu_cpu="max")
+
+    def test_26_aarch64_shell_with_cpu_protections(self):
+        self.run_boot_case("aarch64", shell_test=True, qemu_cpu="max")
 
 
 if __name__ == "__main__":

@@ -104,6 +104,7 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 - Test persistence across kernel and QEMU restarts.
 - Extend the FAT driver with GPT partition tables, subdirectories, and long filenames.
 - Add storage drivers for physical hardware beyond the QEMU virtio devices.
+- Expose files to user programs through file-descriptor syscalls (open, read, write, close) with a per-process open-file limit (moved from M12).
 
 **Complete when:** both targets can create, write, read, and delete files on disk, with data surviving a reboot.
 
@@ -122,26 +123,44 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 - Add useful shell utilities and a way to package and launch programs.
 - Broaden syscall coverage and the userspace library, and add pipes, background jobs, and process signals.
 - Improve the shell with line editing beyond Backspace, command history, a documented command set, and a more capable `calc`.
-- Add kill/abort for a stuck child and reclaim a child's resources when its parent exits first.
+- ~~Add kill/abort for a stuck child and reclaim a child's resources when its parent exits first.~~ Done early (see M15): Ctrl+C interrupts the foreground job, and an exiting parent terminates and reaps its children.
+- Add user threads with thread-local storage (`PT_TLS`, moved from M13).
+- If a `fork`-style API is adopted, build it on copy-on-write and demand paging (moved from M13); processes are currently created with `Spawn`.
 
 **Complete when:** init starts and supervises basic services, and users can run a documented set of utilities and programs through the shell on both targets.
 
-### 12. Security And Hardening
+### 12. Security And Hardening (Complete)
+
+**Part 1 (complete):** The security invariants are documented in `docs/development.md`. The loader checks that segments lie in user space, AArch64 user pages are privileged-execute-never, and each process may have at most 16 live children. The shell test's `hardening` program runs 44 negative checks: bad syscall pointers and arguments, a kernel-half ELF, heap execution, code writes, kernel reads, an invalid syscall, and the child limit.
+
+**Part 2 (complete):** AArch64 device registers (UART, RTC, GIC, virtio-mmio) are mapped in the kernel half through `Memory::MapDevice`, as is the x86-64 local APIC, and AArch64 user page tables no longer copy the kernel's low `TTBR0` mappings. The memory test maps a user page at the UART's identity address to prove the slot is free.
+
+**Part 3 (complete):** Spawned processes get a randomized stack, arguments page, and heap start, using a cycle-counter-seeded generator. The shell test runs `aslr` twice and requires different addresses. AArch64 user space now ends at `2^47` to match its canonical-address check.
+
+**Part 4 (complete):** Spawned programs load as static PIEs at a random image base (see M13). The kernel enables x86-64 SMEP/SMAP and AArch64 PAN when the CPU has them; the loader's copies into user memory open a short user-access window, and interrupt entry closes it again. `RDRAND`/`RNDR` are mixed into the random source when present. Matrix cases run the shell session on QEMU's `max` CPU and require these protections. Moved: the open-file limit to M9, with file syscalls.
 
 - Audit syscall argument validation, ELF loading, address-space isolation, and resource cleanup.
 - Enforce writable/executable memory policy and tighten privilege transitions.
 - Add negative tests for invalid syscalls, malformed binaries, and attempts to access protected memory.
 - Remove kernel low-address mappings (such as the UART identity map) from AArch64 user roots by moving them to the higher half.
-- Add user stack guard pages, per-process resource limits (pages, tasks, open files), and address-space layout randomization.
+- Add user stack guard pages, per-process resource limits (pages, tasks, open files), and address-space layout randomization. Randomizing the program image depends on PIE support in M13.
 
 **Complete when:** security invariants are documented and automated tests demonstrate that malformed inputs and user programs cannot access or corrupt protected kernel state.
 
-### 13. Memory Management And Process Scalability
+### 13. Memory Management And Process Scalability (Complete)
 
 - Replace fixed limits with dynamic ones: a growable task table, heap-allocated kernel stacks, and a per-process page limit instead of the fixed ELF page cap.
 - Give user programs a growable stack, a heap (`brk` or `mmap`-style syscall), and optional demand paging with copy-on-write.
-- Extend the ELF loader beyond static executables: PIE/relocations, `PT_TLS`, and a documented policy for dynamic linking.
+- Extend the ELF loader beyond static executables: PIE/relocations (which also enables image ASLR for M12), `PT_TLS`, and a documented policy for dynamic linking.
 - Add scheduler policy beyond round-robin, such as priorities; blocked/sleeping states, timed sleep, and an idle task already exist.
+
+**Part 1 (complete):** Tasks and process records are heap-allocated. Kernel stacks come from a guard-paged pool, and a per-process page limit replaces the fixed ELF page cap. QEMU tests run 12 concurrent tasks for three rounds without leaking frames, check that a guard page faults, and have the shell's `fanout 6` run six children at once.
+
+**Part 2 (complete):** User stacks grow on demand through a 64-page region whose lowest page is a guard, and the `ExtendHeap` syscall grows a program break above the ELF image. The shell test's `memtest` checks deep recursion and heap reads and writes, and `memtest overflow` is terminated at the guard page.
+
+**Part 3 (complete):** Tasks have Low, Normal, or High priority, and the scheduler runs the highest-priority ready task, round-robin within a level. The `Sleep` syscall blocks a program without using a CPU. A scheduler test checks priority order, and the shell test runs `sleep 1100`.
+
+**Part 4 (complete):** User programs are built as static PIEs. The ELF loader accepts `ET_DYN`, applies `R_X86_64_RELATIVE`/`R_AARCH64_RELATIVE` relocations before setting final permissions, and rejects symbol, PLT, and text relocations; unit tests cover each case. `memtest exhaust` checks that hitting the page limit fails cleanly and that pages are reclaimed. The dynamic-linking policy is documented in `docs/development.md`. Moved: `PT_TLS` and copy-on-write to M11.
 
 **Complete when:** more than four processes can run with independently growing memory on both targets, sleeping tasks do not consume CPU, and QEMU tests cover allocation failure and resource reclamation under load.
 
@@ -152,6 +171,19 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 - Add QEMU xHCI keyboard devices to both machine configurations for repeatable tests.
 
 **Complete when:** both targets enumerate a QEMU USB keyboard and deliver key events through the shared input path.
+
+### 15. Terminal Layout And Status Bar (Complete)
+
+**Summary:** The framebuffer terminal has a status bar on its top row. It shows the foreground program on the left and, on the right, busy/online CPUs and the UTC time. Busy CPUs are counted from scheduler timer ticks. The prompt (`> `) and input are edited inline with a cursor. The `ReadUptime` syscall backs a new `uptime` command, and the once-a-second uptime log is gone. Unit tests cover the bar layout, inline erase across wraps, incremental-versus-full rendering, and the short date format. The SMP test checks busy-CPU accounting, and the shell test runs `uptime`. Follow-ups: `calc` evaluates full expressions with exact fractions, interactively at a `calc> ` prompt or from its arguments (the argument limit rose to 16). The `primes <workers>` demo splits work across processes and reports each worker's CPUs through the new `CurrentCpu` syscall. Spawned programs are now time-sliced on every timer tick on both architectures, so a CPU-bound program no longer keeps its core until it blocks. Ctrl+C interrupts the shell's foreground job and its descendants, and children are terminated and reaped when their parent exits.
+
+- Add a one-row status bar at the top of the framebuffer terminal, above the scrolling text.
+- Show the foreground program's name on the left of the bar, and on the right the busy CPU count over the online CPU count (for example `2/4`) followed by the current RTC date and time as `Mon Oct 19 9:36 PM`.
+- Remove the dedicated input row at the bottom: the prompt and the line being typed appear inline in the scrolling text, like a normal terminal, with Backspace editing in place.
+- Change the shell prompt to `> `.
+- Remove the on-screen uptime and add an `uptime` command that prints it, backed by a new syscall that reports time since boot.
+- Stop the once-a-second uptime log on the terminal and serial port; the smoke test checks the `uptime` command instead.
+
+**Complete when:** on both targets the bar shows the right program, CPU count, and time as programs start and exit, input is edited inline, and QEMU tests cover the `uptime` command and the new prompt.
 
 ## Optional Tracks
 

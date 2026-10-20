@@ -22,9 +22,9 @@ bool InitializeVirtualMemory(uint64_t hhdm_offset)
 
 bool MapPage(uint64_t virtual_address, uint64_t physical_address, PageFlags flags)
 {
-    const uint8_t supported_flags = static_cast<uint8_t>(PageFlags::Read) |
-                                    static_cast<uint8_t>(PageFlags::Write) |
-                                    static_cast<uint8_t>(PageFlags::Execute);
+    const uint8_t supported_flags =
+        static_cast<uint8_t>(PageFlags::Read) | static_cast<uint8_t>(PageFlags::Write) |
+        static_cast<uint8_t>(PageFlags::Execute) | static_cast<uint8_t>(PageFlags::Device);
     if ((static_cast<uint8_t>(flags) & static_cast<uint8_t>(PageFlags::Read)) == 0 ||
         (static_cast<uint8_t>(flags) & ~supported_flags) != 0)
     {

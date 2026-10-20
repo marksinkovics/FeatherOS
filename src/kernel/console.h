@@ -5,22 +5,22 @@
 
 namespace FeatherOS
 {
-class KLogger;
 class Term;
 } // namespace FeatherOS
 
 // The kernel console: serial plus the optional framebuffer terminal, with line editing for
-// programs that read input. Requires the periodic timer to be running.
+// programs that read input. Requires the periodic timer and the scheduler to be running.
 namespace FeatherOS::Console
 {
 
-void Initialize(KLogger* logger, Term* term);
+void Initialize(Term* term);
+// Redraws the status bar soon, e.g. after the foreground program changes.
+void NotifyStatusChanged();
 void WriteCharacter(char character);
 // Shows prompt, then echoes and edits input until Enter. Interrupts are enabled while waiting.
-// Returns the line length; buffer receives at most capacity - 1 characters and a terminator.
-size_t ReadLine(const char* prompt, char* buffer, size_t capacity);
-// Updates the uptime display; ReadLine calls it while waiting.
-void Service();
+// buffer receives at most capacity - 1 characters and a terminator. Returns false when Ctrl+C
+// interrupted the calling program.
+bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* length);
 
 } // namespace FeatherOS::Console
 

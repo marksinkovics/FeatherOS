@@ -1,14 +1,19 @@
 #include "process.h"
 
+#include "kernel/arch/cpu_features.h"
 #include "kernel/arch/rtc.h"
 #include "kernel/console.h"
+#include "kernel/cpu.h"
 #include "kernel/filesystem/initramfs.h"
+#include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/panic.h"
 #include "kernel/process_arguments.h"
+#include "kernel/random.h"
 #include "kernel/scheduler.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/syscall.h"
+#include "kernel/time/timer.h"
 #if defined(ARCH_x86_64)
 #include "kernel/arch/x86_64/exceptions.h"
 #elif defined(ARCH_aarch64)
@@ -22,9 +27,9 @@ namespace FeatherOS::Process
 namespace
 {
 
-constexpr uint32_t MaximumProgramPages = 256;
-// One slot each for the shell and a child, plus one spare; the scheduler has four tasks.
-constexpr size_t MaximumProcesses = 3;
+// Covers every user page: ELF segments, the stack, and the arguments block.
+constexpr uint32_t DefaultProcessPageLimit = 1024;
+constexpr uint32_t MaximumChildrenPerProcess = 16;
 constexpr size_t MaximumCommandNameLength = 32;
 constexpr size_t MaximumPromptLength = 32;
 
@@ -38,16 +43,18 @@ constexpr char UserProgramSuffix[] = "-aarch64.elf";
 
 struct ProcessRecord
 {
-    bool in_use;
+    ProcessRecord* next;
     ProcessId id;
     ProcessId parent;
+    uint32_t live_children;
     Scheduler::TaskId task;
+    char name[MaximumCommandNameLength + 1];
     UserProgram program;
 };
 
 uint64_t hhdm_offset = 0;
 Sync::SpinLock process_lock;
-ProcessRecord processes[MaximumProcesses];
+ProcessRecord* process_list = nullptr;
 ProcessId next_process_id = 1;
 // Only this process may read console input; zero means the kernel itself.
 ProcessId foreground_process = 0;
@@ -74,10 +81,21 @@ bool AllocateZeroedPage(uint64_t* physical_address)
         Memory::FreePageFrame(*physical_address);
         return false;
     }
-    for (uint64_t offset = 0; offset < Memory::PageSize; ++offset)
+    auto* words = reinterpret_cast<volatile uint64_t*>(page);
+    for (uint64_t index = 0; index < Memory::PageSize / sizeof(uint64_t); ++index)
     {
-        page[offset] = 0;
+        words[index] = 0;
     }
+    return true;
+}
+
+bool AllocateProgramPage(UserProgram* program, uint64_t* physical_address)
+{
+    if (program->mapped_page_count >= program->page_limit || !AllocateZeroedPage(physical_address))
+    {
+        return false;
+    }
+    ++program->mapped_page_count;
     return true;
 }
 
@@ -89,8 +107,9 @@ bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_siz
     {
         return true;
     }
+    // Segments are copied through their own addresses, so they must lie in user space.
     if (program == nullptr || (segment_flags & ELF::SegmentFlagRead) == 0 ||
-        virtual_address > UINT64_MAX - memory_size)
+        virtual_address >= UserAddressLimit || memory_size > UserAddressLimit - virtual_address)
     {
         return false;
     }
@@ -98,10 +117,6 @@ bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_siz
     const uint64_t page_size = Memory::PageSize;
     uint64_t page_address = virtual_address & ~(page_size - 1);
     const uint64_t segment_end = virtual_address + memory_size;
-    if (segment_end > UINT64_MAX - (page_size - 1))
-    {
-        return false;
-    }
     const uint64_t page_end = (segment_end + page_size - 1) & ~(page_size - 1);
     const Memory::PageFlags page_flags =
         Memory::PageFlags::Read | Memory::PageFlags::Write | Memory::PageFlags::User;
@@ -109,8 +124,7 @@ bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_siz
     while (page_address < page_end)
     {
         uint64_t physical_address;
-        if (program->mapped_page_count == MaximumProgramPages ||
-            !AllocateZeroedPage(&physical_address))
+        if (!AllocateProgramPage(program, &physical_address))
         {
             return false;
         }
@@ -119,8 +133,11 @@ bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_siz
             Memory::FreePageFrame(physical_address);
             return false;
         }
-        ++program->mapped_page_count;
         page_address += page_size;
+    }
+    if (page_end > program->heap_start)
+    {
+        program->heap_start = page_end;
     }
     return true;
 }
@@ -134,6 +151,7 @@ bool CopyUserSegment(void*, uint64_t virtual_address, const uint8_t* source, uin
     }
     auto* destination =
         reinterpret_cast<volatile uint8_t*>(static_cast<uintptr_t>(virtual_address));
+    const Arch::CpuFeatures::UserAccessWindow user_access;
     for (uint64_t index = 0; index < size; ++index)
     {
         destination[index] = source[index];
@@ -150,6 +168,7 @@ bool ZeroUserSegment(void*, uint64_t virtual_address, uint64_t size)
     }
     auto* destination =
         reinterpret_cast<volatile uint8_t*>(static_cast<uintptr_t>(virtual_address));
+    const Arch::CpuFeatures::UserAccessWindow user_access;
     for (uint64_t index = 0; index < size; ++index)
     {
         destination[index] = 0;
@@ -218,17 +237,19 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     const ELF::LoadOperations operations = {
         program, MapUserSegment, CopyUserSegment, ZeroUserSegment, ProtectUserSegment,
     };
-    if (!ELF::LoadSegments(image, operations))
+    const uint64_t load_bias = image.position_independent ? program->layout.image_base : 0;
+    if (!ELF::LoadSegments(image, load_bias, operations))
     {
         return false;
     }
 
     uint64_t stack_physical_address;
-    if (!AllocateZeroedPage(&stack_physical_address))
+    if (!AllocateProgramPage(program, &stack_physical_address))
     {
         return false;
     }
-    if (!Memory::MapPage(program->address_space, UserStackAddress, stack_physical_address,
+    if (!Memory::MapPage(program->address_space, program->layout.stack_top - Memory::PageSize,
+                         stack_physical_address,
                          Memory::PageFlags::Read | Memory::PageFlags::Write |
                              Memory::PageFlags::User))
     {
@@ -237,7 +258,7 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     }
 
     uint64_t arguments_physical_address;
-    if (!AllocateZeroedPage(&arguments_physical_address))
+    if (!AllocateProgramPage(program, &arguments_physical_address))
     {
         return false;
     }
@@ -247,16 +268,19 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     {
         arguments_page[index] = source[index];
     }
-    if (!Memory::MapPage(program->address_space, ArgumentsAddress, arguments_physical_address,
+    if (!Memory::MapPage(program->address_space, program->layout.arguments_address,
+                         arguments_physical_address,
                          Memory::PageFlags::Read | Memory::PageFlags::User))
     {
         Memory::FreePageFrame(arguments_physical_address);
         return false;
     }
 
-    program->entry_point = image.entry_point;
-    program->stack_pointer = UserStackAddress + Memory::PageSize;
-    program->argument_pointer = ArgumentsAddress;
+    program->entry_point = image.entry_point + load_bias;
+    program->stack_pointer = program->layout.stack_top;
+    program->heap_start += program->layout.heap_offset * Memory::PageSize;
+    program->heap_break = program->heap_start;
+    program->argument_pointer = program->layout.arguments_address;
     return true;
 }
 
@@ -270,17 +294,68 @@ void ReleaseUserProgram(UserProgram* program)
     program->address_space.root_physical_address = 0;
 }
 
-ProcessRecord* FindProcess(ProcessId process_id)
+void RemoveProcess(ProcessRecord* process)
 {
-    Sync::SpinLockGuard guard(process_lock);
-    for (ProcessRecord& process : processes)
     {
-        if (process.in_use && process.id == process_id)
+        Sync::SpinLockGuard guard(process_lock);
+        for (ProcessRecord* parent = process_list; parent != nullptr; parent = parent->next)
         {
-            return &process;
+            if (parent->id == process->parent && parent->live_children > 0)
+            {
+                --parent->live_children;
+            }
+        }
+        for (ProcessRecord** link = &process_list; *link != nullptr; link = &(*link)->next)
+        {
+            if (*link == process)
+            {
+                *link = process->next;
+                break;
+            }
+        }
+    }
+    Memory::Deallocate(process);
+}
+
+ProcessRecord* FindProcessLocked(ProcessId process_id)
+{
+    for (ProcessRecord* process = process_list; process != nullptr; process = process->next)
+    {
+        if (process->id == process_id)
+        {
+            return process;
         }
     }
     return nullptr;
+}
+
+ProcessRecord* FindProcess(ProcessId process_id)
+{
+    Sync::SpinLockGuard guard(process_lock);
+    return FindProcessLocked(process_id);
+}
+
+bool DescendsFromLocked(const ProcessRecord* process, ProcessId ancestor)
+{
+    for (; process != nullptr; process = FindProcessLocked(process->parent))
+    {
+        if (process->id == ancestor)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void RequestKillLocked(ProcessRecord* process)
+{
+    // The task exists only once the program has loaded; before that there is nothing to stop.
+    if (process->task == 0)
+    {
+        return;
+    }
+    process->program.execution_context.kill_requested = true;
+    Scheduler::WakeTask(process->task);
 }
 
 // Builds "<name>-<arch>.elf" from the first word of command_line, which may only contain
@@ -410,7 +485,11 @@ uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint
     {
         return User::SyscallErrorNotForeground;
     }
-    const size_t length = Console::ReadLine(prompt_text, line, line_capacity);
+    size_t length;
+    if (!Console::ReadLine(prompt_text, line, line_capacity, &length))
+    {
+        return User::SyscallErrorInterrupted;
+    }
     if (!CopyToUser(*process, buffer, line, length + 1))
     {
         return User::SyscallErrorInvalidArgument;
@@ -461,26 +540,136 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
     return 0;
 }
 
+uint64_t ExtendHeapSyscall(void* context, uint64_t increment)
+{
+    UserProgram& program = static_cast<ProcessRecord*>(context)->program;
+    const uint64_t previous_break = program.heap_break;
+    // The heap may grow up to, but never into, the stack region's guard page.
+    const uint64_t stack_region_base =
+        program.layout.stack_top - UserStackRegionPages * Memory::PageSize;
+    if (previous_break > stack_region_base || increment > stack_region_base - previous_break)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    const uint64_t page_size = Memory::PageSize;
+    const uint64_t new_break = previous_break + increment;
+    uint64_t page_address = (previous_break + page_size - 1) & ~(page_size - 1);
+    const uint64_t page_end = (new_break + page_size - 1) & ~(page_size - 1);
+    for (; page_address < page_end; page_address += page_size)
+    {
+        uint64_t physical_address;
+        if (!AllocateProgramPage(&program, &physical_address))
+        {
+            return User::SyscallErrorFailed;
+        }
+        if (!Memory::MapPage(program.address_space, page_address, physical_address,
+                             Memory::PageFlags::Read | Memory::PageFlags::Write |
+                                 Memory::PageFlags::User))
+        {
+            Memory::FreePageFrame(physical_address);
+            --program.mapped_page_count;
+            return User::SyscallErrorFailed;
+        }
+    }
+    program.heap_break = new_break;
+    return previous_break;
+}
+
+uint64_t SleepSyscall(void*, uint64_t milliseconds)
+{
+    const uint64_t ticks_per_second = Time::TicksPerSecond();
+    constexpr uint64_t MaximumMilliseconds = 24ULL * 60 * 60 * 1000;
+    if (ticks_per_second == 0 || milliseconds > MaximumMilliseconds)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    // Round up so the program sleeps at least as long as it asked.
+    const uint64_t ticks = (milliseconds * ticks_per_second + 999) / 1000;
+    Scheduler::SleepUntil(Time::TickCount() + ticks);
+    return 0;
+}
+
 uint64_t ReadClockSyscall(void*)
 {
     uint64_t seconds;
     return Arch::RealTimeClock::ReadUnixSeconds(&seconds) ? seconds : User::SyscallErrorFailed;
 }
 
+uint64_t ReadUptimeSyscall(void*)
+{
+    const uint64_t ticks_per_second = Time::TicksPerSecond();
+    return ticks_per_second == 0 ? User::SyscallErrorFailed
+                                 : Time::TickCount() * 1000 / ticks_per_second;
+}
+
+uint64_t CurrentCpuSyscall(void*)
+{
+    return Cpu::CurrentIndex();
+}
+
 constexpr Syscall::Handlers ProcessSyscallHandlers = {
-    WriteCharacterSyscall, ReadLineSyscall, SpawnSyscall, WaitSyscall, ReadClockSyscall,
+    WriteCharacterSyscall, ReadLineSyscall, SpawnSyscall,      WaitSyscall,       ReadClockSyscall,
+    ExtendHeapSyscall,     SleepSyscall,    ReadUptimeSyscall, CurrentCpuSyscall,
 };
 
+// Children never outlive their parent: an exiting process stops and reaps any still running.
+uint64_t RunProcess(void* context)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    const uint64_t exit_status = RunUserProgram(&process->program);
+    for (;;)
+    {
+        ProcessId child = 0;
+        {
+            Sync::SpinLockGuard guard(process_lock);
+            // A child may itself be waiting for its own children, so stop the whole subtree.
+            for (ProcessRecord* candidate = process_list; candidate != nullptr;
+                 candidate = candidate->next)
+            {
+                if (candidate != process && candidate->task != 0 &&
+                    DescendsFromLocked(candidate, process->id))
+                {
+                    RequestKillLocked(candidate);
+                    if (candidate->parent == process->id)
+                    {
+                        child = candidate->id;
+                    }
+                }
+            }
+        }
+        if (child == 0 || !Wait(child, nullptr))
+        {
+            return exit_status;
+        }
+    }
+}
+
 } // namespace
+
+UserLayout DefaultUserLayout()
+{
+    return {DefaultImageBase, UserStackTop, ArgumentsAddress, 0};
+}
+
+UserLayout RandomUserLayout()
+{
+    // Keep the whole stack region inside the window and leave room for the guard and arguments
+    // pages above the stack top.
+    constexpr uint64_t SlotCount = RandomStackWindowPages - UserStackRegionPages - 2;
+    const uint64_t stack_top =
+        RandomStackWindowBase +
+        (UserStackRegionPages + Random::Next() % SlotCount) * Memory::PageSize;
+    const uint64_t image_base =
+        RandomImageWindowBase + (Random::Next() % RandomImageWindowPages) * Memory::PageSize;
+    return {image_base, stack_top, stack_top + Memory::PageSize,
+            Random::Next() % RandomHeapOffsetPages};
+}
 
 void Initialize(uint64_t offset)
 {
     hhdm_offset = offset;
     Sync::SpinLockGuard guard(process_lock);
-    for (ProcessRecord& process : processes)
-    {
-        process.in_use = false;
-    }
+    process_list = nullptr;
     next_process_id = 1;
     foreground_process = 0;
 }
@@ -489,9 +678,13 @@ void InitializeUserProgram(UserProgram* program)
 {
     program->address_space.root_physical_address = 0;
     program->mapped_page_count = 0;
+    program->page_limit = DefaultProcessPageLimit;
     program->entry_point = 0;
     program->stack_pointer = 0;
     program->argument_pointer = 0;
+    program->heap_start = 0;
+    program->heap_break = 0;
+    program->layout = DefaultUserLayout();
     program->execution_context.address_space_root_physical_address = 0;
     program->execution_context.kernel_stack_pointer = 0;
     program->execution_context.previous_kernel_stack_pointer = 0;
@@ -501,6 +694,8 @@ void InitializeUserProgram(UserProgram* program)
     program->execution_context.preemption_enabled = false;
     program->execution_context.syscall_handlers = nullptr;
     program->execution_context.syscall_context = nullptr;
+    program->execution_context.program = program;
+    program->execution_context.kill_requested = false;
 }
 
 bool LoadUserProgram(const ELF::Image& image, const User::ProgramArguments& arguments,
@@ -515,6 +710,36 @@ bool LoadUserProgram(const ELF::Image& image, const User::ProgramArguments& argu
     // Loading may run inside a syscall, so restore the caller's address space, not the kernel's.
     Scheduler::ActivateCurrentAddressSpace();
     return loaded;
+}
+
+bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address)
+{
+    if (context == nullptr || context->program == nullptr)
+    {
+        return false;
+    }
+    auto* program = static_cast<UserProgram*>(context->program);
+    const uint64_t stack_top = program->layout.stack_top;
+    const uint64_t stack_region_base = stack_top - UserStackRegionPages * Memory::PageSize;
+    if (fault_address < stack_region_base + Memory::PageSize || fault_address >= stack_top)
+    {
+        return false;
+    }
+    const uint64_t page_address = fault_address & ~(Memory::PageSize - 1);
+    uint64_t physical_address;
+    if (!AllocateProgramPage(program, &physical_address))
+    {
+        return false;
+    }
+    if (!Memory::MapPage(program->address_space, page_address, physical_address,
+                         Memory::PageFlags::Read | Memory::PageFlags::Write |
+                             Memory::PageFlags::User))
+    {
+        Memory::FreePageFrame(physical_address);
+        --program->mapped_page_count;
+        return false;
+    }
+    return true;
 }
 
 uint64_t RunUserProgram(void* context)
@@ -553,51 +778,78 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
     {
         return SpawnStatus::InvalidExecutable;
     }
+    // The arguments block holds pointers into itself, so its address is chosen first.
+    const UserLayout layout = RandomUserLayout();
     User::ProgramArguments arguments;
-    if (!BuildProgramArguments(command_line, ArgumentsAddress, &arguments))
+    if (!BuildProgramArguments(command_line, layout.arguments_address, &arguments))
     {
         return SpawnStatus::InvalidArguments;
     }
 
-    ProcessRecord* process = nullptr;
+    auto* process = static_cast<ProcessRecord*>(Memory::AllocateZeroed(1, sizeof(ProcessRecord)));
+    if (process == nullptr)
+    {
+        return SpawnStatus::NoResources;
+    }
     ProcessId id = 0;
     {
-        // Claim before loading so a concurrent spawn cannot take the slot.
         Sync::SpinLockGuard guard(process_lock);
-        for (ProcessRecord& candidate : processes)
+        ProcessRecord* parent_record = nullptr;
+        for (ProcessRecord* candidate = process_list; candidate != nullptr;
+             candidate = candidate->next)
         {
-            if (!candidate.in_use)
+            if (candidate->id == parent)
             {
-                process = &candidate;
-                break;
+                parent_record = candidate;
             }
         }
-        if (process == nullptr)
+        if (parent_record != nullptr)
         {
-            return SpawnStatus::NoResources;
+            if (parent_record->live_children == MaximumChildrenPerProcess)
+            {
+                Memory::Deallocate(process);
+                return SpawnStatus::NoResources;
+            }
+            ++parent_record->live_children;
         }
         id = next_process_id++;
-        process->in_use = true;
         process->id = id;
         process->parent = parent;
+        process->next = process_list;
+        process_list = process;
     }
 
+    size_t path_length = 0;
+    while (path[path_length] != '\0')
+    {
+        ++path_length;
+    }
+    const size_t name_length = path_length - (sizeof(UserProgramSuffix) - 1);
+    for (size_t index = 0; index < name_length; ++index)
+    {
+        process->name[index] = path[index];
+    }
+    process->name[name_length] = '\0';
     arguments.process_id = id;
     InitializeUserProgram(&process->program);
+    process->program.layout = layout;
     process->program.execution_context.syscall_handlers = &ProcessSyscallHandlers;
     process->program.execution_context.syscall_context = process;
-    if (!LoadUserProgram(image, arguments, &process->program) ||
-        !Scheduler::CreateTask(RunUserProgram, &process->program, &process->task))
+    const bool loaded = LoadUserProgram(image, arguments, &process->program);
+    // Spawned programs are time-sliced: user mode runs with interrupts unmasked, and each timer
+    // tick may switch to another ready task.
+    process->program.execution_context.preemption_enabled = true;
+    if (!loaded || !Scheduler::CreateTask(RunProcess, process, &process->task))
     {
         ReleaseUserProgram(&process->program);
-        Sync::SpinLockGuard guard(process_lock);
-        process->in_use = false;
+        RemoveProcess(process);
         return SpawnStatus::NoResources;
     }
     {
         Sync::SpinLockGuard guard(process_lock);
         foreground_process = id;
     }
+    Console::NotifyStatusChanged();
     *process_id = id;
     return SpawnStatus::Started;
 }
@@ -615,13 +867,70 @@ bool Wait(ProcessId process_id, uint64_t* exit_status)
         *exit_status = process->program.execution_context.exit_status;
     }
     ReleaseUserProgram(&process->program);
-    Sync::SpinLockGuard guard(process_lock);
-    if (foreground_process == process_id)
     {
-        foreground_process = process->parent;
+        Sync::SpinLockGuard guard(process_lock);
+        if (foreground_process == process_id)
+        {
+            foreground_process = process->parent;
+        }
     }
-    process->in_use = false;
+    RemoveProcess(process);
+    Console::NotifyStatusChanged();
     return true;
+}
+
+bool InterruptForegroundJob()
+{
+    Sync::SpinLockGuard guard(process_lock);
+    // The job is the foreground process's ancestor that the session leader started. The leader
+    // (the shell, whose parent is the kernel) is never interrupted.
+    const ProcessRecord* job = FindProcessLocked(foreground_process);
+    while (job != nullptr && job->parent != 0)
+    {
+        const ProcessRecord* parent = FindProcessLocked(job->parent);
+        if (parent == nullptr || parent->parent == 0)
+        {
+            break;
+        }
+        job = parent;
+    }
+    if (job == nullptr || job->parent == 0)
+    {
+        return false;
+    }
+    for (ProcessRecord* candidate = process_list; candidate != nullptr; candidate = candidate->next)
+    {
+        if (DescendsFromLocked(candidate, job->id))
+        {
+            RequestKillLocked(candidate);
+        }
+    }
+    return true;
+}
+
+void ForegroundProgramName(char* buffer, size_t capacity)
+{
+    if (buffer == nullptr || capacity == 0)
+    {
+        return;
+    }
+    Sync::SpinLockGuard guard(process_lock);
+    const ProcessRecord* foreground = nullptr;
+    for (const ProcessRecord* candidate = process_list; candidate != nullptr;
+         candidate = candidate->next)
+    {
+        if (candidate->id == foreground_process)
+        {
+            foreground = candidate;
+        }
+    }
+    const char* name = foreground != nullptr ? foreground->name : "kernel";
+    size_t length = 0;
+    for (; name[length] != '\0' && length < capacity - 1; ++length)
+    {
+        buffer[length] = name[length];
+    }
+    buffer[length] = '\0';
 }
 
 } // namespace FeatherOS::Process

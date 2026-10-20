@@ -39,6 +39,25 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return, handlers.read_clock(context)};
     }
+    if (request.number == static_cast<uint64_t>(Number::ExtendHeap) &&
+        handlers.extend_heap != nullptr)
+    {
+        return {Action::Return, handlers.extend_heap(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Sleep) && handlers.sleep != nullptr)
+    {
+        return {Action::Return, handlers.sleep(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ReadUptime) &&
+        handlers.read_uptime != nullptr)
+    {
+        return {Action::Return, handlers.read_uptime(context)};
+    }
+    if (request.number == static_cast<uint64_t>(Number::CurrentCpu) &&
+        handlers.current_cpu != nullptr)
+    {
+        return {Action::Return, handlers.current_cpu(context)};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

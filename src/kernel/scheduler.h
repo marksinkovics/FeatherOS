@@ -21,6 +21,13 @@ enum class TaskState : uint8_t
     Complete,
 };
 
+enum class TaskPriority : uint8_t
+{
+    Low,
+    Normal,
+    High,
+};
+
 // Identified by address only; waiters are tracked in the task table.
 struct WaitQueue
 {
@@ -32,13 +39,17 @@ bool CreateTask(TaskEntry entry, void* context, TaskId* task_id);
 bool Yield();
 bool Wait(TaskId task_id, uint64_t* exit_status);
 bool ReapTask(TaskId task_id);
+bool SetPriority(TaskId task_id, TaskPriority priority);
 void EnablePreemption();
 void DisablePreemption();
 void OnTimerTick(uint64_t tick);
+uint64_t BusyTickCount(uint32_t cpu_index);
 TaskState GetState(TaskId task_id);
 
 void WaitOn(WaitQueue& queue, Sync::SpinLock& lock, uint64_t deadline_tick = 0);
 void WakeAll(WaitQueue& queue);
+// Ends a sleep or wait early; waiters treat it as a spurious wakeup and recheck their condition.
+void WakeTask(TaskId task_id);
 bool SleepUntil(uint64_t tick);
 
 // Reactivates the running task's user address space, or the kernel's outside user tasks.

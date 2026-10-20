@@ -15,7 +15,7 @@ import time
 
 READY_MESSAGE = "KERN/I: Kernel initialization complete"
 TIMER_STARTED_MESSAGE = "KERN/I: Timer started at 100 Hz"
-UPTIME_MESSAGE = "KERN/I: Uptime:"
+SHELL_BANNER = "FeatherOS shell. Type 'help' for commands."
 VFS_MESSAGE = "KERN/I: VFS: hello.txt read passed"
 FAT16_MESSAGE = "KERN/I: VFS: FAT16 BLOCK.TXT read passed"
 ELF_LOAD_MESSAGE = "KERN/I: ELF64: test image loaded into user address space"
@@ -45,42 +45,103 @@ EXPECTED_INTERRUPT = {
     "x86_64": "KERN/IRQ: PIT interrupt acknowledged",
     "aarch64": "KERN/IRQ: GIC software interrupt acknowledged",
 }
+MAX_CPU_PROTECTIONS = {
+    "x86_64": "KERN/I: CPU protections: SMEP SMAP RDRAND",
+    "aarch64": "KERN/I: CPU protections: PAN RNDR",
+}
 EXPECTED_ARCHITECTURE = {
     "x86_64": "KERN/I: Architecture: x86_64",
     "aarch64": "KERN/I: Architecture: aarch64",
 }
 EXPECTED_MEMORY = "KERN/MEMORY: tests passed"
 EXPECTED_TIMER = "KERN/TIMER: periodic ticks passed"
-EXPECTED_CALC = "calc: 2 + 3 = 5"
+EXPECTED_CALC = "69.25"
 EXPECTED_UNKNOWN_COMMAND = "Unknown command: nope"
-CALC_INPUT = b"nope\n\ncalc 2 3\n"
+CALC_INPUT = b"nope\n\ncalc 4 + 66 - (3 / 4)\n"
 # Covers argv, foreground input in a child, and nonzero exit statuses.
-SHELL_INPUT = b"echo hello   feather os\nupper\nmixed Case\ndate\ncalc 1\n"
+SHELL_INPUT = (
+    b"echo hello   feather os\nupper\nmixed Case\ndate\nuptime\nfanout 6\n"
+    b"date --help\nprimes -h\n"
+    b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
+    b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\n"
+    b"calc\n1 / 3\n7 / 0\nexit\n"
+)
+# Ctrl+C for a command that shows no prompt of its own, sent while it runs.
+INTERRUPT_RUNNING = object()
+INTERRUPT_DELAY_SECONDS = 1.5
+CONTROL_C = b"\x03"
+# Interrupts a CPU-bound job, a sleep, programs blocked reading input, and the
+# shell's own prompt (which only discards the line). The shell test's last
+# command must stay last because its output ends the run.
+SHELL_INTERRUPT_INPUT = (
+    b"primes 1 1000000000\n",
+    INTERRUPT_RUNNING,
+    b"sleep 100000\n",
+    INTERRUPT_RUNNING,
+    b"upper\n",
+    CONTROL_C,
+    b"calc\n",
+    CONTROL_C,
+    CONTROL_C,
+    b"calc 1 +\n",
+)
+EXPECTED_INTERRUPTS = 5
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
 )
+UPTIME_OUTPUT = re.compile(r"^uptime: \d+:\d{2}:\d{2}\r?$", re.MULTILINE)
+PRIMES_WORKER_OUTPUT = re.compile(
+    r"^primes: worker \d+ found \d+ on CPU \d+(?:,\d+)*\r?$", re.MULTILINE
+)
+EXHAUST_OUTPUT = re.compile(
+    r"^memtest: page limit reached after (\d+) heap pages\r?$", re.MULTILINE
+)
+# The 1024-page limit also covers the image, stack, and arguments pages.
+MINIMUM_EXHAUST_PAGES = 1000
+ASLR_OUTPUT = re.compile(
+    r"^aslr: image=(\d+) stack=(\d+) args=(\d+) heap=(\d+)\r?$", re.MULTILINE
+)
 # QEMU's RTC follows the host clock; allow for boot time and slow hosts.
 MAXIMUM_CLOCK_SKEW_SECONDS = 120
 EXPECTED_SHELL_OUTPUT = (
+    "usage: date",
+    "usage: primes <workers 1-16> [limit]",
     "hello feather os",
     "upper> ",
     "MIXED CASE",
-    "usage: calc <number> <number>",
+    "fanout: 6 children exited",
+    "memtest: stack and heap ok",
+    # memtest overflow ends at the stack guard page with ExitStatusFault.
+    "shell: program terminated by a CPU exception",
+    "sleep: slept 1100 ms",
+    "hardening: 44 checks passed",
+    "primes: 9592 primes below 100000 with 4 workers in ",
+    "calc> ",
+    "0.333333",
+    "calc: division by zero",
+    "calc: unexpected end of expression",
     "exit status 1",
 )
 EXPECTED_SCHEDULER = (
-    "KERN/SCHEDULER: preemption, wait, exit, reap, blocking, and sleep passed"
+    "KERN/SCHEDULER: preemption, wait, exit, reap, blocking, sleep, "
+    "and priorities passed"
 )
 EXPECTED_USER_PREEMPTION = "KERN/SCHEDULER: user-mode preemption passed"
 EXPECTED_SMP = (
-    "KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact"
+    "KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact; "
+    "busy CPUs counted"
 )
 USER_PREEMPTION_OUTPUTS = {"x86_64": b"UIu", "aarch64": b"AIa"}
 INPUT_ACCEPTED_MESSAGE = "KERN/I: Input line accepted"
-INPUT_PROMPT = b"FeatherOS> "
+SHELL_PROMPT = re.compile(rb"^> ", re.MULTILINE)
+# Each scripted shell line is typed only once a prompt asks for it, so
+# typed-ahead input never overflows the kernel's input queue.
+LINE_PROMPT = re.compile(rb"^(?:upper|calc)?> ", re.MULTILINE)
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
+# The scripted shell session runs many programs; AArch64 emulation is slower.
+SHELL_TIMEOUT_SECONDS = 30
 QEMU_CPU_COUNT = 4
 SMP_MESSAGE = f"KERN/I: SMP: {QEMU_CPU_COUNT} CPUs online with IPIs and timers"
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
@@ -122,6 +183,9 @@ def main():
     )
     parser.add_argument("--firmware", help="AArch64 UEFI firmware image")
     parser.add_argument("--disk", required=True, help="Raw virtio block image")
+    parser.add_argument(
+        "--cpu", help="QEMU CPU model; 'max' also requires its CPU protections"
+    )
     parser.add_argument(
         "--expect-panic",
         action="store_true",
@@ -228,7 +292,7 @@ def main():
                 "-machine",
                 "virt",
                 "-cpu",
-                "cortex-a72",
+                args.cpu or "cortex-a72",
                 "-m",
                 "2G",
                 "-smp",
@@ -247,6 +311,8 @@ def main():
         command.extend(
             ["-m", "2G", "-smp", str(QEMU_CPU_COUNT), "-boot", "order=d"]
         )
+        if args.cpu:
+            command.extend(["-cpu", args.cpu])
     command.extend(
         [
             "-drive",
@@ -287,8 +353,19 @@ def main():
         bufsize=0,
     )
     captured = bytearray()
-    deadline = time.monotonic() + QEMU_TIMEOUT_SECONDS
+    timeout = (
+        SHELL_TIMEOUT_SECONDS if args.expect_shell else QEMU_TIMEOUT_SECONDS
+    )
+    deadline = time.monotonic() + timeout
     input_sent = False
+    pending_lines = []
+    if args.expect_calc:
+        pending_lines = CALC_INPUT.splitlines(keepends=True)
+    elif args.expect_shell:
+        pending_lines = SHELL_INPUT.splitlines(keepends=True) + list(
+            SHELL_INTERRUPT_INPUT
+        )
+    lines_sent = 0
     qmp_connection = None
     qmp_channel = None
     input_error = None
@@ -333,7 +410,7 @@ def main():
         else:
             markers = (EXPECTED_TIMER.encode(),)
     else:
-        markers = (UPTIME_MESSAGE.encode(), PANIC_MARKER.encode())
+        markers = (SHELL_BANNER.encode(), PANIC_MARKER.encode())
 
     while process.poll() is None:
         remaining = deadline - time.monotonic()
@@ -350,15 +427,38 @@ def main():
             break
         captured.extend(chunk)
         clean_output = ANSI_ESCAPE_BYTES.sub(b"", captured)
+        prompt_count = len(LINE_PROMPT.findall(clean_output))
+        try:
+            while pending_lines and lines_sent < prompt_count:
+                for character in pending_lines.pop(0):
+                    process.stdin.write(bytes((character,)))
+                    process.stdin.flush()
+                    time.sleep(0.02)
+                lines_sent += 1
+                while pending_lines and pending_lines[0] is INTERRUPT_RUNNING:
+                    pending_lines.pop(0)
+                    time.sleep(INTERRUPT_DELAY_SECONDS)
+                    process.stdin.write(CONTROL_C)
+                    process.stdin.flush()
+        except OSError as error:
+            input_error = str(error)
+            pending_lines = []
         if (
-            (args.expect_input or args.expect_calc or args.expect_shell)
+            args.expect_input
             and not input_sent
-            and INPUT_PROMPT in clean_output
+            and SHELL_PROMPT.search(clean_output)
         ):
             try:
                 if use_qmp_keyboard:
                     qmp_connection, qmp_channel = OpenQmpChannel(
                         qmp_socket_path
+                    )
+                    # Ctrl+C at the shell prompt only discards the line.
+                    SendQmpCommand(
+                        qmp_channel,
+                        7,
+                        "human-monitor-command",
+                        {"command-line": "sendkey ctrl-c"},
                     )
                     SendQmpCommand(
                         qmp_channel,
@@ -391,13 +491,7 @@ def main():
                         {"command-line": "sendkey ret"},
                     )
                 else:
-                    if args.expect_calc:
-                        input_sequence = CALC_INPUT
-                    elif args.expect_shell:
-                        input_sequence = SHELL_INPUT
-                    else:
-                        input_sequence = b"abx\x7f\n"
-                    for character in input_sequence:
+                    for character in b"\x03abx\x7f\n":
                         process.stdin.write(bytes((character,)))
                         process.stdin.flush()
                         time.sleep(0.02)
@@ -429,6 +523,12 @@ def main():
     serial_lines = [line for line in output.splitlines() if "KERN/" in line]
     if serial_lines:
         print("\n".join(serial_lines))
+    if args.cpu == "max" and MAX_CPU_PROTECTIONS[args.arch] not in output:
+        print(
+            "FAIL: kernel did not enable the protections of QEMU's max CPU",
+            file=sys.stderr,
+        )
+        return 1
     if args.expect_panic:
         if EXPECTED_PANIC not in output:
             print(
@@ -498,7 +598,7 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        print("PASS: unknown command rejected; calculator command returned 5")
+        print("PASS: unknown command rejected; calculator returned 69.25")
         return 0
     if args.expect_shell:
         missing = [
@@ -506,6 +606,45 @@ def main():
         ]
         if missing:
             print(f"FAIL: shell output is missing {missing}", file=sys.stderr)
+            return 1
+        exhausted = [int(pages) for pages in EXHAUST_OUTPUT.findall(output)]
+        if (
+            len(exhausted) != 2
+            or exhausted[0] != exhausted[1]
+            or exhausted[0] < MINIMUM_EXHAUST_PAGES
+        ):
+            print(
+                f"FAIL: page-limit exhaustion runs reported {exhausted}",
+                file=sys.stderr,
+            )
+            return 1
+        layouts = ASLR_OUTPUT.findall(output)
+        if len(layouts) != 2 or any(
+            first == second for first, second in zip(*layouts)
+        ):
+            print(
+                f"FAIL: two aslr runs did not get distinct layouts: {layouts}",
+                file=sys.stderr,
+            )
+            return 1
+        if len(PRIMES_WORKER_OUTPUT.findall(output)) != 4:
+            print("FAIL: primes did not report four workers", file=sys.stderr)
+            return 1
+        # A prompt may precede the echo on the same line.
+        interrupts = len(re.findall(r"\^C\r?$", output, re.MULTILINE))
+        if (
+            interrupts != EXPECTED_INTERRUPTS
+            or "primes below 1000000000" in output
+            or "slept 100000" in output
+        ):
+            print(
+                f"FAIL: Ctrl+C was echoed {interrupts} times, expected "
+                f"{EXPECTED_INTERRUPTS}, or an interrupted command finished",
+                file=sys.stderr,
+            )
+            return 1
+        if UPTIME_OUTPUT.search(output) is None:
+            print("FAIL: uptime did not print H:MM:SS", file=sys.stderr)
             return 1
         date_match = DATE_OUTPUT.search(output)
         if date_match is None:
@@ -526,7 +665,7 @@ def main():
             return 1
         print(
             "PASS: shell ran programs with arguments, foreground input, "
-            f"and date ({date_match.group(1)} UTC)"
+            f"uptime, Ctrl+C, and date ({date_match.group(1)} UTC)"
         )
         return 0
     if args.expect_user_preemption:
@@ -563,7 +702,13 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        print("PASS: keyboard/serial input, backspace, and Enter were handled")
+        if b"> ^C" not in captured:
+            print("FAIL: Ctrl+C was not echoed at the prompt", file=sys.stderr)
+            return 1
+        print(
+            "PASS: keyboard/serial input, Ctrl+C, backspace, and Enter were "
+            "handled"
+        )
         return 0
     if PANIC_MARKER in output:
         print("FAIL: kernel panicked during startup", file=sys.stderr)
@@ -630,8 +775,8 @@ def main():
             file=sys.stderr,
         )
         return 1
-    if re.search(r"KERN/I: Uptime: \d+ seconds", output) is None:
-        print("FAIL: kernel did not report uptime", file=sys.stderr)
+    if SHELL_BANNER not in output:
+        print("FAIL: the shell did not start", file=sys.stderr)
         return 1
     if EXPECTED_ARCHITECTURE[args.arch] not in output:
         print("FAIL: kernel did not report its architecture", file=sys.stderr)

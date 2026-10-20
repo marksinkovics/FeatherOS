@@ -4,6 +4,7 @@
 
 #include "kernel/arch/serial.h"
 #include "kernel/exception.h"
+#include "kernel/process.h"
 #include "kernel/scheduler.h"
 #include "kernel/cpu.h"
 #include "kernel/syscall.h"
@@ -166,8 +167,8 @@ bool WriteSyscallCharacter(void*, char character)
     return true;
 }
 
-constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {WriteSyscallCharacter, nullptr,
-                                                                nullptr, nullptr, nullptr};
+constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {
+    WriteSyscallCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 
 template <size_t Size> uint64_t StackTop(uint8_t (&stack)[Size])
 {
@@ -315,12 +316,31 @@ extern "C" uint64_t FeatherOS_x86_64_GetUserReturnStack()
     return user_context->kernel_stack_pointer;
 }
 
+namespace
+{
+
+// A program that Ctrl+C interrupted ends when it would next resume in ring 3.
+void TerminateIfKilled(const ExceptionContext* context)
+{
+    auto* user_context =
+        static_cast<FeatherOS::UserExecutionContext*>(FeatherOS::Scheduler::CurrentUserContext());
+    if ((context->code_segment & 3) == 3 && user_context != nullptr && user_context->active &&
+        user_context->kill_requested)
+    {
+        user_context->exit_status = FeatherOS::User::ExitStatusInterrupted;
+        user_context->exit_requested = true;
+    }
+}
+
+} // namespace
+
 extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
 {
     if (context->vector >= 32 && context->vector < 48)
     {
         FeatherOS_x86_64_HandleHardwareInterrupt(context->vector);
         RestoreCurrentUserKernelStack();
+        TerminateIfKilled(context);
         return;
     }
     if (context->vector == LocalApic::IpiVector || context->vector == LocalApic::TimerVector ||
@@ -328,6 +348,7 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
     {
         LocalApic::HandleInterrupt(context->vector);
         RestoreCurrentUserKernelStack();
+        TerminateIfKilled(context);
         return;
     }
 
@@ -347,6 +368,7 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
         if (result.action == FeatherOS::Syscall::Action::Return)
         {
             context->rax = result.value;
+            TerminateIfKilled(context);
             return;
         }
         user_context->exit_status = result.action == FeatherOS::Syscall::Action::Exit
@@ -364,6 +386,11 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
         {
             uint64_t fault_address;
             asm volatile("mov %%cr2, %0" : "=r"(fault_address));
+            const bool not_present = (context->error_code & 1) == 0;
+            if (not_present && FeatherOS::Process::HandleUserPageFault(user_context, fault_address))
+            {
+                return;
+            }
             kernel_mapping_isolated = (context->error_code & 1) != 0 &&
                                       (context->error_code & 4) != 0 &&
                                       fault_address >= 0xFFFF800000000000;

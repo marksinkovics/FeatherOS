@@ -42,6 +42,10 @@ void RunCommand(const char* line)
         WriteLine("shell: could not wait for program");
         return;
     }
+    if (status == ExitStatusInterrupted)
+    {
+        return;
+    }
     if (status == ExitStatusFault || status == ExitStatusKernelAccessFault)
     {
         WriteLine("shell: program terminated by a CPU exception");
@@ -56,14 +60,19 @@ void RunCommand(const char* line)
 
 } // namespace
 
-// The interactive shell: runs initramfs programs by name and waits for each to exit.
-extern "C" [[noreturn]] void _start(const ProgramArguments*)
+constexpr char Help[] =
+    "usage: shell\n"
+    "Runs programs by name and waits for each one. Type help for the commands;\n"
+    "Ctrl+C stops the running command.";
+
+extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     WriteLine("FeatherOS shell. Type 'help' for commands.");
     char line[MaximumCommandLineLength];
     for (;;)
     {
-        if (IsSyscallError(ReadLine(line, sizeof(line), "FeatherOS> ")))
+        if (IsSyscallError(ReadLine(line, sizeof(line), "> ")))
         {
             WriteLine("shell: could not read input");
             Exit(1);
@@ -79,7 +88,10 @@ extern "C" [[noreturn]] void _start(const ProgramArguments*)
         }
         if (StringEquals(command, "help"))
         {
-            WriteLine("Commands: calc <a> <b>, date, echo <words...>, upper, help");
+            WriteLine("Commands: calc [expression], date, echo <words...>, fanout <n>, "
+                      "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
+                      "sleep <ms>, upper, uptime, help");
+            WriteLine("Run <command> --help to see what a command does.");
             continue;
         }
         RunCommand(command);

@@ -9,6 +9,7 @@ namespace Serial
 {
 
 void Init(uint64_t hhdm_offset);
+void InitializeMapping();
 void Write(const char* text);
 void ForceUnlock();
 bool ReadCharacter(char* character);

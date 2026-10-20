@@ -3,6 +3,7 @@
 #include "kernel/arch/keyboard.h"
 #include "interrupts.h"
 #include "kernel/input/input.h"
+#include "kernel/memory/device_memory.h"
 #include "kernel/memory/page_allocator.h"
 
 #include <stddef.h>
@@ -102,6 +103,7 @@ uint64_t device_hhdm_offset = 0;
 volatile uint8_t* queue_virtual_address = nullptr;
 uint16_t last_used_index = 0;
 bool shift_pressed = false;
+bool control_pressed = false;
 bool caps_lock_enabled = false;
 
 uint32_t ReadBigEndian32(const uint8_t* data)
@@ -196,8 +198,9 @@ bool ReadDeviceRegisters(const FdtNode& node, DeviceRegisters* registers)
     {
         return false;
     }
-    registers->base = static_cast<uintptr_t>(address);
-    return true;
+    constexpr uint64_t VirtioMmioRegisterSize = 0x200;
+    registers->base = Memory::MapDevice(address, VirtioMmioRegisterSize);
+    return registers->base != 0;
 }
 
 volatile uint32_t* Registers(uintptr_t base)
@@ -454,6 +457,11 @@ void HandleKeyEvent(uint16_t code, uint32_t value)
         shift_pressed = value != 0;
         return;
     }
+    if (code == 29 || code == 97)
+    {
+        control_pressed = value != 0;
+        return;
+    }
     if (code == 58)
     {
         if (value == 1)
@@ -473,6 +481,13 @@ void HandleKeyEvent(uint16_t code, uint32_t value)
     else if (code == 28)
     {
         Input::SubmitEvent({Input::EventType::Enter, '\0'});
+    }
+    else if (control_pressed)
+    {
+        if (code == 46)
+        {
+            Input::SubmitEvent({Input::EventType::Interrupt, '\0'});
+        }
     }
     else
     {
