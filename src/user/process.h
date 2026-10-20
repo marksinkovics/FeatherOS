@@ -7,7 +7,7 @@ namespace FeatherOS::User
 {
 
 constexpr uint64_t MaximumCommandLineLength = 64;
-constexpr uint64_t MaximumArgumentCount = 8;
+constexpr uint64_t MaximumArgumentCount = 16;
 
 // Read-only block the kernel maps into each program; _start receives a pointer to it.
 struct ProgramArguments

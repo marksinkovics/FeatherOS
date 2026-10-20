@@ -6,6 +6,7 @@
 #include "kernel/framebuffer/term.h"
 
 #include <array>
+#include <string>
 
 namespace
 {
@@ -69,7 +70,7 @@ TEST_CASE("framebuffer rejects invalid descriptors")
     REQUIRE_FALSE(framebuffer.init(&descriptor));
 }
 
-TEST_CASE("terminal rendering keeps padding around logs and the prompt row")
+TEST_CASE("terminal rendering keeps padding around the status bar and text")
 {
     constexpr uint64_t width = 320;
     constexpr uint64_t height = 80;
@@ -81,11 +82,11 @@ TEST_CASE("terminal rendering keeps padding around logs and the prompt row")
 
     FeatherOS::Term terminal;
     terminal.Init(&framebuffer);
-    terminal.Print("Boot status");
-    terminal.BeginInput("FeatherOS> ");
-    terminal.SetUptimeText("Uptime: 1s");
-    terminal.HandleInputEvent({FeatherOS::Input::EventType::Character, 'x'});
-    terminal.HandleInputEvent({FeatherOS::Input::EventType::Backspace, '\0'});
+    terminal.SetStatus("shell", "1/4  Mon Oct 19 9:36 PM");
+    terminal.Print("Boot status\n> ");
+    terminal.SetCursorVisible(true);
+    terminal.Print("x");
+    terminal.EraseCharacter();
 
     for (uint64_t y = 0; y < FeatherOS::TermConfig::Padding * FONT_HEIGHT; ++y)
     {
@@ -120,6 +121,54 @@ TEST_CASE("terminal rendering keeps padding around logs and the prompt row")
     }
     REQUIRE(lit_pixels > 0);
 }
+
+TEST_CASE("terminal places status text at the bar's edges and input inline")
+{
+    constexpr uint64_t width = 320;
+    constexpr uint64_t height = 80;
+    std::array<uint8_t, width * height * 4> pixels{};
+    limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, width * 4, 32);
+    Framebuffer framebuffer;
+    REQUIRE(framebuffer.init(&descriptor));
+
+    // 40 columns and 5 rows, minus padding: a status row and two text rows of 38 columns.
+    constexpr uint32_t columns = 38;
+    FeatherOS::Term terminal;
+    terminal.Init(&framebuffer);
+    terminal.SetStatus("upper", "2/4  Mon Oct 19 9:36 PM");
+    const auto row_text = [&](uint32_t row)
+    {
+        std::string text;
+        for (uint32_t column = 0; column < columns; ++column)
+        {
+            text += static_cast<char>(terminal.CharacterAt(row, column));
+        }
+        return text;
+    };
+    REQUIRE(row_text(0) == " upper        2/4  Mon Oct 19 9:36 PM ");
+
+    terminal.Print("> ");
+    terminal.Print("abc");
+    terminal.EraseCharacter();
+    REQUIRE(row_text(1).substr(0, 5) == "> ab ");
+
+    // Erasing at the start of a wrapped row continues on the row above.
+    terminal.Print("\n");
+    terminal.Print(std::string(columns, 'w').c_str());
+    terminal.EraseCharacter();
+    REQUIRE(row_text(1) == std::string(columns - 1, 'w') + " ");
+
+    // Scrolling moves only the text rows.
+    terminal.Print("\nnext");
+    REQUIRE(row_text(0) == " upper        2/4  Mon Oct 19 9:36 PM ");
+    REQUIRE(row_text(1) == std::string(columns - 1, 'w') + " ");
+    REQUIRE(row_text(2).substr(0, 4) == "next");
+
+    // Left text is cut short rather than running into the right text.
+    terminal.SetStatus("a-very-long-program-name-here", "2/4  Mon Oct 19 9:36 PM");
+    REQUIRE(row_text(0) == " a-very-long- 2/4  Mon Oct 19 9:36 PM ");
+}
+
 TEST_CASE("incremental terminal rendering matches a full redraw")
 {
     constexpr uint64_t width = 320;
@@ -132,8 +181,11 @@ TEST_CASE("incremental terminal rendering matches a full redraw")
 
     FeatherOS::Term terminal;
     terminal.Init(&framebuffer);
-    terminal.BeginInput("FeatherOS> ");
-    // The burst scrolls past every content row; later single-line scrolls shift existing pixels.
+    terminal.SetStatus("shell", "1/4  Mon Oct 19 9:36 PM");
+    terminal.Print("> ");
+    terminal.SetCursorVisible(true);
+    // The burst scrolls past every text row; later single-line scrolls shift existing pixels,
+    // including the cursor.
     terminal.Print("a\nb\nc\nd\ne\nf\ng\nh\n");
     char line[] = "log line 0";
     for (char digit = '0'; digit <= '9'; ++digit)
@@ -141,10 +193,10 @@ TEST_CASE("incremental terminal rendering matches a full redraw")
         line[sizeof(line) - 2] = digit;
         terminal.PrintLn(line);
     }
-    terminal.SetUptimeText("Uptime: 9s");
-    terminal.HandleInputEvent({FeatherOS::Input::EventType::Character, 'x'});
-    terminal.HandleInputEvent({FeatherOS::Input::EventType::Enter, '\0'});
-    terminal.HandleInputEvent({FeatherOS::Input::EventType::Character, 'y'});
+    terminal.SetStatus("upper", "2/4  Mon Oct 19 9:37 PM");
+    terminal.Print("> x");
+    terminal.EraseCharacter();
+    terminal.Print("y\n> ");
 
     const auto incremental = pixels;
     size_t lit_pixels = 0;

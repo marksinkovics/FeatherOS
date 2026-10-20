@@ -43,6 +43,7 @@ bool SetPriority(TaskId task_id, TaskPriority priority);
 void EnablePreemption();
 void DisablePreemption();
 void OnTimerTick(uint64_t tick);
+uint64_t BusyTickCount(uint32_t cpu_index);
 TaskState GetState(TaskId task_id);
 
 void WaitOn(WaitQueue& queue, Sync::SpinLock& lock, uint64_t deadline_tick = 0);

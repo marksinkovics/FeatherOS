@@ -877,6 +877,13 @@ uint64_t SmpTask(void*)
         Sync::SpinLockGuard guard(smp_counter_lock);
         ++smp_counter;
     }
+    // Stay on the CPU across two of its timer ticks so the scheduler records it as busy.
+    const uint32_t cpu = Cpu::CurrentIndex();
+    const uint64_t busy_until = Time::CpuTickCount(cpu) + 2;
+    while (Time::CpuTickCount(cpu) < busy_until)
+    {
+        Sync::CpuRelax();
+    }
     return 0;
 }
 
@@ -884,6 +891,11 @@ uint64_t SmpTask(void*)
 
 void RunSmpTests()
 {
+    uint64_t busy_before[Cpu::MaximumCpus];
+    for (uint32_t cpu = 0; cpu < Cpu::MaximumCpus; ++cpu)
+    {
+        busy_before[cpu] = Scheduler::BusyTickCount(cpu);
+    }
     Scheduler::TaskId task_ids[SmpTestTasks];
     for (Scheduler::TaskId& task_id : task_ids)
     {
@@ -900,16 +912,26 @@ void RunSmpTests()
         }
     }
     uint32_t cpus_used = 0;
-    for (uint32_t cpus = smp_cpus_seen; cpus != 0; cpus &= cpus - 1)
+    uint32_t cpus_counted_busy = 0;
+    for (uint32_t cpu = 0; cpu < Cpu::MaximumCpus; ++cpu)
     {
-        ++cpus_used;
+        if ((smp_cpus_seen & (1U << cpu)) != 0)
+        {
+            ++cpus_used;
+            cpus_counted_busy += Scheduler::BusyTickCount(cpu) > busy_before[cpu] ? 1 : 0;
+        }
     }
     if (smp_concurrent_tasks != SmpTestTasks || cpus_used != SmpTestTasks ||
         smp_counter != SmpTestTasks * SmpCounterIterations)
     {
         Panic("Tasks did not run concurrently on separate CPUs");
     }
-    Serial::Write("KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact\n");
+    if (cpus_counted_busy != SmpTestTasks)
+    {
+        Panic("Busy CPUs were not counted");
+    }
+    Serial::Write("KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact; busy CPUs "
+                  "counted\n");
 }
 #endif
 

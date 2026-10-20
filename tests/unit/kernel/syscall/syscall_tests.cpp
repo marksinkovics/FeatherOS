@@ -63,11 +63,21 @@ uint64_t RecordSleep(void* context, uint64_t milliseconds)
     return 0;
 }
 
+uint64_t ReadFixedUptime(void*)
+{
+    return 65000;
+}
+
+uint64_t ReadFixedCpu(void*)
+{
+    return 3;
+}
+
 constexpr FeatherOS::Syscall::Handlers WriteOnly = {
-    CaptureCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    CaptureCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     CaptureCharacter, RecordReadLine,   RecordSpawn, RecordWait,
-    ReadFixedClock,   RecordExtendHeap, RecordSleep};
+    ReadFixedClock,   RecordExtendHeap, RecordSleep, ReadFixedUptime, ReadFixedCpu};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)
@@ -114,7 +124,7 @@ TEST_CASE("syscall dispatcher rejects invalid requests")
                                          &output)
                 .action == Action::Invalid);
     const FeatherOS::Syscall::Handlers no_output = {nullptr, nullptr, nullptr, nullptr,
-                                                    nullptr, nullptr, nullptr};
+                                                    nullptr, nullptr, nullptr, nullptr, nullptr};
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::WriteCharacter, 'A'), no_output,
                                          &output)
                 .action == Action::Invalid);
@@ -131,6 +141,10 @@ TEST_CASE("syscall dispatcher rejects process syscalls without handlers")
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Wait), WriteOnly, &output).action ==
             Action::Invalid);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadClock), WriteOnly, &output)
+                .action == Action::Invalid);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadUptime), WriteOnly, &output)
+                .action == Action::Invalid);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::CurrentCpu), WriteOnly, &output)
                 .action == Action::Invalid);
 }
 
@@ -174,4 +188,12 @@ TEST_CASE("syscall dispatcher routes process syscalls and returns handler result
     REQUIRE(result.action == Action::Return);
     REQUIRE(result.value == 0);
     REQUIRE(output.last_arguments[1] == 250);
+
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadUptime), AllHandlers, &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(result.value == 65000);
+
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::CurrentCpu), AllHandlers, &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(result.value == 3);
 }
