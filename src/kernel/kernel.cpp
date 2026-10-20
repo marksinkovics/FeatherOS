@@ -1,4 +1,5 @@
 #include "kernel/config.h"
+#include "kernel/arch/cpu_features.h"
 #include "kernel/arch/serial.h"
 #include "kernel/cpu.h"
 #include "kernel/exception.h"
@@ -135,6 +136,7 @@ extern "C" void kmain()
     }
 
     FeatherOS::InitializeExceptions();
+    FeatherOS::Arch::CpuFeatures::InitializeCurrentCpu();
 
     for (size_t i = 0; &__init_array[i] != __init_array_end; i++)
     {

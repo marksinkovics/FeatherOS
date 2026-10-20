@@ -1,5 +1,6 @@
 #include "smp.h"
 
+#include "kernel/arch/cpu_features.h"
 #include "kernel/arch/interrupts.h"
 #include "kernel/arch/serial.h"
 #include "kernel/cpu.h"
@@ -37,6 +38,7 @@ void OnIpi()
     const auto cpu_index = static_cast<uint32_t>(info->extra_argument);
     Cpu::InstallLocalState(cpu_index);
     InitializeSecondaryCpuExceptions(cpu_index);
+    Arch::CpuFeatures::InitializeCurrentCpu();
     if (Cpu::CurrentIndex() != cpu_index)
     {
         Panic("CPU-local state does not match the started CPU");

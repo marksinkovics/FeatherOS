@@ -1,5 +1,6 @@
 #include "kernel_test.h"
 
+#include "kernel/arch/cpu_features.h"
 #include "kernel/arch/serial.h"
 #include "kernel/exception.h"
 #include "kernel/memory/heap.h"
@@ -796,8 +797,12 @@ void RunMemoryTests()
         Panic("User page at a kernel identity-mapped address was rejected");
     }
     auto* user_value = reinterpret_cast<volatile uint64_t*>(user_test_address);
-    *user_value = 0xA11CE55A1234FEDC;
-    const volatile uint64_t observed_user_value = *user_value;
+    uint64_t observed_user_value;
+    {
+        const Arch::CpuFeatures::UserAccessWindow user_access;
+        *user_value = 0xA11CE55A1234FEDC;
+        observed_user_value = *user_value;
+    }
     if (Memory::DestroyAddressSpace(&user_address_space))
     {
         Panic("Active user address space was destroyed");

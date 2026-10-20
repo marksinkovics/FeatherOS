@@ -46,9 +46,40 @@ bool HeapWorks()
     return true;
 }
 
+// Grows the heap until the per-process page limit refuses more, then checks that the memory it
+// already has still works.
+[[noreturn]] void ExhaustHeap()
+{
+    constexpr uint64_t PageSize = 4096;
+    const uint64_t start = ExtendHeap(0);
+    uint64_t pages = 0;
+    while (!IsSyscallError(ExtendHeap(PageSize)))
+    {
+        ++pages;
+    }
+    auto* bytes = reinterpret_cast<volatile uint8_t*>(start);
+    for (uint64_t page = 0; page < pages; ++page)
+    {
+        bytes[page * PageSize] = static_cast<uint8_t>(page);
+    }
+    for (uint64_t page = 0; page < pages; ++page)
+    {
+        if (bytes[page * PageSize] != static_cast<uint8_t>(page))
+        {
+            WriteLine("memtest: heap corrupted after exhaustion");
+            Exit(1);
+        }
+    }
+    WriteText("memtest: page limit reached after ");
+    WriteNumber(pages);
+    WriteLine(" heap pages");
+    Exit(0);
+}
+
 } // namespace
 
-// memtest [overflow]: grows the stack and heap, or overflows the stack into its guard page.
+// memtest [overflow|exhaust]: grows the stack and heap, overflows the stack into its guard page,
+// or grows the heap until the page limit refuses more.
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
     if (arguments != nullptr && arguments->argument_count == 2 &&
@@ -57,6 +88,11 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
         FillStack(1000);
         WriteLine("memtest: stack overflow was not caught");
         Exit(1);
+    }
+    if (arguments != nullptr && arguments->argument_count == 2 &&
+        StringEquals(arguments->argument_values[1], "exhaust"))
+    {
+        ExhaustHeap();
     }
     uint64_t expected = 0;
     for (uint64_t depth = 0; depth <= 32; ++depth)

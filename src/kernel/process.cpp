@@ -1,5 +1,6 @@
 #include "process.h"
 
+#include "kernel/arch/cpu_features.h"
 #include "kernel/arch/rtc.h"
 #include "kernel/console.h"
 #include "kernel/filesystem/initramfs.h"
@@ -78,9 +79,10 @@ bool AllocateZeroedPage(uint64_t* physical_address)
         Memory::FreePageFrame(*physical_address);
         return false;
     }
-    for (uint64_t offset = 0; offset < Memory::PageSize; ++offset)
+    auto* words = reinterpret_cast<volatile uint64_t*>(page);
+    for (uint64_t index = 0; index < Memory::PageSize / sizeof(uint64_t); ++index)
     {
-        page[offset] = 0;
+        words[index] = 0;
     }
     return true;
 }
@@ -147,6 +149,7 @@ bool CopyUserSegment(void*, uint64_t virtual_address, const uint8_t* source, uin
     }
     auto* destination =
         reinterpret_cast<volatile uint8_t*>(static_cast<uintptr_t>(virtual_address));
+    const Arch::CpuFeatures::UserAccessWindow user_access;
     for (uint64_t index = 0; index < size; ++index)
     {
         destination[index] = source[index];
@@ -163,6 +166,7 @@ bool ZeroUserSegment(void*, uint64_t virtual_address, uint64_t size)
     }
     auto* destination =
         reinterpret_cast<volatile uint8_t*>(static_cast<uintptr_t>(virtual_address));
+    const Arch::CpuFeatures::UserAccessWindow user_access;
     for (uint64_t index = 0; index < size; ++index)
     {
         destination[index] = 0;
@@ -231,7 +235,8 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     const ELF::LoadOperations operations = {
         program, MapUserSegment, CopyUserSegment, ZeroUserSegment, ProtectUserSegment,
     };
-    if (!ELF::LoadSegments(image, operations))
+    const uint64_t load_bias = image.position_independent ? program->layout.image_base : 0;
+    if (!ELF::LoadSegments(image, load_bias, operations))
     {
         return false;
     }
@@ -269,7 +274,7 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
         return false;
     }
 
-    program->entry_point = image.entry_point;
+    program->entry_point = image.entry_point + load_bias;
     program->stack_pointer = program->layout.stack_top;
     program->heap_start += program->layout.heap_offset * Memory::PageSize;
     program->heap_break = program->heap_start;
@@ -565,7 +570,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
 
 UserLayout DefaultUserLayout()
 {
-    return {UserStackTop, ArgumentsAddress, 0};
+    return {DefaultImageBase, UserStackTop, ArgumentsAddress, 0};
 }
 
 UserLayout RandomUserLayout()
@@ -576,7 +581,10 @@ UserLayout RandomUserLayout()
     const uint64_t stack_top =
         RandomStackWindowBase +
         (UserStackRegionPages + Random::Next() % SlotCount) * Memory::PageSize;
-    return {stack_top, stack_top + Memory::PageSize, Random::Next() % RandomHeapOffsetPages};
+    const uint64_t image_base =
+        RandomImageWindowBase + (Random::Next() % RandomImageWindowPages) * Memory::PageSize;
+    return {image_base, stack_top, stack_top + Memory::PageSize,
+            Random::Next() % RandomHeapOffsetPages};
 }
 
 void Initialize(uint64_t offset)

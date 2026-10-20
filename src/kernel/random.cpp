@@ -1,5 +1,6 @@
 #include "random.h"
 
+#include "kernel/arch/cpu_features.h"
 #include "kernel/sync/spinlock.h"
 
 namespace FeatherOS::Random
@@ -28,12 +29,14 @@ uint64_t ReadCycleCounter()
 
 } // namespace
 
-// The cycle counter makes successive values unpredictable enough for address randomization,
-// but this is not a cryptographic generator.
+// Hardware randomness is mixed in when the CPU has it; otherwise only the cycle counter, which
+// is unpredictable enough for address randomization but not cryptographic.
 uint64_t Next()
 {
+    uint64_t hardware = 0;
+    Arch::CpuFeatures::ReadHardwareRandom(&hardware);
     Sync::SpinLockGuard guard(random_lock);
-    state += 0x9E3779B97F4A7C15 ^ ReadCycleCounter();
+    state += 0x9E3779B97F4A7C15 ^ ReadCycleCounter() ^ hardware;
     uint64_t value = state;
     value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9;
     value = (value ^ (value >> 27)) * 0x94D049BB133111EB;

@@ -45,6 +45,10 @@ EXPECTED_INTERRUPT = {
     "x86_64": "KERN/IRQ: PIT interrupt acknowledged",
     "aarch64": "KERN/IRQ: GIC software interrupt acknowledged",
 }
+MAX_CPU_PROTECTIONS = {
+    "x86_64": "KERN/I: CPU protections: SMEP SMAP RDRAND",
+    "aarch64": "KERN/I: CPU protections: PAN RNDR",
+}
 EXPECTED_ARCHITECTURE = {
     "x86_64": "KERN/I: Architecture: x86_64",
     "aarch64": "KERN/I: Architecture: aarch64",
@@ -57,14 +61,20 @@ CALC_INPUT = b"nope\n\ncalc 2 3\n"
 # Covers argv, foreground input in a child, and nonzero exit statuses.
 SHELL_INPUT = (
     b"echo hello   feather os\nupper\nmixed Case\ndate\nfanout 6\n"
-    b"memtest\nmemtest overflow\nsleep 1100\nhardening\naslr\naslr\ncalc 1\n"
+    b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
+    b"sleep 1100\nhardening\naslr\naslr\ncalc 1\n"
 )
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
 )
+EXHAUST_OUTPUT = re.compile(
+    r"^memtest: page limit reached after (\d+) heap pages\r?$", re.MULTILINE
+)
+# The 1024-page limit also covers the image, stack, and arguments pages.
+MINIMUM_EXHAUST_PAGES = 1000
 ASLR_OUTPUT = re.compile(
-    r"^aslr: stack=(\d+) args=(\d+) heap=(\d+)\r?$", re.MULTILINE
+    r"^aslr: image=(\d+) stack=(\d+) args=(\d+) heap=(\d+)\r?$", re.MULTILINE
 )
 # QEMU's RTC follows the host clock; allow for boot time and slow hosts.
 MAXIMUM_CLOCK_SKEW_SECONDS = 120
@@ -92,8 +102,13 @@ EXPECTED_SMP = (
 USER_PREEMPTION_OUTPUTS = {"x86_64": b"UIu", "aarch64": b"AIa"}
 INPUT_ACCEPTED_MESSAGE = "KERN/I: Input line accepted"
 INPUT_PROMPT = b"FeatherOS> "
+# Each scripted shell line is typed only once a prompt asks for it, so
+# typed-ahead input never overflows the kernel's input queue.
+LINE_PROMPTS = (INPUT_PROMPT, b"upper> ")
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
+# The scripted shell session runs many programs; AArch64 emulation is slower.
+SHELL_TIMEOUT_SECONDS = 30
 QEMU_CPU_COUNT = 4
 SMP_MESSAGE = f"KERN/I: SMP: {QEMU_CPU_COUNT} CPUs online with IPIs and timers"
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
@@ -135,6 +150,9 @@ def main():
     )
     parser.add_argument("--firmware", help="AArch64 UEFI firmware image")
     parser.add_argument("--disk", required=True, help="Raw virtio block image")
+    parser.add_argument(
+        "--cpu", help="QEMU CPU model; 'max' also requires its CPU protections"
+    )
     parser.add_argument(
         "--expect-panic",
         action="store_true",
@@ -241,7 +259,7 @@ def main():
                 "-machine",
                 "virt",
                 "-cpu",
-                "cortex-a72",
+                args.cpu or "cortex-a72",
                 "-m",
                 "2G",
                 "-smp",
@@ -260,6 +278,8 @@ def main():
         command.extend(
             ["-m", "2G", "-smp", str(QEMU_CPU_COUNT), "-boot", "order=d"]
         )
+        if args.cpu:
+            command.extend(["-cpu", args.cpu])
     command.extend(
         [
             "-drive",
@@ -300,8 +320,17 @@ def main():
         bufsize=0,
     )
     captured = bytearray()
-    deadline = time.monotonic() + QEMU_TIMEOUT_SECONDS
+    timeout = (
+        SHELL_TIMEOUT_SECONDS if args.expect_shell else QEMU_TIMEOUT_SECONDS
+    )
+    deadline = time.monotonic() + timeout
     input_sent = False
+    pending_lines = []
+    if args.expect_calc:
+        pending_lines = CALC_INPUT.splitlines(keepends=True)
+    elif args.expect_shell:
+        pending_lines = SHELL_INPUT.splitlines(keepends=True)
+    lines_sent = 0
     qmp_connection = None
     qmp_channel = None
     input_error = None
@@ -363,8 +392,21 @@ def main():
             break
         captured.extend(chunk)
         clean_output = ANSI_ESCAPE_BYTES.sub(b"", captured)
+        prompt_count = sum(
+            clean_output.count(prompt) for prompt in LINE_PROMPTS
+        )
+        try:
+            while pending_lines and lines_sent < prompt_count:
+                for character in pending_lines.pop(0):
+                    process.stdin.write(bytes((character,)))
+                    process.stdin.flush()
+                    time.sleep(0.02)
+                lines_sent += 1
+        except OSError as error:
+            input_error = str(error)
+            pending_lines = []
         if (
-            (args.expect_input or args.expect_calc or args.expect_shell)
+            args.expect_input
             and not input_sent
             and INPUT_PROMPT in clean_output
         ):
@@ -404,13 +446,7 @@ def main():
                         {"command-line": "sendkey ret"},
                     )
                 else:
-                    if args.expect_calc:
-                        input_sequence = CALC_INPUT
-                    elif args.expect_shell:
-                        input_sequence = SHELL_INPUT
-                    else:
-                        input_sequence = b"abx\x7f\n"
-                    for character in input_sequence:
+                    for character in b"abx\x7f\n":
                         process.stdin.write(bytes((character,)))
                         process.stdin.flush()
                         time.sleep(0.02)
@@ -442,6 +478,12 @@ def main():
     serial_lines = [line for line in output.splitlines() if "KERN/" in line]
     if serial_lines:
         print("\n".join(serial_lines))
+    if args.cpu == "max" and MAX_CPU_PROTECTIONS[args.arch] not in output:
+        print(
+            "FAIL: kernel did not enable the protections of QEMU's max CPU",
+            file=sys.stderr,
+        )
+        return 1
     if args.expect_panic:
         if EXPECTED_PANIC not in output:
             print(
@@ -519,6 +561,17 @@ def main():
         ]
         if missing:
             print(f"FAIL: shell output is missing {missing}", file=sys.stderr)
+            return 1
+        exhausted = [int(pages) for pages in EXHAUST_OUTPUT.findall(output)]
+        if (
+            len(exhausted) != 2
+            or exhausted[0] != exhausted[1]
+            or exhausted[0] < MINIMUM_EXHAUST_PAGES
+        ):
+            print(
+                f"FAIL: page-limit exhaustion runs reported {exhausted}",
+                file=sys.stderr,
+            )
             return 1
         layouts = ASLR_OUTPUT.findall(output)
         if len(layouts) != 2 or any(

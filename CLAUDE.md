@@ -4,9 +4,9 @@ Hobby kernel for **x86-64 and AArch64**, booted by Limine, freestanding C/C++ + 
 
 ## Status (keep this section current)
 
-- Milestones **M1–M8 complete** on both architectures: multi-arch build, exceptions/IRQs, physical/virtual memory + heap, timers + keyboard input, initramfs/VFS/FAT16 over virtio-blk, ELF64 + user mode + syscalls, preemptive scheduler + processes + shell, SMP (4 CPUs in QEMU).
+- Milestones **M1–M8, M12 and M13 complete** on both architectures: multi-arch build, exceptions/IRQs, physical/virtual memory + heap, timers + keyboard input, initramfs/VFS/FAT16 over virtio-blk, ELF64 + user mode + syscalls, preemptive scheduler + processes + shell, SMP (4 CPUs in QEMU).
 - **M8 done:** every CPU schedules from one shared run queue (scheduler lock held across switches, per-CPU idle tasks, IPI wakeups). Per-CPU index via x86-64 `GS` + `SWAPGS` / AArch64 `TPIDR_EL1`. x86-64 uses the local APIC for IPIs and timers, with the legacy PIC kept for devices. The AArch64 kernel runs on `SP_EL1`.
-- **In progress on `feat/scalability_security`: M13, then M12.** Done: dynamic tasks and processes, guard-paged kernel stacks, a per-process page limit, demand-grown user stacks with a guard page, and the `ExtendHeap` syscall. Then task priorities (Low/Normal/High) and the `Sleep` syscall. Remaining M13 (ELF PIE/TLS, copy-on-write) is deferred. M12 part 1 is done (documented invariants, a user-range check, AArch64 PXN, a 16-child limit, the `hardening` negative tests). AArch64 user page tables hold no kernel mappings: devices go through `Memory::MapDevice`. Spawned processes get a randomized stack, arguments page, and heap. Next: PIE loading (enables image ASLR), then M9/M10/M11.
+- **M12 and M13 done** (on `feat/scalability_security`): dynamic tasks and processes, guard-paged kernel stacks, demand-grown user stacks, `ExtendHeap`/`Sleep` syscalls, priorities, static-PIE programs with full ASLR, SMEP/SMAP/PAN plus `RDRAND`/`RNDR` when present (tested with `QEMU_CPU=max`), and the `hardening` negative tests. Deferred items moved to M9 (open-file limit) and M11 (threads/TLS, `fork`/copy-on-write). Next: M9, M10 or M11 (order provisional).
 - Known hard limits: 16 KiB kernel stacks (guard-paged pool), 1024 pages per process, 63-page user stack, no heap shrinking, ≤8 program args in 63 chars, no SSE state saved on x86-64 (user code builds with `-mgeneral-regs-only`), no TLB shootdown or per-CPU run queues, `KLogger` not locked.
 
 ## Branches
@@ -32,7 +32,7 @@ Hobby kernel for **x86-64 and AArch64**, booted by Limine, freestanding C/C++ + 
 bash tools/quality.sh --fix         # clang-format/tidy, ruff, shellcheck/shfmt
 ```
 
-You must always pass an architecture (`--arch` or `ARCH=`). Feature tests are env toggles, e.g. `SHELL_TEST=ON`, `SCHEDULER_TEST=ON`, `SMP_TEST=ON`, `PANIC_TEST=ON`, which map to `FEATHEROS_*_TEST` CMake options. Outputs go under `build/<arch>/`.
+You must always pass an architecture (`--arch` or `ARCH=`). Feature tests are env toggles, e.g. `SHELL_TEST=ON`, `SCHEDULER_TEST=ON`, `SMP_TEST=ON`, `PANIC_TEST=ON` (add `QEMU_CPU=max` for the hardware-protection CPU model), which map to `FEATHEROS_*_TEST` CMake options. Outputs go under `build/<arch>/`.
 
 ## Change workflow: lint before testing
 
