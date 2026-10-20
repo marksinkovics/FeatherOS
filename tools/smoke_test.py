@@ -15,7 +15,7 @@ import time
 
 READY_MESSAGE = "KERN/I: Kernel initialization complete"
 TIMER_STARTED_MESSAGE = "KERN/I: Timer started at 100 Hz"
-UPTIME_MESSAGE = "KERN/I: Uptime:"
+SHELL_BANNER = "FeatherOS shell. Type 'help' for commands."
 VFS_MESSAGE = "KERN/I: VFS: hello.txt read passed"
 FAT16_MESSAGE = "KERN/I: VFS: FAT16 BLOCK.TXT read passed"
 ELF_LOAD_MESSAGE = "KERN/I: ELF64: test image loaded into user address space"
@@ -55,18 +55,23 @@ EXPECTED_ARCHITECTURE = {
 }
 EXPECTED_MEMORY = "KERN/MEMORY: tests passed"
 EXPECTED_TIMER = "KERN/TIMER: periodic ticks passed"
-EXPECTED_CALC = "calc: 2 + 3 = 5"
+EXPECTED_CALC = "69.25"
 EXPECTED_UNKNOWN_COMMAND = "Unknown command: nope"
-CALC_INPUT = b"nope\n\ncalc 2 3\n"
+CALC_INPUT = b"nope\n\ncalc 4 + 66 - (3 / 4)\n"
 # Covers argv, foreground input in a child, and nonzero exit statuses.
 SHELL_INPUT = (
-    b"echo hello   feather os\nupper\nmixed Case\ndate\nfanout 6\n"
+    b"echo hello   feather os\nupper\nmixed Case\ndate\nuptime\nfanout 6\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
-    b"sleep 1100\nhardening\naslr\naslr\ncalc 1\n"
+    b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\n"
+    b"calc\n1 / 3\n7 / 0\nexit\ncalc 1 +\n"
 )
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
+)
+UPTIME_OUTPUT = re.compile(r"^uptime: \d+:\d{2}:\d{2}\r?$", re.MULTILINE)
+PRIMES_WORKER_OUTPUT = re.compile(
+    r"^primes: worker \d+ found \d+ on CPU \d+(?:,\d+)*\r?$", re.MULTILINE
 )
 EXHAUST_OUTPUT = re.compile(
     r"^memtest: page limit reached after (\d+) heap pages\r?$", re.MULTILINE
@@ -88,7 +93,11 @@ EXPECTED_SHELL_OUTPUT = (
     "shell: program terminated by a CPU exception",
     "sleep: slept 1100 ms",
     "hardening: 44 checks passed",
-    "usage: calc <number> <number>",
+    "primes: 9592 primes below 100000 with 4 workers in ",
+    "calc> ",
+    "0.333333",
+    "calc: division by zero",
+    "calc: unexpected end of expression",
     "exit status 1",
 )
 EXPECTED_SCHEDULER = (
@@ -97,14 +106,15 @@ EXPECTED_SCHEDULER = (
 )
 EXPECTED_USER_PREEMPTION = "KERN/SCHEDULER: user-mode preemption passed"
 EXPECTED_SMP = (
-    "KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact"
+    "KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact; "
+    "busy CPUs counted"
 )
 USER_PREEMPTION_OUTPUTS = {"x86_64": b"UIu", "aarch64": b"AIa"}
 INPUT_ACCEPTED_MESSAGE = "KERN/I: Input line accepted"
-INPUT_PROMPT = b"FeatherOS> "
+SHELL_PROMPT = re.compile(rb"^> ", re.MULTILINE)
 # Each scripted shell line is typed only once a prompt asks for it, so
 # typed-ahead input never overflows the kernel's input queue.
-LINE_PROMPTS = (INPUT_PROMPT, b"upper> ")
+LINE_PROMPT = re.compile(rb"^(?:upper|calc)?> ", re.MULTILINE)
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
 # The scripted shell session runs many programs; AArch64 emulation is slower.
@@ -375,7 +385,7 @@ def main():
         else:
             markers = (EXPECTED_TIMER.encode(),)
     else:
-        markers = (UPTIME_MESSAGE.encode(), PANIC_MARKER.encode())
+        markers = (SHELL_BANNER.encode(), PANIC_MARKER.encode())
 
     while process.poll() is None:
         remaining = deadline - time.monotonic()
@@ -392,9 +402,7 @@ def main():
             break
         captured.extend(chunk)
         clean_output = ANSI_ESCAPE_BYTES.sub(b"", captured)
-        prompt_count = sum(
-            clean_output.count(prompt) for prompt in LINE_PROMPTS
-        )
+        prompt_count = len(LINE_PROMPT.findall(clean_output))
         try:
             while pending_lines and lines_sent < prompt_count:
                 for character in pending_lines.pop(0):
@@ -408,7 +416,7 @@ def main():
         if (
             args.expect_input
             and not input_sent
-            and INPUT_PROMPT in clean_output
+            and SHELL_PROMPT.search(clean_output)
         ):
             try:
                 if use_qmp_keyboard:
@@ -553,7 +561,7 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        print("PASS: unknown command rejected; calculator command returned 5")
+        print("PASS: unknown command rejected; calculator returned 69.25")
         return 0
     if args.expect_shell:
         missing = [
@@ -582,6 +590,12 @@ def main():
                 file=sys.stderr,
             )
             return 1
+        if len(PRIMES_WORKER_OUTPUT.findall(output)) != 4:
+            print("FAIL: primes did not report four workers", file=sys.stderr)
+            return 1
+        if UPTIME_OUTPUT.search(output) is None:
+            print("FAIL: uptime did not print H:MM:SS", file=sys.stderr)
+            return 1
         date_match = DATE_OUTPUT.search(output)
         if date_match is None:
             print("FAIL: date did not print a timestamp", file=sys.stderr)
@@ -601,7 +615,7 @@ def main():
             return 1
         print(
             "PASS: shell ran programs with arguments, foreground input, "
-            f"and date ({date_match.group(1)} UTC)"
+            f"uptime, and date ({date_match.group(1)} UTC)"
         )
         return 0
     if args.expect_user_preemption:
@@ -705,8 +719,8 @@ def main():
             file=sys.stderr,
         )
         return 1
-    if re.search(r"KERN/I: Uptime: \d+ seconds", output) is None:
-        print("FAIL: kernel did not report uptime", file=sys.stderr)
+    if SHELL_BANNER not in output:
+        print("FAIL: the shell did not start", file=sys.stderr)
         return 1
     if EXPECTED_ARCHITECTURE[args.arch] not in output:
         print("FAIL: kernel did not report its architecture", file=sys.stderr)

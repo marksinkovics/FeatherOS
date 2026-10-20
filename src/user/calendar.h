@@ -115,6 +115,54 @@ inline bool FormatCalendarTime(const CalendarTime& time,
     return true;
 }
 
+// "Wed Sep 30 12:59 PM" plus a terminator.
+constexpr uint32_t ShortCalendarTimeLength = 20;
+
+// 0 is Sunday; 1970-01-01 was a Thursday.
+inline uint32_t WeekdayFromUnixSeconds(uint64_t seconds)
+{
+    return static_cast<uint32_t>((seconds / 86400 + 4) % 7);
+}
+
+// Writes "Mon Oct 19 9:36 PM": weekday, month, day, and a 12-hour clock without seconds.
+inline void FormatShortCalendarTime(uint64_t seconds, char (&buffer)[ShortCalendarTimeLength])
+{
+    constexpr char weekdays[] = "SunMonTueWedThuFriSat";
+    constexpr char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    const CalendarTime time = CalendarFromUnixSeconds(seconds);
+    const uint32_t weekday = WeekdayFromUnixSeconds(seconds);
+    const uint32_t hour = time.hour % 12 == 0 ? 12 : time.hour % 12;
+    uint32_t length = 0;
+    for (uint32_t index = 0; index < 3; ++index)
+    {
+        buffer[length++] = weekdays[weekday * 3 + index];
+    }
+    buffer[length++] = ' ';
+    for (uint32_t index = 0; index < 3; ++index)
+    {
+        buffer[length++] = months[(time.month - 1) * 3 + index];
+    }
+    buffer[length++] = ' ';
+    if (time.day >= 10)
+    {
+        buffer[length++] = static_cast<char>('0' + time.day / 10);
+    }
+    buffer[length++] = static_cast<char>('0' + time.day % 10);
+    buffer[length++] = ' ';
+    if (hour >= 10)
+    {
+        buffer[length++] = '1';
+    }
+    buffer[length++] = static_cast<char>('0' + hour % 10);
+    buffer[length++] = ':';
+    buffer[length++] = static_cast<char>('0' + time.minute / 10);
+    buffer[length++] = static_cast<char>('0' + time.minute % 10);
+    buffer[length++] = ' ';
+    buffer[length++] = time.hour < 12 ? 'A' : 'P';
+    buffer[length++] = 'M';
+    buffer[length] = '\0';
+}
+
 } // namespace FeatherOS::User
 
 #endif

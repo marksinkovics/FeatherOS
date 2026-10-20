@@ -6,6 +6,7 @@
 #include "kernel/user_context.h"
 #include "user/process.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace FeatherOS::Process
@@ -92,6 +93,8 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
 // Waits for a spawned process to exit, then releases its task and memory and returns console
 // input to its parent.
 bool Wait(ProcessId process_id, uint64_t* exit_status);
+// "kernel" when no process holds the console.
+void ForegroundProgramName(char* buffer, size_t capacity);
 
 } // namespace FeatherOS::Process
 

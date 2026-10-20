@@ -63,8 +63,9 @@ TEST_CASE("program arguments reject oversized lines and argument counts")
     const std::string long_line(FeatherOS::User::MaximumCommandLineLength, 'x');
     REQUIRE_FALSE(
         FeatherOS::Process::BuildProgramArguments(long_line.c_str(), UserAddress, &arguments));
-    REQUIRE_FALSE(
-        FeatherOS::Process::BuildProgramArguments("a b c d e f g h i", UserAddress, &arguments));
-    REQUIRE(FeatherOS::Process::BuildProgramArguments("a b c d e f g h", UserAddress, &arguments));
+    REQUIRE_FALSE(FeatherOS::Process::BuildProgramArguments("a b c d e f g h i j k l m n o p q",
+                                                            UserAddress, &arguments));
+    REQUIRE(FeatherOS::Process::BuildProgramArguments("a b c d e f g h i j k l m n o p",
+                                                      UserAddress, &arguments));
     REQUIRE(arguments.argument_count == FeatherOS::User::MaximumArgumentCount);
 }

@@ -172,6 +172,19 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 
 **Complete when:** both targets enumerate a QEMU USB keyboard and deliver key events through the shared input path.
 
+### 15. Terminal Layout And Status Bar (Complete)
+
+**Summary:** The framebuffer terminal has a status bar on its top row. It shows the foreground program on the left and, on the right, busy/online CPUs and the UTC time. Busy CPUs are counted from scheduler timer ticks. The prompt (`> `) and input are edited inline with a cursor. The `ReadUptime` syscall backs a new `uptime` command, and the once-a-second uptime log is gone. Unit tests cover the bar layout, inline erase across wraps, incremental-versus-full rendering, and the short date format. The SMP test checks busy-CPU accounting, and the shell test runs `uptime`. Follow-ups: `calc` evaluates full expressions with exact fractions, interactively at a `calc> ` prompt or from its arguments (the argument limit rose to 16). The `primes <workers>` demo splits work across processes and reports each worker's CPUs through the new `CurrentCpu` syscall. Spawned programs are now time-sliced on every timer tick on both architectures, so a CPU-bound program no longer keeps its core until it blocks.
+
+- Add a one-row status bar at the top of the framebuffer terminal, above the scrolling text.
+- Show the foreground program's name on the left of the bar, and on the right the busy CPU count over the online CPU count (for example `2/4`) followed by the current RTC date and time as `Mon Oct 19 9:36 PM`.
+- Remove the dedicated input row at the bottom: the prompt and the line being typed appear inline in the scrolling text, like a normal terminal, with Backspace editing in place.
+- Change the shell prompt to `> `.
+- Remove the on-screen uptime and add an `uptime` command that prints it, backed by a new syscall that reports time since boot.
+- Stop the once-a-second uptime log on the terminal and serial port; the smoke test checks the `uptime` command instead.
+
+**Complete when:** on both targets the bar shows the right program, CPU count, and time as programs start and exit, input is edited inline, and QEMU tests cover the `uptime` command and the new prompt.
+
 ## Optional Tracks
 
 These are separately tracked directions and are not prerequisites for the core milestones above:

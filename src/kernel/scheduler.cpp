@@ -46,6 +46,8 @@ Task idle_tasks[Cpu::MaximumCpus];
 alignas(16) uint8_t boot_idle_stack[Memory::KernelStackSize];
 Task* current_tasks[Cpu::MaximumCpus];
 bool cpu_scheduling[Cpu::MaximumCpus];
+// Timer ticks that found the CPU running something other than its idle task.
+volatile uint64_t busy_ticks[Cpu::MaximumCpus];
 TaskId next_task_id = 1;
 bool initialized = false;
 volatile bool preemption_enabled = false;
@@ -385,6 +387,10 @@ void OnTimerTick(uint64_t tick)
     {
         return;
     }
+    if (CurrentTask() != &IdleTask())
+    {
+        ++busy_ticks[Cpu::CurrentIndex()];
+    }
 
     // Interrupt handlers run with interrupts masked.
     scheduler_lock.Lock();
@@ -398,7 +404,13 @@ void OnTimerTick(uint64_t tick)
         }
         task = task->next;
     } while (task != &boot_task);
-    if (CurrentTask() == &IdleTask() || preemption_enabled)
+    // Interrupts reach a preemptible user task only in user mode or while it waits for input, so
+    // switching away is safe there.
+    const auto* user_context =
+        static_cast<const UserExecutionContext*>(CurrentTask()->user_context);
+    const bool user_preemptible =
+        user_context != nullptr && user_context->active && user_context->preemption_enabled;
+    if (CurrentTask() == &IdleTask() || preemption_enabled || user_preemptible)
     {
         if (CurrentTask() != &IdleTask() && CurrentTask()->state == TaskState::Running)
         {
@@ -407,6 +419,11 @@ void OnTimerTick(uint64_t tick)
         Schedule();
     }
     scheduler_lock.Unlock();
+}
+
+uint64_t BusyTickCount(uint32_t cpu_index)
+{
+    return cpu_index < Cpu::MaximumCpus ? busy_ticks[cpu_index] : 0;
 }
 
 bool Wait(TaskId task_id, uint64_t* exit_status)

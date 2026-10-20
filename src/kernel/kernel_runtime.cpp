@@ -347,7 +347,7 @@ void StartSecondaryCpus(KLogger& logger, limine_smp_response* smp)
     {
         logger.Warning("Keyboard device unavailable; use serial input");
     }
-    Console::Initialize(&logger, display_ready ? &term : nullptr);
+    Console::Initialize(display_ready ? &term : nullptr);
 
     // The shell is an ordinary initramfs program; restart it if it ever exits.
     for (;;)

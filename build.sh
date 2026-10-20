@@ -187,7 +187,7 @@ iso() {
     fi
     tar -cf "$initramfs_path" -C "$SCRIPT_DIR/initramfs" hello.txt
     local user_program
-    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout memtest:memtest sleep:sleep hardening:hardening aslr:aslr; do
+    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout memtest:memtest sleep:sleep hardening:hardening aslr:aslr uptime:uptime primes:primes; do
         local user_elf="${user_program%%:*}-$ARCH.elf"
         "$user_compiler" \
             -ffreestanding -fno-builtin -fno-exceptions -fno-rtti -fno-stack-protector \

@@ -3,6 +3,7 @@
 #include "kernel/arch/cpu_features.h"
 #include "kernel/arch/rtc.h"
 #include "kernel/console.h"
+#include "kernel/cpu.h"
 #include "kernel/filesystem/initramfs.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
@@ -47,6 +48,7 @@ struct ProcessRecord
     ProcessId parent;
     uint32_t live_children;
     Scheduler::TaskId task;
+    char name[MaximumCommandNameLength + 1];
     UserProgram program;
 };
 
@@ -561,9 +563,21 @@ uint64_t ReadClockSyscall(void*)
     return Arch::RealTimeClock::ReadUnixSeconds(&seconds) ? seconds : User::SyscallErrorFailed;
 }
 
+uint64_t ReadUptimeSyscall(void*)
+{
+    const uint64_t ticks_per_second = Time::TicksPerSecond();
+    return ticks_per_second == 0 ? User::SyscallErrorFailed
+                                 : Time::TickCount() * 1000 / ticks_per_second;
+}
+
+uint64_t CurrentCpuSyscall(void*)
+{
+    return Cpu::CurrentIndex();
+}
+
 constexpr Syscall::Handlers ProcessSyscallHandlers = {
-    WriteCharacterSyscall, ReadLineSyscall,   SpawnSyscall, WaitSyscall,
-    ReadClockSyscall,      ExtendHeapSyscall, SleepSyscall,
+    WriteCharacterSyscall, ReadLineSyscall, SpawnSyscall,      WaitSyscall,       ReadClockSyscall,
+    ExtendHeapSyscall,     SleepSyscall,    ReadUptimeSyscall, CurrentCpuSyscall,
 };
 
 } // namespace
@@ -740,13 +754,27 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
         process_list = process;
     }
 
+    size_t path_length = 0;
+    while (path[path_length] != '\0')
+    {
+        ++path_length;
+    }
+    const size_t name_length = path_length - (sizeof(UserProgramSuffix) - 1);
+    for (size_t index = 0; index < name_length; ++index)
+    {
+        process->name[index] = path[index];
+    }
+    process->name[name_length] = '\0';
     arguments.process_id = id;
     InitializeUserProgram(&process->program);
     process->program.layout = layout;
     process->program.execution_context.syscall_handlers = &ProcessSyscallHandlers;
     process->program.execution_context.syscall_context = process;
-    if (!LoadUserProgram(image, arguments, &process->program) ||
-        !Scheduler::CreateTask(RunUserProgram, &process->program, &process->task))
+    const bool loaded = LoadUserProgram(image, arguments, &process->program);
+    // Spawned programs are time-sliced: user mode runs with interrupts unmasked, and each timer
+    // tick may switch to another ready task.
+    process->program.execution_context.preemption_enabled = true;
+    if (!loaded || !Scheduler::CreateTask(RunUserProgram, &process->program, &process->task))
     {
         ReleaseUserProgram(&process->program);
         RemoveProcess(process);
@@ -756,6 +784,7 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
         Sync::SpinLockGuard guard(process_lock);
         foreground_process = id;
     }
+    Console::NotifyStatusChanged();
     *process_id = id;
     return SpawnStatus::Started;
 }
@@ -781,7 +810,33 @@ bool Wait(ProcessId process_id, uint64_t* exit_status)
         }
     }
     RemoveProcess(process);
+    Console::NotifyStatusChanged();
     return true;
+}
+
+void ForegroundProgramName(char* buffer, size_t capacity)
+{
+    if (buffer == nullptr || capacity == 0)
+    {
+        return;
+    }
+    Sync::SpinLockGuard guard(process_lock);
+    const ProcessRecord* foreground = nullptr;
+    for (const ProcessRecord* candidate = process_list; candidate != nullptr;
+         candidate = candidate->next)
+    {
+        if (candidate->id == foreground_process)
+        {
+            foreground = candidate;
+        }
+    }
+    const char* name = foreground != nullptr ? foreground->name : "kernel";
+    size_t length = 0;
+    for (; name[length] != '\0' && length < capacity - 1; ++length)
+    {
+        buffer[length] = name[length];
+    }
+    buffer[length] = '\0';
 }
 
 } // namespace FeatherOS::Process

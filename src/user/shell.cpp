@@ -63,7 +63,7 @@ extern "C" [[noreturn]] void _start(const ProgramArguments*)
     char line[MaximumCommandLineLength];
     for (;;)
     {
-        if (IsSyscallError(ReadLine(line, sizeof(line), "FeatherOS> ")))
+        if (IsSyscallError(ReadLine(line, sizeof(line), "> ")))
         {
             WriteLine("shell: could not read input");
             Exit(1);
@@ -79,8 +79,9 @@ extern "C" [[noreturn]] void _start(const ProgramArguments*)
         }
         if (StringEquals(command, "help"))
         {
-            WriteLine("Commands: calc <a> <b>, date, echo <words...>, fanout <n>, "
-                      "aslr, hardening, memtest [overflow|exhaust], sleep <ms>, upper, help");
+            WriteLine("Commands: calc [expression], date, echo <words...>, fanout <n>, "
+                      "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
+                      "sleep <ms>, upper, uptime, help");
             continue;
         }
         RunCommand(command);

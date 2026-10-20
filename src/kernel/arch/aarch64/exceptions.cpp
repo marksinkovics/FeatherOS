@@ -33,7 +33,7 @@ bool WriteSyscallCharacter(void*, char character)
 }
 
 constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {
-    WriteSyscallCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    WriteSyscallCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 
 } // namespace
 

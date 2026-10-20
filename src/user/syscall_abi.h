@@ -18,6 +18,8 @@ enum class SyscallNumber : uint64_t
     ReadClock = 5,      // () -> current UTC time in seconds since 1970-01-01
     ExtendHeap = 6,     // (increment) -> previous program break; 0 queries it
     Sleep = 7,          // (milliseconds) -> 0 after at least that long
+    ReadUptime = 8,     // () -> milliseconds since the kernel's timer started
+    CurrentCpu = 9,     // () -> index of the CPU running the caller
 };
 
 // Results at or above SyscallErrorBase report failures instead of values.
