@@ -46,9 +46,21 @@ bool BuildProgramArguments(const char* command_line, uint64_t user_address,
         }
         arguments->argument_values[arguments->argument_count++] =
             reinterpret_cast<const char*>(storage_address + storage_length);
-        while (index < length && command_line[index] != ' ')
+        // Double quotes group words, so "my notes.txt" is one argument; the quotes are dropped.
+        bool quoted = false;
+        while (index < length && (quoted || command_line[index] != ' '))
         {
+            if (command_line[index] == '"')
+            {
+                quoted = !quoted;
+                ++index;
+                continue;
+            }
             arguments->argument_storage[storage_length++] = command_line[index++];
+        }
+        if (quoted)
+        {
+            return false;
         }
         // Each argument is shorter than its source text plus separator, so the terminator fits.
         arguments->argument_storage[storage_length++] = '\0';

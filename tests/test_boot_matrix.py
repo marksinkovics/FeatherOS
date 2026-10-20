@@ -19,6 +19,8 @@ class BootMatrixTests(unittest.TestCase):
         scheduler_test=False,
         user_preemption_test=False,
         smp_test=False,
+        storage_test=False,
+        disk_layout="mbr",
         calc_test=False,
         shell_test=False,
         input_test=False,
@@ -35,6 +37,8 @@ class BootMatrixTests(unittest.TestCase):
             "ON" if user_preemption_test else "OFF"
         )
         environment["SMP_TEST"] = "ON" if smp_test else "OFF"
+        environment["STORAGE_TEST"] = "ON" if storage_test else "OFF"
+        environment["DISK_LAYOUT"] = disk_layout
         environment["CALC_TEST"] = "ON" if calc_test else "OFF"
         environment["SHELL_TEST"] = "ON" if shell_test else "OFF"
         environment["INPUT_TEST"] = "ON" if input_test else "OFF"
@@ -133,6 +137,18 @@ class BootMatrixTests(unittest.TestCase):
 
     def test_26_aarch64_shell_with_cpu_protections(self):
         self.run_boot_case("aarch64", shell_test=True, qemu_cpu="max")
+
+    def test_27_x86_64_storage_persistence(self):
+        self.run_boot_case("x86_64", storage_test=True)
+
+    def test_28_aarch64_storage_persistence(self):
+        self.run_boot_case("aarch64", storage_test=True)
+
+    def test_29_x86_64_storage_on_gpt_disk(self):
+        self.run_boot_case("x86_64", storage_test=True, disk_layout="gpt")
+
+    def test_30_aarch64_storage_on_gpt_disk(self):
+        self.run_boot_case("aarch64", storage_test=True, disk_layout="gpt")
 
 
 if __name__ == "__main__":

@@ -58,21 +58,66 @@ void RunCommand(const char* line)
     }
 }
 
+// A built-in, because only the shell's own working directory should change. One pair of double
+// quotes around the directory is dropped, as program arguments drop theirs.
+void ChangeDirectoryCommand(const char* argument)
+{
+    while (*argument == ' ')
+    {
+        ++argument;
+    }
+    char path[MaximumPathLength];
+    uint64_t length = 0;
+    for (const char* character = argument; *character != '\0' && length < sizeof(path) - 1;
+         ++character)
+    {
+        if (*character != '"')
+        {
+            path[length++] = *character;
+        }
+    }
+    while (length > 0 && path[length - 1] == ' ')
+    {
+        --length;
+    }
+    path[length] = '\0';
+    const char* target = length == 0 ? "/disk" : path;
+    if (IsSyscallError(ChangeDirectory(target)))
+    {
+        WriteText("cd: ");
+        WriteText(target);
+        WriteLine(": no such directory");
+    }
+}
+
+// "<working directory>> ", such as "/disk/docs> ".
+void BuildPrompt(char (&prompt)[MaximumPathLength + 3])
+{
+    const uint64_t length = CurrentDirectory(prompt, MaximumPathLength);
+    const uint64_t end = IsSyscallError(length) ? 0 : length;
+    prompt[end] = '>';
+    prompt[end + 1] = ' ';
+    prompt[end + 2] = '\0';
+}
+
 } // namespace
 
 constexpr char Help[] =
     "usage: shell\n"
     "Runs programs by name and waits for each one. Type help for the commands;\n"
-    "Ctrl+C stops the running command.";
+    "Ctrl+C stops the running command. The prompt shows the working directory,\n"
+    "which cd changes (cd alone returns to /disk) and programs inherit.";
 
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
     ExitWithHelpIfRequested(arguments, Help);
     WriteLine("FeatherOS shell. Type 'help' for commands.");
     char line[MaximumCommandLineLength];
+    char prompt[MaximumPathLength + 3];
     for (;;)
     {
-        if (IsSyscallError(ReadLine(line, sizeof(line), "> ")))
+        BuildPrompt(prompt);
+        if (IsSyscallError(ReadLine(line, sizeof(line), prompt)))
         {
             WriteLine("shell: could not read input");
             Exit(1);
@@ -86,11 +131,26 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
         {
             continue;
         }
+        if (StringEquals(command, "cd") ||
+            (command[0] == 'c' && command[1] == 'd' && command[2] == ' '))
+        {
+            ChangeDirectoryCommand(command + 2);
+            continue;
+        }
+        if (StringEquals(command, "pwd"))
+        {
+            char directory[MaximumPathLength];
+            WriteLine(IsSyscallError(CurrentDirectory(directory, sizeof(directory))) ? "?"
+                                                                                     : directory);
+            continue;
+        }
         if (StringEquals(command, "help"))
         {
-            WriteLine("Commands: calc [expression], date, echo <words...>, fanout <n>, "
-                      "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
-                      "sleep <ms>, upper, uptime, help");
+            WriteLine(
+                "Commands: calc [expression], date, echo <words...>, fanout <n>, "
+                "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
+                "sleep <ms>, upper, uptime, filetest, ls, cat <file>, write [-a] <file> <text>, "
+                "rm <file>, mkdir <dir>, rmdir <dir>, cd [dir], pwd, help");
             WriteLine("Run <command> --help to see what a command does.");
             continue;
         }

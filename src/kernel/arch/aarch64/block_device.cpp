@@ -2,6 +2,7 @@
 
 #include "kernel/memory/device_memory.h"
 #include "kernel/memory/page_allocator.h"
+#include "kernel/sync/spinlock.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -55,6 +56,8 @@ constexpr uint32_t StatusOffset = DataOffset + SectorSize;
 constexpr uint16_t DescriptorNext = 1;
 constexpr uint16_t DescriptorDeviceWrite = 2;
 constexpr uint32_t RequestRead = 0;
+constexpr uint32_t RequestWrite = 1;
+constexpr uint32_t FeatureReadOnly = 1U << 5;
 constexpr uint8_t RequestStatusPending = 0xFF;
 
 struct FdtNode
@@ -96,7 +99,10 @@ uint64_t queue_physical_address = 0;
 volatile uint8_t* queue_virtual_address = nullptr;
 uint64_t capacity_sectors = 0;
 uint16_t available_index_value = 0;
+bool read_only = false;
 bool initialized = false;
+// One request buffer serves every caller, so requests from different CPUs take turns.
+Sync::SpinLock device_lock;
 
 uint32_t ReadBigEndian32(const uint8_t* data)
 {
@@ -371,6 +377,70 @@ bool InitializeQueue()
     return true;
 }
 
+// Writes source to the sector when it is set, otherwise reads the sector into destination.
+bool Transfer(uint64_t sector, const uint8_t* source, uint8_t* destination)
+{
+    const bool write = source != nullptr;
+    if (!initialized || (write ? read_only : destination == nullptr) || sector >= capacity_sectors)
+    {
+        return false;
+    }
+
+    Sync::SpinLockGuard guard(device_lock);
+    auto* descriptors = reinterpret_cast<volatile Descriptor*>(queue_virtual_address);
+    auto* request = reinterpret_cast<volatile BlockRequest*>(queue_virtual_address + RequestOffset);
+    auto* data = queue_virtual_address + DataOffset;
+    auto* status = queue_virtual_address + StatusOffset;
+    auto* available_index =
+        reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 2);
+    auto* available_ring =
+        reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 4);
+    auto* used_index = reinterpret_cast<volatile uint16_t*>(queue_virtual_address + UsedOffset + 2);
+    auto* used_elements =
+        reinterpret_cast<volatile UsedElement*>(queue_virtual_address + UsedOffset + 4);
+
+    request->type = write ? RequestWrite : RequestRead;
+    request->reserved = 0;
+    request->sector = sector;
+    // The device writes the data buffer for reads and reads it for writes.
+    descriptors[1].flags = write ? DescriptorNext : DescriptorNext | DescriptorDeviceWrite;
+    if (write)
+    {
+        for (uint32_t index = 0; index < SectorSize; ++index)
+        {
+            data[index] = source[index];
+        }
+    }
+    *status = RequestStatusPending;
+    const uint16_t used_slot = *used_index % QueueSize;
+    const uint16_t expected_used_index = static_cast<uint16_t>(*used_index + 1);
+    available_ring[available_index_value % QueueSize] = 0;
+    ++available_index_value;
+    asm volatile("dmb oshst" ::: "memory");
+    *available_index = available_index_value;
+    Registers()[VirtioQueueNotify / 4] = 0;
+
+    uint64_t attempts = 0;
+    while (*used_index != expected_used_index && attempts < 10000000)
+    {
+        ++attempts;
+    }
+    if (*used_index != expected_used_index || used_elements[used_slot].id != 0 || *status != 0)
+    {
+        return false;
+    }
+
+    asm volatile("dmb oshld" ::: "memory");
+    if (!write)
+    {
+        for (uint32_t index = 0; index < SectorSize; ++index)
+        {
+            destination[index] = data[index];
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 bool Initialize(const void* platform_data, uint64_t hhdm_offset)
@@ -388,7 +458,7 @@ bool Initialize(const void* platform_data, uint64_t hhdm_offset)
     registers[VirtioDeviceStatus / 4] = StatusAcknowledge;
     registers[VirtioDeviceStatus / 4] = StatusAcknowledge | StatusDriver;
     registers[VirtioDeviceFeaturesSelect / 4] = 0;
-    (void)registers[VirtioDeviceFeatures / 4];
+    read_only = (registers[VirtioDeviceFeatures / 4] & FeatureReadOnly) != 0;
     registers[VirtioDeviceFeaturesSelect / 4] = 1;
     if ((registers[VirtioDeviceFeatures / 4] & FeatureVersionOne) == 0)
     {
@@ -422,50 +492,12 @@ uint64_t SectorCount()
 
 bool ReadSector(uint64_t sector, void* buffer)
 {
-    if (!initialized || buffer == nullptr || sector >= capacity_sectors)
-    {
-        return false;
-    }
+    return Transfer(sector, nullptr, static_cast<uint8_t*>(buffer));
+}
 
-    auto* request = reinterpret_cast<volatile BlockRequest*>(queue_virtual_address + RequestOffset);
-    auto* data = queue_virtual_address + DataOffset;
-    auto* status = queue_virtual_address + StatusOffset;
-    auto* available_index =
-        reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 2);
-    auto* available_ring =
-        reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 4);
-    auto* used_index = reinterpret_cast<volatile uint16_t*>(queue_virtual_address + UsedOffset + 2);
-    auto* used_elements =
-        reinterpret_cast<volatile UsedElement*>(queue_virtual_address + UsedOffset + 4);
-
-    request->type = RequestRead;
-    request->reserved = 0;
-    request->sector = sector;
-    *status = RequestStatusPending;
-    const uint16_t expected_used_index = static_cast<uint16_t>(*used_index + 1);
-    available_ring[available_index_value % QueueSize] = 0;
-    ++available_index_value;
-    asm volatile("dmb oshst" ::: "memory");
-    *available_index = available_index_value;
-    Registers()[VirtioQueueNotify / 4] = 0;
-
-    uint64_t attempts = 0;
-    while (*used_index != expected_used_index && attempts < 10000000)
-    {
-        ++attempts;
-    }
-    if (*used_index != expected_used_index || used_elements[0].id != 0 || *status != 0)
-    {
-        return false;
-    }
-
-    asm volatile("dmb oshld" ::: "memory");
-    auto* destination = static_cast<uint8_t*>(buffer);
-    for (uint32_t index = 0; index < SectorSize; ++index)
-    {
-        destination[index] = data[index];
-    }
-    return true;
+bool WriteSector(uint64_t sector, const void* buffer)
+{
+    return Transfer(sector, static_cast<const uint8_t*>(buffer), nullptr);
 }
 
 } // namespace FeatherOS::BlockDevice

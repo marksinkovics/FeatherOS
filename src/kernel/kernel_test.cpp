@@ -11,6 +11,11 @@
 #if defined(FEATHEROS_SCHEDULER_TEST) || defined(FEATHEROS_SMP_TEST)
 #include "kernel/scheduler.h"
 #endif
+#if defined(FEATHEROS_STORAGE_TEST)
+#include "kernel/filesystem/fat16.h"
+#include "kernel/filesystem/vfs.h"
+#include "kernel/storage/block_device.h"
+#endif
 #if defined(FEATHEROS_SMP_TEST)
 #include "kernel/cpu.h"
 #endif
@@ -932,6 +937,203 @@ void RunSmpTests()
     }
     Serial::Write("KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact; busy CPUs "
                   "counted\n");
+}
+#endif
+
+#if defined(FEATHEROS_STORAGE_TEST)
+namespace
+{
+
+// The last sector before the FAT16 partition, which nothing else uses.
+constexpr uint64_t ScratchSector = 2047;
+constexpr char BootCountMagic[] = "FOSBOOT";
+
+uint8_t PatternByte(uint32_t index, uint64_t boot_count)
+{
+    return static_cast<uint8_t>(index * 7 + boot_count);
+}
+
+// The host-side check in tools/smoke_test.py rebuilds the same text.
+constexpr char PersistentFile[] = "/disk/PERSIST.TXT";
+constexpr char ScratchFile[] = "/disk/SCRATCH.TMP";
+constexpr uint32_t PersistentLines = 200;
+
+uint64_t FormatLine(char (&line)[48], uint64_t boot_count, uint32_t line_number)
+{
+    if (!String::FormatTo(line, sizeof(line), "FeatherOS boot {} line {}\n", boot_count,
+                          line_number))
+    {
+        Panic("Storage test line formatting failed");
+    }
+    uint64_t length = 0;
+    while (line[length] != '\0')
+    {
+        ++length;
+    }
+    return length;
+}
+
+void WriteLines(VFS::FileHandle* file, uint64_t boot_count, uint32_t line_count)
+{
+    for (uint32_t line_number = 0; line_number < line_count; ++line_number)
+    {
+        char line[48];
+        const uint64_t length = FormatLine(line, boot_count, line_number);
+        uint64_t written;
+        if (!VFS::Write(file, line, length, &written) || written != length)
+        {
+            Panic("Storage test file write failed");
+        }
+    }
+}
+
+void CheckPersistentFile(uint64_t boot_count)
+{
+    VFS::FileHandle file;
+    if (!VFS::Open(PersistentFile, &file))
+    {
+        Panic("Storage test file is missing");
+    }
+    for (uint32_t line_number = 0; line_number < PersistentLines; ++line_number)
+    {
+        char expected[48];
+        const uint64_t length = FormatLine(expected, boot_count, line_number);
+        char actual[48];
+        uint64_t bytes_read;
+        if (!VFS::Read(&file, actual, length, &bytes_read) || bytes_read != length)
+        {
+            Panic("Storage test file is too short");
+        }
+        for (uint64_t index = 0; index < length; ++index)
+        {
+            if (actual[index] != expected[index])
+            {
+                Panic("Storage test file has the wrong contents");
+            }
+        }
+    }
+    char extra;
+    uint64_t bytes_read;
+    if (!VFS::Read(&file, &extra, 1, &bytes_read) || bytes_read != 0)
+    {
+        Panic("Storage test file is too long");
+    }
+    VFS::Close(&file);
+}
+
+// Rewrites the previous boot's file in place, then checks that deleting a file returns its
+// clusters.
+void RunFileTests(uint64_t boot_count)
+{
+    VFS::FileHandle file;
+    const bool exists = VFS::Open(PersistentFile, &file);
+    if (exists != (boot_count > 1))
+    {
+        Panic("Storage test file state does not match the boot count");
+    }
+    if (exists)
+    {
+        VFS::Close(&file);
+        CheckPersistentFile(boot_count - 1);
+        if (!VFS::Open(PersistentFile, &file) || !VFS::Truncate(&file, 0))
+        {
+            Panic("Storage test file truncation failed");
+        }
+    }
+    else if (!VFS::Create(PersistentFile, &file))
+    {
+        Panic("Storage test file creation failed");
+    }
+    WriteLines(&file, boot_count, PersistentLines);
+    VFS::Close(&file);
+    CheckPersistentFile(boot_count);
+
+    const uint32_t free_clusters = FAT16::FreeClusterCount();
+    if (!VFS::Create(ScratchFile, &file))
+    {
+        Panic("Storage scratch file creation failed");
+    }
+    WriteLines(&file, boot_count, 100);
+    VFS::Close(&file);
+    if (FAT16::FreeClusterCount() >= free_clusters || !VFS::Remove(ScratchFile) ||
+        FAT16::FreeClusterCount() != free_clusters)
+    {
+        Panic("Removing the storage scratch file did not free its clusters");
+    }
+}
+
+} // namespace
+
+// Each boot reads the previous boot's count from the scratch sector, so running twice on one disk
+// image shows that writes persist across a restart.
+void RunStorageTests()
+{
+    uint8_t sector[BlockDevice::SectorSize];
+    if (!BlockDevice::ReadSector(ScratchSector, sector))
+    {
+        Panic("Could not read the storage scratch sector");
+    }
+    uint64_t boot_count = 0;
+    bool has_count = true;
+    for (uint32_t index = 0; index < sizeof(BootCountMagic); ++index)
+    {
+        has_count = has_count && sector[index] == static_cast<uint8_t>(BootCountMagic[index]);
+    }
+    if (has_count)
+    {
+        for (uint32_t index = 0; index < sizeof(uint64_t); ++index)
+        {
+            boot_count |= static_cast<uint64_t>(sector[sizeof(BootCountMagic) + index])
+                          << (8 * index);
+        }
+    }
+    ++boot_count;
+
+    constexpr uint32_t PatternStart = sizeof(BootCountMagic) + sizeof(uint64_t);
+    for (uint32_t index = 0; index < sizeof(BootCountMagic); ++index)
+    {
+        sector[index] = static_cast<uint8_t>(BootCountMagic[index]);
+    }
+    for (uint32_t index = 0; index < sizeof(uint64_t); ++index)
+    {
+        sector[sizeof(BootCountMagic) + index] = static_cast<uint8_t>(boot_count >> (8 * index));
+    }
+    for (uint32_t index = PatternStart; index < BlockDevice::SectorSize; ++index)
+    {
+        sector[index] = PatternByte(index, boot_count);
+    }
+    if (!BlockDevice::WriteSector(ScratchSector, sector))
+    {
+        Panic("Could not write the storage scratch sector");
+    }
+    if (BlockDevice::WriteSector(BlockDevice::SectorCount(), sector))
+    {
+        Panic("A write past the end of the disk succeeded");
+    }
+
+    uint8_t read_back[BlockDevice::SectorSize];
+    if (!BlockDevice::ReadSector(ScratchSector, read_back))
+    {
+        Panic("Could not read back the storage scratch sector");
+    }
+    for (uint32_t index = 0; index < BlockDevice::SectorSize; ++index)
+    {
+        if (read_back[index] != sector[index])
+        {
+            Panic("Storage scratch sector read back different data");
+        }
+    }
+
+    RunFileTests(boot_count);
+
+    char message[80];
+    if (!String::FormatTo(message, sizeof(message),
+                          "KERN/STORAGE: sector and FAT16 file writes verified; boot count {}\n",
+                          boot_count))
+    {
+        Panic("Storage test message formatting failed");
+    }
+    Serial::Write(message);
 }
 #endif
 

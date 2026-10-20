@@ -5,6 +5,8 @@
 #include "kernel/console.h"
 #include "kernel/cpu.h"
 #include "kernel/filesystem/initramfs.h"
+#include "kernel/files.h"
+#include "kernel/filesystem/path.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/panic.h"
@@ -31,7 +33,9 @@ namespace
 constexpr uint32_t DefaultProcessPageLimit = 1024;
 constexpr uint32_t MaximumChildrenPerProcess = 16;
 constexpr size_t MaximumCommandNameLength = 32;
-constexpr size_t MaximumPromptLength = 32;
+// Room for the shell's prompt, which shows its working directory.
+constexpr size_t MaximumPromptLength = User::MaximumPathLength + 8;
+constexpr char DefaultWorkingDirectory[] = "/disk";
 
 #if defined(ARCH_x86_64)
 constexpr uint16_t UserMachine = ELF::MachineX86_64;
@@ -49,6 +53,9 @@ struct ProcessRecord
     uint32_t live_children;
     Scheduler::TaskId task;
     char name[MaximumCommandNameLength + 1];
+    Files::Table files;
+    // Relative paths in file syscalls start here; children inherit it.
+    char working_directory[User::MaximumPathLength];
     UserProgram program;
 };
 
@@ -422,6 +429,36 @@ bool UserRangeWritable(const ProcessRecord& process, uint64_t address, uint64_t 
     return true;
 }
 
+bool UserRangeReadable(const ProcessRecord& process, uint64_t address, uint64_t size)
+{
+    if (size == 0 || address > UINT64_MAX - (size - 1))
+    {
+        return false;
+    }
+    for (uint64_t index = 0; index < size; ++index)
+    {
+        if (UserByte(process, address + index, false) == nullptr)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CopyFromUser(const ProcessRecord& process, uint64_t address, void* destination, size_t size)
+{
+    if (!UserRangeReadable(process, address, size))
+    {
+        return false;
+    }
+    auto* bytes = static_cast<uint8_t*>(destination);
+    for (size_t index = 0; index < size; ++index)
+    {
+        bytes[index] = *UserByte(process, address + index, false);
+    }
+    return true;
+}
+
 bool CopyToUser(const ProcessRecord& process, uint64_t address, const void* source, size_t size)
 {
     if (!UserRangeWritable(process, address, size))
@@ -457,6 +494,15 @@ bool CopyStringFromUser(const ProcessRecord& process, uint64_t address, char* bu
         }
     }
     return false;
+}
+
+// Copies a path argument and resolves it against the process's working directory.
+bool CopyPathFromUser(const ProcessRecord& process, uint64_t address,
+                      char (&path)[User::MaximumPathLength])
+{
+    char text[User::MaximumPathLength];
+    return CopyStringFromUser(process, address, text, sizeof(text)) &&
+           Path::Resolve(process.working_directory, text, path);
 }
 
 bool WriteCharacterSyscall(void*, char character)
@@ -607,9 +653,207 @@ uint64_t CurrentCpuSyscall(void*)
     return Cpu::CurrentIndex();
 }
 
+// File data moves through a kernel buffer of this size, and each chunk is a separate filesystem
+// call.
+constexpr uint64_t FileChunkSize = 512;
+
+uint64_t OpenSyscall(void* context, uint64_t path, uint64_t flags)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    char path_text[User::MaximumPathLength];
+    if (!CopyPathFromUser(*process, path, path_text))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    return Files::Open(&process->files, path_text, flags);
+}
+
+uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64_t length)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    uint8_t chunk[FileChunkSize];
+    if (length == 0)
+    {
+        return Files::Read(&process->files, descriptor, nullptr, 0);
+    }
+    // Checking the whole range first keeps a bad buffer from consuming file data.
+    if (!UserRangeWritable(*process, buffer, length))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    uint64_t total = 0;
+    while (total < length)
+    {
+        const uint64_t wanted = length - total < FileChunkSize ? length - total : FileChunkSize;
+        const uint64_t count = Files::Read(&process->files, descriptor, chunk, wanted);
+        if (User::IsSyscallError(count))
+        {
+            return total > 0 ? total : count;
+        }
+        if (count > 0 && !CopyToUser(*process, buffer + total, chunk, count))
+        {
+            return User::SyscallErrorInvalidArgument;
+        }
+        total += count;
+        if (count < wanted)
+        {
+            break;
+        }
+    }
+    return total;
+}
+
+uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64_t length)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    uint8_t chunk[FileChunkSize];
+    if (length == 0)
+    {
+        return Files::Write(&process->files, descriptor, nullptr, 0);
+    }
+    if (!UserRangeReadable(*process, buffer, length))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    uint64_t total = 0;
+    while (total < length)
+    {
+        const uint64_t wanted = length - total < FileChunkSize ? length - total : FileChunkSize;
+        if (!CopyFromUser(*process, buffer + total, chunk, wanted))
+        {
+            return User::SyscallErrorInvalidArgument;
+        }
+        const uint64_t count = Files::Write(&process->files, descriptor, chunk, wanted);
+        if (User::IsSyscallError(count))
+        {
+            return total > 0 ? total : count;
+        }
+        total += count;
+        if (count < wanted)
+        {
+            break;
+        }
+    }
+    return total;
+}
+
+uint64_t CloseSyscall(void* context, uint64_t descriptor)
+{
+    return Files::Close(&static_cast<ProcessRecord*>(context)->files, descriptor);
+}
+
+uint64_t SeekSyscall(void* context, uint64_t descriptor, uint64_t offset)
+{
+    return Files::Seek(&static_cast<ProcessRecord*>(context)->files, descriptor, offset);
+}
+
+// Copies the path argument and passes it to one of the path-only Files calls.
+uint64_t PathSyscall(void* context, uint64_t path, uint64_t (*operation)(const char*))
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    char path_text[User::MaximumPathLength];
+    if (!CopyPathFromUser(*process, path, path_text))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    return operation(path_text);
+}
+
+uint64_t RemoveSyscall(void* context, uint64_t path)
+{
+    return PathSyscall(context, path, Files::Remove);
+}
+
+uint64_t MakeDirectorySyscall(void* context, uint64_t path)
+{
+    return PathSyscall(context, path, Files::MakeDirectory);
+}
+
+uint64_t RemoveDirectorySyscall(void* context, uint64_t path)
+{
+    return PathSyscall(context, path, Files::RemoveDirectory);
+}
+
+uint64_t ChangeDirectorySyscall(void* context, uint64_t path)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    char path_text[User::MaximumPathLength];
+    if (!CopyPathFromUser(*process, path, path_text))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    const uint64_t result = Files::CheckDirectory(path_text);
+    if (User::IsSyscallError(result))
+    {
+        return result;
+    }
+    for (size_t index = 0; index < sizeof(path_text); ++index)
+    {
+        process->working_directory[index] = path_text[index];
+        if (path_text[index] == '\0')
+        {
+            break;
+        }
+    }
+    return 0;
+}
+
+uint64_t CurrentDirectorySyscall(void* context, uint64_t buffer, uint64_t capacity)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    uint64_t length = 0;
+    while (process->working_directory[length] != '\0')
+    {
+        ++length;
+    }
+    if (capacity <= length || !CopyToUser(*process, buffer, process->working_directory, length + 1))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    return length;
+}
+
+uint64_t ReadDirectorySyscall(void* context, uint64_t path, uint64_t index, uint64_t entry)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    char path_text[User::MaximumPathLength];
+    User::DirectoryEntry directory_entry;
+    if (!CopyPathFromUser(*process, path, path_text) ||
+        !UserRangeWritable(*process, entry, sizeof(directory_entry)))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    const uint64_t result = Files::ReadDirectory(path_text, index, &directory_entry);
+    if (User::IsSyscallError(result))
+    {
+        return result;
+    }
+    return CopyToUser(*process, entry, &directory_entry, sizeof(directory_entry))
+               ? 0
+               : User::SyscallErrorInvalidArgument;
+}
+
 constexpr Syscall::Handlers ProcessSyscallHandlers = {
-    WriteCharacterSyscall, ReadLineSyscall, SpawnSyscall,      WaitSyscall,       ReadClockSyscall,
-    ExtendHeapSyscall,     SleepSyscall,    ReadUptimeSyscall, CurrentCpuSyscall,
+    WriteCharacterSyscall,
+    ReadLineSyscall,
+    SpawnSyscall,
+    WaitSyscall,
+    ReadClockSyscall,
+    ExtendHeapSyscall,
+    SleepSyscall,
+    ReadUptimeSyscall,
+    CurrentCpuSyscall,
+    OpenSyscall,
+    ReadSyscall,
+    WriteSyscall,
+    CloseSyscall,
+    SeekSyscall,
+    RemoveSyscall,
+    ReadDirectorySyscall,
+    MakeDirectorySyscall,
+    RemoveDirectorySyscall,
+    ChangeDirectorySyscall,
+    CurrentDirectorySyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -617,6 +861,7 @@ uint64_t RunProcess(void* context)
 {
     auto* process = static_cast<ProcessRecord*>(context);
     const uint64_t exit_status = RunUserProgram(&process->program);
+    Files::CloseAll(&process->files);
     for (;;)
     {
         ProcessId child = 0;
@@ -803,6 +1048,7 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
                 parent_record = candidate;
             }
         }
+        const char* working_directory = DefaultWorkingDirectory;
         if (parent_record != nullptr)
         {
             if (parent_record->live_children == MaximumChildrenPerProcess)
@@ -811,6 +1057,15 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
                 return SpawnStatus::NoResources;
             }
             ++parent_record->live_children;
+            working_directory = parent_record->working_directory;
+        }
+        for (size_t index = 0; index < sizeof(process->working_directory); ++index)
+        {
+            process->working_directory[index] = working_directory[index];
+            if (working_directory[index] == '\0')
+            {
+                break;
+            }
         }
         id = next_process_id++;
         process->id = id;

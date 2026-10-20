@@ -97,14 +97,32 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 
 **Complete:** Every CPU schedules from a shared run queue under the scheduler lock, with per-CPU idle tasks and IPI wakeups of idle CPUs, so tasks and user programs run on any CPU. The framebuffer console and page-table edits are locked, and AArch64 kernel code runs on `SP_EL1` so exception frames stay on each task's stack. QEMU tests verify that tasks run concurrently on three CPUs with an exact shared locked counter, and every shell and user-mode test runs with four CPUs. Follow-on work: per-CPU run queues and load balancing, TLB shootdown once kernel pages are unmapped or address spaces are shared, I/O APIC routing for x86-64 device interrupts, and a lock for `KLogger`.
 
-### 9. Persistent Storage
+### 9. Persistent Storage (Complete)
 
 - Extend block-device and VFS support to allow writes as well as reads.
 - Add a small writable filesystem and define clear behavior for errors and filesystem inconsistencies.
 - Test persistence across kernel and QEMU restarts.
 - Extend the FAT driver with GPT partition tables, subdirectories, and long filenames.
-- Add storage drivers for physical hardware beyond the QEMU virtio devices.
+- Give the shell a current directory: a `cd` command, relative paths, and the directory shown in the prompt.
 - Expose files to user programs through file-descriptor syscalls (open, read, write, close) with a per-process open-file limit (moved from M12).
+
+**Part 1 (complete):** Both virtio-blk drivers write sectors as well as read them. They serialize requests across CPUs and refuse writes to a read-only device. `STORAGE_TEST` boots one disk image twice; the second boot reads the boot counter that the first boot wrote.
+
+**Part 2 (complete):** FAT16 can create, write, shrink, and remove files in its root directory through the VFS. It zeroes new clusters, keeps the FAT copies identical, rejects looping chains, and orders updates so an interruption only leaks clusters. A full disk ends a write cleanly. Unit tests cover multi-cluster writes, overwrites, appends at cluster boundaries, truncation, removal, bad names, a full root directory, a full disk, and looping chains. `STORAGE_TEST` rewrites a multi-cluster file on each boot, and the smoke test checks the image with mtools.
+
+**Part 3 (complete):** The `Open`, `Read`, `Write`, `Close`, `Seek`, and `Remove` syscalls give each process up to 16 descriptors, which is the open-file limit moved here from M12. A disk file has one writer or many readers, an open file cannot be removed, and descriptors close when a process exits. A blocking mutex serializes filesystem access. Unit tests cover descriptor numbering, the limit, flags, access modes, and sharing rules. The shell test's `filetest` runs 33 checks in QEMU on both architectures.
+
+**Part 4 (complete):** The shell has `ls`, `cat`, `write [-a]`, and `rm`, backed by a `ReadDirectory` syscall and an `OpenAppend` flag. `STORAGE_TEST` writes a file with these tools on the first boot and reads it back, removes it, and lists the disk on the second, with mtools checking the image after each boot.
+
+**Part 5 (complete):** Partition discovery reads GUID partition tables, checking both CRC32s, and falls back to the MBR for non-GPT disks. `DISK_LAYOUT=gpt` builds a GPT test disk that macOS also recognizes, unit tests cover a valid table and damaged ones, and matrix cases run the storage test on GPT disks.
+
+**Part 6 (complete):** FAT16 resolves multi-component paths with `.` and `..`, creates directories with their `.` and `..` entries, grows subdirectories by a cluster when full, and removes only empty ones. The new `MakeDirectory` and `RemoveDirectory` syscalls back `mkdir` and `rmdir`, `ls` takes a directory, and open-file sharing rules key on the entry's directory and slot. Unit tests cover nested paths, growth, removal rules, and same-slot files in different directories, and the two-boot storage test now creates and removes a directory, checked by mtools.
+
+**Part 7 (complete):** FAT16 reads and writes VFAT long names of up to 63 ASCII characters, with checksummed, sequence-checked name entries and generated `~N` short aliases. Lower-case 8.3 names keep their case through the NT case bits, names match case-insensitively by long or short name, and program arguments accept double quotes for names with spaces. Unit tests cover name rules, aliases, encoding and decoding, removal, and directory growth for name runs, and the two-boot storage test reads a long name written by mtools and writes one that mtools reads back.
+
+**Part 8 (complete):** Each process has a working directory that children inherit, and file syscalls resolve relative paths against it, collapsing `.` and `..` lexically. `/` is the read-only initramfs and lists `disk/` with the archive's files. The shell has `cd` and `pwd` built-ins and shows the directory in its prompt, and the tools take relative paths. The `ChangeDirectory` and `CurrentDirectory` syscalls back them. Unit tests cover path resolution and the root listing, and the shell test changes directories, reads through relative paths, and lists `/`. The build also stops macOS `tar` from adding `._` AppleDouble entries to the initramfs.
+
+Moved: storage drivers for physical hardware, to M16.
 
 **Complete when:** both targets can create, write, read, and delete files on disk, with data surviving a reboot.
 
@@ -119,6 +137,7 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 ### 11. System Services And Compatibility
 
 - Add an init process and define service startup and shutdown behavior.
+- Add `shutdown` and `reboot`: PSCI `SYSTEM_OFF`/`SYSTEM_RESET` on AArch64; on x86-64, ACPI S5 through the FADT's PM1a control port (`\_S5` sleep type found by scanning the DSDT) and the ACPI reset register with the keyboard-controller reset as a fallback. Restrict them to the session leader, stop the other CPUs, flush the disk (virtio-blk flush), and halt if power-off fails. Test that QEMU exits on `shutdown` and boots again after `reboot`.
 - Expand the userspace runtime and libc around a documented, deliberately scoped POSIX subset.
 - Add useful shell utilities and a way to package and launch programs.
 - Broaden syscall coverage and the userspace library, and add pipes, background jobs, and process signals.
@@ -184,6 +203,15 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 - Stop the once-a-second uptime log on the terminal and serial port; the smoke test checks the `uptime` command instead.
 
 **Complete when:** on both targets the bar shows the right program, CPU count, and time as programs start and exit, input is edited inline, and QEMU tests cover the `uptime` command and the new prompt.
+
+### 16. Physical Storage Drivers
+
+- Add NVMe first, since its paired submission and completion queues are close to the virtio-blk driver, then AHCI for SATA disks (moved from M9).
+- Develop and test each driver on QEMU's emulated controllers (`-device nvme`, `-device ahci`) with the same matrix tests as virtio-blk, before trying real hardware.
+- Share one block-device interface so the filesystem does not depend on the controller.
+- Later, USB mass storage on top of the xHCI stack from M14, and SD/eMMC for ARM boards.
+
+**Complete when:** both targets mount and write the FAT test disk through NVMe and AHCI in QEMU, passing the same storage tests as virtio-blk.
 
 ## Optional Tracks
 

@@ -86,6 +86,62 @@ inline uint64_t CurrentCpu()
     return Syscall(SyscallNumber::CurrentCpu);
 }
 
+inline uint64_t OpenFile(const char* path, uint64_t flags)
+{
+    return Syscall(SyscallNumber::Open, reinterpret_cast<uint64_t>(path), flags);
+}
+
+inline uint64_t ReadFile(uint64_t descriptor, void* buffer, uint64_t length)
+{
+    return Syscall(SyscallNumber::Read, descriptor, reinterpret_cast<uint64_t>(buffer), length);
+}
+
+inline uint64_t WriteFile(uint64_t descriptor, const void* buffer, uint64_t length)
+{
+    return Syscall(SyscallNumber::Write, descriptor, reinterpret_cast<uint64_t>(buffer), length);
+}
+
+inline uint64_t CloseFile(uint64_t descriptor)
+{
+    return Syscall(SyscallNumber::Close, descriptor);
+}
+
+inline uint64_t SeekFile(uint64_t descriptor, uint64_t offset)
+{
+    return Syscall(SyscallNumber::Seek, descriptor, offset);
+}
+
+inline uint64_t RemoveFile(const char* path)
+{
+    return Syscall(SyscallNumber::Remove, reinterpret_cast<uint64_t>(path));
+}
+
+inline uint64_t MakeDirectory(const char* path)
+{
+    return Syscall(SyscallNumber::MakeDirectory, reinterpret_cast<uint64_t>(path));
+}
+
+inline uint64_t RemoveDirectory(const char* path)
+{
+    return Syscall(SyscallNumber::RemoveDirectory, reinterpret_cast<uint64_t>(path));
+}
+
+inline uint64_t ChangeDirectory(const char* path)
+{
+    return Syscall(SyscallNumber::ChangeDirectory, reinterpret_cast<uint64_t>(path));
+}
+
+inline uint64_t CurrentDirectory(char* buffer, uint64_t capacity)
+{
+    return Syscall(SyscallNumber::CurrentDirectory, reinterpret_cast<uint64_t>(buffer), capacity);
+}
+
+inline uint64_t ReadDirectory(const char* path, uint64_t index, DirectoryEntry* entry)
+{
+    return Syscall(SyscallNumber::ReadDirectory, reinterpret_cast<uint64_t>(path), index,
+                   reinterpret_cast<uint64_t>(entry));
+}
+
 } // namespace FeatherOS::User
 
 #endif

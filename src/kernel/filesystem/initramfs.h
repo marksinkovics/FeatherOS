@@ -14,6 +14,8 @@ struct File
 
 bool Mount(const void* archive, uint64_t size);
 bool Open(const char* path, File* file);
+// The index-th file of the archive; false past the last one.
+bool ReadDirectory(uint32_t index, char (&name)[64], uint64_t* size);
 
 } // namespace FeatherOS::Initramfs
 

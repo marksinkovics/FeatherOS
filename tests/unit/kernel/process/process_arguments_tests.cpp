@@ -69,3 +69,16 @@ TEST_CASE("program arguments reject oversized lines and argument counts")
                                                       UserAddress, &arguments));
     REQUIRE(arguments.argument_count == FeatherOS::User::MaximumArgumentCount);
 }
+
+TEST_CASE("program arguments group quoted words and drop the quotes")
+{
+    FeatherOS::User::ProgramArguments arguments;
+    REQUIRE(FeatherOS::Process::BuildProgramArguments("cat \"my notes.txt\" a\"b c\"d \"\"",
+                                                      UserAddress, &arguments));
+    REQUIRE(arguments.argument_count == 4);
+    REQUIRE(ArgumentAt(arguments, 1) == "my notes.txt");
+    REQUIRE(ArgumentAt(arguments, 2) == "ab cd");
+    REQUIRE(ArgumentAt(arguments, 3).empty());
+    REQUIRE_FALSE(
+        FeatherOS::Process::BuildProgramArguments("cat \"unterminated", UserAddress, &arguments));
+}
