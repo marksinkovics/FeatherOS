@@ -17,11 +17,13 @@ using ProcessId = uint64_t;
 constexpr uint64_t UserStackAddress = 0x800000;
 constexpr uint64_t UserAddressLimit = 0x0000800000000000;
 constexpr uint64_t RandomStackWindowBase = 0x0000700000000000;
+constexpr uint64_t DefaultImageBase = 0x400000;
 #elif defined(ARCH_aarch64)
 constexpr uint64_t UserStackAddress = 0x0000400000800000;
 // The page-table code treats addresses with bit 47 set as kernel-half, as on x86-64.
 constexpr uint64_t UserAddressLimit = 0x0000800000000000;
 constexpr uint64_t RandomStackWindowBase = 0x0000600000000000;
+constexpr uint64_t DefaultImageBase = 0x0000400000000000;
 #else
 #error "Unsupported architecture for user processes"
 #endif
@@ -32,9 +34,13 @@ constexpr uint64_t UserStackRegionPages = 64;
 constexpr uint64_t ArgumentsAddress = UserStackAddress + 2 * 4096;
 constexpr uint64_t RandomStackWindowPages = 1ULL << 28;
 constexpr uint64_t RandomHeapOffsetPages = 1ULL << 16;
+// Position-independent images load at a random page in this window, far below the stack window.
+constexpr uint64_t RandomImageWindowBase = 0x0000100000000000;
+constexpr uint64_t RandomImageWindowPages = 1ULL << 28;
 
 struct UserLayout
 {
+    uint64_t image_base;
     uint64_t stack_top;
     uint64_t arguments_address;
     uint64_t heap_offset;

@@ -1,5 +1,6 @@
 #include "kernel_runtime.h"
 
+#include "kernel/arch/cpu_features.h"
 #include "kernel/arch/keyboard.h"
 #include "kernel/arch/rtc.h"
 #include "kernel/arch/serial.h"
@@ -257,8 +258,34 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     logger.Info("VFS: FAT16 BLOCK.TXT read passed");
 }
 
+void LogCpuProtections(KLogger& logger)
+{
+    const Arch::CpuFeatures::Protections protections = Arch::CpuFeatures::Enabled();
+#if defined(ARCH_x86_64)
+    const char* execute = " SMEP";
+    const char* access = " SMAP";
+    const char* random = " RDRAND";
+#elif defined(ARCH_aarch64)
+    const char* execute = "";
+    const char* access = " PAN";
+    const char* random = " RNDR";
+#endif
+    const bool any = protections.execute_protection || protections.access_protection ||
+                     protections.hardware_random;
+    char message[64];
+    if (!String::FormatTo(message, sizeof(message), "CPU protections:{}{}{}{}",
+                          protections.execute_protection ? execute : "",
+                          protections.access_protection ? access : "",
+                          protections.hardware_random ? random : "", any ? "" : " none"))
+    {
+        Panic("CPU protection summary formatting failed");
+    }
+    logger.Info(message);
+}
+
 void LogBootSummary(KLogger& logger, const Memory::Summary& memory_summary)
 {
+    LogCpuProtections(logger);
 #if defined(ARCH_x86_64)
     logger.Info("Architecture: x86_64");
 #elif defined(ARCH_aarch64)

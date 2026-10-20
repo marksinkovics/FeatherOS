@@ -10,6 +10,7 @@ if (ARCH STREQUAL "x86_64")
         ${SRCROOT}/arch/x86_64/exceptions.asm
         ${SRCROOT}/arch/x86_64/interrupts.cpp
         ${SRCROOT}/arch/x86_64/local_apic.cpp
+        ${SRCROOT}/arch/x86_64/cpu_features.cpp
         ${SRCROOT}/arch/x86_64/keyboard.cpp
         ${SRCROOT}/arch/x86_64/block_device.cpp
         ${SRCROOT}/arch/x86_64/rtc.cpp
@@ -23,6 +24,7 @@ elseif (ARCH STREQUAL "aarch64")
         ${SRCROOT}/arch/aarch64/exceptions.cpp
         ${SRCROOT}/arch/aarch64/exceptions.S
         ${SRCROOT}/arch/aarch64/interrupts.cpp
+        ${SRCROOT}/arch/aarch64/cpu_features.cpp
         ${SRCROOT}/arch/aarch64/keyboard.cpp
         ${SRCROOT}/arch/aarch64/block_device.cpp
         ${SRCROOT}/arch/aarch64/rtc.cpp

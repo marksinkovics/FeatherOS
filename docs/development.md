@@ -56,7 +56,7 @@ ARCH=x86_64 ./build.sh test
 
 Run `./build.sh --arch x86_64 test` to configure and build the kernel, create the bootable ISO, and boot it in QEMU without a display. The test passes when the kernel emits its ready message over serial without reporting a panic. Build artifacts and compile databases are isolated under `build/x86_64` and `build/aarch64`.
 
-The integration tests use Python's built-in `unittest` framework and keep QEMU as the execution backend. `./build.sh test-all` runs 24 cases across x86-64 and AArch64, covering panic and exception reporting, normal startup, interrupts, memory, timers, cooperative scheduling, user-mode preemption, multi-CPU scheduling, UART input, window-keyboard input, and shell sessions that run user programs. Both keyboard cases inject keys through QEMU's QMP interface. Each case builds its kernel and ISO, boots QEMU, and validates serial output. QEMU is stopped as soon as the expected record appears, with a timeout as a fallback. Failures include the captured QEMU output.
+The integration tests use Python's built-in `unittest` framework and keep QEMU as the execution backend. `./build.sh test-all` runs 26 cases across x86-64 and AArch64, covering panic and exception reporting, normal startup, interrupts, memory, timers, cooperative scheduling, user-mode preemption, multi-CPU scheduling, shell sessions on QEMU's `max` CPU with hardware protections enabled, UART input, window-keyboard input, and shell sessions that run user programs. Both keyboard cases inject keys through QEMU's QMP interface. Each case builds its kernel and ISO, boots QEMU, and validates serial output. QEMU is stopped as soon as the expected record appears, with a timeout as a fallback. Failures include the captured QEMU output.
 
 ## Unit Tests
 
@@ -89,6 +89,21 @@ The kernel resolves every user pointer through the caller's page tables before t
 
 `Memory::MapDevice(physical, size)` (`src/kernel/memory/device_memory.cpp`) maps device registers uncached into the kernel half at `0xFFFFF00000000000 + physical`, so drivers reach them whichever address space is active. `PageFlags::Device` selects Device-nGnRnE memory on AArch64 and `PCD`/`PWT` on x86-64. The AArch64 UART, PL031 RTC, GICv2, and virtio-mmio devices, and the x86-64 local APIC, all use it. The AArch64 UART uses Limine's identity map only until virtual memory is initialized, so the earliest panics still print.
 
+### Position-independent programs
+
+User programs are built as static position-independent executables (`-fpie -Wl,-pie -Wl,--no-dynamic-linker -Wl,-z,text`), linked at 0 by `src/user/linker_<arch>.ld`. The ELF loader accepts `ET_DYN` images, adds the load bias to every segment, and applies the `RELATIVE` relocations listed under `PT_DYNAMIC` while the segments are still writable, then sets their final permissions. It rejects relocations that need symbols, a PLT, or a write into a non-writable segment. Spawned programs get a random image base; the kernel's own test programs load at `0x400000` (x86-64) or `0x0000400000000000` (AArch64).
+
+**Dynamic-linking policy:** FeatherOS runs only static PIEs. Every program carries its own copy of `src/user/runtime.h`, and the kernel never resolves symbols. If shared libraries are added later, a user-space dynamic linker will load and relocate them, the way `ld.so` does on other systems; the kernel will keep applying only `RELATIVE` relocations, to the dynamic linker itself.
+
+### CPU protections
+
+`src/kernel/arch/<arch>/cpu_features.cpp` enables hardware protections on every CPU when the boot CPU reports them, and startup logs `CPU protections: ...`:
+
+- x86-64: SMEP stops the kernel from executing user pages, and SMAP stops it from reading or writing them. `RDRAND` feeds the random source.
+- AArch64: every user page is privileged-execute-never anyway; PAN stops kernel access to user pages, and `RNDR` feeds the random source.
+
+The loader copies into a new program through its user addresses inside an `Arch::CpuFeatures::UserAccessWindow` (`stac`/`clac`, or clearing and setting PAN). Interrupt entry closes any open window: x86-64 runs `clac`, and AArch64 clears `SCTLR_EL1.SPAN` so taking an exception sets PAN. QEMU's default `qemu64` and `cortex-a72` CPUs have none of these features. Set `QEMU_CPU=max` to test with them, for example `QEMU_CPU=max SHELL_TEST=ON ./build.sh --arch x86_64 test`; the smoke test then requires the full protections line.
+
 ### Security invariants
 
 - User programs never reach kernel memory: user mappings must lie below `0x0000800000000000` on both targets. AArch64 user page tables contain no kernel mappings at all, because the kernel and its devices live in `TTBR1`, and the ELF loader rejects segments outside that range before it copies anything.
@@ -96,7 +111,7 @@ The kernel resolves every user pointer through the caller's page tables before t
 - No page is both writable and executable: the ELF loader rejects W+X segments, and stacks, heap, and arguments are non-executable. On AArch64 every user page is also privileged-execute-never, so the kernel cannot run user code.
 - A CPU exception in user mode terminates only that program.
 - Each process has at most 1024 pages and 16 live children.
-- Spawned processes get a randomized layout (`Process::RandomUserLayout`): the stack top lands on a random page in a 1 TiB window (`0x7000…` on x86-64, `0x6000…` on AArch64), the arguments page sits just above it past a guard page, and the heap starts up to 256 MiB above the image. `src/kernel/random.cpp` mixes the CPU cycle counter through splitmix64; it is not a cryptographic generator. Program images still load at their linked address until PIE support lands (M13).
+- Spawned processes get a randomized layout (`Process::RandomUserLayout`): the stack top lands on a random page in a 1 TiB window (`0x7000…` on x86-64, `0x6000…` on AArch64), the arguments page sits just above it past a guard page, and the heap starts up to 256 MiB above the image. `src/kernel/random.cpp` mixes the CPU cycle counter through splitmix64; it is not a cryptographic generator. Programs the kernel spawns also load at a random image base in a 1 TiB window at `0x1000…`.
 
 User memory grows on demand within the per-process page limit. The stack occupies a 64-page region ending at `Process::UserStackTop`: one page is mapped at load, and a not-present user page fault inside the region maps another zeroed page and resumes the program. The region's lowest page is never mapped, so a stack overflow faults there and terminates only that program. The heap starts at the page after the highest ELF segment; `ExtendHeap` maps whole pages eagerly up to the stack region's guard page.
 
@@ -139,7 +154,7 @@ After startup, the kernel spawns `src/user/shell.cpp` from the initramfs and res
 - `sleep <ms>` sleeps and checks that the wall clock advanced by the whole seconds requested.
 - `hardening` runs 44 negative checks: syscalls with kernel or invalid pointers and oversized arguments, a kernel-half ELF (`badelf`, generated by `tools/create_bad_elf.py`), children that execute the heap, write their code, read kernel memory, or use an invalid syscall (each must be terminated), and the per-process child limit.
 - `aslr` prints where its stack, arguments block, and heap landed; the shell test runs it twice and requires different addresses.
-- `memtest [overflow]` grows its stack and heap and checks them, or recurses into the stack guard page to show that the kernel terminates it.
+- `memtest [overflow|exhaust]` grows its stack and heap and checks them, recurses into the stack guard page to show that the kernel terminates it, or grows its heap until the page limit refuses more (the shell test runs it twice and requires the same count).
 - `upper` reads one line as the foreground process and prints it in upper case.
 
 To add a program, create `src/user/<name>.cpp` with a `_start(const ProgramArguments*)` entry point and add `<name>:<name>` to the user-program list in `build.sh`.

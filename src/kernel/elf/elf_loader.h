@@ -21,6 +21,11 @@ struct Image
     uint64_t program_header_offset;
     uint16_t program_header_count;
     uint16_t load_segment_count;
+    uint16_t machine;
+    // ET_DYN: link addresses start near zero and the loader picks a base; ET_EXEC loads as linked.
+    bool position_independent;
+    uint64_t dynamic_offset;
+    uint64_t dynamic_size;
 };
 
 struct LoadSegment
@@ -45,7 +50,7 @@ struct LoadOperations
 
 bool Parse(const void* data, uint64_t size, uint16_t expected_machine, Image* image);
 bool GetLoadSegment(const Image& image, uint16_t index, LoadSegment* segment);
-bool LoadSegments(const Image& image, const LoadOperations& operations);
+bool LoadSegments(const Image& image, uint64_t load_bias, const LoadOperations& operations);
 
 } // namespace FeatherOS::ELF
 
