@@ -78,10 +78,14 @@ bool HeapWorks()
 
 } // namespace
 
-// memtest [overflow|exhaust]: grows the stack and heap, overflows the stack into its guard page,
-// or grows the heap until the page limit refuses more.
+constexpr char Help[] =
+    "usage: memtest [overflow|exhaust]\n"
+    "Grows and checks the stack and heap. overflow recurses into the stack guard\n"
+    "page and is terminated; exhaust grows the heap until the page limit refuses more.";
+
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     if (arguments != nullptr && arguments->argument_count == 2 &&
         StringEquals(arguments->argument_values[1], "overflow"))
     {

@@ -1,6 +1,7 @@
 #ifndef FEATHEROS_USER_RUNTIME_H
 #define FEATHEROS_USER_RUNTIME_H
 
+#include "process.h"
 #include "syscall.h"
 
 #include <stdint.h>
@@ -47,6 +48,17 @@ inline bool StringEquals(const char* left, const char* right)
         ++right;
     }
     return *left == *right;
+}
+
+inline void ExitWithHelpIfRequested(const ProgramArguments* arguments, const char* help)
+{
+    if (arguments != nullptr && arguments->argument_count == 2 &&
+        (StringEquals(arguments->argument_values[1], "-h") ||
+         StringEquals(arguments->argument_values[1], "--help")))
+    {
+        WriteLine(help);
+        Exit(0);
+    }
 }
 
 // Parses a whole string of decimal digits; fails on other characters or overflow.

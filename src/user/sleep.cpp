@@ -3,9 +3,13 @@
 
 using namespace FeatherOS::User;
 
-// sleep <milliseconds>: blocks for at least that long, checked against the wall clock.
+constexpr char Help[] =
+    "usage: sleep <milliseconds>\n"
+    "Waits at least that long without using a CPU, checked against the wall clock.";
+
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     uint64_t milliseconds;
     if (arguments == nullptr || arguments->argument_count != 2 ||
         !ParseUnsignedNumber(arguments->argument_values[1], &milliseconds))

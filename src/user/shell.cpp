@@ -60,9 +60,14 @@ void RunCommand(const char* line)
 
 } // namespace
 
-// The interactive shell: runs initramfs programs by name and waits for each to exit.
-extern "C" [[noreturn]] void _start(const ProgramArguments*)
+constexpr char Help[] =
+    "usage: shell\n"
+    "Runs programs by name and waits for each one. Type help for the commands;\n"
+    "Ctrl+C stops the running command.";
+
+extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     WriteLine("FeatherOS shell. Type 'help' for commands.");
     char line[MaximumCommandLineLength];
     for (;;)
@@ -86,6 +91,7 @@ extern "C" [[noreturn]] void _start(const ProgramArguments*)
             WriteLine("Commands: calc [expression], date, echo <words...>, fanout <n>, "
                       "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
                       "sleep <ms>, upper, uptime, help");
+            WriteLine("Run <command> --help to see what a command does.");
             continue;
         }
         RunCommand(command);

@@ -3,9 +3,12 @@
 
 using namespace FeatherOS::User;
 
-// upper: reads one line of console input and prints it in upper case.
-extern "C" [[noreturn]] void _start(const ProgramArguments*)
+constexpr char Help[] = "usage: upper\n"
+                        "Reads one line at an upper> prompt and prints it in upper case.";
+
+extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     char line[MaximumCommandLineLength];
     const uint64_t length = ReadLine(line, sizeof(line), "upper> ");
     if (IsSyscallError(length))

@@ -14,9 +14,12 @@ void WriteTwoDigits(uint64_t value)
 
 } // namespace
 
-// uptime: prints the time since boot as H:MM:SS.
-extern "C" [[noreturn]] void _start(const ProgramArguments*)
+constexpr char Help[] = "usage: uptime\n"
+                        "Prints the time since boot as H:MM:SS.";
+
+extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     const uint64_t milliseconds = ReadUptime();
     if (IsSyscallError(milliseconds))
     {

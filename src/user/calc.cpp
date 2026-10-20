@@ -48,9 +48,14 @@ const char* SkipSpaces(const char* text)
 
 } // namespace
 
-// calc [expression]: evaluates the expression, or reads one per line at a calc> prompt.
+constexpr char Help[] =
+    "usage: calc [expression]\n"
+    "Evaluates + - * / with parentheses and decimals, e.g. calc 4 + 66 - (3 / 4).\n"
+    "Without an expression, reads one per line at a calc> prompt; type exit to quit.";
+
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     if (arguments != nullptr && arguments->argument_count > 1)
     {
         const char* expression = SkipSpaces(arguments->command_line);

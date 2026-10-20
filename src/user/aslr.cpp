@@ -12,9 +12,14 @@ const char* const relocated_labels[] = {"relocated"};
 
 } // namespace
 
-// aslr: prints where this run's image, stack, arguments block, and heap landed.
+constexpr char Help[] =
+    "usage: aslr\n"
+    "Prints where this run's image, stack, arguments block, and heap were placed;\n"
+    "run it twice to see address-space layout randomization.";
+
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     if (!StringEquals(relocated_labels[0], "relocated"))
     {
         WriteLine("aslr: relocations were not applied");

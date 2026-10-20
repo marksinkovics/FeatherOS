@@ -63,9 +63,14 @@ bool ChildTerminated(const char* command_line)
 
 } // namespace
 
-// hardening [violation]: checks that the kernel rejects invalid requests from user programs.
+constexpr char Help[] =
+    "usage: hardening\n"
+    "Runs 44 checks that the kernel rejects bad syscalls, pointers, ELF files,\n"
+    "and memory violations from user programs.";
+
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     if (arguments != nullptr && arguments->argument_count == 2)
     {
         RunViolation(arguments->argument_values[1]);

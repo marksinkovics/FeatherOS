@@ -84,9 +84,14 @@ void WriteCpus(uint64_t cpus)
 
 } // namespace
 
-// primes <workers> [limit]: counts the primes below limit, split across worker processes.
+constexpr char Help[] =
+    "usage: primes <workers 1-16> [limit]\n"
+    "Counts the primes below limit (default 10000000, at most 1000000000) with\n"
+    "worker processes and shows the CPUs each ran on. Compare primes 1 with primes 4.";
+
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     uint64_t workers = 0;
     uint64_t limit = DefaultLimit;
     const uint64_t count = arguments == nullptr ? 0 : arguments->argument_count;

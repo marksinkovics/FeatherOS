@@ -61,6 +61,7 @@ CALC_INPUT = b"nope\n\ncalc 4 + 66 - (3 / 4)\n"
 # Covers argv, foreground input in a child, and nonzero exit statuses.
 SHELL_INPUT = (
     b"echo hello   feather os\nupper\nmixed Case\ndate\nuptime\nfanout 6\n"
+    b"date --help\nprimes -h\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
     b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
@@ -104,6 +105,8 @@ ASLR_OUTPUT = re.compile(
 # QEMU's RTC follows the host clock; allow for boot time and slow hosts.
 MAXIMUM_CLOCK_SKEW_SECONDS = 120
 EXPECTED_SHELL_OUTPUT = (
+    "usage: date",
+    "usage: primes <workers 1-16> [limit]",
     "hello feather os",
     "upper> ",
     "MIXED CASE",

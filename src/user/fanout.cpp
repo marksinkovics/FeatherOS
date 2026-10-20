@@ -3,9 +3,12 @@
 
 using namespace FeatherOS::User;
 
-// fanout <count>: starts count `echo` children before waiting for any of them.
+constexpr char Help[] = "usage: fanout <1-16>\n"
+                        "Starts that many echo children at once, then waits for all of them.";
+
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     constexpr uint64_t MaximumChildren = 16;
     uint64_t count;
     if (arguments == nullptr || arguments->argument_count != 2 ||
