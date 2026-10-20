@@ -93,6 +93,9 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
 // Waits for a spawned process to exit, then releases its task and memory and returns console
 // input to its parent.
 bool Wait(ProcessId process_id, uint64_t* exit_status);
+// Ctrl+C: marks the foreground job and its descendants for termination. Returns false when only
+// the session leader holds the console.
+bool InterruptForegroundJob();
 // "kernel" when no process holds the console.
 void ForegroundProgramName(char* buffer, size_t capacity);
 

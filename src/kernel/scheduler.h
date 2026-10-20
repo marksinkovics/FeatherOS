@@ -48,6 +48,8 @@ TaskState GetState(TaskId task_id);
 
 void WaitOn(WaitQueue& queue, Sync::SpinLock& lock, uint64_t deadline_tick = 0);
 void WakeAll(WaitQueue& queue);
+// Ends a sleep or wait early; waiters treat it as a spurious wakeup and recheck their condition.
+void WakeTask(TaskId task_id);
 bool SleepUntil(uint64_t tick);
 
 // Reactivates the running task's user address space, or the kernel's outside user tasks.

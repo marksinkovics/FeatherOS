@@ -23,6 +23,8 @@ struct UserExecutionContext
     void* syscall_context;
     // The Process::UserProgram that owns this context.
     void* program;
+    // Set from any CPU; the program is terminated the next time it would return to user mode.
+    volatile bool kill_requested;
 };
 
 } // namespace FeatherOS

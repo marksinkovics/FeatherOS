@@ -63,8 +63,28 @@ SHELL_INPUT = (
     b"echo hello   feather os\nupper\nmixed Case\ndate\nuptime\nfanout 6\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
     b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\n"
-    b"calc\n1 / 3\n7 / 0\nexit\ncalc 1 +\n"
+    b"calc\n1 / 3\n7 / 0\nexit\n"
 )
+# Ctrl+C for a command that shows no prompt of its own, sent while it runs.
+INTERRUPT_RUNNING = object()
+INTERRUPT_DELAY_SECONDS = 1.5
+CONTROL_C = b"\x03"
+# Interrupts a CPU-bound job, a sleep, programs blocked reading input, and the
+# shell's own prompt (which only discards the line). The shell test's last
+# command must stay last because its output ends the run.
+SHELL_INTERRUPT_INPUT = (
+    b"primes 1 1000000000\n",
+    INTERRUPT_RUNNING,
+    b"sleep 100000\n",
+    INTERRUPT_RUNNING,
+    b"upper\n",
+    CONTROL_C,
+    b"calc\n",
+    CONTROL_C,
+    CONTROL_C,
+    b"calc 1 +\n",
+)
+EXPECTED_INTERRUPTS = 5
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
@@ -339,7 +359,9 @@ def main():
     if args.expect_calc:
         pending_lines = CALC_INPUT.splitlines(keepends=True)
     elif args.expect_shell:
-        pending_lines = SHELL_INPUT.splitlines(keepends=True)
+        pending_lines = SHELL_INPUT.splitlines(keepends=True) + list(
+            SHELL_INTERRUPT_INPUT
+        )
     lines_sent = 0
     qmp_connection = None
     qmp_channel = None
@@ -410,6 +432,11 @@ def main():
                     process.stdin.flush()
                     time.sleep(0.02)
                 lines_sent += 1
+                while pending_lines and pending_lines[0] is INTERRUPT_RUNNING:
+                    pending_lines.pop(0)
+                    time.sleep(INTERRUPT_DELAY_SECONDS)
+                    process.stdin.write(CONTROL_C)
+                    process.stdin.flush()
         except OSError as error:
             input_error = str(error)
             pending_lines = []
@@ -422,6 +449,13 @@ def main():
                 if use_qmp_keyboard:
                     qmp_connection, qmp_channel = OpenQmpChannel(
                         qmp_socket_path
+                    )
+                    # Ctrl+C at the shell prompt only discards the line.
+                    SendQmpCommand(
+                        qmp_channel,
+                        7,
+                        "human-monitor-command",
+                        {"command-line": "sendkey ctrl-c"},
                     )
                     SendQmpCommand(
                         qmp_channel,
@@ -454,7 +488,7 @@ def main():
                         {"command-line": "sendkey ret"},
                     )
                 else:
-                    for character in b"abx\x7f\n":
+                    for character in b"\x03abx\x7f\n":
                         process.stdin.write(bytes((character,)))
                         process.stdin.flush()
                         time.sleep(0.02)
@@ -593,6 +627,19 @@ def main():
         if len(PRIMES_WORKER_OUTPUT.findall(output)) != 4:
             print("FAIL: primes did not report four workers", file=sys.stderr)
             return 1
+        # A prompt may precede the echo on the same line.
+        interrupts = len(re.findall(r"\^C\r?$", output, re.MULTILINE))
+        if (
+            interrupts != EXPECTED_INTERRUPTS
+            or "primes below 1000000000" in output
+            or "slept 100000" in output
+        ):
+            print(
+                f"FAIL: Ctrl+C was echoed {interrupts} times, expected "
+                f"{EXPECTED_INTERRUPTS}, or an interrupted command finished",
+                file=sys.stderr,
+            )
+            return 1
         if UPTIME_OUTPUT.search(output) is None:
             print("FAIL: uptime did not print H:MM:SS", file=sys.stderr)
             return 1
@@ -615,7 +662,7 @@ def main():
             return 1
         print(
             "PASS: shell ran programs with arguments, foreground input, "
-            f"uptime, and date ({date_match.group(1)} UTC)"
+            f"uptime, Ctrl+C, and date ({date_match.group(1)} UTC)"
         )
         return 0
     if args.expect_user_preemption:
@@ -652,7 +699,13 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        print("PASS: keyboard/serial input, backspace, and Enter were handled")
+        if b"> ^C" not in captured:
+            print("FAIL: Ctrl+C was not echoed at the prompt", file=sys.stderr)
+            return 1
+        print(
+            "PASS: keyboard/serial input, Ctrl+C, backspace, and Enter were "
+            "handled"
+        )
         return 0
     if PANIC_MARKER in output:
         print("FAIL: kernel panicked during startup", file=sys.stderr)
