@@ -298,6 +298,11 @@ uint64_t RemoveDirectory(const char* path)
     return VFS::RemoveDirectory(path) ? 0 : User::SyscallErrorFailed;
 }
 
+void Quiesce()
+{
+    file_system_lock.Lock();
+}
+
 void CloseAll(Table* table)
 {
     if (table == nullptr)

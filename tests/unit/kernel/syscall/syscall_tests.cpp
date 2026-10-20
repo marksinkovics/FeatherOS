@@ -32,17 +32,20 @@ uint64_t RecordReadLine(void* context, uint64_t buffer, uint64_t capacity, uint6
     return 5;
 }
 
-uint64_t RecordSpawn(void* context, uint64_t command_line)
+uint64_t RecordSpawn(void* context, uint64_t command_line, uint64_t flags)
 {
-    static_cast<OutputTarget*>(context)->last_arguments[0] = command_line;
+    auto* output = static_cast<OutputTarget*>(context);
+    output->last_arguments[0] = command_line;
+    output->last_arguments[1] = flags;
     return 42;
 }
 
-uint64_t RecordWait(void* context, uint64_t process_id, uint64_t status_pointer)
+uint64_t RecordWait(void* context, uint64_t process_id, uint64_t status_pointer, uint64_t flags)
 {
     auto* output = static_cast<OutputTarget*>(context);
     output->last_arguments[0] = process_id;
     output->last_arguments[1] = status_pointer;
+    output->last_arguments[2] = flags;
     return FeatherOS::User::SyscallErrorInvalidArgument;
 }
 
@@ -113,12 +116,13 @@ uint64_t RecordRemove(void* context, uint64_t path)
 constexpr FeatherOS::Syscall::Handlers WriteOnly = {
     CaptureCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-    nullptr,          nullptr, nullptr, nullptr};
+    nullptr,          nullptr, nullptr, nullptr, nullptr};
 constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     CaptureCharacter, RecordReadLine,   RecordSpawn,    RecordWait,       ReadFixedClock,
     RecordExtendHeap, RecordSleep,      ReadFixedUptime, ReadFixedCpu,    RecordOpen,
     RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeek,     RecordRemove,
-    RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek};
+    RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek,
+    RecordDescriptor};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)
@@ -167,7 +171,8 @@ TEST_CASE("syscall dispatcher rejects invalid requests")
     const FeatherOS::Syscall::Handlers no_output = {nullptr, nullptr, nullptr, nullptr, nullptr,
                                                     nullptr, nullptr, nullptr, nullptr, nullptr,
                                                     nullptr, nullptr, nullptr, nullptr, nullptr,
-                                                    nullptr, nullptr, nullptr, nullptr, nullptr};
+                                                    nullptr, nullptr, nullptr, nullptr, nullptr,
+                                                    nullptr};
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::WriteCharacter, 'A'), no_output,
                                          &output)
                 .action == Action::Invalid);
@@ -192,7 +197,8 @@ TEST_CASE("syscall dispatcher rejects process syscalls without handlers")
     for (const Number number : {Number::Open, Number::Read, Number::Write, Number::Close,
                                 Number::Seek, Number::Remove, Number::ReadDirectory,
                                 Number::MakeDirectory, Number::RemoveDirectory,
-                                Number::ChangeDirectory, Number::CurrentDirectory})
+                                Number::ChangeDirectory, Number::CurrentDirectory,
+                                Number::Shutdown})
     {
         REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(number), WriteOnly, &output).action ==
                 Action::Invalid);
@@ -211,17 +217,19 @@ TEST_CASE("syscall dispatcher routes process syscalls and returns handler result
     REQUIRE(output.last_arguments[2] == 0x2000);
 
     result =
-        FeatherOS::Syscall::Dispatch(MakeRequest(Number::Spawn, 0x3000), AllHandlers, &output);
+        FeatherOS::Syscall::Dispatch(MakeRequest(Number::Spawn, 0x3000, 2), AllHandlers, &output);
     REQUIRE(result.action == Action::Return);
     REQUIRE(result.value == 42);
     REQUIRE(output.last_arguments[0] == 0x3000);
+    REQUIRE(output.last_arguments[1] == 2);
 
     result =
-        FeatherOS::Syscall::Dispatch(MakeRequest(Number::Wait, 9, 0x4000), AllHandlers, &output);
+        FeatherOS::Syscall::Dispatch(MakeRequest(Number::Wait, 9, 0x4000, 1), AllHandlers, &output);
     REQUIRE(result.action == Action::Return);
     REQUIRE(FeatherOS::User::IsSyscallError(result.value));
     REQUIRE(output.last_arguments[0] == 9);
     REQUIRE(output.last_arguments[1] == 0x4000);
+    REQUIRE(output.last_arguments[2] == 1);
 
     result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadClock), AllHandlers, &output);
     REQUIRE(result.action == Action::Return);

@@ -59,6 +59,7 @@ constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {WriteSyscallChar
                                                                 nullptr,
                                                                 nullptr,
                                                                 nullptr,
+                                                                nullptr,
                                                                 nullptr};
 
 } // namespace

@@ -12,6 +12,7 @@
 #include "kernel/framebuffer/term.h"
 #include "kernel/halt.h"
 #include "kernel/input/input.h"
+#include "kernel/arch/power.h"
 #include "kernel/klogger.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/panic.h"
@@ -352,24 +353,24 @@ void StartSecondaryCpus(KLogger& logger, limine_smp_response* smp)
     }
     Console::Initialize(display_ready ? &term : nullptr);
 
-    // The shell is an ordinary initramfs program; restart it if it ever exits.
+    // init starts and supervises the services in /init.conf; restart it if it ever exits.
     for (;;)
     {
-        Process::ProcessId shell;
-        if (Process::Spawn("shell", 0, &shell) != Process::SpawnStatus::Started)
+        Process::ProcessId init;
+        if (Process::Spawn("init", 0, 0, &init) != Process::SpawnStatus::Started)
         {
-            Panic("Could not start the initramfs shell");
+            Panic("Could not start init");
         }
         uint64_t exit_status;
-        if (!Process::Wait(shell, &exit_status))
+        if (!Process::Wait(init, &exit_status))
         {
-            Panic("Could not wait for the shell");
+            Panic("Could not wait for init");
         }
         char message[64];
-        if (!String::FormatTo(message, sizeof(message), "Shell exited with status {}; restarting",
+        if (!String::FormatTo(message, sizeof(message), "init exited with status {}; restarting",
                               exit_status))
         {
-            Panic("Shell status formatting failed");
+            Panic("init status formatting failed");
         }
         logger.Warning(message);
     }
@@ -380,6 +381,7 @@ void StartSecondaryCpus(KLogger& logger, limine_smp_response* smp)
 [[noreturn]] void Run(KLogger& logger, const BootInfo& boot_info)
 {
     Process::Initialize(boot_info.hhdm_offset);
+    Arch::Power::Initialize(boot_info.acpi_rsdp_physical, boot_info.platform_data);
     InitializeDisplay(logger, boot_info.framebuffer);
     MountInitramfs(logger, boot_info);
     LoadTestExecutable(logger, boot_info);

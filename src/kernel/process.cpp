@@ -10,6 +10,7 @@
 #include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/panic.h"
+#include "kernel/power.h"
 #include "kernel/process_arguments.h"
 #include "kernel/random.h"
 #include "kernel/scheduler.h"
@@ -53,6 +54,8 @@ struct ProcessRecord
     uint32_t live_children;
     Scheduler::TaskId task;
     char name[MaximumCommandNameLength + 1];
+    // Set for the console service: its descendants form Ctrl+C jobs.
+    bool session_leader;
     Files::Table files;
     // Relative paths in file syscalls start here; children inherit it.
     char working_directory[User::MaximumPathLength];
@@ -543,16 +546,17 @@ uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint
     return length;
 }
 
-uint64_t SpawnSyscall(void* context, uint64_t command_line)
+uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
     char line[User::MaximumCommandLineLength];
-    if (!CopyStringFromUser(*process, command_line, line, sizeof(line)))
+    if (!CopyStringFromUser(*process, command_line, line, sizeof(line)) ||
+        (flags & ~(User::SpawnBackground | User::SpawnSessionLeader)) != 0)
     {
         return User::SyscallErrorInvalidArgument;
     }
     ProcessId child;
-    switch (Spawn(line, process->id, &child))
+    switch (Spawn(line, process->id, flags, &child))
     {
     case SpawnStatus::Started:
         return child;
@@ -565,14 +569,19 @@ uint64_t SpawnSyscall(void* context, uint64_t command_line)
     }
 }
 
-uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer)
+uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer, uint64_t flags)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
     const ProcessRecord* child = FindProcess(process_id);
-    if (child == nullptr || child->parent != process->id ||
+    if (child == nullptr || child->parent != process->id || (flags & ~User::WaitNoHang) != 0 ||
         !UserRangeWritable(*process, status_pointer, sizeof(uint64_t)))
     {
         return User::SyscallErrorInvalidArgument;
+    }
+    if ((flags & User::WaitNoHang) != 0 &&
+        Scheduler::GetState(child->task) != Scheduler::TaskState::Complete)
+    {
+        return User::SyscallErrorWouldBlock;
     }
     uint64_t exit_status;
     if (!Wait(process_id, &exit_status))
@@ -798,6 +807,23 @@ uint64_t ChangeDirectorySyscall(void* context, uint64_t path)
     return 0;
 }
 
+uint64_t ShutdownSyscall(void* context, uint64_t action)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    // Only init (started by the kernel) and session leaders such as the shell may stop the system.
+    if (process->parent != 0 && !process->session_leader)
+    {
+        return User::SyscallErrorNotPermitted;
+    }
+    if (action != User::ShutdownPowerOff && action != User::ShutdownRestart)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Power::Shutdown(action == User::ShutdownRestart ? Power::Action::Restart
+                                                    : Power::Action::PowerOff,
+                    process->id);
+}
+
 uint64_t CurrentDirectorySyscall(void* context, uint64_t buffer, uint64_t capacity)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
@@ -854,6 +880,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     RemoveDirectorySyscall,
     ChangeDirectorySyscall,
     CurrentDirectorySyscall,
+    ShutdownSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -1006,7 +1033,7 @@ uint64_t RunUserProgram(void* context)
     return program->execution_context.exit_status;
 }
 
-SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process_id)
+SpawnStatus Spawn(const char* command_line, ProcessId parent, uint64_t flags, ProcessId* process_id)
 {
     if (command_line == nullptr || process_id == nullptr)
     {
@@ -1070,6 +1097,7 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
         id = next_process_id++;
         process->id = id;
         process->parent = parent;
+        process->session_leader = (flags & User::SpawnSessionLeader) != 0;
         process->next = process_list;
         process_list = process;
     }
@@ -1100,6 +1128,7 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
         RemoveProcess(process);
         return SpawnStatus::NoResources;
     }
+    if ((flags & User::SpawnBackground) == 0)
     {
         Sync::SpinLockGuard guard(process_lock);
         foreground_process = id;
@@ -1134,22 +1163,59 @@ bool Wait(ProcessId process_id, uint64_t* exit_status)
     return true;
 }
 
+bool StopOtherProcesses(ProcessId caller)
+{
+    const auto others_running = [caller](bool request_kill)
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        const ProcessRecord* caller_record = FindProcessLocked(caller);
+        bool running = false;
+        for (ProcessRecord* candidate = process_list; candidate != nullptr;
+             candidate = candidate->next)
+        {
+            if (candidate->task == 0 || DescendsFromLocked(caller_record, candidate->id) ||
+                Scheduler::GetState(candidate->task) == Scheduler::TaskState::Complete)
+            {
+                continue;
+            }
+            if (request_kill)
+            {
+                RequestKillLocked(candidate);
+            }
+            running = true;
+        }
+        return running;
+    };
+    others_running(true);
+    const uint64_t deadline = Time::TickCount() + 2 * Time::TicksPerSecond();
+    while (Time::TickCount() < deadline)
+    {
+        if (!others_running(false))
+        {
+            return true;
+        }
+        Scheduler::SleepUntil(Time::TickCount() + 1);
+    }
+    return !others_running(false);
+}
+
 bool InterruptForegroundJob()
 {
     Sync::SpinLockGuard guard(process_lock);
-    // The job is the foreground process's ancestor that the session leader started. The leader
-    // (the shell, whose parent is the kernel) is never interrupted.
+    // The job is the foreground process's ancestor that a session leader started. Session leaders
+    // (the shell) and processes outside any session (init) are never interrupted.
     const ProcessRecord* job = FindProcessLocked(foreground_process);
-    while (job != nullptr && job->parent != 0)
+    while (job != nullptr && !job->session_leader)
     {
         const ProcessRecord* parent = FindProcessLocked(job->parent);
-        if (parent == nullptr || parent->parent == 0)
+        if (parent == nullptr || parent->session_leader)
         {
             break;
         }
         job = parent;
     }
-    if (job == nullptr || job->parent == 0)
+    const ProcessRecord* leader = job == nullptr ? nullptr : FindProcessLocked(job->parent);
+    if (job == nullptr || job->session_leader || leader == nullptr || !leader->session_leader)
     {
         return false;
     }

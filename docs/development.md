@@ -56,7 +56,7 @@ ARCH=x86_64 ./build.sh test
 
 Run `./build.sh --arch x86_64 test` to configure and build the kernel, create the bootable ISO, and boot it in QEMU without a display. The test passes when the kernel emits its ready message over serial without reporting a panic. Build artifacts and compile databases are isolated under `build/x86_64` and `build/aarch64`.
 
-The integration tests use Python's built-in `unittest` framework and keep QEMU as the execution backend. `./build.sh test-all` runs 30 cases across x86-64 and AArch64, covering panic and exception reporting, normal startup, interrupts, memory, timers, cooperative scheduling, user-mode preemption, multi-CPU scheduling, disk-write persistence across two boots on MBR and GPT disks, shell sessions on QEMU's `max` CPU with hardware protections enabled, UART input, window-keyboard input, and shell sessions that run user programs. Both keyboard cases inject keys through QEMU's QMP interface. Each case builds its kernel and ISO, boots QEMU, and validates serial output. QEMU is stopped as soon as the expected record appears, with a timeout as a fallback. Failures include the captured QEMU output.
+The integration tests use Python's built-in `unittest` framework and keep QEMU as the execution backend. `./build.sh test-all` runs 34 cases across x86-64 and AArch64, covering panic and exception reporting, normal startup, interrupts, memory, timers, cooperative scheduling, user-mode preemption, multi-CPU scheduling, disk-write persistence across two boots on MBR and GPT disks, `shutdown` (QEMU must exit by itself) and `reboot` (the system must boot again; `POWER_TEST=shutdown` or `POWER_TEST=reboot`), shell sessions on QEMU's `max` CPU with hardware protections enabled, UART input, window-keyboard input, and shell sessions that run user programs. Both keyboard cases inject keys through QEMU's QMP interface. Each case builds its kernel and ISO, boots QEMU, and validates serial output. QEMU is stopped as soon as the expected record appears, with a timeout as a fallback. Failures include the captured QEMU output.
 
 ## Unit Tests
 
@@ -83,8 +83,8 @@ ISO generation cross-compiles each program listed in the user-program loop in `b
 | 0 | `Exit(status)` | Ends the program with an exit status |
 | 1 | `WriteCharacter(character)` | Writes printable ASCII or `\n` to the console |
 | 2 | `ReadLine(buffer, capacity, prompt)` | Shows the prompt and blocks until Enter; only the foreground process may read |
-| 3 | `Spawn(command_line)` | Starts the program named by the first word and returns its process ID |
-| 4 | `Wait(process_id, status_pointer)` | Blocks until a child exits, stores its status, and releases it |
+| 3 | `Spawn(command_line, flags)` | Starts the program named by the first word and returns its process ID; `SpawnBackground` leaves the console with the caller, and `SpawnSessionLeader` makes the child a session leader |
+| 4 | `Wait(process_id, status_pointer, flags)` | Blocks until a child exits, stores its status, and releases it; with `WaitNoHang`, returns `SyscallErrorWouldBlock` while the child runs |
 | 5 | `ReadClock()` | Returns the current UTC time in seconds since 1970-01-01 |
 | 6 | `ExtendHeap(increment)` | Grows the program break by `increment` bytes and returns the previous break; `0` returns the current one |
 | 7 | `Sleep(milliseconds)` | Blocks for at least that long (rounded up to timer ticks, at most one day) without using a CPU |
@@ -101,12 +101,13 @@ ISO generation cross-compiles each program listed in the user-program loop in `b
 | 18 | `RemoveDirectory(path)` | Removes an empty directory |
 | 19 | `ChangeDirectory(path)` | Sets the caller's working directory |
 | 20 | `CurrentDirectory(buffer, capacity)` | Copies the working directory and returns its length |
+| 21 | `Shutdown(action)` | Powers off (`ShutdownPowerOff`) or restarts (`ShutdownRestart`); init and session leaders only, otherwise `SyscallErrorNotPermitted` |
 
 The kernel resolves every user pointer through the caller's page tables before touching it, so unmapped, read-only, or kernel addresses fail with `SyscallErrorInvalidArgument` instead of faulting. Blocking syscalls re-enable interrupts and yield to other tasks while they wait.
 
 File descriptors live in a per-process table in `src/kernel/files.cpp`. Numbering starts at 3, because 0–2 are reserved for standard streams, and each process may hold 16 at once (`SyscallErrorTooManyOpenFiles` after that). Paths are at most 63 characters, and the shell's double quotes keep spaces inside one argument (`cat "my notes.txt"`). `/` is the read-only initramfs, so `/hello.txt` is its `hello.txt`, and `/disk` is the FAT16 disk. Every process has a working directory, which starts as its parent's (`/disk` for the shell). Relative paths in file syscalls are joined to it, and `.`, `..`, and repeated slashes collapse lexically (`src/kernel/filesystem/path.cpp`), so `/disk/..` is `/`. `ChangeDirectory` accepts only existing directories, but a directory removed afterwards leaves the old path in place, and calls through it then fail. Listing `/` shows `disk/` followed by the initramfs files. `OpenCreate`, `OpenTruncate`, and `OpenAppend` (start at the end of the file) require `OpenWrite`, and opening an initramfs file for writing fails with `SyscallErrorInvalidArgument`. A disk file may have one writer or any number of readers, and an open file cannot be removed; both cases fail with `SyscallErrorBusy`. These rules exist because each descriptor caches the file's size and clusters. When a process exits, including after a fault or Ctrl+C, the kernel closes its descriptors. `Read` and `Write` check the whole user buffer first and then move data through a 512-byte kernel buffer, and a blocking `Sync::Mutex` (`src/kernel/sync/mutex.h`) keeps filesystem calls from different CPUs from interleaving.
 
-Ctrl+C (serial byte `0x03`, or Ctrl+C on the PS/2 or virtio keyboard) interrupts the console's foreground job: the process the shell started, and all of its descendants. The shell is the session leader and is never interrupted; Ctrl+C at its prompt only discards the line. The console echoes `^C` and marks each process in the job, waking any that are sleeping or blocked. A marked program ends with `ExitStatusInterrupted` the next time it would resume in user mode: at its next timer tick, or when its current syscall returns (`ReadLine` returns `SyscallErrorInterrupted` first). The shell prints nothing for that status. Children never outlive their parent: when a process exits, the kernel marks its remaining descendants the same way and reaps its children before the parent's own exit completes.
+Ctrl+C (serial byte `0x03`, or Ctrl+C on the PS/2 or virtio keyboard) interrupts the console's foreground job: the process a session leader (the shell) started, and all of its descendants. Session leaders, and init, which belongs to no session, are never interrupted; Ctrl+C at its prompt only discards the line. The console echoes `^C` and marks each process in the job, waking any that are sleeping or blocked. A marked program ends with `ExitStatusInterrupted` the next time it would resume in user mode: at its next timer tick, or when its current syscall returns (`ReadLine` returns `SyscallErrorInterrupted` first). The shell prints nothing for that status. Children never outlive their parent: when a process exits, the kernel marks its remaining descendants the same way and reaps its children before the parent's own exit completes.
 
 ### Device registers
 
@@ -168,7 +169,19 @@ The kernel reads UTC wall-clock time from the platform real-time clock with one-
 
 ## Shell And Console Input
 
-After startup, the kernel spawns `src/user/shell.cpp` from the initramfs and restarts it if it exits. The shell reads lines with a prompt showing its working directory, such as `/disk> `, and runs each line's first word as the initramfs program `<name>-<arch>.elf` (names are limited to 32 letters, digits, `_`, or `-`), waits for it, and prints `exit status N` for nonzero statuses. Missing programs report `Unknown command: <name>`; `help` lists the bundled programs:
+After startup, the kernel spawns `init` (`src/user/init.cpp`), and restarts it if it ever exits. init reads `/init.conf` from the initramfs (`initramfs/init.conf`), with one service per line as `<policy> <command line>` and `#` comments. `once` services run to completion in order before the others start. `respawn` services run in the background. A `console` service, at most one, holds the console as a session leader. init polls its services with non-blocking `Wait`s, reports each exit as `init: <command> exited with status N`, and restarts the service; one that exits five times within ten seconds is disabled instead. Malformed lines are reported and skipped, and a missing `/init.conf` falls back to `console shell`. The default configuration prints a startup line and runs the shell as the console service, so the shell's `exit` built-in returns to a fresh shell.
+
+`shutdown` and `reboot` are shell built-ins over the `Shutdown` syscall (`src/kernel/power.cpp`). In order, the kernel:
+
+1. Marks every process except the caller and its ancestors for termination, and waits up to two seconds for them to exit.
+2. Takes the filesystem lock for good, so no file operation is half done.
+3. Sends a virtio-blk flush when the device supports it.
+4. Parks the other CPUs with an IPI.
+5. Asks the firmware to act.
+
+AArch64 uses PSCI `SYSTEM_OFF` or `SYSTEM_RESET`, through `hvc` or `smc` as the device tree's `/psci` node says (`src/kernel/arch/aarch64/power.cpp`). x86-64 reads ACPI from Limine's RSDP through the device-memory window, checking table checksums. It powers off with the FADT's PM1 control ports and the `\_S5` sleep types, found by scanning the DSDT's AML instead of interpreting it, and enables ACPI mode first if needed. It restarts through the FADT reset register when present, then the keyboard controller, then a triple fault (`src/kernel/arch/x86_64/power.cpp`). If the firmware does nothing, the kernel panics.
+
+The shell The shell reads lines with a prompt showing its working directory, such as `/disk> `, and runs each line's first word as the initramfs program `<name>-<arch>.elf` (names are limited to 32 letters, digits, `_`, or `-`), waits for it, and prints `exit status N` for nonzero statuses. Missing programs report `Unknown command: <name>`; `help` lists the bundled programs:
 
 - `calc [expression]` evaluates an expression such as `4 + 66 - (3 / 4)` with `+ - * /`, parentheses, unary signs, and decimals, using exact fractions (`src/user/calculator.h`) and printing up to six decimal places. Without an expression it reads one per line at a `calc> ` prompt until `exit` or `quit`.
 - `date` prints the current UTC time, such as `2026-10-19 03:07:39 UTC`.
@@ -176,7 +189,7 @@ After startup, the kernel spawns `src/user/shell.cpp` from the initramfs and res
 - `fanout <n>` starts `n` (1–16) `echo` children before waiting for any of them.
 - `primes <workers> [limit]` demonstrates multicore scheduling. It counts the primes below `limit` (default 10,000,000) with 1–16 worker processes, each testing every n-th odd number by trial division. Each worker reports its count and the CPUs it ran on through its exit status, and the parent prints one line per worker plus the total time. Compare `primes 1` with `primes 4` and watch the status bar's busy-CPU count.
 - `sleep <ms>` sleeps and checks that the wall clock advanced by the whole seconds requested.
-- `hardening` runs 44 negative checks: syscalls with kernel or invalid pointers and oversized arguments, a kernel-half ELF (`badelf`, generated by `tools/create_bad_elf.py`), children that execute the heap, write their code, read kernel memory, or use an invalid syscall (each must be terminated), and the per-process child limit.
+- `hardening` runs 45 negative checks, including `Shutdown` from an ordinary program: syscalls with kernel or invalid pointers and oversized arguments, a kernel-half ELF (`badelf`, generated by `tools/create_bad_elf.py`), children that execute the heap, write their code, read kernel memory, or use an invalid syscall (each must be terminated), and the per-process child limit.
 - `aslr` prints where its stack, arguments block, and heap landed; the shell test runs it twice and requires different addresses.
 - `memtest [overflow|exhaust]` grows its stack and heap and checks them, recurses into the stack guard page to show that the kernel terminates it, or grows its heap until the page limit refuses more (the shell test runs it twice and requires the same count).
 - `upper` reads one line as the foreground process and prints it in upper case.
@@ -192,7 +205,7 @@ Interactive runs accept keys from the QEMU window on both architectures. x86-64 
 
 The framebuffer's top row is a status bar. Its left side names the foreground program (`kernel` before the shell starts). Its right side shows busy CPUs over online CPUs, then the UTC date and time as `Mon Oct 19 9:36 PM`. A CPU counts as busy when the scheduler's timer ticks found it running a task other than its idle task for at least half of the last second. A high-priority kernel task redraws the bar once a second and when the foreground program changes. Its clock is read from the RTC once and then advanced by timer ticks.
 
-`CALC_TEST=ON` checks a calculator expression, an unknown command, and a blank line; `SHELL_TEST=ON` checks `filetest`, `cd` and `pwd` with relative paths and the initramfs root, `--help`/`-h`, Ctrl+C on a CPU-bound `primes`, a `sleep`, `upper` and `calc` waiting for input, and the shell prompt, plus `echo` arguments, foreground input in `upper`, the interactive `calc> ` prompt and its errors, `primes 4 100000` (the count and four worker reports), a nonzero exit status, the `uptime` format, and that `date` is within two minutes of the host clock. `INPUT_TEST=ON` runs the keyboard test, including Ctrl+C at the prompt. Pass each with `./build.sh test --arch x86_64` or `--arch aarch64`.
+`CALC_TEST=ON` checks a calculator expression, an unknown command, and a blank line; `SHELL_TEST=ON` checks init's startup line and its restart of the shell after `exit`, `filetest`, `cd` and `pwd` with relative paths and the initramfs root, `--help`/`-h`, Ctrl+C on a CPU-bound `primes`, a `sleep`, `upper` and `calc` waiting for input, and the shell prompt, plus `echo` arguments, foreground input in `upper`, the interactive `calc> ` prompt and its errors, `primes 4 100000` (the count and four worker reports), a nonzero exit status, the `uptime` format, and that `date` is within two minutes of the host clock. `INPUT_TEST=ON` runs the keyboard test, including Ctrl+C at the prompt. Pass each with `./build.sh test --arch x86_64` or `--arch aarch64`.
 
 To run only one architecture's panic check, use `PANIC_TEST=ON`; this intentionally panics during startup, and the smoke test passes only when it observes the expected panic record:
 
@@ -212,7 +225,7 @@ ARCH=aarch64 ./build.sh iso
 QEMU_EFI=/path/to/AAVMF_CODE.fd ARCH=aarch64 ./build.sh test
 ```
 
-The AArch64 ISO is UEFI-only and uses Limine's `BOOTAA64.EFI`. QEMU runs with the `virt` machine. Interactive runs for both architectures mirror raw serial output to `build/<arch>/serial.log` and print it to the launching terminal with firmware terminal-control sequences removed. Set `QEMU_EFI` to an AArch64 UEFI firmware image if the script cannot find one in a common system location.
+The AArch64 ISO is UEFI-only and uses Limine's `BOOTAA64.EFI`. QEMU runs with the `virt` machine. Interactive runs let the guest restart and power off, so the shell's `reboot` boots again and `shutdown` closes QEMU; set `QEMU_NO_REBOOT=1` to make a reset exit QEMU instead, which helps catch a triple fault during boot. They mirror raw serial output to `build/<arch>/serial.log` and print it to the launching terminal with firmware terminal-control sequences removed. Set `QEMU_EFI` to an AArch64 UEFI firmware image if the script cannot find one in a common system location.
 
 On macOS, the toolchain builder automatically selects Apple Clang, the active Xcode SDK, GNU89 host flags, and system zlib for Binutils. Build each stage separately:
 

@@ -38,6 +38,8 @@ uint64_t CheckDirectory(const char* path);
 // Fails unless the directory is empty.
 uint64_t RemoveDirectory(const char* path);
 void CloseAll(Table* table);
+// Waits for any filesystem call in progress, then blocks all later ones, for shutdown.
+void Quiesce();
 
 } // namespace FeatherOS::Files
 

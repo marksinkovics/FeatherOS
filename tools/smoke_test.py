@@ -65,6 +65,7 @@ SHELL_INPUT = (
     b"date --help\nprimes -h\nfiletest\n"
     b"mkdir work\ncd work\nwrite a.txt in work\npwd\ncat a.txt\ncd ..\n"
     b"cat work/a.txt\ncd /\nls\ncat hello.txt\ncd nowhere\ncd\npwd\n"
+    b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
     b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
@@ -111,6 +112,10 @@ ASLR_OUTPUT = re.compile(
 # QEMU's RTC follows the host clock; allow for boot time and slow hosts.
 MAXIMUM_CLOCK_SKEW_SECONDS = 120
 EXPECTED_SHELL_OUTPUT = (
+    "init: FeatherOS is starting its services",
+    # init restarts the console service after the shell's exit command.
+    "init: shell exited with status 0",
+    "init: restarting shell",
     "usage: date",
     "usage: primes <workers 1-16> [limit]",
     "filetest: 33 checks passed",
@@ -125,7 +130,7 @@ EXPECTED_SHELL_OUTPUT = (
     # memtest overflow ends at the stack guard page with ExitStatusFault.
     "shell: program terminated by a CPU exception",
     "sleep: slept 1100 ms",
-    "hardening: 44 checks passed",
+    "hardening: 45 checks passed",
     "primes: 9592 primes below 100000 with 4 workers in ",
     "calc> ",
     "0.333333",
@@ -142,6 +147,18 @@ EXPECTED_SMP = (
     "KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact; "
     "busy CPUs counted"
 )
+POWER_MESSAGES = {
+    "shutdown": (
+        "KERN/I: Shutdown: stopping processes",
+        "KERN/I: Shutdown: disk flushed",
+        "KERN/I: Powering off",
+    ),
+    "reboot": (
+        "KERN/I: Shutdown: stopping processes",
+        "KERN/I: Shutdown: disk flushed",
+        "KERN/I: Restarting",
+    ),
+}
 STORAGE_MESSAGE = (
     "KERN/STORAGE: sector and FAT16 file writes verified; boot count "
 )
@@ -353,6 +370,12 @@ def main():
         help="Expect tasks to run concurrently on several CPUs",
     )
     parser.add_argument(
+        "--expect-power",
+        choices=("shutdown", "reboot"),
+        help="Run the shell's shutdown or reboot and expect QEMU to exit or "
+        "boot again",
+    )
+    parser.add_argument(
         "--expect-storage-boot",
         type=int,
         default=0,
@@ -468,8 +491,8 @@ def main():
             "stdio",
             "-monitor",
             "none",
-            "-no-reboot",
-            "-no-shutdown",
+            *(() if args.expect_power == "reboot" else ("-no-reboot",)),
+            *(() if args.expect_power == "shutdown" else ("-no-shutdown",)),
             "-cdrom",
             args.iso,
         ]
@@ -481,6 +504,7 @@ def main():
         args.expect_calc
         or args.expect_shell
         or args.expect_storage_boot
+        or args.expect_power
         or (args.expect_input and not use_qmp_keyboard)
     )
     process = subprocess.Popen(
@@ -493,7 +517,7 @@ def main():
     captured = bytearray()
     timeout = (
         SHELL_TIMEOUT_SECONDS
-        if args.expect_shell or args.expect_storage_boot
+        if args.expect_shell or args.expect_storage_boot or args.expect_power
         else QEMU_TIMEOUT_SECONDS
     )
     deadline = time.monotonic() + timeout
@@ -509,6 +533,8 @@ def main():
         pending_lines = STORAGE_SHELL_INPUT[
             args.expect_storage_boot
         ].splitlines(keepends=True)
+    elif args.expect_power:
+        pending_lines = [f"{args.expect_power}\n".encode()]
     lines_sent = 0
     qmp_connection = None
     qmp_channel = None
@@ -523,6 +549,7 @@ def main():
             args.expect_scheduler,
             args.expect_smp,
             args.expect_storage_boot,
+            args.expect_power,
             args.expect_user_preemption,
             args.expect_input,
             args.expect_calc,
@@ -541,6 +568,9 @@ def main():
             markers = (EXPECTED_SCHEDULER.encode(),)
         elif args.expect_smp:
             markers = (EXPECTED_SMP.encode(), PANIC_MARKER.encode())
+        elif args.expect_power:
+            # A shutdown ends when QEMU exits; a reboot when the shell is back.
+            markers = (PANIC_MARKER.encode(),)
         elif args.expect_storage_boot:
             markers = (
                 STORAGE_SHELL_OUTPUT[args.expect_storage_boot][-1].encode(),
@@ -562,6 +592,7 @@ def main():
     else:
         markers = (SHELL_BANNER.encode(), PANIC_MARKER.encode())
 
+    output_closed = False
     while process.poll() is None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -574,6 +605,7 @@ def main():
 
         chunk = os.read(process.stdout.fileno(), 4096)
         if not chunk:
+            output_closed = True
             break
         captured.extend(chunk)
         clean_output = ANSI_ESCAPE_BYTES.sub(b"", captured)
@@ -650,7 +682,15 @@ def main():
             input_sent = True
         if any(marker in clean_output for marker in markers):
             break
+        if (
+            args.expect_power == "reboot"
+            and clean_output.count(SHELL_BANNER.encode()) >= 2
+        ):
+            break
 
+    # QEMU closes its output as it exits, which can come before the
+    # process can be reaped.
+    exited_by_itself = output_closed or process.poll() is not None
     if process.poll() is None:
         process.terminate()
     try:
@@ -726,6 +766,31 @@ def main():
             print(failure_message, file=sys.stderr)
             return 1
         print("PASS: timer preemption and task lifecycle passed")
+        return 0
+    if args.expect_power:
+        expected = POWER_MESSAGES[args.expect_power]
+        missing = [text for text in expected if text not in output]
+        boots = output.count(
+            "KERN/I: Limine transferred control to the kernel"
+        )
+        if missing or PANIC_MARKER in output:
+            print(f"FAIL: power output is missing {missing}", file=sys.stderr)
+            return 1
+        if args.expect_power == "shutdown" and not exited_by_itself:
+            print("FAIL: QEMU kept running after shutdown", file=sys.stderr)
+            return 1
+        if args.expect_power == "reboot" and boots < 2:
+            print("FAIL: the system did not boot again", file=sys.stderr)
+            return 1
+        outcome = (
+            "powered off"
+            if args.expect_power == "shutdown"
+            else "booted again"
+        )
+        print(
+            f"PASS: {args.expect_power} stopped processes, flushed the disk, "
+            f"and {outcome}"
+        )
         return 0
     if args.expect_storage_boot:
         expected = f"{STORAGE_MESSAGE}{args.expect_storage_boot}"

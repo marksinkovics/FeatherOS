@@ -49,15 +49,15 @@ inline uint64_t ReadLine(char* buffer, uint64_t capacity, const char* prompt)
 }
 
 // Starts the program named by the first word of command_line; returns its process ID.
-inline uint64_t Spawn(const char* command_line)
+inline uint64_t Spawn(const char* command_line, uint64_t flags = 0)
 {
-    return Syscall(SyscallNumber::Spawn, reinterpret_cast<uint64_t>(command_line));
+    return Syscall(SyscallNumber::Spawn, reinterpret_cast<uint64_t>(command_line), flags);
 }
 
 // Waits for a child started with Spawn and stores its exit status.
-inline uint64_t Wait(uint64_t process_id, uint64_t* status)
+inline uint64_t Wait(uint64_t process_id, uint64_t* status, uint64_t flags = 0)
 {
-    return Syscall(SyscallNumber::Wait, process_id, reinterpret_cast<uint64_t>(status));
+    return Syscall(SyscallNumber::Wait, process_id, reinterpret_cast<uint64_t>(status), flags);
 }
 
 // Returns the current UTC time in seconds since 1970-01-01, or a syscall error.
@@ -124,6 +124,11 @@ inline uint64_t MakeDirectory(const char* path)
 inline uint64_t RemoveDirectory(const char* path)
 {
     return Syscall(SyscallNumber::RemoveDirectory, reinterpret_cast<uint64_t>(path));
+}
+
+inline uint64_t Shutdown(uint64_t action)
+{
+    return Syscall(SyscallNumber::Shutdown, action);
 }
 
 inline uint64_t ChangeDirectory(const char* path)

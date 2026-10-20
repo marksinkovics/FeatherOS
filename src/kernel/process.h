@@ -87,12 +87,17 @@ bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address);
 // Scheduler task entry: runs a loaded program in user mode and returns its exit status.
 uint64_t RunUserProgram(void* program);
 
-// Starts "<name>-<arch>.elf" from the initramfs, where name is the first word of command_line,
-// and makes it the foreground process that receives console input.
-SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process_id);
+// Starts "<name>-<arch>.elf" from the initramfs, where name is the first word of command_line.
+// Unless flags has User::SpawnBackground, it becomes the foreground process that receives
+// console input.
+SpawnStatus Spawn(const char* command_line, ProcessId parent, uint64_t flags,
+                  ProcessId* process_id);
 // Waits for a spawned process to exit, then releases its task and memory and returns console
 // input to its parent.
 bool Wait(ProcessId process_id, uint64_t* exit_status);
+// For shutdown: marks every process except caller and its ancestors for termination and waits up
+// to two seconds for them to exit. False if some are still running.
+bool StopOtherProcesses(ProcessId caller);
 // Ctrl+C: marks the foreground job and its descendants for termination. Returns false when only
 // the session leader holds the console.
 bool InterruptForegroundJob();

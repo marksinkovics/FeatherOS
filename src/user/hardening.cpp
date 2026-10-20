@@ -103,6 +103,7 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
         Check(!IsSyscallError(child), "spawning up to the child limit");
     }
     Check(IsSyscallError(Spawn("sleep 300")), "spawning past the child limit");
+    Check(Shutdown(ShutdownPowerOff) == SyscallErrorNotPermitted, "shutdown from a program");
     for (const uint64_t child : children)
     {
         uint64_t status;

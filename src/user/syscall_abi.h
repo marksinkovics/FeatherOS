@@ -13,8 +13,8 @@ enum class SyscallNumber : uint64_t
     Exit = 0,              // (status) -> does not return
     WriteCharacter = 1,    // (character) -> 0; printable ASCII or '\n'
     ReadLine = 2,          // (buffer, capacity, prompt) -> line length; foreground process only
-    Spawn = 3,             // (command_line) -> process ID of the started child
-    Wait = 4,              // (process_id, status_pointer) -> 0 once the child has exited
+    Spawn = 3,             // (command_line, flags) -> process ID of the started child
+    Wait = 4,              // (process_id, status_pointer, flags) -> 0 once the child has exited
     ReadClock = 5,         // () -> current UTC time in seconds since 1970-01-01
     ExtendHeap = 6,        // (increment) -> previous program break; 0 queries it
     Sleep = 7,             // (milliseconds) -> 0 after at least that long
@@ -31,7 +31,18 @@ enum class SyscallNumber : uint64_t
     RemoveDirectory = 18,  // (path) -> 0; the directory must be empty
     ChangeDirectory = 19,  // (path) -> 0
     CurrentDirectory = 20, // (buffer, capacity) -> length of the working directory
+    Shutdown = 21,         // (action) -> does not return; init and session leaders only
 };
+
+// Spawn flags. A child normally takes the console from its parent; a background child does not.
+// A session leader's descendants form Ctrl+C jobs, and the leader itself is never interrupted.
+constexpr uint64_t SpawnBackground = 1U << 0;
+constexpr uint64_t SpawnSessionLeader = 1U << 1;
+// Shutdown actions.
+constexpr uint64_t ShutdownPowerOff = 0;
+constexpr uint64_t ShutdownRestart = 1;
+// Wait flag: return SyscallErrorWouldBlock instead of blocking while the child runs.
+constexpr uint64_t WaitNoHang = 1U << 0;
 
 // Paths are absolute ("/disk/notes.txt") or relative to the process's working directory, which
 // starts as its parent's ("/disk" for the shell). "/" is the read-only initramfs; files under
@@ -66,6 +77,8 @@ constexpr uint64_t SyscallErrorInterrupted = UINT64_MAX - 4;
 constexpr uint64_t SyscallErrorTooManyOpenFiles = UINT64_MAX - 5;
 // A disk file has either one writer or any number of readers, and an open file cannot be removed.
 constexpr uint64_t SyscallErrorBusy = UINT64_MAX - 6;
+constexpr uint64_t SyscallErrorWouldBlock = UINT64_MAX - 7;
+constexpr uint64_t SyscallErrorNotPermitted = UINT64_MAX - 8;
 
 constexpr bool IsSyscallError(uint64_t value)
 {

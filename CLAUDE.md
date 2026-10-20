@@ -8,12 +8,13 @@ Hobby kernel for **x86-64 and AArch64**, booted by Limine, freestanding C/C++ + 
 - **M8 done:** every CPU schedules from one shared run queue (scheduler lock held across switches, per-CPU idle tasks, IPI wakeups). Per-CPU index via x86-64 `GS` + `SWAPGS` / AArch64 `TPIDR_EL1`. x86-64 uses the local APIC for IPIs and timers, with the legacy PIC kept for devices. The AArch64 kernel runs on `SP_EL1`.
 - **M12 and M13 done** (merged to `main`): dynamic tasks and processes, guard-paged kernel stacks, demand-grown user stacks, `ExtendHeap`/`Sleep` syscalls, priorities, static-PIE programs with full ASLR, SMEP/SMAP/PAN plus `RDRAND`/`RNDR` when present (tested with `QEMU_CPU=max`), and the `hardening` negative tests. Deferred items moved to M9 (open-file limit) and M11 (threads/TLS, `fork`/copy-on-write).
 - **M15 done:** top status bar (foreground program, busy/online CPUs, UTC time), inline prompt `> ` with a cursor, `ReadUptime` syscall + `uptime` command, no periodic uptime log; expression `calc`, `primes` multicore demo (`CurrentCpu` syscall), spawned programs time-sliced on timer ticks, Ctrl+C interrupts the foreground job (children die with their parent).
-- **M9 done** (on `feat/persistent_storage`): virtio-blk writes, writable FAT16 with subdirectories and VFAT long names on MBR or GPT disks, file-descriptor syscalls (`src/kernel/files.cpp`), per-process working directories (`filesystem/path.cpp`), and shell tools `ls`/`cat`/`write`/`rm`/`mkdir`/`rmdir` plus `cd`/`pwd` built-ins. `STORAGE_TEST` checks persistence across two boots with mtools. Next: M10, M11 or M16 (order provisional).
+- **M9 done** (merged to `main`): virtio-blk writes, writable FAT16 with subdirectories and VFAT long names on MBR or GPT disks, file-descriptor syscalls (`src/kernel/files.cpp`), per-process working directories (`filesystem/path.cpp`), and shell tools `ls`/`cat`/`write`/`rm`/`mkdir`/`rmdir` plus `cd`/`pwd` built-ins. `STORAGE_TEST` checks persistence across two boots with mtools.
+- **M11 in progress** (on `feat/system_service`): Part 1 done, `init` with `/init.conf` services (`once`/`respawn`/`console`, restart limits). Part 2 done, `shutdown`/`reboot` (`src/kernel/power.cpp`; PSCI on AArch64, ACPI on x86-64; `POWER_TEST=shutdown|reboot`). Next: the documented POSIX subset.
 - Known hard limits: 16 KiB kernel stacks (guard-paged pool), 1024 pages per process, 16 open files per process (64 open disk files system-wide), FAT16 long names ASCII-only and at most 63 characters, 63-page user stack, no heap shrinking, ≤16 program args in 63 chars (double quotes group words), no SSE state saved on x86-64 (user code builds with `-mgeneral-regs-only`), no TLB shootdown or per-CPU run queues, `KLogger` not locked.
 
 ## Branches
 
-- `main` — default branch with M1–M8, M12, M13 and M15, each squash-merged from a feature branch.
+- `main` — default branch with M1–M9, M12, M13 and M15, each squash-merged from a feature branch.
 - Do feature work on `feat/<topic>` branches cut from `main`, and squash-merge each one back into `main`.
 
 ## Layout
@@ -34,7 +35,7 @@ Hobby kernel for **x86-64 and AArch64**, booted by Limine, freestanding C/C++ + 
 bash tools/quality.sh --fix         # clang-format/tidy, ruff, shellcheck/shfmt
 ```
 
-You must always pass an architecture (`--arch` or `ARCH=`). Feature tests are env toggles, e.g. `SHELL_TEST=ON`, `SCHEDULER_TEST=ON`, `SMP_TEST=ON`, `STORAGE_TEST=ON`, `PANIC_TEST=ON` (add `QEMU_CPU=max` for the hardware-protection CPU model), which map to `FEATHEROS_*_TEST` CMake options. Outputs go under `build/<arch>/`.
+You must always pass an architecture (`--arch` or `ARCH=`). Feature tests are env toggles, e.g. `SHELL_TEST=ON`, `SCHEDULER_TEST=ON`, `SMP_TEST=ON`, `STORAGE_TEST=ON`, `PANIC_TEST=ON` (add `QEMU_CPU=max` for the hardware-protection CPU model; `QEMU_NO_REBOOT=1` makes interactive runs exit on reset), which map to `FEATHEROS_*_TEST` CMake options. Outputs go under `build/<arch>/`.
 
 ## Change workflow: lint before testing
 

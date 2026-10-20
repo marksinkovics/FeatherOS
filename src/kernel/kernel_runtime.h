@@ -25,6 +25,7 @@ struct BootInfo
     const void* initramfs_data;
     uint64_t initramfs_size;
     limine_smp_response* smp;
+    uint64_t acpi_rsdp_physical;
 };
 
 [[noreturn]] void Run(KLogger& logger, const BootInfo& boot_info);

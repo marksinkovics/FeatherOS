@@ -137,6 +137,19 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
             ChangeDirectoryCommand(command + 2);
             continue;
         }
+        if (StringEquals(command, "shutdown") || StringEquals(command, "reboot"))
+        {
+            // Returns only if the kernel refuses.
+            Shutdown(command[0] == 's' ? ShutdownPowerOff : ShutdownRestart);
+            WriteText(command);
+            WriteLine(": not permitted");
+            continue;
+        }
+        if (StringEquals(command, "exit"))
+        {
+            // init restarts the console service.
+            Exit(0);
+        }
         if (StringEquals(command, "pwd"))
         {
             char directory[MaximumPathLength];
@@ -150,7 +163,8 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
                 "Commands: calc [expression], date, echo <words...>, fanout <n>, "
                 "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
                 "sleep <ms>, upper, uptime, filetest, ls, cat <file>, write [-a] <file> <text>, "
-                "rm <file>, mkdir <dir>, rmdir <dir>, cd [dir], pwd, help");
+                "rm <file>, mkdir <dir>, rmdir <dir>, cd [dir], pwd, exit, shutdown, reboot, "
+                "help");
             WriteLine("Run <command> --help to see what a command does.");
             continue;
         }

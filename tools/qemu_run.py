@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -20,6 +21,11 @@ def main():
     parser.add_argument("--disk", required=True, help="Raw virtio block image")
     parser.add_argument(
         "--log-file", required=True, help="Path for raw serial output"
+    )
+    parser.add_argument(
+        "--no-reboot",
+        action="store_true",
+        help="Exit instead of resetting, to catch a triple fault",
     )
     parser.add_argument("iso", help="Path to the bootable ISO")
     args = parser.parse_args()
@@ -78,8 +84,8 @@ def main():
             "stdio",
             "-monitor",
             "none",
-            "-no-reboot",
-            "-no-shutdown",
+            # The shell's reboot and shutdown should restart or close QEMU.
+            *(("-no-reboot",) if args.no_reboot else ()),
             "-cdrom",
             args.iso,
         ]
@@ -92,7 +98,11 @@ def main():
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
         )
         try:
-            for output_chunk in process.stdout:
+            # Read whatever has arrived, so prompts show before a newline.
+            while True:
+                output_chunk = os.read(process.stdout.fileno(), 4096)
+                if not output_chunk:
+                    break
                 log_file.write(output_chunk)
                 log_file.flush()
                 sys.stdout.buffer.write(ANSI_ESCAPE.sub(b"", output_chunk))

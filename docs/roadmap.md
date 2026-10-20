@@ -136,6 +136,10 @@ Moved: storage drivers for physical hardware, to M16.
 
 ### 11. System Services And Compatibility
 
+**Part 1 (complete):** The kernel starts `init`, which runs the `once`, `respawn`, and `console` services listed in `/init.conf`, restarts services that exit, and disables one that exits five times within ten seconds. `Spawn` gained background and session-leader flags, `Wait` gained a non-blocking mode, and Ctrl+C jobs now end at the session leader. Unit tests cover the configuration format and restart limit, and the shell test checks that init restarts the shell after `exit`.
+
+**Part 2 (complete):** The shell's `shutdown` and `reboot` built-ins call a `Shutdown` syscall limited to init and session leaders. The kernel stops other processes, quiesces the filesystem, flushes virtio-blk, parks the other CPUs, and uses PSCI on AArch64 or ACPI S5 and the reset register (with keyboard-controller and triple-fault fallbacks) on x86-64. Matrix cases check that QEMU exits after `shutdown` and boots again after `reboot` on both architectures, and `hardening` checks that ordinary programs are refused.
+
 - Add an init process and define service startup and shutdown behavior.
 - Add `shutdown` and `reboot`: PSCI `SYSTEM_OFF`/`SYSTEM_RESET` on AArch64; on x86-64, ACPI S5 through the FADT's PM1a control port (`\_S5` sleep type found by scanning the DSDT) and the ACPI reset register with the keyboard-controller reset as a fallback. Restrict them to the session leader, stop the other CPUs, flush the disk (virtio-blk flush), and halt if power-off fails. Test that QEMU exits on `shutdown` and boots again after `reboot`.
 - Expand the userspace runtime and libc around a documented, deliberately scoped POSIX subset.

@@ -44,7 +44,9 @@ constexpr uint16_t DescriptorNext = 1;
 constexpr uint16_t DescriptorDeviceWrite = 2;
 constexpr uint32_t RequestRead = 0;
 constexpr uint32_t RequestWrite = 1;
+constexpr uint32_t RequestFlush = 4;
 constexpr uint32_t FeatureReadOnly = 1U << 5;
+constexpr uint32_t FeatureFlush = 1U << 9;
 constexpr uint8_t RequestStatusPending = 0xFF;
 
 struct __attribute__((packed)) Descriptor
@@ -74,6 +76,7 @@ volatile uint8_t* queue_virtual_address = nullptr;
 uint64_t capacity_sectors = 0;
 uint16_t available_index_value = 0;
 bool read_only = false;
+bool flush_supported = false;
 bool initialized = false;
 // One request buffer serves every caller, so requests from different CPUs take turns.
 Sync::SpinLock device_lock;
@@ -239,6 +242,35 @@ void ConfigureDescriptor(uint16_t index, uint64_t address, uint32_t length, uint
     descriptors[index].next = next;
 }
 
+// Hands the prepared request to the device and polls until it completes.
+bool SubmitLocked()
+{
+    auto* available_index =
+        reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 2);
+    auto* available_ring =
+        reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 4);
+    auto* used_index = reinterpret_cast<volatile uint16_t*>(queue_virtual_address + UsedOffset + 2);
+    auto* used_elements =
+        reinterpret_cast<volatile UsedElement*>(queue_virtual_address + UsedOffset + 4);
+    queue_virtual_address[StatusOffset] = RequestStatusPending;
+    const uint16_t used_slot = *used_index % QueueSize;
+    const uint16_t expected_used_index = static_cast<uint16_t>(*used_index + 1);
+    available_ring[available_index_value % QueueSize] = 0;
+    ++available_index_value;
+    asm volatile("mfence" ::: "memory");
+    *available_index = available_index_value;
+    WritePort16(device_io_base + VirtioQueueNotify, QueueIndex);
+
+    uint64_t attempts = 0;
+    while (*used_index != expected_used_index && attempts < 10000000)
+    {
+        ++attempts;
+    }
+    asm volatile("lfence" ::: "memory");
+    return *used_index == expected_used_index && used_elements[used_slot].id == 0 &&
+           queue_virtual_address[StatusOffset] == 0;
+}
+
 // Writes source to the sector when it is set, otherwise reads the sector into destination.
 bool Transfer(uint64_t sector, const uint8_t* source, uint8_t* destination)
 {
@@ -250,13 +282,6 @@ bool Transfer(uint64_t sector, const uint8_t* source, uint8_t* destination)
 
     Sync::SpinLockGuard guard(device_lock);
     auto* request = reinterpret_cast<volatile Request*>(queue_virtual_address + RequestOffset);
-    auto* available_index =
-        reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 2);
-    auto* available_ring =
-        reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 4);
-    auto* used_index = reinterpret_cast<volatile uint16_t*>(queue_virtual_address + UsedOffset + 2);
-    auto* used_elements =
-        reinterpret_cast<volatile UsedElement*>(queue_virtual_address + UsedOffset + 4);
     volatile uint8_t* data = queue_virtual_address + DataOffset;
 
     request->type = write ? RequestWrite : RequestRead;
@@ -272,27 +297,10 @@ bool Transfer(uint64_t sector, const uint8_t* source, uint8_t* destination)
             data[index] = source[index];
         }
     }
-    queue_virtual_address[StatusOffset] = RequestStatusPending;
-    const uint16_t used_slot = *used_index % QueueSize;
-    const uint16_t expected_used_index = static_cast<uint16_t>(*used_index + 1);
-    available_ring[available_index_value % QueueSize] = 0;
-    ++available_index_value;
-    asm volatile("mfence" ::: "memory");
-    *available_index = available_index_value;
-    WritePort16(device_io_base + VirtioQueueNotify, QueueIndex);
-
-    uint64_t attempts = 0;
-    while (*used_index != expected_used_index && attempts < 10000000)
-    {
-        ++attempts;
-    }
-    if (*used_index != expected_used_index || used_elements[used_slot].id != 0 ||
-        queue_virtual_address[StatusOffset] != 0)
+    if (!SubmitLocked())
     {
         return false;
     }
-
-    asm volatile("lfence" ::: "memory");
     if (!write)
     {
         for (uint32_t index = 0; index < SectorSize; ++index)
@@ -315,8 +323,10 @@ bool Initialize(const void*, uint64_t hhdm_offset)
     WritePort8(device_io_base + VirtioDeviceStatus, 0);
     WritePort8(device_io_base + VirtioDeviceStatus, StatusAcknowledge);
     WritePort8(device_io_base + VirtioDeviceStatus, StatusAcknowledge | StatusDriver);
-    read_only = (ReadPort32(device_io_base + VirtioHostFeatures) & FeatureReadOnly) != 0;
-    WritePort32(device_io_base + VirtioGuestFeatures, 0);
+    const uint32_t host_features = ReadPort32(device_io_base + VirtioHostFeatures);
+    read_only = (host_features & FeatureReadOnly) != 0;
+    flush_supported = (host_features & FeatureFlush) != 0;
+    WritePort32(device_io_base + VirtioGuestFeatures, host_features & FeatureFlush);
     WritePort16(device_io_base + VirtioQueueSelect, QueueIndex);
     if (ReadPort16(device_io_base + VirtioQueueSize) < QueueSize || !AllocateQueue(hhdm_offset))
     {
@@ -370,6 +380,27 @@ bool ReadSector(uint64_t sector, void* buffer)
 bool WriteSector(uint64_t sector, const void* buffer)
 {
     return Transfer(sector, static_cast<const uint8_t*>(buffer), nullptr);
+}
+
+bool Flush()
+{
+    // Without the flush feature the device completes writes before reporting them done.
+    if (!initialized || !flush_supported)
+    {
+        return initialized;
+    }
+    Sync::SpinLockGuard guard(device_lock);
+    auto* request = reinterpret_cast<volatile Request*>(queue_virtual_address + RequestOffset);
+    request->type = RequestFlush;
+    request->reserved = 0;
+    request->sector = 0;
+    // A flush has no data, so the header leads straight to the status byte.
+    ConfigureDescriptor(0, queue_physical_address + RequestOffset, sizeof(Request), DescriptorNext,
+                        2);
+    const bool flushed = SubmitLocked();
+    ConfigureDescriptor(0, queue_physical_address + RequestOffset, sizeof(Request), DescriptorNext,
+                        1);
+    return flushed;
 }
 
 } // namespace FeatherOS::BlockDevice

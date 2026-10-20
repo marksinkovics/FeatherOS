@@ -13,6 +13,8 @@ uint64_t SectorCount();
 bool ReadSector(uint64_t sector, void* buffer);
 // Fails on a read-only device.
 bool WriteSector(uint64_t sector, const void* buffer);
+// Asks the device to make completed writes durable, such as QEMU syncing its image file.
+bool Flush();
 
 } // namespace FeatherOS::BlockDevice
 

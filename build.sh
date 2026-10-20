@@ -188,9 +188,9 @@ iso() {
     fi
     # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
     export COPYFILE_DISABLE=1
-    tar -cf "$initramfs_path" -C "$SCRIPT_DIR/initramfs" hello.txt
+    tar -cf "$initramfs_path" -C "$SCRIPT_DIR/initramfs" hello.txt init.conf
     local user_program
-    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout memtest:memtest sleep:sleep hardening:hardening aslr:aslr uptime:uptime primes:primes filetest:filetest ls:ls cat:cat write:write rm:rm mkdir:mkdir rmdir:rmdir; do
+    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout memtest:memtest sleep:sleep hardening:hardening aslr:aslr uptime:uptime primes:primes filetest:filetest ls:ls cat:cat write:write rm:rm mkdir:mkdir rmdir:rmdir init:init; do
         local user_elf="${user_program%%:*}-$ARCH.elf"
         "$user_compiler" \
             -ffreestanding -fno-builtin -fno-exceptions -fno-rtti -fno-stack-protector \
@@ -291,22 +291,30 @@ run() {
         local build_dir
         build_dir=$(_build_dir)
         _print "Run AArch64 in QEMU (serial log: build/aarch64/serial.log)"
+        local run_args=()
+        if [[ "${QEMU_NO_REBOOT:-OFF}" == ON || "${QEMU_NO_REBOOT:-OFF}" == 1 ]]; then
+            run_args+=(--no-reboot)
+        fi
         python3 "$SCRIPT_DIR/tools/qemu_run.py" \
             --arch aarch64 \
             --firmware "$firmware" \
             --disk "$build_dir/virtio-disk.img" \
             --log-file "$build_dir/serial.log" \
-            "$iso_path"
+            "${run_args[@]}" "$iso_path"
     elif [ "$ARCH" = "x86_64" ]; then
         _require_tools qemu-system-x86_64 python3
         local build_dir
         build_dir=$(_build_dir)
         _print "Run x86_64 in QEMU (serial log: build/x86_64/serial.log)"
+        local run_args=()
+        if [[ "${QEMU_NO_REBOOT:-OFF}" == ON || "${QEMU_NO_REBOOT:-OFF}" == 1 ]]; then
+            run_args+=(--no-reboot)
+        fi
         python3 "$SCRIPT_DIR/tools/qemu_run.py" \
             --arch x86_64 \
             --disk "$build_dir/virtio-disk.img" \
             --log-file "$build_dir/serial.log" \
-            "$iso_path"
+            "${run_args[@]}" "$iso_path"
     else
         _err "QEMU launch is not supported for ARCH='$ARCH'."
         exit 1
@@ -354,6 +362,9 @@ smoke_test() {
     fi
     if [[ -n "${QEMU_CPU:-}" ]]; then
         smoke_args+=(--cpu "$QEMU_CPU")
+    fi
+    if [[ -n "${POWER_TEST:-}" ]]; then
+        smoke_args+=(--expect-power "$POWER_TEST")
     fi
 
     iso_path=$(_kernel_iso)

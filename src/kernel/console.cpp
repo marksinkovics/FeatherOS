@@ -198,6 +198,17 @@ void WriteCharacter(char character)
     }
 }
 
+void WriteLine(const char* text)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    Serial::Write(text);
+    Serial::Write("\n");
+    if (console_term != nullptr)
+    {
+        console_term->PrintLn(text);
+    }
+}
+
 bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* line_length)
 {
     if (buffer == nullptr || capacity == 0 || line_length == nullptr)

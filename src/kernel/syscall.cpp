@@ -28,11 +28,11 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     }
     if (request.number == static_cast<uint64_t>(Number::Spawn) && handlers.spawn != nullptr)
     {
-        return {Action::Return, handlers.spawn(context, arguments[0])};
+        return {Action::Return, handlers.spawn(context, arguments[0], arguments[1])};
     }
     if (request.number == static_cast<uint64_t>(Number::Wait) && handlers.wait != nullptr)
     {
-        return {Action::Return, handlers.wait(context, arguments[0], arguments[1])};
+        return {Action::Return, handlers.wait(context, arguments[0], arguments[1], arguments[2])};
     }
     if (request.number == static_cast<uint64_t>(Number::ReadClock) &&
         handlers.read_clock != nullptr)
@@ -107,6 +107,10 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
         handlers.current_directory != nullptr)
     {
         return {Action::Return, handlers.current_directory(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Shutdown) && handlers.shutdown != nullptr)
+    {
+        return {Action::Return, handlers.shutdown(context, arguments[0])};
     }
     return {Action::Invalid, UINT64_MAX};
 }

@@ -14,6 +14,7 @@ if (ARCH STREQUAL "x86_64")
         ${SRCROOT}/arch/x86_64/keyboard.cpp
         ${SRCROOT}/arch/x86_64/block_device.cpp
         ${SRCROOT}/arch/x86_64/rtc.cpp
+        ${SRCROOT}/arch/x86_64/power.cpp
     )
     set(SCHEDULER_CONTEXT_SRC ${SRCROOT}/arch/x86_64/context_switch.asm)
 elseif (ARCH STREQUAL "aarch64")
@@ -28,6 +29,7 @@ elseif (ARCH STREQUAL "aarch64")
         ${SRCROOT}/arch/aarch64/keyboard.cpp
         ${SRCROOT}/arch/aarch64/block_device.cpp
         ${SRCROOT}/arch/aarch64/rtc.cpp
+        ${SRCROOT}/arch/aarch64/power.cpp
     )
     set(SCHEDULER_CONTEXT_SRC ${SRCROOT}/arch/aarch64/context_switch.S)
 else ()
@@ -47,6 +49,7 @@ set(SRC
     ${SRCROOT}/panic.cpp
     ${SRCROOT}/console.cpp
     ${SRCROOT}/files.cpp
+    ${SRCROOT}/power.cpp
     ${SRCROOT}/process.cpp
     ${SRCROOT}/process_arguments.cpp
     ${SRCROOT}/scheduler.cpp

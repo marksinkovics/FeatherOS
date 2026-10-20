@@ -21,6 +21,7 @@ class BootMatrixTests(unittest.TestCase):
         smp_test=False,
         storage_test=False,
         disk_layout="mbr",
+        power_test="",
         calc_test=False,
         shell_test=False,
         input_test=False,
@@ -39,6 +40,7 @@ class BootMatrixTests(unittest.TestCase):
         environment["SMP_TEST"] = "ON" if smp_test else "OFF"
         environment["STORAGE_TEST"] = "ON" if storage_test else "OFF"
         environment["DISK_LAYOUT"] = disk_layout
+        environment["POWER_TEST"] = power_test
         environment["CALC_TEST"] = "ON" if calc_test else "OFF"
         environment["SHELL_TEST"] = "ON" if shell_test else "OFF"
         environment["INPUT_TEST"] = "ON" if input_test else "OFF"
@@ -149,6 +151,18 @@ class BootMatrixTests(unittest.TestCase):
 
     def test_30_aarch64_storage_on_gpt_disk(self):
         self.run_boot_case("aarch64", storage_test=True, disk_layout="gpt")
+
+    def test_31_x86_64_shutdown(self):
+        self.run_boot_case("x86_64", power_test="shutdown")
+
+    def test_32_aarch64_shutdown(self):
+        self.run_boot_case("aarch64", power_test="shutdown")
+
+    def test_33_x86_64_reboot(self):
+        self.run_boot_case("x86_64", power_test="reboot")
+
+    def test_34_aarch64_reboot(self):
+        self.run_boot_case("aarch64", power_test="reboot")
 
 
 if __name__ == "__main__":

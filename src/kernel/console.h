@@ -17,6 +17,7 @@ void Initialize(Term* term);
 // Redraws the status bar soon, e.g. after the foreground program changes.
 void NotifyStatusChanged();
 void WriteCharacter(char character);
+void WriteLine(const char* text);
 // Shows prompt, then echoes and edits input until Enter. Interrupts are enabled while waiting.
 // buffer receives at most capacity - 1 characters and a terminator. Returns false when Ctrl+C
 // interrupted the calling program.
