@@ -178,7 +178,7 @@ iso() {
         user_compiler=x86_64-elf-g++
         user_linker_script="$SCRIPT_DIR/src/user/linker_x86_64.ld"
         # Context switches do not save SSE state, so user code must not use it.
-        user_arch_flags=(-mno-red-zone -mcmodel=large -mgeneral-regs-only)
+        user_arch_flags=(-mno-red-zone -mgeneral-regs-only)
     else
         _require_tools aarch64-elf-g++
         user_compiler=aarch64-elf-g++
@@ -187,17 +187,20 @@ iso() {
     fi
     tar -cf "$initramfs_path" -C "$SCRIPT_DIR/initramfs" hello.txt
     local user_program
-    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date; do
+    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout memtest:memtest sleep:sleep hardening:hardening aslr:aslr uptime:uptime primes:primes; do
         local user_elf="${user_program%%:*}-$ARCH.elf"
         "$user_compiler" \
             -ffreestanding -fno-builtin -fno-exceptions -fno-rtti -fno-stack-protector \
-            -fno-pic -fno-pie -nostdlib -nodefaultlibs -static \
+            -fpie -nostdlib -nodefaultlibs \
+            -Wl,-pie -Wl,--no-dynamic-linker -Wl,-z,text \
             -Wl,-T,"$user_linker_script" -Wl,-e,_start -Wl,--build-id=none \
             -Wl,-z,max-page-size=0x1000 "${user_arch_flags[@]}" \
             -I"$SCRIPT_DIR/src/user" "$SCRIPT_DIR/src/user/${user_program#*:}.cpp" \
             -o "$build_dir/$user_elf"
         tar -rf "$initramfs_path" -C "$build_dir" "$user_elf"
     done
+    python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$build_dir/badelf-$ARCH.elf"
+    tar -rf "$initramfs_path" -C "$build_dir" "badelf-$ARCH.elf"
     python3 "$SCRIPT_DIR/tools/create_test_disk.py" "$block_image" \
         "$SCRIPT_DIR/initramfs/block.txt"
 
@@ -345,6 +348,9 @@ smoke_test() {
     fi
     if [[ "${INPUT_TEST:-OFF}" == ON || "${INPUT_TEST:-OFF}" == 1 ]]; then
         smoke_args+=(--expect-input)
+    fi
+    if [[ -n "${QEMU_CPU:-}" ]]; then
+        smoke_args+=(--cpu "$QEMU_CPU")
     fi
 
     iso_path=$(_kernel_iso)

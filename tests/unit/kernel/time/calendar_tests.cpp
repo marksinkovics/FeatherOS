@@ -68,3 +68,18 @@ TEST_CASE("calendar rejects invalid dates")
     REQUIRE_FALSE(FeatherOS::User::UnixSecondsFromCalendar({2024, 1, 1, 0, 60, 0}, &seconds));
     REQUIRE_FALSE(FeatherOS::User::UnixSecondsFromCalendar({2024, 1, 1, 0, 0, 60}, &seconds));
 }
+
+TEST_CASE("calendar formats short dates with weekday and a 12-hour clock")
+{
+    const auto short_format = [](uint64_t seconds)
+    {
+        char text[FeatherOS::User::ShortCalendarTimeLength];
+        FeatherOS::User::FormatShortCalendarTime(seconds, text);
+        return std::string(text);
+    };
+    REQUIRE(short_format(0) == "Thu Jan 1 12:00 AM");
+    REQUIRE(short_format(1792445760) == "Mon Oct 19 9:36 PM");
+    REQUIRE(short_format(1792364283) == "Sun Oct 18 10:58 PM");
+    REQUIRE(short_format(951825600) == "Tue Feb 29 12:00 PM");
+    REQUIRE(short_format(1735689599) == "Tue Dec 31 11:59 PM");
+}

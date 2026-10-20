@@ -2,6 +2,7 @@
 
 #include "kernel/arch/interrupts.h"
 #include "kernel/cpu.h"
+#include "kernel/memory/device_memory.h"
 #include "kernel/panic.h"
 
 #include <stddef.h>
@@ -364,8 +365,15 @@ bool InitializeInterruptController(const void* device_tree)
     {
         return false;
     }
-    distributor_base = registers.distributor;
-    cpu_interface_base = registers.cpu_interface;
+    // GICv2 register frames are 64 KiB on QEMU virt.
+    constexpr uint64_t GicFrameSize = 0x10000;
+    distributor_base = Memory::MapDevice(registers.distributor, GicFrameSize);
+    cpu_interface_base = Memory::MapDevice(registers.cpu_interface, GicFrameSize);
+    if (distributor_base == 0 || cpu_interface_base == 0)
+    {
+        distributor_base = 0;
+        return false;
+    }
 
     asm volatile("msr daifset, #2" ::: "memory");
     DistributorRegister(GicDistributorControl) = 0;

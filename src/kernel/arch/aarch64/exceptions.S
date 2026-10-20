@@ -149,6 +149,8 @@ aarch64_irq_common:
     str x0, [sp, #256]
     mov x0, sp
     bl FeatherOS_AArch64_IrqDispatch
+    mov x0, sp
+    bl FeatherOS_AArch64_InterruptReturn
     ldr x0, [sp, #248]
     msr ELR_EL1, x0
     ldr x0, [sp, #256]

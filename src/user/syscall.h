@@ -66,6 +66,26 @@ inline uint64_t ReadClock()
     return Syscall(SyscallNumber::ReadClock);
 }
 
+inline uint64_t ExtendHeap(uint64_t increment)
+{
+    return Syscall(SyscallNumber::ExtendHeap, increment);
+}
+
+inline uint64_t Sleep(uint64_t milliseconds)
+{
+    return Syscall(SyscallNumber::Sleep, milliseconds);
+}
+
+inline uint64_t ReadUptime()
+{
+    return Syscall(SyscallNumber::ReadUptime);
+}
+
+inline uint64_t CurrentCpu()
+{
+    return Syscall(SyscallNumber::CurrentCpu);
+}
+
 } // namespace FeatherOS::User
 
 #endif

@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #include "kernel/arch/serial.h"
+#include "kernel/memory/device_memory.h"
 #include "kernel/sync/spinlock.h"
 
 namespace FeatherOS
@@ -14,11 +15,13 @@ namespace
 Sync::SpinLock write_lock;
 
 const uint64_t UartPhysicalAddress = 0x09000000;
+constexpr uint64_t UartRegisterSize = 0x1000;
+// Limine's identity map reaches the UART until InitializeMapping moves it into the kernel half.
+uintptr_t uart_base = UartPhysicalAddress;
 
 volatile uint32_t* Register(uint32_t offset)
 {
-    uintptr_t address = (uintptr_t)(UartPhysicalAddress + offset);
-    return (volatile uint32_t*)address;
+    return reinterpret_cast<volatile uint32_t*>(uart_base + offset);
 }
 
 void WriteCharacter(char character)
@@ -62,6 +65,15 @@ void Write(const char* text)
             WriteCharacter('\r');
         }
         WriteCharacter(*text++);
+    }
+}
+
+void InitializeMapping()
+{
+    const uintptr_t mapped = Memory::MapDevice(UartPhysicalAddress, UartRegisterSize);
+    if (mapped != 0)
+    {
+        uart_base = mapped;
     }
 }
 

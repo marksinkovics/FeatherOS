@@ -1,5 +1,6 @@
 #include "kernel/arch/rtc.h"
 
+#include "kernel/sync/spinlock.h"
 #include "user/calendar.h"
 
 namespace FeatherOS::Arch::RealTimeClock
@@ -25,6 +26,9 @@ constexpr uint8_t StatusBBinary = 0x04;
 constexpr uint8_t HourPm = 0x80;
 constexpr uint32_t MaximumReadAttempts = 8;
 constexpr uint32_t MaximumUpdateWait = 1000000;
+
+// Each CMOS access is an index write followed by a data read, so CPUs must not interleave them.
+Sync::SpinLock cmos_lock;
 
 struct RawTime
 {
@@ -96,6 +100,7 @@ bool ReadUnixSeconds(uint64_t* seconds)
     {
         return false;
     }
+    Sync::SpinLockGuard guard(cmos_lock);
     // An update can still start between the check and the reads, so require two equal reads.
     RawTime previous;
     RawTime current;

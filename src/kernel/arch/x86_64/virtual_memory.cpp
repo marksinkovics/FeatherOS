@@ -15,6 +15,8 @@ constexpr uint64_t PageAddressMask = 0x000FFFFFFFFFF000;
 constexpr uint64_t Present = 1;
 constexpr uint64_t Writable = 1U << 1;
 constexpr uint64_t UserAccessible = 1U << 2;
+constexpr uint64_t WriteThrough = 1U << 3;
+constexpr uint64_t CacheDisable = 1U << 4;
 constexpr uint64_t LargePage = 1U << 7;
 constexpr uint64_t NoExecute = 1ULL << 63;
 constexpr uint64_t EferMsr = 0xC0000080;
@@ -139,6 +141,10 @@ bool MapPageInRoot(volatile uint64_t* selected_root, uint64_t virtual_address,
     {
         entry |= NoExecute;
     }
+    if ((static_cast<uint8_t>(flags) & static_cast<uint8_t>(PageFlags::Device)) != 0)
+    {
+        entry |= CacheDisable | WriteThrough;
+    }
     page_table[pt_index] = entry;
     InvalidatePage(virtual_address);
     return true;
@@ -198,6 +204,16 @@ bool InitializeVirtualMemory(uint64_t offset)
     if (root_table == nullptr)
     {
         return false;
+    }
+    // Address spaces copy the kernel's top-level entries when created, so every kernel-half
+    // entry must exist now; later kernel mappings then appear in every address space.
+    for (size_t index = 256; index < 512; ++index)
+    {
+        volatile uint64_t* table;
+        if (!GetOrCreateTable(root_table, index, &table, false))
+        {
+            return false;
+        }
     }
 
     uint32_t msr = EferMsr;

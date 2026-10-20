@@ -21,6 +21,10 @@ struct UserExecutionContext
     // Syscall services for this program; when null, only exit and serial output are available.
     const Syscall::Handlers* syscall_handlers;
     void* syscall_context;
+    // The Process::UserProgram that owns this context.
+    void* program;
+    // Set from any CPU; the program is terminated the next time it would return to user mode.
+    volatile bool kill_requested;
 };
 
 } // namespace FeatherOS

@@ -14,6 +14,7 @@ constexpr uint16_t KeyboardStatusPort = 0x64;
 constexpr uint16_t KeyboardCommandPort = 0x64;
 
 bool shift_pressed = false;
+bool control_pressed = false;
 bool caps_lock_enabled = false;
 bool extended_scan_code = false;
 
@@ -111,14 +112,24 @@ void OnKeyboardScanCode(uint8_t scan_code)
         extended_scan_code = true;
         return;
     }
+    const bool released = (scan_code & 0x80U) != 0;
     if (extended_scan_code)
     {
         extended_scan_code = false;
+        // Right Ctrl is E0 1D; other extended keys are ignored.
+        if ((scan_code & 0x7FU) == 0x1D)
+        {
+            control_pressed = !released;
+        }
         return;
     }
 
-    const bool released = (scan_code & 0x80U) != 0;
     scan_code &= 0x7FU;
+    if (scan_code == 0x1D)
+    {
+        control_pressed = !released;
+        return;
+    }
     if (scan_code == 0x2A || scan_code == 0x36)
     {
         shift_pressed = !released;
@@ -143,6 +154,13 @@ void OnKeyboardScanCode(uint8_t scan_code)
     else if (scan_code == 0x1C)
     {
         Input::SubmitEvent({Input::EventType::Enter, '\0'});
+    }
+    else if (control_pressed)
+    {
+        if (scan_code == 0x2E)
+        {
+            Input::SubmitEvent({Input::EventType::Interrupt, '\0'});
+        }
     }
     else
     {

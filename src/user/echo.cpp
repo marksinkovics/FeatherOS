@@ -3,9 +3,12 @@
 
 using namespace FeatherOS::User;
 
-// echo <words...>: prints its arguments separated by single spaces.
+constexpr char Help[] = "usage: echo <words...>\n"
+                        "Prints its arguments separated by single spaces.";
+
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
+    ExitWithHelpIfRequested(arguments, Help);
     if (arguments == nullptr)
     {
         Exit(2);

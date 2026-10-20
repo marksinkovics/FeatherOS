@@ -2,6 +2,8 @@
 
 #include "kernel/arch/interrupts.h"
 #include "kernel/cpu.h"
+#include "kernel/memory/heap.h"
+#include "kernel/memory/kernel_stack.h"
 #include "kernel/memory/virtual_memory.h"
 #include "kernel/panic.h"
 #include "kernel/time/timer.h"
@@ -14,22 +16,23 @@ namespace FeatherOS::Scheduler
 namespace
 {
 
-constexpr size_t MaximumTasks = 4;
-constexpr size_t TaskStackSize = 16384;
-
 struct Task
 {
+    // Ring of the boot task and every created task; idle tasks are not in it.
+    Task* next;
+    Task* previous;
     uint64_t stack_pointer;
     TaskEntry entry;
     void* context;
     TaskId id;
     TaskState state;
+    TaskPriority priority;
     uint64_t exit_status;
     // 0 = no deadline.
     uint64_t wake_tick;
     const WaitQueue* wait_queue;
     void* user_context;
-    // Null for the boot task, which runs on the bootloader's stack.
+    // Null for the boot task and secondary idle tasks, which run on the bootloader's stacks.
     uint8_t* stack;
     WaitQueue exit_queue;
 };
@@ -37,14 +40,14 @@ struct Task
 // Lock order: subsystem locks before the scheduler lock. It is held across context switches and
 // released by the task that switches in.
 Sync::SpinLock scheduler_lock;
-Task tasks[MaximumTasks];
-alignas(16) uint8_t task_stacks[MaximumTasks][TaskStackSize];
 Task boot_task;
 // Secondary CPUs run their idle task on the stack they started on; only the boot CPU needs one.
 Task idle_tasks[Cpu::MaximumCpus];
-alignas(16) uint8_t boot_idle_stack[TaskStackSize];
+alignas(16) uint8_t boot_idle_stack[Memory::KernelStackSize];
 Task* current_tasks[Cpu::MaximumCpus];
 bool cpu_scheduling[Cpu::MaximumCpus];
+// Timer ticks that found the CPU running something other than its idle task.
+volatile uint64_t busy_ticks[Cpu::MaximumCpus];
 TaskId next_task_id = 1;
 bool initialized = false;
 volatile bool preemption_enabled = false;
@@ -69,34 +72,19 @@ Task& IdleTask()
 
 void ResetTask(Task& task)
 {
+    task.next = nullptr;
+    task.previous = nullptr;
+    task.stack = nullptr;
     task.stack_pointer = 0;
     task.entry = nullptr;
     task.context = nullptr;
     task.id = 0;
     task.state = TaskState::Empty;
+    task.priority = TaskPriority::Normal;
     task.exit_status = 0;
     task.wake_tick = 0;
     task.wait_queue = nullptr;
     task.user_context = nullptr;
-}
-
-constexpr size_t RunOrderLength = MaximumTasks + 1;
-
-Task* RunOrderTask(size_t position)
-{
-    return position < MaximumTasks ? &tasks[position] : &boot_task;
-}
-
-size_t RunOrderPosition(const Task* task)
-{
-    for (size_t position = 0; position < RunOrderLength; ++position)
-    {
-        if (RunOrderTask(position) == task)
-        {
-            return position;
-        }
-    }
-    return RunOrderLength - 1;
 }
 
 Task* FindTask(TaskId task_id)
@@ -105,11 +93,11 @@ Task* FindTask(TaskId task_id)
     {
         return nullptr;
     }
-    for (Task& task : tasks)
+    for (Task* task = boot_task.next; task != &boot_task; task = task->next)
     {
-        if (task.id == task_id && task.state != TaskState::Empty)
+        if (task->id == task_id)
         {
-            return &task;
+            return task;
         }
     }
     return nullptr;
@@ -117,16 +105,20 @@ Task* FindTask(TaskId task_id)
 
 Task* FindReadyTask(const Task* after)
 {
-    const size_t start = (RunOrderPosition(after) + 1) % RunOrderLength;
-    for (size_t offset = 0; offset < RunOrderLength; ++offset)
+    // Idle tasks are outside the ring, so their search starts at the boot task.
+    Task* start = after->next != nullptr ? after->next : &boot_task;
+    Task* best = nullptr;
+    Task* candidate = start;
+    do
     {
-        Task* candidate = RunOrderTask((start + offset) % RunOrderLength);
-        if (candidate != after && candidate->state == TaskState::Ready)
+        if (candidate != after && candidate->state == TaskState::Ready &&
+            (best == nullptr || candidate->priority > best->priority))
         {
-            return candidate;
+            best = candidate;
         }
-    }
-    return nullptr;
+        candidate = candidate->next;
+    } while (candidate != start);
+    return best;
 }
 
 // An idle CPU halts until an interrupt, so new work would otherwise wait for its next tick.
@@ -153,14 +145,15 @@ void MakeReady(Task& task)
 
 void WakeAllLocked(const WaitQueue& queue)
 {
-    for (size_t position = 0; position < RunOrderLength; ++position)
+    Task* task = &boot_task;
+    do
     {
-        Task* task = RunOrderTask(position);
         if (task->state == TaskState::Blocked && task->wait_queue == &queue)
         {
             MakeReady(*task);
         }
-    }
+        task = task->next;
+    } while (task != &boot_task);
 }
 
 void ActivateTaskAddressSpace(const Task* task)
@@ -187,13 +180,14 @@ bool Schedule()
 {
     Task* previous = CurrentTask();
     Task* next = FindReadyTask(previous);
+    if (previous->state == TaskState::Ready &&
+        (next == nullptr || next->priority < previous->priority))
+    {
+        previous->state = TaskState::Running;
+        return false;
+    }
     if (next == nullptr)
     {
-        if (previous->state == TaskState::Ready)
-        {
-            previous->state = TaskState::Running;
-            return false;
-        }
         if (previous == &IdleTask())
         {
             return false;
@@ -235,7 +229,7 @@ void TaskBootstrap()
 void PrepareTaskStack(Task& task, uint8_t* stack)
 {
     task.stack = stack;
-    uintptr_t stack_top = reinterpret_cast<uintptr_t>(stack + TaskStackSize);
+    uintptr_t stack_top = reinterpret_cast<uintptr_t>(stack + Memory::KernelStackSize);
     stack_top &= ~static_cast<uintptr_t>(0xF);
 
 #if defined(ARCH_x86_64)
@@ -287,13 +281,10 @@ uint64_t IdleTaskMain(void*)
 bool Initialize()
 {
     const uint64_t flags = scheduler_lock.LockIrqSave();
-    for (Task& task : tasks)
-    {
-        ResetTask(task);
-    }
     ResetTask(boot_task);
+    boot_task.next = &boot_task;
+    boot_task.previous = &boot_task;
     boot_task.state = TaskState::Running;
-    boot_task.stack = nullptr;
     Task& idle_task = IdleTask();
     ResetTask(idle_task);
     idle_task.entry = IdleTaskMain;
@@ -319,29 +310,28 @@ bool CreateTask(TaskEntry entry, void* context, TaskId* task_id)
         return false;
     }
 
-    Sync::SpinLockGuard guard(scheduler_lock);
-    if (next_task_id == 0)
+    // Allocate before taking the scheduler lock: the heap and page tables have their own locks.
+    auto* task = static_cast<Task*>(Memory::AllocateZeroed(1, sizeof(Task)));
+    uint8_t* stack = Memory::AllocateKernelStack();
+    if (task == nullptr || stack == nullptr)
     {
+        Memory::Deallocate(task);
+        Memory::FreeKernelStack(stack);
         return false;
     }
-    size_t task_index = 0;
-    while (task_index < MaximumTasks && tasks[task_index].state != TaskState::Empty)
-    {
-        ++task_index;
-    }
-    if (task_index == MaximumTasks)
-    {
-        return false;
-    }
+    ResetTask(*task);
+    task->entry = entry;
+    task->context = context;
+    PrepareTaskStack(*task, stack);
 
-    Task& task = tasks[task_index];
-    ResetTask(task);
-    task.entry = entry;
-    task.context = context;
-    task.id = next_task_id++;
-    PrepareTaskStack(task, task_stacks[task_index]);
-    MakeReady(task);
-    *task_id = task.id;
+    Sync::SpinLockGuard guard(scheduler_lock);
+    task->id = next_task_id++;
+    task->next = &boot_task;
+    task->previous = boot_task.previous;
+    boot_task.previous->next = task;
+    boot_task.previous = task;
+    MakeReady(*task);
+    *task_id = task->id;
     return true;
 }
 
@@ -357,7 +347,6 @@ void RunSecondaryCpu()
     ResetTask(idle_task);
     idle_task.entry = IdleTaskMain;
     idle_task.state = TaskState::Running;
-    idle_task.stack = nullptr;
     CurrentTask() = &idle_task;
     cpu_scheduling[Cpu::CurrentIndex()] = true;
     scheduler_lock.Unlock();
@@ -398,19 +387,30 @@ void OnTimerTick(uint64_t tick)
     {
         return;
     }
+    if (CurrentTask() != &IdleTask())
+    {
+        ++busy_ticks[Cpu::CurrentIndex()];
+    }
 
     // Interrupt handlers run with interrupts masked.
     scheduler_lock.Lock();
-    for (size_t position = 0; position < RunOrderLength; ++position)
+    Task* task = &boot_task;
+    do
     {
-        Task* task = RunOrderTask(position);
         if ((task->state == TaskState::Sleeping || task->state == TaskState::Blocked) &&
             task->wake_tick != 0 && tick >= task->wake_tick)
         {
             MakeReady(*task);
         }
-    }
-    if (CurrentTask() == &IdleTask() || preemption_enabled)
+        task = task->next;
+    } while (task != &boot_task);
+    // Interrupts reach a preemptible user task only in user mode or while it waits for input, so
+    // switching away is safe there.
+    const auto* user_context =
+        static_cast<const UserExecutionContext*>(CurrentTask()->user_context);
+    const bool user_preemptible =
+        user_context != nullptr && user_context->active && user_context->preemption_enabled;
+    if (CurrentTask() == &IdleTask() || preemption_enabled || user_preemptible)
     {
         if (CurrentTask() != &IdleTask() && CurrentTask()->state == TaskState::Running)
         {
@@ -419,6 +419,11 @@ void OnTimerTick(uint64_t tick)
         Schedule();
     }
     scheduler_lock.Unlock();
+}
+
+uint64_t BusyTickCount(uint32_t cpu_index)
+{
+    return cpu_index < Cpu::MaximumCpus ? busy_ticks[cpu_index] : 0;
 }
 
 bool Wait(TaskId task_id, uint64_t* exit_status)
@@ -455,13 +460,37 @@ bool ReapTask(TaskId task_id)
         return false;
     }
 
-    Sync::SpinLockGuard guard(scheduler_lock);
-    Task* task = FindTask(task_id);
-    if (task == nullptr || task->state != TaskState::Complete || task == CurrentTask())
+    Task* task;
+    {
+        Sync::SpinLockGuard guard(scheduler_lock);
+        task = FindTask(task_id);
+        if (task == nullptr || task->state != TaskState::Complete || task == CurrentTask())
+        {
+            return false;
+        }
+        task->previous->next = task->next;
+        task->next->previous = task->previous;
+    }
+    // A complete task's CPU switched away under the scheduler lock, so its stack is unused.
+    Memory::FreeKernelStack(task->stack);
+    Memory::Deallocate(task);
+    return true;
+}
+
+bool SetPriority(TaskId task_id, TaskPriority priority)
+{
+    if (!initialized)
     {
         return false;
     }
-    ResetTask(*task);
+
+    Sync::SpinLockGuard guard(scheduler_lock);
+    Task* task = FindTask(task_id);
+    if (task == nullptr)
+    {
+        return false;
+    }
+    task->priority = priority;
     return true;
 }
 
@@ -515,6 +544,21 @@ void WakeAll(WaitQueue& queue)
     WakeAllLocked(queue);
 }
 
+void WakeTask(TaskId task_id)
+{
+    if (!initialized)
+    {
+        return;
+    }
+    Sync::SpinLockGuard guard(scheduler_lock);
+    Task* task = FindTask(task_id);
+    if (task != nullptr &&
+        (task->state == TaskState::Sleeping || task->state == TaskState::Blocked))
+    {
+        MakeReady(*task);
+    }
+}
+
 bool SleepUntil(uint64_t tick)
 {
     if (!initialized || CurrentTask() == &IdleTask())
@@ -562,7 +606,8 @@ uint64_t CurrentKernelStackTop()
     {
         return 0;
     }
-    uintptr_t stack_top = reinterpret_cast<uintptr_t>(CurrentTask()->stack + TaskStackSize);
+    uintptr_t stack_top =
+        reinterpret_cast<uintptr_t>(CurrentTask()->stack + Memory::KernelStackSize);
     stack_top &= ~static_cast<uintptr_t>(0xF);
     return stack_top;
 }

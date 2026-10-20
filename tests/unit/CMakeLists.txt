@@ -17,6 +17,7 @@ add_executable(featheros_unit_tests
     kernel/input/input_tests.cpp
     kernel/klogger/klogger_tests.cpp
     kernel/memory/memory_map_tests.cpp
+    kernel/process/calculator_tests.cpp
     kernel/process/process_arguments_tests.cpp
     kernel/syscall/syscall_tests.cpp
     kernel/time/calendar_tests.cpp

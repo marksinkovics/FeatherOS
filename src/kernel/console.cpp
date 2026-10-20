@@ -1,39 +1,190 @@
 #include "console.h"
 
 #include "kernel/arch/interrupts.h"
+#include "kernel/arch/rtc.h"
 #include "kernel/arch/serial.h"
+#include "kernel/cpu.h"
 #include "kernel/framebuffer/term.h"
 #include "kernel/input/input.h"
-#include "kernel/klogger.h"
 #include "kernel/panic.h"
+#include "kernel/process.h"
+#include "kernel/scheduler.h"
+#include "kernel/smp.h"
 #include "kernel/string/format.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/time/timer.h"
+#include "kernel/user_context.h"
+#include "user/calendar.h"
 
 namespace FeatherOS::Console
 {
 namespace
 {
 
-constexpr uint64_t TicksPerSecond = 100;
-
-KLogger* console_logger = nullptr;
 Term* console_term = nullptr;
-uint64_t last_reported_second = 0;
 // Programs on different CPUs share one terminal.
 Sync::SpinLock display_lock;
 
-} // namespace
+Sync::SpinLock status_lock;
+Scheduler::WaitQueue status_waiters;
+bool status_changed = false;
+bool status_running = false;
+// The bar's clock advances from one RTC read by timer ticks, so it never touches the RTC again.
+bool clock_available = false;
+uint64_t clock_base_seconds = 0;
+uint64_t clock_base_tick = 0;
 
-void Initialize(KLogger* logger, Term* term)
+struct CpuSample
 {
-    console_logger = logger;
-    console_term = term;
-    last_reported_second = Time::TickCount() / TicksPerSecond;
+    uint64_t ticks[Cpu::MaximumCpus];
+    uint64_t busy_ticks[Cpu::MaximumCpus];
+};
+
+CpuSample TakeCpuSample()
+{
+    CpuSample sample;
+    for (uint32_t cpu = 0; cpu < Cpu::MaximumCpus; ++cpu)
+    {
+        sample.ticks[cpu] = Time::CpuTickCount(cpu);
+        sample.busy_ticks[cpu] = Scheduler::BusyTickCount(cpu);
+    }
+    return sample;
+}
+
+// A CPU counts as busy when it ran tasks for at least half of the interval.
+uint32_t CountBusyCpus(const CpuSample& before, const CpuSample& after)
+{
+    uint32_t busy_cpus = 0;
+    for (uint32_t cpu = 0; cpu < Cpu::MaximumCpus; ++cpu)
+    {
+        const uint64_t elapsed = after.ticks[cpu] - before.ticks[cpu];
+        const uint64_t busy = after.busy_ticks[cpu] - before.busy_ticks[cpu];
+        if (elapsed > 0 && busy * 2 >= elapsed)
+        {
+            ++busy_cpus;
+        }
+    }
+    return busy_cpus;
+}
+
+void DrawStatus(uint32_t busy_cpus)
+{
+    char program[33];
+    Process::ForegroundProgramName(program, sizeof(program));
+    char status[48];
+    bool formatted;
+    if (clock_available)
+    {
+        const uint64_t seconds =
+            clock_base_seconds + (Time::TickCount() - clock_base_tick) / Time::TicksPerSecond();
+        char clock_text[User::ShortCalendarTimeLength];
+        User::FormatShortCalendarTime(seconds, clock_text);
+        formatted = String::FormatTo(status, sizeof(status), "{}/{}  {}", busy_cpus,
+                                     Smp::OnlineCpuCount(), static_cast<const char*>(clock_text));
+    }
+    else
+    {
+        formatted =
+            String::FormatTo(status, sizeof(status), "{}/{}", busy_cpus, Smp::OnlineCpuCount());
+    }
+    if (!formatted)
+    {
+        Panic("Status bar formatting failed");
+    }
+    Sync::SpinLockGuard guard(display_lock);
+    console_term->SetStatus(program, status);
+}
+
+uint64_t StatusTaskMain(void*)
+{
+    const uint64_t ticks_per_second = Time::TicksPerSecond();
+    CpuSample previous = TakeCpuSample();
+    uint32_t busy_cpus = 0;
+    uint64_t next_sample_tick = Time::TickCount() + ticks_per_second;
+    for (;;)
+    {
+        if (Time::TickCount() >= next_sample_tick)
+        {
+            const CpuSample current = TakeCpuSample();
+            busy_cpus = CountBusyCpus(previous, current);
+            previous = current;
+            next_sample_tick = Time::TickCount() + ticks_per_second;
+        }
+        DrawStatus(busy_cpus);
+        const uint64_t flags = status_lock.LockIrqSave();
+        if (!status_changed)
+        {
+            Scheduler::WaitOn(status_waiters, status_lock, next_sample_tick);
+        }
+        status_changed = false;
+        status_lock.UnlockIrqRestore(flags);
+    }
+}
+
+bool InterruptForegroundJob()
+{
+    if (!Process::InterruptForegroundJob())
+    {
+        return false;
+    }
+    Sync::SpinLockGuard guard(display_lock);
+    Serial::Write("^C\n");
     if (console_term != nullptr)
     {
-        console_term->SetUptimeText("Uptime: 0s");
+        console_term->SetCursorVisible(false);
+        console_term->Print("^C\n");
     }
+    return true;
+}
+
+bool CallerInterrupted()
+{
+    const auto* context = static_cast<const UserExecutionContext*>(Scheduler::CurrentUserContext());
+    return context != nullptr && context->kill_requested;
+}
+
+void ShowPrompt(const char* prompt)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    Serial::Write(prompt);
+    if (console_term != nullptr)
+    {
+        console_term->Print(prompt);
+        console_term->SetCursorVisible(true);
+    }
+}
+
+} // namespace
+
+void Initialize(Term* term)
+{
+    console_term = term;
+    Input::SetInterruptHandler(InterruptForegroundJob);
+    if (console_term == nullptr || Time::TicksPerSecond() == 0)
+    {
+        return;
+    }
+    clock_base_tick = Time::TickCount();
+    clock_available = Arch::RealTimeClock::ReadUnixSeconds(&clock_base_seconds);
+    Scheduler::TaskId status_task;
+    if (!Scheduler::CreateTask(StatusTaskMain, nullptr, &status_task) ||
+        !Scheduler::SetPriority(status_task, Scheduler::TaskPriority::High))
+    {
+        Panic("Could not start the status bar task");
+    }
+    status_running = true;
+}
+
+void NotifyStatusChanged()
+{
+    if (!status_running)
+    {
+        return;
+    }
+    const uint64_t flags = status_lock.LockIrqSave();
+    status_changed = true;
+    Scheduler::WakeAll(status_waiters);
+    status_lock.UnlockIrqRestore(flags);
 }
 
 void WriteCharacter(char character)
@@ -47,54 +198,17 @@ void WriteCharacter(char character)
     }
 }
 
-void Service()
+bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* line_length)
 {
-    const uint64_t current_second = Time::TickCount() / TicksPerSecond;
-    if (current_second <= last_reported_second)
+    if (buffer == nullptr || capacity == 0 || line_length == nullptr)
     {
-        return;
-    }
-    last_reported_second = current_second;
-
-    char uptime_message[64];
-    if (!String::FormatTo(uptime_message, sizeof(uptime_message), "Uptime: {} seconds",
-                          current_second))
-    {
-        Panic("Uptime formatting failed");
-    }
-    char status_message[32];
-    if (!String::FormatTo(status_message, sizeof(status_message), "Uptime: {}s", current_second))
-    {
-        Panic("Uptime status formatting failed");
-    }
-    Sync::SpinLockGuard guard(display_lock);
-    if (console_term != nullptr)
-    {
-        console_term->SetUptimeText(status_message);
-    }
-    Serial::Write("KERN/I: ");
-    Serial::Write(uptime_message);
-    Serial::Write("\n");
-}
-
-size_t ReadLine(const char* prompt, char* buffer, size_t capacity)
-{
-    if (buffer == nullptr || capacity == 0)
-    {
-        return 0;
+        return false;
     }
     if (prompt == nullptr)
     {
         prompt = "";
     }
-    {
-        Sync::SpinLockGuard guard(display_lock);
-        Serial::Write(prompt);
-        if (console_term != nullptr)
-        {
-            console_term->BeginInput(prompt);
-        }
-    }
+    ShowPrompt(prompt);
 
     size_t length = 0;
     buffer[0] = '\0';
@@ -102,63 +216,84 @@ size_t ReadLine(const char* prompt, char* buffer, size_t capacity)
     const uint64_t interrupt_state = Arch::Interrupts::SaveAndDisable();
     Arch::Interrupts::Enable();
     bool line_complete = false;
-    while (!line_complete)
+    bool interrupted = false;
+    while (!line_complete && !interrupted)
     {
-        Service();
         Input::Poll();
         Input::Event event;
+        interrupted = CallerInterrupted();
         // Stop at Enter so input typed ahead stays queued for the next reader.
-        while (!line_complete && Input::TryReadEvent(&event))
+        while (!line_complete && !interrupted && Input::TryReadEvent(&event))
         {
+            if (event.type == Input::EventType::Interrupt)
+            {
+                // Nothing to terminate, so Ctrl+C only discards the line.
+                {
+                    Sync::SpinLockGuard guard(display_lock);
+                    Serial::Write("^C\n");
+                    if (console_term != nullptr)
+                    {
+                        console_term->SetCursorVisible(false);
+                        console_term->Print("^C\n");
+                    }
+                }
+                length = 0;
+                buffer[0] = '\0';
+                ShowPrompt(prompt);
+                continue;
+            }
+            Sync::SpinLockGuard guard(display_lock);
             if (event.type == Input::EventType::Character)
             {
-                const char echo[] = {event.character, '\0'};
-                Serial::Write(echo);
                 if (length < capacity - 1)
                 {
                     buffer[length++] = event.character;
                     buffer[length] = '\0';
+                    const char echo[] = {event.character, '\0'};
+                    Serial::Write(echo);
+                    if (console_term != nullptr)
+                    {
+                        console_term->Print(echo);
+                    }
                 }
             }
             else if (event.type == Input::EventType::Backspace)
             {
-                Serial::Write("\b \b");
                 if (length > 0)
                 {
                     buffer[--length] = '\0';
+                    Serial::Write("\b \b");
+                    if (console_term != nullptr)
+                    {
+                        console_term->EraseCharacter();
+                    }
                 }
             }
             else
             {
                 Serial::Write("\n");
+                if (console_term != nullptr)
+                {
+                    console_term->SetCursorVisible(false);
+                    console_term->Print("\n");
+                }
                 line_complete = true;
             }
-            Sync::SpinLockGuard guard(display_lock);
-            if (console_term != nullptr)
-            {
-                console_term->HandleInputEvent(event);
-            }
         }
-        if (!line_complete)
+        if (!line_complete && !interrupted)
         {
-            // The deadline keeps the uptime display updating.
-            Input::WaitForEvent((Time::TickCount() / TicksPerSecond + 1) * TicksPerSecond);
+            Input::WaitForEvent(0);
+            interrupted = CallerInterrupted();
         }
     }
+    if (line_complete)
     {
-        Sync::SpinLockGuard guard(display_lock);
-        if (console_logger != nullptr)
-        {
-            console_logger->Info("Input line accepted");
-        }
-        if (console_term != nullptr)
-        {
-            console_term->EndInput();
-        }
+        Serial::Write("KERN/I: Input line accepted\n");
     }
     Arch::Interrupts::SaveAndDisable();
     Arch::Interrupts::Restore(interrupt_state);
-    return length;
+    *line_length = length;
+    return line_complete;
 }
 
 } // namespace FeatherOS::Console

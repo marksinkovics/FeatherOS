@@ -51,10 +51,33 @@ uint64_t ReadFixedClock(void*)
     return 1792364283;
 }
 
-constexpr FeatherOS::Syscall::Handlers WriteOnly = {CaptureCharacter, nullptr, nullptr, nullptr,
-                                                    nullptr};
-constexpr FeatherOS::Syscall::Handlers AllHandlers = {CaptureCharacter, RecordReadLine,
-                                                      RecordSpawn, RecordWait, ReadFixedClock};
+uint64_t RecordExtendHeap(void* context, uint64_t increment)
+{
+    static_cast<OutputTarget*>(context)->last_arguments[0] = increment;
+    return 0x600000;
+}
+
+uint64_t RecordSleep(void* context, uint64_t milliseconds)
+{
+    static_cast<OutputTarget*>(context)->last_arguments[1] = milliseconds;
+    return 0;
+}
+
+uint64_t ReadFixedUptime(void*)
+{
+    return 65000;
+}
+
+uint64_t ReadFixedCpu(void*)
+{
+    return 3;
+}
+
+constexpr FeatherOS::Syscall::Handlers WriteOnly = {
+    CaptureCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+constexpr FeatherOS::Syscall::Handlers AllHandlers = {
+    CaptureCharacter, RecordReadLine,   RecordSpawn, RecordWait,
+    ReadFixedClock,   RecordExtendHeap, RecordSleep, ReadFixedUptime, ReadFixedCpu};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)
@@ -100,7 +123,8 @@ TEST_CASE("syscall dispatcher rejects invalid requests")
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::WriteCharacter, 0x80), WriteOnly,
                                          &output)
                 .action == Action::Invalid);
-    const FeatherOS::Syscall::Handlers no_output = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    const FeatherOS::Syscall::Handlers no_output = {nullptr, nullptr, nullptr, nullptr,
+                                                    nullptr, nullptr, nullptr, nullptr, nullptr};
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::WriteCharacter, 'A'), no_output,
                                          &output)
                 .action == Action::Invalid);
@@ -117,6 +141,10 @@ TEST_CASE("syscall dispatcher rejects process syscalls without handlers")
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Wait), WriteOnly, &output).action ==
             Action::Invalid);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadClock), WriteOnly, &output)
+                .action == Action::Invalid);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadUptime), WriteOnly, &output)
+                .action == Action::Invalid);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::CurrentCpu), WriteOnly, &output)
                 .action == Action::Invalid);
 }
 
@@ -147,4 +175,25 @@ TEST_CASE("syscall dispatcher routes process syscalls and returns handler result
     result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadClock), AllHandlers, &output);
     REQUIRE(result.action == Action::Return);
     REQUIRE(result.value == 1792364283);
+
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::ExtendHeap, 8192), AllHandlers,
+                                          &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(result.value == 0x600000);
+    REQUIRE(output.last_arguments[0] == 8192);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ExtendHeap, 1), WriteOnly, nullptr)
+                .action == Action::Invalid);
+
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::Sleep, 250), AllHandlers, &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(result.value == 0);
+    REQUIRE(output.last_arguments[1] == 250);
+
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadUptime), AllHandlers, &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(result.value == 65000);
+
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::CurrentCpu), AllHandlers, &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(result.value == 3);
 }
