@@ -73,11 +73,52 @@ uint64_t ReadFixedCpu(void*)
     return 3;
 }
 
+uint64_t RecordOpen(void* context, uint64_t path, uint64_t flags)
+{
+    auto* output = static_cast<OutputTarget*>(context);
+    output->last_arguments[0] = path;
+    output->last_arguments[1] = flags;
+    return 7;
+}
+
+uint64_t RecordTransfer(void* context, uint64_t descriptor, uint64_t buffer, uint64_t length)
+{
+    auto* output = static_cast<OutputTarget*>(context);
+    output->last_arguments[0] = descriptor;
+    output->last_arguments[1] = buffer;
+    output->last_arguments[2] = length;
+    return length / 2;
+}
+
+uint64_t RecordDescriptor(void* context, uint64_t descriptor)
+{
+    static_cast<OutputTarget*>(context)->last_arguments[0] = descriptor;
+    return 0;
+}
+
+uint64_t RecordSeek(void* context, uint64_t descriptor, uint64_t offset)
+{
+    auto* output = static_cast<OutputTarget*>(context);
+    output->last_arguments[0] = descriptor;
+    output->last_arguments[1] = offset;
+    return 0;
+}
+
+uint64_t RecordRemove(void* context, uint64_t path)
+{
+    static_cast<OutputTarget*>(context)->last_arguments[2] = path;
+    return 0;
+}
+
 constexpr FeatherOS::Syscall::Handlers WriteOnly = {
-    CaptureCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    CaptureCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    nullptr,          nullptr, nullptr, nullptr};
 constexpr FeatherOS::Syscall::Handlers AllHandlers = {
-    CaptureCharacter, RecordReadLine,   RecordSpawn, RecordWait,
-    ReadFixedClock,   RecordExtendHeap, RecordSleep, ReadFixedUptime, ReadFixedCpu};
+    CaptureCharacter, RecordReadLine,   RecordSpawn,    RecordWait,       ReadFixedClock,
+    RecordExtendHeap, RecordSleep,      ReadFixedUptime, ReadFixedCpu,    RecordOpen,
+    RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeek,     RecordRemove,
+    RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)
@@ -123,7 +164,9 @@ TEST_CASE("syscall dispatcher rejects invalid requests")
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::WriteCharacter, 0x80), WriteOnly,
                                          &output)
                 .action == Action::Invalid);
-    const FeatherOS::Syscall::Handlers no_output = {nullptr, nullptr, nullptr, nullptr,
+    const FeatherOS::Syscall::Handlers no_output = {nullptr, nullptr, nullptr, nullptr, nullptr,
+                                                    nullptr, nullptr, nullptr, nullptr, nullptr,
+                                                    nullptr, nullptr, nullptr, nullptr, nullptr,
                                                     nullptr, nullptr, nullptr, nullptr, nullptr};
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::WriteCharacter, 'A'), no_output,
                                          &output)
@@ -146,6 +189,14 @@ TEST_CASE("syscall dispatcher rejects process syscalls without handlers")
                 .action == Action::Invalid);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::CurrentCpu), WriteOnly, &output)
                 .action == Action::Invalid);
+    for (const Number number : {Number::Open, Number::Read, Number::Write, Number::Close,
+                                Number::Seek, Number::Remove, Number::ReadDirectory,
+                                Number::MakeDirectory, Number::RemoveDirectory,
+                                Number::ChangeDirectory, Number::CurrentDirectory})
+    {
+        REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(number), WriteOnly, &output).action ==
+                Action::Invalid);
+    }
 }
 
 TEST_CASE("syscall dispatcher routes process syscalls and returns handler results")
@@ -196,4 +247,45 @@ TEST_CASE("syscall dispatcher routes process syscalls and returns handler result
     result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::CurrentCpu), AllHandlers, &output);
     REQUIRE(result.action == Action::Return);
     REQUIRE(result.value == 3);
+}
+
+TEST_CASE("syscall dispatcher routes file syscalls with their arguments")
+{
+    OutputTarget output;
+    FeatherOS::Syscall::Result result =
+        FeatherOS::Syscall::Dispatch(MakeRequest(Number::Open, 0x5000, 6), AllHandlers, &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(result.value == 7);
+    REQUIRE(output.last_arguments[0] == 0x5000);
+    REQUIRE(output.last_arguments[1] == 6);
+
+    for (const Number number : {Number::Read, Number::Write, Number::ReadDirectory})
+    {
+        result =
+            FeatherOS::Syscall::Dispatch(MakeRequest(number, 4, 0x6000, 64), AllHandlers, &output);
+        REQUIRE(result.value == 32);
+        REQUIRE(output.last_arguments[0] == 4);
+        REQUIRE(output.last_arguments[1] == 0x6000);
+        REQUIRE(output.last_arguments[2] == 64);
+    }
+
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::Seek, 5, 99), AllHandlers, &output);
+    REQUIRE(result.value == 0);
+    REQUIRE(output.last_arguments[0] == 5);
+    REQUIRE(output.last_arguments[1] == 99);
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::Close, 6), AllHandlers, &output);
+    REQUIRE(output.last_arguments[0] == 6);
+    for (const Number number : {Number::Remove, Number::MakeDirectory, Number::RemoveDirectory,
+                                Number::ChangeDirectory})
+    {
+        output.last_arguments[2] = 0;
+        result = FeatherOS::Syscall::Dispatch(MakeRequest(number, 0x7000), AllHandlers, &output);
+        REQUIRE(result.value == 0);
+        REQUIRE(output.last_arguments[2] == 0x7000);
+    }
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::CurrentDirectory, 0x8000, 64),
+                                          AllHandlers, &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0x8000);
+    REQUIRE(output.last_arguments[1] == 64);
 }

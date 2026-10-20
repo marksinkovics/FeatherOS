@@ -61,6 +61,23 @@ inline void ExitWithHelpIfRequested(const ProgramArguments* arguments, const cha
     }
 }
 
+// Fails if name does not fit a path argument. The kernel resolves relative paths against the
+// working directory.
+inline bool CopyPath(const char* name, char (&path)[MaximumPathLength])
+{
+    uint64_t length = 0;
+    for (; name[length] != '\0'; ++length)
+    {
+        if (length == MaximumPathLength - 1)
+        {
+            return false;
+        }
+        path[length] = name[length];
+    }
+    path[length] = '\0';
+    return true;
+}
+
 // Parses a whole string of decimal digits; fails on other characters or overflow.
 inline bool ParseUnsignedNumber(const char* text, uint64_t* value)
 {

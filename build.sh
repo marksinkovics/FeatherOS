@@ -127,7 +127,8 @@ build() {
         -DFEATHEROS_TIMER_TEST="${TIMER_TEST:-OFF}" \
         -DFEATHEROS_SCHEDULER_TEST="${SCHEDULER_TEST:-OFF}" \
         -DFEATHEROS_USER_PREEMPTION_TEST="${USER_PREEMPTION_TEST:-OFF}" \
-        -DFEATHEROS_SMP_TEST="${SMP_TEST:-OFF}"
+        -DFEATHEROS_SMP_TEST="${SMP_TEST:-OFF}" \
+        -DFEATHEROS_STORAGE_TEST="${STORAGE_TEST:-OFF}"
 
     time cmake --build . --parallel
 }
@@ -185,9 +186,11 @@ iso() {
         user_linker_script="$SCRIPT_DIR/src/user/linker_aarch64.ld"
         user_arch_flags=(-mcpu=generic -march=armv8-a+nofp+nosimd -mcmodel=small)
     fi
+    # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
+    export COPYFILE_DISABLE=1
     tar -cf "$initramfs_path" -C "$SCRIPT_DIR/initramfs" hello.txt
     local user_program
-    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout memtest:memtest sleep:sleep hardening:hardening aslr:aslr uptime:uptime primes:primes; do
+    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout memtest:memtest sleep:sleep hardening:hardening aslr:aslr uptime:uptime primes:primes filetest:filetest ls:ls cat:cat write:write rm:rm mkdir:mkdir rmdir:rmdir; do
         local user_elf="${user_program%%:*}-$ARCH.elf"
         "$user_compiler" \
             -ffreestanding -fno-builtin -fno-exceptions -fno-rtti -fno-stack-protector \
@@ -202,7 +205,7 @@ iso() {
     python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$build_dir/badelf-$ARCH.elf"
     tar -rf "$initramfs_path" -C "$build_dir" "badelf-$ARCH.elf"
     python3 "$SCRIPT_DIR/tools/create_test_disk.py" "$block_image" \
-        "$SCRIPT_DIR/initramfs/block.txt"
+        "$SCRIPT_DIR/initramfs/block.txt" --layout "${DISK_LAYOUT:-mbr}"
 
     if [ "$ARCH" = "aarch64" ]; then
         _require_tools mcopy mdel qemu-system-aarch64
@@ -370,16 +373,25 @@ smoke_test() {
         local build_dir
         build_dir=$(_build_dir)
         smoke_args+=(--disk "$build_dir/virtio-disk.img")
-        python3 "$SCRIPT_DIR/tools/smoke_test.py" "${smoke_args[@]}" "$iso_path"
     elif [ "$ARCH" = "x86_64" ]; then
         _require_tools qemu-system-x86_64
         local build_dir
         build_dir=$(_build_dir)
         smoke_args+=(--disk "$build_dir/virtio-disk.img")
-        python3 "$SCRIPT_DIR/tools/smoke_test.py" "${smoke_args[@]}" "$iso_path"
     else
         _err "Smoke test is not supported for ARCH='$ARCH'."
         exit 1
+    fi
+
+    if [[ "${STORAGE_TEST:-OFF}" == ON || "${STORAGE_TEST:-OFF}" == 1 ]]; then
+        # Booting the same disk image twice shows that writes persist across a restart.
+        local boot
+        for boot in 1 2; do
+            python3 "$SCRIPT_DIR/tools/smoke_test.py" "${smoke_args[@]}" \
+                --expect-storage-boot "$boot" "$iso_path" || exit 1
+        done
+    else
+        python3 "$SCRIPT_DIR/tools/smoke_test.py" "${smoke_args[@]}" "$iso_path"
     fi
 }
 

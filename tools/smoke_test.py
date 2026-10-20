@@ -8,6 +8,7 @@ import re
 import select
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -61,7 +62,9 @@ CALC_INPUT = b"nope\n\ncalc 4 + 66 - (3 / 4)\n"
 # Covers argv, foreground input in a child, and nonzero exit statuses.
 SHELL_INPUT = (
     b"echo hello   feather os\nupper\nmixed Case\ndate\nuptime\nfanout 6\n"
-    b"date --help\nprimes -h\n"
+    b"date --help\nprimes -h\nfiletest\n"
+    b"mkdir work\ncd work\nwrite a.txt in work\npwd\ncat a.txt\ncd ..\n"
+    b"cat work/a.txt\ncd /\nls\ncat hello.txt\ncd nowhere\ncd\npwd\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
     b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
@@ -90,6 +93,9 @@ EXPECTED_INTERRUPTS = 5
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
 )
+# pwd prints the directory alone; prompts follow it with "> ".
+WORKING_DIRECTORY_OUTPUT = re.compile(r"^(/disk(?:/work)?)\r?$", re.MULTILINE)
+WORK_FILE_OUTPUT = re.compile(r"^in work\r?$", re.MULTILINE)
 UPTIME_OUTPUT = re.compile(r"^uptime: \d+:\d{2}:\d{2}\r?$", re.MULTILINE)
 PRIMES_WORKER_OUTPUT = re.compile(
     r"^primes: worker \d+ found \d+ on CPU \d+(?:,\d+)*\r?$", re.MULTILINE
@@ -107,6 +113,10 @@ MAXIMUM_CLOCK_SKEW_SECONDS = 120
 EXPECTED_SHELL_OUTPUT = (
     "usage: date",
     "usage: primes <workers 1-16> [limit]",
+    "filetest: 33 checks passed",
+    "disk/",
+    "FeatherOS initramfs is ready.",
+    "cd: nowhere: no such directory",
     "hello feather os",
     "upper> ",
     "MIXED CASE",
@@ -132,12 +142,53 @@ EXPECTED_SMP = (
     "KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact; "
     "busy CPUs counted"
 )
+STORAGE_MESSAGE = (
+    "KERN/STORAGE: sector and FAT16 file writes verified; boot count "
+)
+PERSISTENT_FILE_LINES = 200
+# Shell commands for each STORAGE_TEST boot: the first writes notes.txt, and
+# the second must still find it after the restart.
+STORAGE_SHELL_INPUT = {
+    1: b"write notes.txt first line\nwrite -a notes.txt second line\n"
+    b"cat notes.txt\nmkdir docs\nwrite docs/plan.txt nested hello\n"
+    b'cat "read me first.txt"\nwrite "My Plans.txt" long name test\n'
+    b"ls docs\nls\n",
+    2: b"cat notes.txt\nrm notes.txt\ncat notes.txt\nrm notes.txt\n"
+    b"cat docs/plan.txt\nrmdir docs\nrm docs/plan.txt\nrmdir docs\n"
+    b'cat "my plans.txt"\nrm "MY PLANS.TXT"\nls docs\nls\n',
+}
+NOTES_CONTENTS = b"first line\nsecond line\n"
+PLAN_CONTENTS = b"nested hello\n"
+LONG_NAME_CONTENTS = b"long name test\n"
+NOTES_OUTPUT = re.compile(r"^first line\r?\nsecond line\r?$", re.MULTILINE)
+# The disk also holds BLOCK.TXT and the kernel test's PERSIST.TXT.
+# The disk also holds Read Me First.txt, written by mtools.
+STORAGE_SHELL_OUTPUT = {
+    1: (
+        "\nLong names from mtools work.",
+        "plan.txt",
+        "notes.txt",
+        "My Plans.txt",
+        "docs/",
+        "1 directory, 5 files, ",
+    ),
+    2: (
+        "cat: cannot open notes.txt",
+        "rm: notes.txt: no such file",
+        "\nnested hello",
+        "rmdir: docs: not an empty directory",
+        "\nlong name test",
+        "ls: docs: no such directory",
+        "3 files, ",
+    ),
+}
 USER_PREEMPTION_OUTPUTS = {"x86_64": b"UIu", "aarch64": b"AIa"}
 INPUT_ACCEPTED_MESSAGE = "KERN/I: Input line accepted"
-SHELL_PROMPT = re.compile(rb"^> ", re.MULTILINE)
+# The shell's prompt shows its working directory, such as "/disk> ".
+SHELL_PROMPT = re.compile(rb"^/[^\n>]*> ", re.MULTILINE)
 # Each scripted shell line is typed only once a prompt asks for it, so
 # typed-ahead input never overflows the kernel's input queue.
-LINE_PROMPT = re.compile(rb"^(?:upper|calc)?> ", re.MULTILINE)
+LINE_PROMPT = re.compile(rb"^(?:upper|calc|/[^\n>]*)?> ", re.MULTILINE)
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
 # The scripted shell session runs many programs; AArch64 emulation is slower.
@@ -146,6 +197,86 @@ QEMU_CPU_COUNT = 4
 SMP_MESSAGE = f"KERN/I: SMP: {QEMU_CPU_COUNT} CPUs online with IPIs and timers"
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
 ANSI_ESCAPE_BYTES = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
+
+
+def PartitionOffset(disk):
+    """Byte offset of the first partition, from a GPT or the MBR."""
+    mbr = disk.read(512)
+    if mbr[446 + 4] != 0xEE:
+        return struct.unpack_from("<I", mbr, 446 + 8)[0] * 512
+    disk.seek(512)
+    header = disk.read(512)
+    disk.seek(struct.unpack_from("<Q", header, 72)[0] * 512)
+    return struct.unpack_from("<Q", disk.read(128), 32)[0] * 512
+
+
+def VerifyDiskImage(disk_path, boot_count):
+    """Checks the guest's FAT16 writes with mtools, a separate FAT reader."""
+    with open(disk_path, "rb") as disk:
+        partition_offset = PartitionOffset(disk)
+        disk.seek(partition_offset)
+        boot_sector = disk.read(512)
+        reserved_sectors = struct.unpack_from("<H", boot_sector, 14)[0]
+        fat_count = boot_sector[16]
+        fat_bytes = struct.unpack_from("<H", boot_sector, 22)[0] * 512
+        disk.seek(partition_offset + reserved_sectors * 512)
+        fats = [disk.read(fat_bytes) for _ in range(fat_count)]
+    if any(fat != fats[0] for fat in fats):
+        return "the FAT copies differ"
+
+    image = f"{disk_path}@@{partition_offset}"
+    environment = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+    expected = "".join(
+        f"FeatherOS boot {boot_count} line {line}\n"
+        for line in range(PERSISTENT_FILE_LINES)
+    ).encode()
+    contents = subprocess.run(
+        ["mtype", "-i", image, "::PERSIST.TXT"],
+        capture_output=True,
+        env=environment,
+        check=False,
+    )
+    if contents.returncode != 0 or contents.stdout != expected:
+        return "mtools read different PERSIST.TXT contents"
+    listing = subprocess.run(
+        ["mdir", "-b", "-i", image, "::"],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+    if listing.returncode != 0 or "SCRATCH" in listing.stdout:
+        return "mtools still lists the removed scratch file"
+    notes = subprocess.run(
+        ["mtype", "-i", image, "::NOTES.TXT"],
+        capture_output=True,
+        env=environment,
+        check=False,
+    )
+    plan = subprocess.run(
+        ["mtype", "-i", image, "::DOCS/PLAN.TXT"],
+        capture_output=True,
+        env=environment,
+        check=False,
+    )
+    if boot_count == 1 and notes.stdout != NOTES_CONTENTS:
+        return "mtools read different NOTES.TXT contents"
+    long_name = subprocess.run(
+        ["mtype", "-i", image, "::My Plans.txt"],
+        capture_output=True,
+        env=environment,
+        check=False,
+    )
+    if boot_count == 1 and plan.stdout != PLAN_CONTENTS:
+        return "mtools read different DOCS/PLAN.TXT contents"
+    if boot_count == 1 and long_name.stdout != LONG_NAME_CONTENTS:
+        return "mtools read different 'My Plans.txt' contents"
+    listed = listing.stdout.upper()
+    if boot_count == 2 and any(
+        name in listed for name in ("NOTES", "DOCS", "MY PLANS")
+    ):
+        return "mtools still lists a file or directory the shell removed"
+    return None
 
 
 def SendQmpCommand(channel, command_id, execute, arguments=None):
@@ -220,6 +351,12 @@ def main():
         "--expect-smp",
         action="store_true",
         help="Expect tasks to run concurrently on several CPUs",
+    )
+    parser.add_argument(
+        "--expect-storage-boot",
+        type=int,
+        default=0,
+        help="Expect a verified disk write that counts this many boots",
     )
     parser.add_argument(
         "--expect-user-preemption",
@@ -343,6 +480,7 @@ def main():
     uses_serial_input = (
         args.expect_calc
         or args.expect_shell
+        or args.expect_storage_boot
         or (args.expect_input and not use_qmp_keyboard)
     )
     process = subprocess.Popen(
@@ -354,7 +492,9 @@ def main():
     )
     captured = bytearray()
     timeout = (
-        SHELL_TIMEOUT_SECONDS if args.expect_shell else QEMU_TIMEOUT_SECONDS
+        SHELL_TIMEOUT_SECONDS
+        if args.expect_shell or args.expect_storage_boot
+        else QEMU_TIMEOUT_SECONDS
     )
     deadline = time.monotonic() + timeout
     input_sent = False
@@ -365,6 +505,10 @@ def main():
         pending_lines = SHELL_INPUT.splitlines(keepends=True) + list(
             SHELL_INTERRUPT_INPUT
         )
+    elif args.expect_storage_boot:
+        pending_lines = STORAGE_SHELL_INPUT[
+            args.expect_storage_boot
+        ].splitlines(keepends=True)
     lines_sent = 0
     qmp_connection = None
     qmp_channel = None
@@ -378,6 +522,7 @@ def main():
             args.expect_timer,
             args.expect_scheduler,
             args.expect_smp,
+            args.expect_storage_boot,
             args.expect_user_preemption,
             args.expect_input,
             args.expect_calc,
@@ -396,6 +541,11 @@ def main():
             markers = (EXPECTED_SCHEDULER.encode(),)
         elif args.expect_smp:
             markers = (EXPECTED_SMP.encode(), PANIC_MARKER.encode())
+        elif args.expect_storage_boot:
+            markers = (
+                STORAGE_SHELL_OUTPUT[args.expect_storage_boot][-1].encode(),
+                PANIC_MARKER.encode(),
+            )
         elif args.expect_user_preemption:
             markers = (EXPECTED_USER_PREEMPTION.encode(),)
         elif args.expect_input:
@@ -577,6 +727,35 @@ def main():
             return 1
         print("PASS: timer preemption and task lifecycle passed")
         return 0
+    if args.expect_storage_boot:
+        expected = f"{STORAGE_MESSAGE}{args.expect_storage_boot}"
+        if (
+            re.search(rf"^{re.escape(expected)}\r?$", output, re.MULTILINE)
+            is None
+        ):
+            print(f"FAIL: expected '{expected}'", file=sys.stderr)
+            return 1
+        missing = [
+            text
+            for text in STORAGE_SHELL_OUTPUT[args.expect_storage_boot]
+            if text not in output
+        ]
+        if missing or NOTES_OUTPUT.search(output) is None:
+            print(
+                "FAIL: file tools output is missing "
+                f"{missing or 'the cat output'}",
+                file=sys.stderr,
+            )
+            return 1
+        disk_error = VerifyDiskImage(args.disk, args.expect_storage_boot)
+        if disk_error is not None:
+            print(f"FAIL: disk image check: {disk_error}", file=sys.stderr)
+            return 1
+        print(
+            "PASS: sector, FAT16, and shell file-tool writes verified in the "
+            f"guest and with mtools; boot {args.expect_storage_boot} persisted"
+        )
+        return 0
     if args.expect_smp:
         if EXPECTED_SMP not in output:
             print(
@@ -640,6 +819,19 @@ def main():
             print(
                 f"FAIL: Ctrl+C was echoed {interrupts} times, expected "
                 f"{EXPECTED_INTERRUPTS}, or an interrupted command finished",
+                file=sys.stderr,
+            )
+            return 1
+        if WORKING_DIRECTORY_OUTPUT.findall(output) != ["/disk/work", "/disk"]:
+            print(
+                "FAIL: pwd did not follow cd: "
+                f"{WORKING_DIRECTORY_OUTPUT.findall(output)}",
+                file=sys.stderr,
+            )
+            return 1
+        if len(WORK_FILE_OUTPUT.findall(output)) != 2:
+            print(
+                "FAIL: a file was not readable through a relative path",
                 file=sys.stderr,
             )
             return 1

@@ -58,6 +58,56 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return, handlers.current_cpu(context)};
     }
+    if (request.number == static_cast<uint64_t>(Number::Open) && handlers.open != nullptr)
+    {
+        return {Action::Return, handlers.open(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Read) && handlers.read != nullptr)
+    {
+        return {Action::Return, handlers.read(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Write) && handlers.write != nullptr)
+    {
+        return {Action::Return, handlers.write(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Close) && handlers.close != nullptr)
+    {
+        return {Action::Return, handlers.close(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Seek) && handlers.seek != nullptr)
+    {
+        return {Action::Return, handlers.seek(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Remove) && handlers.remove != nullptr)
+    {
+        return {Action::Return, handlers.remove(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ReadDirectory) &&
+        handlers.read_directory != nullptr)
+    {
+        return {Action::Return,
+                handlers.read_directory(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::MakeDirectory) &&
+        handlers.make_directory != nullptr)
+    {
+        return {Action::Return, handlers.make_directory(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::RemoveDirectory) &&
+        handlers.remove_directory != nullptr)
+    {
+        return {Action::Return, handlers.remove_directory(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ChangeDirectory) &&
+        handlers.change_directory != nullptr)
+    {
+        return {Action::Return, handlers.change_directory(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::CurrentDirectory) &&
+        handlers.current_directory != nullptr)
+    {
+        return {Action::Return, handlers.current_directory(context, arguments[0], arguments[1])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

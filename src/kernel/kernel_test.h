@@ -8,6 +8,9 @@ void Run(const void* platform_data);
 #if defined(FEATHEROS_SMP_TEST)
 void RunSmpTests();
 #endif
+#if defined(FEATHEROS_STORAGE_TEST)
+void RunStorageTests();
+#endif
 
 } // namespace FeatherOS::KernelTest
 

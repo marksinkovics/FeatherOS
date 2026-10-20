@@ -11,7 +11,9 @@ list(APPEND CMAKE_MODULE_PATH "${FEATHEROS_CATCH2_SOURCE_DIR}/extras")
 include(Catch)
 
 add_executable(featheros_unit_tests
+    kernel/filesystem/fat_names_tests.cpp
     kernel/filesystem/filesystem_tests.cpp
+    kernel/filesystem/path_tests.cpp
     kernel/elf/elf_loader_tests.cpp
     kernel/framebuffer/framebuffer_tests.cpp
     kernel/input/input_tests.cpp
@@ -23,6 +25,9 @@ add_executable(featheros_unit_tests
     kernel/time/calendar_tests.cpp
     kernel/string/format_tests.cpp
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat16.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/fat_names.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/partition.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/vfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/elf/elf_loader.cpp"
@@ -34,6 +39,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
     "${FEATHEROS_ROOT}/src/kernel/process_arguments.cpp"
     "${FEATHEROS_ROOT}/src/kernel/syscall.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/files.cpp"
     "${FEATHEROS_ROOT}/src/kernel/string/format.cpp"
 )
 target_compile_features(featheros_unit_tests PRIVATE cxx_std_17)

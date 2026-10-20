@@ -18,7 +18,7 @@
 #include "kernel/process.h"
 #include "kernel/process_arguments.h"
 #include "kernel/scheduler.h"
-#if defined(FEATHEROS_SMP_TEST)
+#if defined(FEATHEROS_SMP_TEST) || defined(FEATHEROS_STORAGE_TEST)
 #include "kernel/kernel_test.h"
 #endif
 #include "kernel/smp.h"
@@ -222,6 +222,9 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     {
         Panic("MBR partition or FAT16 mount failed");
     }
+#if defined(FEATHEROS_STORAGE_TEST)
+    KernelTest::RunStorageTests();
+#endif
 
     constexpr char expected_contents[] = "FeatherOS FAT16 volume OK";
     VFS::FileInfo file_info;

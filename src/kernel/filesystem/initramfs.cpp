@@ -137,26 +137,14 @@ bool HeaderMatchesPath(const TarHeader& header, const char* path)
     return FieldEquals(header.name, sizeof(header.name), path + prefix_length + 1);
 }
 
-} // namespace
-
-bool Mount(const void* archive, uint64_t size)
+// Calls visit(header, data, size) for each regular file until it returns true; false if none
+// does or the archive is malformed.
+template <typename Visit> bool ForEachFile(Visit visit)
 {
-    if (archive == nullptr || size < TarBlockSize * 2)
+    if (archive_data == nullptr)
     {
         return false;
     }
-    archive_data = static_cast<const uint8_t*>(archive);
-    archive_size = size;
-    return true;
-}
-
-bool Open(const char* path, File* file)
-{
-    if (archive_data == nullptr || path == nullptr || path[0] == '\0' || file == nullptr)
-    {
-        return false;
-    }
-
     uint64_t offset = 0;
     while (offset <= archive_size && archive_size - offset >= TarBlockSize)
     {
@@ -184,16 +172,73 @@ bool Open(const char* path, File* file)
         {
             return false;
         }
-
-        if ((header->type == '\0' || header->type == '0') && HeaderMatchesPath(*header, path))
+        if ((header->type == '\0' || header->type == '0') &&
+            visit(*header, block + TarBlockSize, file_size))
         {
-            file->data = block + TarBlockSize;
-            file->size = file_size;
             return true;
         }
         offset += TarBlockSize + padded_size;
     }
     return false;
+}
+
+} // namespace
+
+bool Mount(const void* archive, uint64_t size)
+{
+    if (archive == nullptr || size < TarBlockSize * 2)
+    {
+        return false;
+    }
+    archive_data = static_cast<const uint8_t*>(archive);
+    archive_size = size;
+    return true;
+}
+
+bool Open(const char* path, File* file)
+{
+    if (path == nullptr || path[0] == '\0' || file == nullptr)
+    {
+        return false;
+    }
+    return ForEachFile(
+        [&](const TarHeader& header, const uint8_t* data, uint64_t size)
+        {
+            if (!HeaderMatchesPath(header, path))
+            {
+                return false;
+            }
+            file->data = data;
+            file->size = size;
+            return true;
+        });
+}
+
+bool ReadDirectory(uint32_t index, char (&name)[64], uint64_t* size)
+{
+    if (size == nullptr)
+    {
+        return false;
+    }
+    uint32_t listed = 0;
+    return ForEachFile(
+        [&](const TarHeader& header, const uint8_t*, uint64_t file_size)
+        {
+            if (header.prefix[0] != '\0' || listed++ != index)
+            {
+                return false;
+            }
+            size_t length = 0;
+            for (; length < sizeof(header.name) && length < sizeof(name) - 1 &&
+                   header.name[length] != '\0';
+                 ++length)
+            {
+                name[length] = header.name[length];
+            }
+            name[length] = '\0';
+            *size = file_size;
+            return true;
+        });
 }
 
 } // namespace FeatherOS::Initramfs

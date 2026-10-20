@@ -46,6 +46,7 @@ set(SRC
     ${SRCROOT}/memory/virtual_memory.cpp
     ${SRCROOT}/panic.cpp
     ${SRCROOT}/console.cpp
+    ${SRCROOT}/files.cpp
     ${SRCROOT}/process.cpp
     ${SRCROOT}/process_arguments.cpp
     ${SRCROOT}/scheduler.cpp
@@ -65,6 +66,9 @@ set(SRC
     ${SRCROOT}/framebuffer/term.cpp
     ${SRCROOT}/filesystem/initramfs.cpp
     ${SRCROOT}/filesystem/fat16.cpp
+    ${SRCROOT}/filesystem/fat_names.cpp
+    ${SRCROOT}/filesystem/path.cpp
+    ${SRCROOT}/storage/partition.cpp
     ${SRCROOT}/filesystem/vfs.cpp
     ${SRCROOT}/elf/elf_loader.cpp
     ${SRCROOT}/input/input.cpp
