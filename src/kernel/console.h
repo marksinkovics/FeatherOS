@@ -18,8 +18,9 @@ void Initialize(Term* term);
 void NotifyStatusChanged();
 void WriteCharacter(char character);
 // Shows prompt, then echoes and edits input until Enter. Interrupts are enabled while waiting.
-// Returns the line length; buffer receives at most capacity - 1 characters and a terminator.
-size_t ReadLine(const char* prompt, char* buffer, size_t capacity);
+// buffer receives at most capacity - 1 characters and a terminator. Returns false when Ctrl+C
+// interrupted the calling program.
+bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* length);
 
 } // namespace FeatherOS::Console
 

@@ -544,6 +544,21 @@ void WakeAll(WaitQueue& queue)
     WakeAllLocked(queue);
 }
 
+void WakeTask(TaskId task_id)
+{
+    if (!initialized)
+    {
+        return;
+    }
+    Sync::SpinLockGuard guard(scheduler_lock);
+    Task* task = FindTask(task_id);
+    if (task != nullptr &&
+        (task->state == TaskState::Sleeping || task->state == TaskState::Blocked))
+    {
+        MakeReady(*task);
+    }
+}
+
 bool SleepUntil(uint64_t tick)
 {
     if (!initialized || CurrentTask() == &IdleTask())

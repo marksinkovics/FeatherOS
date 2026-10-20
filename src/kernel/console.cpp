@@ -13,6 +13,7 @@
 #include "kernel/string/format.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/time/timer.h"
+#include "kernel/user_context.h"
 #include "user/calendar.h"
 
 namespace FeatherOS::Console
@@ -120,11 +121,45 @@ uint64_t StatusTaskMain(void*)
     }
 }
 
+bool InterruptForegroundJob()
+{
+    if (!Process::InterruptForegroundJob())
+    {
+        return false;
+    }
+    Sync::SpinLockGuard guard(display_lock);
+    Serial::Write("^C\n");
+    if (console_term != nullptr)
+    {
+        console_term->SetCursorVisible(false);
+        console_term->Print("^C\n");
+    }
+    return true;
+}
+
+bool CallerInterrupted()
+{
+    const auto* context = static_cast<const UserExecutionContext*>(Scheduler::CurrentUserContext());
+    return context != nullptr && context->kill_requested;
+}
+
+void ShowPrompt(const char* prompt)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    Serial::Write(prompt);
+    if (console_term != nullptr)
+    {
+        console_term->Print(prompt);
+        console_term->SetCursorVisible(true);
+    }
+}
+
 } // namespace
 
 void Initialize(Term* term)
 {
     console_term = term;
+    Input::SetInterruptHandler(InterruptForegroundJob);
     if (console_term == nullptr || Time::TicksPerSecond() == 0)
     {
         return;
@@ -163,25 +198,17 @@ void WriteCharacter(char character)
     }
 }
 
-size_t ReadLine(const char* prompt, char* buffer, size_t capacity)
+bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* line_length)
 {
-    if (buffer == nullptr || capacity == 0)
+    if (buffer == nullptr || capacity == 0 || line_length == nullptr)
     {
-        return 0;
+        return false;
     }
     if (prompt == nullptr)
     {
         prompt = "";
     }
-    {
-        Sync::SpinLockGuard guard(display_lock);
-        Serial::Write(prompt);
-        if (console_term != nullptr)
-        {
-            console_term->Print(prompt);
-            console_term->SetCursorVisible(true);
-        }
-    }
+    ShowPrompt(prompt);
 
     size_t length = 0;
     buffer[0] = '\0';
@@ -189,13 +216,32 @@ size_t ReadLine(const char* prompt, char* buffer, size_t capacity)
     const uint64_t interrupt_state = Arch::Interrupts::SaveAndDisable();
     Arch::Interrupts::Enable();
     bool line_complete = false;
-    while (!line_complete)
+    bool interrupted = false;
+    while (!line_complete && !interrupted)
     {
         Input::Poll();
         Input::Event event;
+        interrupted = CallerInterrupted();
         // Stop at Enter so input typed ahead stays queued for the next reader.
-        while (!line_complete && Input::TryReadEvent(&event))
+        while (!line_complete && !interrupted && Input::TryReadEvent(&event))
         {
+            if (event.type == Input::EventType::Interrupt)
+            {
+                // Nothing to terminate, so Ctrl+C only discards the line.
+                {
+                    Sync::SpinLockGuard guard(display_lock);
+                    Serial::Write("^C\n");
+                    if (console_term != nullptr)
+                    {
+                        console_term->SetCursorVisible(false);
+                        console_term->Print("^C\n");
+                    }
+                }
+                length = 0;
+                buffer[0] = '\0';
+                ShowPrompt(prompt);
+                continue;
+            }
             Sync::SpinLockGuard guard(display_lock);
             if (event.type == Input::EventType::Character)
             {
@@ -234,15 +280,20 @@ size_t ReadLine(const char* prompt, char* buffer, size_t capacity)
                 line_complete = true;
             }
         }
-        if (!line_complete)
+        if (!line_complete && !interrupted)
         {
             Input::WaitForEvent(0);
+            interrupted = CallerInterrupted();
         }
     }
-    Serial::Write("KERN/I: Input line accepted\n");
+    if (line_complete)
+    {
+        Serial::Write("KERN/I: Input line accepted\n");
+    }
     Arch::Interrupts::SaveAndDisable();
     Arch::Interrupts::Restore(interrupt_state);
-    return length;
+    *line_length = length;
+    return line_complete;
 }
 
 } // namespace FeatherOS::Console

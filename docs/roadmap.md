@@ -123,7 +123,7 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 - Add useful shell utilities and a way to package and launch programs.
 - Broaden syscall coverage and the userspace library, and add pipes, background jobs, and process signals.
 - Improve the shell with line editing beyond Backspace, command history, a documented command set, and a more capable `calc`.
-- Add kill/abort for a stuck child and reclaim a child's resources when its parent exits first.
+- ~~Add kill/abort for a stuck child and reclaim a child's resources when its parent exits first.~~ Done early (see M15): Ctrl+C interrupts the foreground job, and an exiting parent terminates and reaps its children.
 - Add user threads with thread-local storage (`PT_TLS`, moved from M13).
 - If a `fork`-style API is adopted, build it on copy-on-write and demand paging (moved from M13); processes are currently created with `Spawn`.
 
@@ -174,7 +174,7 @@ Grow FeatherOS from a Limine-booted kernel into a small operating system that su
 
 ### 15. Terminal Layout And Status Bar (Complete)
 
-**Summary:** The framebuffer terminal has a status bar on its top row. It shows the foreground program on the left and, on the right, busy/online CPUs and the UTC time. Busy CPUs are counted from scheduler timer ticks. The prompt (`> `) and input are edited inline with a cursor. The `ReadUptime` syscall backs a new `uptime` command, and the once-a-second uptime log is gone. Unit tests cover the bar layout, inline erase across wraps, incremental-versus-full rendering, and the short date format. The SMP test checks busy-CPU accounting, and the shell test runs `uptime`. Follow-ups: `calc` evaluates full expressions with exact fractions, interactively at a `calc> ` prompt or from its arguments (the argument limit rose to 16). The `primes <workers>` demo splits work across processes and reports each worker's CPUs through the new `CurrentCpu` syscall. Spawned programs are now time-sliced on every timer tick on both architectures, so a CPU-bound program no longer keeps its core until it blocks.
+**Summary:** The framebuffer terminal has a status bar on its top row. It shows the foreground program on the left and, on the right, busy/online CPUs and the UTC time. Busy CPUs are counted from scheduler timer ticks. The prompt (`> `) and input are edited inline with a cursor. The `ReadUptime` syscall backs a new `uptime` command, and the once-a-second uptime log is gone. Unit tests cover the bar layout, inline erase across wraps, incremental-versus-full rendering, and the short date format. The SMP test checks busy-CPU accounting, and the shell test runs `uptime`. Follow-ups: `calc` evaluates full expressions with exact fractions, interactively at a `calc> ` prompt or from its arguments (the argument limit rose to 16). The `primes <workers>` demo splits work across processes and reports each worker's CPUs through the new `CurrentCpu` syscall. Spawned programs are now time-sliced on every timer tick on both architectures, so a CPU-bound program no longer keeps its core until it blocks. Ctrl+C interrupts the shell's foreground job and its descendants, and children are terminated and reaped when their parent exits.
 
 - Add a one-row status bar at the top of the framebuffer terminal, above the scrolling text.
 - Show the foreground program's name on the left of the bar, and on the right the busy CPU count over the online CPU count (for example `2/4`) followed by the current RTC date and time as `Mon Oct 19 9:36 PM`.

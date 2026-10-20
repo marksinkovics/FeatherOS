@@ -317,9 +317,8 @@ void RemoveProcess(ProcessRecord* process)
     Memory::Deallocate(process);
 }
 
-ProcessRecord* FindProcess(ProcessId process_id)
+ProcessRecord* FindProcessLocked(ProcessId process_id)
 {
-    Sync::SpinLockGuard guard(process_lock);
     for (ProcessRecord* process = process_list; process != nullptr; process = process->next)
     {
         if (process->id == process_id)
@@ -328,6 +327,35 @@ ProcessRecord* FindProcess(ProcessId process_id)
         }
     }
     return nullptr;
+}
+
+ProcessRecord* FindProcess(ProcessId process_id)
+{
+    Sync::SpinLockGuard guard(process_lock);
+    return FindProcessLocked(process_id);
+}
+
+bool DescendsFromLocked(const ProcessRecord* process, ProcessId ancestor)
+{
+    for (; process != nullptr; process = FindProcessLocked(process->parent))
+    {
+        if (process->id == ancestor)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void RequestKillLocked(ProcessRecord* process)
+{
+    // The task exists only once the program has loaded; before that there is nothing to stop.
+    if (process->task == 0)
+    {
+        return;
+    }
+    process->program.execution_context.kill_requested = true;
+    Scheduler::WakeTask(process->task);
 }
 
 // Builds "<name>-<arch>.elf" from the first word of command_line, which may only contain
@@ -457,7 +485,11 @@ uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint
     {
         return User::SyscallErrorNotForeground;
     }
-    const size_t length = Console::ReadLine(prompt_text, line, line_capacity);
+    size_t length;
+    if (!Console::ReadLine(prompt_text, line, line_capacity, &length))
+    {
+        return User::SyscallErrorInterrupted;
+    }
     if (!CopyToUser(*process, buffer, line, length + 1))
     {
         return User::SyscallErrorInvalidArgument;
@@ -580,6 +612,38 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     ExtendHeapSyscall,     SleepSyscall,    ReadUptimeSyscall, CurrentCpuSyscall,
 };
 
+// Children never outlive their parent: an exiting process stops and reaps any still running.
+uint64_t RunProcess(void* context)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    const uint64_t exit_status = RunUserProgram(&process->program);
+    for (;;)
+    {
+        ProcessId child = 0;
+        {
+            Sync::SpinLockGuard guard(process_lock);
+            // A child may itself be waiting for its own children, so stop the whole subtree.
+            for (ProcessRecord* candidate = process_list; candidate != nullptr;
+                 candidate = candidate->next)
+            {
+                if (candidate != process && candidate->task != 0 &&
+                    DescendsFromLocked(candidate, process->id))
+                {
+                    RequestKillLocked(candidate);
+                    if (candidate->parent == process->id)
+                    {
+                        child = candidate->id;
+                    }
+                }
+            }
+        }
+        if (child == 0 || !Wait(child, nullptr))
+        {
+            return exit_status;
+        }
+    }
+}
+
 } // namespace
 
 UserLayout DefaultUserLayout()
@@ -631,6 +695,7 @@ void InitializeUserProgram(UserProgram* program)
     program->execution_context.syscall_handlers = nullptr;
     program->execution_context.syscall_context = nullptr;
     program->execution_context.program = program;
+    program->execution_context.kill_requested = false;
 }
 
 bool LoadUserProgram(const ELF::Image& image, const User::ProgramArguments& arguments,
@@ -774,7 +839,7 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, ProcessId* process
     // Spawned programs are time-sliced: user mode runs with interrupts unmasked, and each timer
     // tick may switch to another ready task.
     process->program.execution_context.preemption_enabled = true;
-    if (!loaded || !Scheduler::CreateTask(RunUserProgram, &process->program, &process->task))
+    if (!loaded || !Scheduler::CreateTask(RunProcess, process, &process->task))
     {
         ReleaseUserProgram(&process->program);
         RemoveProcess(process);
@@ -811,6 +876,35 @@ bool Wait(ProcessId process_id, uint64_t* exit_status)
     }
     RemoveProcess(process);
     Console::NotifyStatusChanged();
+    return true;
+}
+
+bool InterruptForegroundJob()
+{
+    Sync::SpinLockGuard guard(process_lock);
+    // The job is the foreground process's ancestor that the session leader started. The leader
+    // (the shell, whose parent is the kernel) is never interrupted.
+    const ProcessRecord* job = FindProcessLocked(foreground_process);
+    while (job != nullptr && job->parent != 0)
+    {
+        const ProcessRecord* parent = FindProcessLocked(job->parent);
+        if (parent == nullptr || parent->parent == 0)
+        {
+            break;
+        }
+        job = parent;
+    }
+    if (job == nullptr || job->parent == 0)
+    {
+        return false;
+    }
+    for (ProcessRecord* candidate = process_list; candidate != nullptr; candidate = candidate->next)
+    {
+        if (DescendsFromLocked(candidate, job->id))
+        {
+            RequestKillLocked(candidate);
+        }
+    }
     return true;
 }
 

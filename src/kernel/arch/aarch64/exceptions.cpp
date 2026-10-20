@@ -25,6 +25,14 @@ struct ExceptionContext
     uint64_t spsr;
 };
 
+// The frame aarch64_irq_common saves.
+struct InterruptContext
+{
+    uint64_t registers[31];
+    uint64_t elr;
+    uint64_t spsr;
+};
+
 bool WriteSyscallCharacter(void*, char character)
 {
     const char output[] = {character, '\0'};
@@ -91,6 +99,40 @@ bool RunUserTest(uint64_t entry_point, uint64_t stack_pointer, uint64_t argument
     return user_context->exit_status == 0;
 }
 
+namespace
+{
+
+// Makes the exception return resume aarch64_user_test_return in EL1, which ends the program.
+void ReturnToKernel(FeatherOS::UserExecutionContext* user_context, uint64_t* x0, uint64_t* elr,
+                    uint64_t* spsr)
+{
+    *x0 = reinterpret_cast<uint64_t>(user_context);
+    *elr = reinterpret_cast<uint64_t>(aarch64_user_test_return);
+    *spsr = (*spsr & ~0xFULL) | 0x5;
+}
+
+// A program that Ctrl+C interrupted ends when it would next resume in EL0.
+void TerminateIfKilled(FeatherOS::UserExecutionContext* user_context, uint64_t* x0, uint64_t* elr,
+                       uint64_t* spsr)
+{
+    if ((*spsr & 0xF) == 0 && user_context != nullptr && user_context->active &&
+        user_context->kill_requested)
+    {
+        user_context->exit_status = FeatherOS::User::ExitStatusInterrupted;
+        user_context->exit_requested = true;
+        ReturnToKernel(user_context, x0, elr, spsr);
+    }
+}
+
+} // namespace
+
+extern "C" void FeatherOS_AArch64_InterruptReturn(InterruptContext* context)
+{
+    TerminateIfKilled(
+        static_cast<FeatherOS::UserExecutionContext*>(FeatherOS::Scheduler::CurrentUserContext()),
+        &context->registers[0], &context->elr, &context->spsr);
+}
+
 extern "C" void FeatherOS_AArch64_ExceptionDispatch(ExceptionContext* context)
 {
     const uint64_t exception_class = (context->esr >> 26) & 0x3F;
@@ -109,15 +151,14 @@ extern "C" void FeatherOS_AArch64_ExceptionDispatch(ExceptionContext* context)
         if (result.action == FeatherOS::Syscall::Action::Return)
         {
             context->registers[0] = result.value;
+            TerminateIfKilled(user_context, &context->registers[0], &context->elr, &context->spsr);
             return;
         }
         user_context->exit_status = result.action == FeatherOS::Syscall::Action::Exit
                                         ? result.value
                                         : FeatherOS::User::ExitStatusFault;
         user_context->exit_requested = true;
-        context->registers[0] = reinterpret_cast<uint64_t>(user_context);
-        context->elr = reinterpret_cast<uint64_t>(aarch64_user_test_return);
-        context->spsr = (context->spsr & ~0xFULL) | 0x5;
+        ReturnToKernel(user_context, &context->registers[0], &context->elr, &context->spsr);
         return;
     }
     if (user_context != nullptr && user_context->active && from_el0)
@@ -137,9 +178,7 @@ extern "C" void FeatherOS_AArch64_ExceptionDispatch(ExceptionContext* context)
                                         ? FeatherOS::User::ExitStatusKernelAccessFault
                                         : FeatherOS::User::ExitStatusFault;
         user_context->exit_requested = true;
-        context->registers[0] = reinterpret_cast<uint64_t>(user_context);
-        context->elr = reinterpret_cast<uint64_t>(aarch64_user_test_return);
-        context->spsr = (context->spsr & ~0xFULL) | 0x5;
+        ReturnToKernel(user_context, &context->registers[0], &context->elr, &context->spsr);
         return;
     }
     const char* name =

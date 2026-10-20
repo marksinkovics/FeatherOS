@@ -42,6 +42,10 @@ void RunCommand(const char* line)
         WriteLine("shell: could not wait for program");
         return;
     }
+    if (status == ExitStatusInterrupted)
+    {
+        return;
+    }
     if (status == ExitStatusFault || status == ExitStatusKernelAccessFault)
     {
         WriteLine("shell: program terminated by a CPU exception");

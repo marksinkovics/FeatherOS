@@ -18,6 +18,8 @@ uint32_t queue_head = 0;
 uint32_t queue_tail = 0;
 uint32_t queue_size = 0;
 bool previous_was_carriage_return = false;
+InterruptHandler interrupt_handler = nullptr;
+uint32_t pending_interrupts = 0;
 
 void SubmitEventLocked(Event event)
 {
@@ -46,16 +48,41 @@ void ProcessCharacterLocked(char character)
     {
         SubmitEventLocked({EventType::Backspace, '\0'});
     }
+    else if (character == '\x03')
+    {
+        ++pending_interrupts;
+    }
     else if (character >= 0x20 && character <= 0x7e)
     {
         SubmitEventLocked({EventType::Character, character});
     }
 }
 
+void DeliverInterrupt()
+{
+    if (interrupt_handler != nullptr && interrupt_handler())
+    {
+        return;
+    }
+    Sync::SpinLockGuard guard(queue_lock);
+    SubmitEventLocked({EventType::Interrupt, '\0'});
+    Scheduler::WakeAll(event_waiters);
+}
+
 } // namespace
+
+void SetInterruptHandler(InterruptHandler handler)
+{
+    interrupt_handler = handler;
+}
 
 void SubmitEvent(Event event)
 {
+    if (event.type == EventType::Interrupt)
+    {
+        DeliverInterrupt();
+        return;
+    }
     Sync::SpinLockGuard guard(queue_lock);
     SubmitEventLocked(event);
     Scheduler::WakeAll(event_waiters);
@@ -63,16 +90,26 @@ void SubmitEvent(Event event)
 
 void Poll()
 {
-    Sync::SpinLockGuard guard(queue_lock);
-    const uint32_t previous_size = queue_size;
-    char character;
-    while (Serial::ReadCharacter(&character))
+    uint32_t interrupts;
     {
-        ProcessCharacterLocked(character);
+        Sync::SpinLockGuard guard(queue_lock);
+        const uint32_t previous_size = queue_size;
+        char character;
+        while (Serial::ReadCharacter(&character))
+        {
+            ProcessCharacterLocked(character);
+        }
+        if (queue_size != previous_size)
+        {
+            Scheduler::WakeAll(event_waiters);
+        }
+        interrupts = pending_interrupts;
+        pending_interrupts = 0;
     }
-    if (queue_size != previous_size)
+    // The handler takes other subsystems' locks, so it runs after the queue lock is released.
+    for (; interrupts > 0; --interrupts)
     {
-        Scheduler::WakeAll(event_waiters);
+        DeliverInterrupt();
     }
 }
 
