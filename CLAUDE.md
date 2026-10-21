@@ -59,5 +59,6 @@ Get the code lint-clean **before** running any QEMU smoke test or `test-all`. Al
 
 ## Deeper docs
 
-- `docs/roadmap.md` — milestone goals, completion summaries, and future work.
+- `docs/roadmap.md` — planned and completed milestones, with completion summaries.
+- `docs/ideas.md` — unscheduled ideas; one moves to the roadmap with the next milestone number when planned.
 - `docs/development.md` — tool setup, every test mode, syscall table, scheduler/process/shell/RTC details, and AArch64 toolchain notes.

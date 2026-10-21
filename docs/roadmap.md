@@ -4,6 +4,8 @@
 
 Grow FeatherOS from a Limine-booted kernel into a small operating system that supports both x86-64 and AArch64. The kernel should share architecture-neutral services where practical while keeping CPU entry, exceptions, interrupts, page tables, context switching, and userspace ABI code in separate architecture backends.
 
+This file lists the milestones that are planned or complete. Directions that are not scheduled yet are collected in [ideas.md](ideas.md). An idea moves here, with the next milestone number, when work on it is planned.
+
 ## Current Foundation
 
 - Limine boot protocol and x86-64/AArch64 kernel entry
@@ -131,6 +133,14 @@ Moved: storage drivers for physical hardware, to M16.
 - Add the first network driver for QEMU virtio-net, with architecture-appropriate device discovery and DMA handling.
 - Build the network stack in stages: Ethernet, IP, ICMP, UDP, then TCP.
 - Add basic socket interfaces and simple diagnostic and client/server programs.
+- Grow the protocols in this order:
+  1. `ping` over ICMP
+  2. DHCP for the address, and DNS for names
+  3. TCP
+  4. a `fetch` HTTP client
+  5. a small HTTP server that serves files from the disk
+  6. NTP to set the clock
+  7. a remote shell over TCP
 
 **Complete when:** both targets can exchange packets in QEMU, pass basic ICMP/UDP/TCP tests, and run a small network client and server.
 
@@ -144,13 +154,42 @@ Moved: storage drivers for physical hardware, to M16.
 
 - Add an init process and define service startup and shutdown behavior.
 - Add `shutdown` and `reboot`: PSCI `SYSTEM_OFF`/`SYSTEM_RESET` on AArch64; on x86-64, ACPI S5 through the FADT's PM1a control port (`\_S5` sleep type found by scanning the DSDT) and the ACPI reset register with the keyboard-controller reset as a fallback. Restrict them to the session leader, stop the other CPUs, flush the disk (virtio-blk flush), and halt if power-off fails. Test that QEMU exits on `shutdown` and boots again after `reboot`.
-- Expand the userspace runtime and libc around a documented, deliberately scoped POSIX subset.
+- Expand the userspace runtime and libc around a documented, deliberately scoped POSIX subset (Part 3 below).
 - Add useful shell utilities and a way to package and launch programs.
+- Add a full-screen text editor (`edit`, in the style of nano), needed to write code on the OS for M17 and M18.
+- Add `ps`, `top` and `kill`, with per-process CPU time from the scheduler's tick accounting.
+- Add virtual files:
+  - `/dev/null` and `/dev/zero`
+  - `/dev/random`, backed by `RDRAND`/`RNDR`
+  - `/proc/<pid>/status` and `/proc/meminfo`
+- Add a RAM-backed `/tmp`.
+- Add a `cron`-style service that init runs, starting programs on a schedule.
 - Broaden syscall coverage and the userspace library, and add pipes, background jobs, and process signals.
 - Improve the shell with line editing beyond Backspace, command history, a documented command set, and a more capable `calc`.
 - ~~Add kill/abort for a stuck child and reclaim a child's resources when its parent exits first.~~ Done early (see M15): Ctrl+C interrupts the foreground job, and an exiting parent terminates and reaps its children.
 - Add user threads with thread-local storage (`PT_TLS`, moved from M13).
 - If a `fork`-style API is adopted, build it on copy-on-write and demand paging (moved from M13); processes are currently created with `Spawn`.
+
+**Part 3 (planned): C library.** A libc written from scratch under `src/libc/`, built as a static library and linked into every program. The public headers are plain C (wrapped in `extern "C"` for C++), so C and C++ programs both use them. The implementation is freestanding C++ in `FeatherOS::LibC`, with the same style and lint setup as the kernel. No outside code: only the compiler's freestanding headers (`stdint.h`, `stddef.h`, `stdarg.h`, `stdbool.h`, `limits.h`). Each step lands with host unit tests and a QEMU case on both architectures.
+
+1. **Startup and basics:** `crt0` builds `argc`/`argv`, runs global constructors, and calls `main`, whose return value goes to `exit` (which runs `atexit` handlers). Also the C++ runtime hooks the implementation needs: `__cxa_atexit`, `__cxa_guard_*`, `__cxa_pure_virtual`, and `new`/`delete` once `malloc` exists. Also `string.h`, `ctype.h`, `errno`, `setjmp`/`longjmp`, and the integer parts of `stdlib.h` (`strtol`, `atoi`, `abs`, `qsort`, `bsearch`).
+2. **Kernel support:** the console as descriptors 0, 1 and 2; syscall errors mapped to `errno` values; `getpid`/`getppid`; a `Stat` syscall; and an environment block passed by `Spawn` (`environ`, `getenv`, `setenv`).
+3. **Memory:** `malloc`/`free`/`calloc`/`realloc` as a free-list allocator over `ExtendHeap`.
+4. **stdio:** the `printf` family built on one `vsnprintf`, and buffered `FILE*` streams (`stdin`/`stdout`/`stderr`, `fopen`, `fread`/`fwrite`, `fgets`/`fputs`, `fflush`, `fclose`). The console is line-buffered.
+5. **POSIX calls:**
+   - `unistd.h`, `fcntl.h` (`open` flags), `sys/stat.h` and `dirent.h`
+   - `time.h`: `time`, `gmtime`, `strftime`, `clock_gettime`, `nanosleep`
+   - `spawn.h` (`posix_spawn`) with `sys/wait.h` (`waitpid`, `WNOHANG`, `WIFEXITED`)
+6. **Floating point:** save FPU/SIMD state per task on both architectures and drop `-mgeneral-regs-only`. Then add `%f` in `printf`, `strtod`, and a small `math.h`.
+7. **Adoption:**
+   - Move every program in `src/user/` onto libc and retire `runtime.h`.
+   - Add a `libctest` conformance program to the matrix.
+   - Document the subset in `docs/posix.md`: each function, how it differs from POSIX, and what is left out on purpose.
+
+Out of scope for Part 3:
+- `fork`/`exec`: `posix_spawn` covers process creation until copy-on-write exists.
+- signals and pipes: covered by the later bullet.
+- pthreads, sockets, users and permissions, `mmap`, `termios`, locales, and wide characters.
 
 **Complete when:** init starts and supervises basic services, and users can run a documented set of utilities and programs through the shell on both targets.
 
@@ -215,17 +254,69 @@ Moved: storage drivers for physical hardware, to M16.
 - Add NVMe first, since its paired submission and completion queues are close to the virtio-blk driver, then AHCI for SATA disks (moved from M9).
 - Develop and test each driver on QEMU's emulated controllers (`-device nvme`, `-device ahci`) with the same matrix tests as virtio-blk, before trying real hardware.
 - Share one block-device interface so the filesystem does not depend on the controller.
-- Later, USB mass storage on top of the xHCI stack from M14, and SD/eMMC for ARM boards.
+- Later, SD/eMMC for ARM boards. USB mass storage is part of M19.
 
 **Complete when:** both targets mount and write the FAT test disk through NVMe and AHCI in QEMU, passing the same storage tests as virtio-blk.
 
-## Optional Tracks
+### 17. Native Toolchain
 
-These are separately tracked directions and are not prerequisites for the core milestones above:
+A compiler toolchain written from scratch that runs on FeatherOS. Porting GCC or Clang is out of scope, both because the project uses no outside code and because of their size. Each tool is written in C++, developed and unit-tested on the host first, and then built as a FeatherOS program. Needs: the M11 C library, running programs from disk, per-process memory limits well above 4 MiB, and a way to edit source files.
 
-- **Graphical desktop:** build windowing and user-facing graphics on top of the framebuffer and input systems.
-- **Broader hardware support:** add devices and platforms beyond the initial QEMU targets, including network adapters beyond QEMU virtio-net, prioritizing reusable driver interfaces.
-- **Installation and updates:** produce an installable image and define a reliable system update and recovery workflow.
+- **Stage 1: Assembler and linker.**
+  - Assemble x86-64 and AArch64 text assembly into object files.
+  - Link them into static-PIE ELF programs that the existing loader accepts.
+- **Stage 2: C compiler.**
+  - Cover a C11 subset, with one code generator per architecture.
+  - It should build the libc and simple tools on FeatherOS.
+- **Stage 3: C++ subset.** Namespaces, classes, references, overloading, `constexpr`, and simple templates: the subset the FeatherOS code style uses. It should build the user programs in `src/user/`. Full C++ (general templates, exceptions, RTTI, newer standards) is not a goal.
+- **Stretch:** compile the toolchain itself (self-hosting), then the kernel.
+
+**Complete when:** on both targets, FeatherOS compiles a C++ user program from source on its own disk and runs the result, and the matrix tests this.
+
+### 18. Scripting Languages
+
+Interpreters written from scratch, like the M17 toolchain.
+
+- **Part 1: Shell scripts.** Extend the shell into an interpreter for a documented subset of POSIX `sh`, not full Bash:
+  - variables, quoting, `$?`
+  - `if`/`for`/`while`/`case`, functions
+  - `$(...)` command substitution, `#!` script files
+  - Builds on the M11 pipes, signals and background jobs.
+- **Part 2: Python subset.**
+  - A bytecode interpreter for a documented core: integers, floats, strings, lists, dicts, functions, classes, exceptions, and a small built-in library (`print`, file I/O, `os`-style calls over the M11 C library).
+  - Memory is managed by reference counting with a cycle collector, or by a tracing garbage collector.
+  - Needs floating point from M11 Part 3.
+
+**Complete when:** on both targets, the matrix runs a shell script and a Python script from the disk and checks their output.
+
+### 19. Removable Drives And Foreign Filesystems
+
+Scheduled right after M14, whose xHCI stack it uses. The goal is to plug in a USB drive formatted as FAT, exFAT, ext4, NTFS or APFS, and read and write it.
+
+**Groundwork:**
+- **A mount table and a filesystem driver interface.** Today the VFS hard-codes `/` (FAT16) and `/system` (the initramfs).
+- **USB mass storage** on the M14 xHCI stack: the Bulk-Only Transport protocol carrying SCSI commands, with UAS later.
+- **Hot-plug:** detect the partitions on a new drive (the GPT/MBR code exists), mount each one at `/media/<label>`, and provide `mount`, `umount` and `eject`. Unmounting flushes everything first, so pulling the drive out afterwards is safe.
+
+**Safety rules:** a filesystem bug here corrupts a real drive, so:
+- Mount new filesystem drivers read-only until their write path passes the matrix.
+- Mount read-only whenever the volume reports it was not cleanly unmounted:
+  - an ext4 journal that needs recovery, until we replay the journal ourselves
+  - NTFS left hibernated by Windows "Fast Startup", or flagged dirty
+  - an APFS container whose latest checkpoint is not valid
+- After the OS writes to a test image, check it on the host with that filesystem's own repair tool. This extends the `STORAGE_TEST` pattern, which already cross-checks FAT with mtools.
+
+| Filesystem | Specification | Write difficulty | Host tools for test images and checks |
+|---|---|---|---|
+| FAT32 | Microsoft FAT specification | Low: extends the FAT16 driver | `mkfs.fat`, `fsck.fat`, mtools |
+| exFAT | Microsoft's published exFAT specification | Low to medium: allocation bitmap, checksummed directory entry sets, UTF-16 names. The usual format of large USB drives | `mkfs.exfat`, `fsck.exfat` |
+| ext2, then ext4 | Linux kernel documentation | Medium to high. Order: ext2 read/write, ext4 read, then ext4 writes (extents, htree directories, CRC32C checksums, block groups, jbd2 journal transactions) | `mke2fs -d`, `e2fsck -fn` (e2fsprogs) |
+| NTFS | Reverse-engineered documentation (Linux ntfs3 and NTFS-3G docs) | High: MFT records and attributes, data runs, B+ tree directory indexes, `$Bitmap`, update sequence arrays. Mark the volume dirty while mounted. Compressed and encrypted files stay read-only | `mkntfs`, `ntfsfix -n` (NTFS-3G) |
+| APFS | Apple's "Apple File System Reference" | Highest: copy-on-write B-trees, object map, space manager, checkpoints and transaction IDs, Fletcher-64 checksums. FileVault-encrypted volumes also need AES-XTS and the keybag | `hdiutil create -fs APFS`, `fsck_apfs -n` on macOS |
+
+**Order:** FAT32 → exFAT → ext2/ext4 → NTFS → APFS. Each filesystem is read-only first, then gets writes.
+
+**Complete when:** on both targets, a QEMU USB drive with each filesystem is detected, mounted under `/media`, written and cleanly ejected, and the host repair tool finds no errors.
 
 ## Architecture Boundaries
 
