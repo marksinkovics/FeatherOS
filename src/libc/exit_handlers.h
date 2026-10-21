@@ -6,6 +6,8 @@ namespace FeatherOS::LibC
 
 // Shared by atexit and the C++ runtime's __cxa_atexit, which registers static destructors.
 bool AddExitHandler(void (*function)(void*), void* argument);
+// stdio registers its flush here, so programs that never use stdio do not link it.
+void SetExitFlush(void (*flush)());
 
 } // namespace FeatherOS::LibC
 

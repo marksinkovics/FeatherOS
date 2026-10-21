@@ -6,7 +6,9 @@ add_library(featheros_c STATIC
     environment.cpp
     errno.cpp
     exit.cpp
+    malloc.cpp
     stat.cpp
+    stdio.cpp
     stdlib.cpp
     string.cpp
     unistd.cpp

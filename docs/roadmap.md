@@ -167,28 +167,43 @@ Moved: storage drivers for physical hardware, to M16.
 - Broaden syscall coverage and the userspace library, and add pipes, background jobs, and process signals.
 - Improve the shell with line editing beyond Backspace, command history, a documented command set, and a more capable `calc`.
 - ~~Add kill/abort for a stuck child and reclaim a child's resources when its parent exits first.~~ Done early (see M15): Ctrl+C interrupts the foreground job, and an exiting parent terminates and reaps its children.
-- Add user threads with thread-local storage (`PT_TLS`, moved from M13).
+- Add user threads with thread-local storage (`PT_TLS`, moved from M13). The C library must become thread-safe at the same time:
+  - a lock in `malloc`, with a futex-style syscall so a waiting thread sleeps instead of spinning
+  - a per-thread `errno` behind `__errno_location()`
+  - locked `__cxa_guard_*` for function-local statics
+  - locked stdio streams
 - If a `fork`-style API is adopted, build it on copy-on-write and demand paging (moved from M13); processes are currently created with `Spawn`.
 
 **Part 3 (in progress): C library.** A libc written from scratch under `src/libc/`, built as a static library and linked into every program. The public headers are plain C (wrapped in `extern "C"` for C++), so C and C++ programs both use them. The implementation is freestanding C++ in `FeatherOS::LibC`, with the same style and lint setup as the kernel. No outside code: only the compiler's freestanding headers (`stdint.h`, `stddef.h`, `stdarg.h`, `stdbool.h`, `limits.h`). Each step lands with host unit tests and a QEMU case on both architectures.
 
 1. **(Complete) Startup and basics:** `crt0` builds `argc`/`argv`, runs global constructors, and calls `main`, whose return value goes to `exit` (which runs `atexit` handlers). Also the C++ runtime hooks the implementation needs: `__cxa_atexit`, `__cxa_guard_*`, `__cxa_pure_virtual`, and `new`/`delete` once `malloc` exists. Also `string.h`, `ctype.h`, `errno`, `setjmp`/`longjmp`, and the integer parts of `stdlib.h` (`strtol`, `atoi`, `abs`, `qsort`, `bsearch`).
 2. **(Complete) Kernel support:** the console as descriptors 0, 1 and 2; syscall errors mapped to `errno` values; `getpid`/`getppid`; a `Stat` syscall; and an environment block passed by `Spawn` (`environ`, `getenv`, `setenv`).
-3. **Memory:** `malloc`/`free`/`calloc`/`realloc` as a free-list allocator over `ExtendHeap`.
-4. **stdio:** the `printf` family built on one `vsnprintf`, and buffered `FILE*` streams (`stdin`/`stdout`/`stderr`, `fopen`, `fread`/`fwrite`, `fgets`/`fputs`, `fflush`, `fclose`). The console is line-buffered.
+3. **(Complete) Memory:** `malloc`/`free`/`calloc`/`realloc` as a free-list allocator over `ExtendHeap`.
+4. **(Complete) stdio:** the `printf` family built on one `vsnprintf`, and buffered `FILE*` streams (`stdin`/`stdout`/`stderr`, `fopen`, `fread`/`fwrite`, `fgets`/`fputs`, `fflush`, `fclose`). The console is line-buffered.
 5. **POSIX calls:**
    - the rest of `unistd.h` (`lseek`, `unlink`, `rmdir`, `chdir`, `getcwd`, `sleep`), `fcntl.h` (`open` flags), `mkdir` in `sys/stat.h`, and `dirent.h`
    - `time.h`: `time`, `gmtime`, `strftime`, `clock_gettime`, `nanosleep`
    - `spawn.h` (`posix_spawn`) with `sys/wait.h` (`waitpid`, `WNOHANG`, `WIFEXITED`)
-6. **Floating point:** save FPU/SIMD state per task on both architectures and drop `-mgeneral-regs-only`. Then add `%f` in `printf`, `strtod`, and a small `math.h`.
+   - `scanf`, `fscanf`, `sscanf` and their `v` forms: integers with the same length modifiers as `printf`, `%s`, `%c`, scansets (`%[...]`), `%n`, assignment suppression (`%*d`), and field widths, sharing one header-only engine with host tests against the host's `sscanf`
+6. **Floating point:** save FPU/SIMD state per task on both architectures and drop `-mgeneral-regs-only`. Then add the floating-point conversions to `printf` and `scanf`, `strtod`/`atof`, and a small `math.h`.
 7. **Adoption:**
    - Move every program in `src/user/` onto libc and retire `runtime.h`.
    - Add a `libctest` conformance program to the matrix.
    - Document the subset in `docs/posix.md`: each function, how it differs from POSIX, and what is left out on purpose.
 
+**Step 4 summary:** One header-only `printf` engine writes through a sink: a stream, a buffer, or a descriptor. It handles the integer, character, string and pointer conversions with every flag, width, precision and length modifier, and host tests compare it with the host's `snprintf`. `FILE*` streams have 512-byte buffers: stdout is line-buffered, stderr unbuffered, and a console read flushes stdout first. They cover `fopen` modes, `fread`/`fwrite`, `fgets`, `getline`, `ungetc`, `fseek`/`ftell`, append mode, and switching between reading and writing. `exit` flushes all streams last. `assert.h`, `perror` and `remove` are also added. `libctest` (187 checks) now prints through stdio, reads a line with `fgets(stdin)`, round-trips a disk file, and checks that a failed `assert` aborts. Not yet: floating-point conversions (step 6) and `scanf` (step 5).
+
+**Step 3 summary:** `malloc`, `calloc`, `realloc` and `free` use a first-fit allocator with address-ordered free lists. Free neighbors merge on both sides, `realloc` grows in place when it can, and the heap grows in 64 KiB steps by only the shortfall. Invalid and double frees are caught. C++ `new`/`delete` and `strdup`/`strndup` build on it. `ExtendHeap` now checks the page limit before mapping, so a failed request no longer leaves pages mapped that later growth would trip over. Host tests cover the allocator over an in-memory arena; `libctest` (152 checks) covers allocation, `new`/`delete`, reuse, and growing after a failed request.
+
 **Step 2 summary:** Descriptors 0–2 are the console in every process: writes print as one unit, and reads return a line at a time (foreground only), keeping what does not fit for the next read. Syscall errors now name their cause (bad descriptor or address, read-only, exists, not a directory, not empty, and others), with the error range widened to 4095 values as on Linux, and the C library maps each to `errno`. New syscalls are `Stat`, `StatDescriptor`, `ProcessId` and `ParentProcessId`. `Spawn` takes an environment block that the kernel validates and maps with the arguments. init sets variables from `env` lines in `init.conf`, and the shell passes its environment on. The C library adds `read`/`write`/`close`, `getpid`/`getppid`, `stat`/`fstat`, `environ`, `getenv`/`setenv`/`unsetenv`, and a new `env` program uses only the C library. Unit tests cover the error codes, `Stat`, environment validation, `env` lines, and the environment table; `libctest` grows to 104 checks, including a console read.
 
 **Step 1 summary:** `src/libc/` builds as `libfeatheros_c.a` in CMake, which now also builds the user programs into `build/<arch>/programs`. A program with a `main` links the C library's `_start`, which copies `argv` to writable memory, runs constructors and calls `exit(main(...))`. Also included: `string.h`, `ctype.h`, `errno.h`, `setjmp.h` in assembly for each architecture, the integer parts of `stdlib.h`, and the C++ runtime hooks. Host unit tests cover the `strtol` parser and heapsort, and the shell test runs `libctest` (75 checks plus exit-handler order) on both architectures.
+
+Follow-ups to Part 3, scheduled but not yet done:
+- **Return freed heap memory:**
+  - Let `ExtendHeap` take a negative increment. It unmaps the pages above the new break, frees their frames, and lowers the page count, which needs a helper that unmaps one page of a user address space.
+  - The allocator shrinks the break when the free block at the end of the heap passes a threshold (about 256 KiB), keeping a 64 KiB cushion.
+  - This only returns memory at the top of the heap. The full fix is `mmap`/`munmap` (in [ideas.md](ideas.md) under Scalability), with large allocations in their own mappings that `free` unmaps at once.
 
 Out of scope for Part 3:
 - `fork`/`exec`: `posix_spawn` covers process creation until copy-on-write exists.

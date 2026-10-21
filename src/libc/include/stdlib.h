@@ -33,6 +33,13 @@ __attribute__((__noreturn__)) void _Exit(int status);
 __attribute__((__noreturn__)) void abort(void);
 int atexit(void (*function)(void));
 
+// Allocations are 16-byte aligned. The heap only grows: freed memory is reused but never
+// returned to the kernel.
+void* malloc(size_t size);
+void* calloc(size_t count, size_t size);
+void* realloc(void* pointer, size_t size);
+void free(void* pointer);
+
 int abs(int value);
 long labs(long value);
 long long llabs(long long value);

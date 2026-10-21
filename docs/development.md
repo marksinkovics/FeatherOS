@@ -60,7 +60,7 @@ The integration tests use Python's built-in `unittest` framework and keep QEMU a
 
 ## Unit Tests
 
-Run `./build.sh unit-test` for native host tests of USTAR, FAT16 reads and writes, VFS, ELF loading, terminal rendering, syscall dispatch, program-argument parsing, calendar conversion, file-syscall error codes and `Stat`, Spawn environment validation, `init.conf` `env` lines, and the C library's integer parsing, sort, and environment table. CMake fetches the pinned Catch2 `v3.7.1` release on the first run, then CTest runs the cases from `build/unit-tests-ninja`. These tests use an in-memory block device; QEMU remains responsible for exercising real PCI/MMIO and boot integration.
+Run `./build.sh unit-test` for native host tests of USTAR, FAT16 reads and writes, VFS, ELF loading, terminal rendering, syscall dispatch, program-argument parsing, calendar conversion, file-syscall error codes and `Stat`, Spawn environment validation, `init.conf` `env` lines, and the C library's integer parsing, sort, environment table, allocator, and `printf` engine. CMake fetches the pinned Catch2 `v3.7.1` release on the first run, then CTest runs the cases from `build/unit-tests-ninja`. These tests use an in-memory block device; QEMU remains responsible for exercising real PCI/MMIO and boot integration.
 
 ## Initramfs
 
@@ -154,7 +154,7 @@ Normal boot first runs `src/user/test_program.cpp` twice as scheduled tasks to v
 A program with a `main` also links `start.cpp`, the C library's `_start`. It copies the arguments to writable memory, since the kernel maps them read-only and C lets a program modify its `argv` strings. It then runs the `.preinit_array` and `.init_array` constructors (C++ static objects and `__attribute__((constructor))` functions) and calls `exit(main(argc, argv))`. `exit` runs `atexit` handlers and static destructors newest first, then the `.fini_array` destructors, and passes the low 8 bits of the status to the kernel, as POSIX does. That also keeps a program's status apart from the kernel's fault statuses. `abort` exits with status 134, what a shell shows for `SIGABRT`, because there are no signals yet. The C++ runtime hooks are `__cxa_atexit`, `__cxa_guard_*` and `__cxa_pure_virtual`; static-local guards take no lock because programs are single-threaded.
 
 Supported so far:
-- `string.h`: the `mem*` and `str*` functions, `strtok_r` and `strerror`.
+- `string.h`: the `mem*` and `str*` functions, `strtok_r`, `strdup`/`strndup` and `strerror`.
 - `ctype.h`: ASCII classification and case mapping.
 - `errno.h`: Linux error numbers. `errno` is `*__errno_location()`, so each thread can get its own later.
 - `setjmp.h`: written in assembly per architecture in `src/libc/arch/<arch>/setjmp.cpp`.
@@ -165,15 +165,29 @@ Supported so far:
   - `qsort` (heapsort, `src/libc/heap_sort.h`), `bsearch`
   - `rand`/`srand`
   - `getenv`, `setenv`, `unsetenv`
+  - `malloc`, `calloc`, `realloc`, `free`
 - `unistd.h`: `read`, `write` and `close` (descriptors 0–2 are the console), `getpid`, `getppid`, `_exit`, `environ`.
 - `sys/stat.h`: `stat` and `fstat`. With no users yet, the mode only says whether a file can be written (`0644` or `0444`, and `0755` or `0555` for directories); the console is a character device, and times are 0.
 - `sys/types.h`.
+- `stdio.h`:
+  - formatting: `printf`, `fprintf`, `dprintf`, `sprintf`, `snprintf` and their `v` forms
+  - streams: `fopen` (modes `r`, `w`, `a`, with `+` and an ignored `b`), `fdopen`, `fclose`, `fflush`, `setvbuf`/`setbuf` (mode only)
+  - reading and writing: `fread`/`fwrite`, `fgetc`/`getc`/`getchar`, `ungetc` (one character), `fgets`, `getline`, `fputc`/`putc`/`putchar`, `fputs`, `puts`
+  - position and state: `fseek`/`ftell`/`rewind`, `feof`/`ferror`/`clearerr`, `fileno`
+  - also `remove` and `perror`
+- `assert.h`: a failed `assert` prints `file:line: function: Assertion `expression' failed.` to stderr and aborts; `NDEBUG` turns it off.
+
+One `printf` engine (`src/libc/format.h`) serves every formatting function through a sink: a stream, a buffer, or a descriptor. It supports `d i u o x X c s p %`, the flags `- + space # 0`, width and precision (including `*`), and the length modifiers `hh h l ll j z t`. A null string prints `(null)` and a null pointer `(nil)`, as in glibc. Floating-point conversions are printed as written and take no argument until user programs can use floating point. `%n` is not supported, since it writes through a pointer the format supplies.
+
+Each stream has a 512-byte buffer. stdout is line-buffered, and stderr is unbuffered, though one call's output is still written at once. Files are fully buffered. Reading from the console first flushes stdout, so a prompt without a newline appears. `exit` flushes every stream after the `atexit` handlers and destructors; `_exit` and `abort` do not. Streams in `a` mode write at the end of the file even after an `fseek`. Seeking past the end fails with `EINVAL`, and the console cannot seek (`ESPIPE`). There are 16 file streams besides the three console ones, matching the descriptor limit. `scanf` and its relatives come in step 5 of M11 Part 3.
 
 A failed call sets `errno` and returns -1. `src/libc/syscall_result.h` maps each syscall error to an `errno` value, for example `SyscallErrorBadAddress` to `EFAULT`; a background program's console read fails with `EIO`, as on Linux.
 
+`malloc` (`src/libc/heap_allocator.h`) is a first-fit allocator over `ExtendHeap`. Each block has a 16-byte header, so payloads are 16-byte aligned. Free blocks are kept in address order, which lets `free` merge a block with free neighbors on both sides; `realloc` shrinks in place or grows into a free neighbor before it moves the data. The heap grows in 64 KiB steps, and only by what the free block at its end lacks. Memory is reused but never returned to the kernel. Each region ends in a marker block that is never freed, so a block never takes memory past its region for a neighbor. A header tag catches frees of pointers that did not come from `malloc`, and double frees: `free` and `realloc` then print `free: invalid pointer` and abort. C++ `new` and `delete`, including the array and sized forms, use `malloc`. With exceptions disabled, a failed `new` prints a message and aborts instead of throwing. Programs are single-threaded, so the allocator takes no lock. `ExtendHeap` checks the page limit before it maps anything, so a request that is too large fails cleanly and the heap can still grow afterwards.
+
 The environment comes from Spawn: `_start` loads the block the parent passed into a fixed table (`src/libc/environment_table.h`) before constructors run, and `environ` points at its entries. The table is the size Spawn accepts (1 KiB, 32 variables), so anything a program sets can be passed to its children; `setenv` fails with `ENOMEM` beyond that. Programs should not assign `environ` themselves.
 
-The parser, the sort, and the environment table are header-only, so host unit tests cover them. `libctest one "two words"` checks the rest on both architectures, including a console read at its own `> ` prompt. It still prints through `runtime.h` until `stdio.h` exists. `env` prints the environment and uses only the C library.
+The parser, the sort, the environment table, the allocator, and the `printf` engine are header-only, so host unit tests cover them. The allocator runs over an in-memory arena, including a randomized run, and the engine's output is compared with the host's `snprintf` for every flag combination. `libctest one "two words"` checks the rest on both architectures: it prints through stdio and reads two typed lines at its `> ` prompts, one with `read` and one with `fgets(stdin)`. It also runs a child whose `assert` fails. `env` prints the environment and uses only the C library.
 
 ## Scheduler And Processes
 

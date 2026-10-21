@@ -28,6 +28,8 @@ size_t strcspn(const char* text, const char* reject);
 char* strpbrk(const char* text, const char* accept);
 char* strtok(char* text, const char* separators);
 char* strtok_r(char* text, const char* separators, char** state);
+char* strdup(const char* text);
+char* strndup(const char* text, size_t maximum);
 
 char* strerror(int error);
 

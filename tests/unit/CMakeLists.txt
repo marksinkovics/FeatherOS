@@ -26,8 +26,10 @@ add_executable(featheros_unit_tests
     kernel/time/calendar_tests.cpp
     kernel/string/format_tests.cpp
     libc/environment_table_tests.cpp
+    libc/heap_allocator_tests.cpp
     libc/heap_sort_tests.cpp
     libc/integer_parse_tests.cpp
+    libc/printf_tests.cpp
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat16.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat_names.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"

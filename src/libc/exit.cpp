@@ -24,6 +24,7 @@ constexpr int AbortStatus = 134;
 
 ExitHandler handlers[MaximumExitHandlers];
 size_t handler_count = 0;
+void (*exit_flush)() = nullptr;
 
 bool AddHandler(const ExitHandler& handler)
 {
@@ -46,6 +47,11 @@ namespace FeatherOS::LibC
 bool AddExitHandler(void (*function)(void*), void* argument)
 {
     return AddHandler({function, nullptr, argument});
+}
+
+void SetExitFlush(void (*flush)())
+{
+    exit_flush = flush;
 }
 
 } // namespace FeatherOS::LibC
@@ -73,6 +79,11 @@ extern "C" void exit(int status)
     for (const FiniFunction* function = __fini_array_end; function != __fini_array_start;)
     {
         (*--function)();
+    }
+    // Streams are flushed last, so output from handlers and destructors is not lost.
+    if (exit_flush != nullptr)
+    {
+        exit_flush();
     }
     _Exit(status);
 }

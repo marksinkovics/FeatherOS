@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 namespace
@@ -276,6 +277,23 @@ char* strtok_r(char* text, const char* separators, char** state)
 char* strtok(char* text, const char* separators)
 {
     return strtok_r(text, separators, &tokenizer_state);
+}
+
+char* strdup(const char* text)
+{
+    return strndup(text, SIZE_MAX);
+}
+
+char* strndup(const char* text, size_t maximum)
+{
+    const size_t length = strnlen(text, maximum);
+    auto* copy = static_cast<char*>(malloc(length + 1));
+    if (copy != nullptr)
+    {
+        memcpy(copy, text, length);
+        copy[length] = '\0';
+    }
+    return copy;
 }
 
 char* strerror(int error)

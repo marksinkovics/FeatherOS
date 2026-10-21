@@ -680,8 +680,22 @@ uint64_t ExtendHeapSyscall(void* context, uint64_t increment)
     const uint64_t new_break = previous_break + increment;
     uint64_t page_address = (previous_break + page_size - 1) & ~(page_size - 1);
     const uint64_t page_end = (new_break + page_size - 1) & ~(page_size - 1);
+    // Fail before mapping anything when the page limit cannot cover the request.
+    if ((page_end - page_address) / page_size > program.page_limit - program.mapped_page_count)
+    {
+        return User::SyscallErrorNoMemory;
+    }
     for (; page_address < page_end; page_address += page_size)
     {
+        // A call that ran out of physical memory part-way leaves its pages mapped above the
+        // break; a later call reuses them.
+        uint64_t mapped_address;
+        bool writable;
+        if (Memory::TranslateUserPage(program.address_space, page_address, &mapped_address,
+                                      &writable))
+        {
+            continue;
+        }
         uint64_t physical_address;
         if (!AllocateProgramPage(&program, &physical_address))
         {

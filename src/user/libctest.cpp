@@ -1,17 +1,15 @@
-#include "runtime.h"
+#include "syscall.h"
 
+#include <assert.h>
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-using FeatherOS::User::WriteLine;
-using FeatherOS::User::WriteNumber;
-using FeatherOS::User::WriteText;
 
 namespace
 {
@@ -20,7 +18,8 @@ constexpr char Help[] =
     "usage: libctest one \"two words\"\n"
     "Checks the C library: startup and arguments, constructors, string.h, ctype.h,\n"
     "stdlib.h, errno, setjmp, exit handlers, the console descriptors, stat, process\n"
-    "IDs, and the environment. It asks for one line of input at a \"> \" prompt.";
+    "IDs, the environment, the heap, and stdio. It asks for two lines of input at\n"
+    "\"> \" prompts.";
 
 #if defined(__x86_64__)
 constexpr uintptr_t KernelAddress = 0xFFFF800000000000;
@@ -38,8 +37,7 @@ void Check(bool passed, const char* name)
 {
     if (!passed)
     {
-        WriteText("libctest: failed ");
-        WriteLine(name);
+        printf("libctest: failed %s\n", name);
         exit(1);
     }
     ++passed_checks;
@@ -67,7 +65,8 @@ __attribute__((destructor)) void ReportExitOrder()
 {
     if (static_object_destroyed)
     {
-        WriteLine("libctest: exit handlers ran in order");
+        // Buffered, so this also checks that exit flushes stdout after the destructors.
+        printf("libctest: exit handlers ran in order\n");
     }
 }
 
@@ -316,6 +315,10 @@ void CheckConsoleDescriptors()
     Check(read(STDIN_FILENO, line, 5) == 5 && memcmp(line, "typed", 5) == 0, "short console read");
     const ssize_t rest = read(STDIN_FILENO, line, sizeof(line));
     Check(rest == 12 && memcmp(line, " into stdin\n", 12) == 0, "rest of the console line");
+    // The prompt has no newline, so it shows only because reading stdin flushes stdout.
+    printf("> ");
+    Check(fgets(line, sizeof(line), stdin) != nullptr && strcmp(line, "read by fgets\n") == 0,
+          "fgets from stdin");
 
     struct stat status;
     Check(fstat(STDOUT_FILENO, &status) == 0 && S_ISCHR(status.st_mode), "fstat on stdout");
@@ -394,13 +397,228 @@ void CheckEnvironment()
     Check(unsetenv("FEATHER") == 0, "unsetenv a missing variable");
 }
 
+int live_objects = 0;
+
+struct Counted
+{
+    Counted()
+    {
+        ++live_objects;
+    }
+    ~Counted()
+    {
+        --live_objects;
+    }
+    int value = 7;
+};
+
+uint64_t ProgramBreak()
+{
+    return FeatherOS::User::ExtendHeap(0);
+}
+
+bool Filled(const unsigned char* bytes, size_t count, unsigned char value)
+{
+    for (size_t index = 0; index < count; ++index)
+    {
+        if (bytes[index] != value)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void CheckAllocation()
+{
+    auto* first = static_cast<unsigned char*>(malloc(100));
+    Check(first != nullptr && reinterpret_cast<uintptr_t>(first) % 16 == 0, "malloc aligns");
+    memset(first, 0xAB, 100);
+    auto* grown = static_cast<unsigned char*>(realloc(first, 5000));
+    Check(grown != nullptr && Filled(grown, 100, 0xAB), "realloc keeps the contents");
+    memset(grown, 0xCD, 5000);
+    free(grown);
+    auto* zeroed = static_cast<unsigned char*>(calloc(50, 100));
+    Check(zeroed != nullptr && Filled(zeroed, 5000, 0), "calloc zeroes reused memory");
+    free(zeroed);
+    Check(realloc(malloc(10), 0) == nullptr, "realloc to 0 frees");
+    void* from_null = realloc(nullptr, 32);
+    Check(from_null != nullptr, "realloc of nullptr allocates");
+    free(from_null);
+    free(nullptr);
+
+    char* copy = strdup("feather");
+    Check(copy != nullptr && strcmp(copy, "feather") == 0, "strdup");
+    free(copy);
+    copy = strndup("featheros", 7);
+    Check(copy != nullptr && strcmp(copy, "feather") == 0, "strndup");
+    free(copy);
+
+    errno = 0;
+    Check(malloc(SIZE_MAX) == nullptr && errno == ENOMEM, "malloc too large");
+    errno = 0;
+    Check(calloc(SIZE_MAX / 2, 4) == nullptr && errno == ENOMEM, "calloc overflow");
+
+    auto* object = new Counted;
+    Check(live_objects == 1 && object->value == 7, "new runs the constructor");
+    delete object;
+    auto* objects = new Counted[5];
+    Check(live_objects == 5, "new[] constructs each element");
+    delete[] objects;
+    Check(live_objects == 0, "delete and delete[] run destructors");
+}
+
+void CheckHeapReuse()
+{
+    // Freed blocks merge again, so the same memory serves later allocations.
+    constexpr size_t Pieces = 32;
+    constexpr size_t PieceSize = 64 * 1024;
+    void* pieces[Pieces];
+    for (void*& piece : pieces)
+    {
+        piece = malloc(PieceSize);
+        Check(piece != nullptr, "allocating 2 MiB in pieces");
+        memset(piece, 0x11, PieceSize);
+    }
+    for (void* piece : pieces)
+    {
+        free(piece);
+    }
+    const uint64_t break_after_pieces = ProgramBreak();
+    void* whole = malloc(Pieces * PieceSize - 4096);
+    Check(whole != nullptr && ProgramBreak() == break_after_pieces,
+          "freed pieces merge into one large block");
+    free(whole);
+    for (int round = 0; round < 200; ++round)
+    {
+        free(malloc(8000));
+    }
+    Check(ProgramBreak() == break_after_pieces, "repeated allocations reuse memory");
+
+    // More than the 1024-page limit fails without using up pages, so the heap can still grow.
+    errno = 0;
+    Check(malloc(8 * 1024 * 1024) == nullptr && errno == ENOMEM, "malloc past the page limit");
+    void* larger = malloc(Pieces * PieceSize + 256 * 1024);
+    Check(larger != nullptr && ProgramBreak() > break_after_pieces,
+          "the heap grows after a failed request");
+    free(larger);
+}
+
+constexpr char StreamFile[] = "/LIBCTEST.TXT";
+
+void CheckFormatting()
+{
+    char text[64];
+    Check(snprintf(text, sizeof(text), "%s-%05d-%#x", "id", 42, 255) == 13 &&
+              strcmp(text, "id-00042-0xff") == 0,
+          "snprintf");
+    Check(snprintf(text, 4, "%d", 123456) == 6 && strcmp(text, "123") == 0, "snprintf truncates");
+    Check(sprintf(text, "%c%c", 'o', 'k') == 2 && strcmp(text, "ok") == 0, "sprintf");
+    Check(printf("libctest: printf %s %d\n", "works", 7) == 25, "printf");
+    Check(dprintf(STDOUT_FILENO, "libctest: dprintf %u\n", 3U) == 20, "dprintf");
+    Check(fprintf(stderr, "libctest: fprintf to stderr\n") == 28, "fprintf to stderr");
+    errno = ENOENT;
+    perror("libctest: perror");
+    Check(puts("libctest: puts works") == 0, "puts");
+}
+
+void CheckFileStreams()
+{
+    FILE* file = fopen(StreamFile, "w");
+    Check(file != nullptr, "fopen for writing");
+    Check(fputs("first line\n", file) == 0 && fprintf(file, "%d,%d\n", 1, 2) == 4 &&
+              fputc('Z', file) == 'Z',
+          "writing a stream");
+    Check(ftell(file) == 16, "ftell while writing");
+    Check(fclose(file) == 0, "fclose flushes");
+
+    char text[64];
+    file = fopen(StreamFile, "r");
+    Check(file != nullptr && fgets(text, sizeof(text), file) != nullptr &&
+              strcmp(text, "first line\n") == 0,
+          "fgets");
+    Check(fgetc(file) == '1' && ungetc('1', file) == '1' && fgetc(file) == '1', "ungetc");
+    Check(ftell(file) == 12, "ftell while reading");
+    char rest[8];
+    Check(fread(rest, 1, sizeof(rest), file) == 4 && memcmp(rest, ",2\nZ", 4) == 0,
+          "fread to the end");
+    Check(feof(file) && !ferror(file), "end of file");
+    Check(fseek(file, -1, SEEK_END) == 0 && fgetc(file) == 'Z', "fseek from the end");
+    rewind(file);
+    Check(fgetc(file) == 'f' && !feof(file), "rewind");
+    Check(fseek(file, 6, SEEK_SET) == 0 && fgets(text, 5, file) != nullptr &&
+              strcmp(text, "line") == 0,
+          "fgets stops at its size");
+    Check(fputc('x', file) == EOF && ferror(file), "writing a read-only stream");
+    clearerr(file);
+    Check(!ferror(file) && fclose(file) == 0, "clearerr");
+
+    file = fopen(StreamFile, "a");
+    Check(file != nullptr && fseek(file, 0, SEEK_SET) == 0 && fputs("+end", file) == 0 &&
+              fclose(file) == 0,
+          "appending after a seek");
+    file = fopen(StreamFile, "r");
+    char* line = nullptr;
+    size_t capacity = 0;
+    int lines = 0;
+    bool last_line_matches = false;
+    for (ssize_t length; (length = getline(&line, &capacity, file)) > 0;)
+    {
+        ++lines;
+        last_line_matches = strcmp(line, "Z+end") == 0;
+    }
+    Check(lines == 3 && last_line_matches, "getline");
+    free(line);
+    fclose(file);
+
+    file = fopen(StreamFile, "w+");
+    Check(file != nullptr && fputs("abc", file) == 0, "fopen w+");
+    rewind(file);
+    Check(fgetc(file) == 'a' && fputc('X', file) == 'X' && fseek(file, 0, SEEK_SET) == 0 &&
+              fgets(text, sizeof(text), file) != nullptr && strcmp(text, "aXc") == 0,
+          "switching between reading and writing");
+    FILE* second = fopen(StreamFile, "a");
+    Check(second == nullptr && errno == EBUSY, "a second writer");
+    fclose(file);
+
+    errno = 0;
+    Check(fopen("/missing/file.txt", "r") == nullptr && errno == ENOENT, "fopen a missing file");
+    errno = 0;
+    Check(fopen("/system/hello.txt", "w") == nullptr && errno == EROFS, "fopen read-only");
+    errno = 0;
+    Check(fopen(StreamFile, "q") == nullptr && errno == EINVAL, "fopen with a bad mode");
+    errno = 0;
+    Check(fseek(stdout, 0, SEEK_SET) == -1 && errno == ESPIPE, "fseek on the console");
+    Check(fileno(stdin) == 0 && fileno(stderr) == 2, "fileno");
+    Check(remove(StreamFile) == 0, "remove");
+    errno = 0;
+    Check(remove(StreamFile) == -1 && errno == ENOENT, "remove a missing file");
+}
+
+void CheckAssert()
+{
+    const uint64_t child = FeatherOS::User::Spawn("libctest assert");
+    uint64_t status = 0;
+    Check(!FeatherOS::User::IsSyscallError(child) &&
+              !FeatherOS::User::IsSyscallError(FeatherOS::User::Wait(child, &status)) &&
+              status == 134,
+          "a failed assert aborts");
+    assert(passed_checks > 0);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
     if (argc == 2 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0))
     {
-        WriteLine(Help);
+        puts(Help);
+        return 0;
+    }
+    // The child CheckAssert starts: a failed assert prints its message and aborts.
+    if (argc == 2 && strcmp(argv[1], "assert") == 0)
+    {
+        assert(argc == 1);
         return 0;
     }
     CheckArguments(argc, argv);
@@ -416,8 +634,11 @@ int main(int argc, char** argv)
     CheckFileStatus();
     CheckProcessIds();
     CheckEnvironment();
-    WriteText("libctest: ");
-    WriteNumber(passed_checks);
-    WriteLine(" checks passed");
+    CheckAllocation();
+    CheckHeapReuse();
+    CheckFormatting();
+    CheckFileStreams();
+    CheckAssert();
+    printf("libctest: %llu checks passed\n", static_cast<unsigned long long>(passed_checks));
     return 0;
 }
