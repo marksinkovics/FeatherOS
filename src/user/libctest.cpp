@@ -6,7 +6,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <math.h>
 #include <setjmp.h>
+#include <stdarg.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +26,8 @@ constexpr char Help[] =
     "Checks the C library: startup and arguments, constructors, string.h, ctype.h,\n"
     "stdlib.h, errno, setjmp, exit handlers, the console descriptors, stat, process\n"
     "IDs, the environment, the heap, stdio, files and directories, time, and\n"
-    "posix_spawn. It asks for three lines of input at \"> \" prompts.";
+    "posix_spawn, and floating point. It asks for three lines of input at \"> \"\n"
+    "prompts.";
 
 #if defined(__x86_64__)
 constexpr uintptr_t KernelAddress = 0xFFFF800000000000;
@@ -788,6 +791,97 @@ void CheckScanning()
     Check(fclose(file) == 0 && remove("/home/LIBCSCAN.TXT") == 0, "removing the scan file");
 }
 
+bool Formats(const char* expected, const char* format, ...) __attribute__((format(printf, 2, 3)));
+
+bool Formats(const char* expected, const char* format, ...)
+{
+    char text[128];
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(text, sizeof(text), format, arguments);
+    va_end(arguments);
+    if (strcmp(text, expected) != 0)
+    {
+        printf("libctest: \"%s\" gave \"%s\", expected \"%s\"\n", format, text, expected);
+        return false;
+    }
+    return true;
+}
+
+bool Near(double value, double expected, double tolerance)
+{
+    return fabs(value - expected) <= tolerance;
+}
+
+void CheckFloatingPoint()
+{
+    Check(Formats("3.141593 3.142e+00 3.14159 0x1.921fb54442d18p+1", "%f %.3e %g %a", M_PI, M_PI,
+                  M_PI, M_PI),
+          "printf of pi");
+    Check(Formats("[  -0.500] [1e+100] [0.0001] [1e-05] [  inf] [nan]",
+                  "[%8.3f] [%g] [%g] [%g] [%5f] [%f]", -0.5, 1e100, 1e-4, 1e-5, HUGE_VAL, NAN),
+          "printf widths and %g");
+    Check(Formats("0.1000000000000000055511151231257827021181583404541015625", "%.55f", 0.1),
+          "printf of 0.1 exactly");
+    Check(Formats("2.5 2 4", "%.1f %.0f %.0f", 2.5, 2.5, 3.5), "printf rounds ties to even");
+#if __LDBL_MANT_DIG__ == 64
+    Check(Formats("0.1000000000000000000013553", "%.25Lf", 0.1L), "printf of an x87 long double");
+#elif __LDBL_MANT_DIG__ == 113
+    Check(Formats("0.1000000000000000000000000", "%.25Lf", 0.1L), "printf of a quad long double");
+#endif
+
+    char* end = nullptr;
+    const char number[] = "  -1.25e3xyz";
+    Check(strtod(number, &end) == -1250.0 && end == number + 9, "strtod");
+    Check(strtod("0x1.8p1", nullptr) == 3.0 && atof("2.5") == 2.5, "strtod hex and atof");
+    Check(strtof("0.1", nullptr) == 0.1f, "strtof");
+    const long double parsed = strtold("0.1", nullptr);
+    const long double literal = 0.1L;
+    // An x87 long double fills 16 bytes, but only the first 10 hold the value.
+    const size_t value_bytes = __LDBL_MANT_DIG__ == 64 ? 10 : sizeof(long double);
+    Check(memcmp(&parsed, &literal, value_bytes) == 0, "strtold");
+    errno = 0;
+    Check(isinf(strtod("1e400", nullptr)) && errno == ERANGE, "strtod overflow");
+    Check(isnan(strtod("nan", nullptr)), "strtod NaN");
+
+    double value = 0;
+    float single = 0;
+    Check(sscanf("6.25 0.5", "%lf %f", &value, &single) == 2 && value == 6.25 && single == 0.5f,
+          "sscanf floats");
+
+    Check(sqrt(2.0) * sqrt(2.0) - 2.0 < 1e-15 && sqrt(16.0) == 4.0, "sqrt");
+    Check(Near(sin(M_PI / 6), 0.5, 1e-15) && Near(cos(M_PI / 3), 0.5, 1e-15) &&
+              Near(tan(M_PI / 4), 1.0, 1e-15),
+          "sin, cos, and tan");
+    Check(Near(exp(1.0), M_E, 1e-15) && Near(log(M_E), 1.0, 1e-15) && log2(1024.0) == 10.0 &&
+              Near(log10(1000.0), 3.0, 1e-15),
+          "exp and the logarithms");
+    Check(pow(2.0, 10.0) == 1024.0 && Near(pow(2.0, 0.5), M_SQRT2, 1e-15), "pow");
+    Check(Near(atan2(1.0, 1.0), M_PI_4, 1e-15) && Near(asin(1.0), M_PI_2, 1e-15) &&
+              Near(acos(-1.0), M_PI, 1e-15),
+          "the inverse functions");
+    Check(floor(-2.5) == -3.0 && ceil(-2.5) == -2.0 && round(-2.5) == -3.0 && trunc(-2.5) == -2.0 &&
+              fmod(10.0, 3.0) == 1.0,
+          "rounding and fmod");
+    int exponent = 0;
+    Check(frexp(48.0, &exponent) == 0.75 && exponent == 6 && ldexp(0.75, 6) == 48.0, "frexp");
+    errno = 0;
+    Check(isnan(log(-1.0)) && errno == EDOM, "log of a negative number");
+    errno = 0;
+    Check(isinf(exp(1000.0)) && errno == ERANGE, "exp overflow");
+    errno = 0;
+    Check(isinf(pow(0.0, -1.0)) && errno == ERANGE, "pow pole");
+    Check(sqrtf(2.25f) == 1.5f && Near(sinf(1.0f), 0.841470985, 1e-7), "float functions");
+
+    // Lots of floating-point work while other programs run, checked against a known sum.
+    double sum = 0;
+    for (int term = 1; term <= 200000; ++term)
+    {
+        sum += 1.0 / (static_cast<double>(term) * term);
+    }
+    Check(Near(sum, M_PI * M_PI / 6, 1e-5), "a long floating-point loop");
+}
+
 void CheckAssert()
 {
     const uint64_t child = FeatherOS::User::Spawn("libctest assert");
@@ -840,6 +934,7 @@ int main(int argc, char** argv)
     CheckTime();
     CheckSpawn();
     CheckScanning();
+    CheckFloatingPoint();
     CheckAssert();
     printf("libctest: %llu checks passed\n", static_cast<unsigned long long>(passed_checks));
     return 0;

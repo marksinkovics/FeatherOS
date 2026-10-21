@@ -163,7 +163,8 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
             WriteLine(
                 "Commands: calc [expression], date, echo <words...>, fanout <n>, "
                 "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
-                "sleep <ms>, upper, uptime, filetest, ls, cat <file>, write [-a] <file> <text>, "
+                "sleep <ms>, upper, uptime, filetest, fptest, libctest, ls, cat <file>, write [-a] "
+                "<file> <text>, "
                 "rm <file>, mkdir <dir>, rmdir <dir>, env, cd [dir], pwd, exit, shutdown, reboot, "
                 "help");
             WriteLine("Run <command> --help to see what a command does.");

@@ -47,6 +47,11 @@ div_t div(int numerator, int denominator);
 ldiv_t ldiv(long numerator, long denominator);
 lldiv_t lldiv(long long numerator, long long denominator);
 
+// Correctly rounded; hexadecimal ("0x1.8p3"), "inf", "infinity" and "nan" are accepted.
+double strtod(const char* text, char** end);
+float strtof(const char* text, char** end);
+long double strtold(const char* text, char** end);
+double atof(const char* text);
 int atoi(const char* text);
 long atol(const char* text);
 long long atoll(const char* text);

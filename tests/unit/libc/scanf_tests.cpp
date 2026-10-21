@@ -132,11 +132,36 @@ TEST_CASE("scanf returns -1 only when input ends before the first conversion")
     REQUIRE(Scan("", "literal") == -1);
 }
 
-TEST_CASE("scanf stops at floating-point conversions for now")
+TEST_CASE("scanf reads floats, doubles, and long doubles the way the host does")
 {
-    int value = 0;
-    REQUIRE(Scan("1.5 2", "%f %d", &value) == 0);
+    for (const char* text : {"1.5", "  -0.25", "3e2", "1E-3", "0x1.8p1", "inf", "-INFINITY",
+                             "nan", ".5", "7.", "2.5x", "123456789.123456789"})
+    {
+        INFO(text);
+        float ours_float = 0;
+        float host_float = 0;
+        REQUIRE(Scan(text, "%f", &ours_float) == std::sscanf(text, "%f", &host_float));
+        REQUIRE(std::memcmp(&ours_float, &host_float, sizeof(float)) == 0);
+        double ours = 0;
+        double host = 0;
+        REQUIRE(Scan(text, "%lg", &ours) == std::sscanf(text, "%lg", &host));
+        REQUIRE((ours == host || (ours != ours && host != host)));
+    }
+    long double extended = 0;
+    REQUIRE(Scan("0.1", "%Le", &extended) == 1);
+    REQUIRE(extended == 0.1L);
+    double width_limited = 0;
+    int rest = 0;
+    REQUIRE(Scan("12345", "%3lf%d", &width_limited, &rest) == 2);
+    REQUIRE(width_limited == 123.0);
+    REQUIRE(rest == 45);
+}
+
+TEST_CASE("scanf reads pointers in hexadecimal")
+{
     void* pointer = nullptr;
     REQUIRE(Scan("0x1234", "%p", &pointer) == 1);
     REQUIRE(pointer == reinterpret_cast<void*>(0x1234));
+    double value = 0;
+    REQUIRE(Scan("abc", "%lf", &value) == 0);
 }

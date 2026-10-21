@@ -1,5 +1,6 @@
 #include "scheduler.h"
 
+#include "kernel/arch/floating_point.h"
 #include "kernel/arch/interrupts.h"
 #include "kernel/cpu.h"
 #include "kernel/memory/heap.h"
@@ -35,6 +36,8 @@ struct Task
     // Null for the boot task and secondary idle tasks, which run on the bootloader's stacks.
     uint8_t* stack;
     WaitQueue exit_queue;
+    // Saved while the task is switched out; it only ever holds user-mode values.
+    Arch::FloatingPoint::State floating_point;
 };
 
 // Lock order: subsystem locks before the scheduler lock. It is held across context switches and
@@ -85,6 +88,7 @@ void ResetTask(Task& task)
     task.wake_tick = 0;
     task.wait_queue = nullptr;
     task.user_context = nullptr;
+    Arch::FloatingPoint::InitializeState(&task.floating_point);
 }
 
 Task* FindTask(TaskId task_id)
@@ -200,6 +204,10 @@ bool Schedule()
     }
     CurrentTask() = next;
     ActivateTaskAddressSpace(next);
+    // Kernel code does not touch these registers, so the next task's can be loaded before the
+    // switch, and a new task starts with its initial state already in place.
+    Arch::FloatingPoint::Save(&previous->floating_point);
+    Arch::FloatingPoint::Restore(&next->floating_point);
     FeatherOS_Arch_SwitchContext(&previous->stack_pointer, next->stack_pointer);
     return true;
 }

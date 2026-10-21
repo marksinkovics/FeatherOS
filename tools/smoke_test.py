@@ -69,7 +69,7 @@ SHELL_INPUT = (
     b"cat work/a.txt\ncd /\nls\ncat hello.txt\ncd nowhere\ncd\npwd\n"
     b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
-    b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\n"
+    b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\nfptest 8\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
 )
 # Ctrl+C for a command that shows no prompt of its own, sent while it runs.
@@ -131,7 +131,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 240 checks passed",
+    "libctest: 264 checks passed",
     "libctest: exit handlers ran in order",
     # env prints the variables init.conf sets, which the shell passes on.
     "HOME=/home",
@@ -149,6 +149,7 @@ EXPECTED_SHELL_OUTPUT = (
     "shell: program terminated by a CPU exception",
     "sleep: slept 1100 ms",
     "hardening: 46 checks passed",
+    "fptest: 8 of 8 workers kept their registers",
     "primes: 9592 primes below 100000 with 4 workers in ",
     "calc> ",
     "0.333333",

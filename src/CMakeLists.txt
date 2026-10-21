@@ -10,11 +10,10 @@ set(FEATHEROS_USER_FLAGS
     -fpie -nostdlib -nodefaultlibs -Wall -Wextra -Werror
 )
 if (ARCH STREQUAL "x86_64")
-    # Context switches do not save SSE state, so user code must not use it.
-    list(APPEND FEATHEROS_USER_FLAGS -mno-red-zone -mgeneral-regs-only)
+    list(APPEND FEATHEROS_USER_FLAGS -mno-red-zone)
 else ()
     list(APPEND FEATHEROS_USER_FLAGS
-        -mcpu=generic -march=armv8-a+nofp+nosimd -mno-outline-atomics -mcmodel=small)
+        -mcpu=generic -march=armv8-a -mno-outline-atomics -mcmodel=small)
 endif ()
 add_subdirectory(${SRCROOT}/libc)
 add_subdirectory(${SRCROOT}/user)

@@ -37,7 +37,7 @@ std::string Host(const char* format, ...)
 {
     va_list arguments;
     va_start(arguments, format);
-    char buffer[256];
+    static char buffer[8192];
     std::vsnprintf(buffer, sizeof(buffer), format, arguments);
     va_end(arguments);
     return buffer;
@@ -117,11 +117,72 @@ TEST_CASE("printf prints pointers in hexadecimal and null as (nil)")
 
 TEST_CASE("printf prints unsupported conversions as written")
 {
-    // %f consumes no argument, so the integer still reaches %d.
-    REQUIRE(Format("%f|%d", 5) == "%f|5");
-    REQUIRE(Format("%.2e %n") == "%.2e %n");
+    REQUIRE(Format("%n") == "%n");
     REQUIRE(Format("trailing %") == "trailing %");
     REQUIRE(Format("%y") == "%y");
+}
+
+TEST_CASE("printf formats doubles digit for digit like the host")
+{
+    const double values[] = {
+        0.0,      -0.0,     1.0,       0.1,       1.5,      2.5,         0.5,
+        123.456,  1e-5,     1e-300,    5e-324,    2.2250738585072014e-308, 1.7976931348623157e308,
+        1e21,     1e22,     9.5,       0.125,     3.14159265358979,       -2.71828,
+        1.0 / 3,  2.0 / 3,  123456789.0, 0.000123456, 1e100,  99.995,      0.0001,
+        0.00001234, 1e-7,   5e-5,      1e15,      999999.5, 0.9999995,   1e-310,
+        4503599627370497.0,
+    };
+    const char* formats[] = {
+        "%f",     "%.0f",  "%.1f",   "%.2f",   "%.10f",  "%.20f",  "%e",      "%.0e",
+        "%.3e",   "%.15e", "%g",     "%.0g",   "%.3g",   "%.10g",  "%.17g",   "%#g",
+        "%#.0f",  "%#.0e", "%+f",    "% e",    "%10.3f", "%-12.2e|", "%010.3f", "%+012.4e",
+        "%G",     "%E",    "%.400f", "%.1100f", "%.30e", "%#.3g", "%.25g",
+    };
+    for (const double value : values)
+    {
+        for (const char* format : formats)
+        {
+            INFO(format << " with " << value);
+            REQUIRE_SAME(format, value);
+        }
+    }
+}
+
+TEST_CASE("printf formats infinity and NaN, ignoring the 0 flag")
+{
+    const double infinity = 1.0 / 0.0;
+    REQUIRE_SAME("%f %e %g %F %E %G", infinity, -infinity, infinity, infinity, -infinity,
+                 infinity);
+    REQUIRE_SAME("[%08f] [%-6f] [%+f]", infinity, infinity, infinity);
+    const double not_a_number = __builtin_nan("");
+    REQUIRE(Format("%f %F [%5f]", not_a_number, not_a_number, not_a_number) == "nan NAN [  nan]");
+}
+
+TEST_CASE("printf formats hexadecimal floats")
+{
+    for (const double value : {1.0, 1.5, 0.1, -2.0, 1e100, 0.0, 3.0 / 7})
+    {
+        INFO(value);
+        REQUIRE_SAME("%a", value);
+        REQUIRE_SAME("%A", value);
+        REQUIRE_SAME("%.20a", value);
+    }
+    // macOS truncates when a precision drops hex digits, so these follow glibc, which rounds
+    // half to even and lets a carry make the leading digit 2.
+    REQUIRE(Format("%.3a", 0.1) == "0x1.99ap-4");
+    REQUIRE(Format("%.0a", 1.25) == "0x1p+0");
+    REQUIRE(Format("%#.0a", 1.5) == "0x2.p+0");
+    REQUIRE(Format("%.0a", 1.9) == "0x2p+0");
+    REQUIRE(Format("%.1a", 1.96875) == "0x2.0p+0");
+}
+
+TEST_CASE("printf keeps precision beyond the digits it computes")
+{
+    const std::string formatted = Format("%.1200f", 0.5);
+    REQUIRE(formatted.size() == 1202);
+    REQUIRE(formatted.substr(0, 3) == "0.5");
+    REQUIRE(formatted.find_first_not_of('0', 3) == std::string::npos);
+    REQUIRE(Format("%.1103e", 1.0).size() == 1103 + 2 + 4);
 }
 
 TEST_CASE("snprintf keeps what fits and reports the full length")

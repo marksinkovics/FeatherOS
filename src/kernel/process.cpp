@@ -294,7 +294,13 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     }
 
     program->entry_point = image.entry_point + load_bias;
+#if defined(ARCH_x86_64)
+    // A function starts with rsp 8 bytes past a 16-byte boundary, as a call leaves it. Code that
+    // keeps SSE values on the stack relies on that alignment.
+    program->stack_pointer = program->layout.stack_top - 8;
+#else
     program->stack_pointer = program->layout.stack_top;
+#endif
     program->heap_start += program->layout.heap_offset * Memory::PageSize;
     program->heap_break = program->heap_start;
     program->argument_pointer = program->layout.arguments_address;

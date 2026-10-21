@@ -10,7 +10,7 @@ set(FEATHEROS_PROGRAMS
 )
 # Programs that start at main() rather than defining _start themselves.
 set(FEATHEROS_MAIN_PROGRAMS
-    env:env libctest:libctest
+    env:env fptest:fptest libctest:libctest
 )
 
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker_${ARCH}.ld)

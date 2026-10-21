@@ -185,11 +185,17 @@ Moved: storage drivers for physical hardware, to M16.
    - `time.h`: `time`, `gmtime`, `strftime`, `clock_gettime`, `nanosleep`
    - `spawn.h` (`posix_spawn`) with `sys/wait.h` (`waitpid`, `WNOHANG`, `WIFEXITED`)
    - `scanf`, `fscanf`, `sscanf` and their `v` forms: integers with the same length modifiers as `printf`, `%s`, `%c`, scansets (`%[...]`), `%n`, assignment suppression (`%*d`), and field widths, sharing one header-only engine with host tests against the host's `sscanf`
-6. **Floating point:** save FPU/SIMD state per task on both architectures and drop `-mgeneral-regs-only`. Then add the floating-point conversions to `printf` and `scanf`, `strtod`/`atof`, and a small `math.h`.
+6. **(Complete) Floating point:** save FPU/SIMD state per task on both architectures and drop `-mgeneral-regs-only`. Then add the floating-point conversions to `printf` and `scanf`, `strtod`/`atof`, and a small `math.h`.
 7. **Adoption:**
    - Move every program in `src/user/` onto libc and retire `runtime.h`.
    - Add a `libctest` conformance program to the matrix.
    - Document the subset in `docs/posix.md`: each function, how it differs from POSIX, and what is left out on purpose.
+
+**Step 6 summary:**
+- **Kernel:** the x86-64 kernel is built with `-mgeneral-regs-only`, so the kernel never uses FP/SIMD registers on either architecture. The scheduler saves and loads them on each context switch: FXSAVE on x86-64, q0–q31 with FPCR/FPSR on AArch64. Each CPU enables them at boot, and x86-64 programs start with the ABI's stack alignment. User programs drop `-mgeneral-regs-only` and `+nofp+nosimd`. `fptest` fills every vector register in 8 workers and fails if a switch loses them; with saving disabled, it does fail.
+- **Conversions:** `printf` gains `%f %e %g %a` (and `L`), exact via big integers and matching the host's `printf` digit for digit. `strtod`/`strtof`/`strtold`/`atof` are correctly rounded, and `scanf` reads floats.
+- **`math.h`:** the exact functions match the host bit for bit. `exp`, `log`, `pow`, the trigonometric and hyperbolic functions, and `hypot` are within 1–3 ulps of the host's `libm`, and set `errno`.
+- **Tests:** `libctest` (264 checks) checks all of this on both architectures, including x87 and 128-bit `long double` output.
 
 **Step 5 summary:**
 - **Files:** `open`/`creat` with Linux flag values, where `O_APPEND` puts every write at the end. Also `lseek` (the kernel's `Seek` now takes an origin and returns the new offset), `unlink`, `mkdir`, `rmdir`, `chdir`, `getcwd`, `access`, `isatty`, and `dirent.h`.

@@ -1,3 +1,4 @@
+#include "libc/float_parse.h"
 #include "libc/heap_sort.h"
 #include "libc/integer_parse.h"
 
@@ -68,6 +69,21 @@ Unsigned ParseUnsigned(const char* text, char** end, int base, Unsigned maximum)
     return parsed.negative ? static_cast<Unsigned>(0 - value) : value;
 }
 
+template <typename Value>
+Value ParseFloating(const FeatherOS::LibC::FloatLayout& layout, const char* text, char** end)
+{
+    const FeatherOS::LibC::ParsedFloat parsed = FeatherOS::LibC::ParseFloat(layout, text);
+    if (end != nullptr)
+    {
+        *end = const_cast<char*>(parsed.end);
+    }
+    if (parsed.range_error)
+    {
+        errno = ERANGE;
+    }
+    return FeatherOS::LibC::FromRawBits<Value>(parsed.bits);
+}
+
 uint64_t random_state = 1;
 
 } // namespace
@@ -120,6 +136,26 @@ unsigned long strtoul(const char* text, char** end, int base)
 unsigned long long strtoull(const char* text, char** end, int base)
 {
     return ParseUnsigned<unsigned long long>(text, end, base, ULLONG_MAX);
+}
+
+double strtod(const char* text, char** end)
+{
+    return ParseFloating<double>(FeatherOS::LibC::DoubleFormat, text, end);
+}
+
+float strtof(const char* text, char** end)
+{
+    return ParseFloating<float>(FeatherOS::LibC::FloatFormat, text, end);
+}
+
+long double strtold(const char* text, char** end)
+{
+    return ParseFloating<long double>(FeatherOS::LibC::LongDoubleFormat, text, end);
+}
+
+double atof(const char* text)
+{
+    return strtod(text, nullptr);
 }
 
 int atoi(const char* text)

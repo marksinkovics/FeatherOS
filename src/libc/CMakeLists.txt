@@ -8,6 +8,7 @@ add_library(featheros_c STATIC
     errno.cpp
     exit.cpp
     malloc.cpp
+    math.cpp
     spawn.cpp
     stat.cpp
     stdio.cpp

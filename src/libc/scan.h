@@ -1,6 +1,7 @@
 #ifndef FEATHEROS_LIBC_SCAN_H
 #define FEATHEROS_LIBC_SCAN_H
 
+#include "libc/float_parse.h"
 #include "libc/integer_parse.h"
 
 #include <stdarg.h>
@@ -12,8 +13,7 @@ namespace FeatherOS::LibC
 
 // The scanf engine, reading through a Source with int Get() (-1 at the end) and Unget(int),
 // which only ever puts back the character just read. Returns the number of assignments, or
-// -1 if the input ended before the first conversion. Floating-point conversions stop the scan
-// until user programs can use floating point.
+// -1 if the input ended before the first conversion.
 template <typename Source> int ScanFrom(Source& source, const char* format, va_list arguments);
 
 namespace ScanDetail
@@ -175,6 +175,87 @@ bool ReadInteger(Reader<Source>& reader, int base, size_t width, char (&text)[Ma
     text[length] = '\0';
     *actual_base = base;
     return any_digit;
+}
+
+constexpr size_t MaximumFloatLength = 512;
+
+inline bool IsHexDigit(int character)
+{
+    return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') ||
+           (character >= 'A' && character <= 'F');
+}
+
+inline int LowerCase(int character)
+{
+    return character >= 'A' && character <= 'Z' ? character - 'A' + 'a' : character;
+}
+
+// Reads the longest prefix of a strtod number into text: a sign, then "inf", "infinity",
+// "nan", or hex or decimal digits with a point and an exponent. Since only one character can be
+// put back, a word like "info" leaves its prefix read.
+template <typename Source>
+bool ReadFloatText(Reader<Source>& reader, size_t width, char (&text)[MaximumFloatLength])
+{
+    size_t length = 0;
+    const size_t limit = width < sizeof(text) - 1 ? width : sizeof(text) - 1;
+    int character = reader.Get();
+    auto take = [&]()
+    {
+        text[length++] = static_cast<char>(character);
+        character = reader.Get();
+    };
+    if ((character == '+' || character == '-') && length < limit)
+    {
+        take();
+    }
+    if (LowerCase(character) == 'i' || LowerCase(character) == 'n')
+    {
+        const char* word = LowerCase(character) == 'i' ? "infinity" : "nan";
+        for (size_t index = 0;
+             word[index] != '\0' && length < limit && LowerCase(character) == word[index]; ++index)
+        {
+            take();
+        }
+    }
+    else
+    {
+        bool hex = false;
+        if (character == '0' && length < limit)
+        {
+            take();
+            if (LowerCase(character) == 'x' && length < limit)
+            {
+                take();
+                hex = true;
+            }
+        }
+        bool seen_point = false;
+        while (length < limit)
+        {
+            const bool digit = hex ? IsHexDigit(character) : (character >= '0' && character <= '9');
+            if (!digit && (character != '.' || seen_point))
+            {
+                break;
+            }
+            seen_point = seen_point || character == '.';
+            take();
+        }
+        if (LowerCase(character) == (hex ? 'p' : 'e') && length < limit)
+        {
+            take();
+            if ((character == '+' || character == '-') && length < limit)
+            {
+                take();
+            }
+            while (length < limit && character >= '0' && character <= '9')
+            {
+                take();
+            }
+        }
+    }
+    reader.Unget(character);
+    text[length] = '\0';
+    return length > 0;
 }
 
 template <typename Value> void Store(void* target, Value value)
@@ -398,6 +479,53 @@ template <typename Source> int ScanFrom(Source& source, const char* format, va_l
             converted = true;
             break;
         }
+        case 'e':
+        case 'E':
+        case 'f':
+        case 'F':
+        case 'g':
+        case 'G':
+        case 'a':
+        case 'A':
+        {
+            if (!reader.SkipSpace())
+            {
+                return finish(true);
+            }
+            char text[MaximumFloatLength];
+            if (!ReadFloatText(reader, width == 0 ? sizeof(text) - 1 : width, text))
+            {
+                return finish(false);
+            }
+            // No length means float, l double, and L long double.
+            const FloatLayout& layout = length == 'L'   ? LongDoubleFormat
+                                        : length == 'l' ? DoubleFormat
+                                                        : FloatFormat;
+            const ParsedFloat parsed = ParseFloat(layout, text);
+            if (parsed.end == text)
+            {
+                return finish(false);
+            }
+            converted = true;
+            if (!suppress)
+            {
+                void* target = va_arg(list, void*);
+                if (length == 'L')
+                {
+                    Store(target, FromRawBits<long double>(parsed.bits));
+                }
+                else if (length == 'l')
+                {
+                    Store(target, FromRawBits<double>(parsed.bits));
+                }
+                else
+                {
+                    Store(target, FromRawBits<float>(parsed.bits));
+                }
+                ++assigned;
+            }
+            break;
+        }
         case 'n':
             if (!suppress)
             {
@@ -405,7 +533,7 @@ template <typename Source> int ScanFrom(Source& source, const char* format, va_l
             }
             break;
         default:
-            // Floating point, an unknown conversion, or the end of the format.
+            // An unknown conversion, or the end of the format.
             return finish(false);
         }
     }

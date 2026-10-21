@@ -1,6 +1,8 @@
 #ifndef FEATHEROS_LIBC_FORMAT_H
 #define FEATHEROS_LIBC_FORMAT_H
 
+#include "libc/float_format.h"
+
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -9,9 +11,8 @@ namespace FeatherOS::LibC
 {
 
 // The printf engine, writing through any Sink with a Put(char) member. Returns the number of
-// characters the format produces. Floating-point conversions (%f, %e, %g, %a) are printed as
-// written and consume no argument until user programs can use floating point; %n is not
-// supported, since it writes through a pointer the format supplies.
+// characters the format produces. %n is not supported, since it writes through a pointer the
+// format supplies.
 template <typename Sink> int FormatTo(Sink& sink, const char* format, va_list arguments);
 
 // snprintf's sink: keeps what fits, always leaves room for the terminator, and counts the rest.
@@ -233,6 +234,39 @@ inline uint64_t UnsignedArgument(const Specification& specification, va_list* ar
     }
 }
 
+template <typename Sink>
+void WriteFloat(Writer<Sink>& writer, const Specification& specification, char conversion,
+                const DecodedFloat& value)
+{
+    FloatText text;
+    FormatFloat(value,
+                {conversion, specification.precision, specification.plus, specification.space,
+                 specification.alternate},
+                &text);
+    const size_t total =
+        text.prefix_length + text.body_length + text.trailing_zeros + text.suffix_length;
+    const size_t width = specification.width > 0 ? static_cast<size_t>(specification.width) : 0;
+    const size_t padding = width > total ? width - total : 0;
+    // The 0 flag pads with zeros after the sign, except for infinity and NaN.
+    const bool zero_pad = specification.zero && !specification.left && text.finite;
+    if (!specification.left && !zero_pad)
+    {
+        writer.Repeat(' ', static_cast<int>(padding));
+    }
+    writer.Text(text.prefix, text.prefix_length);
+    if (zero_pad)
+    {
+        writer.Repeat('0', static_cast<int>(padding));
+    }
+    writer.Text(text.body, text.body_length);
+    writer.Repeat('0', static_cast<int>(text.trailing_zeros));
+    writer.Text(text.suffix, text.suffix_length);
+    if (specification.left)
+    {
+        writer.Repeat(' ', static_cast<int>(padding));
+    }
+}
+
 inline bool IsDigit(char character)
 {
     return character >= '0' && character <= '9';
@@ -391,6 +425,25 @@ template <typename Sink> int FormatTo(Sink& sink, const char* format, va_list ar
             PadAndWrite(writer, specification, text, Length(text, specification.precision));
             break;
         }
+        case 'f':
+        case 'F':
+        case 'e':
+        case 'E':
+        case 'g':
+        case 'G':
+        case 'a':
+        case 'A':
+            if (specification.length == 'L')
+            {
+                WriteFloat(writer, specification, conversion,
+                           Decode(LongDoubleFormat, RawBits(va_arg(list, long double))));
+            }
+            else
+            {
+                WriteFloat(writer, specification, conversion,
+                           Decode(DoubleFormat, RawBits(va_arg(list, double))));
+            }
+            break;
         case '%':
             writer.Put('%');
             break;
