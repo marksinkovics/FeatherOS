@@ -76,7 +76,7 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     }
     if (request.number == static_cast<uint64_t>(Number::Seek) && handlers.seek != nullptr)
     {
-        return {Action::Return, handlers.seek(context, arguments[0], arguments[1])};
+        return {Action::Return, handlers.seek(context, arguments[0], arguments[1], arguments[2])};
     }
     if (request.number == static_cast<uint64_t>(Number::Remove) && handlers.remove != nullptr)
     {

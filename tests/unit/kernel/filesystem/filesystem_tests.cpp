@@ -524,14 +524,24 @@ TEST_CASE("file descriptors read, write, seek, and truncate disk files")
     const std::string contents = Pattern(1200);
     REQUIRE(FeatherOS::Files::Write(&table, writer, contents.data(), contents.size()) ==
             contents.size());
-    REQUIRE(FeatherOS::Files::Seek(&table, writer, 1201) ==
+    REQUIRE(FeatherOS::Files::Seek(&table, writer, 1201, FeatherOS::User::SeekFromStart) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Seek(&table, writer, 1200) == 0);
+    REQUIRE(FeatherOS::Files::Seek(&table, writer, 1200, FeatherOS::User::SeekFromStart) == 1200);
     REQUIRE(FeatherOS::Files::Write(&table, writer, "END", 3) == 3);
     REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
 
     const uint64_t reader = FeatherOS::Files::Open(&table, "/DATA.TXT", OpenRead);
-    REQUIRE(FeatherOS::Files::Seek(&table, reader, 1190) == 0);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, 1190, FeatherOS::User::SeekFromStart) == 1190);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, static_cast<uint64_t>(-10),
+                                   FeatherOS::User::SeekFromCurrent) == 1180);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, static_cast<uint64_t>(-3),
+                                   FeatherOS::User::SeekFromEnd) == 1200);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, static_cast<uint64_t>(-1204),
+                                   FeatherOS::User::SeekFromEnd) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, 0, 3) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, 1190, FeatherOS::User::SeekFromStart) == 1190);
     char tail[32];
     REQUIRE(FeatherOS::Files::Read(&table, reader, tail, sizeof(tail)) == 13);
     REQUIRE(std::string(tail, 13) == contents.substr(1190) + "END");
@@ -957,7 +967,8 @@ TEST_CASE("file syscalls report why a change failed")
     REQUIRE(FeatherOS::Files::RemoveDirectory("/system") == FeatherOS::User::SyscallErrorReadOnly);
     REQUIRE(FeatherOS::Files::RemoveDirectory("/") == FeatherOS::User::SyscallErrorBusy);
     REQUIRE(FeatherOS::Files::RemoveDirectory("/docs") == 0);
-    REQUIRE(FeatherOS::Files::Seek(&table, 9, 0) == FeatherOS::User::SyscallErrorBadDescriptor);
+    REQUIRE(FeatherOS::Files::Seek(&table, 9, 0, FeatherOS::User::SeekFromStart) ==
+            FeatherOS::User::SyscallErrorBadDescriptor);
 }
 
 TEST_CASE("stat reports type, size, and whether a file is read-only")

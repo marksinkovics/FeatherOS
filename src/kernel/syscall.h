@@ -48,7 +48,7 @@ struct Handlers
     uint64_t (*read)(void* context, uint64_t descriptor, uint64_t buffer, uint64_t length);
     uint64_t (*write)(void* context, uint64_t descriptor, uint64_t buffer, uint64_t length);
     uint64_t (*close)(void* context, uint64_t descriptor);
-    uint64_t (*seek)(void* context, uint64_t descriptor, uint64_t offset);
+    uint64_t (*seek)(void* context, uint64_t descriptor, uint64_t offset, uint64_t whence);
     uint64_t (*remove)(void* context, uint64_t path);
     uint64_t (*read_directory)(void* context, uint64_t path, uint64_t index, uint64_t entry);
     uint64_t (*make_directory)(void* context, uint64_t path);

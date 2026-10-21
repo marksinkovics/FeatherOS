@@ -92,7 +92,7 @@ void CheckReading()
     Check(ReadFile(reader, buffer, 10) == 0, "reading at the end of the file");
     Check(ReadFile(reader, reinterpret_cast<void*>(KernelAddress), 10) == SyscallErrorBadAddress,
           "reading into kernel memory");
-    Check(SeekFile(second_reader, 100) == 0 && ReadFile(second_reader, buffer, 10) == 10 &&
+    Check(SeekFile(second_reader, 100) == 100 && ReadFile(second_reader, buffer, 10) == 10 &&
               SameBytes(buffer, pattern + 100, 10),
           "seeking");
     Check(SeekFile(second_reader, PatternSize + 1) == SyscallErrorInvalidArgument,
@@ -101,12 +101,12 @@ void CheckReading()
     Check(CloseFile(reader) == 0 && CloseFile(second_reader) == 0, "closing both readers");
 
     const uint64_t appender = OpenFile(TestFile, OpenWrite);
-    Check(Valid(appender) && SeekFile(appender, PatternSize) == 0 &&
+    Check(Valid(appender) && SeekFile(appender, PatternSize) == PatternSize &&
               WriteFile(appender, "END", 3) == 3 && CloseFile(appender) == 0,
           "appending");
     const uint64_t tail_reader = OpenFile(TestFile, OpenRead);
-    Check(SeekFile(tail_reader, PatternSize - 1) == 0 && ReadFile(tail_reader, buffer, 10) == 4 &&
-              buffer[0] == pattern[PatternSize - 1] &&
+    Check(SeekFile(tail_reader, PatternSize - 1) == PatternSize - 1 &&
+              ReadFile(tail_reader, buffer, 10) == 4 && buffer[0] == pattern[PatternSize - 1] &&
               SameBytes(buffer + 1, reinterpret_cast<const uint8_t*>("END"), 3) &&
               CloseFile(tail_reader) == 0,
           "reading the appended bytes");

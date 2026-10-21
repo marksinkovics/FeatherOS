@@ -3,14 +3,17 @@ set(CMAKE_CXX_FLAGS "")
 add_library(featheros_c STATIC
     ctype.cpp
     cxx_runtime.cpp
+    dirent.cpp
     environment.cpp
     errno.cpp
     exit.cpp
     malloc.cpp
+    spawn.cpp
     stat.cpp
     stdio.cpp
     stdlib.cpp
     string.cpp
+    time.cpp
     unistd.cpp
     arch/${ARCH}/setjmp.cpp
 )

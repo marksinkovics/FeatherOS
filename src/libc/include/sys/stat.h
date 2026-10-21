@@ -36,6 +36,8 @@ __BEGIN_DECLS
 
 int stat(const char* path, struct stat* status);
 int fstat(int descriptor, struct stat* status);
+// The mode is ignored, since there are no permissions yet.
+int mkdir(const char* path, mode_t mode);
 
 __END_DECLS
 

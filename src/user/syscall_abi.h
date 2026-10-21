@@ -24,7 +24,7 @@ enum class SyscallNumber : uint64_t
     Read = 11,             // (descriptor, buffer, length) -> bytes read; 0 at end of file
     Write = 12,            // (descriptor, buffer, length) -> bytes written
     Close = 13,            // (descriptor) -> 0
-    Seek = 14,             // (descriptor, offset) -> 0; offset at most the file size
+    Seek = 14,             // (descriptor, offset, whence) -> the new offset, at most the size
     Remove = 15,           // (path) -> 0
     ReadDirectory = 16,    // (path, index, entry) -> 0; SyscallErrorNotFound past the end
     MakeDirectory = 17,    // (path) -> 0
@@ -47,6 +47,10 @@ constexpr uint64_t ShutdownPowerOff = 0;
 constexpr uint64_t ShutdownRestart = 1;
 // Wait flag: return SyscallErrorWouldBlock instead of blocking while the child runs.
 constexpr uint64_t WaitNoHang = 1U << 0;
+// Seek origins; the offset is signed and added to the origin.
+constexpr uint64_t SeekFromStart = 0;
+constexpr uint64_t SeekFromCurrent = 1;
+constexpr uint64_t SeekFromEnd = 2;
 
 // Spawn's environment is "NAME=value" strings, each with its terminator, then an empty string.
 // A null pointer gives the child an empty environment.

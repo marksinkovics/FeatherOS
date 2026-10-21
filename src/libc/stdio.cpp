@@ -1,5 +1,6 @@
 #include "libc/exit_handlers.h"
 #include "libc/format.h"
+#include "libc/scan.h"
 #include "libc/syscall_result.h"
 #include "user/syscall.h"
 
@@ -74,9 +75,7 @@ bool WriteAll(FeatherFile* stream, const unsigned char* bytes, size_t count)
 
 bool SeekDescriptor(FeatherFile* stream, long offset)
 {
-    const uint64_t result = FeatherOS::User::SeekFile(static_cast<uint64_t>(stream->descriptor),
-                                                      static_cast<uint64_t>(offset));
-    if (FeatherOS::LibC::Check<int>(result) != 0)
+    if (lseek(stream->descriptor, offset, SEEK_SET) < 0)
     {
         return false;
     }
@@ -769,6 +768,85 @@ int sprintf(char* buffer, const char* format, ...)
     va_list arguments;
     va_start(arguments, format);
     const int count = vsnprintf(buffer, SIZE_MAX, format, arguments);
+    va_end(arguments);
+    return count;
+}
+
+namespace
+{
+
+struct StreamSource
+{
+    FeatherFile* stream;
+
+    int Get()
+    {
+        return GetByte(stream);
+    }
+
+    void Unget(int character)
+    {
+        ungetc(character, stream);
+    }
+};
+
+struct TextSource
+{
+    const char* text;
+
+    int Get()
+    {
+        return *text == '\0' ? EOF : static_cast<unsigned char>(*text++);
+    }
+
+    void Unget(int)
+    {
+        --text;
+    }
+};
+
+} // namespace
+
+int vfscanf(FILE* stream, const char* format, va_list arguments)
+{
+    StreamSource source = {stream};
+    return FeatherOS::LibC::ScanFrom(source, format, arguments);
+}
+
+int fscanf(FILE* stream, const char* format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    const int count = vfscanf(stream, format, arguments);
+    va_end(arguments);
+    return count;
+}
+
+int vscanf(const char* format, va_list arguments)
+{
+    return vfscanf(stdin, format, arguments);
+}
+
+int scanf(const char* format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    const int count = vfscanf(stdin, format, arguments);
+    va_end(arguments);
+    return count;
+}
+
+int vsscanf(const char* text, const char* format, va_list arguments)
+{
+    TextSource source = {text};
+    return FeatherOS::LibC::ScanFrom(source, format, arguments);
+}
+
+int sscanf(const char* text, const char* format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    const int count = vsscanf(text, format, arguments);
     va_end(arguments);
     return count;
 }

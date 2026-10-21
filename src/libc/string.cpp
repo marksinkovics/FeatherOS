@@ -385,6 +385,9 @@ char* strerror(int error)
     case ENOTEMPTY:
         message = "Directory not empty";
         break;
+    case EOVERFLOW:
+        message = "Value too large for defined data type";
+        break;
     case EILSEQ:
         message = "Illegal byte sequence";
         break;

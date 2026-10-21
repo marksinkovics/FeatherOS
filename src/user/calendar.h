@@ -115,8 +115,8 @@ inline bool FormatCalendarTime(const CalendarTime& time,
     return true;
 }
 
-// "Wed Sep 30 12:59 PM" plus a terminator.
-constexpr uint32_t ShortCalendarTimeLength = 20;
+// "Wed Sep 30 12:59:59 PM" plus a terminator.
+constexpr uint32_t ShortCalendarTimeLength = 23;
 
 // 0 is Sunday; 1970-01-01 was a Thursday.
 inline uint32_t WeekdayFromUnixSeconds(uint64_t seconds)
@@ -124,7 +124,7 @@ inline uint32_t WeekdayFromUnixSeconds(uint64_t seconds)
     return static_cast<uint32_t>((seconds / 86400 + 4) % 7);
 }
 
-// Writes "Mon Oct 19 9:36 PM": weekday, month, day, and a 12-hour clock without seconds.
+// Writes "Mon Oct 19 9:36:05 PM": weekday, month, day, and a 12-hour clock.
 inline void FormatShortCalendarTime(uint64_t seconds, char (&buffer)[ShortCalendarTimeLength])
 {
     constexpr char weekdays[] = "SunMonTueWedThuFriSat";
@@ -157,6 +157,9 @@ inline void FormatShortCalendarTime(uint64_t seconds, char (&buffer)[ShortCalend
     buffer[length++] = ':';
     buffer[length++] = static_cast<char>('0' + time.minute / 10);
     buffer[length++] = static_cast<char>('0' + time.minute % 10);
+    buffer[length++] = ':';
+    buffer[length++] = static_cast<char>('0' + time.second / 10);
+    buffer[length++] = static_cast<char>('0' + time.second % 10);
     buffer[length++] = ' ';
     buffer[length++] = time.hour < 12 ? 'A' : 'P';
     buffer[length++] = 'M';

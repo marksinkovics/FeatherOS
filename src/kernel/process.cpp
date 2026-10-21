@@ -906,7 +906,7 @@ uint64_t CloseSyscall(void* context, uint64_t descriptor)
     return Files::Close(&process->files, descriptor);
 }
 
-uint64_t SeekSyscall(void* context, uint64_t descriptor, uint64_t offset)
+uint64_t SeekSyscall(void* context, uint64_t descriptor, uint64_t offset, uint64_t whence)
 {
     auto* process = static_cast<ProcessRecord*>(context);
     if (descriptor < User::FirstFileDescriptor)
@@ -914,7 +914,7 @@ uint64_t SeekSyscall(void* context, uint64_t descriptor, uint64_t offset)
         return IsConsoleDescriptor(*process, descriptor) ? User::SyscallErrorNotSeekable
                                                          : User::SyscallErrorBadDescriptor;
     }
-    return Files::Seek(&process->files, descriptor, offset);
+    return Files::Seek(&process->files, descriptor, offset, whence);
 }
 
 // Copies the path argument and passes it to one of the path-only Files calls.

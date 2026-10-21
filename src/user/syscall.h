@@ -108,9 +108,9 @@ inline uint64_t CloseFile(uint64_t descriptor)
     return Syscall(SyscallNumber::Close, descriptor);
 }
 
-inline uint64_t SeekFile(uint64_t descriptor, uint64_t offset)
+inline uint64_t SeekFile(uint64_t descriptor, uint64_t offset, uint64_t whence = SeekFromStart)
 {
-    return Syscall(SyscallNumber::Seek, descriptor, offset);
+    return Syscall(SyscallNumber::Seek, descriptor, offset, whence);
 }
 
 inline uint64_t RemoveFile(const char* path)

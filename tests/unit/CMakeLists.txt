@@ -30,6 +30,9 @@ add_executable(featheros_unit_tests
     libc/heap_sort_tests.cpp
     libc/integer_parse_tests.cpp
     libc/printf_tests.cpp
+    libc/scanf_tests.cpp
+    libc/spawn_request_tests.cpp
+    libc/time_format_tests.cpp
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat16.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat_names.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"

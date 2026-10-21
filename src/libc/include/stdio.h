@@ -20,6 +20,9 @@
 #define __FEATHEROS_PRINTF(format_index, first_argument)                                           \
     __attribute__((__format__(__printf__, format_index, first_argument)))
 
+#define __FEATHEROS_SCANF(format_index, first_argument)                                            \
+    __attribute__((__format__(__scanf__, format_index, first_argument)))
+
 __BEGIN_DECLS
 
 typedef struct FeatherFile FILE;
@@ -77,6 +80,15 @@ int vdprintf(int descriptor, const char* format, va_list arguments) __FEATHEROS_
 int vsprintf(char* buffer, const char* format, va_list arguments) __FEATHEROS_PRINTF(2, 0);
 int vsnprintf(char* buffer, size_t size, const char* format, va_list arguments)
     __FEATHEROS_PRINTF(3, 0);
+
+// Integers (with the same length modifiers as printf), %c, %s, %[...], %n, %*, and widths;
+// a floating-point conversion stops the scan for now.
+int scanf(const char* format, ...) __FEATHEROS_SCANF(1, 2);
+int fscanf(FILE* stream, const char* format, ...) __FEATHEROS_SCANF(2, 3);
+int sscanf(const char* text, const char* format, ...) __FEATHEROS_SCANF(2, 3);
+int vscanf(const char* format, va_list arguments) __FEATHEROS_SCANF(1, 0);
+int vfscanf(FILE* stream, const char* format, va_list arguments) __FEATHEROS_SCANF(2, 0);
+int vsscanf(const char* text, const char* format, va_list arguments) __FEATHEROS_SCANF(2, 0);
 
 __END_DECLS
 

@@ -180,7 +180,7 @@ Moved: storage drivers for physical hardware, to M16.
 2. **(Complete) Kernel support:** the console as descriptors 0, 1 and 2; syscall errors mapped to `errno` values; `getpid`/`getppid`; a `Stat` syscall; and an environment block passed by `Spawn` (`environ`, `getenv`, `setenv`).
 3. **(Complete) Memory:** `malloc`/`free`/`calloc`/`realloc` as a free-list allocator over `ExtendHeap`.
 4. **(Complete) stdio:** the `printf` family built on one `vsnprintf`, and buffered `FILE*` streams (`stdin`/`stdout`/`stderr`, `fopen`, `fread`/`fwrite`, `fgets`/`fputs`, `fflush`, `fclose`). The console is line-buffered.
-5. **POSIX calls:**
+5. **(Complete) POSIX calls:**
    - the rest of `unistd.h` (`lseek`, `unlink`, `rmdir`, `chdir`, `getcwd`, `sleep`), `fcntl.h` (`open` flags), `mkdir` in `sys/stat.h`, and `dirent.h`
    - `time.h`: `time`, `gmtime`, `strftime`, `clock_gettime`, `nanosleep`
    - `spawn.h` (`posix_spawn`) with `sys/wait.h` (`waitpid`, `WNOHANG`, `WIFEXITED`)
@@ -191,7 +191,14 @@ Moved: storage drivers for physical hardware, to M16.
    - Add a `libctest` conformance program to the matrix.
    - Document the subset in `docs/posix.md`: each function, how it differs from POSIX, and what is left out on purpose.
 
-**Step 4 summary:** One header-only `printf` engine writes through a sink: a stream, a buffer, or a descriptor. It handles the integer, character, string and pointer conversions with every flag, width, precision and length modifier, and host tests compare it with the host's `snprintf`. `FILE*` streams have 512-byte buffers: stdout is line-buffered, stderr unbuffered, and a console read flushes stdout first. They cover `fopen` modes, `fread`/`fwrite`, `fgets`, `getline`, `ungetc`, `fseek`/`ftell`, append mode, and switching between reading and writing. `exit` flushes all streams last. `assert.h`, `perror` and `remove` are also added. `libctest` (187 checks) now prints through stdio, reads a line with `fgets(stdin)`, round-trips a disk file, and checks that a failed `assert` aborts. Not yet: floating-point conversions (step 6) and `scanf` (step 5).
+**Step 5 summary:**
+- **Files:** `open`/`creat` with Linux flag values, where `O_APPEND` puts every write at the end. Also `lseek` (the kernel's `Seek` now takes an origin and returns the new offset), `unlink`, `mkdir`, `rmdir`, `chdir`, `getcwd`, `access`, `isatty`, and `dirent.h`.
+- **Time:** `time.h`, built on the shared `calendar.h`, with UTC conversions, `mktime` normalization, a C-locale `strftime`, `clock_gettime` and `nanosleep`, plus `sleep`/`usleep`.
+- **Processes:** `posix_spawn`/`posix_spawnp` turn `argv` and `envp` into the kernel's command line and environment block. `waitpid`/`wait` use the Linux status encoding, and `-1` polls the spawned children.
+- **Scanning:** `scanf`, `fscanf` and `sscanf` share one header-only engine.
+- **Tests:** host tests compare `scanf` and `strftime` with the host's own and cover the spawn requests. `libctest` (240 checks) exercises all of it on both architectures, including `scanf(stdin)` and spawning `echo`, `env`, a failing child and a faulting one.
+
+**Step 4 summary:** One header-only `printf` engine writes through a sink: a stream, a buffer, or a descriptor. It handles the integer, character, string and pointer conversions with every flag, width, precision and length modifier, and host tests compare it with the host's `snprintf`. `FILE*` streams have 512-byte buffers: stdout is line-buffered, stderr unbuffered, and a console read flushes stdout first. They cover `fopen` modes, `fread`/`fwrite`, `fgets`, `getline`, `ungetc`, `fseek`/`ftell`, append mode, and switching between reading and writing. `exit` flushes all streams last. `assert.h`, `perror` and `remove` are also added. `libctest` (187 checks) now prints through stdio, reads a line with `fgets(stdin)`, round-trips a disk file, and checks that a failed `assert` aborts. Not yet: floating-point conversions (step 6) and `scanf` (added in step 5).
 
 **Step 3 summary:** `malloc`, `calloc`, `realloc` and `free` use a first-fit allocator with address-ordered free lists. Free neighbors merge on both sides, `realloc` grows in place when it can, and the heap grows in 64 KiB steps by only the shortfall. Invalid and double frees are caught. C++ `new`/`delete` and `strdup`/`strndup` build on it. `ExtendHeap` now checks the page limit before mapping, so a failed request no longer leaves pages mapped that later growth would trip over. Host tests cover the allocator over an in-memory arena; `libctest` (152 checks) covers allocation, `new`/`delete`, reuse, and growing after a failed request.
 

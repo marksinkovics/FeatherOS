@@ -258,7 +258,7 @@ uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t l
     return complete || bytes_written > 0 ? bytes_written : User::SyscallErrorFailed;
 }
 
-uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset)
+uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset, uint64_t whence)
 {
     Sync::MutexGuard guard(file_system_lock);
     OpenFile* file = FindOpenFile(table, descriptor);
@@ -266,7 +266,27 @@ uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset)
     {
         return User::SyscallErrorBadDescriptor;
     }
-    return VFS::Seek(&file->handle, offset) ? 0 : User::SyscallErrorInvalidArgument;
+    uint64_t origin = 0;
+    if (whence == User::SeekFromCurrent)
+    {
+        origin = file->handle.offset;
+    }
+    else if (whence == User::SeekFromEnd)
+    {
+        origin = file->handle.size;
+    }
+    else if (whence != User::SeekFromStart)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    // Unsigned addition wraps like signed addition, so a negative offset moves backward.
+    const auto distance = static_cast<int64_t>(offset);
+    if (distance < 0 && static_cast<uint64_t>(-(distance + 1)) >= origin)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    const uint64_t target = origin + offset;
+    return VFS::Seek(&file->handle, target) ? target : User::SyscallErrorInvalidArgument;
 }
 
 uint64_t Close(Table* table, uint64_t descriptor)

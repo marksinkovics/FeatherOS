@@ -28,7 +28,8 @@ struct Table
 uint64_t Open(Table* table, const char* path, uint64_t flags);
 uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length);
 uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t length);
-uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset);
+// offset is signed, added to the origin whence names; returns the new offset.
+uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset, uint64_t whence);
 uint64_t Close(Table* table, uint64_t descriptor);
 uint64_t Remove(const char* path);
 uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* entry);

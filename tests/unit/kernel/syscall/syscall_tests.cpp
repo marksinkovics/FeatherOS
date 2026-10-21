@@ -110,6 +110,15 @@ uint64_t RecordDescriptor(void* context, uint64_t descriptor)
     return 0;
 }
 
+uint64_t RecordSeekFrom(void* context, uint64_t descriptor, uint64_t offset, uint64_t whence)
+{
+    auto* output = static_cast<OutputTarget*>(context);
+    output->last_arguments[0] = descriptor;
+    output->last_arguments[1] = offset;
+    output->last_arguments[2] = whence;
+    return offset;
+}
+
 uint64_t RecordSeek(void* context, uint64_t descriptor, uint64_t offset)
 {
     auto* output = static_cast<OutputTarget*>(context);
@@ -131,7 +140,7 @@ constexpr FeatherOS::Syscall::Handlers WriteOnly = {
 constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     CaptureCharacter, RecordReadLine,   RecordSpawn,    RecordWait,       ReadFixedClock,
     RecordExtendHeap, RecordSleep,      ReadFixedUptime, ReadFixedCpu,    RecordOpen,
-    RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeek,     RecordRemove,
+    RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeekFrom, RecordRemove,
     RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek,
     RecordDescriptor, RecordSeek,       RecordSeek,      ReadFixedProcessId, ReadFixedParentProcessId};
 
@@ -297,10 +306,12 @@ TEST_CASE("syscall dispatcher routes file syscalls with their arguments")
         REQUIRE(output.last_arguments[2] == 64);
     }
 
-    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::Seek, 5, 99), AllHandlers, &output);
-    REQUIRE(result.value == 0);
+    result =
+        FeatherOS::Syscall::Dispatch(MakeRequest(Number::Seek, 5, 99, 2), AllHandlers, &output);
+    REQUIRE(result.value == 99);
     REQUIRE(output.last_arguments[0] == 5);
     REQUIRE(output.last_arguments[1] == 99);
+    REQUIRE(output.last_arguments[2] == 2);
     result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::Close, 6), AllHandlers, &output);
     REQUIRE(output.last_arguments[0] == 6);
     for (const Number number : {Number::Remove, Number::MakeDirectory, Number::RemoveDirectory,

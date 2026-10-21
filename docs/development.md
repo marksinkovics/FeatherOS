@@ -60,7 +60,7 @@ The integration tests use Python's built-in `unittest` framework and keep QEMU a
 
 ## Unit Tests
 
-Run `./build.sh unit-test` for native host tests of USTAR, FAT16 reads and writes, VFS, ELF loading, terminal rendering, syscall dispatch, program-argument parsing, calendar conversion, file-syscall error codes and `Stat`, Spawn environment validation, `init.conf` `env` lines, and the C library's integer parsing, sort, environment table, allocator, and `printf` engine. CMake fetches the pinned Catch2 `v3.7.1` release on the first run, then CTest runs the cases from `build/unit-tests-ninja`. These tests use an in-memory block device; QEMU remains responsible for exercising real PCI/MMIO and boot integration.
+Run `./build.sh unit-test` for native host tests of USTAR, FAT16 reads and writes, VFS, ELF loading, terminal rendering, syscall dispatch, program-argument parsing, calendar conversion, file-syscall error codes and `Stat`, Spawn environment validation, `init.conf` `env` lines, `Seek` origins, and the C library's integer parsing, sort, environment table, allocator, `printf` and `scanf` engines, `strftime`, and `posix_spawn` requests. CMake fetches the pinned Catch2 `v3.7.1` release on the first run, then CTest runs the cases from `build/unit-tests-ninja`. These tests use an in-memory block device; QEMU remains responsible for exercising real PCI/MMIO and boot integration.
 
 ## Initramfs
 
@@ -94,7 +94,7 @@ The CMake build compiles each program listed in `src/user/CMakeLists.txt` (`src/
 | 11 | `Read(descriptor, buffer, length)` | Reads from the descriptor's offset and returns the byte count; `0` at end of file. On descriptors 0–2, returns one console line |
 | 12 | `Write(descriptor, buffer, length)` | Writes at the descriptor's offset and returns the byte count, which is short if the disk fills |
 | 13 | `Close(descriptor)` | Releases the descriptor |
-| 14 | `Seek(descriptor, offset)` | Moves the offset, which may be at most the file size; `SyscallErrorNotSeekable` on the console |
+| 14 | `Seek(descriptor, offset, whence)` | Moves the offset relative to `SeekFromStart`, `SeekFromCurrent` or `SeekFromEnd` (the offset is signed) and returns the new one, which may be at most the file size; `SyscallErrorNotSeekable` on the console |
 | 15 | `Remove(path)` | Deletes a file on the disk |
 | 16 | `ReadDirectory(path, index, entry)` | Fills a `DirectoryEntry` (name, directory flag, size) for the index-th entry of a directory (`/` lists `system` first); `SyscallErrorNotFound` past the last entry and for a missing directory (`Stat` tells them apart), `SyscallErrorNotDirectory` for a file |
 | 17 | `MakeDirectory(path)` | Creates a directory on the disk |
@@ -166,8 +166,23 @@ Supported so far:
   - `rand`/`srand`
   - `getenv`, `setenv`, `unsetenv`
   - `malloc`, `calloc`, `realloc`, `free`
-- `unistd.h`: `read`, `write` and `close` (descriptors 0–2 are the console), `getpid`, `getppid`, `_exit`, `environ`.
-- `sys/stat.h`: `stat` and `fstat`. With no users yet, the mode only says whether a file can be written (`0644` or `0444`, and `0755` or `0555` for directories); the console is a character device, and times are 0.
+- `unistd.h`:
+  - `read`, `write`, `close` and `lseek` (descriptors 0–2 are the console)
+  - `unlink`, `rmdir`, `chdir`, `getcwd`, `access`, `isatty`
+  - `sleep`, `usleep`, `getpid`, `getppid`, `_exit`, `environ`
+- `fcntl.h`: `open` with `O_RDONLY`/`O_WRONLY`/`O_RDWR`, `O_CREAT`, `O_EXCL`, `O_TRUNC`, `O_APPEND` (every write goes to the end) and an ignored `O_CLOEXEC`; `creat`.
+- `dirent.h`: `opendir`, `readdir`, `rewinddir`, `closedir`. Listings have no `.` and `..`. A stream keeps reading the same directory after a `chdir`.
+- `time.h`:
+  - `time`, `gmtime`/`localtime` and their `_r` forms (UTC only, from 1970 on)
+  - `mktime`/`timegm`, which normalize out-of-range fields
+  - `strftime` (the C locale, header-only in `src/libc/time_format.h`), `asctime`, `ctime`
+  - `clock_gettime` (`CLOCK_REALTIME` to the second, `CLOCK_MONOTONIC` to the millisecond), `nanosleep`
+- `spawn.h` and `sys/wait.h`:
+  - `posix_spawn`/`posix_spawnp` build the kernel's one-line command from `path` and `argv`, so the program must be in `/system` and an argument cannot hold a double quote; `argv[0]` becomes the program's name.
+  - File actions and attributes can be initialized but hold nothing.
+  - `waitpid`/`wait` use the Linux status encoding, with a CPU exception reported as signal 11 and Ctrl+C as signal 2.
+  - `waitpid(-1, …)` polls the children `posix_spawn` started every 10 ms.
+- `sys/stat.h`: `stat`, `fstat`, and `mkdir`. With no users yet, the mode only says whether a file can be written (`0644` or `0444`, and `0755` or `0555` for directories); the console is a character device, and times are 0.
 - `sys/types.h`.
 - `stdio.h`:
   - formatting: `printf`, `fprintf`, `dprintf`, `sprintf`, `snprintf` and their `v` forms
@@ -175,11 +190,12 @@ Supported so far:
   - reading and writing: `fread`/`fwrite`, `fgetc`/`getc`/`getchar`, `ungetc` (one character), `fgets`, `getline`, `fputc`/`putc`/`putchar`, `fputs`, `puts`
   - position and state: `fseek`/`ftell`/`rewind`, `feof`/`ferror`/`clearerr`, `fileno`
   - also `remove` and `perror`
+  - scanning: `scanf`, `fscanf`, `sscanf` and their `v` forms (`src/libc/scan.h`), with integers and the `printf` length modifiers, `%c`, `%s`, `%[...]` sets, `%n`, `%*` and widths. A floating-point conversion stops the scan until step 6.
 - `assert.h`: a failed `assert` prints `file:line: function: Assertion `expression' failed.` to stderr and aborts; `NDEBUG` turns it off.
 
 One `printf` engine (`src/libc/format.h`) serves every formatting function through a sink: a stream, a buffer, or a descriptor. It supports `d i u o x X c s p %`, the flags `- + space # 0`, width and precision (including `*`), and the length modifiers `hh h l ll j z t`. A null string prints `(null)` and a null pointer `(nil)`, as in glibc. Floating-point conversions are printed as written and take no argument until user programs can use floating point. `%n` is not supported, since it writes through a pointer the format supplies.
 
-Each stream has a 512-byte buffer. stdout is line-buffered, and stderr is unbuffered, though one call's output is still written at once. Files are fully buffered. Reading from the console first flushes stdout, so a prompt without a newline appears. `exit` flushes every stream after the `atexit` handlers and destructors; `_exit` and `abort` do not. Streams in `a` mode write at the end of the file even after an `fseek`. Seeking past the end fails with `EINVAL`, and the console cannot seek (`ESPIPE`). There are 16 file streams besides the three console ones, matching the descriptor limit. `scanf` and its relatives come in step 5 of M11 Part 3.
+Each stream has a 512-byte buffer. stdout is line-buffered, and stderr is unbuffered, though one call's output is still written at once. Files are fully buffered. Reading from the console first flushes stdout, so a prompt without a newline appears. `exit` flushes every stream after the `atexit` handlers and destructors; `_exit` and `abort` do not. Streams in `a` mode write at the end of the file even after an `fseek`. Seeking past the end fails with `EINVAL`, and the console cannot seek (`ESPIPE`). There are 16 file streams besides the three console ones, matching the descriptor limit.
 
 A failed call sets `errno` and returns -1. `src/libc/syscall_result.h` maps each syscall error to an `errno` value, for example `SyscallErrorBadAddress` to `EFAULT`; a background program's console read fails with `EIO`, as on Linux.
 
@@ -187,7 +203,7 @@ A failed call sets `errno` and returns -1. `src/libc/syscall_result.h` maps each
 
 The environment comes from Spawn: `_start` loads the block the parent passed into a fixed table (`src/libc/environment_table.h`) before constructors run, and `environ` points at its entries. The table is the size Spawn accepts (1 KiB, 32 variables), so anything a program sets can be passed to its children; `setenv` fails with `ENOMEM` beyond that. Programs should not assign `environ` themselves.
 
-The parser, the sort, the environment table, the allocator, and the `printf` engine are header-only, so host unit tests cover them. The allocator runs over an in-memory arena, including a randomized run, and the engine's output is compared with the host's `snprintf` for every flag combination. `libctest one "two words"` checks the rest on both architectures: it prints through stdio and reads two typed lines at its `> ` prompts, one with `read` and one with `fgets(stdin)`. It also runs a child whose `assert` fails. `env` prints the environment and uses only the C library.
+The parser, the sort, the environment table, the allocator, the `printf` and `scanf` engines, `strftime`, and the `posix_spawn` request builder are header-only, so host unit tests cover them; `scanf` and `strftime` are compared with the host's own. The allocator runs over an in-memory arena, including a randomized run, and the engine's output is compared with the host's `snprintf` for every flag combination. `libctest one "two words"` checks the rest on both architectures: it prints through stdio and reads three typed lines at its `> ` prompts, with `read`, `fgets(stdin)`, and `scanf`. It also covers descriptors, directories, time, and `posix_spawn`, starting `echo`, `env`, a failing child, and a faulting one. It also runs a child whose `assert` fails. `env` prints the environment and uses only the C library.
 
 ## Scheduler And Processes
 
@@ -250,7 +266,7 @@ Every program except the boot self-test prints its usage and purpose for `<name>
 
 Interactive runs accept keys from the QEMU window on both architectures. x86-64 uses PS/2; AArch64 uses virtio-input on QEMU `virt`. The launching terminal's serial console also remains available. The kernel console (`src/kernel/console.cpp`) handles line editing for `ReadLine`: the prompt and the typed line appear inline in the scrolling text with a block cursor, like a normal terminal, and it supports printable ASCII, Backspace (also across a wrapped line), and Enter, echoing input to serial. Program output appears on both serial and the framebuffer console.
 
-The framebuffer's top row is a status bar. Its left side names the foreground program (`kernel` before the shell starts). Its right side shows busy CPUs over online CPUs, then the UTC date and time as `Mon Oct 19 9:36 PM`. A CPU counts as busy when the scheduler's timer ticks found it running a task other than its idle task for at least half of the last second. A high-priority kernel task redraws the bar once a second and when the foreground program changes. Its clock is read from the RTC once and then advanced by timer ticks.
+The framebuffer's top row is a status bar. Its left side names the foreground program (`kernel` before the shell starts). Its right side shows busy CPUs over online CPUs, then the UTC date and time as `Mon Oct 19 9:36:05 PM`. A CPU counts as busy when the scheduler's timer ticks found it running a task other than its idle task for at least half of the last second. A high-priority kernel task redraws the bar once a second and when the foreground program changes. Its clock is read from the RTC once and then advanced by timer ticks.
 
 `CALC_TEST=ON` checks a calculator expression, an unknown command, and a blank line; `SHELL_TEST=ON` checks init's startup line and its restart of the shell after `exit`, `filetest`, `cd` and `pwd` from `/home` with relative paths, `/`, and `/system`, `libctest` with a quoted argument and a console read, `env` with the variables from `init.conf`, `--help`/`-h`, Ctrl+C on a CPU-bound `primes`, a `sleep`, `upper` and `calc` waiting for input, and the shell prompt, plus `echo` arguments, foreground input in `upper`, the interactive `calc> ` prompt and its errors, `primes 4 100000` (the count and four worker reports), a nonzero exit status, the `uptime` format, and that `date` is within two minutes of the host clock. `INPUT_TEST=ON` runs the keyboard test, including Ctrl+C at the prompt. Pass each with `./build.sh test --arch x86_64` or `--arch aarch64`.
 

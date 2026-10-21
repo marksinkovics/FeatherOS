@@ -2,13 +2,18 @@
 
 #include <assert.h>
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <setjmp.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 namespace
@@ -18,8 +23,8 @@ constexpr char Help[] =
     "usage: libctest one \"two words\"\n"
     "Checks the C library: startup and arguments, constructors, string.h, ctype.h,\n"
     "stdlib.h, errno, setjmp, exit handlers, the console descriptors, stat, process\n"
-    "IDs, the environment, the heap, and stdio. It asks for two lines of input at\n"
-    "\"> \" prompts.";
+    "IDs, the environment, the heap, stdio, files and directories, time, and\n"
+    "posix_spawn. It asks for three lines of input at \"> \" prompts.";
 
 #if defined(__x86_64__)
 constexpr uintptr_t KernelAddress = 0xFFFF800000000000;
@@ -319,6 +324,11 @@ void CheckConsoleDescriptors()
     printf("> ");
     Check(fgets(line, sizeof(line), stdin) != nullptr && strcmp(line, "read by fgets\n") == 0,
           "fgets from stdin");
+    printf("> ");
+    int number = 0;
+    char word[16];
+    Check(scanf("%d %15s", &number, word) == 2 && number == 42 && strcmp(word, "answer") == 0,
+          "scanf from stdin");
 
     struct stat status;
     Check(fstat(STDOUT_FILENO, &status) == 0 && S_ISCHR(status.st_mode), "fstat on stdout");
@@ -595,6 +605,189 @@ void CheckFileStreams()
     Check(remove(StreamFile) == -1 && errno == ENOENT, "remove a missing file");
 }
 
+constexpr char WorkDirectory[] = "/home/libcwork";
+
+void CheckDescriptorFiles()
+{
+    const int descriptor = open("/home/LIBCRAW.TXT", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    Check(descriptor >= 3 && write(descriptor, "0123456789", 10) == 10, "open and write");
+    Check(lseek(descriptor, 0, SEEK_CUR) == 10 && lseek(descriptor, -4, SEEK_END) == 6 &&
+              lseek(descriptor, 2, SEEK_SET) == 2,
+          "lseek origins");
+    char bytes[4];
+    Check(read(descriptor, bytes, 3) == 3 && memcmp(bytes, "234", 3) == 0, "read after lseek");
+    errno = 0;
+    Check(lseek(descriptor, 11, SEEK_SET) == -1 && errno == EINVAL, "lseek past the end");
+    struct stat status;
+    Check(fstat(descriptor, &status) == 0 && status.st_size == 10 && !isatty(descriptor),
+          "fstat a file");
+    Check(close(descriptor) == 0, "close");
+
+    errno = 0;
+    Check(open("/home/LIBCRAW.TXT", O_WRONLY | O_CREAT | O_EXCL) == -1 && errno == EEXIST,
+          "O_EXCL on an existing file");
+    const int appender = open("/home/LIBCRAW.TXT", O_WRONLY | O_APPEND);
+    Check(appender >= 3 && lseek(appender, 0, SEEK_SET) == 0 && write(appender, "AB", 2) == 2 &&
+              close(appender) == 0,
+          "O_APPEND after lseek");
+    Check(stat("/home/LIBCRAW.TXT", &status) == 0 && status.st_size == 12,
+          "O_APPEND wrote at the end");
+    errno = 0;
+    Check(open("/home/LIBCRAW.TXT", O_RDONLY | 0x40000) == -1 && errno == EINVAL,
+          "open with an unknown flag");
+    errno = 0;
+    Check(lseek(STDOUT_FILENO, 0, SEEK_SET) == -1 && errno == ESPIPE, "lseek on the console");
+    Check(isatty(STDOUT_FILENO) == 1, "isatty on the console");
+    Check(access("/system/hello.txt", R_OK) == 0, "access to read");
+    errno = 0;
+    Check(access("/system/hello.txt", W_OK) == -1 && errno == EROFS, "access to write");
+    Check(unlink("/home/LIBCRAW.TXT") == 0, "unlink");
+    errno = 0;
+    Check(unlink("/home/LIBCRAW.TXT") == -1 && errno == ENOENT, "unlink a missing file");
+}
+
+void CheckDirectories()
+{
+    char directory[64];
+    Check(getcwd(directory, sizeof(directory)) != nullptr, "getcwd");
+    char original[64];
+    strcpy(original, directory);
+    Check(mkdir(WorkDirectory, 0755) == 0, "mkdir");
+    errno = 0;
+    Check(mkdir(WorkDirectory, 0755) == -1 && errno == EEXIST, "mkdir an existing directory");
+    Check(chdir(WorkDirectory) == 0 && getcwd(directory, sizeof(directory)) != nullptr &&
+              strcmp(directory, WorkDirectory) == 0,
+          "chdir");
+    errno = 0;
+    Check(getcwd(directory, 4) == nullptr && errno == ERANGE, "getcwd with a small buffer");
+    FILE* file = fopen("note.txt", "w");
+    Check(file != nullptr && fputs("hi", file) == 0 && fclose(file) == 0,
+          "a file relative to the working directory");
+
+    DIR* listing = opendir(".");
+    Check(listing != nullptr && chdir("/") == 0, "opendir");
+    const struct dirent* entry = readdir(listing);
+    Check(entry != nullptr && strcmp(entry->d_name, "note.txt") == 0 && entry->d_type == DT_REG,
+          "readdir after a chdir");
+    Check(readdir(listing) == nullptr, "readdir at the end");
+    rewinddir(listing);
+    Check(readdir(listing) != nullptr && closedir(listing) == 0, "rewinddir");
+
+    listing = opendir("/system");
+    bool found = false;
+    for (const struct dirent* system_entry = readdir(listing); system_entry != nullptr;
+         system_entry = readdir(listing))
+    {
+        found = found || strcmp(system_entry->d_name, "hello.txt") == 0;
+    }
+    Check(found && closedir(listing) == 0, "listing /system");
+    errno = 0;
+    Check(opendir("/no/such/directory") == nullptr && errno == ENOENT, "opendir a missing one");
+    errno = 0;
+    Check(opendir("/system/hello.txt") == nullptr && errno == ENOTDIR, "opendir a file");
+
+    errno = 0;
+    Check(rmdir(WorkDirectory) == -1 && errno == ENOTEMPTY, "rmdir a non-empty directory");
+    Check(chdir(WorkDirectory) == 0 && unlink("note.txt") == 0 && chdir(original) == 0,
+          "unlink relative to the working directory");
+    Check(rmdir(WorkDirectory) == 0, "rmdir");
+}
+
+void CheckTime()
+{
+    const time_t now = time(nullptr);
+    Check(now > 1700000000, "time");
+    const time_t epoch = 0;
+    struct tm calendar;
+    Check(gmtime_r(&epoch, &calendar) != nullptr && calendar.tm_year == 70 &&
+              calendar.tm_wday == 4 && calendar.tm_yday == 0,
+          "gmtime of the epoch");
+    Check(strcmp(asctime(&calendar), "Thu Jan  1 00:00:00 1970\n") == 0, "asctime");
+    struct tm normalized = {};
+    normalized.tm_year = 126;
+    normalized.tm_mon = 0;
+    normalized.tm_mday = 32;
+    normalized.tm_hour = 25;
+    Check(mktime(&normalized) == 1769994000 && normalized.tm_mon == 1 && normalized.tm_mday == 2 &&
+              normalized.tm_hour == 1 && normalized.tm_wday == 1,
+          "mktime normalizes");
+    char text[32];
+    Check(strftime(text, sizeof(text), "%Y-%m-%d %H:%M", &normalized) == 16 &&
+              strcmp(text, "2026-02-02 01:00") == 0,
+          "strftime");
+    struct timespec before;
+    struct timespec after;
+    const struct timespec pause = {0, 30000000};
+    Check(clock_gettime(CLOCK_MONOTONIC, &before) == 0 && nanosleep(&pause, nullptr) == 0 &&
+              clock_gettime(CLOCK_MONOTONIC, &after) == 0,
+          "nanosleep");
+    const long elapsed_ms =
+        (after.tv_sec - before.tv_sec) * 1000 + (after.tv_nsec - before.tv_nsec) / 1000000;
+    Check(elapsed_ms >= 30, "CLOCK_MONOTONIC measures the sleep");
+    errno = 0;
+    const struct timespec invalid = {0, 1000000000};
+    Check(nanosleep(&invalid, nullptr) == -1 && errno == EINVAL, "nanosleep rejects bad input");
+    const time_t before_epoch = -1;
+    errno = 0;
+    Check(gmtime(&before_epoch) == nullptr && errno == EOVERFLOW, "gmtime before 1970");
+}
+
+void CheckSpawn()
+{
+    char* echo_arguments[] = {const_cast<char*>("echo"), const_cast<char*>("spawned by"),
+                              const_cast<char*>("posix_spawn"), nullptr};
+    pid_t child = 0;
+    int status = -1;
+    Check(posix_spawn(&child, "/system/echo", nullptr, nullptr, echo_arguments, environ) == 0 &&
+              waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "posix_spawn and waitpid");
+
+    char variable[] = "SPAWNED=yes";
+    char* environment[] = {variable, nullptr};
+    char* env_arguments[] = {const_cast<char*>("env"), nullptr};
+    Check(posix_spawnp(&child, "env", nullptr, nullptr, env_arguments, environment) == 0 &&
+              wait(&status) == child && WIFEXITED(status),
+          "posix_spawnp with its own environment");
+
+    char* exit_arguments[] = {const_cast<char*>("libctest"), const_cast<char*>("exit7"), nullptr};
+    Check(posix_spawn(&child, "libctest", nullptr, nullptr, exit_arguments, environ) == 0 &&
+              waitpid(-1, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 7,
+          "an exit status through waitpid(-1)");
+
+    char* fault_arguments[] = {const_cast<char*>("hardening"), const_cast<char*>("exec-heap"),
+                               nullptr};
+    Check(posix_spawn(&child, "hardening", nullptr, nullptr, fault_arguments, environ) == 0 &&
+              waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == 11,
+          "a CPU exception reports SIGSEGV");
+
+    char* sleep_arguments[] = {const_cast<char*>("sleep"), const_cast<char*>("300"), nullptr};
+    Check(posix_spawn(&child, "sleep", nullptr, nullptr, sleep_arguments, environ) == 0 &&
+              waitpid(child, &status, WNOHANG) == 0 && waitpid(child, &status, 0) == child,
+          "WNOHANG while the child runs");
+
+    Check(posix_spawn(&child, "/home/program", nullptr, nullptr, echo_arguments, environ) == ENOENT,
+          "posix_spawn outside /system");
+    errno = 0;
+    Check(waitpid(-1, &status, 0) == -1 && errno == ECHILD, "waitpid with no children");
+}
+
+void CheckScanning()
+{
+    int count = 0;
+    char fruit[16];
+    Check(sscanf("7 apples", "%d %15s", &count, fruit) == 2 && count == 7 &&
+              strcmp(fruit, "apples") == 0,
+          "sscanf");
+    FILE* file = fopen("/home/LIBCSCAN.TXT", "w+");
+    Check(file != nullptr && fprintf(file, "width=%d height=%d\n", 640, 480) > 0, "fprintf");
+    rewind(file);
+    int width = 0;
+    int height = 0;
+    Check(fscanf(file, "width=%d height=%d", &width, &height) == 2 && width == 640 && height == 480,
+          "fscanf");
+    Check(fclose(file) == 0 && remove("/home/LIBCSCAN.TXT") == 0, "removing the scan file");
+}
+
 void CheckAssert()
 {
     const uint64_t child = FeatherOS::User::Spawn("libctest assert");
@@ -614,6 +807,10 @@ int main(int argc, char** argv)
     {
         puts(Help);
         return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "exit7") == 0)
+    {
+        return 7;
     }
     // The child CheckAssert starts: a failed assert prints its message and aborts.
     if (argc == 2 && strcmp(argv[1], "assert") == 0)
@@ -638,6 +835,11 @@ int main(int argc, char** argv)
     CheckHeapReuse();
     CheckFormatting();
     CheckFileStreams();
+    CheckDescriptorFiles();
+    CheckDirectories();
+    CheckTime();
+    CheckSpawn();
+    CheckScanning();
     CheckAssert();
     printf("libctest: %llu checks passed\n", static_cast<unsigned long long>(passed_checks));
     return 0;

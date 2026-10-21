@@ -63,8 +63,8 @@ CALC_INPUT = b"nope\n\ncalc 4 + 66 - (3 / 4)\n"
 SHELL_INPUT = (
     b"echo hello   feather os\nupper\nmixed Case\ndate\nuptime\nfanout 6\n"
     b'date --help\nprimes -h\nfiletest\nlibctest one "two words"\n'
-    # libctest reads these at its "> " prompts, with read() and with fgets().
-    b"typed into stdin\nread by fgets\nenv\n"
+    # libctest reads these at its "> " prompts: read(), fgets(), scanf().
+    b"typed into stdin\nread by fgets\n42 answer\nenv\n"
     b"mkdir work\ncd work\nwrite a.txt in work\npwd\ncat a.txt\ncd ..\n"
     b"cat work/a.txt\ncd /\nls\ncat hello.txt\ncd nowhere\ncd\npwd\n"
     b"exit\n"
@@ -129,7 +129,9 @@ EXPECTED_SHELL_OUTPUT = (
     "libctest: perror: No such file or directory",
     "libctest: puts works",
     "Assertion `argc == 1' failed.",
-    "libctest: 187 checks passed",
+    "spawned by posix_spawn",
+    "SPAWNED=yes",
+    "libctest: 240 checks passed",
     "libctest: exit handlers ran in order",
     # env prints the variables init.conf sets, which the shell passes on.
     "HOME=/home",
