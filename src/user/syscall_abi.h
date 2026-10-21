@@ -44,9 +44,9 @@ constexpr uint64_t ShutdownRestart = 1;
 // Wait flag: return SyscallErrorWouldBlock instead of blocking while the child runs.
 constexpr uint64_t WaitNoHang = 1U << 0;
 
-// Paths are absolute ("/disk/notes.txt") or relative to the process's working directory, which
-// starts as its parent's ("/disk" for the shell). "/" is the read-only initramfs; files under
-// /disk are writable.
+// Paths are absolute ("/home/notes.txt") or relative to the process's working directory, which
+// starts as its parent's ("/home" for the shell). "/" is the disk; "/system" is the read-only
+// initramfs.
 constexpr uint64_t OpenRead = 1U << 0;
 constexpr uint64_t OpenWrite = 1U << 1;
 // With OpenWrite: create the file if it is missing, or empty it if it exists.

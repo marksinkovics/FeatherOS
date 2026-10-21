@@ -81,7 +81,7 @@ void ChangeDirectoryCommand(const char* argument)
         --length;
     }
     path[length] = '\0';
-    const char* target = length == 0 ? "/disk" : path;
+    const char* target = length == 0 ? "/home" : path;
     if (IsSyscallError(ChangeDirectory(target)))
     {
         WriteText("cd: ");
@@ -90,7 +90,7 @@ void ChangeDirectoryCommand(const char* argument)
     }
 }
 
-// "<working directory>> ", such as "/disk/docs> ".
+// "<working directory>> ", such as "/home/docs> ".
 void BuildPrompt(char (&prompt)[MaximumPathLength + 3])
 {
     const uint64_t length = CurrentDirectory(prompt, MaximumPathLength);
@@ -106,7 +106,7 @@ constexpr char Help[] =
     "usage: shell\n"
     "Runs programs by name and waits for each one. Type help for the commands;\n"
     "Ctrl+C stops the running command. The prompt shows the working directory,\n"
-    "which cd changes (cd alone returns to /disk) and programs inherit.";
+    "which cd changes (cd alone returns to /home) and programs inherit.";
 
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {

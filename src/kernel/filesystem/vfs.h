@@ -31,8 +31,8 @@ bool Read(FileHandle* file, void* buffer, uint64_t length, uint64_t* bytes_read)
 bool Seek(FileHandle* file, uint64_t offset);
 bool Stat(const char* path, FileInfo* info);
 void Close(FileHandle* file);
-// Only files under /disk/ can be changed; the initramfs is read-only. A handle caches the file's
-// size, so other handles to the same file do not see its changes.
+// Only disk files can be changed; the initramfs under /system is read-only. A handle caches the
+// file's size, so other handles to the same file do not see its changes.
 bool Create(const char* path, FileHandle* file);
 // Writes at the handle's offset and advances it; *bytes_written may be short if the disk fills.
 bool Write(FileHandle* file, const void* buffer, uint64_t length, uint64_t* bytes_written);
@@ -41,8 +41,8 @@ bool Remove(const char* path);
 bool MakeDirectory(const char* path);
 bool IsDirectory(const char* path);
 bool RemoveDirectory(const char* path);
-// Lists "/" (the disk mount point and the initramfs files) or a directory under /disk, such as
-// "/disk/docs"; false past the last entry.
+// Lists a directory, such as "/", "/home/docs", or "/system"; "/" starts with the system entry.
+// False past the last entry.
 bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry);
 
 } // namespace FeatherOS::VFS

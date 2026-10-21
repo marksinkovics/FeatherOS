@@ -230,12 +230,11 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     constexpr char expected_contents[] = "FeatherOS FAT16 volume OK";
     VFS::FileInfo file_info;
     VFS::FileHandle file;
-    if (!VFS::Stat("/disk/BLOCK.TXT", &file_info) ||
-        file_info.size != sizeof(expected_contents) - 1)
+    if (!VFS::Stat("/BLOCK.TXT", &file_info) || file_info.size != sizeof(expected_contents) - 1)
     {
         Panic("VFS could not stat FAT16 BLOCK.TXT");
     }
-    if (!VFS::Open("/disk/BLOCK.TXT", &file))
+    if (!VFS::Open("/BLOCK.TXT", &file))
     {
         Panic("VFS could not open FAT16 BLOCK.TXT");
     }

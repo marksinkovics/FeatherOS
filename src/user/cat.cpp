@@ -4,8 +4,8 @@
 using namespace FeatherOS::User;
 
 constexpr char Help[] = "usage: cat <file>\n"
-                        "Prints a file. A relative name that is missing is also tried in the\n"
-                        "initramfs root, so cat hello.txt works from any directory.";
+                        "Prints a file. A relative name that is missing is also tried in\n"
+                        "/system, so cat hello.txt works from any directory.";
 
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {
@@ -20,17 +20,19 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
     uint64_t descriptor = CopyPath(name, path) ? OpenFile(path, OpenRead) : SyscallErrorNotFound;
     if (descriptor == SyscallErrorNotFound && name[0] != '/')
     {
-        char root_path[MaximumPathLength + 1];
-        root_path[0] = '/';
-        for (uint64_t index = 0; index < MaximumPathLength; ++index)
+        constexpr char SystemPrefix[] = "/system/";
+        char system_path[sizeof(SystemPrefix) + MaximumPathLength];
+        uint64_t length = 0;
+        for (; SystemPrefix[length] != '\0'; ++length)
         {
-            root_path[index + 1] = path[index];
-            if (path[index] == '\0')
-            {
-                break;
-            }
+            system_path[length] = SystemPrefix[length];
         }
-        descriptor = OpenFile(root_path, OpenRead);
+        for (uint64_t index = 0; path[index] != '\0'; ++index)
+        {
+            system_path[length++] = path[index];
+        }
+        system_path[length] = '\0';
+        descriptor = OpenFile(system_path, OpenRead);
     }
     if (IsSyscallError(descriptor))
     {

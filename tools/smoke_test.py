@@ -95,7 +95,7 @@ DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
 )
 # pwd prints the directory alone; prompts follow it with "> ".
-WORKING_DIRECTORY_OUTPUT = re.compile(r"^(/disk(?:/work)?)\r?$", re.MULTILINE)
+WORKING_DIRECTORY_OUTPUT = re.compile(r"^(/home(?:/work)?)\r?$", re.MULTILINE)
 WORK_FILE_OUTPUT = re.compile(r"^in work\r?$", re.MULTILINE)
 UPTIME_OUTPUT = re.compile(r"^uptime: \d+:\d{2}:\d{2}\r?$", re.MULTILINE)
 PRIMES_WORKER_OUTPUT = re.compile(
@@ -119,7 +119,8 @@ EXPECTED_SHELL_OUTPUT = (
     "usage: date",
     "usage: primes <workers 1-16> [limit]",
     "filetest: 33 checks passed",
-    "disk/",
+    "system/",
+    "home/",
     "FeatherOS initramfs is ready.",
     "cd: nowhere: no such directory",
     "hello feather os",
@@ -168,7 +169,7 @@ PERSISTENT_FILE_LINES = 200
 STORAGE_SHELL_INPUT = {
     1: b"write notes.txt first line\nwrite -a notes.txt second line\n"
     b"cat notes.txt\nmkdir docs\nwrite docs/plan.txt nested hello\n"
-    b'cat "read me first.txt"\nwrite "My Plans.txt" long name test\n'
+    b'cat "/read me first.txt"\nwrite "My Plans.txt" long name test\n'
     b"ls docs\nls\n",
     2: b"cat notes.txt\nrm notes.txt\ncat notes.txt\nrm notes.txt\n"
     b"cat docs/plan.txt\nrmdir docs\nrm docs/plan.txt\nrmdir docs\n"
@@ -179,7 +180,8 @@ PLAN_CONTENTS = b"nested hello\n"
 LONG_NAME_CONTENTS = b"long name test\n"
 NOTES_OUTPUT = re.compile(r"^first line\r?\nsecond line\r?$", re.MULTILINE)
 # The disk also holds BLOCK.TXT and the kernel test's PERSIST.TXT.
-# The disk also holds Read Me First.txt, written by mtools.
+# The shell runs in /home; the disk's root also holds BLOCK.TXT, the kernel
+# test's PERSIST.TXT, and Read Me First.txt, written by mtools.
 STORAGE_SHELL_OUTPUT = {
     1: (
         "\nLong names from mtools work.",
@@ -187,7 +189,7 @@ STORAGE_SHELL_OUTPUT = {
         "notes.txt",
         "My Plans.txt",
         "docs/",
-        "1 directory, 5 files, ",
+        "1 directory, 2 files, ",
     ),
     2: (
         "cat: cannot open notes.txt",
@@ -196,12 +198,12 @@ STORAGE_SHELL_OUTPUT = {
         "rmdir: docs: not an empty directory",
         "\nlong name test",
         "ls: docs: no such directory",
-        "3 files, ",
+        "0 files, ",
     ),
 }
 USER_PREEMPTION_OUTPUTS = {"x86_64": b"UIu", "aarch64": b"AIa"}
 INPUT_ACCEPTED_MESSAGE = "KERN/I: Input line accepted"
-# The shell's prompt shows its working directory, such as "/disk> ".
+# The shell's prompt shows its working directory, such as "/home> ".
 SHELL_PROMPT = re.compile(rb"^/[^\n>]*> ", re.MULTILINE)
 # Each scripted shell line is typed only once a prompt asks for it, so
 # typed-ahead input never overflows the kernel's input queue.
@@ -265,30 +267,37 @@ def VerifyDiskImage(disk_path, boot_count):
     if listing.returncode != 0 or "SCRATCH" in listing.stdout:
         return "mtools still lists the removed scratch file"
     notes = subprocess.run(
-        ["mtype", "-i", image, "::NOTES.TXT"],
+        ["mtype", "-i", image, "::home/notes.txt"],
         capture_output=True,
         env=environment,
         check=False,
     )
     plan = subprocess.run(
-        ["mtype", "-i", image, "::DOCS/PLAN.TXT"],
+        ["mtype", "-i", image, "::home/docs/plan.txt"],
         capture_output=True,
         env=environment,
         check=False,
     )
     if boot_count == 1 and notes.stdout != NOTES_CONTENTS:
-        return "mtools read different NOTES.TXT contents"
+        return "mtools read different home/notes.txt contents"
     long_name = subprocess.run(
-        ["mtype", "-i", image, "::My Plans.txt"],
+        ["mtype", "-i", image, "::home/My Plans.txt"],
         capture_output=True,
         env=environment,
         check=False,
     )
     if boot_count == 1 and plan.stdout != PLAN_CONTENTS:
-        return "mtools read different DOCS/PLAN.TXT contents"
+        return "mtools read different home/docs/plan.txt contents"
     if boot_count == 1 and long_name.stdout != LONG_NAME_CONTENTS:
         return "mtools read different 'My Plans.txt' contents"
-    listed = listing.stdout.upper()
+    home_listing = subprocess.run(
+        ["mdir", "-b", "-i", image, "::home"],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+    listed = home_listing.stdout.upper()
     if boot_count == 2 and any(
         name in listed for name in ("NOTES", "DOCS", "MY PLANS")
     ):
@@ -887,7 +896,7 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        if WORKING_DIRECTORY_OUTPUT.findall(output) != ["/disk/work", "/disk"]:
+        if WORKING_DIRECTORY_OUTPUT.findall(output) != ["/home/work", "/home"]:
             print(
                 "FAIL: pwd did not follow cd: "
                 f"{WORKING_DIRECTORY_OUTPUT.findall(output)}",

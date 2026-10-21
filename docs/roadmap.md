@@ -136,7 +136,9 @@ Moved: storage drivers for physical hardware, to M16.
 
 ### 11. System Services And Compatibility
 
-**Part 1 (complete):** The kernel starts `init`, which runs the `once`, `respawn`, and `console` services listed in `/init.conf`, restarts services that exit, and disables one that exits five times within ten seconds. `Spawn` gained background and session-leader flags, `Wait` gained a non-blocking mode, and Ctrl+C jobs now end at the session leader. Unit tests cover the configuration format and restart limit, and the shell test checks that init restarts the shell after `exit`.
+**File system layout:** The disk is mounted at `/` and the read-only initramfs at `/system`, as on Linux, and init and the shell start in `/home`. This replaces the earlier `/disk` mount point and initramfs root from M9.
+
+**Part 1 (complete):** The kernel starts `init`, which runs the `once`, `respawn`, and `console` services listed in `/system/init.conf`, restarts services that exit, and disables one that exits five times within ten seconds. `Spawn` gained background and session-leader flags, `Wait` gained a non-blocking mode, and Ctrl+C jobs now end at the session leader. Unit tests cover the configuration format and restart limit, and the shell test checks that init restarts the shell after `exit`.
 
 **Part 2 (complete):** The shell's `shutdown` and `reboot` built-ins call a `Shutdown` syscall limited to init and session leaders. The kernel stops other processes, quiesces the filesystem, flushes virtio-blk, parks the other CPUs, and uses PSCI on AArch64 or ACPI S5 and the reset register (with keyboard-controller and triple-fault fallbacks) on x86-64. Matrix cases check that QEMU exits after `shutdown` and boots again after `reboot` on both architectures, and `hardening` checks that ordinary programs are refused.
 

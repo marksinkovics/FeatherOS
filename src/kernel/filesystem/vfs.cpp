@@ -8,18 +8,53 @@ namespace FeatherOS::VFS
 namespace
 {
 
-constexpr char DiskMountPath[] = "/disk/";
+constexpr char SystemMountPath[] = "/system";
 
-bool IsDiskPath(const char* path)
+// "/system" and the paths under it name the read-only initramfs, as do the bare names kernel code
+// uses. Every other absolute path names the disk, which is mounted at "/".
+bool IsSystemPath(const char* path)
 {
-    for (uint32_t index = 0; index < sizeof(DiskMountPath) - 1; ++index)
+    if (path[0] != '/')
     {
-        if (path[index] != DiskMountPath[index])
+        return true;
+    }
+    for (uint32_t index = 0; index < sizeof(SystemMountPath) - 1; ++index)
+    {
+        if (path[index] != SystemMountPath[index])
         {
             return false;
         }
     }
-    return path[sizeof(DiskMountPath) - 1] != '\0';
+    const char next = path[sizeof(SystemMountPath) - 1];
+    return next == '\0' || next == '/';
+}
+
+// The initramfs name: "/system/hello.txt" is its "hello.txt", and "" is the mount point itself.
+const char* ArchivePath(const char* path)
+{
+    if (path[0] != '/')
+    {
+        return path;
+    }
+    const char* rest = path + sizeof(SystemMountPath) - 1;
+    while (*rest == '/')
+    {
+        ++rest;
+    }
+    return rest;
+}
+
+// The path inside the disk volume ("" for "/"), or nullptr for an initramfs path.
+const char* VolumePath(const char* path)
+{
+    return IsSystemPath(path) ? nullptr : path + 1;
+}
+
+// A disk path that names an entry rather than the volume's root.
+const char* DiskEntryPath(const char* path)
+{
+    const char* volume_path = VolumePath(path);
+    return volume_path != nullptr && *volume_path != '\0' ? volume_path : nullptr;
 }
 
 void OpenDiskHandle(const FAT16::File& disk_file, FileHandle* file)
@@ -38,27 +73,6 @@ FAT16::File DiskFile(const FileHandle& file)
 {
     return {file.first_cluster, static_cast<uint32_t>(file.size), file.directory_cluster,
             file.entry_index};
-}
-
-// The initramfs is the read-only root: "/hello.txt" names its "hello.txt". Kernel code may also
-// use the bare name.
-const char* ArchivePath(const char* path)
-{
-    return path[0] == '/' ? path + 1 : path;
-}
-
-// The part of a /disk path inside the volume: "" for "/disk" itself, or nullptr otherwise.
-const char* VolumePath(const char* path)
-{
-    for (uint32_t index = 0; index < sizeof(DiskMountPath) - 2; ++index)
-    {
-        if (path[index] != DiskMountPath[index])
-        {
-            return nullptr;
-        }
-    }
-    const char* rest = path + sizeof(DiskMountPath) - 2;
-    return rest[0] == '\0' || rest[0] == '/' ? rest : nullptr;
 }
 
 void UpdateHandle(const FAT16::File& disk_file, FileHandle* file)
@@ -81,10 +95,10 @@ bool Open(const char* path, FileHandle* file)
         return false;
     }
 
-    if (IsDiskPath(path))
+    if (const char* volume_path = DiskEntryPath(path))
     {
         FAT16::File disk_file;
-        if (!FAT16::Open(path + sizeof(DiskMountPath) - 1, &disk_file))
+        if (!FAT16::Open(volume_path, &disk_file))
         {
             return false;
         }
@@ -163,10 +177,10 @@ bool Stat(const char* path, FileInfo* info)
         return false;
     }
 
-    if (IsDiskPath(path))
+    if (const char* volume_path = DiskEntryPath(path))
     {
         FAT16::FileInfo disk_file_info;
-        if (!FAT16::Stat(path + sizeof(DiskMountPath) - 1, &disk_file_info))
+        if (!FAT16::Stat(volume_path, &disk_file_info))
         {
             return false;
         }
@@ -202,8 +216,8 @@ void Close(FileHandle* file)
 bool Create(const char* path, FileHandle* file)
 {
     FAT16::File disk_file;
-    if (path == nullptr || file == nullptr || !IsDiskPath(path) ||
-        !FAT16::Create(path + sizeof(DiskMountPath) - 1, &disk_file))
+    const char* volume_path = path == nullptr ? nullptr : DiskEntryPath(path);
+    if (volume_path == nullptr || file == nullptr || !FAT16::Create(volume_path, &disk_file))
     {
         return false;
     }
@@ -247,12 +261,17 @@ bool Truncate(FileHandle* file, uint64_t size)
 
 bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry)
 {
-    if (path != nullptr && entry != nullptr && path[0] == '/' && path[1] == '\0')
+    if (path == nullptr || entry == nullptr)
     {
-        // The root lists the disk's mount point, then the initramfs files.
+        return false;
+    }
+    const char* volume_path = VolumePath(path);
+    if (volume_path != nullptr && *volume_path == '\0')
+    {
+        // The root lists the initramfs mount point, then the disk's own root entries.
         if (index == 0)
         {
-            constexpr char MountName[] = "disk";
+            constexpr char MountName[] = "system";
             for (uint32_t offset = 0; offset < sizeof(MountName); ++offset)
             {
                 entry->name[offset] = MountName[offset];
@@ -261,44 +280,53 @@ bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entr
             entry->size = 0;
             return true;
         }
-        uint64_t size;
-        if (!Initramfs::ReadDirectory(index - 1, entry->name, &size))
-        {
-            return false;
-        }
-        entry->directory = false;
-        entry->size = static_cast<uint32_t>(size);
-        return true;
+        return FAT16::ReadDirectory("", index - 1, entry);
     }
-    const char* volume_path = path == nullptr ? nullptr : VolumePath(path);
-    return volume_path != nullptr && FAT16::ReadDirectory(volume_path, index, entry);
+    if (volume_path != nullptr)
+    {
+        return FAT16::ReadDirectory(volume_path, index, entry);
+    }
+    uint64_t size;
+    if (*ArchivePath(path) != '\0' || !Initramfs::ReadDirectory(index, entry->name, &size))
+    {
+        return false;
+    }
+    entry->directory = false;
+    entry->size = static_cast<uint32_t>(size);
+    return true;
 }
 
 bool IsDirectory(const char* path)
 {
-    if (path != nullptr && path[0] == '/' && path[1] == '\0')
+    if (path == nullptr)
     {
-        return true;
+        return false;
     }
-    const char* volume_path = path == nullptr ? nullptr : VolumePath(path);
-    return volume_path != nullptr && FAT16::IsDirectory(volume_path);
+    const char* volume_path = VolumePath(path);
+    if (volume_path == nullptr)
+    {
+        return path[0] == '/' && *ArchivePath(path) == '\0';
+    }
+    // The root exists even without a disk, since it holds /system.
+    return *volume_path == '\0' || FAT16::IsDirectory(volume_path);
 }
 
 bool MakeDirectory(const char* path)
 {
-    return path != nullptr && IsDiskPath(path) &&
-           FAT16::MakeDirectory(path + sizeof(DiskMountPath) - 1);
+    const char* volume_path = path == nullptr ? nullptr : DiskEntryPath(path);
+    return volume_path != nullptr && FAT16::MakeDirectory(volume_path);
 }
 
 bool RemoveDirectory(const char* path)
 {
-    return path != nullptr && IsDiskPath(path) &&
-           FAT16::RemoveDirectory(path + sizeof(DiskMountPath) - 1);
+    const char* volume_path = path == nullptr ? nullptr : DiskEntryPath(path);
+    return volume_path != nullptr && FAT16::RemoveDirectory(volume_path);
 }
 
 bool Remove(const char* path)
 {
-    return path != nullptr && IsDiskPath(path) && FAT16::Remove(path + sizeof(DiskMountPath) - 1);
+    const char* volume_path = path == nullptr ? nullptr : DiskEntryPath(path);
+    return volume_path != nullptr && FAT16::Remove(volume_path);
 }
 
 } // namespace FeatherOS::VFS

@@ -5,7 +5,7 @@ using namespace FeatherOS::User;
 
 constexpr char Help[] = "usage: ls [directory]\n"
                         "Lists a directory (the current one by default) with file sizes in\n"
-                        "bytes; subdirectories end in /. ls / shows the initramfs and /disk.";
+                        "bytes; subdirectories end in /. /system holds the read-only boot files.";
 
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {

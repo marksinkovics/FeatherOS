@@ -12,8 +12,8 @@ constexpr uint64_t KernelAddress = 0xFFFF800000000000;
 constexpr uint64_t KernelAddress = 0xFFFF000000000000;
 #endif
 
-constexpr char TestFile[] = "/disk/FILETEST.TXT";
-constexpr char InitramfsFile[] = "/hello.txt";
+constexpr char TestFile[] = "/FILETEST.TXT";
+constexpr char InitramfsFile[] = "/system/hello.txt";
 // Larger than one disk cluster, so the file spans several.
 constexpr uint64_t PatternSize = 3000;
 
@@ -144,9 +144,10 @@ void CheckInitramfsAndLimits()
 
 } // namespace
 
-constexpr char Help[] = "usage: filetest\n"
-                        "Runs checks of the file syscalls on /disk/: descriptors, sharing rules,\n"
-                        "bad pointers, the open-file limit, and cleanup when a process exits.";
+constexpr char Help[] =
+    "usage: filetest\n"
+    "Runs checks of the file syscalls on the disk: descriptors, sharing rules,\n"
+    "bad pointers, the open-file limit, and cleanup when a process exits.";
 
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {

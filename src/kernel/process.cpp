@@ -36,7 +36,8 @@ constexpr uint32_t MaximumChildrenPerProcess = 16;
 constexpr size_t MaximumCommandNameLength = 32;
 // Room for the shell's prompt, which shows its working directory.
 constexpr size_t MaximumPromptLength = User::MaximumPathLength + 8;
-constexpr char DefaultWorkingDirectory[] = "/disk";
+// init, and so the shell, start in /home, or in / on a disk without one.
+constexpr char HomeDirectory[] = "/home";
 
 #if defined(ARCH_x86_64)
 constexpr uint16_t UserMachine = ELF::MachineX86_64;
@@ -1058,6 +1059,8 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, uint64_t flags, Pr
         return SpawnStatus::InvalidArguments;
     }
 
+    // Checked outside the process lock, since it reads the disk.
+    const bool home_exists = parent == 0 && Files::CheckDirectory(HomeDirectory) == 0;
     auto* process = static_cast<ProcessRecord*>(Memory::AllocateZeroed(1, sizeof(ProcessRecord)));
     if (process == nullptr)
     {
@@ -1075,7 +1078,7 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, uint64_t flags, Pr
                 parent_record = candidate;
             }
         }
-        const char* working_directory = DefaultWorkingDirectory;
+        const char* working_directory = home_exists ? HomeDirectory : "/";
         if (parent_record != nullptr)
         {
             if (parent_record->live_children == MaximumChildrenPerProcess)

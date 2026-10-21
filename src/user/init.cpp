@@ -8,7 +8,7 @@ using namespace FeatherOS::User::Init;
 namespace
 {
 
-constexpr char ConfigPath[] = "/init.conf";
+constexpr char ConfigPath[] = "/system/init.conf";
 constexpr char FallbackConfig[] = "console shell\n";
 constexpr uint64_t MaximumConfigSize = 2048;
 constexpr uint64_t PollMilliseconds = 200;

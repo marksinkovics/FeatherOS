@@ -151,6 +151,8 @@ def main():
     subprocess.run(
         ["mcopy", "-i", image_spec, args.file, "::BLOCK.TXT"], check=True
     )
+    # The shell starts in /home.
+    subprocess.run(["mmd", "-i", image_spec, "::home"], check=True)
     with tempfile.NamedTemporaryFile() as long_name_source:
         long_name_source.write(LONG_NAME_CONTENTS)
         long_name_source.flush()

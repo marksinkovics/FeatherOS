@@ -8,7 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-ANSI_ESCAPE = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
+# The firmware and Limine clear the screen on every boot; those codes would
+# also clear the terminal and anyone viewing the log.
+# A two-byte escape never uses '[', which starts the longer CSI form, so a bare
+# "ESC [" at the end of a read counts as incomplete.
+ANSI_ESCAPE = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\\]^_c])")
+LONGEST_ESCAPE = 32
 QEMU_CPU_COUNT = 4
 
 
@@ -99,14 +104,29 @@ def main():
         )
         try:
             # Read whatever has arrived, so prompts show before a newline.
+            pending = b""
             while True:
                 output_chunk = os.read(process.stdout.fileno(), 4096)
+                data = pending + output_chunk
+                ready_length = len(data)
+                # Hold back an escape sequence split across reads.
+                escape = data.rfind(
+                    b"\x1b", max(0, len(data) - LONGEST_ESCAPE)
+                )
+                if (
+                    output_chunk
+                    and escape != -1
+                    and ANSI_ESCAPE.match(data, escape) is None
+                ):
+                    ready_length = escape
+                pending = data[ready_length:]
+                text = ANSI_ESCAPE.sub(b"", data[:ready_length])
+                log_file.write(text)
+                log_file.flush()
+                sys.stdout.buffer.write(text)
+                sys.stdout.buffer.flush()
                 if not output_chunk:
                     break
-                log_file.write(output_chunk)
-                log_file.flush()
-                sys.stdout.buffer.write(ANSI_ESCAPE.sub(b"", output_chunk))
-                sys.stdout.buffer.flush()
             return_code = process.wait()
         except KeyboardInterrupt:
             process.terminate()
