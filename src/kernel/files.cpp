@@ -107,6 +107,59 @@ void CloseLocked(OpenFile* file)
     file->writable = false;
 }
 
+bool ExistsLocked(const char* path)
+{
+    VFS::FileHandle handle;
+    if (VFS::IsDirectory(path))
+    {
+        return true;
+    }
+    if (!VFS::Open(path, &handle))
+    {
+        return false;
+    }
+    VFS::Close(&handle);
+    return true;
+}
+
+// Paths reach Files already resolved to absolute form, so the parent is everything before the
+// last '/'.
+bool ParentExistsLocked(const char* path)
+{
+    char parent[User::MaximumPathLength];
+    uint64_t last_separator = 0;
+    uint64_t length = 0;
+    for (; path[length] != '\0' && length < sizeof(parent) - 1; ++length)
+    {
+        parent[length] = path[length];
+        if (path[length] == '/')
+        {
+            last_separator = length;
+        }
+    }
+    parent[last_separator == 0 ? 1 : last_separator] = '\0';
+    return VFS::IsDirectory(parent);
+}
+
+// Why an operation that changes path could not create it.
+uint64_t CreateErrorLocked(const char* path)
+{
+    if (ExistsLocked(path))
+    {
+        return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorExists;
+    }
+    if (VFS::IsReadOnly(path))
+    {
+        return User::SyscallErrorReadOnly;
+    }
+    return ParentExistsLocked(path) ? User::SyscallErrorFailed : User::SyscallErrorNotFound;
+}
+
+uint64_t MissingErrorLocked(const char* path)
+{
+    return ExistsLocked(path) ? User::SyscallErrorNotDirectory : User::SyscallErrorNotFound;
+}
+
 } // namespace
 
 uint64_t Open(Table* table, const char* path, uint64_t flags)
@@ -133,19 +186,23 @@ uint64_t Open(Table* table, const char* path, uint64_t flags)
     VFS::FileHandle handle;
     if (!VFS::Open(path, &handle))
     {
+        if (VFS::IsDirectory(path))
+        {
+            return User::SyscallErrorIsDirectory;
+        }
         if ((flags & User::OpenCreate) == 0)
         {
             return User::SyscallErrorNotFound;
         }
         if (!VFS::Create(path, &handle))
         {
-            return User::SyscallErrorFailed;
+            return CreateErrorLocked(path);
         }
     }
     else if (writable && !handle.block_backed)
     {
         VFS::Close(&handle);
-        return User::SyscallErrorInvalidArgument;
+        return User::SyscallErrorReadOnly;
     }
     if (handle.block_backed)
     {
@@ -180,7 +237,7 @@ uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length)
     OpenFile* file = FindOpenFile(table, descriptor);
     if (file == nullptr || !file->readable)
     {
-        return User::SyscallErrorInvalidArgument;
+        return User::SyscallErrorBadDescriptor;
     }
     uint64_t bytes_read;
     return VFS::Read(&file->handle, buffer, length, &bytes_read) ? bytes_read
@@ -193,7 +250,7 @@ uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t l
     OpenFile* file = FindOpenFile(table, descriptor);
     if (file == nullptr || !file->writable)
     {
-        return User::SyscallErrorInvalidArgument;
+        return User::SyscallErrorBadDescriptor;
     }
     uint64_t bytes_written;
     const bool complete = VFS::Write(&file->handle, buffer, length, &bytes_written);
@@ -205,8 +262,11 @@ uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset)
 {
     Sync::MutexGuard guard(file_system_lock);
     OpenFile* file = FindOpenFile(table, descriptor);
-    return file != nullptr && VFS::Seek(&file->handle, offset) ? 0
-                                                               : User::SyscallErrorInvalidArgument;
+    if (file == nullptr)
+    {
+        return User::SyscallErrorBadDescriptor;
+    }
+    return VFS::Seek(&file->handle, offset) ? 0 : User::SyscallErrorInvalidArgument;
 }
 
 uint64_t Close(Table* table, uint64_t descriptor)
@@ -215,7 +275,7 @@ uint64_t Close(Table* table, uint64_t descriptor)
     OpenFile* file = FindOpenFile(table, descriptor);
     if (file == nullptr)
     {
-        return User::SyscallErrorInvalidArgument;
+        return User::SyscallErrorBadDescriptor;
     }
     CloseLocked(file);
     return 0;
@@ -231,14 +291,14 @@ uint64_t Remove(const char* path)
     VFS::FileHandle handle;
     if (!VFS::Open(path, &handle))
     {
-        return User::SyscallErrorNotFound;
+        return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorNotFound;
     }
     const bool on_disk = handle.block_backed;
     const bool busy = on_disk && FindUse(UseKey(handle)) != nullptr;
     VFS::Close(&handle);
     if (!on_disk)
     {
-        return User::SyscallErrorInvalidArgument;
+        return User::SyscallErrorReadOnly;
     }
     if (busy)
     {
@@ -256,7 +316,7 @@ uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* e
     Sync::MutexGuard guard(file_system_lock);
     if (!VFS::IsDirectory(path))
     {
-        return User::SyscallErrorInvalidArgument;
+        return MissingErrorLocked(path);
     }
     FAT16::DirectoryEntry disk_entry;
     if (!VFS::ReadDirectory(path, static_cast<uint32_t>(index), &disk_entry))
@@ -274,8 +334,12 @@ uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* e
 
 uint64_t CheckDirectory(const char* path)
 {
+    if (path == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
     Sync::MutexGuard guard(file_system_lock);
-    return path != nullptr && VFS::IsDirectory(path) ? 0 : User::SyscallErrorNotFound;
+    return VFS::IsDirectory(path) ? 0 : MissingErrorLocked(path);
 }
 
 uint64_t MakeDirectory(const char* path)
@@ -285,7 +349,11 @@ uint64_t MakeDirectory(const char* path)
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
-    return VFS::MakeDirectory(path) ? 0 : User::SyscallErrorFailed;
+    if (ExistsLocked(path))
+    {
+        return User::SyscallErrorExists;
+    }
+    return VFS::MakeDirectory(path) ? 0 : CreateErrorLocked(path);
 }
 
 uint64_t RemoveDirectory(const char* path)
@@ -295,7 +363,67 @@ uint64_t RemoveDirectory(const char* path)
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
+    if (!VFS::IsDirectory(path))
+    {
+        return MissingErrorLocked(path);
+    }
+    if (VFS::IsReadOnly(path))
+    {
+        return User::SyscallErrorReadOnly;
+    }
+    // The root holds the /system mount point, so it can never be removed.
+    if (path[0] == '/' && path[1] == '\0')
+    {
+        return User::SyscallErrorBusy;
+    }
+    FAT16::DirectoryEntry entry;
+    if (VFS::ReadDirectory(path, 0, &entry))
+    {
+        return User::SyscallErrorNotEmpty;
+    }
     return VFS::RemoveDirectory(path) ? 0 : User::SyscallErrorFailed;
+}
+
+uint64_t Stat(const char* path, User::FileStatus* status)
+{
+    if (path == nullptr || status == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    status->read_only = VFS::IsReadOnly(path);
+    if (VFS::IsDirectory(path))
+    {
+        status->type = User::FileType::Directory;
+        status->size = 0;
+        return 0;
+    }
+    VFS::FileInfo info;
+    if (!VFS::Stat(path, &info))
+    {
+        return User::SyscallErrorNotFound;
+    }
+    status->type = User::FileType::Regular;
+    status->size = info.size;
+    return 0;
+}
+
+uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* status)
+{
+    if (status == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    const OpenFile* file = FindOpenFile(table, descriptor);
+    if (file == nullptr)
+    {
+        return User::SyscallErrorBadDescriptor;
+    }
+    status->type = User::FileType::Regular;
+    status->size = file->handle.size;
+    status->read_only = !file->handle.block_backed;
+    return 0;
 }
 
 void Quiesce()

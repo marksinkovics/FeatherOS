@@ -62,7 +62,9 @@ CALC_INPUT = b"nope\n\ncalc 4 + 66 - (3 / 4)\n"
 # Covers argv, foreground input in a child, and nonzero exit statuses.
 SHELL_INPUT = (
     b"echo hello   feather os\nupper\nmixed Case\ndate\nuptime\nfanout 6\n"
-    b"date --help\nprimes -h\nfiletest\n"
+    b'date --help\nprimes -h\nfiletest\nlibctest one "two words"\n'
+    # libctest reads this line from descriptor 0 at its own "> " prompt.
+    b"typed into stdin\nenv\n"
     b"mkdir work\ncd work\nwrite a.txt in work\npwd\ncat a.txt\ncd ..\n"
     b"cat work/a.txt\ncd /\nls\ncat hello.txt\ncd nowhere\ncd\npwd\n"
     b"exit\n"
@@ -119,6 +121,13 @@ EXPECTED_SHELL_OUTPUT = (
     "usage: date",
     "usage: primes <workers 1-16> [limit]",
     "filetest: 33 checks passed",
+    "libctest: standard output works",
+    "libctest: standard error works",
+    "libctest: 104 checks passed",
+    "libctest: exit handlers ran in order",
+    # env prints the variables init.conf sets, which the shell passes on.
+    "HOME=/home",
+    "PATH=/system",
     "system/",
     "home/",
     "FeatherOS initramfs is ready.",
@@ -131,7 +140,7 @@ EXPECTED_SHELL_OUTPUT = (
     # memtest overflow ends at the stack guard page with ExitStatusFault.
     "shell: program terminated by a CPU exception",
     "sleep: slept 1100 ms",
-    "hardening: 45 checks passed",
+    "hardening: 46 checks passed",
     "primes: 9592 primes below 100000 with 4 workers in ",
     "calc> ",
     "0.333333",

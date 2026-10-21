@@ -49,9 +49,11 @@ inline uint64_t ReadLine(char* buffer, uint64_t capacity, const char* prompt)
 }
 
 // Starts the program named by the first word of command_line; returns its process ID.
-inline uint64_t Spawn(const char* command_line, uint64_t flags = 0)
+inline uint64_t Spawn(const char* command_line, uint64_t flags = 0,
+                      const char* environment = nullptr)
 {
-    return Syscall(SyscallNumber::Spawn, reinterpret_cast<uint64_t>(command_line), flags);
+    return Syscall(SyscallNumber::Spawn, reinterpret_cast<uint64_t>(command_line), flags,
+                   reinterpret_cast<uint64_t>(environment));
 }
 
 // Waits for a child started with Spawn and stores its exit status.
@@ -145,6 +147,27 @@ inline uint64_t ReadDirectory(const char* path, uint64_t index, DirectoryEntry* 
 {
     return Syscall(SyscallNumber::ReadDirectory, reinterpret_cast<uint64_t>(path), index,
                    reinterpret_cast<uint64_t>(entry));
+}
+
+inline uint64_t Stat(const char* path, FileStatus* status)
+{
+    return Syscall(SyscallNumber::Stat, reinterpret_cast<uint64_t>(path),
+                   reinterpret_cast<uint64_t>(status));
+}
+
+inline uint64_t StatDescriptor(uint64_t descriptor, FileStatus* status)
+{
+    return Syscall(SyscallNumber::StatDescriptor, descriptor, reinterpret_cast<uint64_t>(status));
+}
+
+inline uint64_t ProcessId()
+{
+    return Syscall(SyscallNumber::ProcessId);
+}
+
+inline uint64_t ParentProcessId()
+{
+    return Syscall(SyscallNumber::ParentProcessId);
 }
 
 } // namespace FeatherOS::User

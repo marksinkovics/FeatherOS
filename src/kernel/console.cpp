@@ -209,6 +209,40 @@ void WriteLine(const char* text)
     }
 }
 
+void Write(const char* text, size_t length)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    char chunk[65];
+    size_t used = 0;
+    auto flush = [&]()
+    {
+        chunk[used] = '\0';
+        Serial::Write(chunk);
+        if (console_term != nullptr)
+        {
+            console_term->Print(chunk);
+        }
+        used = 0;
+    };
+    for (size_t index = 0; index < length; ++index)
+    {
+        const auto byte = static_cast<unsigned char>(text[index]);
+        if (byte < 0x20 && byte != '\n' && byte != '\t')
+        {
+            continue;
+        }
+        chunk[used++] = byte == '\t' ? ' ' : byte > 0x7E ? '?' : static_cast<char>(byte);
+        if (used == sizeof(chunk) - 1)
+        {
+            flush();
+        }
+    }
+    if (used > 0)
+    {
+        flush();
+    }
+}
+
 bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* line_length)
 {
     if (buffer == nullptr || capacity == 0 || line_length == nullptr)

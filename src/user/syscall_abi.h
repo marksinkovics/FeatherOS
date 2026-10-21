@@ -13,7 +13,7 @@ enum class SyscallNumber : uint64_t
     Exit = 0,              // (status) -> does not return
     WriteCharacter = 1,    // (character) -> 0; printable ASCII or '\n'
     ReadLine = 2,          // (buffer, capacity, prompt) -> line length; foreground process only
-    Spawn = 3,             // (command_line, flags) -> process ID of the started child
+    Spawn = 3,             // (command_line, flags, environment) -> process ID of the child
     Wait = 4,              // (process_id, status_pointer, flags) -> 0 once the child has exited
     ReadClock = 5,         // () -> current UTC time in seconds since 1970-01-01
     ExtendHeap = 6,        // (increment) -> previous program break; 0 queries it
@@ -26,12 +26,16 @@ enum class SyscallNumber : uint64_t
     Close = 13,            // (descriptor) -> 0
     Seek = 14,             // (descriptor, offset) -> 0; offset at most the file size
     Remove = 15,           // (path) -> 0
-    ReadDirectory = 16,    // (path, index, entry) -> 0; SyscallErrorNotFound past the last entry
+    ReadDirectory = 16,    // (path, index, entry) -> 0; SyscallErrorNotFound past the end
     MakeDirectory = 17,    // (path) -> 0
     RemoveDirectory = 18,  // (path) -> 0; the directory must be empty
     ChangeDirectory = 19,  // (path) -> 0
     CurrentDirectory = 20, // (buffer, capacity) -> length of the working directory
     Shutdown = 21,         // (action) -> does not return; init and session leaders only
+    Stat = 22,             // (path, status) -> 0
+    StatDescriptor = 23,   // (descriptor, status) -> 0
+    ProcessId = 24,        // () -> the caller's process ID
+    ParentProcessId = 25,  // () -> the parent's process ID; 0 for init
 };
 
 // Spawn flags. A child normally takes the console from its parent; a background child does not.
@@ -44,6 +48,11 @@ constexpr uint64_t ShutdownRestart = 1;
 // Wait flag: return SyscallErrorWouldBlock instead of blocking while the child runs.
 constexpr uint64_t WaitNoHang = 1U << 0;
 
+// Spawn's environment is "NAME=value" strings, each with its terminator, then an empty string.
+// A null pointer gives the child an empty environment.
+constexpr uint64_t MaximumEnvironmentSize = 1024;
+constexpr uint64_t MaximumEnvironmentVariables = 32;
+
 // Paths are absolute ("/home/notes.txt") or relative to the process's working directory, which
 // starts as its parent's ("/home" for the shell). "/" is the disk; "/system" is the read-only
 // initramfs.
@@ -55,7 +64,11 @@ constexpr uint64_t OpenTruncate = 1U << 3;
 // With OpenWrite: start at the end of the file.
 constexpr uint64_t OpenAppend = 1U << 4;
 constexpr uint64_t MaximumPathLength = 64;
-// Descriptors 0-2 are reserved for standard streams.
+// Descriptors 0-2 are the console in every process. Each is readable and writable, like a
+// terminal: reading returns one line, ending in '\n', and only the foreground process may read.
+constexpr uint64_t StandardInput = 0;
+constexpr uint64_t StandardOutput = 1;
+constexpr uint64_t StandardError = 2;
 constexpr uint64_t FirstFileDescriptor = 3;
 constexpr uint64_t MaximumOpenFiles = 16;
 
@@ -67,8 +80,24 @@ struct DirectoryEntry
     uint64_t size;
 };
 
-// Results at or above SyscallErrorBase report failures instead of values.
-constexpr uint64_t SyscallErrorBase = UINT64_MAX - 15;
+enum class FileType : uint32_t
+{
+    Regular = 1,
+    Directory = 2,
+    Console = 3,
+};
+
+struct FileStatus
+{
+    uint64_t size;
+    FileType type;
+    // The initramfs under /system cannot be changed.
+    bool read_only;
+};
+
+// Results at or above SyscallErrorBase report failures instead of values. As on Linux, the top
+// 4095 values are reserved, which no size, address, or process ID ever reaches.
+constexpr uint64_t SyscallErrorBase = UINT64_MAX - 4094;
 constexpr uint64_t SyscallErrorFailed = UINT64_MAX;
 constexpr uint64_t SyscallErrorNotFound = UINT64_MAX - 1;
 constexpr uint64_t SyscallErrorInvalidArgument = UINT64_MAX - 2;
@@ -79,6 +108,24 @@ constexpr uint64_t SyscallErrorTooManyOpenFiles = UINT64_MAX - 5;
 constexpr uint64_t SyscallErrorBusy = UINT64_MAX - 6;
 constexpr uint64_t SyscallErrorWouldBlock = UINT64_MAX - 7;
 constexpr uint64_t SyscallErrorNotPermitted = UINT64_MAX - 8;
+// The descriptor is not open, or not open for that kind of access.
+constexpr uint64_t SyscallErrorBadDescriptor = UINT64_MAX - 9;
+// A pointer argument is not mapped, or not writable where the kernel must write.
+constexpr uint64_t SyscallErrorBadAddress = UINT64_MAX - 10;
+constexpr uint64_t SyscallErrorReadOnly = UINT64_MAX - 11;
+constexpr uint64_t SyscallErrorExists = UINT64_MAX - 12;
+constexpr uint64_t SyscallErrorNotDirectory = UINT64_MAX - 13;
+constexpr uint64_t SyscallErrorNotEmpty = UINT64_MAX - 14;
+// The console cannot seek.
+constexpr uint64_t SyscallErrorNotSeekable = UINT64_MAX - 15;
+constexpr uint64_t SyscallErrorNameTooLong = UINT64_MAX - 16;
+constexpr uint64_t SyscallErrorIsDirectory = UINT64_MAX - 17;
+// Wait names a process that is not the caller's child.
+constexpr uint64_t SyscallErrorNotChild = UINT64_MAX - 18;
+constexpr uint64_t SyscallErrorNoMemory = UINT64_MAX - 19;
+constexpr uint64_t SyscallErrorNotExecutable = UINT64_MAX - 20;
+// The result does not fit the caller's buffer.
+constexpr uint64_t SyscallErrorRange = UINT64_MAX - 21;
 
 constexpr bool IsSyscallError(uint64_t value)
 {

@@ -479,8 +479,8 @@ TEST_CASE("file descriptors start at 3 and are limited per process")
     REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead) == descriptors[4]);
     FeatherOS::Files::CloseAll(&table);
     REQUIRE(FeatherOS::Files::Close(&table, descriptors[0]) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Close(&table, 0) == FeatherOS::User::SyscallErrorInvalidArgument);
+            FeatherOS::User::SyscallErrorBadDescriptor);
+    REQUIRE(FeatherOS::Files::Close(&table, 0) == FeatherOS::User::SyscallErrorBadDescriptor);
 }
 
 TEST_CASE("file descriptors validate flags and access modes")
@@ -499,17 +499,17 @@ TEST_CASE("file descriptors validate flags and access modes")
     REQUIRE(FeatherOS::Files::Open(&table, "/NEW.TXT", OpenWrite) ==
             FeatherOS::User::SyscallErrorNotFound);
     REQUIRE(FeatherOS::Files::Open(&table, "hello.txt", OpenWrite) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Remove("hello.txt") == FeatherOS::User::SyscallErrorInvalidArgument);
+            FeatherOS::User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Remove("hello.txt") == FeatherOS::User::SyscallErrorReadOnly);
 
     const uint64_t reader = FeatherOS::Files::Open(&table, "hello.txt", OpenRead);
     char buffer[16];
     REQUIRE(FeatherOS::Files::Read(&table, reader, buffer, sizeof(buffer)) == 7);
     REQUIRE(FeatherOS::Files::Write(&table, reader, buffer, 1) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
+            FeatherOS::User::SyscallErrorBadDescriptor);
     const uint64_t writer = FeatherOS::Files::Open(&table, "/NEW.TXT", OpenWrite | OpenCreate);
     REQUIRE(FeatherOS::Files::Read(&table, writer, buffer, 1) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
+            FeatherOS::User::SyscallErrorBadDescriptor);
     FeatherOS::Files::CloseAll(&table);
 }
 
@@ -598,9 +598,9 @@ TEST_CASE("directory listing skips deleted entries and names files as NAME.EXT")
     REQUIRE(FeatherOS::Files::ReadDirectory("/", 3, &entry) ==
             FeatherOS::User::SyscallErrorNotFound);
     REQUIRE(FeatherOS::Files::ReadDirectory("/missing", 0, &entry) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
+            FeatherOS::User::SyscallErrorNotFound);
     REQUIRE(FeatherOS::Files::ReadDirectory("/README", 0, &entry) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
+            FeatherOS::User::SyscallErrorNotDirectory);
 }
 
 TEST_CASE("appending opens at the end of the file")
@@ -829,7 +829,7 @@ TEST_CASE("open-file sharing rules tell apart files with the same slot in differ
     const uint64_t second = FeatherOS::Files::Open(&table, "/b/same.txt", OpenWrite);
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(first));
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(second));
-    REQUIRE(FeatherOS::Files::RemoveDirectory("/a") == FeatherOS::User::SyscallErrorFailed);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/a") == FeatherOS::User::SyscallErrorNotEmpty);
     FeatherOS::Files::CloseAll(&table);
     FeatherOS::User::DirectoryEntry entry{};
     REQUIRE(FeatherOS::Files::ReadDirectory("/", 2, &entry) == 0);
@@ -923,7 +923,73 @@ TEST_CASE("the VFS root is the disk, with the initramfs mounted at /system")
     REQUIRE(FeatherOS::Files::CheckDirectory("/") == 0);
     REQUIRE(FeatherOS::Files::CheckDirectory("/system") == 0);
     REQUIRE(FeatherOS::Files::CheckDirectory("/system/hello.txt") ==
+            FeatherOS::User::SyscallErrorNotDirectory);
+    REQUIRE(FeatherOS::Files::CheckDirectory("/system/missing") ==
             FeatherOS::User::SyscallErrorNotFound);
     REQUIRE(FeatherOS::Files::Open(&table, "/system/hello.txt", OpenWrite) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
+            FeatherOS::User::SyscallErrorReadOnly);
+}
+
+TEST_CASE("file syscalls report why a change failed")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "archive");
+    REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
+    FeatherOS::Files::Table table{};
+    REQUIRE(FeatherOS::Files::MakeDirectory("/docs") == 0);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/docs") == FeatherOS::User::SyscallErrorExists);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/BLOCK.TXT") == FeatherOS::User::SyscallErrorExists);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/missing/docs") ==
+            FeatherOS::User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/system/docs") ==
+            FeatherOS::User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Open(&table, "/missing/new.txt", OpenWrite | OpenCreate) ==
+            FeatherOS::User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Open(&table, "/system/new.txt", OpenWrite | OpenCreate) ==
+            FeatherOS::User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Open(&table, "/docs", OpenRead) ==
+            FeatherOS::User::SyscallErrorIsDirectory);
+    REQUIRE(FeatherOS::Files::Remove("/docs") == FeatherOS::User::SyscallErrorIsDirectory);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/BLOCK.TXT") ==
+            FeatherOS::User::SyscallErrorNotDirectory);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/gone") == FeatherOS::User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/system") == FeatherOS::User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/") == FeatherOS::User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/docs") == 0);
+    REQUIRE(FeatherOS::Files::Seek(&table, 9, 0) == FeatherOS::User::SyscallErrorBadDescriptor);
+}
+
+TEST_CASE("stat reports type, size, and whether a file is read-only")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "archive");
+    REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
+    FeatherOS::User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat("/BLOCK.TXT", &status) == 0);
+    REQUIRE(status.type == FeatherOS::User::FileType::Regular);
+    REQUIRE(status.size == 8);
+    REQUIRE_FALSE(status.read_only);
+    REQUIRE(FeatherOS::Files::Stat("/system/hello.txt", &status) == 0);
+    REQUIRE(status.type == FeatherOS::User::FileType::Regular);
+    REQUIRE(status.size == 7);
+    REQUIRE(status.read_only);
+    REQUIRE(FeatherOS::Files::Stat("/", &status) == 0);
+    REQUIRE(status.type == FeatherOS::User::FileType::Directory);
+    REQUIRE_FALSE(status.read_only);
+    REQUIRE(FeatherOS::Files::Stat("/system", &status) == 0);
+    REQUIRE(status.type == FeatherOS::User::FileType::Directory);
+    REQUIRE(status.read_only);
+    REQUIRE(FeatherOS::Files::Stat("/missing", &status) == FeatherOS::User::SyscallErrorNotFound);
+
+    FeatherOS::Files::Table table{};
+    const uint64_t writer = FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenWrite | OpenAppend);
+    REQUIRE(FeatherOS::Files::Write(&table, writer, "++", 2) == 2);
+    REQUIRE(FeatherOS::Files::StatDescriptor(&table, writer, &status) == 0);
+    REQUIRE(status.size == 10);
+    REQUIRE_FALSE(status.read_only);
+    REQUIRE(FeatherOS::Files::StatDescriptor(&table, writer + 1, &status) ==
+            FeatherOS::User::SyscallErrorBadDescriptor);
+    FeatherOS::Files::CloseAll(&table);
 }

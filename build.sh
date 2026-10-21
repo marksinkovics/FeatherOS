@@ -171,37 +171,17 @@ iso() {
     fi
     local initramfs_path="$build_dir/initramfs.tar"
     local block_image="$build_dir/virtio-disk.img"
-    local user_compiler
-    local user_linker_script
-    local -a user_arch_flags=()
-    if [ "$ARCH" = "x86_64" ]; then
-        _require_tools x86_64-elf-g++
-        user_compiler=x86_64-elf-g++
-        user_linker_script="$SCRIPT_DIR/src/user/linker_x86_64.ld"
-        # Context switches do not save SSE state, so user code must not use it.
-        user_arch_flags=(-mno-red-zone -mgeneral-regs-only)
-    else
-        _require_tools aarch64-elf-g++
-        user_compiler=aarch64-elf-g++
-        user_linker_script="$SCRIPT_DIR/src/user/linker_aarch64.ld"
-        user_arch_flags=(-mcpu=generic -march=armv8-a+nofp+nosimd -mcmodel=small)
+    # The CMake build compiles the programs (src/user/CMakeLists.txt) into this directory.
+    local programs_dir="$build_dir/programs"
+    local -a programs=("$programs_dir"/*-"$ARCH".elf)
+    if [ ! -f "${programs[0]}" ]; then
+        _err "No user programs in $programs_dir, run './build.sh build' first."
+        exit 1
     fi
     # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
     export COPYFILE_DISABLE=1
     tar -cf "$initramfs_path" -C "$SCRIPT_DIR/initramfs" hello.txt init.conf
-    local user_program
-    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout memtest:memtest sleep:sleep hardening:hardening aslr:aslr uptime:uptime primes:primes filetest:filetest ls:ls cat:cat write:write rm:rm mkdir:mkdir rmdir:rmdir init:init; do
-        local user_elf="${user_program%%:*}-$ARCH.elf"
-        "$user_compiler" \
-            -ffreestanding -fno-builtin -fno-exceptions -fno-rtti -fno-stack-protector \
-            -fpie -nostdlib -nodefaultlibs \
-            -Wl,-pie -Wl,--no-dynamic-linker -Wl,-z,text \
-            -Wl,-T,"$user_linker_script" -Wl,-e,_start -Wl,--build-id=none \
-            -Wl,-z,max-page-size=0x1000 "${user_arch_flags[@]}" \
-            -I"$SCRIPT_DIR/src/user" "$SCRIPT_DIR/src/user/${user_program#*:}.cpp" \
-            -o "$build_dir/$user_elf"
-        tar -rf "$initramfs_path" -C "$build_dir" "$user_elf"
-    done
+    tar -rf "$initramfs_path" -C "$programs_dir" "${programs[@]##*/}"
     python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$build_dir/badelf-$ARCH.elf"
     tar -rf "$initramfs_path" -C "$build_dir" "badelf-$ARCH.elf"
     python3 "$SCRIPT_DIR/tools/create_test_disk.py" "$block_image" \

@@ -28,7 +28,7 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     }
     if (request.number == static_cast<uint64_t>(Number::Spawn) && handlers.spawn != nullptr)
     {
-        return {Action::Return, handlers.spawn(context, arguments[0], arguments[1])};
+        return {Action::Return, handlers.spawn(context, arguments[0], arguments[1], arguments[2])};
     }
     if (request.number == static_cast<uint64_t>(Number::Wait) && handlers.wait != nullptr)
     {
@@ -111,6 +111,25 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     if (request.number == static_cast<uint64_t>(Number::Shutdown) && handlers.shutdown != nullptr)
     {
         return {Action::Return, handlers.shutdown(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Stat) && handlers.stat != nullptr)
+    {
+        return {Action::Return, handlers.stat(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::StatDescriptor) &&
+        handlers.stat_descriptor != nullptr)
+    {
+        return {Action::Return, handlers.stat_descriptor(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ProcessId) &&
+        handlers.process_id != nullptr)
+    {
+        return {Action::Return, handlers.process_id(context)};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ParentProcessId) &&
+        handlers.parent_process_id != nullptr)
+    {
+        return {Action::Return, handlers.parent_process_id(context)};
     }
     return {Action::Invalid, UINT64_MAX};
 }

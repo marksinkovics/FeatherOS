@@ -60,6 +60,12 @@ struct ProcessRecord
     Files::Table files;
     // Relative paths in file syscalls start here; children inherit it.
     char working_directory[User::MaximumPathLength];
+    // Bit n is set once descriptor n, one of the console descriptors 0-2, has been closed.
+    uint8_t closed_console_descriptors;
+    // The rest of a console line that a read did not take, with its '\n'.
+    char console_input[User::MaximumCommandLineLength];
+    uint8_t console_input_length;
+    uint8_t console_input_offset;
     UserProgram program;
 };
 
@@ -477,36 +483,69 @@ bool CopyToUser(const ProcessRecord& process, uint64_t address, const void* sour
     return true;
 }
 
-bool CopyStringFromUser(const ProcessRecord& process, uint64_t address, char* buffer,
-                        size_t capacity)
+// 0, SyscallErrorBadAddress, or SyscallErrorInvalidArgument when no terminator fits.
+uint64_t CopyStringFromUser(const ProcessRecord& process, uint64_t address, char* buffer,
+                            size_t capacity)
 {
     for (size_t index = 0; index < capacity; ++index)
     {
         if (address > UINT64_MAX - index)
         {
-            return false;
+            return User::SyscallErrorBadAddress;
         }
         volatile uint8_t* byte = UserByte(process, address + index, false);
         if (byte == nullptr)
         {
-            return false;
+            return User::SyscallErrorBadAddress;
         }
         buffer[index] = static_cast<char>(*byte);
         if (buffer[index] == '\0')
         {
-            return true;
+            return 0;
         }
     }
-    return false;
+    return User::SyscallErrorInvalidArgument;
 }
 
 // Copies a path argument and resolves it against the process's working directory.
-bool CopyPathFromUser(const ProcessRecord& process, uint64_t address,
-                      char (&path)[User::MaximumPathLength])
+uint64_t CopyPathFromUser(const ProcessRecord& process, uint64_t address,
+                          char (&path)[User::MaximumPathLength])
 {
     char text[User::MaximumPathLength];
-    return CopyStringFromUser(process, address, text, sizeof(text)) &&
-           Path::Resolve(process.working_directory, text, path);
+    const uint64_t copied = CopyStringFromUser(process, address, text, sizeof(text));
+    if (copied == User::SyscallErrorBadAddress)
+    {
+        return copied;
+    }
+    return copied == 0 && Path::Resolve(process.working_directory, text, path)
+               ? 0
+               : User::SyscallErrorNameTooLong;
+}
+
+// Copies a Spawn environment block: strings up to the empty one that ends it.
+uint64_t CopyEnvironmentFromUser(const ProcessRecord& process, uint64_t address,
+                                 char (&block)[User::MaximumEnvironmentSize])
+{
+    bool after_terminator = true;
+    for (size_t index = 0; index < sizeof(block); ++index)
+    {
+        if (address > UINT64_MAX - index)
+        {
+            return User::SyscallErrorBadAddress;
+        }
+        volatile uint8_t* byte = UserByte(process, address + index, false);
+        if (byte == nullptr)
+        {
+            return User::SyscallErrorBadAddress;
+        }
+        block[index] = static_cast<char>(*byte);
+        if (block[index] == '\0' && after_terminator)
+        {
+            return 0;
+        }
+        after_terminator = block[index] == '\0';
+    }
+    return User::SyscallErrorInvalidArgument;
 }
 
 bool WriteCharacterSyscall(void*, char character)
@@ -519,17 +558,22 @@ uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
     char prompt_text[MaximumPromptLength];
-    if (!CopyStringFromUser(*process, prompt, prompt_text, sizeof(prompt_text)))
+    const uint64_t copied = CopyStringFromUser(*process, prompt, prompt_text, sizeof(prompt_text));
+    if (copied != 0)
     {
-        return User::SyscallErrorInvalidArgument;
+        return copied;
     }
     char line[User::MaximumCommandLineLength];
     const size_t line_capacity =
         capacity < sizeof(line) ? static_cast<size_t>(capacity) : sizeof(line);
+    if (line_capacity == 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
     // Validate the destination before blocking so a bad buffer fails immediately.
     if (!UserRangeWritable(*process, buffer, line_capacity))
     {
-        return User::SyscallErrorInvalidArgument;
+        return User::SyscallErrorBadAddress;
     }
     if (process->id != foreground_process)
     {
@@ -542,22 +586,36 @@ uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint
     }
     if (!CopyToUser(*process, buffer, line, length + 1))
     {
-        return User::SyscallErrorInvalidArgument;
+        return User::SyscallErrorBadAddress;
     }
     return length;
 }
 
-uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags)
+uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags, uint64_t environment)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    char line[User::MaximumCommandLineLength];
-    if (!CopyStringFromUser(*process, command_line, line, sizeof(line)) ||
-        (flags & ~(User::SpawnBackground | User::SpawnSessionLeader)) != 0)
+    if ((flags & ~(User::SpawnBackground | User::SpawnSessionLeader)) != 0)
     {
         return User::SyscallErrorInvalidArgument;
     }
+    char line[User::MaximumCommandLineLength];
+    const uint64_t copied = CopyStringFromUser(*process, command_line, line, sizeof(line));
+    if (copied != 0)
+    {
+        return copied;
+    }
+    char environment_block[User::MaximumEnvironmentSize];
+    if (environment != 0)
+    {
+        const uint64_t environment_copied =
+            CopyEnvironmentFromUser(*process, environment, environment_block);
+        if (environment_copied != 0)
+        {
+            return environment_copied;
+        }
+    }
     ProcessId child;
-    switch (Spawn(line, process->id, flags, &child))
+    switch (Spawn(line, environment != 0 ? environment_block : nullptr, process->id, flags, &child))
     {
     case SpawnStatus::Started:
         return child;
@@ -565,6 +623,10 @@ uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags)
         return User::SyscallErrorNotFound;
     case SpawnStatus::InvalidArguments:
         return User::SyscallErrorInvalidArgument;
+    case SpawnStatus::InvalidExecutable:
+        return User::SyscallErrorNotExecutable;
+    case SpawnStatus::NoResources:
+        return User::SyscallErrorNoMemory;
     default:
         return User::SyscallErrorFailed;
     }
@@ -573,11 +635,18 @@ uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags)
 uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer, uint64_t flags)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    const ProcessRecord* child = FindProcess(process_id);
-    if (child == nullptr || child->parent != process->id || (flags & ~User::WaitNoHang) != 0 ||
-        !UserRangeWritable(*process, status_pointer, sizeof(uint64_t)))
+    if ((flags & ~User::WaitNoHang) != 0)
     {
         return User::SyscallErrorInvalidArgument;
+    }
+    const ProcessRecord* child = FindProcess(process_id);
+    if (child == nullptr || child->parent != process->id)
+    {
+        return User::SyscallErrorNotChild;
+    }
+    if (!UserRangeWritable(*process, status_pointer, sizeof(uint64_t)))
+    {
+        return User::SyscallErrorBadAddress;
     }
     if ((flags & User::WaitNoHang) != 0 &&
         Scheduler::GetState(child->task) != Scheduler::TaskState::Complete)
@@ -591,7 +660,7 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
     }
     if (!CopyToUser(*process, status_pointer, &exit_status, sizeof(exit_status)))
     {
-        return User::SyscallErrorInvalidArgument;
+        return User::SyscallErrorBadAddress;
     }
     return 0;
 }
@@ -616,7 +685,7 @@ uint64_t ExtendHeapSyscall(void* context, uint64_t increment)
         uint64_t physical_address;
         if (!AllocateProgramPage(&program, &physical_address))
         {
-            return User::SyscallErrorFailed;
+            return User::SyscallErrorNoMemory;
         }
         if (!Memory::MapPage(program.address_space, page_address, physical_address,
                              Memory::PageFlags::Read | Memory::PageFlags::Write |
@@ -624,7 +693,7 @@ uint64_t ExtendHeapSyscall(void* context, uint64_t increment)
         {
             Memory::FreePageFrame(physical_address);
             --program.mapped_page_count;
-            return User::SyscallErrorFailed;
+            return User::SyscallErrorNoMemory;
         }
     }
     program.heap_break = new_break;
@@ -671,17 +740,67 @@ uint64_t OpenSyscall(void* context, uint64_t path, uint64_t flags)
 {
     auto* process = static_cast<ProcessRecord*>(context);
     char path_text[User::MaximumPathLength];
-    if (!CopyPathFromUser(*process, path, path_text))
+    const uint64_t copied = CopyPathFromUser(*process, path, path_text);
+    if (copied != 0)
     {
-        return User::SyscallErrorInvalidArgument;
+        return copied;
     }
     return Files::Open(&process->files, path_text, flags);
+}
+
+bool IsConsoleDescriptor(const ProcessRecord& process, uint64_t descriptor)
+{
+    return descriptor < User::FirstFileDescriptor &&
+           (process.closed_console_descriptors & (1U << descriptor)) == 0;
+}
+
+// Console reads return one line at a time, ending in '\n'; what does not fit the caller's buffer
+// is kept for its next read.
+uint64_t ReadConsole(ProcessRecord* process, uint64_t buffer, uint64_t length)
+{
+    if (!UserRangeWritable(*process, buffer, length))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    if (process->console_input_offset == process->console_input_length)
+    {
+        if (process->id != foreground_process)
+        {
+            return User::SyscallErrorNotForeground;
+        }
+        size_t line_length;
+        if (!Console::ReadLine("", process->console_input, sizeof(process->console_input),
+                               &line_length))
+        {
+            return User::SyscallErrorInterrupted;
+        }
+        process->console_input[line_length] = '\n';
+        process->console_input_length = static_cast<uint8_t>(line_length + 1);
+        process->console_input_offset = 0;
+    }
+    const uint64_t available = process->console_input_length - process->console_input_offset;
+    const uint64_t count = length < available ? length : available;
+    if (!CopyToUser(*process, buffer, process->console_input + process->console_input_offset,
+                    count))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    process->console_input_offset = static_cast<uint8_t>(process->console_input_offset + count);
+    return count;
 }
 
 uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64_t length)
 {
     auto* process = static_cast<ProcessRecord*>(context);
     uint8_t chunk[FileChunkSize];
+    if (descriptor < User::FirstFileDescriptor)
+    {
+        if (!IsConsoleDescriptor(*process, descriptor))
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        return length == 0 ? 0 : ReadConsole(process, buffer, length);
+    }
     if (length == 0)
     {
         return Files::Read(&process->files, descriptor, nullptr, 0);
@@ -689,7 +808,7 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
     // Checking the whole range first keeps a bad buffer from consuming file data.
     if (!UserRangeWritable(*process, buffer, length))
     {
-        return User::SyscallErrorInvalidArgument;
+        return User::SyscallErrorBadAddress;
     }
     uint64_t total = 0;
     while (total < length)
@@ -702,7 +821,7 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
         }
         if (count > 0 && !CopyToUser(*process, buffer + total, chunk, count))
         {
-            return User::SyscallErrorInvalidArgument;
+            return User::SyscallErrorBadAddress;
         }
         total += count;
         if (count < wanted)
@@ -717,13 +836,18 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
 {
     auto* process = static_cast<ProcessRecord*>(context);
     uint8_t chunk[FileChunkSize];
+    const bool console = descriptor < User::FirstFileDescriptor;
+    if (console && !IsConsoleDescriptor(*process, descriptor))
+    {
+        return User::SyscallErrorBadDescriptor;
+    }
     if (length == 0)
     {
-        return Files::Write(&process->files, descriptor, nullptr, 0);
+        return console ? 0 : Files::Write(&process->files, descriptor, nullptr, 0);
     }
     if (!UserRangeReadable(*process, buffer, length))
     {
-        return User::SyscallErrorInvalidArgument;
+        return User::SyscallErrorBadAddress;
     }
     uint64_t total = 0;
     while (total < length)
@@ -731,7 +855,13 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
         const uint64_t wanted = length - total < FileChunkSize ? length - total : FileChunkSize;
         if (!CopyFromUser(*process, buffer + total, chunk, wanted))
         {
-            return User::SyscallErrorInvalidArgument;
+            return User::SyscallErrorBadAddress;
+        }
+        if (console)
+        {
+            Console::Write(reinterpret_cast<const char*>(chunk), wanted);
+            total += wanted;
+            continue;
         }
         const uint64_t count = Files::Write(&process->files, descriptor, chunk, wanted);
         if (User::IsSyscallError(count))
@@ -749,12 +879,28 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
 
 uint64_t CloseSyscall(void* context, uint64_t descriptor)
 {
-    return Files::Close(&static_cast<ProcessRecord*>(context)->files, descriptor);
+    auto* process = static_cast<ProcessRecord*>(context);
+    if (descriptor < User::FirstFileDescriptor)
+    {
+        if (!IsConsoleDescriptor(*process, descriptor))
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        process->closed_console_descriptors |= static_cast<uint8_t>(1U << descriptor);
+        return 0;
+    }
+    return Files::Close(&process->files, descriptor);
 }
 
 uint64_t SeekSyscall(void* context, uint64_t descriptor, uint64_t offset)
 {
-    return Files::Seek(&static_cast<ProcessRecord*>(context)->files, descriptor, offset);
+    auto* process = static_cast<ProcessRecord*>(context);
+    if (descriptor < User::FirstFileDescriptor)
+    {
+        return IsConsoleDescriptor(*process, descriptor) ? User::SyscallErrorNotSeekable
+                                                         : User::SyscallErrorBadDescriptor;
+    }
+    return Files::Seek(&process->files, descriptor, offset);
 }
 
 // Copies the path argument and passes it to one of the path-only Files calls.
@@ -762,9 +908,10 @@ uint64_t PathSyscall(void* context, uint64_t path, uint64_t (*operation)(const c
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
     char path_text[User::MaximumPathLength];
-    if (!CopyPathFromUser(*process, path, path_text))
+    const uint64_t copied = CopyPathFromUser(*process, path, path_text);
+    if (copied != 0)
     {
-        return User::SyscallErrorInvalidArgument;
+        return copied;
     }
     return operation(path_text);
 }
@@ -788,9 +935,10 @@ uint64_t ChangeDirectorySyscall(void* context, uint64_t path)
 {
     auto* process = static_cast<ProcessRecord*>(context);
     char path_text[User::MaximumPathLength];
-    if (!CopyPathFromUser(*process, path, path_text))
+    const uint64_t copied = CopyPathFromUser(*process, path, path_text);
+    if (copied != 0)
     {
-        return User::SyscallErrorInvalidArgument;
+        return copied;
     }
     const uint64_t result = Files::CheckDirectory(path_text);
     if (User::IsSyscallError(result))
@@ -833,9 +981,13 @@ uint64_t CurrentDirectorySyscall(void* context, uint64_t buffer, uint64_t capaci
     {
         ++length;
     }
-    if (capacity <= length || !CopyToUser(*process, buffer, process->working_directory, length + 1))
+    if (capacity <= length)
     {
-        return User::SyscallErrorInvalidArgument;
+        return User::SyscallErrorRange;
+    }
+    if (!CopyToUser(*process, buffer, process->working_directory, length + 1))
+    {
+        return User::SyscallErrorBadAddress;
     }
     return length;
 }
@@ -845,10 +997,14 @@ uint64_t ReadDirectorySyscall(void* context, uint64_t path, uint64_t index, uint
     const auto* process = static_cast<const ProcessRecord*>(context);
     char path_text[User::MaximumPathLength];
     User::DirectoryEntry directory_entry;
-    if (!CopyPathFromUser(*process, path, path_text) ||
-        !UserRangeWritable(*process, entry, sizeof(directory_entry)))
+    const uint64_t copied = CopyPathFromUser(*process, path, path_text);
+    if (copied != 0)
     {
-        return User::SyscallErrorInvalidArgument;
+        return copied;
+    }
+    if (!UserRangeWritable(*process, entry, sizeof(directory_entry)))
+    {
+        return User::SyscallErrorBadAddress;
     }
     const uint64_t result = Files::ReadDirectory(path_text, index, &directory_entry);
     if (User::IsSyscallError(result))
@@ -857,7 +1013,54 @@ uint64_t ReadDirectorySyscall(void* context, uint64_t path, uint64_t index, uint
     }
     return CopyToUser(*process, entry, &directory_entry, sizeof(directory_entry))
                ? 0
-               : User::SyscallErrorInvalidArgument;
+               : User::SyscallErrorBadAddress;
+}
+
+uint64_t CopyStatusToUser(const ProcessRecord& process, uint64_t address,
+                          const User::FileStatus& status)
+{
+    return CopyToUser(process, address, &status, sizeof(status)) ? 0 : User::SyscallErrorBadAddress;
+}
+
+uint64_t StatSyscall(void* context, uint64_t path, uint64_t status)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    char path_text[User::MaximumPathLength];
+    const uint64_t copied = CopyPathFromUser(*process, path, path_text);
+    if (copied != 0)
+    {
+        return copied;
+    }
+    User::FileStatus file_status = {};
+    const uint64_t result = Files::Stat(path_text, &file_status);
+    return User::IsSyscallError(result) ? result : CopyStatusToUser(*process, status, file_status);
+}
+
+uint64_t StatDescriptorSyscall(void* context, uint64_t descriptor, uint64_t status)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    User::FileStatus file_status = {};
+    if (descriptor < User::FirstFileDescriptor)
+    {
+        if (!IsConsoleDescriptor(*process, descriptor))
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        file_status.type = User::FileType::Console;
+        return CopyStatusToUser(*process, status, file_status);
+    }
+    const uint64_t result = Files::StatDescriptor(&process->files, descriptor, &file_status);
+    return User::IsSyscallError(result) ? result : CopyStatusToUser(*process, status, file_status);
+}
+
+uint64_t ProcessIdSyscall(void* context)
+{
+    return static_cast<const ProcessRecord*>(context)->id;
+}
+
+uint64_t ParentProcessIdSyscall(void* context)
+{
+    return static_cast<const ProcessRecord*>(context)->parent;
 }
 
 constexpr Syscall::Handlers ProcessSyscallHandlers = {
@@ -882,6 +1085,10 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     ChangeDirectorySyscall,
     CurrentDirectorySyscall,
     ShutdownSyscall,
+    StatSyscall,
+    StatDescriptorSyscall,
+    ProcessIdSyscall,
+    ParentProcessIdSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -1034,7 +1241,8 @@ uint64_t RunUserProgram(void* context)
     return program->execution_context.exit_status;
 }
 
-SpawnStatus Spawn(const char* command_line, ProcessId parent, uint64_t flags, ProcessId* process_id)
+SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId parent,
+                  uint64_t flags, ProcessId* process_id)
 {
     if (command_line == nullptr || process_id == nullptr)
     {
@@ -1054,7 +1262,8 @@ SpawnStatus Spawn(const char* command_line, ProcessId parent, uint64_t flags, Pr
     // The arguments block holds pointers into itself, so its address is chosen first.
     const UserLayout layout = RandomUserLayout();
     User::ProgramArguments arguments;
-    if (!BuildProgramArguments(command_line, layout.arguments_address, &arguments))
+    if (!BuildProgramArguments(command_line, layout.arguments_address, &arguments) ||
+        !CopyEnvironment(environment, User::MaximumEnvironmentSize, &arguments))
     {
         return SpawnStatus::InvalidArguments;
     }

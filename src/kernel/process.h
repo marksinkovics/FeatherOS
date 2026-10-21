@@ -88,10 +88,11 @@ bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address);
 uint64_t RunUserProgram(void* program);
 
 // Starts "<name>-<arch>.elf" from the initramfs, where name is the first word of command_line.
-// Unless flags has User::SpawnBackground, it becomes the foreground process that receives
-// console input.
-SpawnStatus Spawn(const char* command_line, ProcessId parent, uint64_t flags,
-                  ProcessId* process_id);
+// environment is a kernel copy of a Spawn environment block, at most
+// User::MaximumEnvironmentSize bytes, or null for none. Unless flags has User::SpawnBackground,
+// the child becomes the foreground process that receives console input.
+SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId parent,
+                  uint64_t flags, ProcessId* process_id);
 // Waits for a spawned process to exit, then releases its task and memory and returns console
 // input to its parent.
 bool Wait(ProcessId process_id, uint64_t* exit_status);

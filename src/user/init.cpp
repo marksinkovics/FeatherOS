@@ -16,6 +16,10 @@ constexpr uint64_t PollMilliseconds = 200;
 char config[MaximumConfigSize];
 Service services[MaximumServices];
 uint32_t service_count = 0;
+// Every service starts with the variables from the config's env lines.
+char environment[MaximumEnvironmentSize];
+uint64_t environment_used = 0;
+uint64_t environment_count = 0;
 
 void Report(const char* message, const Service& service)
 {
@@ -44,6 +48,14 @@ uint64_t ReadConfig()
     return length;
 }
 
+void IgnoreLine(uint64_t line_number)
+{
+    WriteText("init: ignoring line ");
+    WriteNumber(line_number);
+    WriteText(" of ");
+    WriteLine(ConfigPath);
+}
+
 void ParseConfig(const char* text, uint64_t length)
 {
     bool has_console = false;
@@ -59,15 +71,18 @@ void ParseConfig(const char* text, uint64_t length)
         const LineKind kind = ParseLine(text + start, end - start, &service);
         const bool second_console =
             kind == LineKind::Service && service.policy == Policy::Console && has_console;
-        if (kind == LineKind::Invalid || second_console || service_count == MaximumServices)
+        if (kind == LineKind::Variable)
         {
-            if (kind != LineKind::Empty)
+            if (!AppendVariable(environment, sizeof(environment), &environment_used,
+                                &environment_count, service.command))
             {
-                WriteText("init: ignoring line ");
-                WriteNumber(line_number);
-                WriteText(" of ");
-                WriteLine(ConfigPath);
+                IgnoreLine(line_number);
             }
+        }
+        else if (kind == LineKind::Invalid || second_console ||
+                 (kind == LineKind::Service && service_count == MaximumServices))
+        {
+            IgnoreLine(line_number);
         }
         else if (kind == LineKind::Service)
         {
@@ -83,7 +98,7 @@ void Start(Service* service)
     const uint64_t flags = service->policy == Policy::Console   ? SpawnSessionLeader
                            : service->policy == Policy::Respawn ? SpawnBackground
                                                                 : 0;
-    const uint64_t process_id = Spawn(service->command, flags);
+    const uint64_t process_id = Spawn(service->command, flags, environment);
     if (IsSyscallError(process_id))
     {
         Report("cannot start ", *service);
@@ -106,8 +121,9 @@ void ReportExit(const Service& service, uint64_t status)
 } // namespace
 
 constexpr char Help[] = "usage: init\n"
-                        "The first process: starts the services in /init.conf and restarts\n"
-                        "those that exit. The kernel runs it at boot.";
+                        "The first process: starts the services in /system/init.conf, with\n"
+                        "its env variables, and restarts those that exit. The kernel runs it\n"
+                        "at boot.";
 
 extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
 {

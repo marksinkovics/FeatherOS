@@ -81,8 +81,9 @@ check_clang_tidy() {
         find "$REPO_ROOT/src" -type f \
             \( -name '*.c' -o -name '*.cpp' \) \
             ! -path "$REPO_ROOT/src/kernel/arch/*" \
+            ! -path "$REPO_ROOT/src/libc/arch/*" \
             -print0
-        find "$REPO_ROOT/src/kernel/arch/$arch" -type f \
+        find "$REPO_ROOT/src/kernel/arch/$arch" "$REPO_ROOT/src/libc/arch/$arch" -type f \
             \( -name '*.c' -o -name '*.cpp' \) \
             -print0
     } | xargs -0 clang-tidy "${clang_tidy_args[@]}"

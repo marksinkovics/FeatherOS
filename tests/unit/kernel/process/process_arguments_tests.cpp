@@ -82,3 +82,47 @@ TEST_CASE("program arguments group quoted words and drop the quotes")
     REQUIRE_FALSE(
         FeatherOS::Process::BuildProgramArguments("cat \"unterminated", UserAddress, &arguments));
 }
+
+TEST_CASE("spawn environments are copied when every entry is NAME=value")
+{
+    FeatherOS::User::ProgramArguments arguments{};
+    const char environment[] = "HOME=/home\0PATH=/system\0EMPTY=\0";
+    REQUIRE(FeatherOS::Process::CopyEnvironment(environment, sizeof(environment), &arguments));
+    REQUIRE(arguments.environment_count == 3);
+    REQUIRE(std::memcmp(arguments.environment, environment, sizeof(environment)) == 0);
+
+    REQUIRE(FeatherOS::Process::CopyEnvironment(nullptr, 0, &arguments));
+    REQUIRE(arguments.environment_count == 0);
+    REQUIRE(arguments.environment[0] == '\0');
+    const char empty[] = "";
+    REQUIRE(FeatherOS::Process::CopyEnvironment(empty, sizeof(empty), &arguments));
+    REQUIRE(arguments.environment_count == 0);
+}
+
+TEST_CASE("spawn environments reject malformed or oversized blocks")
+{
+    FeatherOS::User::ProgramArguments arguments{};
+    const char no_separator[] = "HOME\0";
+    REQUIRE_FALSE(
+        FeatherOS::Process::CopyEnvironment(no_separator, sizeof(no_separator), &arguments));
+    const char empty_name[] = "=value\0";
+    REQUIRE_FALSE(FeatherOS::Process::CopyEnvironment(empty_name, sizeof(empty_name), &arguments));
+    // Without the empty string that ends the block, the entry runs past the given size.
+    const char unterminated[] = {'A', '=', '1', '\0'};
+    REQUIRE_FALSE(
+        FeatherOS::Process::CopyEnvironment(unterminated, sizeof(unterminated), &arguments));
+
+    std::string many;
+    for (uint64_t index = 0; index <= FeatherOS::User::MaximumEnvironmentVariables; ++index)
+    {
+        many += "V" + std::to_string(index) + "=1";
+        many.push_back('\0');
+    }
+    many.push_back('\0');
+    REQUIRE_FALSE(FeatherOS::Process::CopyEnvironment(many.data(), many.size(), &arguments));
+
+    std::string large = "BIG=" + std::string(FeatherOS::User::MaximumEnvironmentSize, 'x');
+    large.push_back('\0');
+    large.push_back('\0');
+    REQUIRE_FALSE(FeatherOS::Process::CopyEnvironment(large.data(), large.size(), &arguments));
+}

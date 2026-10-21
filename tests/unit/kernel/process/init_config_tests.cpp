@@ -63,3 +63,37 @@ TEST_CASE("init disables a service that restarts too often")
         REQUIRE(FeatherOS::User::Init::AllowRestart(&steady, restart * 3000));
     }
 }
+
+TEST_CASE("init reads env lines as NAME=value variables")
+{
+    Service service{};
+    REQUIRE(Parse("env HOME=/home", &service) == LineKind::Variable);
+    REQUIRE(std::string(service.command) == "HOME=/home");
+    REQUIRE(Parse("  env\tGREETING=a=b \r", &service) == LineKind::Variable);
+    REQUIRE(std::string(service.command) == "GREETING=a=b");
+    REQUIRE(Parse("env EMPTY=", &service) == LineKind::Variable);
+    REQUIRE(Parse("env", &service) == LineKind::Invalid);
+    REQUIRE(Parse("env HOME", &service) == LineKind::Invalid);
+    REQUIRE(Parse("env =value", &service) == LineKind::Invalid);
+    REQUIRE(Parse("env A=1 B=2", &service) == LineKind::Invalid);
+    REQUIRE(Parse("env NAME =x", &service) == LineKind::Invalid);
+}
+
+TEST_CASE("init appends variables to an environment block until it is full")
+{
+    char block[16];
+    block[0] = '\0';
+    uint64_t used = 0;
+    uint64_t count = 0;
+    REQUIRE(FeatherOS::User::Init::AppendVariable(block, sizeof(block), &used, &count, "A=1"));
+    REQUIRE(FeatherOS::User::Init::AppendVariable(block, sizeof(block), &used, &count, "BB=22"));
+    REQUIRE(count == 2);
+    REQUIRE(used == 10);
+    REQUIRE(std::string(block, used + 1) == std::string("A=1\0BB=22\0\0", 11));
+    // "CCC=3" would need 6 more bytes plus the final terminator.
+    REQUIRE_FALSE(
+        FeatherOS::User::Init::AppendVariable(block, sizeof(block), &used, &count, "CCC=3"));
+    REQUIRE(FeatherOS::User::Init::AppendVariable(block, sizeof(block), &used, &count, "D=4"));
+    REQUIRE(used == 14);
+    REQUIRE(block[14] == '\0');
+}

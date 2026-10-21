@@ -18,6 +18,9 @@ void Initialize(Term* term);
 void NotifyStatusChanged();
 void WriteCharacter(char character);
 void WriteLine(const char* text);
+// Prints printable ASCII and newlines as one unit, so other output cannot interleave with it. Tab
+// prints as a space, bytes above 0x7F as '?', and other control bytes are dropped.
+void Write(const char* text, size_t length);
 // Shows prompt, then echoes and edits input until Enter. Interrupts are enabled while waiting.
 // buffer receives at most capacity - 1 characters and a terminator. Returns false when Ctrl+C
 // interrupted the calling program.

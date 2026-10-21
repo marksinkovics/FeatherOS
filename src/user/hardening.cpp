@@ -79,12 +79,13 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
     char buffer[16];
     const auto* kernel_text = reinterpret_cast<const char*>(KernelAddress);
     Check(ReadLine(reinterpret_cast<char*>(KernelAddress), sizeof(buffer), ">") ==
-              SyscallErrorInvalidArgument,
+              SyscallErrorBadAddress,
           "kernel ReadLine buffer");
-    Check(ReadLine(buffer, sizeof(buffer), kernel_text) == SyscallErrorInvalidArgument,
+    Check(ReadLine(buffer, sizeof(buffer), kernel_text) == SyscallErrorBadAddress,
           "kernel ReadLine prompt");
-    Check(Spawn(kernel_text) == SyscallErrorInvalidArgument, "kernel Spawn command line");
-    Check(Wait(123456, nullptr) == SyscallErrorInvalidArgument, "Wait for a non-child");
+    Check(Spawn(kernel_text) == SyscallErrorBadAddress, "kernel Spawn command line");
+    Check(Spawn("echo", 0, kernel_text) == SyscallErrorBadAddress, "kernel Spawn environment");
+    Check(Wait(123456, nullptr) == SyscallErrorNotChild, "Wait for a non-child");
     Check(ExtendHeap(UINT64_MAX) == SyscallErrorInvalidArgument, "oversized ExtendHeap");
     Check(Sleep(UINT64_MAX) == SyscallErrorInvalidArgument, "oversized Sleep");
     const uint64_t bad_elf = Spawn("badelf");

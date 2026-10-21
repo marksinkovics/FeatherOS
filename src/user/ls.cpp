@@ -18,6 +18,15 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
         WriteLine("usage: ls [directory]");
         Exit(1);
     }
+    // ReadDirectory reports a missing directory the same way as the end of a listing.
+    FileStatus status;
+    if (IsSyscallError(Stat(path, &status)) || status.type != FileType::Directory)
+    {
+        WriteText("ls: ");
+        WriteText(name);
+        WriteLine(": no such directory");
+        Exit(1);
+    }
     constexpr uint64_t NameColumnWidth = 24;
     uint64_t files = 0;
     uint64_t directories = 0;

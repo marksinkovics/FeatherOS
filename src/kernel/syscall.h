@@ -37,7 +37,7 @@ struct Handlers
 {
     WriteCharacter write_character;
     uint64_t (*read_line)(void* context, uint64_t buffer, uint64_t capacity, uint64_t prompt);
-    uint64_t (*spawn)(void* context, uint64_t command_line, uint64_t flags);
+    uint64_t (*spawn)(void* context, uint64_t command_line, uint64_t flags, uint64_t environment);
     uint64_t (*wait)(void* context, uint64_t process_id, uint64_t status_pointer, uint64_t flags);
     uint64_t (*read_clock)(void* context);
     uint64_t (*extend_heap)(void* context, uint64_t increment);
@@ -56,6 +56,10 @@ struct Handlers
     uint64_t (*change_directory)(void* context, uint64_t path);
     uint64_t (*current_directory)(void* context, uint64_t buffer, uint64_t capacity);
     uint64_t (*shutdown)(void* context, uint64_t action);
+    uint64_t (*stat)(void* context, uint64_t path, uint64_t status);
+    uint64_t (*stat_descriptor)(void* context, uint64_t descriptor, uint64_t status);
+    uint64_t (*process_id)(void* context);
+    uint64_t (*parent_process_id)(void* context);
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

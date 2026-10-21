@@ -1,6 +1,8 @@
 #ifndef FEATHEROS_USER_PROCESS_H
 #define FEATHEROS_USER_PROCESS_H
 
+#include "syscall_abi.h"
+
 #include <stdint.h>
 
 namespace FeatherOS::User
@@ -21,7 +23,13 @@ struct ProgramArguments
     uint64_t argument_count;
     const char* argument_values[MaximumArgumentCount];
     char argument_storage[MaximumCommandLineLength];
+    // The environment the parent passed to Spawn, in the same format.
+    uint64_t environment_count;
+    char environment[MaximumEnvironmentSize];
 };
+
+// The kernel maps the block as a single page.
+static_assert(sizeof(ProgramArguments) <= 4096, "ProgramArguments must fit in one page");
 
 } // namespace FeatherOS::User
 

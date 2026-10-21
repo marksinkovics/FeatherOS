@@ -15,9 +15,10 @@ void WriteCommandName(const char* line)
     }
 }
 
-void RunCommand(const char* line)
+// Programs inherit the environment init gave the shell.
+void RunCommand(const char* line, const char* environment)
 {
-    const uint64_t process_id = Spawn(line);
+    const uint64_t process_id = Spawn(line, 0, environment);
     if (process_id == SyscallErrorNotFound)
     {
         WriteText("Unknown command: ");
@@ -163,11 +164,11 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
                 "Commands: calc [expression], date, echo <words...>, fanout <n>, "
                 "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
                 "sleep <ms>, upper, uptime, filetest, ls, cat <file>, write [-a] <file> <text>, "
-                "rm <file>, mkdir <dir>, rmdir <dir>, cd [dir], pwd, exit, shutdown, reboot, "
+                "rm <file>, mkdir <dir>, rmdir <dir>, env, cd [dir], pwd, exit, shutdown, reboot, "
                 "help");
             WriteLine("Run <command> --help to see what a command does.");
             continue;
         }
-        RunCommand(command);
+        RunCommand(command, arguments->environment);
     }
 }

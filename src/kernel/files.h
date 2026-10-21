@@ -33,10 +33,12 @@ uint64_t Close(Table* table, uint64_t descriptor);
 uint64_t Remove(const char* path);
 uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* entry);
 uint64_t MakeDirectory(const char* path);
-// 0 for a directory, otherwise SyscallErrorNotFound.
+// 0 for a directory, otherwise SyscallErrorNotDirectory or SyscallErrorNotFound.
 uint64_t CheckDirectory(const char* path);
 // Fails unless the directory is empty.
 uint64_t RemoveDirectory(const char* path);
+uint64_t Stat(const char* path, User::FileStatus* status);
+uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* status);
 void CloseAll(Table* table);
 // Waits for any filesystem call in progress, then blocks all later ones, for shutdown.
 void Quiesce();

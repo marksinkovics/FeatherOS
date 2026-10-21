@@ -32,11 +32,12 @@ uint64_t RecordReadLine(void* context, uint64_t buffer, uint64_t capacity, uint6
     return 5;
 }
 
-uint64_t RecordSpawn(void* context, uint64_t command_line, uint64_t flags)
+uint64_t RecordSpawn(void* context, uint64_t command_line, uint64_t flags, uint64_t environment)
 {
     auto* output = static_cast<OutputTarget*>(context);
     output->last_arguments[0] = command_line;
     output->last_arguments[1] = flags;
+    output->last_arguments[2] = environment;
     return 42;
 }
 
@@ -74,6 +75,16 @@ uint64_t ReadFixedUptime(void*)
 uint64_t ReadFixedCpu(void*)
 {
     return 3;
+}
+
+uint64_t ReadFixedProcessId(void*)
+{
+    return 12;
+}
+
+uint64_t ReadFixedParentProcessId(void*)
+{
+    return 4;
 }
 
 uint64_t RecordOpen(void* context, uint64_t path, uint64_t flags)
@@ -116,13 +127,13 @@ uint64_t RecordRemove(void* context, uint64_t path)
 constexpr FeatherOS::Syscall::Handlers WriteOnly = {
     CaptureCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-    nullptr,          nullptr, nullptr, nullptr, nullptr};
+    nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     CaptureCharacter, RecordReadLine,   RecordSpawn,    RecordWait,       ReadFixedClock,
     RecordExtendHeap, RecordSleep,      ReadFixedUptime, ReadFixedCpu,    RecordOpen,
     RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeek,     RecordRemove,
     RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek,
-    RecordDescriptor};
+    RecordDescriptor, RecordSeek,       RecordSeek,      ReadFixedProcessId, ReadFixedParentProcessId};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)
@@ -216,12 +227,13 @@ TEST_CASE("syscall dispatcher routes process syscalls and returns handler result
     REQUIRE(output.last_arguments[1] == 64);
     REQUIRE(output.last_arguments[2] == 0x2000);
 
-    result =
-        FeatherOS::Syscall::Dispatch(MakeRequest(Number::Spawn, 0x3000, 2), AllHandlers, &output);
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::Spawn, 0x3000, 2, 0x3800),
+                                          AllHandlers, &output);
     REQUIRE(result.action == Action::Return);
     REQUIRE(result.value == 42);
     REQUIRE(output.last_arguments[0] == 0x3000);
     REQUIRE(output.last_arguments[1] == 2);
+    REQUIRE(output.last_arguments[2] == 0x3800);
 
     result =
         FeatherOS::Syscall::Dispatch(MakeRequest(Number::Wait, 9, 0x4000, 1), AllHandlers, &output);
@@ -255,6 +267,14 @@ TEST_CASE("syscall dispatcher routes process syscalls and returns handler result
     result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::CurrentCpu), AllHandlers, &output);
     REQUIRE(result.action == Action::Return);
     REQUIRE(result.value == 3);
+
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::ProcessId), AllHandlers, &output);
+    REQUIRE(result.value == 12);
+    result =
+        FeatherOS::Syscall::Dispatch(MakeRequest(Number::ParentProcessId), AllHandlers, &output);
+    REQUIRE(result.value == 4);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ProcessId), WriteOnly, nullptr)
+                .action == Action::Invalid);
 }
 
 TEST_CASE("syscall dispatcher routes file syscalls with their arguments")
@@ -296,4 +316,15 @@ TEST_CASE("syscall dispatcher routes file syscalls with their arguments")
     REQUIRE(result.action == Action::Return);
     REQUIRE(output.last_arguments[0] == 0x8000);
     REQUIRE(output.last_arguments[1] == 64);
+
+    for (const Number number : {Number::Stat, Number::StatDescriptor})
+    {
+        output.last_arguments[0] = 0;
+        output.last_arguments[1] = 0;
+        result = FeatherOS::Syscall::Dispatch(MakeRequest(number, 0x9000, 0xA000), AllHandlers,
+                                              &output);
+        REQUIRE(result.value == 0);
+        REQUIRE(output.last_arguments[0] == 0x9000);
+        REQUIRE(output.last_arguments[1] == 0xA000);
+    }
 }

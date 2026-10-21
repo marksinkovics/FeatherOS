@@ -5,7 +5,8 @@
 
 #include <stdint.h>
 
-// /init.conf: one service per line as "<policy> <command line>"; '#' starts a comment line.
+// /system/init.conf: one service per line as "<policy> <command line>", or "env NAME=value" for a
+// variable in every service's environment. '#' starts a comment line.
 namespace FeatherOS::User::Init
 {
 
@@ -39,6 +40,8 @@ enum class LineKind : uint8_t
 {
     Empty,
     Service,
+    // An env line; service->command holds its "NAME=value".
+    Variable,
     Invalid,
 };
 
@@ -79,7 +82,12 @@ inline LineKind ParseLine(const char* line, uint64_t length, Service* service)
     }
     const char* word = line + start;
     const uint64_t word_length = word_end - start;
-    if (Matches(word, word_length, "once"))
+    const bool variable = Matches(word, word_length, "env");
+    if (variable)
+    {
+        service->policy = Policy::Once;
+    }
+    else if (Matches(word, word_length, "once"))
     {
         service->policy = Policy::Once;
     }
@@ -105,6 +113,27 @@ inline LineKind ParseLine(const char* line, uint64_t length, Service* service)
     {
         return LineKind::Invalid;
     }
+    if (variable)
+    {
+        // The name must be non-empty and the line a single NAME=value word.
+        uint64_t separator = command_start;
+        while (separator < length && line[separator] != '=' && line[separator] != ' ' &&
+               line[separator] != '\t')
+        {
+            ++separator;
+        }
+        if (separator == command_start || separator == length || line[separator] != '=')
+        {
+            return LineKind::Invalid;
+        }
+        for (uint64_t index = separator; index < length; ++index)
+        {
+            if (line[index] == ' ' || line[index] == '\t')
+            {
+                return LineKind::Invalid;
+            }
+        }
+    }
     for (uint64_t index = 0; index < command_length; ++index)
     {
         service->command[index] = line[command_start + index];
@@ -115,7 +144,31 @@ inline LineKind ParseLine(const char* line, uint64_t length, Service* service)
     service->restarts = 0;
     service->running = false;
     service->disabled = false;
-    return LineKind::Service;
+    return variable ? LineKind::Variable : LineKind::Service;
+}
+
+// Appends entry to an environment block of capacity bytes holding used bytes before its final
+// terminator. False if it does not fit.
+inline bool AppendVariable(char* block, uint64_t capacity, uint64_t* used, uint64_t* count,
+                           const char* entry)
+{
+    uint64_t length = 0;
+    while (entry[length] != '\0')
+    {
+        ++length;
+    }
+    if (*count == MaximumEnvironmentVariables || *used + length + 2 > capacity)
+    {
+        return false;
+    }
+    for (uint64_t index = 0; index <= length; ++index)
+    {
+        block[*used + index] = entry[index];
+    }
+    *used += length + 1;
+    block[*used] = '\0';
+    ++*count;
+    return true;
 }
 
 // Counts a restart at now (milliseconds since boot); false once the service exits too often.

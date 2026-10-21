@@ -40,6 +40,8 @@ bool Truncate(FileHandle* file, uint64_t size);
 bool Remove(const char* path);
 bool MakeDirectory(const char* path);
 bool IsDirectory(const char* path);
+// True for the initramfs: /system, the paths under it, and the bare names kernel code uses.
+bool IsReadOnly(const char* path);
 bool RemoveDirectory(const char* path);
 // Lists a directory, such as "/", "/home/docs", or "/system"; "/" starts with the system entry.
 // False past the last entry.

@@ -311,6 +311,11 @@ bool IsDirectory(const char* path)
     return *volume_path == '\0' || FAT16::IsDirectory(volume_path);
 }
 
+bool IsReadOnly(const char* path)
+{
+    return path != nullptr && IsSystemPath(path);
+}
+
 bool MakeDirectory(const char* path)
 {
     const char* volume_path = path == nullptr ? nullptr : DiskEntryPath(path);

@@ -356,7 +356,7 @@ void StartSecondaryCpus(KLogger& logger, limine_smp_response* smp)
     for (;;)
     {
         Process::ProcessId init;
-        if (Process::Spawn("init", 0, 0, &init) != Process::SpawnStatus::Started)
+        if (Process::Spawn("init", nullptr, 0, 0, &init) != Process::SpawnStatus::Started)
         {
             Panic("Could not start init");
         }
