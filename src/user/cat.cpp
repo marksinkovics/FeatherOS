@@ -1,87 +1,53 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <errno.h>
+#include <stdio.h>
 
 constexpr char Help[] = "usage: cat <file>\n"
                         "Prints a file. A relative name that is missing is also tried in\n"
                         "/system, so cat hello.txt works from any directory.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    if (arguments == nullptr || arguments->argument_count != 2)
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        WriteLine("usage: cat <file>");
-        Exit(1);
+        puts(Help);
+        return 0;
     }
-    const char* name = arguments->argument_values[1];
-    char path[MaximumPathLength];
-    uint64_t descriptor = CopyPath(name, path) ? OpenFile(path, OpenRead) : SyscallErrorNotFound;
-    if (descriptor == SyscallErrorNotFound && name[0] != '/')
+    if (argc != 2)
     {
-        constexpr char SystemPrefix[] = "/system/";
-        char system_path[sizeof(SystemPrefix) + MaximumPathLength];
-        uint64_t length = 0;
-        for (; SystemPrefix[length] != '\0'; ++length)
-        {
-            system_path[length] = SystemPrefix[length];
-        }
-        for (uint64_t index = 0; path[index] != '\0'; ++index)
-        {
-            system_path[length++] = path[index];
-        }
-        system_path[length] = '\0';
-        descriptor = OpenFile(system_path, OpenRead);
+        puts("usage: cat <file>");
+        return 1;
     }
-    if (IsSyscallError(descriptor))
+    const char* name = argv[1];
+    FILE* file = fopen(name, "r");
+    if (file == nullptr && errno == ENOENT && name[0] != '/')
     {
-        WriteText("cat: cannot open ");
-        WriteLine(name);
-        Exit(1);
+        char system_path[96];
+        snprintf(system_path, sizeof(system_path), "/system/%s", name);
+        file = fopen(system_path, "r");
     }
-
-    char buffer[256];
-    char last = '\n';
-    for (;;)
+    if (file == nullptr)
     {
-        const uint64_t count = ReadFile(descriptor, buffer, sizeof(buffer));
-        if (IsSyscallError(count))
-        {
-            WriteLine("cat: read failed");
-            Exit(1);
-        }
-        if (count == 0)
-        {
-            break;
-        }
-        // The console accepts only printable ASCII and newlines.
-        for (uint64_t index = 0; index < count; ++index)
-        {
-            const char character = buffer[index];
-            if (character == '\r')
-            {
-                continue;
-            }
-            if (character == '\t')
-            {
-                WriteCharacter(' ');
-            }
-            else if (character == '\n' || (character >= 0x20 && character <= 0x7E))
-            {
-                WriteCharacter(static_cast<uint64_t>(character));
-            }
-            else
-            {
-                WriteCharacter('?');
-            }
-            last = character;
-        }
+        printf("cat: cannot open %s\n", name);
+        return 1;
+    }
+    // The console shows tabs as spaces and drops other control characters.
+    int last = '\n';
+    for (int character; (character = fgetc(file)) != EOF;)
+    {
+        putchar(character);
+        last = character;
+    }
+    if (ferror(file))
+    {
+        puts("cat: read failed");
+        return 1;
     }
     if (last != '\n')
     {
-        WriteCharacter('\n');
+        putchar('\n');
     }
-    CloseFile(descriptor);
-    Exit(0);
+    fclose(file);
+    return 0;
 }

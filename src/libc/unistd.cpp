@@ -3,8 +3,10 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <sys/reboot.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -205,6 +207,39 @@ unsigned int sleep(unsigned int seconds)
 int usleep(unsigned int microseconds)
 {
     return Check<int>(FeatherOS::User::Sleep((static_cast<uint64_t>(microseconds) + 999) / 1000));
+}
+
+void* sbrk(intptr_t increment)
+{
+    if (increment < 0)
+    {
+        errno = EINVAL;
+        return reinterpret_cast<void*>(-1);
+    }
+    const uint64_t previous = FeatherOS::User::ExtendHeap(static_cast<uint64_t>(increment));
+    if (FeatherOS::User::IsSyscallError(previous))
+    {
+        errno = ENOMEM;
+        return reinterpret_cast<void*>(-1);
+    }
+    return reinterpret_cast<void*>(previous);
+}
+
+int sched_getcpu()
+{
+    return static_cast<int>(FeatherOS::User::CurrentCpu());
+}
+
+int reboot(int command)
+{
+    if (command != RB_AUTOBOOT && command != RB_POWER_OFF)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    return Check<int>(FeatherOS::User::Shutdown(command == RB_POWER_OFF
+                                                    ? FeatherOS::User::ShutdownPowerOff
+                                                    : FeatherOS::User::ShutdownRestart));
 }
 
 pid_t getpid()

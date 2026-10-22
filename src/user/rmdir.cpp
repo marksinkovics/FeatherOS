@@ -1,27 +1,27 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <stdio.h>
+#include <unistd.h>
 
 constexpr char Help[] = "usage: rmdir <directory>\n"
                         "Removes an empty directory on the disk.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    char path[MaximumPathLength];
-    if (arguments == nullptr || arguments->argument_count != 2 ||
-        !CopyPath(arguments->argument_values[1], path))
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        WriteLine("usage: rmdir <directory>");
-        Exit(1);
+        puts(Help);
+        return 0;
     }
-    if (IsSyscallError(RemoveDirectory(path)))
+    if (argc != 2)
     {
-        WriteText("rmdir: ");
-        WriteText(arguments->argument_values[1]);
-        WriteLine(": not an empty directory");
-        Exit(1);
+        puts("usage: rmdir <directory>");
+        return 1;
     }
-    Exit(0);
+    if (rmdir(argv[1]) != 0)
+    {
+        printf("rmdir: %s: not an empty directory\n", argv[1]);
+        return 1;
+    }
+    return 0;
 }

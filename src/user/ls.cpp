@@ -1,84 +1,74 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <dirent.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 constexpr char Help[] = "usage: ls [directory]\n"
                         "Lists a directory (the current one by default) with file sizes in\n"
                         "bytes; subdirectories end in /. /system holds the read-only boot files.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    const uint64_t count = arguments == nullptr ? 1 : arguments->argument_count;
-    const char* name = count == 2 ? arguments->argument_values[1] : ".";
-    char path[MaximumPathLength];
-    if (count > 2 || !CopyPath(name, path))
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        WriteLine("usage: ls [directory]");
-        Exit(1);
+        puts(Help);
+        return 0;
     }
-    // ReadDirectory reports a missing directory the same way as the end of a listing.
-    FileStatus status;
-    if (IsSyscallError(Stat(path, &status)) || status.type != FileType::Directory)
+    if (argc > 2)
     {
-        WriteText("ls: ");
-        WriteText(name);
-        WriteLine(": no such directory");
-        Exit(1);
+        puts("usage: ls [directory]");
+        return 1;
     }
-    constexpr uint64_t NameColumnWidth = 24;
-    uint64_t files = 0;
-    uint64_t directories = 0;
-    uint64_t bytes = 0;
-    DirectoryEntry entry;
-    for (uint64_t index = 0;; ++index)
+    const char* name = argc == 2 ? argv[1] : ".";
+    DIR* directory = opendir(name);
+    // Entries are looked up from inside the directory, so their paths stay short.
+    if (directory == nullptr || chdir(name) != 0)
     {
-        const uint64_t result = ReadDirectory(path, index, &entry);
-        if (result == SyscallErrorNotFound)
+        printf("ls: %s: no such directory\n", name);
+        return 1;
+    }
+    constexpr int NameColumnWidth = 24;
+    unsigned long files = 0;
+    unsigned long directories = 0;
+    unsigned long long bytes = 0;
+    for (;;)
+    {
+        errno = 0;
+        const dirent* entry = readdir(directory);
+        if (entry == nullptr)
         {
+            if (errno != 0)
+            {
+                printf("ls: %s: no such directory\n", name);
+                return 1;
+            }
             break;
         }
-        if (IsSyscallError(result))
+        const bool is_directory = entry->d_type == DT_DIR;
+        const int length = static_cast<int>(strlen(entry->d_name)) + (is_directory ? 1 : 0);
+        printf("%s%s%*s", entry->d_name, is_directory ? "/" : "",
+               length < NameColumnWidth ? NameColumnWidth - length : 1, "");
+        if (is_directory)
         {
-            WriteText("ls: ");
-            WriteText(name);
-            WriteLine(": no such directory");
-            Exit(1);
-        }
-        uint64_t length = 0;
-        for (; entry.name[length] != '\0'; ++length)
-        {
-            WriteCharacter(static_cast<uint64_t>(entry.name[length]));
-        }
-        if (entry.directory)
-        {
-            WriteCharacter('/');
-            ++length;
-        }
-        do
-        {
-            WriteCharacter(' ');
-        } while (++length < NameColumnWidth);
-        if (entry.directory)
-        {
-            WriteLine("<dir>");
+            puts("<dir>");
             ++directories;
             continue;
         }
-        WriteNumber(entry.size);
-        WriteCharacter('\n');
+        struct stat status;
+        const long long size = stat(entry->d_name, &status) == 0 ? status.st_size : 0;
+        printf("%lld\n", size);
         ++files;
-        bytes += entry.size;
+        bytes += static_cast<unsigned long long>(size);
     }
+    closedir(directory);
     if (directories > 0)
     {
-        WriteNumber(directories);
-        WriteText(directories == 1 ? " directory, " : " directories, ");
+        printf("%lu %s, ", directories, directories == 1 ? "directory" : "directories");
     }
-    WriteNumber(files);
-    WriteText(files == 1 ? " file, " : " files, ");
-    WriteNumber(bytes);
-    WriteLine(" bytes");
-    Exit(0);
+    printf("%lu %s, %llu bytes\n", files, files == 1 ? "file" : "files", bytes);
+    return 0;
 }

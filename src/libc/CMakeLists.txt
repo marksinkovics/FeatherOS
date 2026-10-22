@@ -7,6 +7,7 @@ add_library(featheros_c STATIC
     environment.cpp
     errno.cpp
     exit.cpp
+    featheros.cpp
     malloc.cpp
     math.cpp
     spawn.cpp

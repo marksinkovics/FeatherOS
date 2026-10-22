@@ -1,6 +1,7 @@
 #include "libc/environment.h"
 #include "user/process.h"
 
+#include <featheros.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -15,6 +16,7 @@ using InitFunction = void (*)();
 // on an argument, for example), so they are copied.
 char argument_storage[FeatherOS::User::MaximumCommandLineLength];
 char* argument_values[FeatherOS::User::MaximumArgumentCount + 1];
+const FeatherOS::User::ProgramArguments* arguments_page = nullptr;
 
 int CopyArguments(const FeatherOS::User::ProgramArguments& arguments)
 {
@@ -41,8 +43,14 @@ extern "C" const InitFunction __preinit_array_end[] __attribute__((visibility("h
 extern "C" const InitFunction __init_array_start[] __attribute__((visibility("hidden")));
 extern "C" const InitFunction __init_array_end[] __attribute__((visibility("hidden")));
 
+const void* featheros_arguments_page()
+{
+    return arguments_page;
+}
+
 extern "C" [[noreturn]] void _start(const FeatherOS::User::ProgramArguments* arguments)
 {
+    arguments_page = arguments;
     const int count = CopyArguments(*arguments);
     FeatherOS::LibC::LoadEnvironment(arguments->environment);
     // Global constructors, including C++ static objects, run before main.

@@ -1,61 +1,74 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
+
+#include <errno.h>
+#include <featheros.h>
+#include <spawn.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/reboot.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace FeatherOS::User;
 
 namespace
 {
 
-// Writes the first word of line, which names the command.
-void WriteCommandName(const char* line)
-{
-    for (; *line != '\0' && *line != ' '; ++line)
-    {
-        WriteCharacter(static_cast<uint64_t>(*line));
-    }
-}
+constexpr size_t MaximumWords = 16;
+constexpr size_t MaximumPathLength = 64;
+constexpr int SignalInterrupt = 2;
 
-// Programs inherit the environment init gave the shell.
-void RunCommand(const char* line, const char* environment)
+// Programs inherit the shell's environment, which init set up.
+void RunCommand(char* line)
 {
-    const uint64_t process_id = Spawn(line, 0, environment);
-    if (process_id == SyscallErrorNotFound)
+    char* words[MaximumWords + 1];
+    size_t count = 0;
+    const SplitResult split = SplitCommandLine(line, words, MaximumWords + 1, &count);
+    if (split == SplitResult::UnclosedQuote)
     {
-        WriteText("Unknown command: ");
-        WriteCommandName(line);
-        WriteCharacter('\n');
+        puts("shell: unclosed quote");
         return;
     }
-    if (process_id == SyscallErrorInvalidArgument)
+    if (split == SplitResult::TooManyWords)
     {
-        WriteLine("shell: too many arguments");
+        puts("shell: too many arguments");
         return;
     }
-    if (IsSyscallError(process_id))
+    pid_t child = 0;
+    const int error = posix_spawnp(&child, words[0], nullptr, nullptr, words, environ);
+    if (error == ENOENT)
     {
-        WriteLine("shell: could not start program");
+        printf("Unknown command: %s\n", words[0]);
+        return;
+    }
+    if (error == E2BIG)
+    {
+        puts("shell: too many arguments");
+        return;
+    }
+    if (error != 0)
+    {
+        puts("shell: could not start program");
         return;
     }
 
-    uint64_t status = 0;
-    if (IsSyscallError(Wait(process_id, &status)))
+    int status = 0;
+    if (waitpid(child, &status, 0) != child)
     {
-        WriteLine("shell: could not wait for program");
+        puts("shell: could not wait for program");
         return;
     }
-    if (status == ExitStatusInterrupted)
+    if (WIFSIGNALED(status))
     {
-        return;
+        if (WTERMSIG(status) != SignalInterrupt)
+        {
+            puts("shell: program terminated by a CPU exception");
+        }
     }
-    if (status == ExitStatusFault || status == ExitStatusKernelAccessFault)
+    else if (WEXITSTATUS(status) != 0)
     {
-        WriteLine("shell: program terminated by a CPU exception");
-    }
-    else if (status != 0)
-    {
-        WriteText("exit status ");
-        WriteNumber(status);
-        WriteCharacter('\n');
+        printf("exit status %d\n", WEXITSTATUS(status));
     }
 }
 
@@ -68,7 +81,7 @@ void ChangeDirectoryCommand(const char* argument)
         ++argument;
     }
     char path[MaximumPathLength];
-    uint64_t length = 0;
+    size_t length = 0;
     for (const char* character = argument; *character != '\0' && length < sizeof(path) - 1;
          ++character)
     {
@@ -83,22 +96,10 @@ void ChangeDirectoryCommand(const char* argument)
     }
     path[length] = '\0';
     const char* target = length == 0 ? "/home" : path;
-    if (IsSyscallError(ChangeDirectory(target)))
+    if (chdir(target) != 0)
     {
-        WriteText("cd: ");
-        WriteText(target);
-        WriteLine(": no such directory");
+        printf("cd: %s: no such directory\n", target);
     }
-}
-
-// "<working directory>> ", such as "/home/docs> ".
-void BuildPrompt(char (&prompt)[MaximumPathLength + 3])
-{
-    const uint64_t length = CurrentDirectory(prompt, MaximumPathLength);
-    const uint64_t end = IsSyscallError(length) ? 0 : length;
-    prompt[end] = '>';
-    prompt[end + 1] = ' ';
-    prompt[end + 2] = '\0';
 }
 
 } // namespace
@@ -109,21 +110,30 @@ constexpr char Help[] =
     "Ctrl+C stops the running command. The prompt shows the working directory,\n"
     "which cd changes (cd alone returns to /home) and programs inherit.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    WriteLine("FeatherOS shell. Type 'help' for commands.");
-    char line[MaximumCommandLineLength];
+    if (HelpRequested(argc, argv))
+    {
+        puts(Help);
+        return 0;
+    }
+    puts("FeatherOS shell. Type 'help' for commands.");
+    char line[64];
+    // "<working directory>> ", such as "/home/docs> ".
     char prompt[MaximumPathLength + 3];
     for (;;)
     {
-        BuildPrompt(prompt);
-        if (IsSyscallError(ReadLine(line, sizeof(line), prompt)))
+        if (getcwd(prompt, MaximumPathLength) == nullptr)
         {
-            WriteLine("shell: could not read input");
-            Exit(1);
+            prompt[0] = '\0';
         }
-        const char* command = line;
+        strcat(prompt, "> ");
+        if (featheros_read_line(prompt, line, sizeof(line)) < 0)
+        {
+            puts("shell: could not read input");
+            return 1;
+        }
+        char* command = line;
         while (*command == ' ')
         {
             ++command;
@@ -132,44 +142,41 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
         {
             continue;
         }
-        if (StringEquals(command, "cd") ||
-            (command[0] == 'c' && command[1] == 'd' && command[2] == ' '))
+        if (strcmp(command, "cd") == 0 || strncmp(command, "cd ", 3) == 0)
         {
             ChangeDirectoryCommand(command + 2);
             continue;
         }
-        if (StringEquals(command, "shutdown") || StringEquals(command, "reboot"))
+        if (strcmp(command, "shutdown") == 0 || strcmp(command, "reboot") == 0)
         {
             // Returns only if the kernel refuses.
-            Shutdown(command[0] == 's' ? ShutdownPowerOff : ShutdownRestart);
-            WriteText(command);
-            WriteLine(": not permitted");
+            reboot(command[0] == 's' ? RB_POWER_OFF : RB_AUTOBOOT);
+            printf("%s: not permitted\n", command);
             continue;
         }
-        if (StringEquals(command, "exit"))
+        if (strcmp(command, "exit") == 0)
         {
             // init restarts the console service.
-            Exit(0);
+            return 0;
         }
-        if (StringEquals(command, "pwd"))
+        if (strcmp(command, "pwd") == 0)
         {
             char directory[MaximumPathLength];
-            WriteLine(IsSyscallError(CurrentDirectory(directory, sizeof(directory))) ? "?"
-                                                                                     : directory);
+            puts(getcwd(directory, sizeof(directory)) == nullptr ? "?" : directory);
             continue;
         }
-        if (StringEquals(command, "help"))
+        if (strcmp(command, "help") == 0)
         {
-            WriteLine(
+            puts(
                 "Commands: calc [expression], date, echo <words...>, fanout <n>, "
                 "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
                 "sleep <ms>, upper, uptime, filetest, fptest, libctest, ls, cat <file>, write [-a] "
                 "<file> <text>, "
                 "rm <file>, mkdir <dir>, rmdir <dir>, env, cd [dir], pwd, exit, shutdown, reboot, "
                 "help");
-            WriteLine("Run <command> --help to see what a command does.");
+            puts("Run <command> --help to see what a command does.");
             continue;
         }
-        RunCommand(command, arguments->environment);
+        RunCommand(command);
     }
 }

@@ -1,6 +1,11 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
+#include "syscall.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// These checks call the kernel directly, since they test the exact errors it returns.
 using namespace FeatherOS::User;
 
 namespace
@@ -25,9 +30,8 @@ void Check(bool passed, const char* name)
 {
     if (!passed)
     {
-        WriteText("filetest: failed ");
-        WriteLine(name);
-        Exit(1);
+        printf("filetest: failed %s\n", name);
+        exit(1);
     }
     ++passed_checks;
 }
@@ -145,14 +149,17 @@ constexpr char Help[] =
     "Runs checks of the file syscalls on the disk: descriptors, sharing rules,\n"
     "bad pointers, the open-file limit, and cleanup when a process exits.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    // The child the main run spawns: it exits with a writer still open.
-    if (arguments != nullptr && arguments->argument_count == 2 &&
-        StringEquals(arguments->argument_values[1], "hold"))
+    if (HelpRequested(argc, argv))
     {
-        Exit(Valid(OpenFile(TestFile, OpenWrite)) ? 0 : 1);
+        puts(Help);
+        return 0;
+    }
+    // The child the main run spawns: it exits with a writer still open.
+    if (argc == 2 && strcmp(argv[1], "hold") == 0)
+    {
+        return Valid(OpenFile(TestFile, OpenWrite)) ? 0 : 1;
     }
 
     for (uint64_t index = 0; index < PatternSize; ++index)
@@ -174,8 +181,6 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
     Check(OpenFile(TestFile, OpenRead) == SyscallErrorNotFound, "the removed file is gone");
     Check(RemoveFile(TestFile) == SyscallErrorNotFound, "removing it twice");
 
-    WriteText("filetest: ");
-    WriteNumber(passed_checks);
-    WriteLine(" checks passed");
-    Exit(0);
+    printf("filetest: %llu checks passed\n", static_cast<unsigned long long>(passed_checks));
+    return 0;
 }

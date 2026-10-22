@@ -1,7 +1,10 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 namespace
 {
@@ -23,15 +26,17 @@ uint64_t FillStack(uint64_t depth)
     return sum;
 }
 
+void* const HeapFailed = reinterpret_cast<void*>(-1);
+
 bool HeapWorks()
 {
     constexpr uint64_t HeapBytes = 3 * 4096 + 100;
-    const uint64_t start = ExtendHeap(HeapBytes);
-    if (IsSyscallError(start) || ExtendHeap(0) != start + HeapBytes)
+    auto* start = static_cast<uint8_t*>(sbrk(HeapBytes));
+    if (start == HeapFailed || sbrk(0) != start + HeapBytes)
     {
         return false;
     }
-    auto* bytes = reinterpret_cast<volatile uint8_t*>(start);
+    volatile uint8_t* bytes = start;
     for (uint64_t index = 0; index < HeapBytes; ++index)
     {
         bytes[index] = static_cast<uint8_t>(index * 7);
@@ -51,13 +56,13 @@ bool HeapWorks()
 [[noreturn]] void ExhaustHeap()
 {
     constexpr uint64_t PageSize = 4096;
-    const uint64_t start = ExtendHeap(0);
+    auto* start = static_cast<uint8_t*>(sbrk(0));
     uint64_t pages = 0;
-    while (!IsSyscallError(ExtendHeap(PageSize)))
+    while (sbrk(PageSize) != HeapFailed)
     {
         ++pages;
     }
-    auto* bytes = reinterpret_cast<volatile uint8_t*>(start);
+    volatile uint8_t* bytes = start;
     for (uint64_t page = 0; page < pages; ++page)
     {
         bytes[page * PageSize] = static_cast<uint8_t>(page);
@@ -66,14 +71,13 @@ bool HeapWorks()
     {
         if (bytes[page * PageSize] != static_cast<uint8_t>(page))
         {
-            WriteLine("memtest: heap corrupted after exhaustion");
-            Exit(1);
+            puts("memtest: heap corrupted after exhaustion");
+            exit(1);
         }
     }
-    WriteText("memtest: page limit reached after ");
-    WriteNumber(pages);
-    WriteLine(" heap pages");
-    Exit(0);
+    printf("memtest: page limit reached after %llu heap pages\n",
+           static_cast<unsigned long long>(pages));
+    exit(0);
 }
 
 } // namespace
@@ -83,18 +87,20 @@ constexpr char Help[] =
     "Grows and checks the stack and heap. overflow recurses into the stack guard\n"
     "page and is terminated; exhaust grows the heap until the page limit refuses more.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    if (arguments != nullptr && arguments->argument_count == 2 &&
-        StringEquals(arguments->argument_values[1], "overflow"))
+    if (FeatherOS::User::HelpRequested(argc, argv))
+    {
+        puts(Help);
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "overflow") == 0)
     {
         FillStack(1000);
-        WriteLine("memtest: stack overflow was not caught");
-        Exit(1);
+        puts("memtest: stack overflow was not caught");
+        return 1;
     }
-    if (arguments != nullptr && arguments->argument_count == 2 &&
-        StringEquals(arguments->argument_values[1], "exhaust"))
+    if (argc == 2 && strcmp(argv[1], "exhaust") == 0)
     {
         ExhaustHeap();
     }
@@ -108,9 +114,9 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
     }
     if (FillStack(32) != expected || !HeapWorks())
     {
-        WriteLine("memtest: failed");
-        Exit(1);
+        puts("memtest: failed");
+        return 1;
     }
-    WriteLine("memtest: stack and heap ok");
-    Exit(0);
+    puts("memtest: stack and heap ok");
+    return 0;
 }

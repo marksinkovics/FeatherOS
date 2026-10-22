@@ -85,8 +85,16 @@ int WaitFor(pid_t child, int* status, bool no_hang)
 } // namespace
 
 int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t*,
-                const posix_spawnattr_t*, char* const argv[], char* const envp[])
+                const posix_spawnattr_t* attributes, char* const argv[], char* const envp[])
 {
+    uint64_t flags = 0;
+    if (attributes != nullptr)
+    {
+        flags |=
+            (attributes->flags & POSIX_SPAWN_SETSID) != 0 ? FeatherOS::User::SpawnSessionLeader : 0;
+        flags |=
+            (attributes->flags & POSIX_SPAWN_SETPGROUP) != 0 ? FeatherOS::User::SpawnBackground : 0;
+    }
     char line[FeatherOS::User::MaximumCommandLineLength];
     char environment[FeatherOS::User::MaximumEnvironmentSize];
     FeatherOS::LibC::SpawnRequestResult built = FeatherOS::LibC::BuildCommandLine(path, argv, line);
@@ -98,7 +106,7 @@ int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t*,
     {
         return ErrorFor(built);
     }
-    const uint64_t child = FeatherOS::User::Spawn(line, 0, environment);
+    const uint64_t child = FeatherOS::User::Spawn(line, flags, environment);
     if (FeatherOS::User::IsSyscallError(child))
     {
         return FeatherOS::LibC::ErrorNumber(child);
@@ -133,12 +141,45 @@ int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t*)
 
 int posix_spawnattr_init(posix_spawnattr_t* attributes)
 {
-    attributes->unused = 0;
+    attributes->flags = 0;
+    attributes->process_group = 0;
     return 0;
 }
 
 int posix_spawnattr_destroy(posix_spawnattr_t*)
 {
+    return 0;
+}
+
+int posix_spawnattr_getflags(const posix_spawnattr_t* attributes, short* flags)
+{
+    *flags = attributes->flags;
+    return 0;
+}
+
+int posix_spawnattr_setflags(posix_spawnattr_t* attributes, short flags)
+{
+    if ((flags & ~(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSID)) != 0)
+    {
+        return EINVAL;
+    }
+    attributes->flags = flags;
+    return 0;
+}
+
+int posix_spawnattr_getpgroup(const posix_spawnattr_t* attributes, pid_t* process_group)
+{
+    *process_group = attributes->process_group;
+    return 0;
+}
+
+int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t process_group)
+{
+    if (process_group != 0)
+    {
+        return EINVAL;
+    }
+    attributes->process_group = process_group;
     return 0;
 }
 

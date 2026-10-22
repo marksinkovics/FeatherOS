@@ -1,27 +1,27 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <stdio.h>
+#include <sys/stat.h>
 
 constexpr char Help[] = "usage: mkdir <directory>\n"
                         "Creates a directory on the disk.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    char path[MaximumPathLength];
-    if (arguments == nullptr || arguments->argument_count != 2 ||
-        !CopyPath(arguments->argument_values[1], path))
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        WriteLine("usage: mkdir <directory>");
-        Exit(1);
+        puts(Help);
+        return 0;
     }
-    if (IsSyscallError(MakeDirectory(path)))
+    if (argc != 2)
     {
-        WriteText("mkdir: ");
-        WriteText(arguments->argument_values[1]);
-        WriteLine(": cannot create the directory");
-        Exit(1);
+        puts("usage: mkdir <directory>");
+        return 1;
     }
-    Exit(0);
+    if (mkdir(argv[1], 0777) != 0)
+    {
+        printf("mkdir: %s: cannot create the directory\n", argv[1]);
+        return 1;
+    }
+    return 0;
 }

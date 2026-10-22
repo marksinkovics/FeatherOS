@@ -1,6 +1,7 @@
 // File-level assembly, so no compiler-generated prologue changes the registers being saved.
-// jmp_buf: x19-x28, the frame pointer x29, the return address x30, and sp. longjmp makes setjmp
-// appear to return value, or 1 if value is 0.
+// jmp_buf: x19-x28, the frame pointer x29, the return address x30, sp, and d8-d15, the
+// callee-saved part of the vector registers. longjmp makes setjmp appear to return value, or 1
+// if value is 0.
 asm(".text\n"
     ".global setjmp\n"
     ".type setjmp, %function\n"
@@ -13,6 +14,10 @@ asm(".text\n"
     "stp x29, x30, [x0, #80]\n\t"
     "mov x2, sp\n\t"
     "str x2, [x0, #96]\n\t"
+    "stp d8, d9, [x0, #104]\n\t"
+    "stp d10, d11, [x0, #120]\n\t"
+    "stp d12, d13, [x0, #136]\n\t"
+    "stp d14, d15, [x0, #152]\n\t"
     "mov w0, #0\n\t"
     "ret\n"
     ".size setjmp, . - setjmp\n"
@@ -28,6 +33,10 @@ asm(".text\n"
     "ldp x29, x30, [x0, #80]\n\t"
     "ldr x2, [x0, #96]\n\t"
     "mov sp, x2\n\t"
+    "ldp d8, d9, [x0, #104]\n\t"
+    "ldp d10, d11, [x0, #120]\n\t"
+    "ldp d12, d13, [x0, #136]\n\t"
+    "ldp d14, d15, [x0, #152]\n\t"
     "cmp w1, #0\n\t"
     "csinc w0, w1, wzr, ne\n\t"
     "ret\n"

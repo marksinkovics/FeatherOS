@@ -7,7 +7,7 @@
 #if defined(__x86_64__)
 typedef unsigned long jmp_buf[8];
 #elif defined(__aarch64__)
-// x19-x30 and sp, with room for d8-d15 once user programs may use floating point.
+// x19-x30, sp, and d8-d15.
 typedef unsigned long jmp_buf[21];
 #else
 #error "Unsupported architecture"

@@ -2,6 +2,7 @@
 #define FEATHEROS_LIBC_UNISTD_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/cdefs.h>
 #include <sys/types.h>
 
@@ -41,6 +42,9 @@ int access(const char* path, int mode);
 int isatty(int descriptor);
 unsigned int sleep(unsigned int seconds);
 int usleep(unsigned int microseconds);
+// Grows the heap that malloc also uses; the heap cannot shrink, so a negative increment fails
+// with EINVAL.
+void* sbrk(intptr_t increment);
 pid_t getpid(void);
 pid_t getppid(void);
 __attribute__((__noreturn__)) void _exit(int status);

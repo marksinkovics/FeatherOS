@@ -1,27 +1,29 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <ctype.h>
+#include <featheros.h>
+#include <stdio.h>
 
 constexpr char Help[] = "usage: upper\n"
                         "Reads one line at an upper> prompt and prints it in upper case.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    char line[MaximumCommandLineLength];
-    const uint64_t length = ReadLine(line, sizeof(line), "upper> ");
-    if (IsSyscallError(length))
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        WriteLine("upper: could not read input");
-        Exit(1);
+        puts(Help);
+        return 0;
     }
-    for (uint64_t index = 0; index < length; ++index)
+    char line[64];
+    if (featheros_read_line("upper> ", line, sizeof(line)) < 0)
     {
-        const char character = line[index];
-        WriteCharacter(static_cast<uint64_t>(
-            character >= 'a' && character <= 'z' ? character - 'a' + 'A' : character));
+        puts("upper: could not read input");
+        return 1;
     }
-    WriteCharacter('\n');
-    Exit(0);
+    for (char* character = line; *character != '\0'; ++character)
+    {
+        *character = static_cast<char>(toupper(static_cast<unsigned char>(*character)));
+    }
+    puts(line);
+    return 0;
 }

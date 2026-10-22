@@ -1,30 +1,31 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
 
 constexpr char Help[] = "usage: rm <file>\n"
                         "Deletes a file on the disk.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    char path[MaximumPathLength];
-    if (arguments == nullptr || arguments->argument_count != 2 ||
-        !CopyPath(arguments->argument_values[1], path))
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        WriteLine("usage: rm <file>");
-        Exit(1);
+        puts(Help);
+        return 0;
     }
-    const uint64_t result = RemoveFile(path);
-    if (result == 0)
+    if (argc != 2)
     {
-        Exit(0);
+        puts("usage: rm <file>");
+        return 1;
     }
-    WriteText("rm: ");
-    WriteText(arguments->argument_values[1]);
-    WriteLine(result == SyscallErrorNotFound ? ": no such file"
-              : result == SyscallErrorBusy   ? ": the file is open"
-                                             : ": cannot remove");
-    Exit(1);
+    if (unlink(argv[1]) == 0)
+    {
+        return 0;
+    }
+    printf("rm: %s%s\n", argv[1],
+           errno == ENOENT  ? ": no such file"
+           : errno == EBUSY ? ": the file is open"
+                            : ": cannot remove");
+    return 1;
 }

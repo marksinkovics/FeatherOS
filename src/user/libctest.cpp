@@ -4,15 +4,18 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <featheros.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#include <sched.h>
 #include <setjmp.h>
 #include <stdarg.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -25,9 +28,9 @@ constexpr char Help[] =
     "usage: libctest one \"two words\"\n"
     "Checks the C library: startup and arguments, constructors, string.h, ctype.h,\n"
     "stdlib.h, errno, setjmp, exit handlers, the console descriptors, stat, process\n"
-    "IDs, the environment, the heap, stdio, files and directories, time, and\n"
-    "posix_spawn, and floating point. It asks for three lines of input at \"> \"\n"
-    "prompts.";
+    "IDs, the environment, the heap, stdio, files and directories, time,\n"
+    "posix_spawn, the FeatherOS extensions, and floating point. It asks for three\n"
+    "lines of input at \"> \" prompts.";
 
 #if defined(__x86_64__)
 constexpr uintptr_t KernelAddress = 0xFFFF800000000000;
@@ -285,6 +288,46 @@ void JumpFromOuter()
     JumpFromInner();
 }
 
+#if defined(__aarch64__)
+// d8 is written behind the compiler's back: declaring it clobbered would make the compiler save
+// and restore it around the asm, hiding a longjmp that does not.
+void SetD8(uint64_t bits)
+{
+    asm volatile("fmov d8, %0" : : "r"(bits));
+}
+
+uint64_t GetD8()
+{
+    uint64_t bits;
+    asm volatile("fmov %0, d8" : "=r"(bits));
+    return bits;
+}
+
+[[noreturn]] void JumpWithD8Changed()
+{
+    SetD8(0x2222);
+    longjmp(jump_target, 1);
+}
+#endif
+
+// AArch64 callers expect d8-d15 to survive calls; x86-64 has no callee-saved vector registers.
+bool LongjmpRestoresVectorRegisters()
+{
+#if defined(__aarch64__)
+    const uint64_t original = GetD8();
+    SetD8(0x1111);
+    if (setjmp(jump_target) == 0)
+    {
+        JumpWithD8Changed();
+    }
+    const bool restored = GetD8() == 0x1111;
+    SetD8(original);
+    return restored;
+#else
+    return true;
+#endif
+}
+
 void CheckJumps()
 {
     volatile int passes = 0;
@@ -302,6 +345,7 @@ void CheckJumps()
         JumpFromOuter();
     }
     Check(second == 7, "longjmp out of nested calls");
+    Check(LongjmpRestoresVectorRegisters(), "longjmp restores callee-saved vector registers");
 }
 
 bool WriteAll(int descriptor, const char* text)
@@ -774,6 +818,61 @@ void CheckSpawn()
     Check(waitpid(-1, &status, 0) == -1 && errno == ECHILD, "waitpid with no children");
 }
 
+void CheckSpawnAttributes()
+{
+    posix_spawnattr_t attributes;
+    short flags = -1;
+    pid_t group = -1;
+    Check(posix_spawnattr_init(&attributes) == 0 &&
+              posix_spawnattr_getflags(&attributes, &flags) == 0 && flags == 0 &&
+              posix_spawnattr_getpgroup(&attributes, &group) == 0 && group == 0,
+          "posix_spawnattr_init");
+    Check(posix_spawnattr_setflags(&attributes, 0x01) == EINVAL &&
+              posix_spawnattr_setpgroup(&attributes, 5) == EINVAL,
+          "unsupported spawn attributes");
+
+    // A background child has no console, so upper cannot read its line and fails at once.
+    char* upper_arguments[] = {const_cast<char*>("upper"), nullptr};
+    pid_t child = 0;
+    int status = -1;
+    Check(posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP) == 0 &&
+              posix_spawn(&child, "upper", nullptr, &attributes, upper_arguments, environ) == 0 &&
+              waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 1,
+          "POSIX_SPAWN_SETPGROUP starts a background child");
+
+    char* echo_arguments[] = {const_cast<char*>("echo"), const_cast<char*>("session leader"),
+                              nullptr};
+    Check(posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSID) == 0 &&
+              posix_spawn(&child, "echo", nullptr, &attributes, echo_arguments, environ) == 0 &&
+              waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "POSIX_SPAWN_SETSID");
+    Check(posix_spawnattr_destroy(&attributes) == 0, "posix_spawnattr_destroy");
+}
+
+void CheckSystemCalls()
+{
+    char* start = static_cast<char*>(sbrk(0));
+    Check(start != reinterpret_cast<void*>(-1) && sbrk(4096) == start && sbrk(0) == start + 4096,
+          "sbrk grows the heap");
+    start[4095] = 'x';
+    void* block = malloc(100);
+    Check(block != nullptr, "malloc after sbrk");
+    free(block);
+    errno = 0;
+    Check(sbrk(-4096) == reinterpret_cast<void*>(-1) && errno == EINVAL, "sbrk cannot shrink");
+    const int cpu = sched_getcpu();
+    Check(cpu >= 0 && cpu < 64, "sched_getcpu");
+    errno = 0;
+    Check(reboot(RB_POWER_OFF) == -1 && errno == EPERM, "reboot is refused to programs");
+    errno = 0;
+    Check(reboot(0) == -1 && errno == EINVAL, "reboot rejects unknown commands");
+    Check(featheros_arguments_page() != nullptr, "featheros_arguments_page");
+    char line[8];
+    errno = 0;
+    Check(featheros_read_line("> ", line, 0) == -1 && errno == EINVAL,
+          "featheros_read_line needs room");
+}
+
 void CheckScanning()
 {
     int count = 0;
@@ -933,6 +1032,8 @@ int main(int argc, char** argv)
     CheckDirectories();
     CheckTime();
     CheckSpawn();
+    CheckSpawnAttributes();
+    CheckSystemCalls();
     CheckScanning();
     CheckFloatingPoint();
     CheckAssert();

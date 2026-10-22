@@ -1,0 +1,259 @@
+# The FeatherOS C Library and Its POSIX Subset
+
+FeatherOS has its own C library, written from scratch under `src/libc/` and linked statically into every program. This page lists what it provides, where it differs from ISO C and POSIX, and what is left out on purpose. Error numbers, `open` flags, `waitpid` statuses and the `reboot` commands use Linux's values, so code and documentation written for Linux read the same here.
+
+The headers are plain C, and C++ sees the same functions with C linkage. The implementation is freestanding C++ in `FeatherOS::LibC`. It uses only the compiler's own `stdint.h`, `stddef.h`, `stdarg.h`, `stdbool.h` and `float.h`, plus a `limits.h` that adds `LLONG_MAX` and similar to the compiler's.
+
+## Writing a program
+
+```cpp
+#include <stdio.h>
+
+int main(int argc, char** argv)
+{
+    printf("hello from %s\n", argv[0]);
+    return 0;
+}
+```
+
+Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. The build places it in `/system`, where the shell finds it by name. Every program in `src/user/` is written this way, except `test_program`, a kernel self-test that defines `_start` itself.
+
+**Startup.** The C library's `_start` does four things before `main`:
+- copies the arguments to writable memory, since the kernel maps them read-only
+- loads the environment
+- runs `.preinit_array` and `.init_array`, which include C++ static constructors and `__attribute__((constructor))` functions
+- calls `exit(main(argc, argv))`
+
+`argv[0]` is the program's name without `/system/`.
+
+**Exit.** `exit` runs `atexit` handlers and C++ static destructors, newest first. It then runs `.fini_array`, flushes the stdio streams, and passes the low 8 bits of the status to the kernel. `abort` exits with status 134, which a POSIX shell shows for `SIGABRT`.
+
+**Threads.** Programs are single-threaded, so nothing in the library takes a lock. `errno` is already behind `__errno_location()`, so it can become per-thread when threads arrive (see M11 in [roadmap.md](roadmap.md)).
+
+## Limits that shape the API
+
+These come from the kernel and apply everywhere below.
+
+| Limit | Value |
+| --- | --- |
+| Command line passed to a program | 63 characters, at most 16 words including the name |
+| Environment | 1 KiB and at most 32 variables |
+| Path | 63 characters |
+| Open files per process | 16 descriptors, plus the console's 0, 1 and 2 |
+| Running children per process | 16 |
+| Memory per process | 1024 pages (4 MiB), including the image and stack |
+| Clocks | the wall clock counts whole seconds; the monotonic clock counts milliseconds |
+
+## Headers
+
+### `string.h`
+
+Provides:
+- the memory functions: `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`
+- the string functions: `strlen`, `strnlen`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strchr`, `strrchr`, `strstr`, `strspn`, `strcspn`, `strpbrk`, `strtok`, `strtok_r`
+- the allocating copies `strdup` and `strndup`
+- `strerror`
+
+There is no locale, so `strcoll` and `strxfrm` are left out. `strerror` knows a message for every value in `errno.h`.
+
+### `ctype.h`
+
+The `is*` classifiers, `tolower` and `toupper`, for ASCII only, since `"C"` is the only locale.
+
+### `errno.h`
+
+`errno`, with these error numbers, at Linux's values:
+
+`EPERM ENOENT ESRCH EINTR EIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST ENOTDIR EISDIR EINVAL EMFILE ENOTTY ENOSPC ESPIPE EROFS EDOM ERANGE ENAMETOOLONG ENOSYS ENOTEMPTY EOVERFLOW EILSEQ`
+
+Each kernel error maps to one of them. A read by a program that is not in the foreground fails with `EIO`, as a background read does on Linux when there are no signals to stop the program.
+
+### `stdlib.h`
+
+- **Process:** `exit`, `_Exit`, `abort` and `atexit`. `atexit` and `__cxa_atexit` share one list of 32 handlers.
+- **Memory:** `malloc`, `calloc`, `realloc` and `free`.
+  - Blocks are 16-byte aligned and come from a first-fit allocator with address-ordered free lists.
+  - The heap grows in 64 KiB steps. Freed memory is reused but never returned to the kernel (a follow-up in the roadmap).
+  - Freeing a pointer that `malloc` did not return, or freeing one twice, aborts.
+- **Numbers:**
+  - `abs`, `labs`, `llabs`, `div`, `ldiv` and `lldiv`.
+  - `atoi`, `atol`, `atoll`, `strtol`, `strtoll`, `strtoul` and `strtoull`, with bases 0 and 2–36.
+  - `strtod`, `strtof`, `strtold` and `atof`. These are correctly rounded (ties to even), and accept hexadecimal floats, `inf`, `infinity` and `nan(...)`.
+- **Sorting:** `qsort`, a heapsort, so it never needs extra memory but is not stable. `bsearch`.
+- **Environment:** `getenv`, `setenv` and `unsetenv`. `putenv` is left out, because the table keeps its own copies of the strings.
+- **Random numbers:** `rand` and `srand`, a 64-bit linear congruential generator.
+
+Not provided:
+- `system`, because there is no `/bin/sh -c`
+- `mkstemp`, `realpath`, `mbtowc` and the other multibyte functions
+
+### `stdio.h`
+
+**Streams.** `stdin`, `stdout` and `stderr` are the console. `stdout` is line-buffered and `stderr` unbuffered. Reading the console flushes `stdout` first, so a prompt without a newline still appears.
+
+- **Opening:** `fopen` takes `"r"`, `"w"` and `"a"`, each optionally with `+`; a `b` is ignored. A disk file can have only one writer at a time, so a second open for writing fails with `EBUSY`. `fdopen` is also provided.
+- **Buffers and errors:** `fclose`, `fflush`, `setvbuf` and `setbuf`. `setvbuf` uses only the mode: every stream keeps its own 512-byte buffer. `feof`, `ferror`, `clearerr` and `fileno` are also provided.
+- **Reading and writing:** `fread`, `fwrite`, `fgetc`, `getc`, `getchar`, `ungetc`, `fgets`, `getline`, `fputc`, `putc`, `putchar`, `fputs` and `puts`.
+- **Seeking:** `fseek`, `ftell` and `rewind`. Offsets past the end of a file fail with `EINVAL`, and the console cannot seek (`ESPIPE`).
+- **Files:** `remove`, and `perror`.
+
+**Formatting.** The family is `printf`, `fprintf`, `dprintf`, `sprintf` and `snprintf`, plus their `v` forms. It supports:
+- every flag, width and precision (including `*`)
+- the length modifiers `hh h l ll j z t L`
+- the conversions `d i u o x X c s p n %`, and `f F e E g G a A`
+
+Floating-point output is exact: it is computed with big integers, and matches glibc digit for digit. Positional arguments (`%1$d`) and wide characters (`%lc`, `%ls`) are not supported.
+
+**Scanning.** `scanf`, `fscanf` and `sscanf`, plus their `v` forms, read:
+- integers, with the same length modifiers as `printf`
+- floating-point numbers, through the same parser as `strtod`
+- `%c`, `%s`, scansets (`%[...]`), `%n`, `%%`, assignment suppression (`%*d`) and field widths
+
+Not provided:
+- `tmpfile`, `tmpnam`, `rename`, `popen` and `freopen`
+- the wide-character functions
+
+Use `remove` and `fopen` in place of the file functions.
+
+### `assert.h`
+
+`assert` prints `Assertion `expr' failed.` with the file, line and function, then calls `abort`. Defining `NDEBUG` turns it off.
+
+### `setjmp.h`
+
+`setjmp` and `longjmp`, in assembly for each architecture:
+- **x86-64:** saves the callee-saved general registers, the stack pointer and the return address.
+- **AArch64:** saves the same, plus `d8`–`d15`, the callee-saved vector registers.
+
+There are no signals, so `sigsetjmp` and `siglongjmp` are not provided.
+
+### `math.h`
+
+Every function exists for `double` and, with an `f` suffix, `float`:
+- **Exact, bit for bit the same as glibc:** `fabs copysign floor ceil trunc round fmod frexp ldexp scalbn modf fmin fmax sqrt`
+- **Within 1–3 units in the last place of glibc:** `exp exp2 log log2 log10 pow sin cos tan asin acos atan atan2 sinh cosh tanh hypot`
+
+Also provided:
+- the classification macros: `fpclassify isnan isinf isfinite isnormal signbit`
+- `HUGE_VAL`, `INFINITY` and `NAN`
+- the common `M_*` constants
+
+Errors set `errno` (`math_errhandling` is `MATH_ERRNO`):
+- `EDOM` outside a function's domain
+- `ERANGE` on overflow, underflow or a pole
+
+Differences:
+- `sin`, `cos` and `tan` reduce their argument with a three-part π/2, so they lose precision above about 10^6.
+- There are no `long double` functions.
+- AArch64 programs cannot do `long double` arithmetic, because the compiler runtime routines for 128-bit floats are missing. They can still print, parse and copy `long double` values.
+- `fenv.h`, `lround`, `nextafter`, `erf`, `lgamma` and other less common functions are not provided.
+
+### `time.h`
+
+There are no time zones: every time is UTC.
+
+- **Clocks:** `time`, and `clock_gettime` with `CLOCK_REALTIME` (whole seconds) and `CLOCK_MONOTONIC` (milliseconds since boot).
+- **Conversions:**
+  - `gmtime` and `gmtime_r`; `localtime` and `localtime_r` return the same as gmtime.
+  - `mktime` and `timegm`, which normalize out-of-range fields.
+  - `asctime` and `ctime`.
+  - `strftime` with every C99 conversion, in the C locale.
+- **Sleeping:** `nanosleep`, which is never cut short, so `remaining` is always zero.
+
+Differences:
+- Dates before 1970 fail with `EOVERFLOW`.
+- `clock`, `difftime`, `timer_create` and `CLOCK_PROCESS_CPUTIME_ID` are not provided.
+
+### `unistd.h`, `fcntl.h`, `sys/stat.h`, `sys/types.h`
+
+- **Descriptors:**
+  - `read`, `write`, `close` and `lseek`.
+  - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND`. `O_CLOEXEC` is accepted and ignored.
+  - With `O_APPEND`, every write goes to the end, as POSIX requires.
+  - `O_CREAT` and `O_TRUNC` need write access.
+  - Offsets past the end of a file fail with `EINVAL`, because files cannot have holes.
+- **Files and directories:** `unlink`, `rmdir`, `mkdir`, `chdir`, `getcwd`, `stat`, `fstat`, `access` and `isatty`.
+  - There are no users or permissions.
+  - `stat` reports owner 0, and mode bits that only show whether a file is writable: `0644` or `0444`, and `0755` or `0555` for directories.
+  - Every time in `stat` is 0, because FAT16 timestamps are not read.
+  - `access` fails `W_OK` only for the read-only initramfs.
+  - `mkdir` ignores its mode.
+- **Processes:** `getpid`, `getppid` and `_exit`.
+- **Sleeping:** `sleep` and `usleep`.
+- **`environ`.**
+- **`sbrk`:** grows the same heap that `malloc` uses. The heap cannot shrink, so a negative increment fails with `EINVAL`.
+
+Not provided:
+- `fork` and the `exec*` family, because processes start with `posix_spawn`
+- `dup`, `dup2` and `pipe`, until pipes exist
+- `link`, `symlink` and `rename`
+- `chmod` and `chown`
+- `getuid` and the other user and group functions
+- `ftruncate`, `fsync` and `fcntl`
+
+### `dirent.h`
+
+`opendir`, `readdir`, `rewinddir` and `closedir`.
+
+- **Entries:** each has `d_ino`, `d_type` (`DT_DIR` or `DT_REG`) and `d_name`. `d_ino` numbers the entries from 1 within their directory.
+- **Paths:** `opendir` makes its path absolute, so a later `chdir` does not change which directory the stream reads.
+- **Left out:** listings do not include `.` and `..`. `scandir`, `telldir`, `seekdir` and `fdopendir` are not provided.
+
+### `spawn.h` and `sys/wait.h`
+
+**`posix_spawn` and `posix_spawnp`.** The path names a program in `/system`, either as `/system/ls` or as `ls`; programs elsewhere fail with `ENOENT`.
+- **Arguments:** the kernel always makes the program's name its `argv[0]`.
+- **Errors:** an argument containing a double quote fails with `EINVAL`. A command line or environment over the limits fails with `E2BIG`.
+- **Console:** by default the child takes the console until it exits.
+- **PATH:** `posix_spawnp` does not search `PATH`, since every program is in `/system`.
+
+**Attributes.** The supported flags are:
+
+| Flag | Effect on FeatherOS |
+| --- | --- |
+| `POSIX_SPAWN_SETSID` | The child leads a new session: Ctrl+C stops at it, and it may call `reboot`. init starts the shell this way. |
+| `POSIX_SPAWN_SETPGROUP` | The child starts in the background, in its own group, without the console. Its console reads fail with `EIO`. Only group 0 (a new group) is accepted. |
+
+Other flags fail with `EINVAL`. File actions can be created and destroyed, but none can be added yet.
+
+**`waitpid` and `wait`.** They use the Linux status encoding with `WIFEXITED`, `WEXITSTATUS`, `WIFSIGNALED` and `WTERMSIG`, plus `WNOHANG`. There are no signals yet, but two outcomes are reported as if signals ended the child:
+- a CPU exception reports signal 11 (`SIGSEGV`)
+- Ctrl+C reports signal 2 (`SIGINT`)
+
+A `pid` of -1 polls the children `posix_spawn` started, every 10 ms. Process groups (`pid` 0 or below -1) are not supported.
+
+### `sched.h`
+
+`sched_getcpu`, the glibc extension, returns the CPU the caller was running on. That may change as soon as it returns.
+
+### `sys/reboot.h`
+
+`reboot(RB_POWER_OFF)` and `reboot(RB_AUTOBOOT)`, with Linux's values. Only init and session leaders may call it. The kernel then stops every process, flushes the disk, and powers off or restarts. Anyone else gets `EPERM`.
+
+### `featheros.h`
+
+FeatherOS calls with no POSIX equivalent:
+- **`featheros_read_line(prompt, buffer, size)`** reads one console line with editing, and returns its length without the newline. It shows the prompt again after Ctrl+C discards a half-typed line, which printing a prompt and calling `fgets` cannot do. The shell, `calc` and `upper` use it. It flushes `stdout` first, but does not see input already buffered in `stdin`.
+- **`featheros_arguments_page()`** returns the read-only page where the kernel placed the arguments and environment. `aslr` uses it to show that the page moves between runs.
+
+### C++ support
+
+The runtime hooks `__cxa_atexit`, `__cxa_guard_acquire`/`release`/`abort`, `__cxa_pure_virtual` and `__dso_handle` are provided. So are `operator new` and `operator delete`, in their plain, array and sized forms. They are built on `malloc`, and a failed `new` aborts; the aligned and `nothrow` forms are not provided yet. Programs are built with `-fno-exceptions -fno-rtti`, and there is no C++ standard library.
+
+## Left out on purpose
+
+These need kernel features that do not exist yet. Each one is planned in [roadmap.md](roadmap.md) or listed in [ideas.md](ideas.md).
+
+| Missing | Why | Planned |
+| --- | --- | --- |
+| `signal.h`, `kill`, `sigaction` | No signals; Ctrl+C ends the foreground job | M11 (process signals) |
+| `fork`, `exec*` | Processes start with `Spawn`; `fork` needs copy-on-write | M11, if adopted |
+| `pipe`, `dup`, `dup2`, redirection | No pipes yet | M11 |
+| `pthread.h`, C11 `threads.h`, TLS | Single-threaded processes | M11 (user threads), which also makes the library thread-safe |
+| `mmap`, `munmap` | The heap is the only growable mapping | Not scheduled |
+| Shrinking the heap | `ExtendHeap` only grows | Follow-up to M11 Part 3 |
+| `locale.h`, `wchar.h`, multibyte | ASCII and the `"C"` locale only | Not scheduled |
+| Time zones | Everything is UTC | Not scheduled |
+| Users, permissions, `getuid` | No user accounts | Not scheduled |
+| Sockets, `select`, `poll` | No networking | M10 |
+| Dynamic linking, `dlopen` | Static PIEs only | [ideas.md](ideas.md) |

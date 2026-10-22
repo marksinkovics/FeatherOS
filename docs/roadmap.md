@@ -174,7 +174,7 @@ Moved: storage drivers for physical hardware, to M16.
   - locked stdio streams
 - If a `fork`-style API is adopted, build it on copy-on-write and demand paging (moved from M13); processes are currently created with `Spawn`.
 
-**Part 3 (in progress): C library.** A libc written from scratch under `src/libc/`, built as a static library and linked into every program. The public headers are plain C (wrapped in `extern "C"` for C++), so C and C++ programs both use them. The implementation is freestanding C++ in `FeatherOS::LibC`, with the same style and lint setup as the kernel. No outside code: only the compiler's freestanding headers (`stdint.h`, `stddef.h`, `stdarg.h`, `stdbool.h`, `limits.h`). Each step lands with host unit tests and a QEMU case on both architectures.
+**Part 3 (complete): C library.** A libc written from scratch under `src/libc/`, built as a static library and linked into every program. The public headers are plain C (wrapped in `extern "C"` for C++), so C and C++ programs both use them. The implementation is freestanding C++ in `FeatherOS::LibC`, with the same style and lint setup as the kernel. No outside code: only the compiler's freestanding headers (`stdint.h`, `stddef.h`, `stdarg.h`, `stdbool.h`, `limits.h`). Each step lands with host unit tests and a QEMU case on both architectures.
 
 1. **(Complete) Startup and basics:** `crt0` builds `argc`/`argv`, runs global constructors, and calls `main`, whose return value goes to `exit` (which runs `atexit` handlers). Also the C++ runtime hooks the implementation needs: `__cxa_atexit`, `__cxa_guard_*`, `__cxa_pure_virtual`, and `new`/`delete` once `malloc` exists. Also `string.h`, `ctype.h`, `errno`, `setjmp`/`longjmp`, and the integer parts of `stdlib.h` (`strtol`, `atoi`, `abs`, `qsort`, `bsearch`).
 2. **(Complete) Kernel support:** the console as descriptors 0, 1 and 2; syscall errors mapped to `errno` values; `getpid`/`getppid`; a `Stat` syscall; and an environment block passed by `Spawn` (`environ`, `getenv`, `setenv`).
@@ -186,10 +186,21 @@ Moved: storage drivers for physical hardware, to M16.
    - `spawn.h` (`posix_spawn`) with `sys/wait.h` (`waitpid`, `WNOHANG`, `WIFEXITED`)
    - `scanf`, `fscanf`, `sscanf` and their `v` forms: integers with the same length modifiers as `printf`, `%s`, `%c`, scansets (`%[...]`), `%n`, assignment suppression (`%*d`), and field widths, sharing one header-only engine with host tests against the host's `sscanf`
 6. **(Complete) Floating point:** save FPU/SIMD state per task on both architectures and drop `-mgeneral-regs-only`. Then add the floating-point conversions to `printf` and `scanf`, `strtod`/`atof`, and a small `math.h`.
-7. **Adoption:**
+7. **(Complete) Adoption:**
    - Move every program in `src/user/` onto libc and retire `runtime.h`.
    - Add a `libctest` conformance program to the matrix.
    - Document the subset in `docs/posix.md`: each function, how it differs from POSIX, and what is left out on purpose.
+
+**Step 7 summary:**
+- **Programs:** every program in `src/user/` now starts at `main` and uses the C library, and `runtime.h` is gone. The one exception is the kernel self-test `test_program`, which reads the raw arguments block. `src/user/command_line.h` holds the shared `-h`/`--help` check, a strict number parser, and the shell's command-line splitter. A host test checks that a split line reaches the program as the same words after `posix_spawn` and the kernel.
+- **Syscalls still used directly:** `filetest` and `hardening` call `syscall.h` where they test the kernel's exact errors. The `primes` workers do too, because they return 64-bit results through their exit status.
+- **New in the C library**, so programs need no raw syscalls:
+  - `posix_spawnattr_setflags`, where `POSIX_SPAWN_SETSID` makes a session leader and `POSIX_SPAWN_SETPGROUP` starts a background child; init uses both
+  - `sbrk`, `sched_getcpu`, and `reboot`
+  - `<featheros.h>`: `featheros_read_line`, a prompted line read that redraws the prompt after Ctrl+C, and `featheros_arguments_page`
+- **Fixes:** AArch64 `setjmp`/`longjmp` now save `d8`–`d15`, which step 6 had left out. `libctest` (278 checks) catches its absence.
+- **Docs:** [posix.md](posix.md) documents every header and function, how each differs from POSIX, and what is left out on purpose.
+- **Image size:** programs are larger with the C library linked in, about 20 pages at `-O0`, so `memtest exhaust` reaches about 1000 heap pages instead of 1020.
 
 **Step 6 summary:**
 - **Kernel:** the x86-64 kernel is built with `-mgeneral-regs-only`, so the kernel never uses FP/SIMD registers on either architecture. The scheduler saves and loads them on each context switch: FXSAVE on x86-64, q0–q31 with FPCR/FPSR on AArch64. Each CPU enables them at boot, and x86-64 programs start with the ABI's stack alignment. User programs drop `-mgeneral-regs-only` and `+nofp+nosimd`. `fptest` fills every vector register in 8 workers and fails if a switch loses them; with saving disabled, it does fail.
@@ -214,7 +225,7 @@ Moved: storage drivers for physical hardware, to M16.
 
 Follow-ups to Part 3, scheduled but not yet done:
 - **Return freed heap memory:**
-  - Let `ExtendHeap` take a negative increment. It unmaps the pages above the new break, frees their frames, and lowers the page count, which needs a helper that unmaps one page of a user address space.
+  - Let `ExtendHeap` take a negative increment. It unmaps the pages above the new break, frees their frames, and lowers the page count, which needs a helper that unmaps one page of a user address space. `sbrk` then accepts negative increments too.
   - The allocator shrinks the break when the free block at the end of the heap passes a threshold (about 256 KiB), keeping a 64 KiB cushion.
   - This only returns memory at the top of the heap. The full fix is `mmap`/`munmap` (in [ideas.md](ideas.md) under Scalability), with large allocations in their own mappings that `free` unmaps at once.
 

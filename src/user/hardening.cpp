@@ -1,6 +1,12 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
+#include "syscall.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+// These checks call the kernel directly, since they test the exact errors it returns.
 using namespace FeatherOS::User;
 
 namespace
@@ -18,9 +24,8 @@ void Check(bool passed, const char* name)
 {
     if (!passed)
     {
-        WriteText("hardening: failed ");
-        WriteLine(name);
-        Exit(1);
+        printf("hardening: failed %s\n", name);
+        exit(1);
     }
     ++passed_checks;
 }
@@ -35,10 +40,10 @@ bool ChildTerminated(const char* command_line)
 
 [[noreturn]] void RunViolation(const char* name)
 {
-    if (StringEquals(name, "exec-heap"))
+    if (strcmp(name, "exec-heap") == 0)
     {
-        const uint64_t page = ExtendHeap(4096);
-        auto* code = reinterpret_cast<volatile uint32_t*>(page);
+        void* page = sbrk(4096);
+        auto* code = static_cast<volatile uint32_t*>(page);
 #if defined(__x86_64__)
         *code = 0xC3;
 #elif defined(__aarch64__)
@@ -46,34 +51,38 @@ bool ChildTerminated(const char* command_line)
 #endif
         reinterpret_cast<void (*)()>(page)();
     }
-    else if (StringEquals(name, "write-code"))
+    else if (strcmp(name, "write-code") == 0)
     {
         *reinterpret_cast<volatile uint8_t*>(&RunViolation) = 0;
     }
-    else if (StringEquals(name, "kernel-read"))
+    else if (strcmp(name, "kernel-read") == 0)
     {
         (void)*reinterpret_cast<volatile uint64_t*>(KernelAddress);
     }
-    else if (StringEquals(name, "bad-syscall"))
+    else if (strcmp(name, "bad-syscall") == 0)
     {
         Syscall(static_cast<SyscallNumber>(99));
     }
-    Exit(0);
+    exit(0);
 }
 
 } // namespace
 
 constexpr char Help[] =
     "usage: hardening\n"
-    "Runs 44 checks that the kernel rejects bad syscalls, pointers, ELF files,\n"
+    "Runs 46 checks that the kernel rejects bad syscalls, pointers, ELF files,\n"
     "and memory violations from user programs.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    if (arguments != nullptr && arguments->argument_count == 2)
+    if (HelpRequested(argc, argv))
     {
-        RunViolation(arguments->argument_values[1]);
+        puts(Help);
+        return 0;
+    }
+    if (argc == 2)
+    {
+        RunViolation(argv[1]);
     }
 
     char buffer[16];
@@ -111,8 +120,6 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
         Check(!IsSyscallError(Wait(child, &status)) && status == 0, "waiting for children");
     }
 
-    WriteText("hardening: ");
-    WriteNumber(passed_checks);
-    WriteLine(" checks passed");
-    Exit(0);
+    printf("hardening: %llu checks passed\n", static_cast<unsigned long long>(passed_checks));
+    return 0;
 }

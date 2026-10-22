@@ -106,8 +106,9 @@ PRIMES_WORKER_OUTPUT = re.compile(
 EXHAUST_OUTPUT = re.compile(
     r"^memtest: page limit reached after (\d+) heap pages\r?$", re.MULTILINE
 )
-# The 1024-page limit also covers the image, stack, and arguments pages.
-MINIMUM_EXHAUST_PAGES = 1000
+# The 1024-page limit also covers the stack, the arguments page, and the
+# image, which is about 20 pages with the C library linked in.
+MINIMUM_EXHAUST_PAGES = 960
 ASLR_OUTPUT = re.compile(
     r"^aslr: image=(\d+) stack=(\d+) args=(\d+) heap=(\d+)\r?$", re.MULTILINE
 )
@@ -131,7 +132,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 264 checks passed",
+    "libctest: 278 checks passed",
     "libctest: exit handlers ran in order",
     # env prints the variables init.conf sets, which the shell passes on.
     "HOME=/home",

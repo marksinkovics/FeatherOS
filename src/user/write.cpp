@@ -1,48 +1,42 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <stdio.h>
+#include <string.h>
 
 constexpr char Help[] = "usage: write [-a] <file> <text...>\n"
                         "Writes the text and a newline to a file on the disk, replacing it;\n"
                         "-a appends instead.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    const uint64_t count = arguments == nullptr ? 0 : arguments->argument_count;
-    const bool append = count > 1 && StringEquals(arguments->argument_values[1], "-a");
-    const uint64_t name_index = append ? 2 : 1;
-    char path[MaximumPathLength];
-    if (count < name_index + 2 || !CopyPath(arguments->argument_values[name_index], path))
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        WriteLine("usage: write [-a] <file> <text...>");
-        Exit(1);
+        puts(Help);
+        return 0;
     }
-    const uint64_t descriptor =
-        OpenFile(path, OpenWrite | OpenCreate | (append ? OpenAppend : OpenTruncate));
-    if (IsSyscallError(descriptor))
+    const bool append = argc > 1 && strcmp(argv[1], "-a") == 0;
+    const int name_index = append ? 2 : 1;
+    if (argc < name_index + 2)
     {
-        WriteText("write: cannot open ");
-        WriteLine(arguments->argument_values[name_index]);
-        Exit(1);
+        puts("usage: write [-a] <file> <text...>");
+        return 1;
     }
-    for (uint64_t index = name_index + 1; index < count; ++index)
+    FILE* file = fopen(argv[name_index], append ? "a" : "w");
+    if (file == nullptr)
     {
-        const char* word = arguments->argument_values[index];
-        uint64_t length = 0;
-        while (word[length] != '\0')
-        {
-            ++length;
-        }
-        const char* separator = index + 1 < count ? " " : "\n";
-        if (WriteFile(descriptor, word, length) != length ||
-            WriteFile(descriptor, separator, 1) != 1)
-        {
-            WriteLine("write: the disk is full");
-            Exit(1);
-        }
+        printf("write: cannot open %s\n", argv[name_index]);
+        return 1;
     }
-    CloseFile(descriptor);
-    Exit(0);
+    for (int index = name_index + 1; index < argc; ++index)
+    {
+        fputs(argv[index], file);
+        fputc(index + 1 < argc ? ' ' : '\n', file);
+    }
+    const bool failed = ferror(file) != 0;
+    if (fclose(file) != 0 || failed)
+    {
+        puts("write: the disk is full");
+        return 1;
+    }
+    return 0;
 }

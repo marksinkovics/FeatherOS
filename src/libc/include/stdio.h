@@ -81,8 +81,8 @@ int vsprintf(char* buffer, const char* format, va_list arguments) __FEATHEROS_PR
 int vsnprintf(char* buffer, size_t size, const char* format, va_list arguments)
     __FEATHEROS_PRINTF(3, 0);
 
-// Integers (with the same length modifiers as printf), %c, %s, %[...], %n, %*, and widths;
-// a floating-point conversion stops the scan for now.
+// Integers (with the same length modifiers as printf), floating point, %c, %s, %[...], %n, %*,
+// and widths.
 int scanf(const char* format, ...) __FEATHEROS_SCANF(1, 2);
 int fscanf(FILE* stream, const char* format, ...) __FEATHEROS_SCANF(2, 3);
 int sscanf(const char* text, const char* format, ...) __FEATHEROS_SCANF(2, 3);

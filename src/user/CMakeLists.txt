@@ -4,13 +4,15 @@ set(CMAKE_EXE_LINKER_FLAGS "")
 # Each entry is <program name>:<source file>. The build places <name>-<arch>.elf in
 # build/<arch>/programs, and every program there goes into the initramfs.
 set(FEATHEROS_PROGRAMS
-    test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout
+    init:init shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout
     memtest:memtest sleep:sleep hardening:hardening aslr:aslr uptime:uptime primes:primes
-    filetest:filetest ls:ls cat:cat write:write rm:rm mkdir:mkdir rmdir:rmdir init:init
+    filetest:filetest ls:ls cat:cat write:write rm:rm mkdir:mkdir rmdir:rmdir env:env
+    fptest:fptest libctest:libctest
 )
-# Programs that start at main() rather than defining _start themselves.
-set(FEATHEROS_MAIN_PROGRAMS
-    env:env fptest:fptest libctest:libctest
+# Programs that define _start themselves instead of linking the C library's, which calls main.
+# The kernel's own tests run test_program and read the raw arguments block.
+set(FEATHEROS_START_PROGRAMS
+    test:test_program
 )
 
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker_${ARCH}.ld)
@@ -36,8 +38,8 @@ function(featheros_add_program entry)
 endfunction()
 
 foreach (entry ${FEATHEROS_PROGRAMS})
-    featheros_add_program(${entry})
-endforeach ()
-foreach (entry ${FEATHEROS_MAIN_PROGRAMS})
     featheros_add_program(${entry} featheros_crt0)
+endforeach ()
+foreach (entry ${FEATHEROS_START_PROGRAMS})
+    featheros_add_program(${entry})
 endforeach ()
