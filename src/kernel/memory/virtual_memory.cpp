@@ -101,6 +101,22 @@ bool MapPage(AddressSpace& address_space, uint64_t virtual_address, uint64_t phy
 #endif
 }
 
+bool UnmapUserPage(AddressSpace& address_space, uint64_t virtual_address,
+                   uint64_t* physical_address)
+{
+    if (physical_address == nullptr)
+    {
+        return false;
+    }
+#if defined(ARCH_x86_64)
+    return Arch::X86_64::UnmapUserPage(address_space, virtual_address, physical_address);
+#elif defined(ARCH_aarch64)
+    return Arch::AArch64::UnmapUserPage(address_space, virtual_address, physical_address);
+#else
+#error "Unsupported architecture for user page unmapping"
+#endif
+}
+
 bool ActivateAddressSpace(const AddressSpace& address_space)
 {
 #if defined(ARCH_x86_64)

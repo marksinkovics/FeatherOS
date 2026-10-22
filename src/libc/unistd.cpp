@@ -209,17 +209,14 @@ int usleep(unsigned int microseconds)
     return Check<int>(FeatherOS::User::Sleep((static_cast<uint64_t>(microseconds) + 999) / 1000));
 }
 
+// The kernel takes a negative increment as its two's-complement value. Shrinking below the start
+// of the heap fails with EINVAL, and growing past the page limit with ENOMEM.
 void* sbrk(intptr_t increment)
 {
-    if (increment < 0)
-    {
-        errno = EINVAL;
-        return reinterpret_cast<void*>(-1);
-    }
     const uint64_t previous = FeatherOS::User::ExtendHeap(static_cast<uint64_t>(increment));
     if (FeatherOS::User::IsSyscallError(previous))
     {
-        errno = ENOMEM;
+        errno = increment < 0 ? EINVAL : ENOMEM;
         return reinterpret_cast<void*>(-1);
     }
     return reinterpret_cast<void*>(previous);

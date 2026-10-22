@@ -671,9 +671,40 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
     return 0;
 }
 
+// Unmaps the whole pages between the new and the old break, and frees their frames. The page
+// holding the new break stays, with its old contents.
+uint64_t ShrinkHeap(UserProgram& program, uint64_t decrement)
+{
+    const uint64_t previous_break = program.heap_break;
+    if (decrement > previous_break - program.heap_start)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    const uint64_t page_size = Memory::PageSize;
+    const uint64_t new_break = previous_break - decrement;
+    const uint64_t page_end = (previous_break + page_size - 1) & ~(page_size - 1);
+    for (uint64_t page_address = (new_break + page_size - 1) & ~(page_size - 1);
+         page_address < page_end; page_address += page_size)
+    {
+        uint64_t physical_address;
+        if (Memory::UnmapUserPage(program.address_space, page_address, &physical_address))
+        {
+            Memory::FreePageFrame(physical_address);
+            --program.mapped_page_count;
+        }
+    }
+    program.heap_break = new_break;
+    return previous_break;
+}
+
+// A negative increment, as a two's-complement value, shrinks the heap.
 uint64_t ExtendHeapSyscall(void* context, uint64_t increment)
 {
     UserProgram& program = static_cast<ProcessRecord*>(context)->program;
+    if (static_cast<int64_t>(increment) < 0)
+    {
+        return ShrinkHeap(program, 0 - increment);
+    }
     const uint64_t previous_break = program.heap_break;
     // The heap may grow up to, but never into, the stack region's guard page.
     const uint64_t stack_region_base =

@@ -73,7 +73,7 @@ Each kernel error maps to one of them. A read by a program that is not in the fo
 - **Process:** `exit`, `_Exit`, `abort` and `atexit`. `atexit` and `__cxa_atexit` share one list of 32 handlers.
 - **Memory:** `malloc`, `calloc`, `realloc` and `free`.
   - Blocks are 16-byte aligned and come from a first-fit allocator with address-ordered free lists.
-  - The heap grows in 64 KiB steps. Freed memory is reused but never returned to the kernel (a follow-up in the roadmap).
+  - The heap grows in 64 KiB steps. Freed memory is reused, and once more than 256 KiB is free at the end of the heap, all but 64 KiB of it goes back to the kernel. Free space below blocks still in use stays, since only the end of the heap can move.
   - Freeing a pointer that `malloc` did not return, or freeing one twice, aborts.
 - **Numbers:**
   - `abs`, `labs`, `llabs`, `div`, `ldiv` and `lldiv`.
@@ -181,7 +181,7 @@ Differences:
 - **Processes:** `getpid`, `getppid` and `_exit`.
 - **Sleeping:** `sleep` and `usleep`.
 - **`environ`.**
-- **`sbrk`:** grows the same heap that `malloc` uses. The heap cannot shrink, so a negative increment fails with `EINVAL`.
+- **`sbrk`:** moves the end of the heap that `malloc` also uses. A negative increment returns the whole pages above the new end to the kernel, and going below the heap's start fails with `EINVAL`. `malloc` never lowers the break below memory a program got from `sbrk` itself. `brk` is not provided.
 
 Not provided:
 - `fork` and the `exec*` family, because processes start with `posix_spawn`
@@ -250,8 +250,7 @@ These need kernel features that do not exist yet. Each one is planned in [roadma
 | `fork`, `exec*` | Processes start with `Spawn`; `fork` needs copy-on-write | M11, if adopted |
 | `pipe`, `dup`, `dup2`, redirection | No pipes yet | M11 |
 | `pthread.h`, C11 `threads.h`, TLS | Single-threaded processes | M11 (user threads), which also makes the library thread-safe |
-| `mmap`, `munmap` | The heap is the only growable mapping | Not scheduled |
-| Shrinking the heap | `ExtendHeap` only grows | Follow-up to M11 Part 3 |
+| `mmap`, `munmap` | The heap is the only growable mapping, so free space below used blocks cannot be returned | [ideas.md](ideas.md) |
 | `locale.h`, `wchar.h`, multibyte | ASCII and the `"C"` locale only | Not scheduled |
 | Time zones | Everything is UTC | Not scheduled |
 | Users, permissions, `getuid` | No user accounts | Not scheduled |

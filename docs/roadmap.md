@@ -172,6 +172,7 @@ Moved: storage drivers for physical hardware, to M16.
   - a per-thread `errno` behind `__errno_location()`
   - locked `__cxa_guard_*` for function-local statics
   - locked stdio streams
+  - a TLB shootdown when the heap shrinks, since `UnmapUserPage` flushes only the current CPU, which is enough only while each address space runs on one CPU at a time
 - If a `fork`-style API is adopted, build it on copy-on-write and demand paging (moved from M13); processes are currently created with `Spawn`.
 
 **Part 3 (complete): C library.** A libc written from scratch under `src/libc/`, built as a static library and linked into every program. The public headers are plain C (wrapped in `extern "C"` for C++), so C and C++ programs both use them. The implementation is freestanding C++ in `FeatherOS::LibC`, with the same style and lint setup as the kernel. No outside code: only the compiler's freestanding headers (`stdint.h`, `stddef.h`, `stdarg.h`, `stdbool.h`, `limits.h`). Each step lands with host unit tests and a QEMU case on both architectures.
@@ -223,11 +224,13 @@ Moved: storage drivers for physical hardware, to M16.
 
 **Step 1 summary:** `src/libc/` builds as `libfeatheros_c.a` in CMake, which now also builds the user programs into `build/<arch>/programs`. A program with a `main` links the C library's `_start`, which copies `argv` to writable memory, runs constructors and calls `exit(main(...))`. Also included: `string.h`, `ctype.h`, `errno.h`, `setjmp.h` in assembly for each architecture, the integer parts of `stdlib.h`, and the C++ runtime hooks. Host unit tests cover the `strtol` parser and heapsort, and the shell test runs `libctest` (75 checks plus exit-handler order) on both architectures.
 
-Follow-ups to Part 3, scheduled but not yet done:
-- **Return freed heap memory:**
-  - Let `ExtendHeap` take a negative increment. It unmaps the pages above the new break, frees their frames, and lowers the page count, which needs a helper that unmaps one page of a user address space. `sbrk` then accepts negative increments too.
-  - The allocator shrinks the break when the free block at the end of the heap passes a threshold (about 256 KiB), keeping a 64 KiB cushion.
-  - This only returns memory at the top of the heap. The full fix is `mmap`/`munmap` (in [ideas.md](ideas.md) under Scalability), with large allocations in their own mappings that `free` unmaps at once.
+**Follow-up (complete): returning freed heap memory.** `ExtendHeap` takes a negative increment: it unmaps the whole pages above the new break, frees their frames, and lowers the page count, through a new `UnmapUserPage` on both architectures. `sbrk` passes negative increments through. `malloc` gives back all but a 64 KiB cushion, in 64 KiB steps, when more than 256 KiB is free at the end of the heap, and only while the break is still where its memory ends.
+- **Tests:**
+  - Host tests cover the release, its threshold and cushion, refusing when the end has moved, and a randomized run while shrinking.
+  - `memtest exhaust` now grows to the page limit, shrinks back, and must grow as far again.
+  - `hardening` checks that a page the heap gave back faults, and that the heap cannot shrink below its start (48 checks).
+  - `libctest` (282 checks) checks that `free` returns memory and leaves a program's own `sbrk` memory alone.
+- **Still open:** only the top of the heap can be returned. `mmap`/`munmap` (in [ideas.md](ideas.md) under Scalability), with large allocations in their own mappings, would return any freed block at once.
 
 Out of scope for Part 3:
 - `fork`/`exec`: `posix_spawn` covers process creation until copy-on-write exists.

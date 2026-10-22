@@ -23,6 +23,9 @@ struct Arena
     size_t limit = Capacity;
     size_t gap = 0;
     int grow_calls = 0;
+    int shrink_calls = 0;
+    // Set when something else has moved the end, as a program's own sbrk would.
+    bool end_moved = false;
 };
 
 void* GrowArena(size_t size, void* context)
@@ -39,11 +42,23 @@ void* GrowArena(size_t size, void* context)
     return memory;
 }
 
+bool ShrinkArena(void* end, size_t size, void* context)
+{
+    auto* arena = static_cast<Arena*>(context);
+    if (arena->end_moved || end != arena->bytes + arena->used || size > arena->used)
+    {
+        return false;
+    }
+    arena->used -= size;
+    ++arena->shrink_calls;
+    return true;
+}
+
 struct Heap
 {
-    Heap() : arena(std::make_unique<Arena>())
+    explicit Heap(bool shrinking = false) : arena(std::make_unique<Arena>())
     {
-        allocator.Initialize(GrowArena, arena.get());
+        allocator.Initialize(GrowArena, arena.get(), shrinking ? ShrinkArena : nullptr);
     }
 
     std::unique_ptr<Arena> arena;
@@ -222,9 +237,8 @@ TEST_CASE("allocation fails cleanly when the heap cannot grow")
     REQUIRE(heap.allocator.Free(small));
 }
 
-TEST_CASE("random allocations keep their contents until freed")
+void RunRandomAllocations(Heap& heap, uint32_t maximum_size)
 {
-    Heap heap;
     std::map<uint8_t*, std::pair<size_t, uint8_t>> live;
     uint32_t state = 2024;
     auto next = [&state]()
@@ -234,17 +248,19 @@ TEST_CASE("random allocations keep their contents until freed")
     };
     auto verify = [](uint8_t* pointer, size_t size, uint8_t value)
     {
-        for (size_t index = 0; index < size; ++index)
+        size_t index = 0;
+        while (index < size && pointer[index] == value)
         {
-            REQUIRE(pointer[index] == value);
+            ++index;
         }
+        REQUIRE(index == size);
     };
     for (int step = 0; step < 5000; ++step)
     {
         const uint32_t action = next() % 3;
         if (action == 0 || live.empty())
         {
-            const size_t size = next() % 3000;
+            const size_t size = next() % maximum_size;
             auto* pointer = static_cast<uint8_t*>(heap.allocator.Allocate(size));
             REQUIRE(pointer != nullptr);
             const auto value = static_cast<uint8_t>(next());
@@ -263,7 +279,7 @@ TEST_CASE("random allocations keep their contents until freed")
             REQUIRE(heap.allocator.Free(pointer));
             continue;
         }
-        const size_t new_size = next() % 5000;
+        const size_t new_size = next() % (maximum_size * 5 / 3);
         bool invalid = true;
         auto* resized = static_cast<uint8_t*>(heap.allocator.Resize(pointer, new_size, &invalid));
         REQUIRE(resized != nullptr);
@@ -277,4 +293,74 @@ TEST_CASE("random allocations keep their contents until freed")
         REQUIRE(heap.allocator.Free(pointer));
     }
     REQUIRE(heap.allocator.FreeBlockCount() == 1);
+}
+
+TEST_CASE("random allocations keep their contents until freed")
+{
+    Heap heap;
+    RunRandomAllocations(heap, 3000);
+}
+
+TEST_CASE("a large free block at the end of the heap goes back, all but a cushion")
+{
+    Heap heap(true);
+    void* small = heap.allocator.Allocate(100);
+    void* large = heap.allocator.Allocate(1024 * 1024);
+    REQUIRE(large != nullptr);
+    const size_t peak = heap.arena->used;
+    REQUIRE(heap.allocator.Free(large));
+    REQUIRE(heap.arena->shrink_calls == 1);
+    REQUIRE(heap.arena->used < peak);
+    REQUIRE(heap.arena->used % HeapAllocator::GrowthStep == 0);
+    // What stays free at the end is between the cushion and the threshold.
+    REQUIRE(heap.allocator.FreeBytes() >= HeapAllocator::ReleaseCushion);
+    REQUIRE(heap.allocator.FreeBytes() < HeapAllocator::ReleaseThreshold);
+    // The heap still works, and grows again from its new end.
+    void* again = heap.allocator.Allocate(512 * 1024);
+    REQUIRE(again != nullptr);
+    REQUIRE(heap.allocator.Free(again));
+    REQUIRE(heap.allocator.Free(small));
+    REQUIRE(heap.allocator.FreeBlockCount() == 1);
+}
+
+TEST_CASE("small free blocks and free space below used blocks stay in the heap")
+{
+    Heap heap(true);
+    void* small = heap.allocator.Allocate(100 * 1024);
+    REQUIRE(heap.allocator.Free(small));
+    REQUIRE(heap.arena->shrink_calls == 0);
+
+    void* first = heap.allocator.Allocate(200 * 1024);
+    void* middle = heap.allocator.Allocate(100 * 1024);
+    REQUIRE(heap.allocator.Free(first));
+    REQUIRE(heap.arena->shrink_calls == 0);
+    void* large = heap.allocator.Allocate(400 * 1024);
+    REQUIRE(heap.allocator.Free(large));
+    REQUIRE(heap.arena->shrink_calls == 1);
+    REQUIRE(heap.allocator.FreeBytes() >= 200 * 1024 + HeapAllocator::ReleaseCushion);
+    // With middle gone, everything is one free block at the end, which goes back too.
+    REQUIRE(heap.allocator.Free(middle));
+    REQUIRE(heap.arena->shrink_calls == 2);
+    REQUIRE(heap.allocator.FreeBlockCount() == 1);
+    REQUIRE(heap.allocator.FreeBytes() < HeapAllocator::ReleaseThreshold);
+}
+
+TEST_CASE("the heap keeps its memory when the end has moved")
+{
+    Heap heap(true);
+    void* large = heap.allocator.Allocate(1024 * 1024);
+    const size_t peak = heap.arena->used;
+    heap.arena->end_moved = true;
+    REQUIRE(heap.allocator.Free(large));
+    REQUIRE(heap.arena->shrink_calls == 0);
+    REQUIRE(heap.arena->used == peak);
+    REQUIRE(heap.allocator.Allocate(1024 * 1024) == large);
+}
+
+TEST_CASE("random allocations survive the heap shrinking under them")
+{
+    Heap heap(true);
+    RunRandomAllocations(heap, 60000);
+    REQUIRE(heap.arena->shrink_calls > 0);
+    REQUIRE(heap.arena->used <= HeapAllocator::ReleaseThreshold + HeapAllocator::GrowthStep);
 }

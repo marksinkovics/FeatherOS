@@ -51,17 +51,25 @@ bool HeapWorks()
     return true;
 }
 
-// Grows the heap until the per-process page limit refuses more, then checks that the memory it
-// already has still works.
-[[noreturn]] void ExhaustHeap()
+constexpr uint64_t PageSize = 4096;
+
+uint64_t GrowUntilRefused()
 {
-    constexpr uint64_t PageSize = 4096;
-    auto* start = static_cast<uint8_t*>(sbrk(0));
     uint64_t pages = 0;
     while (sbrk(PageSize) != HeapFailed)
     {
         ++pages;
     }
+    return pages;
+}
+
+// Grows the heap until the per-process page limit refuses more, then checks that the memory it
+// already has still works. Shrinking the heap must then give every page back, so it grows as far
+// a second time.
+[[noreturn]] void ExhaustHeap()
+{
+    auto* start = static_cast<uint8_t*>(sbrk(0));
+    const uint64_t pages = GrowUntilRefused();
     volatile uint8_t* bytes = start;
     for (uint64_t page = 0; page < pages; ++page)
     {
@@ -75,7 +83,13 @@ bool HeapWorks()
             exit(1);
         }
     }
-    printf("memtest: page limit reached after %llu heap pages\n",
+    if (sbrk(-static_cast<intptr_t>(pages * PageSize)) == HeapFailed || sbrk(0) != start ||
+        GrowUntilRefused() != pages)
+    {
+        puts("memtest: shrinking the heap did not return its pages");
+        exit(1);
+    }
+    printf("memtest: page limit reached after %llu heap pages, twice\n",
            static_cast<unsigned long long>(pages));
     exit(0);
 }
@@ -85,7 +99,8 @@ bool HeapWorks()
 constexpr char Help[] =
     "usage: memtest [overflow|exhaust]\n"
     "Grows and checks the stack and heap. overflow recurses into the stack guard\n"
-    "page and is terminated; exhaust grows the heap until the page limit refuses more.";
+    "page and is terminated; exhaust grows the heap until the page limit refuses more,\n"
+    "gives it all back, and checks that it grows as far again.";
 
 int main(int argc, char** argv)
 {

@@ -17,16 +17,25 @@ public:
     // Returns bytes of new memory, or nullptr. Memory from consecutive calls may be contiguous,
     // as a growing program break is.
     using Grow = void* (*)(size_t bytes, void* context);
+    // Gives back the last bytes before end, if end is still where the memory from Grow stops
+    // (nothing else grew the break since). False if it could not.
+    using Shrink = bool (*)(void* end, size_t bytes, void* context);
 
     static constexpr size_t Alignment = 16;
     // Requests the heap in steps of at least this much, so small allocations rarely need a
     // syscall.
     static constexpr size_t GrowthStep = 64 * 1024;
+    // When the free block at the end of the heap reaches this size, it is cut back to
+    // ReleaseCushion and the rest is returned, in whole growth steps. The cushion keeps a
+    // program that frees and allocates in a loop from making a syscall each time.
+    static constexpr size_t ReleaseThreshold = 256 * 1024;
+    static constexpr size_t ReleaseCushion = GrowthStep;
 
     // Must be called first; a global allocator then needs no constructor.
-    void Initialize(Grow grow_function, void* grow_context)
+    void Initialize(Grow grow_function, void* grow_context, Shrink shrink_function = nullptr)
     {
         grow = grow_function;
+        shrink = shrink_function;
         context = grow_context;
         free_list = nullptr;
         last_marker = nullptr;
@@ -69,6 +78,7 @@ public:
             return false;
         }
         Insert(block);
+        ReleaseTail();
         return true;
     }
 
@@ -91,6 +101,7 @@ public:
         if (needed <= block->size)
         {
             Split(block, needed);
+            ReleaseTail();
             return pointer;
         }
         // Absorb the free block that follows, if it is adjacent and large enough.
@@ -109,6 +120,7 @@ public:
         }
         CopyBytes(moved, pointer, block->size - HeaderSize);
         Insert(block);
+        ReleaseTail();
         return moved;
     }
 
@@ -281,15 +293,43 @@ private:
         }
     }
 
-    size_t TailFreeBytes() const
+    // The free block that ends where the last region's end marker starts, if there is one.
+    Block* TailFreeBlock() const
     {
-        const Block* last = free_list;
+        Block* last = free_list;
         while (last != nullptr && last->next != nullptr)
         {
             last = last->next;
         }
-        return last != nullptr && last_marker != nullptr && Adjacent(last, last_marker) ? last->size
-                                                                                        : 0;
+        return last != nullptr && last_marker != nullptr && Adjacent(last, last_marker) ? last
+                                                                                        : nullptr;
+    }
+
+    size_t TailFreeBytes() const
+    {
+        const Block* tail = TailFreeBlock();
+        return tail == nullptr ? 0 : tail->size;
+    }
+
+    // The end marker moves down to the new end, so the region stays closed off.
+    void ReleaseTail()
+    {
+        Block* tail = TailFreeBlock();
+        if (shrink == nullptr || tail == nullptr || tail->size < ReleaseThreshold)
+        {
+            return;
+        }
+        const size_t release = (tail->size - ReleaseCushion) & ~(GrowthStep - 1);
+        uint8_t* end = reinterpret_cast<uint8_t*>(last_marker) + EndMarkerSize;
+        if (release == 0 || !shrink(end, release, context))
+        {
+            return;
+        }
+        tail->size -= release;
+        auto* marker = reinterpret_cast<Block*>(reinterpret_cast<uint8_t*>(tail) + tail->size);
+        marker->size = EndMarkerSize;
+        marker->magic = UsedMagic;
+        last_marker = marker;
     }
 
     bool Extend(size_t needed)
@@ -320,6 +360,7 @@ private:
     }
 
     Grow grow;
+    Shrink shrink;
     void* context;
     Block* free_list;
     Block* last_marker;

@@ -51,6 +51,13 @@ bool ChildTerminated(const char* command_line)
 #endif
         reinterpret_cast<void (*)()>(page)();
     }
+    else if (strcmp(name, "freed-heap") == 0)
+    {
+        auto* page = static_cast<volatile uint8_t*>(sbrk(2 * 4096));
+        page[4096] = 1;
+        sbrk(-2 * 4096);
+        page[4096] = 2;
+    }
     else if (strcmp(name, "write-code") == 0)
     {
         *reinterpret_cast<volatile uint8_t*>(&RunViolation) = 0;
@@ -70,7 +77,7 @@ bool ChildTerminated(const char* command_line)
 
 constexpr char Help[] =
     "usage: hardening\n"
-    "Runs 46 checks that the kernel rejects bad syscalls, pointers, ELF files,\n"
+    "Runs 48 checks that the kernel rejects bad syscalls, pointers, ELF files,\n"
     "and memory violations from user programs.";
 
 int main(int argc, char** argv)
@@ -95,12 +102,16 @@ int main(int argc, char** argv)
     Check(Spawn(kernel_text) == SyscallErrorBadAddress, "kernel Spawn command line");
     Check(Spawn("echo", 0, kernel_text) == SyscallErrorBadAddress, "kernel Spawn environment");
     Check(Wait(123456, nullptr) == SyscallErrorNotChild, "Wait for a non-child");
-    Check(ExtendHeap(UINT64_MAX) == SyscallErrorInvalidArgument, "oversized ExtendHeap");
+    Check(ExtendHeap(static_cast<uint64_t>(INT64_MAX)) == SyscallErrorInvalidArgument,
+          "oversized ExtendHeap");
+    Check(ExtendHeap(static_cast<uint64_t>(INT64_MIN)) == SyscallErrorInvalidArgument,
+          "shrinking the heap below its start");
     Check(Sleep(UINT64_MAX) == SyscallErrorInvalidArgument, "oversized Sleep");
     const uint64_t bad_elf = Spawn("badelf");
     Check(IsSyscallError(bad_elf) && bad_elf != SyscallErrorNotFound, "kernel-half ELF");
 
     Check(ChildTerminated("hardening exec-heap"), "executing the heap");
+    Check(ChildTerminated("hardening freed-heap"), "using a page the heap returned");
     Check(ChildTerminated("hardening write-code"), "writing code");
     Check(ChildTerminated("hardening kernel-read"), "reading kernel memory");
     Check(ChildTerminated("hardening bad-syscall"), "invalid syscall number");

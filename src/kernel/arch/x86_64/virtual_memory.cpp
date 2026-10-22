@@ -409,6 +409,51 @@ bool TranslateUserPage(const AddressSpace& address_space, uint64_t virtual_addre
     return true;
 }
 
+bool UnmapUserPage(AddressSpace& address_space, uint64_t virtual_address,
+                   uint64_t* physical_address)
+{
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
+    if (virtual_address >= 0x0000800000000000 || virtual_address % PageSize != 0 ||
+        address_space.root_physical_address == 0 ||
+        (address_space.root_physical_address & ~PageAddressMask) != 0)
+    {
+        return false;
+    }
+
+    const size_t table_indices[] = {
+        (virtual_address >> 39) & 0x1FF,
+        (virtual_address >> 30) & 0x1FF,
+        (virtual_address >> 21) & 0x1FF,
+    };
+    volatile uint64_t* level = PhysicalTable(address_space.root_physical_address);
+    for (size_t table_index = 0; level != nullptr && table_index < 3; ++table_index)
+    {
+        const uint64_t entry = level[table_indices[table_index]];
+        if ((entry & Present) == 0 || (entry & LargePage) != 0 || (entry & UserAccessible) == 0)
+        {
+            return false;
+        }
+        level = PhysicalTable(entry & PageAddressMask);
+    }
+    if (level == nullptr)
+    {
+        return false;
+    }
+
+    const size_t pt_index = (virtual_address >> 12) & 0x1FF;
+    const uint64_t entry = level[pt_index];
+    if ((entry & Present) == 0 || (entry & UserAccessible) == 0)
+    {
+        return false;
+    }
+    level[pt_index] = 0;
+    // Only this CPU's TLB is flushed. That is enough while a process runs on one CPU at a time,
+    // because switching to an address space reloads CR3, which drops its non-global entries.
+    InvalidatePage(virtual_address);
+    *physical_address = entry & PageAddressMask;
+    return true;
+}
+
 bool ActivateAddressSpace(const AddressSpace& address_space)
 {
     if (address_space.root_physical_address == 0 ||

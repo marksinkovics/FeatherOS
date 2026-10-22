@@ -104,7 +104,8 @@ PRIMES_WORKER_OUTPUT = re.compile(
     r"^primes: worker \d+ found \d+ on CPU \d+(?:,\d+)*\r?$", re.MULTILINE
 )
 EXHAUST_OUTPUT = re.compile(
-    r"^memtest: page limit reached after (\d+) heap pages\r?$", re.MULTILINE
+    r"^memtest: page limit reached after (\d+) heap pages, twice\r?$",
+    re.MULTILINE,
 )
 # The 1024-page limit also covers the stack, the arguments page, and the
 # image, which is about 20 pages with the C library linked in.
@@ -132,7 +133,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 278 checks passed",
+    "libctest: 282 checks passed",
     "libctest: exit handlers ran in order",
     # env prints the variables init.conf sets, which the shell passes on.
     "HOME=/home",
@@ -149,7 +150,7 @@ EXPECTED_SHELL_OUTPUT = (
     # memtest overflow ends at the stack guard page with ExitStatusFault.
     "shell: program terminated by a CPU exception",
     "sleep: slept 1100 ms",
-    "hardening: 46 checks passed",
+    "hardening: 48 checks passed",
     "fptest: 8 of 8 workers kept their registers",
     "primes: 9592 primes below 100000 with 4 workers in ",
     "calc> ",

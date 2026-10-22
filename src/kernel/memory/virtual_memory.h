@@ -37,6 +37,9 @@ bool ProtectPage(AddressSpace& address_space, uint64_t virtual_address, PageFlag
 // Resolves a present, user-accessible 4 KiB page; fails for unmapped and kernel-only addresses.
 bool TranslateUserPage(const AddressSpace& address_space, uint64_t virtual_address,
                        uint64_t* physical_address, bool* writable);
+// Removes a present user page and returns its frame, which the caller frees.
+bool UnmapUserPage(AddressSpace& address_space, uint64_t virtual_address,
+                   uint64_t* physical_address);
 bool ActivateAddressSpace(const AddressSpace& address_space);
 void ActivateKernelAddressSpace();
 

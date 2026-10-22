@@ -527,7 +527,8 @@ void CheckAllocation()
 
 void CheckHeapReuse()
 {
-    // Freed blocks merge again, so the same memory serves later allocations.
+    // Freeing the pieces leaves one large free block at the end of the heap, which goes back to
+    // the kernel; the host tests check the merging itself.
     constexpr size_t Pieces = 32;
     constexpr size_t PieceSize = 64 * 1024;
     void* pieces[Pieces];
@@ -537,26 +538,29 @@ void CheckHeapReuse()
         Check(piece != nullptr, "allocating 2 MiB in pieces");
         memset(piece, 0x11, PieceSize);
     }
+    const uint64_t break_with_pieces = ProgramBreak();
     for (void* piece : pieces)
     {
         free(piece);
     }
-    const uint64_t break_after_pieces = ProgramBreak();
+    Check(ProgramBreak() + Pieces * PieceSize / 2 < break_with_pieces,
+          "freeing the pieces returns their memory");
     void* whole = malloc(Pieces * PieceSize - 4096);
-    Check(whole != nullptr && ProgramBreak() == break_after_pieces,
-          "freed pieces merge into one large block");
+    Check(whole != nullptr && ProgramBreak() <= break_with_pieces + 64 * 1024,
+          "the returned memory can be allocated again");
     free(whole);
+    const uint64_t settled_break = ProgramBreak();
     for (int round = 0; round < 200; ++round)
     {
         free(malloc(8000));
     }
-    Check(ProgramBreak() == break_after_pieces, "repeated allocations reuse memory");
+    Check(ProgramBreak() == settled_break, "repeated allocations reuse memory");
 
     // More than the 1024-page limit fails without using up pages, so the heap can still grow.
     errno = 0;
     Check(malloc(8 * 1024 * 1024) == nullptr && errno == ENOMEM, "malloc past the page limit");
     void* larger = malloc(Pieces * PieceSize + 256 * 1024);
-    Check(larger != nullptr && ProgramBreak() > break_after_pieces,
+    Check(larger != nullptr && ProgramBreak() > settled_break,
           "the heap grows after a failed request");
     free(larger);
 }
@@ -851,15 +855,29 @@ void CheckSpawnAttributes()
 
 void CheckSystemCalls()
 {
+    void* const failed = reinterpret_cast<void*>(-1);
     char* start = static_cast<char*>(sbrk(0));
-    Check(start != reinterpret_cast<void*>(-1) && sbrk(4096) == start && sbrk(0) == start + 4096,
-          "sbrk grows the heap");
+    Check(start != failed && sbrk(4096) == start && sbrk(0) == start + 4096, "sbrk grows the heap");
     start[4095] = 'x';
-    void* block = malloc(100);
-    Check(block != nullptr, "malloc after sbrk");
-    free(block);
+    Check(sbrk(-4096) == start + 4096 && sbrk(0) == start, "sbrk shrinks the heap");
     errno = 0;
-    Check(sbrk(-4096) == reinterpret_cast<void*>(-1) && errno == EINVAL, "sbrk cannot shrink");
+    Check(sbrk(INTPTR_MIN) == failed && errno == EINVAL, "sbrk below the heap's start");
+
+    constexpr size_t Large = 1024 * 1024;
+    void* block = malloc(Large);
+    char* grown = static_cast<char*>(sbrk(0));
+    free(block);
+    Check(block != nullptr && static_cast<char*>(sbrk(0)) + Large / 2 < grown,
+          "free returns memory to the kernel");
+
+    // The program's own sbrk memory above malloc's keeps malloc from lowering the break.
+    block = malloc(Large);
+    char* own = static_cast<char*>(sbrk(4096));
+    free(block);
+    own[4095] = 'y';
+    Check(block != nullptr && own != failed && sbrk(0) == own + 4096 && own[4095] == 'y',
+          "malloc leaves the program's sbrk memory alone");
+    Check(sbrk(-4096) == own + 4096, "returning the program's sbrk memory");
     const int cpu = sched_getcpu();
     Check(cpu >= 0 && cpu < 64, "sched_getcpu");
     errno = 0;

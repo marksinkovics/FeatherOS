@@ -42,8 +42,9 @@ int access(const char* path, int mode);
 int isatty(int descriptor);
 unsigned int sleep(unsigned int seconds);
 int usleep(unsigned int microseconds);
-// Grows the heap that malloc also uses; the heap cannot shrink, so a negative increment fails
-// with EINVAL.
+// Moves the end of the heap that malloc also uses, and returns the old end. A negative increment
+// returns the whole pages above the new end to the kernel; going below the heap's start fails
+// with EINVAL. While a program's own sbrk memory lies above malloc's, malloc cannot shrink.
 void* sbrk(intptr_t increment);
 pid_t getpid(void);
 pid_t getppid(void);

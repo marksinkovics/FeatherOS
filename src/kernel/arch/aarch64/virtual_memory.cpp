@@ -439,6 +439,50 @@ bool TranslateUserPage(const AddressSpace& address_space, uint64_t virtual_addre
     return true;
 }
 
+bool UnmapUserPage(AddressSpace& address_space, uint64_t virtual_address,
+                   uint64_t* physical_address)
+{
+    FeatherOS::Sync::SpinLockGuard guard(page_table_lock);
+    if (virtual_address >= (1ULL << 48) || virtual_address % PageSize != 0 ||
+        address_space.root_physical_address == 0 ||
+        (address_space.root_physical_address & ~PageAddressMask) != 0)
+    {
+        return false;
+    }
+
+    const size_t table_indices[] = {
+        (virtual_address >> 39) & 0x1FF,
+        (virtual_address >> 30) & 0x1FF,
+        (virtual_address >> 21) & 0x1FF,
+    };
+    volatile uint64_t* level = PhysicalTable(address_space.root_physical_address);
+    for (size_t table_index = 0; level != nullptr && table_index < 3; ++table_index)
+    {
+        const uint64_t entry = level[table_indices[table_index]];
+        if ((entry & (DescriptorValid | DescriptorTableOrPage)) !=
+            (DescriptorValid | DescriptorTableOrPage))
+        {
+            return false;
+        }
+        level = PhysicalTable(entry & PageAddressMask);
+    }
+    if (level == nullptr)
+    {
+        return false;
+    }
+
+    const size_t level3_index = (virtual_address >> 12) & 0x1FF;
+    const uint64_t descriptor = level[level3_index];
+    if ((descriptor & DescriptorValid) == 0 || (descriptor & AccessPermissionUser) == 0)
+    {
+        return false;
+    }
+    level[level3_index] = 0;
+    InvalidatePage(virtual_address);
+    *physical_address = descriptor & PageAddressMask;
+    return true;
+}
+
 bool ActivateAddressSpace(const AddressSpace& address_space)
 {
     if (address_space.root_physical_address == 0 ||

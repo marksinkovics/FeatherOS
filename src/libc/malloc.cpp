@@ -37,11 +37,22 @@ void* GrowHeap(size_t bytes, void*)
     return reinterpret_cast<void*>(previous + padding);
 }
 
+// A program that also called sbrk owns the memory above the allocator's, so the break is only
+// lowered while it still ends where the allocator's memory does.
+bool ShrinkHeap(void* end, size_t bytes, void*)
+{
+    if (FeatherOS::User::ExtendHeap(0) != reinterpret_cast<uint64_t>(end))
+    {
+        return false;
+    }
+    return !FeatherOS::User::IsSyscallError(FeatherOS::User::ExtendHeap(0 - bytes));
+}
+
 HeapAllocator& Heap()
 {
     if (!initialized)
     {
-        allocator.Initialize(GrowHeap, nullptr);
+        allocator.Initialize(GrowHeap, nullptr, ShrinkHeap);
         initialized = true;
     }
     return allocator;
