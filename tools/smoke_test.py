@@ -67,6 +67,8 @@ SHELL_INPUT = (
     b"typed into stdin\nread by fgets\n42 answer\nenv\n"
     b"mkdir work\ncd work\nwrite a.txt in work\npwd\ncat a.txt\ncd ..\n"
     b"cat work/a.txt\ncd /\nls\ncat hello.txt\ncd nowhere\ncd\npwd\n"
+    b"ls /dev\nwrite /tmp/note.txt kept in tmp\ncat /tmp/note.txt\n"
+    b"cat /proc/self/status\ncat /proc/meminfo\n"
     b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
     b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\nfptest 8\n"
@@ -133,7 +135,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 282 checks passed",
+    "libctest: 295 checks passed",
     "libctest: exit handlers ran in order",
     # env prints the variables init.conf sets, which the shell passes on.
     "HOME=/home",
@@ -142,6 +144,11 @@ EXPECTED_SHELL_OUTPUT = (
     "home/",
     "FeatherOS initramfs is ready.",
     "cd: nowhere: no such directory",
+    # /dev, /tmp, and /proc; the console shows tabs as spaces.
+    "random                  0",
+    "kept in tmp",
+    "Name: cat",
+    "MemTotal: ",
     "hello feather os",
     "upper> ",
     "MIXED CASE",

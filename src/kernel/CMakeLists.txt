@@ -74,6 +74,9 @@ set(SRC
     ${SRCROOT}/filesystem/fat_names.cpp
     ${SRCROOT}/filesystem/path.cpp
     ${SRCROOT}/storage/partition.cpp
+    ${SRCROOT}/filesystem/devices.cpp
+    ${SRCROOT}/filesystem/procfs.cpp
+    ${SRCROOT}/filesystem/tmpfs.cpp
     ${SRCROOT}/filesystem/vfs.cpp
     ${SRCROOT}/elf/elf_loader.cpp
     ${SRCROOT}/input/input.cpp

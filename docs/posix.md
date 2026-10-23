@@ -44,6 +44,19 @@ These come from the kernel and apply everywhere below.
 | Memory per process | 1024 pages (4 MiB), including the image and stack |
 | Clocks | the wall clock counts whole seconds; the monotonic clock counts milliseconds |
 
+## The file system
+
+`/` is the FAT16 disk. These are mounted on top of it:
+
+| Path | Contents |
+| --- | --- |
+| `/system` | The read-only initramfs, which holds every program |
+| `/dev` | `null`, `zero` and `random`, as on Linux; all take writes |
+| `/tmp` | A RAM filesystem, emptied on restart: at most 128 entries and 4 MiB, with case-sensitive names |
+| `/proc` | Read-only: `meminfo`, and `<pid>/status` for each process; `/proc/self` is the caller |
+
+Disk names ignore case and are at most 63 characters, and no file can have holes. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
+
 ## Headers
 
 ### `string.h`
@@ -176,7 +189,8 @@ Differences:
   - There are no users or permissions.
   - `stat` reports owner 0, and mode bits that only show whether a file is writable: `0644` or `0444`, and `0755` or `0555` for directories.
   - Every time in `stat` is 0, because FAT16 timestamps are not read.
-  - `access` fails `W_OK` only for the read-only initramfs.
+  - `access` fails `W_OK` for the read-only initramfs and `/proc`.
+  - `isatty` is true only for the console, not for the devices in `/dev`, which are also `S_IFCHR`.
   - `mkdir` ignores its mode.
 - **Processes:** `getpid`, `getppid` and `_exit`.
 - **Sleeping:** `sleep` and `usleep`.

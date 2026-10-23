@@ -172,6 +172,11 @@ bool GrowHeap(size_t minimum_size)
 namespace FeatherOS::Memory
 {
 
+uint64_t HeapMappedBytes()
+{
+    return mapped_page_count * PageSize;
+}
+
 bool InitializeHeap()
 {
     if (initialized)

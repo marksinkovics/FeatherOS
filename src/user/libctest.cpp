@@ -28,9 +28,9 @@ constexpr char Help[] =
     "usage: libctest one \"two words\"\n"
     "Checks the C library: startup and arguments, constructors, string.h, ctype.h,\n"
     "stdlib.h, errno, setjmp, exit handlers, the console descriptors, stat, process\n"
-    "IDs, the environment, the heap, stdio, files and directories, time,\n"
-    "posix_spawn, the FeatherOS extensions, and floating point. It asks for three\n"
-    "lines of input at \"> \" prompts.";
+    "IDs, the environment, the heap, stdio, files and directories, /dev, /tmp,\n"
+    "/proc, time, posix_spawn, the FeatherOS extensions, and floating point. It\n"
+    "asks for three lines of input at \"> \" prompts.";
 
 #if defined(__x86_64__)
 constexpr uintptr_t KernelAddress = 0xFFFF800000000000;
@@ -744,6 +744,74 @@ void CheckDirectories()
     Check(rmdir(WorkDirectory) == 0, "rmdir");
 }
 
+bool FileContains(const char* path, const char* text)
+{
+    FILE* file = fopen(path, "r");
+    if (file == nullptr)
+    {
+        return false;
+    }
+    char contents[1024];
+    const size_t length = fread(contents, 1, sizeof(contents) - 1, file);
+    fclose(file);
+    contents[length] = '\0';
+    return strstr(contents, text) != nullptr;
+}
+
+void CheckVirtualFiles()
+{
+    FILE* null_file = fopen("/dev/null", "w");
+    Check(null_file != nullptr && fputs("discarded", null_file) >= 0 && fclose(null_file) == 0,
+          "writing /dev/null");
+    char bytes[16];
+    int descriptor = open("/dev/null", O_RDONLY);
+    Check(descriptor >= 0 && read(descriptor, bytes, sizeof(bytes)) == 0 && !isatty(descriptor) &&
+              close(descriptor) == 0,
+          "reading /dev/null ends at once");
+    memset(bytes, 0x55, sizeof(bytes));
+    descriptor = open("/dev/zero", O_RDONLY);
+    Check(descriptor >= 0 && read(descriptor, bytes, sizeof(bytes)) == sizeof(bytes) &&
+              bytes[0] == 0 && bytes[15] == 0 && close(descriptor) == 0,
+          "reading /dev/zero");
+    unsigned char first[16];
+    unsigned char second[16];
+    descriptor = open("/dev/random", O_RDONLY);
+    Check(descriptor >= 0 && read(descriptor, first, sizeof(first)) == sizeof(first) &&
+              read(descriptor, second, sizeof(second)) == sizeof(second) &&
+              memcmp(first, second, sizeof(first)) != 0 && close(descriptor) == 0,
+          "reading /dev/random");
+    struct stat status;
+    Check(stat("/dev/random", &status) == 0 && S_ISCHR(status.st_mode), "devices are S_IFCHR");
+
+    Check(mkdir("/tmp/libctest", 0755) == 0, "mkdir in /tmp");
+    FILE* file = fopen("/tmp/libctest/Data.txt", "w");
+    Check(file != nullptr && fprintf(file, "kept in RAM %d\n", 42) > 0 && fclose(file) == 0,
+          "writing a /tmp file");
+    Check(FileContains("/tmp/libctest/Data.txt", "kept in RAM 42") &&
+              access("/tmp/libctest/data.txt", F_OK) != 0,
+          "/tmp keeps contents and names are case-sensitive");
+    Check(unlink("/tmp/libctest/Data.txt") == 0 && rmdir("/tmp/libctest") == 0,
+          "removing from /tmp");
+
+    char expected[32];
+    snprintf(expected, sizeof(expected), "Pid:\t%d\n", getpid());
+    Check(FileContains("/proc/self/status", "Name:\tlibctest\n") &&
+              FileContains("/proc/self/status", expected),
+          "/proc/self/status");
+    Check(FileContains("/proc/meminfo", "MemTotal:\t"), "/proc/meminfo");
+    snprintf(expected, sizeof(expected), "%d", getpid());
+    bool listed = false;
+    DIR* processes = opendir("/proc");
+    for (const dirent* entry = processes == nullptr ? nullptr : readdir(processes);
+         entry != nullptr; entry = readdir(processes))
+    {
+        listed = listed || (strcmp(entry->d_name, expected) == 0 && entry->d_type == DT_DIR);
+    }
+    Check(processes != nullptr && closedir(processes) == 0 && listed, "/proc lists the process");
+    errno = 0;
+    Check(open("/proc/meminfo", O_WRONLY) == -1 && errno == EROFS, "/proc is read-only");
+}
+
 void CheckTime()
 {
     const time_t now = time(nullptr);
@@ -1048,6 +1116,7 @@ int main(int argc, char** argv)
     CheckFileStreams();
     CheckDescriptorFiles();
     CheckDirectories();
+    CheckVirtualFiles();
     CheckTime();
     CheckSpawn();
     CheckSpawnAttributes();

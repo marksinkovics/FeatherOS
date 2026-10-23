@@ -7,6 +7,8 @@
 #include "kernel/filesystem/initramfs.h"
 #include "kernel/files.h"
 #include "kernel/filesystem/path.h"
+#include "kernel/filesystem/procfs.h"
+#include "kernel/filesystem/tmpfs.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/panic.h"
@@ -523,7 +525,8 @@ uint64_t CopyPathFromUser(const ProcessRecord& process, uint64_t address,
     {
         return copied;
     }
-    return copied == 0 && Path::Resolve(process.working_directory, text, path)
+    return copied == 0 && Path::Resolve(process.working_directory, text, path) &&
+                   Path::ReplaceProcSelf(path, process.id)
                ? 0
                : User::SyscallErrorNameTooLong;
 }
@@ -1175,6 +1178,78 @@ uint64_t RunProcess(void* context)
     }
 }
 
+// Processes are listed by ascending ID.
+bool ProcessAt(uint32_t index, uint64_t* process_id)
+{
+    Sync::SpinLockGuard guard(process_lock);
+    for (const ProcessRecord* process = process_list; process != nullptr; process = process->next)
+    {
+        uint32_t smaller = 0;
+        for (const ProcessRecord* other = process_list; other != nullptr; other = other->next)
+        {
+            smaller += other->id < process->id ? 1 : 0;
+        }
+        if (smaller == index)
+        {
+            *process_id = process->id;
+            return true;
+        }
+    }
+    return false;
+}
+
+char StateLetter(Scheduler::TaskState state)
+{
+    switch (state)
+    {
+    case Scheduler::TaskState::Ready:
+    case Scheduler::TaskState::Running:
+        return 'R';
+    case Scheduler::TaskState::Blocked:
+    case Scheduler::TaskState::Sleeping:
+        return 'S';
+    default:
+        return 'Z';
+    }
+}
+
+bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
+{
+    Sync::SpinLockGuard guard(process_lock);
+    const ProcessRecord* process = FindProcessLocked(process_id);
+    if (process == nullptr)
+    {
+        return false;
+    }
+    uint32_t length = 0;
+    for (; process->name[length] != '\0' && length < sizeof(status->name) - 1; ++length)
+    {
+        status->name[length] = process->name[length];
+    }
+    status->name[length] = '\0';
+    status->state = StateLetter(Scheduler::GetState(process->task));
+    status->process_id = process->id;
+    status->parent_id = process->parent;
+    status->pages = process->program.mapped_page_count;
+    status->page_limit = process->program.page_limit;
+    status->open_files = 0;
+    for (const Files::OpenFile& file : process->files.files)
+    {
+        status->open_files += file.used ? 1 : 0;
+    }
+    return true;
+}
+
+void DescribeMemory(Procfs::MemoryStatus* status)
+{
+    Memory::PageAllocatorStats stats = {};
+    Memory::GetPageAllocatorStats(&stats);
+    status->total_bytes = stats.total_frames * Memory::PageSize;
+    status->free_bytes = stats.free_frames * Memory::PageSize;
+    status->kernel_heap_bytes = Memory::HeapMappedBytes();
+    status->tmp_bytes = Tmpfs::UsedBytes();
+}
+
 } // namespace
 
 UserLayout DefaultUserLayout()
@@ -1198,6 +1273,7 @@ UserLayout RandomUserLayout()
 
 void Initialize(uint64_t offset)
 {
+    Procfs::SetSource({ProcessAt, DescribeProcess, DescribeMemory});
     hhdm_offset = offset;
     Sync::SpinLockGuard guard(process_lock);
     process_list = nullptr;

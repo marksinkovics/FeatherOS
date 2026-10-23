@@ -175,6 +175,22 @@ Moved: storage drivers for physical hardware, to M16.
   - a TLB shootdown when the heap shrinks, since `UnmapUserPage` flushes only the current CPU, which is enough only while each address space runs on one CPU at a time
 - If a `fork`-style API is adopted, build it on copy-on-write and demand paging (moved from M13); processes are currently created with `Spawn`.
 
+**Remaining parts, in order** (agreed after Part 3):
+4. **Virtual files** (complete): `/dev/null`, `/dev/zero`, `/dev/random`, a RAM-backed `/tmp`, `/proc/<pid>/status` and `/proc/meminfo`. This adds file kinds other than disk files, which pipes reuse, and `ps` reads `/proc`.
+5. **Signals, pipes and jobs:** signals and `kill`, `pipe` and `dup2`, and the shell's `|`, `>`, `<` and `&`. `primes` can then return results through a pipe instead of its exit status.
+6. **Process tools:** `ps` and `top`, with per-process CPU time from the scheduler's tick accounting.
+7. **Terminal:** raw keyboard input and cursor control, then shell history and line editing, then `edit`.
+8. **Threads:** user threads with TLS, the thread-safe C library, and the TLB shootdown.
+
+`cron`, more shell utilities and program packaging, and a more capable `calc` fit between the parts. `fork` stays optional.
+
+**Part 4 (complete): virtual files.**
+- **VFS:** `/dev`, `/proc` and `/tmp` are mounted beside `/system`. Each open file records its kind (archive, disk, device, memory or generated), which replaces the disk-only flag.
+- **`/dev`:** `null`, `zero` and `random` (`Random::Next`, from `RDRAND`/`RNDR` when present). They have a new `Device` file type, which the C library reports as `S_IFCHR`; `isatty` now checks for the console itself.
+- **`/tmp`:** a RAM filesystem on the kernel heap with nested, case-sensitive names, limited to 128 entries and 4 MiB, and following the disk's one-writer and no-removing-open-files rules.
+- **`/proc`:** `meminfo` and `<pid>/status`, generated at open from the process table and memory counters through callbacks. `/proc/self` resolves to the caller.
+- **Tests:** host tests for each filesystem (with stand-ins for the process table, the kernel heap and the random source) and for `/proc/self`. `libctest` (295 checks) and the shell test use all three on both architectures.
+
 **Part 3 (complete): C library.** A libc written from scratch under `src/libc/`, built as a static library and linked into every program. The public headers are plain C (wrapped in `extern "C"` for C++), so C and C++ programs both use them. The implementation is freestanding C++ in `FeatherOS::LibC`, with the same style and lint setup as the kernel. No outside code: only the compiler's freestanding headers (`stdint.h`, `stddef.h`, `stdarg.h`, `stdbool.h`, `limits.h`). Each step lands with host unit tests and a QEMU case on both architectures.
 
 1. **(Complete) Startup and basics:** `crt0` builds `argc`/`argv`, runs global constructors, and calls `main`, whose return value goes to `exit` (which runs `atexit` handlers). Also the C++ runtime hooks the implementation needs: `__cxa_atexit`, `__cxa_guard_*`, `__cxa_pure_virtual`, and `new`/`delete` once `malloc` exists. Also `string.h`, `ctype.h`, `errno`, `setjmp`/`longjmp`, and the integer parts of `stdlib.h` (`strtol`, `atoi`, `abs`, `qsort`, `bsearch`).

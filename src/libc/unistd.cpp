@@ -175,14 +175,17 @@ int access(const char* path, int mode)
     return 0;
 }
 
+// Devices under /dev are character devices too, so the kernel's file type tells the console
+// apart.
 int isatty(int descriptor)
 {
-    struct stat status;
-    if (fstat(descriptor, &status) != 0)
+    FeatherOS::User::FileStatus status{};
+    if (descriptor < 0 ||
+        Check<int>(FeatherOS::User::StatDescriptor(static_cast<uint64_t>(descriptor), &status)) < 0)
     {
         return 0;
     }
-    if (!S_ISCHR(status.st_mode))
+    if (status.type != FeatherOS::User::FileType::Console)
     {
         errno = ENOTTY;
         return 0;

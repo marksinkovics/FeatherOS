@@ -10,10 +10,12 @@ namespace
 constexpr uint64_t KnownFlags =
     User::OpenRead | User::OpenWrite | User::OpenCreate | User::OpenTruncate | User::OpenAppend;
 constexpr uint32_t MaximumOpenDiskFiles = 64;
+// FAT16 directory clusters fit in 16 bits, so disk keys never set the top bit.
+constexpr uint64_t MemoryKeyBit = 1ULL << 63;
 
-// Disk files open anywhere in the system, keyed by where their directory entry is. A VFS handle
-// caches the file's size and first cluster, so a second writer, or removing an open file, would act
-// on stale state.
+// Disk and /tmp files open anywhere in the system, keyed by where their directory entry or tmpfs
+// node is. A VFS handle caches the file's size and first cluster, so a second writer, or removing
+// an open file, would act on stale state.
 struct DiskFileUse
 {
     uint64_t key;
@@ -28,7 +30,16 @@ uint32_t disk_file_count = 0;
 
 uint64_t UseKey(const VFS::FileHandle& handle)
 {
+    if (handle.kind == VFS::FileKind::Memory)
+    {
+        return MemoryKeyBit | handle.node;
+    }
     return (static_cast<uint64_t>(handle.directory_cluster) << 32) | handle.entry_index;
+}
+
+bool IsReadOnlyKind(VFS::FileKind kind)
+{
+    return kind == VFS::FileKind::Archive || kind == VFS::FileKind::Generated;
 }
 
 DiskFileUse* FindUse(uint64_t key)
@@ -97,7 +108,7 @@ OpenFile* FindOpenFile(Table* table, uint64_t descriptor)
 
 void CloseLocked(OpenFile* file)
 {
-    if (file->handle.block_backed)
+    if (VFS::IsTracked(file->handle))
     {
         DropUse(UseKey(file->handle), file->writable);
     }
@@ -199,12 +210,12 @@ uint64_t Open(Table* table, const char* path, uint64_t flags)
             return CreateErrorLocked(path);
         }
     }
-    else if (writable && !handle.block_backed)
+    else if (writable && IsReadOnlyKind(handle.kind))
     {
         VFS::Close(&handle);
         return User::SyscallErrorReadOnly;
     }
-    if (handle.block_backed)
+    if (VFS::IsTracked(handle))
     {
         const uint64_t added = AddUse(UseKey(handle), writable);
         if (User::IsSyscallError(added))
@@ -313,10 +324,10 @@ uint64_t Remove(const char* path)
     {
         return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorNotFound;
     }
-    const bool on_disk = handle.block_backed;
-    const bool busy = on_disk && FindUse(UseKey(handle)) != nullptr;
+    const bool removable = VFS::IsTracked(handle);
+    const bool busy = removable && FindUse(UseKey(handle)) != nullptr;
     VFS::Close(&handle);
-    if (!on_disk)
+    if (!removable)
     {
         return User::SyscallErrorReadOnly;
     }
@@ -391,8 +402,7 @@ uint64_t RemoveDirectory(const char* path)
     {
         return User::SyscallErrorReadOnly;
     }
-    // The root holds the /system mount point, so it can never be removed.
-    if (path[0] == '/' && path[1] == '\0')
+    if (VFS::IsMountPoint(path))
     {
         return User::SyscallErrorBusy;
     }
@@ -423,7 +433,7 @@ uint64_t Stat(const char* path, User::FileStatus* status)
     {
         return User::SyscallErrorNotFound;
     }
-    status->type = User::FileType::Regular;
+    status->type = info.device ? User::FileType::Device : User::FileType::Regular;
     status->size = info.size;
     return 0;
 }
@@ -440,9 +450,10 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
     {
         return User::SyscallErrorBadDescriptor;
     }
-    status->type = User::FileType::Regular;
+    status->type = file->handle.kind == VFS::FileKind::Device ? User::FileType::Device
+                                                              : User::FileType::Regular;
     status->size = file->handle.size;
-    status->read_only = !file->handle.block_backed;
+    status->read_only = IsReadOnlyKind(file->handle.kind);
     return 0;
 }
 

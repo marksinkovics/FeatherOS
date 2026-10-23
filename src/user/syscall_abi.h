@@ -89,13 +89,15 @@ enum class FileType : uint32_t
     Regular = 1,
     Directory = 2,
     Console = 3,
+    // Under /dev.
+    Device = 4,
 };
 
 struct FileStatus
 {
     uint64_t size;
     FileType type;
-    // The initramfs under /system cannot be changed.
+    // Files under /system and /proc cannot be changed.
     bool read_only;
 };
 

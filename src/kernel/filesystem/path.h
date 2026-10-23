@@ -13,6 +13,10 @@ constexpr uint32_t MaximumLength = 64;
 // ".", "..", and repeated '/' lexically ("/home/.." is "/"). Fails if the result does not fit.
 bool Resolve(const char* working_directory, const char* path, char (&result)[MaximumLength]);
 
+// Rewrites an absolute "/proc/self" path to name the process, as "/proc/7/status". Paths
+// elsewhere are left alone. Fails if the result does not fit.
+bool ReplaceProcSelf(char (&path)[MaximumLength], uint64_t process_id);
+
 } // namespace FeatherOS::Path
 
 #endif

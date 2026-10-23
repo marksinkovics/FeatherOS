@@ -72,4 +72,57 @@ bool Resolve(const char* working_directory, const char* path, char (&result)[Max
     return true;
 }
 
+bool ReplaceProcSelf(char (&path)[MaximumLength], uint64_t process_id)
+{
+    constexpr char Prefix[] = "/proc/self";
+    constexpr uint32_t PrefixLength = sizeof(Prefix) - 1;
+    uint32_t matched = 0;
+    while (matched < PrefixLength && path[matched] == Prefix[matched])
+    {
+        ++matched;
+    }
+    if (matched < PrefixLength || (path[PrefixLength] != '\0' && path[PrefixLength] != '/'))
+    {
+        return true;
+    }
+    char digits[20];
+    uint32_t digit_count = 0;
+    do
+    {
+        digits[digit_count++] = static_cast<char>('0' + process_id % 10);
+        process_id /= 10;
+    } while (process_id != 0);
+    uint32_t rest_length = 0;
+    while (path[PrefixLength + rest_length] != '\0')
+    {
+        ++rest_length;
+    }
+    constexpr uint32_t DirectoryLength = sizeof("/proc/") - 1;
+    if (DirectoryLength + digit_count + rest_length >= MaximumLength)
+    {
+        return false;
+    }
+    // Moves the rest (such as "/status") into place, then writes the digits before it.
+    const uint32_t rest_start = DirectoryLength + digit_count;
+    if (rest_start > PrefixLength)
+    {
+        for (uint32_t index = rest_length + 1; index > 0; --index)
+        {
+            path[rest_start + index - 1] = path[PrefixLength + index - 1];
+        }
+    }
+    else
+    {
+        for (uint32_t index = 0; index <= rest_length; ++index)
+        {
+            path[rest_start + index] = path[PrefixLength + index];
+        }
+    }
+    for (uint32_t index = 0; index < digit_count; ++index)
+    {
+        path[DirectoryLength + index] = digits[digit_count - 1 - index];
+    }
+    return true;
+}
+
 } // namespace FeatherOS::Path

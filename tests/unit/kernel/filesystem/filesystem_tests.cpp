@@ -595,17 +595,17 @@ TEST_CASE("directory listing skips deleted entries and names files as NAME.EXT")
     REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
 
     FeatherOS::User::DirectoryEntry entry{};
-    // Index 0 of the root is the /system mount point.
+    // Indices 0-3 of the root are the mount points.
     REQUIRE(FeatherOS::Files::ReadDirectory("/", 0, &entry) == 0);
     REQUIRE(std::string(entry.name) == "system");
     REQUIRE(entry.directory);
-    REQUIRE(FeatherOS::Files::ReadDirectory("/", 1, &entry) == 0);
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 4, &entry) == 0);
     REQUIRE(std::string(entry.name) == "BLOCK.TXT");
     REQUIRE(entry.size == 8);
-    REQUIRE(FeatherOS::Files::ReadDirectory("/", 2, &entry) == 0);
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 5, &entry) == 0);
     REQUIRE(std::string(entry.name) == "README");
     REQUIRE(entry.size == 3);
-    REQUIRE(FeatherOS::Files::ReadDirectory("/", 3, &entry) ==
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 6, &entry) ==
             FeatherOS::User::SyscallErrorNotFound);
     REQUIRE(FeatherOS::Files::ReadDirectory("/missing", 0, &entry) ==
             FeatherOS::User::SyscallErrorNotFound);
@@ -742,13 +742,14 @@ std::vector<std::string> ListDirectory(const char* path)
     return names;
 }
 
-// The disk's root entries, without the /system mount point listed first.
+// The disk's root entries, without the mount points listed first.
 std::vector<std::string> ListDiskRoot()
 {
     std::vector<std::string> names = ListDirectory("/");
-    REQUIRE_FALSE(names.empty());
-    REQUIRE(names.front() == "system/");
-    names.erase(names.begin());
+    const std::vector<std::string> mounts = {"system/", "dev/", "proc/", "tmp/"};
+    REQUIRE(names.size() >= mounts.size());
+    REQUIRE(std::vector<std::string>(names.begin(), names.begin() + 4) == mounts);
+    names.erase(names.begin(), names.begin() + 4);
     return names;
 }
 
@@ -815,14 +816,14 @@ TEST_CASE("FAT16 removes only empty directories and frees their clusters")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
-    REQUIRE(FeatherOS::VFS::MakeDirectory("/tmp"));
-    WriteWhole("/tmp/x.txt", "x");
-    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/tmp"));
-    REQUIRE(FeatherOS::VFS::Remove("/tmp/x.txt"));
-    REQUIRE(FeatherOS::VFS::RemoveDirectory("/tmp"));
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/scratch"));
+    WriteWhole("/scratch/x.txt", "x");
+    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/scratch"));
+    REQUIRE(FeatherOS::VFS::Remove("/scratch/x.txt"));
+    REQUIRE(FeatherOS::VFS::RemoveDirectory("/scratch"));
     REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before);
     REQUIRE(ListDiskRoot() == std::vector<std::string>{"BLOCK.TXT"});
-    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/tmp"));
+    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/scratch"));
     REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/"));
 }
 
@@ -842,7 +843,7 @@ TEST_CASE("open-file sharing rules tell apart files with the same slot in differ
     REQUIRE(FeatherOS::Files::RemoveDirectory("/a") == FeatherOS::User::SyscallErrorNotEmpty);
     FeatherOS::Files::CloseAll(&table);
     FeatherOS::User::DirectoryEntry entry{};
-    REQUIRE(FeatherOS::Files::ReadDirectory("/", 2, &entry) == 0);
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 5, &entry) == 0);
     REQUIRE(std::string(entry.name) == "a");
     REQUIRE(entry.directory);
 }
@@ -919,14 +920,15 @@ TEST_CASE("FAT16 long-named directories grow to fit a name's entries")
     REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/my documents"));
 }
 
-TEST_CASE("the VFS root is the disk, with the initramfs mounted at /system")
+TEST_CASE("the VFS root is the disk, with the initramfs and virtual filesystems mounted in it")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "archive");
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     REQUIRE(FeatherOS::VFS::IsDirectory("/"));
-    REQUIRE(ListDirectory("/") == std::vector<std::string>{"system/", "BLOCK.TXT"});
+    REQUIRE(ListDirectory("/") ==
+            std::vector<std::string>{"system/", "dev/", "proc/", "tmp/", "BLOCK.TXT"});
     REQUIRE(ListDirectory("/system") == std::vector<std::string>{"hello.txt"});
     REQUIRE(ReadWhole("/system/hello.txt") == "archive");
     FeatherOS::Files::Table table{};

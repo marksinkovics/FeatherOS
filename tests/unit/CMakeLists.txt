@@ -14,6 +14,7 @@ add_executable(featheros_unit_tests
     kernel/filesystem/fat_names_tests.cpp
     kernel/filesystem/filesystem_tests.cpp
     kernel/filesystem/path_tests.cpp
+    kernel/filesystem/virtual_files_tests.cpp
     kernel/elf/elf_loader_tests.cpp
     kernel/framebuffer/framebuffer_tests.cpp
     kernel/input/input_tests.cpp
@@ -41,6 +42,9 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/partition.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/devices.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/procfs.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/tmpfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/vfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/elf/elf_loader.cpp"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/font.c"
