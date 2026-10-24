@@ -57,6 +57,13 @@ int usleep(unsigned int microseconds);
 void* sbrk(intptr_t increment);
 pid_t getpid(void);
 pid_t getppid(void);
+pid_t getpgrp(void);
+// Fails with ESRCH for a process that does not exist; groups of other sessions are visible too.
+pid_t getpgid(pid_t pid);
+// The group that may read the console. Only init and session leaders (the shell) may change it,
+// to their own group or one holding one of their children; others get EPERM.
+pid_t tcgetpgrp(int descriptor);
+int tcsetpgrp(int descriptor, pid_t group);
 __attribute__((__noreturn__)) void _exit(int status);
 
 __END_DECLS

@@ -233,3 +233,34 @@ TEST_CASE("a pipeline splits into stages at unquoted bars")
     REQUIRE(split("a | b | c", 2) == FeatherOS::User::PipelineResult::TooManyStages);
 }
 
+TEST_CASE("a trailing & is taken off and runs the command in the background")
+{
+    auto take = [](std::string text, std::string* rest)
+    {
+        std::vector<char> line(text.begin(), text.end());
+        line.push_back('\0');
+        char* words[FeatherOS::User::MaximumArgumentCount + 1];
+        bool quoted[FeatherOS::User::MaximumArgumentCount];
+        size_t count = 0;
+        REQUIRE(SplitCommandLine(line.data(), words, FeatherOS::User::MaximumArgumentCount + 1,
+                                 &count, quoted) == SplitResult::Done);
+        const bool background = FeatherOS::User::TakeBackgroundMarker(words, quoted, &count);
+        rest->clear();
+        for (size_t index = 0; index < count; ++index)
+        {
+            *rest += (index > 0 ? " " : "") + std::string(words[index]);
+        }
+        REQUIRE(words[count] == nullptr);
+        return background;
+    };
+    std::string rest;
+    REQUIRE(take("sleep 300 &", &rest));
+    REQUIRE(rest == "sleep 300");
+    REQUIRE(take("sleep 300&", &rest));
+    REQUIRE(rest == "sleep 300");
+    REQUIRE_FALSE(take("echo \"&\"", &rest));
+    REQUIRE(rest == "echo &");
+    REQUIRE_FALSE(take("echo a&b", &rest));
+    REQUIRE_FALSE(take("", &rest));
+}
+

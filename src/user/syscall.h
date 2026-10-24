@@ -175,6 +175,16 @@ inline uint64_t CreatePipe(uint64_t (&descriptors)[2], uint64_t flags)
     return Syscall(SyscallNumber::Pipe, reinterpret_cast<uint64_t>(descriptors), flags);
 }
 
+inline uint64_t ProcessGroup(uint64_t process_id)
+{
+    return Syscall(SyscallNumber::ProcessGroup, process_id);
+}
+
+inline uint64_t ForegroundGroup(bool set, uint64_t group)
+{
+    return Syscall(SyscallNumber::ForegroundGroup, set ? 1 : 0, group);
+}
+
 inline uint64_t ProcessId()
 {
     return Syscall(SyscallNumber::ProcessId);

@@ -158,10 +158,10 @@ bool Generate(const char* path, char* buffer, size_t* length)
         }
         formatted = String::FormatTo(
             buffer, MaximumFileSize,
-            "Name:\t{}\nState:\t{} ({})\nPid:\t{}\nPPid:\t{}\nPages:\t{}\nPageLimit:\t{}\n"
-            "OpenFiles:\t{}\n",
+            "Name:\t{}\nState:\t{} ({})\nPid:\t{}\nPPid:\t{}\nPgid:\t{}\nPages:\t{}\n"
+            "PageLimit:\t{}\nOpenFiles:\t{}\n",
             status.name, status.state, StateName(status.state), status.process_id, status.parent_id,
-            status.pages, status.page_limit, status.open_files);
+            status.group, status.pages, status.page_limit, status.open_files);
         break;
     }
     default:

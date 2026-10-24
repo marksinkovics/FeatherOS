@@ -21,6 +21,7 @@ struct ProcessStatus
     char state;
     uint64_t process_id;
     uint64_t parent_id;
+    uint64_t group;
     uint64_t pages;
     uint64_t page_limit;
     uint64_t open_files;

@@ -195,7 +195,7 @@ Differences:
   - `access` fails `W_OK` for the read-only initramfs and `/proc`.
   - `isatty` is true only for the console, not for the devices in `/dev`, which are also `S_IFCHR`.
   - `mkdir` ignores its mode.
-- **Processes:** `getpid`, `getppid` and `_exit`.
+- **Processes:** `getpid`, `getppid`, `getpgrp`, `getpgid` and `_exit`. `tcgetpgrp` and `tcsetpgrp` work on the console, the only terminal; only init and session leaders (the shell) may move it, to their own group or one holding one of their children, and others get `EPERM`. `setpgid`, `setsid` and `getsid` are not provided: groups and sessions are chosen when `posix_spawn` starts the child.
 - **Sleeping:** `sleep` and `usleep`.
 - **`environ`.**
 - **`sbrk`:** moves the end of the heap that `malloc` also uses. A negative increment returns the whole pages above the new end to the kernel, and going below the heap's start fails with `EINVAL`. `malloc` never lowers the break below memory a program got from `sbrk` itself. `brk` is not provided.
@@ -228,7 +228,8 @@ Not provided:
 | Flag | Effect on FeatherOS |
 | --- | --- |
 | `POSIX_SPAWN_SETSID` | The child leads a new session: Ctrl+C stops at it, and it may call `reboot`. init starts the shell this way. |
-| `POSIX_SPAWN_SETPGROUP` | The child starts in the background, in its own group, without the console. Its console reads fail with `EIO`. Only group 0 (a new group) is accepted. |
+| `POSIX_SPAWN_SETPGROUP` | The child joins the attributes' process group: 0 for a new one it leads, or an existing group that is the caller's or holds one of the caller's children. Others fail with `EINVAL`. |
+| `POSIX_SPAWN_BACKGROUND` | FeatherOS: the child's group does not take the console. With a new group, that makes a background job, whose console reads fail with `EIO`. Without this flag, the child's group becomes the foreground group, as if the caller had called `tcsetpgrp`. |
 
 Other flags fail with `EINVAL`.
 
@@ -238,7 +239,7 @@ Other flags fail with `EINVAL`.
 - a CPU exception reports signal 11 (`SIGSEGV`)
 - Ctrl+C reports signal 2 (`SIGINT`)
 
-A `pid` of -1 polls the children `posix_spawn` started, every 10 ms. Process groups (`pid` 0 or below -1) are not supported.
+A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller's process group, and -n for one in group n, by polling every 10 ms.
 
 ### `sched.h`
 

@@ -210,8 +210,15 @@ int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t* 
     {
         flags |=
             (attributes->flags & POSIX_SPAWN_SETSID) != 0 ? FeatherOS::User::SpawnSessionLeader : 0;
-        flags |=
-            (attributes->flags & POSIX_SPAWN_SETPGROUP) != 0 ? FeatherOS::User::SpawnBackground : 0;
+        flags |= (attributes->flags & POSIX_SPAWN_BACKGROUND) != 0
+                     ? FeatherOS::User::SpawnBackground
+                     : 0;
+        if ((attributes->flags & POSIX_SPAWN_SETPGROUP) != 0)
+        {
+            flags |=
+                FeatherOS::User::SpawnSetGroup | (static_cast<uint64_t>(attributes->process_group)
+                                                  << FeatherOS::User::SpawnGroupShift);
+        }
     }
     char line[FeatherOS::User::MaximumCommandLineLength];
     char environment[FeatherOS::User::MaximumEnvironmentSize];
@@ -312,7 +319,7 @@ int posix_spawnattr_getflags(const posix_spawnattr_t* attributes, short* flags)
 
 int posix_spawnattr_setflags(posix_spawnattr_t* attributes, short flags)
 {
-    if ((flags & ~(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSID)) != 0)
+    if ((flags & ~(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSID | POSIX_SPAWN_BACKGROUND)) != 0)
     {
         return EINVAL;
     }
@@ -328,7 +335,7 @@ int posix_spawnattr_getpgroup(const posix_spawnattr_t* attributes, pid_t* proces
 
 int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t process_group)
 {
-    if (process_group != 0)
+    if (process_group < 0)
     {
         return EINVAL;
     }
@@ -338,7 +345,7 @@ int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t process_group
 
 pid_t waitpid(pid_t pid, int* status, int options)
 {
-    if ((options & ~WNOHANG) != 0 || pid == 0 || pid < -1)
+    if ((options & ~WNOHANG) != 0)
     {
         errno = EINVAL;
         return -1;
@@ -349,16 +356,20 @@ pid_t waitpid(pid_t pid, int* status, int options)
         const int result = WaitFor(pid, status, no_hang);
         return result == 0 ? pid : result == 1 ? 0 : -1;
     }
+    // 0 means the caller's own group, and -n group n; -1 means any child.
+    const pid_t group = pid == 0 ? getpgrp() : pid < -1 ? -pid : 0;
     for (;;)
     {
-        if (child_count == 0)
-        {
-            errno = ECHILD;
-            return -1;
-        }
+        bool any_child = false;
         for (size_t index = 0; index < child_count;)
         {
             const pid_t child = children[index];
+            if (group != 0 && getpgid(child) != group)
+            {
+                ++index;
+                continue;
+            }
+            any_child = true;
             const int result = WaitFor(child, status, true);
             if (result == 0)
             {
@@ -371,6 +382,11 @@ pid_t waitpid(pid_t pid, int* status, int options)
                 continue;
             }
             ++index;
+        }
+        if (!any_child)
+        {
+            errno = ECHILD;
+            return -1;
         }
         if (no_hang)
         {

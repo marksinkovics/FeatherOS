@@ -5,10 +5,16 @@
 #include <sys/types.h>
 
 // glibc's values. POSIX_SPAWN_SETSID makes the child a session leader, which keeps the console
-// and Ctrl+C from reaching past it. POSIX_SPAWN_SETPGROUP, with process group 0, starts it in the
-// background: it does not take the console from its parent. No other flags are supported.
+// and Ctrl+C from reaching past it. POSIX_SPAWN_SETPGROUP puts it in the attributes' process
+// group: 0 for a new one it leads, or an existing group that is the caller's or holds one of its
+// children. No other POSIX flags are supported.
 #define POSIX_SPAWN_SETPGROUP 0x02
 #define POSIX_SPAWN_SETSID 0x80
+// FeatherOS: the child's group does not take the console. With POSIX_SPAWN_SETPGROUP for a new
+// group, that makes a background job, whose console reads fail with EIO; in the caller's own
+// group it changes nothing. Without it, the child's group becomes the foreground group, as if
+// the caller had called tcsetpgrp.
+#define POSIX_SPAWN_BACKGROUND 0x1000
 
 #define POSIX_SPAWN_MAXIMUM_FILE_ACTIONS 8
 
@@ -60,7 +66,6 @@ int posix_spawnattr_destroy(posix_spawnattr_t* attributes);
 int posix_spawnattr_getflags(const posix_spawnattr_t* attributes, short* flags);
 int posix_spawnattr_setflags(posix_spawnattr_t* attributes, short flags);
 int posix_spawnattr_getpgroup(const posix_spawnattr_t* attributes, pid_t* process_group);
-// Only 0, a new group, is supported.
 int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t process_group);
 
 __END_DECLS

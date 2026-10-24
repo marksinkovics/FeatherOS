@@ -75,6 +75,13 @@ SHELL_INPUT = (
     b"echo through the pipe | upper\nls /dev|upper\n"
     b"echo two stages|upper|cat > /tmp/p.txt\ncat /tmp/p.txt\n"
     b"echo a | | upper\n"
+    # A pipeline is one foreground group, so its first command can read the
+    # console.
+    b"upper | upper\ntwo uppers\n"
+    b"upper &\nsleep 1000 &\njobs\nwait\nsleep 800 &\nfg\n"
+    # A background job that starts a program of its own must not take the
+    # console from the shell.
+    b"primes 1 1000000 &\njobs\necho the shell kept the console\nwait\n"
     b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
     b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\nfptest 8\n"
@@ -93,6 +100,9 @@ SHELL_INTERRUPT_INPUT = (
     # The reader of an interrupted writer sees its input end and exits too.
     b"primes 1 1000000000 | upper\n",
     INTERRUPT_RUNNING,
+    # Ctrl+C reaches every command in the foreground group.
+    b"sleep 100000 | sleep 100000\n",
+    INTERRUPT_RUNNING,
     b"sleep 100000\n",
     INTERRUPT_RUNNING,
     b"upper\n",
@@ -102,7 +112,7 @@ SHELL_INTERRUPT_INPUT = (
     CONTROL_C,
     b"calc 1 +\n",
 )
-EXPECTED_INTERRUPTS = 6
+EXPECTED_INTERRUPTS = 7
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
@@ -144,7 +154,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 316 checks passed",
+    "libctest: 327 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
@@ -172,6 +182,14 @@ EXPECTED_SHELL_OUTPUT = (
     "RANDOM",
     "\nTWO STAGES",
     "shell: a pipeline has an empty command",
+    "TWO UPPERS",
+    # Background jobs: upper cannot read the console there and fails.
+    "Running  sleep 1000 &",
+    "Done  sleep 1000 &",
+    "Exit 1  upper &",
+    "\nsleep 800 &",
+    "\nthe shell kept the console",
+    "Done  primes 1 1000000 &",
     "hello feather os",
     "upper> ",
     "MIXED CASE",
@@ -904,6 +922,15 @@ def main():
         print("PASS: unknown command rejected; calculator returned 69.25")
         return 0
     if args.expect_shell:
+        # The shell exits with one of these when it cannot read a command.
+        read_failure = re.search(
+            r"^shell: (?:lost the console|could not read input).*$",
+            output,
+            re.MULTILINE,
+        )
+        if read_failure:
+            print(f"FAIL: {read_failure.group(0).strip()}", file=sys.stderr)
+            return 1
         missing = [
             text for text in EXPECTED_SHELL_OUTPUT if text not in output
         ]

@@ -904,17 +904,18 @@ void CheckSpawnAttributes()
               posix_spawnattr_getpgroup(&attributes, &group) == 0 && group == 0,
           "posix_spawnattr_init");
     Check(posix_spawnattr_setflags(&attributes, 0x01) == EINVAL &&
-              posix_spawnattr_setpgroup(&attributes, 5) == EINVAL,
+              posix_spawnattr_setpgroup(&attributes, -1) == EINVAL,
           "unsupported spawn attributes");
 
     // A background child has no console, so upper cannot read its line and fails at once.
     char* upper_arguments[] = {const_cast<char*>("upper"), nullptr};
     pid_t child = 0;
     int status = -1;
-    Check(posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP) == 0 &&
+    Check(posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_BACKGROUND) ==
+                  0 &&
               posix_spawn(&child, "upper", nullptr, &attributes, upper_arguments, environ) == 0 &&
               waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 1,
-          "POSIX_SPAWN_SETPGROUP starts a background child");
+          "a new group with POSIX_SPAWN_BACKGROUND is a background job");
 
     char* echo_arguments[] = {const_cast<char*>("echo"), const_cast<char*>("session leader"),
                               nullptr};
@@ -923,6 +924,56 @@ void CheckSpawnAttributes()
               waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
           "POSIX_SPAWN_SETSID");
     Check(posix_spawnattr_destroy(&attributes) == 0, "posix_spawnattr_destroy");
+}
+
+pid_t SpawnSleeper(short flags, pid_t group)
+{
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    posix_spawnattr_setflags(&attributes, flags);
+    posix_spawnattr_setpgroup(&attributes, group);
+    char* arguments[] = {const_cast<char*>("sleep"), const_cast<char*>("300"), nullptr};
+    pid_t child = 0;
+    return posix_spawn(&child, "sleep", nullptr, &attributes, arguments, environ) == 0 ? child : -1;
+}
+
+// The shell starts each command as a group of its own and gives it the console.
+void CheckProcessGroups()
+{
+    const pid_t own = getpgrp();
+    Check(own == getpid() && getpgid(0) == own && getpgid(getpid()) == own &&
+              tcgetpgrp(STDIN_FILENO) == own,
+          "the shell runs a command as its own foreground group");
+    errno = 0;
+    Check(getpgid(99999) == -1 && errno == ESRCH, "getpgid of a missing process");
+    errno = 0;
+    Check(tcsetpgrp(STDIN_FILENO, own) == -1 && errno == EPERM,
+          "only session leaders move the console");
+    const int null_device = open("/dev/null", O_RDONLY);
+    errno = 0;
+    Check(tcgetpgrp(null_device) == -1 && errno == ENOTTY && close(null_device) == 0,
+          "tcgetpgrp needs the console");
+    char expected[32];
+    snprintf(expected, sizeof(expected), "Pgid:\t%d\n", own);
+    Check(FileContains("/proc/self/status", expected), "/proc/self/status shows the group");
+
+    const pid_t inherited = SpawnSleeper(0, 0);
+    Check(inherited > 0 && getpgid(inherited) == own, "a child joins its parent's group");
+    int status = -1;
+    Check(waitpid(0, &status, 0) == inherited && WIFEXITED(status), "waitpid(0)");
+
+    const pid_t leader = SpawnSleeper(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_BACKGROUND, 0);
+    const pid_t member = SpawnSleeper(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_BACKGROUND, leader);
+    Check(leader > 0 && member > 0 && getpgid(leader) == leader && getpgid(member) == leader,
+          "POSIX_SPAWN_SETPGROUP leads or joins a group");
+    Check(tcgetpgrp(STDIN_FILENO) == own, "background groups leave the console alone");
+    Check(SpawnSleeper(POSIX_SPAWN_SETPGROUP, 1) == -1, "joining an unrelated group fails");
+    const pid_t first = waitpid(-leader, &status, 0);
+    const pid_t second = waitpid(-leader, &status, 0);
+    errno = 0;
+    Check(((first == leader && second == member) || (first == member && second == leader)) &&
+              waitpid(-leader, &status, WNOHANG) == -1 && errno == ECHILD,
+          "waitpid(-group)");
 }
 
 void CheckSystemCalls()
@@ -1251,6 +1302,7 @@ int main(int argc, char** argv)
     CheckTime();
     CheckSpawn();
     CheckSpawnAttributes();
+    CheckProcessGroups();
     CheckDescriptors();
     CheckPipes();
     CheckSystemCalls();

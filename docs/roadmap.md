@@ -177,12 +177,18 @@ Moved: storage drivers for physical hardware, to M16.
 
 **Remaining parts, in order** (agreed after Part 3):
 4. **Virtual files** (complete): `/dev/null`, `/dev/zero`, `/dev/random`, a RAM-backed `/tmp`, `/proc/<pid>/status` and `/proc/meminfo`. This adds file kinds other than disk files, which pipes reuse, and `ps` reads `/proc`.
-5. **Signals, pipes and jobs** (in progress), in five steps: (1, complete) one descriptor table with shared open files, `dup`/`dup2`/`fcntl`, `O_CLOEXEC`, inheritance through `Spawn`, `posix_spawn` file actions, and the shell's `<`, `>`, `>>`, `2>` and `2>&1`; (2, complete) `pipe` and the shell's `|`; (3) process groups, so a pipeline is one Ctrl+C job, and `&` with `jobs`; (4) signals; (5) `primes` over pipes. In detail: signals and `kill`, `pipe` and `dup2`, and the shell's `|`, `>`, `<` and `&`. `primes` can then return results through a pipe instead of its exit status.
+5. **Signals, pipes and jobs** (in progress), in five steps: (1, complete) one descriptor table with shared open files, `dup`/`dup2`/`fcntl`, `O_CLOEXEC`, inheritance through `Spawn`, `posix_spawn` file actions, and the shell's `<`, `>`, `>>`, `2>` and `2>&1`; (2, complete) `pipe` and the shell's `|`; (3, complete) process groups, so a pipeline is one Ctrl+C job, and `&` with `jobs`; (4) signals; (5) `primes` over pipes. In detail: signals and `kill`, `pipe` and `dup2`, and the shell's `|`, `>`, `<` and `&`. `primes` can then return results through a pipe instead of its exit status.
 6. **Process tools:** `ps` and `top`, with per-process CPU time from the scheduler's tick accounting.
 7. **Terminal:** raw keyboard input and cursor control, then shell history and line editing, then `edit`.
 8. **Threads:** user threads with TLS, the thread-safe C library, and the TLB shootdown.
 
 `cron`, more shell utilities and program packaging, and a more capable `calc` fit between the parts. `fork` stays optional.
+
+**Part 5, step 3 (complete): process groups and jobs.**
+- **Kernel:** every process has a process group, which children join unless `Spawn`'s `SpawnSetGroup` names another or starts a new one. The console belongs to a foreground group instead of one process: any member may read it, Ctrl+C marks every member but session leaders and init, and reaping the group's last process hands it back to the waiter's group. `ProcessGroup` and `ForegroundGroup` syscalls give `getpgid` and `tcsetpgrp`; `/proc/<pid>/status` shows `Pgid`.
+- **C library:** `getpgrp`, `getpgid`, `tcgetpgrp`, `tcsetpgrp`, `posix_spawnattr_setpgroup` for any joinable group, a FeatherOS `POSIX_SPAWN_BACKGROUND` flag (which `POSIX_SPAWN_SETPGROUP` used to stand for), and `waitpid(0)` and `waitpid(-group)`. init starts respawned services with both.
+- **Shell:** each command line is one group led by its first command, so a pipeline is one Ctrl+C job and its first command can read the console. A trailing `&` runs it in the background; `jobs`, `fg [n]` and `wait` manage up to 8 jobs, and finished ones are reported before each prompt.
+- **Tests:** a host test for `&`; `libctest` (327 checks) covers groups, `waitpid` by group and the console's owner, and the shell test runs `upper | upper`, three background jobs with `jobs`, `wait` and `fg`, and Ctrl+C on `sleep | sleep`.
 
 **Part 5, step 2 (complete): pipes.**
 - **Kernel:** a `Pipe` syscall makes a 4 KiB ring buffer with a read end and a write end (`src/kernel/pipe.cpp`), as a new kind of open file. Reads wait for data and return 0 once every writer is gone; writes wait for room, keep pieces of up to 512 bytes whole, and fail with a new `SyscallErrorBrokenPipe` without readers. Both give up on Ctrl+C, and neither holds the filesystem lock while waiting.

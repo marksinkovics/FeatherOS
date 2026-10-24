@@ -15,8 +15,8 @@
 
 __BEGIN_DECLS
 
-// pid -1 waits for any child posix_spawn started, by polling every 10 ms; pid must otherwise
-// name a child. Process groups (0 and negative pids) are not supported.
+// pid -1 waits for any child posix_spawn started, 0 for one in the caller's process group, and
+// -n for one in group n, by polling every 10 ms; a positive pid names one child.
 pid_t waitpid(pid_t pid, int* status, int options);
 pid_t wait(int* status);
 

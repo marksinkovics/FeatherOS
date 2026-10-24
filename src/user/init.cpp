@@ -124,7 +124,7 @@ void Start(Service* service)
     posix_spawnattr_init(&attributes);
     posix_spawnattr_setflags(&attributes, service->policy == Policy::Console ? POSIX_SPAWN_SETSID
                                           : service->policy == Policy::Respawn
-                                              ? POSIX_SPAWN_SETPGROUP
+                                              ? POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_BACKGROUND
                                               : 0);
     pid_t process_id = 0;
     if (SplitCommandLine(command, words, MaximumArgumentCount + 1, &count) != SplitResult::Done ||

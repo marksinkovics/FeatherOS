@@ -63,6 +63,8 @@ struct Handlers
     uint64_t (*duplicate)(void* context, uint64_t descriptor, uint64_t target, uint64_t flags);
     uint64_t (*descriptor_flags)(void* context, uint64_t descriptor, uint64_t set, uint64_t flags);
     uint64_t (*pipe)(void* context, uint64_t descriptors, uint64_t flags);
+    uint64_t (*process_group)(void* context, uint64_t process_id);
+    uint64_t (*foreground_group)(void* context, uint64_t set, uint64_t group);
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

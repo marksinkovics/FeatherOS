@@ -54,6 +54,8 @@ struct ProcessRecord
     ProcessRecord* next;
     ProcessId id;
     ProcessId parent;
+    // Ctrl+C and console input go to every process in the foreground group.
+    ProcessId group;
     uint32_t live_children;
     Scheduler::TaskId task;
     char name[MaximumCommandNameLength + 1];
@@ -73,8 +75,8 @@ uint64_t hhdm_offset = 0;
 Sync::SpinLock process_lock;
 ProcessRecord* process_list = nullptr;
 ProcessId next_process_id = 1;
-// Only this process may read console input; zero means the kernel itself.
-ProcessId foreground_process = 0;
+// Only processes in this group may read console input; zero means the kernel itself.
+ProcessId foreground_group = 0;
 
 volatile uint8_t* PhysicalBytes(uint64_t physical_address)
 {
@@ -381,6 +383,29 @@ void RequestKillLocked(ProcessRecord* process)
     Scheduler::WakeTask(process->task);
 }
 
+bool InForegroundGroup(const ProcessRecord& process)
+{
+    Sync::SpinLockGuard guard(process_lock);
+    return process.group == foreground_group;
+}
+
+// A process may use its own group, or one that holds one of its children.
+bool GroupJoinableLocked(const ProcessRecord& caller, ProcessId group)
+{
+    if (group == caller.group)
+    {
+        return true;
+    }
+    for (const ProcessRecord* other = process_list; other != nullptr; other = other->next)
+    {
+        if (other->group == group && other->parent == caller.id)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Builds "<name>-<arch>.elf" from the first word of command_line, which may only contain
 // letters, digits, '_' or '-'.
 bool BuildProgramPath(const char* command_line,
@@ -582,7 +607,7 @@ uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint
     {
         return User::SyscallErrorBadAddress;
     }
-    if (process->id != foreground_process)
+    if (!InForegroundGroup(*process))
     {
         return User::SyscallErrorNotForeground;
     }
@@ -601,7 +626,11 @@ uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint
 uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags, uint64_t environment)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    if ((flags & ~(User::SpawnBackground | User::SpawnSessionLeader)) != 0)
+    constexpr uint64_t KnownFlags =
+        User::SpawnBackground | User::SpawnSessionLeader | User::SpawnSetGroup;
+    const uint64_t low_flags = flags & ((1ULL << User::SpawnGroupShift) - 1);
+    if ((low_flags & ~KnownFlags) != 0 ||
+        ((low_flags & User::SpawnSetGroup) == 0 && (flags >> User::SpawnGroupShift) != 0))
     {
         return User::SyscallErrorInvalidArgument;
     }
@@ -817,7 +846,7 @@ uint64_t ReadConsole(ProcessRecord* process, uint64_t buffer, uint64_t length)
     }
     if (process->console_input_offset == process->console_input_length)
     {
-        if (process->id != foreground_process)
+        if (!InForegroundGroup(*process))
         {
             return User::SyscallErrorNotForeground;
         }
@@ -963,6 +992,38 @@ uint64_t DuplicateSyscall(void* context, uint64_t descriptor, uint64_t target, u
 {
     return Files::Duplicate(&static_cast<ProcessRecord*>(context)->files, descriptor, target,
                             flags);
+}
+
+uint64_t ProcessGroupSyscall(void* context, uint64_t process_id)
+{
+    const auto* caller = static_cast<const ProcessRecord*>(context);
+    Sync::SpinLockGuard guard(process_lock);
+    const ProcessRecord* target = process_id == 0 ? caller : FindProcessLocked(process_id);
+    return target == nullptr ? User::SyscallErrorNotFound : target->group;
+}
+
+// As with Shutdown, only init and session leaders such as the shell may move the console.
+uint64_t ForegroundGroupSyscall(void* context, uint64_t set, uint64_t group)
+{
+    const auto* caller = static_cast<const ProcessRecord*>(context);
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        if (set == 0)
+        {
+            return foreground_group;
+        }
+        if (caller->parent != 0 && !caller->session_leader)
+        {
+            return User::SyscallErrorNotPermitted;
+        }
+        if (!GroupJoinableLocked(*caller, group))
+        {
+            return User::SyscallErrorInvalidArgument;
+        }
+        foreground_group = group;
+    }
+    Console::NotifyStatusChanged();
+    return group;
 }
 
 uint64_t PipeSyscall(void* context, uint64_t descriptors, uint64_t flags)
@@ -1173,6 +1234,8 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     DuplicateSyscall,
     DescriptorFlagsSyscall,
     PipeSyscall,
+    ProcessGroupSyscall,
+    ForegroundGroupSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -1260,6 +1323,7 @@ bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
     status->state = StateLetter(Scheduler::GetState(process->task));
     status->process_id = process->id;
     status->parent_id = process->parent;
+    status->group = process->group;
     status->pages = process->program.mapped_page_count;
     status->page_limit = process->program.page_limit;
     status->open_files = 0;
@@ -1308,7 +1372,7 @@ void Initialize(uint64_t offset)
     Sync::SpinLockGuard guard(process_lock);
     process_list = nullptr;
     next_process_id = 1;
-    foreground_process = 0;
+    foreground_group = 0;
 }
 
 void InitializeUserProgram(UserProgram* program)
@@ -1446,6 +1510,14 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
             }
         }
         const char* working_directory = home_exists ? HomeDirectory : "/";
+        const ProcessId requested_group =
+            (flags & User::SpawnSetGroup) != 0 ? flags >> User::SpawnGroupShift : 0;
+        if (requested_group != 0 &&
+            (parent_record == nullptr || !GroupJoinableLocked(*parent_record, requested_group)))
+        {
+            Memory::Deallocate(process);
+            return SpawnStatus::InvalidArguments;
+        }
         if (parent_record != nullptr)
         {
             if (parent_record->live_children == MaximumChildrenPerProcess)
@@ -1468,6 +1540,19 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         process->id = id;
         process->parent = parent;
         process->session_leader = (flags & User::SpawnSessionLeader) != 0;
+        if (requested_group != 0)
+        {
+            process->group = requested_group;
+        }
+        else if (process->session_leader || (flags & User::SpawnSetGroup) != 0 ||
+                 parent_record == nullptr)
+        {
+            process->group = id;
+        }
+        else
+        {
+            process->group = parent_record->group;
+        }
         process->next = process_list;
         process_list = process;
         inherited_from = parent_record;
@@ -1509,10 +1594,16 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         RemoveProcess(process);
         return SpawnStatus::NoResources;
     }
+    // A child takes the console only from a parent that has it, so a background job cannot take
+    // it from the shell by starting a program of its own.
     if ((flags & User::SpawnBackground) == 0)
     {
         Sync::SpinLockGuard guard(process_lock);
-        foreground_process = id;
+        const ProcessRecord* parent_record = FindProcessLocked(parent);
+        if (parent_record == nullptr || parent_record->group == foreground_group)
+        {
+            foreground_group = process->group;
+        }
     }
     Console::NotifyStatusChanged();
     *process_id = id;
@@ -1533,10 +1624,17 @@ bool Wait(ProcessId process_id, uint64_t* exit_status)
     }
     ReleaseUserProgram(&process->program);
     {
+        // Once the foreground group's last process is reaped, the console returns to the waiter.
         Sync::SpinLockGuard guard(process_lock);
-        if (foreground_process == process_id)
+        bool group_remains = false;
+        for (const ProcessRecord* other = process_list; other != nullptr; other = other->next)
         {
-            foreground_process = process->parent;
+            group_remains = group_remains || (other != process && other->group == process->group);
+        }
+        const ProcessRecord* waiter = FindProcessLocked(process->parent);
+        if (foreground_group == process->group && !group_remains)
+        {
+            foreground_group = waiter != nullptr ? waiter->group : 0;
         }
     }
     RemoveProcess(process);
@@ -1580,36 +1678,25 @@ bool StopOtherProcesses(ProcessId caller)
     return !others_running(false);
 }
 
+// Session leaders (the shell) and init are never interrupted, so Ctrl+C at the shell's own prompt
+// only discards the line.
 bool InterruptForegroundJob()
 {
     Sync::SpinLockGuard guard(process_lock);
-    // The job is the foreground process's ancestor that a session leader started. Session leaders
-    // (the shell) and processes outside any session (init) are never interrupted.
-    const ProcessRecord* job = FindProcessLocked(foreground_process);
-    while (job != nullptr && !job->session_leader)
-    {
-        const ProcessRecord* parent = FindProcessLocked(job->parent);
-        if (parent == nullptr || parent->session_leader)
-        {
-            break;
-        }
-        job = parent;
-    }
-    const ProcessRecord* leader = job == nullptr ? nullptr : FindProcessLocked(job->parent);
-    if (job == nullptr || job->session_leader || leader == nullptr || !leader->session_leader)
-    {
-        return false;
-    }
+    bool interrupted = false;
     for (ProcessRecord* candidate = process_list; candidate != nullptr; candidate = candidate->next)
     {
-        if (DescendsFromLocked(candidate, job->id))
+        if (candidate->group == foreground_group && !candidate->session_leader &&
+            candidate->parent != 0)
         {
             RequestKillLocked(candidate);
+            interrupted = true;
         }
     }
-    return true;
+    return interrupted;
 }
 
+// The group's leader, or another member if the leader has gone.
 void ForegroundProgramName(char* buffer, size_t capacity)
 {
     if (buffer == nullptr || capacity == 0)
@@ -1621,7 +1708,8 @@ void ForegroundProgramName(char* buffer, size_t capacity)
     for (const ProcessRecord* candidate = process_list; candidate != nullptr;
          candidate = candidate->next)
     {
-        if (candidate->id == foreground_process)
+        if (candidate->group == foreground_group &&
+            (foreground == nullptr || candidate->id == foreground_group))
         {
             foreground = candidate;
         }

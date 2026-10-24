@@ -296,6 +296,52 @@ pid_t getpid()
     return static_cast<pid_t>(FeatherOS::User::ProcessId());
 }
 
+pid_t getpgrp()
+{
+    return static_cast<pid_t>(FeatherOS::User::ProcessGroup(0));
+}
+
+pid_t getpgid(pid_t pid)
+{
+    if (pid < 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    const uint64_t group = FeatherOS::User::ProcessGroup(static_cast<uint64_t>(pid));
+    if (group == FeatherOS::User::SyscallErrorNotFound)
+    {
+        errno = ESRCH;
+        return -1;
+    }
+    return static_cast<pid_t>(group);
+}
+
+// The console is the only terminal.
+pid_t tcgetpgrp(int descriptor)
+{
+    if (!isatty(descriptor))
+    {
+        return -1;
+    }
+    return static_cast<pid_t>(FeatherOS::User::ForegroundGroup(false, 0));
+}
+
+int tcsetpgrp(int descriptor, pid_t group)
+{
+    if (!isatty(descriptor))
+    {
+        return -1;
+    }
+    if (group <= 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    return Check<int>(FeatherOS::User::ForegroundGroup(true, static_cast<uint64_t>(group))) < 0 ? -1
+                                                                                                : 0;
+}
+
 pid_t getppid()
 {
     return static_cast<pid_t>(FeatherOS::User::ParentProcessId());

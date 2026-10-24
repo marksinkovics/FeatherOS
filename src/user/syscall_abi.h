@@ -39,13 +39,20 @@ enum class SyscallNumber : uint64_t
     Duplicate = 26,        // (descriptor, target, flags) -> the new descriptor
     DescriptorFlags = 27,  // (descriptor, set, flags) -> the flags, after setting them if set
     Pipe = 28,             // (descriptors, flags) -> 0; stores the read end, then the write end
+    ProcessGroup = 29,     // (process_id, or 0 for the caller) -> its process group
+    ForegroundGroup = 30,  // (set, group) -> the group that has the console, after setting it
 };
 
-// Spawn flags. A child inherits every descriptor that is not close-on-exec, and normally takes
-// the console from its parent; a background child does not.
-// A session leader's descendants form Ctrl+C jobs, and the leader itself is never interrupted.
+// Spawn flags. A child inherits every descriptor that is not close-on-exec and joins its
+// parent's process group, and its group takes the console if the parent's group has it; a
+// background child's never does. SpawnSetGroup puts the child in the group in bits 32-63 instead,
+// or in a new group of its own when those are 0; the group must be the caller's or hold one of the
+// caller's children. A session leader always leads a new group. A session leader's descendants form
+// Ctrl+C jobs, and the leader itself is never interrupted.
 constexpr uint64_t SpawnBackground = 1U << 0;
 constexpr uint64_t SpawnSessionLeader = 1U << 1;
+constexpr uint64_t SpawnSetGroup = 1U << 2;
+constexpr uint64_t SpawnGroupShift = 32;
 // Shutdown actions.
 constexpr uint64_t ShutdownPowerOff = 0;
 constexpr uint64_t ShutdownRestart = 1;

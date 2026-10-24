@@ -146,6 +146,16 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return, handlers.pipe(context, arguments[0], arguments[1])};
     }
+    if (request.number == static_cast<uint64_t>(Number::ProcessGroup) &&
+        handlers.process_group != nullptr)
+    {
+        return {Action::Return, handlers.process_group(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ForegroundGroup) &&
+        handlers.foreground_group != nullptr)
+    {
+        return {Action::Return, handlers.foreground_group(context, arguments[0], arguments[1])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

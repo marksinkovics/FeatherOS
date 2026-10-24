@@ -266,6 +266,29 @@ inline PipelineResult SplitPipeline(char** words, const bool* quoted, size_t cou
     return PipelineResult::Done;
 }
 
+// Removes a trailing unquoted "&", as its own word or at the end of the last one ("sleep 9&"),
+// and says whether there was one: the command then runs in the background.
+inline bool TakeBackgroundMarker(char** words, const bool* quoted, size_t* count)
+{
+    if (*count == 0 || quoted[*count - 1])
+    {
+        return false;
+    }
+    char* last = words[*count - 1];
+    const size_t length = strlen(last);
+    if (length == 0 || last[length - 1] != '&')
+    {
+        return false;
+    }
+    if (length == 1)
+    {
+        words[--*count] = nullptr;
+        return true;
+    }
+    last[length - 1] = '\0';
+    return true;
+}
+
 } // namespace FeatherOS::User
 
 #endif

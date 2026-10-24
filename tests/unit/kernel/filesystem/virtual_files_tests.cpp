@@ -99,6 +99,7 @@ bool FakeProcessStatus(uint64_t process_id, FeatherOS::Procfs::ProcessStatus* st
     status->state = process_id == 12 ? 'R' : 'S';
     status->process_id = process_id;
     status->parent_id = process_id == 1 ? 0 : 1;
+    status->group = process_id == 12 ? 4 : process_id;
     status->pages = 37;
     status->page_limit = 1024;
     status->open_files = 2;
@@ -283,7 +284,7 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
     UseFakeProcesses();
     REQUIRE(List("/proc") == std::vector<std::string>{"meminfo", "1/", "4/", "12/"});
     REQUIRE(List("/proc/4") == std::vector<std::string>{"status"});
-    REQUIRE(ReadAll("/proc/12/status") == "Name:\tshell\nState:\tR (running)\nPid:\t12\nPPid:\t1\n"
+    REQUIRE(ReadAll("/proc/12/status") == "Name:\tshell\nState:\tR (running)\nPid:\t12\nPPid:\t1\nPgid:\t4\n"
                                           "Pages:\t37\nPageLimit:\t1024\nOpenFiles:\t2\n");
     REQUIRE(ReadAll("/proc/meminfo") ==
             "MemTotal:\t262144 kB\nMemFree:\t204800 kB\nKernelHeap:\t64 kB\nTmp:\t0 kB\n");
