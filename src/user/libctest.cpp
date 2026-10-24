@@ -10,6 +10,7 @@
 #include <math.h>
 #include <sched.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -976,6 +977,140 @@ void CheckProcessGroups()
           "waitpid(-group)");
 }
 
+volatile sig_atomic_t last_signal = 0;
+volatile sig_atomic_t handled_count = 0;
+volatile sig_atomic_t nested_signal = 0;
+
+void RecordSignal(int signal_number)
+{
+    last_signal = signal_number;
+    handled_count = handled_count + 1;
+}
+
+// A handler that is itself interrupted by another signal's handler.
+void RaiseNested(int signal_number)
+{
+    last_signal = signal_number;
+    raise(SIGUSR2);
+    nested_signal = last_signal;
+}
+
+// Floating-point work inside the handler must not leak into the code it interrupted.
+void DisturbFloatingPoint(int)
+{
+    volatile double noise = 3.0;
+    for (int index = 0; index < 10; ++index)
+    {
+        noise = noise * 1.25 + 0.5;
+    }
+    handled_count = handled_count + (noise > 0 ? 1 : 0);
+}
+
+void CheckSignalSets()
+{
+    sigset_t set = 0;
+    Check(sigemptyset(&set) == 0 && set == 0 && sigaddset(&set, SIGINT) == 0 &&
+              sigaddset(&set, SIGTERM) == 0 && sigismember(&set, SIGINT) == 1 &&
+              sigismember(&set, SIGHUP) == 0 && sigdelset(&set, SIGINT) == 0 &&
+              sigismember(&set, SIGINT) == 0 && sigaddset(&set, 0) == -1 && sigfillset(&set) == 0 &&
+              sigismember(&set, SIGKILL) == 1,
+          "signal sets");
+    Check(strcmp(strsignal(SIGTERM), "Terminated") == 0 &&
+              strcmp(strsignal(SIGKILL), "Killed") == 0 &&
+              strcmp(strsignal(99), "Unknown signal") == 0,
+          "strsignal");
+}
+
+void CheckSignalHandlers()
+{
+    Check(signal(SIGUSR1, RecordSignal) == SIG_DFL && raise(SIGUSR1) == 0 &&
+              last_signal == SIGUSR1 && handled_count == 1,
+          "a handler runs before raise returns");
+    volatile double kept = 1.5 * getpid();
+    const double expected = kept;
+    Check(signal(SIGUSR2, DisturbFloatingPoint) == SIG_DFL && raise(SIGUSR2) == 0 &&
+              handled_count == 2 && kept == expected,
+          "a handler keeps the interrupted code's registers");
+
+    sigset_t block = 0;
+    sigaddset(&block, SIGUSR1);
+    sigset_t previous = 0;
+    handled_count = 0;
+    Check(sigprocmask(SIG_BLOCK, &block, &previous) == 0 && raise(SIGUSR1) == 0 &&
+              handled_count == 0,
+          "a blocked signal waits");
+    Check(sigprocmask(SIG_SETMASK, &previous, nullptr) == 0 && handled_count == 1,
+          "unblocking runs the waiting handler");
+
+    Check(signal(SIGUSR2, RecordSignal) == DisturbFloatingPoint &&
+              signal(SIGUSR1, RaiseNested) == RecordSignal && raise(SIGUSR1) == 0 &&
+              nested_signal == SIGUSR2,
+          "a handler can be interrupted by another signal's handler");
+
+    struct sigaction action = {};
+    action.sa_handler = RecordSignal;
+    action.sa_flags = SA_RESETHAND;
+    struct sigaction now = {};
+    handled_count = 0;
+    Check(sigaction(SIGUSR1, &action, nullptr) == 0 && raise(SIGUSR1) == 0 && handled_count == 1 &&
+              sigaction(SIGUSR1, nullptr, &now) == 0 && now.sa_handler == SIG_DFL,
+          "SA_RESETHAND goes back to the default action");
+    Check(signal(SIGUSR2, SIG_IGN) == RecordSignal && raise(SIGUSR2) == 0,
+          "an ignored signal does nothing");
+    signal(SIGUSR2, SIG_DFL);
+    errno = 0;
+    Check(sigaction(SIGKILL, &action, nullptr) == -1 && errno == EINVAL &&
+              signal(19, RecordSignal) == SIG_ERR,
+          "SIGKILL and the stop signals cannot be handled");
+}
+
+void CheckKill()
+{
+    errno = 0;
+    Check(kill(getpid(), 0) == 0 && kill(99999, SIGTERM) == -1 && errno == ESRCH, "kill");
+    errno = 0;
+    Check(kill(1, SIGTERM) == -1 && errno == EPERM, "init cannot be signaled");
+    errno = 0;
+    Check(kill(getpid(), 99) == -1 && errno == EINVAL, "kill with an unknown signal");
+
+    const pid_t sleeper = SpawnSleeper(0, 0);
+    int status = -1;
+    Check(sleeper > 0 && kill(sleeper, SIGTERM) == 0 && waitpid(sleeper, &status, 0) == sleeper &&
+              WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM,
+          "SIGTERM ends a child");
+
+    // The writer's reader is gone before it starts, so its first write raises SIGPIPE.
+    int ends[2];
+    posix_spawn_file_actions_t actions;
+    char* echo_arguments[] = {const_cast<char*>("echo"), const_cast<char*>("nobody reads this"),
+                              nullptr};
+    pid_t writer = 0;
+    Check(pipe2(ends, O_CLOEXEC) == 0 && close(ends[0]) == 0 &&
+              posix_spawn_file_actions_init(&actions) == 0 &&
+              posix_spawn_file_actions_adddup2(&actions, ends[1], STDOUT_FILENO) == 0 &&
+              posix_spawn(&writer, "echo", &actions, nullptr, echo_arguments, environ) == 0 &&
+              close(ends[1]) == 0 && waitpid(writer, &status, 0) == writer && WIFSIGNALED(status) &&
+              WTERMSIG(status) == SIGPIPE,
+          "SIGPIPE ends a writer without a reader");
+
+    // A child's exit raises SIGCHLD, which interrupts calls that wait.
+    signal(SIGCHLD, RecordSignal);
+    handled_count = 0;
+    const pid_t child = SpawnSleeper(0, 0);
+    errno = 0;
+    Check(child > 0 && pause() == -1 && errno == EINTR && last_signal == SIGCHLD &&
+              waitpid(child, &status, 0) == child,
+          "SIGCHLD interrupts pause");
+    const pid_t second = SpawnSleeper(0, 0);
+    const struct timespec long_sleep = {5, 0};
+    struct timespec remaining = {0, 0};
+    errno = 0;
+    Check(second > 0 && nanosleep(&long_sleep, &remaining) == -1 && errno == EINTR &&
+              remaining.tv_sec >= 3 && waitpid(second, &status, 0) == second,
+          "a signal cuts nanosleep short");
+    signal(SIGCHLD, SIG_DFL);
+}
+
 void CheckSystemCalls()
 {
     void* const failed = reinterpret_cast<void*>(-1);
@@ -1107,8 +1242,11 @@ void CheckPipes()
     close(ends[0]);
 
     Check(pipe(ends) == 0 && close(ends[0]) == 0, "closing the read end");
+    // SIGPIPE would end the program, so it is ignored to see the error itself.
+    const sighandler_t previous_pipe = signal(SIGPIPE, SIG_IGN);
     errno = 0;
     Check(write(ends[1], "lost", 4) == -1 && errno == EPIPE, "EPIPE without a reader");
+    signal(SIGPIPE, previous_pipe);
     close(ends[1]);
 
     Check(pipe2(ends, O_CLOEXEC) == 0 && fcntl(ends[0], F_GETFD) == FD_CLOEXEC &&
@@ -1255,8 +1393,8 @@ void CheckAssert()
     uint64_t status = 0;
     Check(!FeatherOS::User::IsSyscallError(child) &&
               !FeatherOS::User::IsSyscallError(FeatherOS::User::Wait(child, &status)) &&
-              status == 134,
-          "a failed assert aborts");
+              status == FeatherOS::User::ExitStatusSignalBase + SIGABRT,
+          "a failed assert aborts with SIGABRT");
     assert(passed_checks > 0);
 }
 
@@ -1303,6 +1441,9 @@ int main(int argc, char** argv)
     CheckSpawn();
     CheckSpawnAttributes();
     CheckProcessGroups();
+    CheckSignalSets();
+    CheckSignalHandlers();
+    CheckKill();
     CheckDescriptors();
     CheckPipes();
     CheckSystemCalls();

@@ -10,6 +10,10 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Exit, arguments[0]};
     }
+    if (request.number == static_cast<uint64_t>(Number::SignalReturn))
+    {
+        return {Action::SignalReturn, 0};
+    }
     if (request.number == static_cast<uint64_t>(Number::WriteCharacter))
     {
         const uint64_t character = arguments[0];
@@ -155,6 +159,25 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
         handlers.foreground_group != nullptr)
     {
         return {Action::Return, handlers.foreground_group(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Kill) && handlers.kill != nullptr)
+    {
+        return {Action::Return, handlers.kill(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::SignalAction) &&
+        handlers.signal_action != nullptr)
+    {
+        return {Action::Return,
+                handlers.signal_action(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::SignalMask) &&
+        handlers.signal_mask != nullptr)
+    {
+        return {Action::Return, handlers.signal_mask(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Pause) && handlers.pause != nullptr)
+    {
+        return {Action::Return, handlers.pause(context)};
     }
     return {Action::Invalid, UINT64_MAX};
 }

@@ -9,6 +9,7 @@ add_library(featheros_c STATIC
     exit.cpp
     featheros.cpp
     malloc.cpp
+    signal.cpp
     math.cpp
     spawn.cpp
     stat.cpp
@@ -18,6 +19,7 @@ add_library(featheros_c STATIC
     time.cpp
     unistd.cpp
     arch/${ARCH}/setjmp.cpp
+    arch/${ARCH}/signal_return.cpp
 )
 # Program startup (_start, which calls main) is linked only into programs that have a main.
 add_library(featheros_crt0 OBJECT start.cpp)

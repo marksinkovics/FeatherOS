@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <signal.h>
 #include <stdlib.h>
 
 namespace
@@ -19,7 +20,7 @@ struct ExitHandler
 
 // The C standard requires room for at least 32 handlers.
 constexpr size_t MaximumExitHandlers = 32;
-// No signals yet, so abort reports what a shell shows for SIGABRT: 128 + 6.
+// What a shell shows for SIGABRT, 128 + 6, if the signal somehow did not end the program.
 constexpr int AbortStatus = 134;
 
 ExitHandler handlers[MaximumExitHandlers];
@@ -95,7 +96,14 @@ extern "C" void _Exit(int status)
     FeatherOS::User::Exit(static_cast<uint8_t>(status));
 }
 
+// As POSIX asks: a SIGABRT handler runs first, but the program ends even if it returns.
 extern "C" void abort()
 {
+    sigset_t abort_signal = 0;
+    sigaddset(&abort_signal, SIGABRT);
+    sigprocmask(SIG_UNBLOCK, &abort_signal, nullptr);
+    raise(SIGABRT);
+    signal(SIGABRT, SIG_DFL);
+    raise(SIGABRT);
     _Exit(AbortStatus);
 }

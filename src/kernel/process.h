@@ -84,6 +84,12 @@ bool LoadUserProgram(const ELF::Image& image, const User::ProgramArguments& argu
                      UserProgram* program);
 // Maps a stack page for a not-present user fault in the growable stack region.
 bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address);
+// For signal frames: copy between kernel memory and the current program's memory, mapping
+// stack pages on demand. False for memory the program cannot write or read.
+bool CopyToCurrentUser(UserExecutionContext* context, uint64_t address, const void* source,
+                       size_t size);
+bool CopyFromCurrentUser(UserExecutionContext* context, uint64_t address, void* destination,
+                         size_t size);
 // Scheduler task entry: runs a loaded program in user mode and returns its exit status.
 uint64_t RunUserProgram(void* program);
 

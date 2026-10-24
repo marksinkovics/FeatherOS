@@ -14,6 +14,8 @@ enum class Action : uint8_t
 {
     Return,
     Exit,
+    // The architecture code puts back the registers a signal handler's frame saved.
+    SignalReturn,
     Invalid,
 };
 
@@ -65,6 +67,11 @@ struct Handlers
     uint64_t (*pipe)(void* context, uint64_t descriptors, uint64_t flags);
     uint64_t (*process_group)(void* context, uint64_t process_id);
     uint64_t (*foreground_group)(void* context, uint64_t set, uint64_t group);
+    uint64_t (*kill)(void* context, uint64_t target, uint64_t signal);
+    uint64_t (*signal_action)(void* context, uint64_t signal, uint64_t new_action,
+                              uint64_t old_action);
+    uint64_t (*signal_mask)(void* context, uint64_t how, uint64_t set);
+    uint64_t (*pause)(void* context);
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

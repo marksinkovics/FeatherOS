@@ -26,7 +26,7 @@ Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS`
 
 `argv[0]` is the program's name without `/system/`.
 
-**Exit.** `exit` runs `atexit` handlers and C++ static destructors, newest first. It then runs `.fini_array`, flushes the stdio streams, and passes the low 8 bits of the status to the kernel. `abort` exits with status 134, which a POSIX shell shows for `SIGABRT`.
+**Exit.** `exit` runs `atexit` handlers and C++ static destructors, newest first. It then runs `.fini_array`, flushes the stdio streams, and passes the low 8 bits of the status to the kernel. `abort` raises `SIGABRT`, so a handler runs first, and ends the program with it even if the handler returns.
 
 **Threads.** Programs are single-threaded, so nothing in the library takes a lock. `errno` is already behind `__errno_location()`, so it can become per-thread when threads arrive (see M11 in [roadmap.md](roadmap.md)).
 
@@ -241,6 +241,21 @@ Other flags fail with `EINVAL`.
 
 A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller's process group, and -n for one in group n, by polling every 10 ms.
 
+### `signal.h`
+
+`sigaction`, `signal`, `kill`, `raise`, `sigprocmask`, `sigemptyset`, `sigfillset`, `sigaddset`, `sigdelset` and `sigismember`, with `pause` in `unistd.h` and `strsignal` in `string.h`. Signals have Linux's numbers: `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGILL`, `SIGTRAP`, `SIGABRT`, `SIGBUS`, `SIGFPE`, `SIGKILL`, `SIGUSR1`, `SIGSEGV`, `SIGUSR2`, `SIGPIPE`, `SIGALRM`, `SIGTERM`, `SIGCHLD` and `SIGCONT`.
+
+- **Delivery:** a handler runs when the program next returns from the kernel, after a syscall or when a timer tick preempts it, so `raise` returns after its handler has run. The handler gets only the signal number. While it runs, the signal and `sa_mask` are blocked, unless `SA_NODEFER`; `SA_RESETHAND` puts the default action back first. `signal` installs a handler that stays, as glibc's does.
+- **Interrupted calls:** `read` and `write` on the console or a pipe, `waitpid`, `sleep`, `nanosleep` and `pause` fail with `EINTR` once a signal arrives (`sleep` returns the seconds left, and `nanosleep` the time left). `SA_RESTART` is accepted, but calls are not restarted.
+- **Defaults:** most signals end the program; `SIGCHLD` and `SIGCONT` are ignored. `SIGKILL` cannot be caught, ignored or blocked. A write to a pipe without a reader raises `SIGPIPE`, so a program sees `EPIPE` only if it ignores or handles it.
+- **Faults:** a CPU exception ends the program with `SIGSEGV` and runs no handler.
+- **Processes:** a child starts with handlers back at their defaults, while ignored signals and the blocked mask carry over. `kill(1, ...)` fails with `EPERM`, since init cannot be signaled.
+- **Not provided:** `SA_SIGINFO` and `siginfo_t`, `sigsuspend`, `sigpending`, `sigaltstack`, `alarm`, and the stop signals (`SIGSTOP`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU`), since processes cannot be stopped.
+
+### `strings.h`
+
+`strcasecmp` and `strncasecmp`, for ASCII.
+
 ### `sched.h`
 
 `sched_getcpu`, the glibc extension, returns the CPU the caller was running on. That may change as soon as it returns.
@@ -265,7 +280,8 @@ These need kernel features that do not exist yet. Each one is planned in [roadma
 
 | Missing | Why | Planned |
 | --- | --- | --- |
-| `signal.h`, `kill`, `sigaction` | No signals; Ctrl+C ends the foreground job | M11 (process signals) |
+| `SA_SIGINFO`, `sigsuspend`, `alarm`, real-time signals | Handlers get only the signal number; no timers send signals | Not scheduled |
+| Stopping and continuing processes (`SIGSTOP`, `SIGTSTP`, job control stops) | Processes cannot be stopped | Not scheduled |
 | `fork`, `exec*` | Processes start with `Spawn`; `fork` needs copy-on-write | M11, if adopted |
 | `pthread.h`, C11 `threads.h`, TLS | Single-threaded processes | M11 (user threads), which also makes the library thread-safe |
 | `mmap`, `munmap` | The heap is the only growable mapping, so free space below used blocks cannot be returned | [ideas.md](ideas.md) |

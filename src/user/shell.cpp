@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <featheros.h>
+#include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +19,6 @@ namespace
 
 constexpr size_t MaximumWords = 16;
 constexpr size_t MaximumPathLength = 64;
-constexpr int SignalInterrupt = 2;
 
 constexpr size_t MaximumRedirects = 4;
 constexpr size_t MaximumStages = 4;
@@ -107,13 +107,19 @@ void ReportReadFailure(int error)
     printf("shell: could not read input: %s\n", strerror(error));
 }
 
+// Silent for Ctrl+C and for a pipeline's writer whose reader left, as in other shells.
 void ReportStatus(int status)
 {
     if (WIFSIGNALED(status))
     {
-        if (WTERMSIG(status) != SignalInterrupt)
+        const int signal_number = WTERMSIG(status);
+        if (signal_number == SIGSEGV)
         {
             puts("shell: program terminated by a CPU exception");
+        }
+        else if (signal_number != SIGINT && signal_number != SIGPIPE)
+        {
+            printf("shell: %s\n", strsignal(signal_number));
         }
     }
     else if (WEXITSTATUS(status) != 0)
@@ -258,7 +264,7 @@ void ReportFinishedJob(Job& job)
 {
     if (WIFSIGNALED(job.status))
     {
-        printf("[%d] Signal %d  %s\n", job.number, WTERMSIG(job.status), job.command);
+        printf("[%d] %s  %s\n", job.number, strsignal(WTERMSIG(job.status)), job.command);
     }
     else if (WEXITSTATUS(job.status) != 0)
     {
@@ -569,7 +575,9 @@ int main(int argc, char** argv)
                 "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
                 "sleep <ms>, upper, uptime, filetest, fptest, libctest, ls, cat <file>, write [-a] "
                 "<file> <text>, "
-                "rm <file>, mkdir <dir>, rmdir <dir>, env, cd [dir], pwd, jobs, fg [n], wait, "
+                "rm <file>, mkdir <dir>, rmdir <dir>, env, kill [-signal] <pid>, cd [dir], pwd, "
+                "jobs, "
+                "fg [n], wait, "
                 "exit, "
                 "shutdown, reboot, help");
             puts("Run <command> --help to see what a command does.");

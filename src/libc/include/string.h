@@ -32,6 +32,8 @@ char* strdup(const char* text);
 char* strndup(const char* text, size_t maximum);
 
 char* strerror(int error);
+// glibc's descriptions, such as "Terminated" for SIGTERM.
+char* strsignal(int signal);
 
 __END_DECLS
 

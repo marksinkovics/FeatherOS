@@ -13,7 +13,6 @@
 namespace
 {
 
-constexpr int SignalInterrupt = 2;
 constexpr int SignalSegmentationFault = 11;
 constexpr uint64_t PollMilliseconds = 10;
 // The kernel's limit on running children per process.
@@ -171,9 +170,9 @@ int EncodeStatus(uint64_t status)
     {
         return SignalSegmentationFault;
     }
-    if (status == FeatherOS::User::ExitStatusInterrupted)
+    if (FeatherOS::User::IsSignalExit(status))
     {
-        return SignalInterrupt;
+        return static_cast<int>(status - FeatherOS::User::ExitStatusSignalBase);
     }
     return static_cast<int>((status & 0xFF) << 8);
 }

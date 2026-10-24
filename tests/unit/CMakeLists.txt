@@ -25,6 +25,7 @@ add_executable(featheros_unit_tests
     kernel/process/command_line_tests.cpp
     kernel/process/init_config_tests.cpp
     kernel/process/process_arguments_tests.cpp
+    kernel/process/signals_tests.cpp
     kernel/syscall/syscall_tests.cpp
     kernel/time/calendar_tests.cpp
     kernel/string/format_tests.cpp
@@ -58,6 +59,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/syscall.cpp"
     "${FEATHEROS_ROOT}/src/kernel/files.cpp"
     "${FEATHEROS_ROOT}/src/kernel/pipe.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/signals.cpp"
     "${FEATHEROS_ROOT}/src/kernel/string/format.cpp"
 )
 target_compile_features(featheros_unit_tests PRIVATE cxx_std_17)

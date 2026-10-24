@@ -140,7 +140,7 @@ bool InterruptForegroundJob()
 bool CallerInterrupted()
 {
     const auto* context = static_cast<const UserExecutionContext*>(Scheduler::CurrentUserContext());
-    return context != nullptr && context->kill_requested;
+    return context != nullptr && Signals::Deliverable(context->signals) != 0;
 }
 
 void ShowPrompt(const char* prompt)

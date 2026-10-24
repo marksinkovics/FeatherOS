@@ -82,6 +82,7 @@ SHELL_INPUT = (
     # A background job that starts a program of its own must not take the
     # console from the shell.
     b"primes 1 1000000 &\njobs\necho the shell kept the console\nwait\n"
+    b"kill -l\nkill 99999\nkill -TERM 1\n"
     b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
     b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\nfptest 8\n"
@@ -154,7 +155,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 327 checks passed",
+    "libctest: 344 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
@@ -190,6 +191,9 @@ EXPECTED_SHELL_OUTPUT = (
     "\nsleep 800 &",
     "\nthe shell kept the console",
     "Done  primes 1 1000000 &",
+    " 9 KILL",
+    "kill: 99999: no such process",
+    "kill: 1: Operation not permitted",
     "hello feather os",
     "upper> ",
     "MIXED CASE",
@@ -613,6 +617,7 @@ def main():
     elif args.expect_power:
         pending_lines = [f"{args.expect_power}\n".encode()]
     lines_sent = 0
+    end_search_start = 0
     qmp_connection = None
     qmp_channel = None
     input_error = None
@@ -694,6 +699,7 @@ def main():
                     process.stdin.flush()
                     time.sleep(0.02)
                 lines_sent += 1
+                end_search_start = len(clean_output)
                 while pending_lines and pending_lines[0] is INTERRUPT_RUNNING:
                     pending_lines.pop(0)
                     time.sleep(INTERRUPT_DELAY_SECONDS)
@@ -757,7 +763,11 @@ def main():
             except (OSError, RuntimeError, json.JSONDecodeError) as error:
                 input_error = str(error)
             input_sent = True
-        if any(marker in clean_output for marker in markers):
+        # The end marker may also appear earlier in a scripted session, so
+        # only output after the last typed line can end it.
+        if not pending_lines and any(
+            marker in clean_output[end_search_start:] for marker in markers
+        ):
             break
         if (
             args.expect_power == "reboot"

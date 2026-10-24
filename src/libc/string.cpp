@@ -1,7 +1,9 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
+#include <strings.h>
 
 namespace
 {
@@ -294,6 +296,52 @@ char* strndup(const char* text, size_t maximum)
         copy[length] = '\0';
     }
     return copy;
+}
+
+int strncasecmp(const char* left, const char* right, size_t count)
+{
+    for (; count > 0; --count, ++left, ++right)
+    {
+        const int difference = tolower(static_cast<unsigned char>(*left)) -
+                               tolower(static_cast<unsigned char>(*right));
+        if (difference != 0 || *left == '\0')
+        {
+            return difference;
+        }
+    }
+    return 0;
+}
+
+int strcasecmp(const char* left, const char* right)
+{
+    return strncasecmp(left, right, SIZE_MAX);
+}
+
+char* strsignal(int signal)
+{
+    const char* names[] = {
+        "Unknown signal",
+        "Hangup",
+        "Interrupt",
+        "Quit",
+        "Illegal instruction",
+        "Trace/breakpoint trap",
+        "Aborted",
+        "Bus error",
+        "Floating point exception",
+        "Killed",
+        "User defined signal 1",
+        "Segmentation fault",
+        "User defined signal 2",
+        "Broken pipe",
+        "Alarm clock",
+        "Terminated",
+        "Stack fault",
+        "Child exited",
+        "Continued",
+    };
+    const bool known = signal > 0 && signal < static_cast<int>(sizeof(names) / sizeof(names[0]));
+    return const_cast<char*>(names[known ? signal : 0]);
 }
 
 char* strerror(int error)

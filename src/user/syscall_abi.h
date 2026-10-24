@@ -41,6 +41,11 @@ enum class SyscallNumber : uint64_t
     Pipe = 28,             // (descriptors, flags) -> 0; stores the read end, then the write end
     ProcessGroup = 29,     // (process_id, or 0 for the caller) -> its process group
     ForegroundGroup = 30,  // (set, group) -> the group that has the console, after setting it
+    Kill = 31,             // (target, signal) -> 0; target as kill(2): a process, or a group
+    SignalAction = 32,     // (signal, new_action, old_action) -> 0; either pointer may be null
+    SignalMask = 33,       // (how, set) -> the previous blocked mask
+    SignalReturn = 34,     // () -> resumes what a signal handler interrupted
+    Pause = 35,            // () -> SyscallErrorInterrupted once a signal arrives
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec and joins its
@@ -162,11 +167,55 @@ constexpr bool IsSyscallError(uint64_t value)
     return value >= SyscallErrorBase;
 }
 
+// Signals, with Linux's numbers. The stop signals (19-22) are not supported, since processes
+// cannot be stopped.
+constexpr int SignalCount = 32;
+constexpr int SignalHangUp = 1;
+constexpr int SignalInterrupt = 2;
+constexpr int SignalQuit = 3;
+constexpr int SignalAbort = 6;
+constexpr int SignalKill = 9;
+constexpr int SignalUser1 = 10;
+constexpr int SignalSegmentationFault = 11;
+constexpr int SignalUser2 = 12;
+constexpr int SignalPipe = 13;
+constexpr int SignalAlarm = 14;
+constexpr int SignalTerminate = 15;
+constexpr int SignalChild = 17;
+constexpr int SignalContinue = 18;
+
+// handler is SignalDefault, SignalIgnore, or the address of a function taking the signal number.
+// It returns to restorer, which must make the SignalReturn syscall; the C library supplies one.
+// mask lists further signals to block while the handler runs.
+struct SignalAction
+{
+    uint64_t handler;
+    uint64_t mask;
+    uint64_t flags;
+    uint64_t restorer;
+};
+
+constexpr uint64_t SignalDefault = 0;
+constexpr uint64_t SignalIgnore = 1;
+// SignalAction flags: go back to the default action once the handler starts, and do not block
+// the signal itself while its handler runs.
+constexpr uint64_t SignalResetHandler = 1U << 0;
+constexpr uint64_t SignalNoDefer = 1U << 1;
+// SignalMask operations.
+constexpr uint64_t SignalMaskBlock = 0;
+constexpr uint64_t SignalMaskUnblock = 1;
+constexpr uint64_t SignalMaskSet = 2;
+
 // Exit statuses the kernel reports for programs it terminated: after a CPU exception, or because
-// Ctrl+C interrupted their job.
+// of signal n, as ExitStatusSignalBase + n.
 constexpr uint64_t ExitStatusFault = UINT64_MAX;
 constexpr uint64_t ExitStatusKernelAccessFault = UINT64_MAX - 1;
-constexpr uint64_t ExitStatusInterrupted = UINT64_MAX - 2;
+constexpr uint64_t ExitStatusSignalBase = UINT64_MAX - 0x100;
+
+constexpr bool IsSignalExit(uint64_t status)
+{
+    return status > ExitStatusSignalBase && status < ExitStatusSignalBase + SignalCount;
+}
 
 } // namespace FeatherOS::User
 

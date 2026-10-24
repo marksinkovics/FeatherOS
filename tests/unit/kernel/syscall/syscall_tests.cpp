@@ -137,14 +137,14 @@ constexpr FeatherOS::Syscall::Handlers WriteOnly = {
     CaptureCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-    nullptr,          nullptr, nullptr, nullptr, nullptr};
+    nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     CaptureCharacter, RecordReadLine,   RecordSpawn,    RecordWait,       ReadFixedClock,
     RecordExtendHeap, RecordSleep,      ReadFixedUptime, ReadFixedCpu,    RecordOpen,
     RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeekFrom, RecordRemove,
     RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek,
     RecordDescriptor, RecordSeek,       RecordSeek,      ReadFixedProcessId, ReadFixedParentProcessId,
-    RecordSeekFrom,   RecordSeekFrom,   RecordSeek, RecordDescriptor, RecordSeek};
+    RecordSeekFrom,   RecordSeekFrom,   RecordSeek, RecordDescriptor, RecordSeek, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)
@@ -358,5 +358,20 @@ TEST_CASE("syscall duplicate and descriptor-flags pass three arguments")
     REQUIRE(result.action == Action::Return);
     REQUIRE(output.last_arguments[0] == 5);
     REQUIRE(output.last_arguments[2] == FeatherOS::User::DescriptorCloseOnExec);
+}
+
+TEST_CASE("syscall signal-return is left to the architecture code")
+{
+    OutputTarget output;
+    const FeatherOS::Syscall::Result result =
+        FeatherOS::Syscall::Dispatch(MakeRequest(Number::SignalReturn), WriteOnly, &output);
+    REQUIRE(result.action == Action::SignalReturn);
+    const FeatherOS::Syscall::Result kill = FeatherOS::Syscall::Dispatch(
+        MakeRequest(Number::Kill, 12, FeatherOS::User::SignalTerminate), AllHandlers, &output);
+    REQUIRE(kill.action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 12);
+    REQUIRE(output.last_arguments[1] == FeatherOS::User::SignalTerminate);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Pause), WriteOnly, &output).action ==
+            Action::Invalid);
 }
 

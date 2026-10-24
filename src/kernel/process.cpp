@@ -372,15 +372,29 @@ bool DescendsFromLocked(const ProcessRecord* process, ProcessId ancestor)
     return false;
 }
 
-void RequestKillLocked(ProcessRecord* process)
+// Wakes the process if it sleeps or waits, so blocking calls can give up for the signal.
+void SendSignalLocked(ProcessRecord* process, int signal)
 {
-    // The task exists only once the program has loaded; before that there is nothing to stop.
+    // The task exists only once the program has loaded; before that there is nothing to signal.
     if (process->task == 0)
     {
         return;
     }
-    process->program.execution_context.kill_requested = true;
+    Signals::Send(&process->program.execution_context.signals, signal);
     Scheduler::WakeTask(process->task);
+}
+
+void RequestKillLocked(ProcessRecord* process)
+{
+    SendSignalLocked(process, User::SignalKill);
+}
+
+// A signal the caller would take, such as SIGINT from Ctrl+C; blocking calls then give up. It
+// takes no locks, so the scheduler may call it with its own lock held.
+bool CallerInterrupted()
+{
+    const auto* context = static_cast<const UserExecutionContext*>(Scheduler::CurrentUserContext());
+    return context != nullptr && Signals::Deliverable(context->signals) != 0;
 }
 
 bool InForegroundGroup(const ProcessRecord& process)
@@ -689,6 +703,11 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
     {
         return User::SyscallErrorWouldBlock;
     }
+    // A signal ends the wait early; the child stays to be waited for again.
+    if (!Scheduler::Wait(child->task, nullptr, CallerInterrupted))
+    {
+        return User::SyscallErrorInterrupted;
+    }
     uint64_t exit_status;
     if (!Wait(process_id, &exit_status))
     {
@@ -789,9 +808,18 @@ uint64_t SleepSyscall(void*, uint64_t milliseconds)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    // Round up so the program sleeps at least as long as it asked.
+    // Round up so the program sleeps at least as long as it asked. A signal ends it early, and
+    // other wakeups go back to sleep.
     const uint64_t ticks = (milliseconds * ticks_per_second + 999) / 1000;
-    Scheduler::SleepUntil(Time::TickCount() + ticks);
+    const uint64_t deadline = Time::TickCount() + ticks;
+    while (Time::TickCount() < deadline)
+    {
+        if (CallerInterrupted())
+        {
+            return User::SyscallErrorInterrupted;
+        }
+        Scheduler::SleepUntil(deadline);
+    }
     return 0;
 }
 
@@ -827,13 +855,6 @@ uint64_t OpenSyscall(void* context, uint64_t path, uint64_t flags)
         return copied;
     }
     return Files::Open(&process->files, path_text, flags);
-}
-
-// Ctrl+C or an exiting parent marks the process; blocking calls then give up.
-bool CallerInterrupted()
-{
-    const auto* context = static_cast<const UserExecutionContext*>(Scheduler::CurrentUserContext());
-    return context != nullptr && context->kill_requested;
 }
 
 // Console reads return one line at a time, ending in '\n'; what does not fit the caller's buffer
@@ -965,6 +986,12 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
         }
         const uint64_t count =
             Files::Write(&process->files, descriptor, chunk, wanted, CallerInterrupted);
+        // As on Unix, writing to a pipe nobody reads also raises SIGPIPE, which ends the writer
+        // unless it handles or ignores it.
+        if (count == User::SyscallErrorBrokenPipe)
+        {
+            Signals::Send(&process->program.execution_context.signals, User::SignalPipe);
+        }
         if (User::IsSyscallError(count))
         {
             return total > 0 ? total : count;
@@ -1024,6 +1051,89 @@ uint64_t ForegroundGroupSyscall(void* context, uint64_t set, uint64_t group)
     }
     Console::NotifyStatusChanged();
     return group;
+}
+
+// target as kill(2): a process ID, 0 for the caller's group, -1 for every process but init and
+// the caller, or -group. Signal 0 only checks that the target exists. init cannot be signaled.
+uint64_t KillSyscall(void* context, uint64_t target, uint64_t signal)
+{
+    const auto* caller = static_cast<const ProcessRecord*>(context);
+    const auto signal_number = static_cast<int>(signal);
+    if (signal > static_cast<uint64_t>(User::SignalCount) ||
+        (signal != 0 && !Signals::IsValid(signal_number)))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    const auto requested = static_cast<int64_t>(target);
+    Sync::SpinLockGuard guard(process_lock);
+    bool found = false;
+    for (ProcessRecord* candidate = process_list; candidate != nullptr; candidate = candidate->next)
+    {
+        const bool matches = requested > 0    ? candidate->id == static_cast<ProcessId>(requested)
+                             : requested == 0 ? candidate->group == caller->group
+                             : requested == -1
+                                 ? candidate != caller
+                                 : candidate->group == static_cast<ProcessId>(-requested);
+        if (!matches)
+        {
+            continue;
+        }
+        if (candidate->parent == 0)
+        {
+            if (requested > 0)
+            {
+                return User::SyscallErrorNotPermitted;
+            }
+            continue;
+        }
+        found = true;
+        if (signal != 0)
+        {
+            SendSignalLocked(candidate, signal_number);
+        }
+    }
+    return found ? 0 : User::SyscallErrorNotFound;
+}
+
+uint64_t SignalActionSyscall(void* context, uint64_t signal, uint64_t new_action,
+                             uint64_t old_action)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    User::SignalAction requested;
+    User::SignalAction previous;
+    if (new_action != 0 && !CopyFromUser(*process, new_action, &requested, sizeof(requested)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    if (old_action != 0 && !UserRangeWritable(*process, old_action, sizeof(previous)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    const uint64_t result = Signals::SetAction(&process->program.execution_context.signals,
+                                               static_cast<int>(signal > INT32_MAX ? 0 : signal),
+                                               new_action != 0 ? &requested : nullptr, &previous);
+    if (result == 0 && old_action != 0 &&
+        !CopyToUser(*process, old_action, &previous, sizeof(previous)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    return result;
+}
+
+uint64_t SignalMaskSyscall(void* context, uint64_t how, uint64_t set)
+{
+    return Signals::ChangeMask(
+        &static_cast<ProcessRecord*>(context)->program.execution_context.signals, how, set);
+}
+
+// Waits until a signal arrives; the program then takes it on the way back to user mode.
+uint64_t PauseSyscall(void*)
+{
+    while (!CallerInterrupted())
+    {
+        Scheduler::SleepUntil(Time::TickCount() + Time::TicksPerSecond());
+    }
+    return User::SyscallErrorInterrupted;
 }
 
 uint64_t PipeSyscall(void* context, uint64_t descriptors, uint64_t flags)
@@ -1236,6 +1346,10 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     PipeSyscall,
     ProcessGroupSyscall,
     ForegroundGroupSyscall,
+    KillSyscall,
+    SignalActionSyscall,
+    SignalMaskSyscall,
+    PauseSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -1266,9 +1380,18 @@ uint64_t RunProcess(void* context)
         }
         if (child == 0 || !Wait(child, nullptr))
         {
-            return exit_status;
+            break;
         }
     }
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        ProcessRecord* parent = FindProcessLocked(process->parent);
+        if (parent != nullptr)
+        {
+            SendSignalLocked(parent, User::SignalChild);
+        }
+    }
+    return exit_status;
 }
 
 // Processes are listed by ascending ID.
@@ -1396,7 +1519,7 @@ void InitializeUserProgram(UserProgram* program)
     program->execution_context.syscall_handlers = nullptr;
     program->execution_context.syscall_context = nullptr;
     program->execution_context.program = program;
-    program->execution_context.kill_requested = false;
+    Signals::Reset(&program->execution_context.signals);
 }
 
 bool LoadUserProgram(const ELF::Image& image, const User::ProgramArguments& arguments,
@@ -1441,6 +1564,37 @@ bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address)
         return false;
     }
     return true;
+}
+
+bool CopyToCurrentUser(UserExecutionContext* context, uint64_t address, const void* source,
+                       size_t size)
+{
+    auto* process = static_cast<ProcessRecord*>(context->syscall_context);
+    if (process == nullptr || size == 0 || address > UINT64_MAX - size)
+    {
+        return false;
+    }
+    // A frame below the stack pointer may reach pages the stack has not touched yet.
+    for (uint64_t page = address & ~(Memory::PageSize - 1); page < address + size;
+         page += Memory::PageSize)
+    {
+        uint64_t physical_address;
+        bool writable;
+        if (!Memory::TranslateUserPage(process->program.address_space, page, &physical_address,
+                                       &writable) &&
+            !HandleUserPageFault(context, page))
+        {
+            return false;
+        }
+    }
+    return CopyToUser(*process, address, source, size);
+}
+
+bool CopyFromCurrentUser(UserExecutionContext* context, uint64_t address, void* destination,
+                         size_t size)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context->syscall_context);
+    return process != nullptr && CopyFromUser(*process, address, destination, size);
 }
 
 uint64_t RunUserProgram(void* context)
@@ -1583,6 +1737,11 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
     process->program.layout = layout;
     process->program.execution_context.syscall_handlers = &ProcessSyscallHandlers;
     process->program.execution_context.syscall_context = process;
+    if (inherited_from != nullptr)
+    {
+        Signals::Inherit(&process->program.execution_context.signals,
+                         inherited_from->program.execution_context.signals);
+    }
     const bool loaded = LoadUserProgram(image, arguments, &process->program);
     // Spawned programs are time-sliced: user mode runs with interrupts unmasked, and each timer
     // tick may switch to another ready task.
@@ -1689,7 +1848,7 @@ bool InterruptForegroundJob()
         if (candidate->group == foreground_group && !candidate->session_leader &&
             candidate->parent != 0)
         {
-            RequestKillLocked(candidate);
+            SendSignalLocked(candidate, User::SignalInterrupt);
             interrupted = true;
         }
     }

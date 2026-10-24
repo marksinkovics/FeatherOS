@@ -163,7 +163,20 @@ int nanosleep(const struct timespec* duration, struct timespec* remaining)
     while (milliseconds > 0)
     {
         const uint64_t step = milliseconds < MaximumStep ? milliseconds : MaximumStep;
-        FeatherOS::User::Sleep(step);
+        const uint64_t start = FeatherOS::User::ReadUptime();
+        if (FeatherOS::User::Sleep(step) == FeatherOS::User::SyscallErrorInterrupted)
+        {
+            // A signal cut the sleep short: report what is left, to the millisecond.
+            const uint64_t slept = FeatherOS::User::ReadUptime() - start;
+            const uint64_t left = milliseconds - (slept < step ? slept : step);
+            if (remaining != nullptr)
+            {
+                *remaining = {static_cast<time_t>(left / 1000),
+                              static_cast<long>(left % 1000 * 1000000)};
+            }
+            errno = EINTR;
+            return -1;
+        }
         milliseconds -= step;
     }
     if (remaining != nullptr)

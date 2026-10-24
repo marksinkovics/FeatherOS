@@ -46,7 +46,7 @@ size_t strftime(char* buffer, size_t size, const char* format, const struct tm* 
 char* asctime(const struct tm* time);
 char* ctime(const time_t* seconds);
 int clock_gettime(clockid_t clock, struct timespec* result);
-// Never cut short, so remaining is always set to zero.
+// A signal cuts it short with EINTR and the time left in remaining.
 int nanosleep(const struct timespec* duration, struct timespec* remaining);
 
 __END_DECLS

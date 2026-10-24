@@ -1,6 +1,7 @@
 #ifndef FEATHEROS_USER_CONTEXT_H
 #define FEATHEROS_USER_CONTEXT_H
 
+#include "kernel/signals.h"
 #include "kernel/syscall.h"
 
 #include <stdint.h>
@@ -23,8 +24,8 @@ struct UserExecutionContext
     void* syscall_context;
     // The Process::UserProgram that owns this context.
     void* program;
-    // Set from any CPU; the program is terminated the next time it would return to user mode.
-    volatile bool kill_requested;
+    // Other CPUs may send signals; each is taken the next time the program returns to user mode.
+    Signals::State signals;
 };
 
 } // namespace FeatherOS

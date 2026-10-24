@@ -2,6 +2,7 @@
 
 #include "local_apic.h"
 
+#include "kernel/arch/floating_point.h"
 #include "kernel/arch/serial.h"
 #include "kernel/exception.h"
 #include "kernel/process.h"
@@ -196,6 +197,10 @@ constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {WriteSyscallChar
                                                                 nullptr,
                                                                 nullptr,
                                                                 nullptr,
+                                                                nullptr,
+                                                                nullptr,
+                                                                nullptr,
+                                                                nullptr,
                                                                 nullptr};
 
 template <size_t Size> uint64_t StackTop(uint8_t (&stack)[Size])
@@ -347,17 +352,138 @@ extern "C" uint64_t FeatherOS_x86_64_GetUserReturnStack()
 namespace
 {
 
-// A program that Ctrl+C interrupted ends when it would next resume in ring 3.
-void TerminateIfKilled(const ExceptionContext* context)
+constexpr uint64_t UserAddressLimit = 0x0000800000000000;
+// The flags a program may change: CF, PF, AF, ZF, SF, DF and OF. IF and IOPL stay as the kernel
+// set them.
+constexpr uint64_t UserFlags = 0x0CD5;
+constexpr uint64_t TrapFlag = 1U << 8;
+constexpr uint64_t DirectionFlag = 1U << 10;
+// The ABI lets a function use 128 bytes below the stack pointer without moving it.
+constexpr uint64_t RedZone = 128;
+constexpr uint32_t MxcsrOffset = 24;
+// The MXCSR bits FXRSTOR accepts on every x86-64 CPU; a reserved bit would fault in the kernel.
+constexpr uint32_t MxcsrMask = 0xFFBF;
+
+// What a signal handler's frame keeps on the user stack, below the interrupted stack pointer.
+struct SignalFrame
+{
+    // The handler returns here: the C library's restorer, which makes the SignalReturn syscall.
+    uint64_t return_address;
+    uint64_t signal;
+    uint64_t saved_mask;
+    uint64_t registers[15];
+    uint64_t instruction_pointer;
+    uint64_t flags;
+    uint64_t stack_pointer;
+    FeatherOS::Arch::FloatingPoint::State floating_point;
+};
+
+constexpr uint64_t ExceptionContext::* SavedRegisters[] = {
+    &ExceptionContext::r15, &ExceptionContext::r14, &ExceptionContext::r13, &ExceptionContext::r12,
+    &ExceptionContext::r11, &ExceptionContext::r10, &ExceptionContext::r9,  &ExceptionContext::r8,
+    &ExceptionContext::rbp, &ExceptionContext::rdi, &ExceptionContext::rsi, &ExceptionContext::rdx,
+    &ExceptionContext::rcx, &ExceptionContext::rbx, &ExceptionContext::rax,
+};
+
+void TerminateForSignal(FeatherOS::UserExecutionContext* user_context, int signal)
+{
+    user_context->exit_status = FeatherOS::User::ExitStatusSignalBase + signal;
+    user_context->exit_requested = true;
+}
+
+// Builds the handler's frame and points the return to ring 3 at the handler, which is called
+// with the signal number as if from the interrupted instruction.
+bool EnterHandler(ExceptionContext* context, FeatherOS::UserExecutionContext* user_context,
+                  const FeatherOS::Signals::Decision& decision)
+{
+    SignalFrame frame;
+    frame.return_address = decision.action.restorer;
+    frame.signal = static_cast<uint64_t>(decision.signal);
+    frame.saved_mask = decision.saved_mask;
+    for (size_t index = 0; index < sizeof(SavedRegisters) / sizeof(SavedRegisters[0]); ++index)
+    {
+        frame.registers[index] = context->*SavedRegisters[index];
+    }
+    frame.instruction_pointer = context->instruction_pointer;
+    frame.flags = context->flags;
+    frame.stack_pointer = context->user_stack_pointer;
+    FeatherOS::Arch::FloatingPoint::Save(&frame.floating_point);
+    if (context->user_stack_pointer < RedZone + sizeof(frame) + 16)
+    {
+        return false;
+    }
+    // At the handler's first instruction the stack is as just after a call: 8 bytes past a
+    // 16-byte boundary.
+    const uint64_t address =
+        ((context->user_stack_pointer - RedZone - sizeof(frame)) & ~uint64_t{15}) - 8;
+    if (!FeatherOS::Process::CopyToCurrentUser(user_context, address, &frame, sizeof(frame)))
+    {
+        return false;
+    }
+    context->instruction_pointer = decision.action.handler;
+    context->user_stack_pointer = address;
+    context->rdi = static_cast<uint64_t>(decision.signal);
+    context->rsi = 0;
+    context->rdx = 0;
+    context->flags &= ~(DirectionFlag | TrapFlag);
+    return true;
+}
+
+// Every return to ring 3 passes here: the program takes its next signal, which may end it.
+void DeliverSignals(ExceptionContext* context)
 {
     auto* user_context =
         static_cast<FeatherOS::UserExecutionContext*>(FeatherOS::Scheduler::CurrentUserContext());
-    if ((context->code_segment & 3) == 3 && user_context != nullptr && user_context->active &&
-        user_context->kill_requested)
+    if ((context->code_segment & 3) != 3 || user_context == nullptr || !user_context->active ||
+        user_context->exit_requested)
     {
-        user_context->exit_status = FeatherOS::User::ExitStatusInterrupted;
-        user_context->exit_requested = true;
+        return;
     }
+    const FeatherOS::Signals::Decision decision =
+        FeatherOS::Signals::TakeNext(&user_context->signals);
+    if (decision.kind == FeatherOS::Signals::DecisionKind::Terminate)
+    {
+        TerminateForSignal(user_context, decision.signal);
+    }
+    // A program whose stack cannot hold the frame cannot run the handler.
+    else if (decision.kind == FeatherOS::Signals::DecisionKind::Handle &&
+             !EnterHandler(context, user_context, decision))
+    {
+        TerminateForSignal(user_context, FeatherOS::User::SignalSegmentationFault);
+    }
+}
+
+// Puts back what the frame saved, refusing what a program could use to escape ring 3: kernel
+// addresses, privileged flags, and MXCSR bits that would fault in FXRSTOR.
+bool ReturnFromSignal(ExceptionContext* context, FeatherOS::UserExecutionContext* user_context)
+{
+    SignalFrame frame;
+    // The handler's ret popped the return address.
+    const uint64_t address = context->user_stack_pointer - 8;
+    if (!FeatherOS::Process::CopyFromCurrentUser(user_context, address, &frame, sizeof(frame)) ||
+        frame.instruction_pointer >= UserAddressLimit || frame.stack_pointer >= UserAddressLimit)
+    {
+        return false;
+    }
+    for (size_t index = 0; index < sizeof(SavedRegisters) / sizeof(SavedRegisters[0]); ++index)
+    {
+        context->*SavedRegisters[index] = frame.registers[index];
+    }
+    context->instruction_pointer = frame.instruction_pointer;
+    context->user_stack_pointer = frame.stack_pointer;
+    context->flags = (context->flags & ~UserFlags) | (frame.flags & UserFlags);
+    uint8_t* mxcsr = frame.floating_point.bytes + MxcsrOffset;
+    const uint32_t value =
+        static_cast<uint32_t>(mxcsr[0]) | (static_cast<uint32_t>(mxcsr[1]) << 8) |
+        (static_cast<uint32_t>(mxcsr[2]) << 16) | (static_cast<uint32_t>(mxcsr[3]) << 24);
+    const uint32_t sanitized = value & MxcsrMask;
+    for (uint32_t byte = 0; byte < 4; ++byte)
+    {
+        mxcsr[byte] = static_cast<uint8_t>(sanitized >> (8 * byte));
+    }
+    FeatherOS::Arch::FloatingPoint::Restore(&frame.floating_point);
+    FeatherOS::Signals::RestoreMask(&user_context->signals, frame.saved_mask);
+    return true;
 }
 
 } // namespace
@@ -368,7 +494,7 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
     {
         FeatherOS_x86_64_HandleHardwareInterrupt(context->vector);
         RestoreCurrentUserKernelStack();
-        TerminateIfKilled(context);
+        DeliverSignals(context);
         return;
     }
     if (context->vector == LocalApic::IpiVector || context->vector == LocalApic::TimerVector ||
@@ -376,7 +502,7 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
     {
         LocalApic::HandleInterrupt(context->vector);
         RestoreCurrentUserKernelStack();
-        TerminateIfKilled(context);
+        DeliverSignals(context);
         return;
     }
 
@@ -396,7 +522,17 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
         if (result.action == FeatherOS::Syscall::Action::Return)
         {
             context->rax = result.value;
-            TerminateIfKilled(context);
+            DeliverSignals(context);
+            return;
+        }
+        if (result.action == FeatherOS::Syscall::Action::SignalReturn)
+        {
+            if (!ReturnFromSignal(context, user_context))
+            {
+                TerminateForSignal(user_context, FeatherOS::User::SignalSegmentationFault);
+                return;
+            }
+            DeliverSignals(context);
             return;
         }
         user_context->exit_status = result.action == FeatherOS::Syscall::Action::Exit

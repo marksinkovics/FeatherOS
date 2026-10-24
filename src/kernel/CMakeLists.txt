@@ -52,6 +52,7 @@ set(SRC
     ${SRCROOT}/console.cpp
     ${SRCROOT}/files.cpp
     ${SRCROOT}/pipe.cpp
+    ${SRCROOT}/signals.cpp
     ${SRCROOT}/power.cpp
     ${SRCROOT}/process.cpp
     ${SRCROOT}/process_arguments.cpp

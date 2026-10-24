@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <sys/reboot.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 using FeatherOS::LibC::Check;
@@ -246,14 +247,14 @@ int isatty(int descriptor)
 // per call.
 unsigned int sleep(unsigned int seconds)
 {
-    constexpr unsigned int SecondsPerDay = 86400;
-    while (seconds > 0)
+    struct timespec duration = {static_cast<time_t>(seconds), 0};
+    struct timespec remaining = {0, 0};
+    if (nanosleep(&duration, &remaining) == 0)
     {
-        const unsigned int step = seconds < SecondsPerDay ? seconds : SecondsPerDay;
-        FeatherOS::User::Sleep(static_cast<uint64_t>(step) * 1000);
-        seconds -= step;
+        return 0;
     }
-    return 0;
+    // Rounded up, so a sleep cut short never reports that no time was left.
+    return static_cast<unsigned int>(remaining.tv_sec) + (remaining.tv_nsec > 0 ? 1 : 0);
 }
 
 int usleep(unsigned int microseconds)

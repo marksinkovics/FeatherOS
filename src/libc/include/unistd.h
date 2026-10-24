@@ -49,6 +49,7 @@ int chdir(const char* path);
 char* getcwd(char* buffer, size_t size);
 int access(const char* path, int mode);
 int isatty(int descriptor);
+// Both end early, failing with EINTR or returning the seconds left, when a signal arrives.
 unsigned int sleep(unsigned int seconds);
 int usleep(unsigned int microseconds);
 // Moves the end of the heap that malloc also uses, and returns the old end. A negative increment
@@ -65,6 +66,8 @@ pid_t getpgid(pid_t pid);
 pid_t tcgetpgrp(int descriptor);
 int tcsetpgrp(int descriptor, pid_t group);
 __attribute__((__noreturn__)) void _exit(int status);
+// Waits for a signal; returns -1 with EINTR once its handler has run.
+int pause(void);
 
 __END_DECLS
 
