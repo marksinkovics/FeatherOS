@@ -32,6 +32,12 @@ def main():
         action="store_true",
         help="Exit instead of resetting, to catch a triple fault",
     )
+    parser.add_argument(
+        "--zoom",
+        action="store_true",
+        help="Scale the guest screen with the window instead of showing it "
+        "pixel for pixel, which looks small on a high-density display",
+    )
     parser.add_argument("iso", help="Path to the bootable ISO")
     args = parser.parse_args()
 
@@ -83,6 +89,10 @@ def main():
             else "virtio-blk-pci,drive=featheros_disk,disable-legacy=off",
         ]
     )
+    if args.zoom:
+        # Cocoa is QEMU's display on macOS; GTK is the usual one elsewhere.
+        display = "cocoa" if sys.platform == "darwin" else "gtk"
+        command.extend(["-display", f"{display},zoom-to-fit=on"])
     command.extend(
         [
             "-serial",

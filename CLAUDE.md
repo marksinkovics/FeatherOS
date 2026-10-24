@@ -36,7 +36,7 @@ Hobby kernel for **x86-64 and AArch64**, booted by Limine, freestanding C/C++ + 
 bash tools/quality.sh --fix         # clang-format/tidy, ruff, shellcheck/shfmt
 ```
 
-You must always pass an architecture (`--arch` or `ARCH=`). Feature tests are env toggles, e.g. `SHELL_TEST=ON`, `SCHEDULER_TEST=ON`, `SMP_TEST=ON`, `STORAGE_TEST=ON`, `PANIC_TEST=ON` (add `QEMU_CPU=max` for the hardware-protection CPU model; `QEMU_NO_REBOOT=1` makes interactive runs exit on reset), which map to `FEATHEROS_*_TEST` CMake options. Outputs go under `build/<arch>/`.
+You must always pass an architecture (`--arch` or `ARCH=`). Feature tests are env toggles, e.g. `SHELL_TEST=ON`, `SCHEDULER_TEST=ON`, `SMP_TEST=ON`, `STORAGE_TEST=ON`, `PANIC_TEST=ON` (add `QEMU_CPU=max` for the hardware-protection CPU model; `QEMU_NO_REBOOT=1` makes interactive runs exit on reset; `QEMU_ZOOM=1` scales the window, which is small on Retina displays at the guest's 1024x768), which map to `FEATHEROS_*_TEST` CMake options. Outputs go under `build/<arch>/`.
 
 ## Change workflow: lint before testing
 
