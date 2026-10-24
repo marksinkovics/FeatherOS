@@ -160,6 +160,16 @@ inline uint64_t StatDescriptor(uint64_t descriptor, FileStatus* status)
     return Syscall(SyscallNumber::StatDescriptor, descriptor, reinterpret_cast<uint64_t>(status));
 }
 
+inline uint64_t Duplicate(uint64_t descriptor, uint64_t target, uint64_t flags)
+{
+    return Syscall(SyscallNumber::Duplicate, descriptor, target, flags);
+}
+
+inline uint64_t DescriptorFlags(uint64_t descriptor, bool set, uint64_t flags)
+{
+    return Syscall(SyscallNumber::DescriptorFlags, descriptor, set ? 1 : 0, flags);
+}
+
 inline uint64_t ProcessId()
 {
     return Syscall(SyscallNumber::ProcessId);

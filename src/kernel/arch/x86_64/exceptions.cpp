@@ -191,6 +191,8 @@ constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {WriteSyscallChar
                                                                 nullptr,
                                                                 nullptr,
                                                                 nullptr,
+                                                                nullptr,
+                                                                nullptr,
                                                                 nullptr};
 
 template <size_t Size> uint64_t StackTop(uint8_t (&stack)[Size])

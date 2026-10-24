@@ -69,6 +69,9 @@ SHELL_INPUT = (
     b"cat work/a.txt\ncd /\nls\ncat hello.txt\ncd nowhere\ncd\npwd\n"
     b"ls /dev\nwrite /tmp/note.txt kept in tmp\ncat /tmp/note.txt\n"
     b"cat /proc/self/status\ncat /proc/meminfo\n"
+    b"echo first redirected line > /tmp/r.txt\n"
+    b"echo second redirected line >> /tmp/r.txt\n"
+    b"upper < /tmp/r.txt\ncat < /tmp/r.txt\ncat < /tmp/none\n"
     b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
     b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\nfptest 8\n"
@@ -135,7 +138,9 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 295 checks passed",
+    "libctest: 306 checks passed",
+    "libctest: written through dup",
+    "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
     # env prints the variables init.conf sets, which the shell passes on.
     "HOME=/home",
@@ -149,6 +154,13 @@ EXPECTED_SHELL_OUTPUT = (
     "kept in tmp",
     "Name: cat",
     "MemTotal: ",
+    # Redirection; cat's lines start lines of their own, unlike the typed
+    # commands that contain the same words.
+    "FIRST REDIRECTED LINE",
+    "SECOND REDIRECTED LINE",
+    "\nfirst redirected line",
+    "\nsecond redirected line",
+    "shell: /tmp/none: No such file or directory",
     "hello feather os",
     "upper> ",
     "MIXED CASE",
@@ -238,7 +250,7 @@ LINE_PROMPT = re.compile(rb"^(?:upper|calc|/[^\n>]*)?> ", re.MULTILINE)
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
 # The scripted shell session runs many programs; AArch64 emulation is slower.
-SHELL_TIMEOUT_SECONDS = 30
+SHELL_TIMEOUT_SECONDS = 45
 QEMU_CPU_COUNT = 4
 SMP_MESSAGE = f"KERN/I: SMP: {QEMU_CPU_COUNT} CPUs online with IPIs and timers"
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")

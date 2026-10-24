@@ -62,8 +62,6 @@ struct ProcessRecord
     Files::Table files;
     // Relative paths in file syscalls start here; children inherit it.
     char working_directory[User::MaximumPathLength];
-    // Bit n is set once descriptor n, one of the console descriptors 0-2, has been closed.
-    uint8_t closed_console_descriptors;
     // The rest of a console line that a read did not take, with its '\n'.
     char console_input[User::MaximumCommandLineLength];
     uint8_t console_input_length;
@@ -802,12 +800,6 @@ uint64_t OpenSyscall(void* context, uint64_t path, uint64_t flags)
     return Files::Open(&process->files, path_text, flags);
 }
 
-bool IsConsoleDescriptor(const ProcessRecord& process, uint64_t descriptor)
-{
-    return descriptor < User::FirstFileDescriptor &&
-           (process.closed_console_descriptors & (1U << descriptor)) == 0;
-}
-
 // Console reads return one line at a time, ending in '\n'; what does not fit the caller's buffer
 // is kept for its next read.
 uint64_t ReadConsole(ProcessRecord* process, uint64_t buffer, uint64_t length)
@@ -847,12 +839,13 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
 {
     auto* process = static_cast<ProcessRecord*>(context);
     uint8_t chunk[FileChunkSize];
-    if (descriptor < User::FirstFileDescriptor)
+    const Files::Kind kind = Files::KindOf(&process->files, descriptor);
+    if (kind == Files::Kind::None)
     {
-        if (!IsConsoleDescriptor(*process, descriptor))
-        {
-            return User::SyscallErrorBadDescriptor;
-        }
+        return User::SyscallErrorBadDescriptor;
+    }
+    if (kind == Files::Kind::Console)
+    {
         return length == 0 ? 0 : ReadConsole(process, buffer, length);
     }
     if (length == 0)
@@ -890,11 +883,12 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
 {
     auto* process = static_cast<ProcessRecord*>(context);
     uint8_t chunk[FileChunkSize];
-    const bool console = descriptor < User::FirstFileDescriptor;
-    if (console && !IsConsoleDescriptor(*process, descriptor))
+    const Files::Kind kind = Files::KindOf(&process->files, descriptor);
+    if (kind == Files::Kind::None)
     {
         return User::SyscallErrorBadDescriptor;
     }
+    const bool console = kind == Files::Kind::Console;
     if (length == 0)
     {
         return console ? 0 : Files::Write(&process->files, descriptor, nullptr, 0);
@@ -933,28 +927,24 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
 
 uint64_t CloseSyscall(void* context, uint64_t descriptor)
 {
-    auto* process = static_cast<ProcessRecord*>(context);
-    if (descriptor < User::FirstFileDescriptor)
-    {
-        if (!IsConsoleDescriptor(*process, descriptor))
-        {
-            return User::SyscallErrorBadDescriptor;
-        }
-        process->closed_console_descriptors |= static_cast<uint8_t>(1U << descriptor);
-        return 0;
-    }
-    return Files::Close(&process->files, descriptor);
+    return Files::Close(&static_cast<ProcessRecord*>(context)->files, descriptor);
 }
 
 uint64_t SeekSyscall(void* context, uint64_t descriptor, uint64_t offset, uint64_t whence)
 {
-    auto* process = static_cast<ProcessRecord*>(context);
-    if (descriptor < User::FirstFileDescriptor)
-    {
-        return IsConsoleDescriptor(*process, descriptor) ? User::SyscallErrorNotSeekable
-                                                         : User::SyscallErrorBadDescriptor;
-    }
-    return Files::Seek(&process->files, descriptor, offset, whence);
+    return Files::Seek(&static_cast<ProcessRecord*>(context)->files, descriptor, offset, whence);
+}
+
+uint64_t DuplicateSyscall(void* context, uint64_t descriptor, uint64_t target, uint64_t flags)
+{
+    return Files::Duplicate(&static_cast<ProcessRecord*>(context)->files, descriptor, target,
+                            flags);
+}
+
+uint64_t DescriptorFlagsSyscall(void* context, uint64_t descriptor, uint64_t set, uint64_t flags)
+{
+    return Files::DescriptorFlags(&static_cast<ProcessRecord*>(context)->files, descriptor,
+                                  set != 0, flags);
 }
 
 // Copies the path argument and passes it to one of the path-only Files calls.
@@ -1094,15 +1084,6 @@ uint64_t StatDescriptorSyscall(void* context, uint64_t descriptor, uint64_t stat
 {
     auto* process = static_cast<ProcessRecord*>(context);
     User::FileStatus file_status = {};
-    if (descriptor < User::FirstFileDescriptor)
-    {
-        if (!IsConsoleDescriptor(*process, descriptor))
-        {
-            return User::SyscallErrorBadDescriptor;
-        }
-        file_status.type = User::FileType::Console;
-        return CopyStatusToUser(*process, status, file_status);
-    }
     const uint64_t result = Files::StatDescriptor(&process->files, descriptor, &file_status);
     return User::IsSyscallError(result) ? result : CopyStatusToUser(*process, status, file_status);
 }
@@ -1143,6 +1124,8 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     StatDescriptorSyscall,
     ProcessIdSyscall,
     ParentProcessIdSyscall,
+    DuplicateSyscall,
+    DescriptorFlagsSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -1233,9 +1216,9 @@ bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
     status->pages = process->program.mapped_page_count;
     status->page_limit = process->program.page_limit;
     status->open_files = 0;
-    for (const Files::OpenFile& file : process->files.files)
+    for (const Files::Slot& slot : process->files.slots)
     {
-        status->open_files += file.used ? 1 : 0;
+        status->open_files += slot.file != nullptr ? 1 : 0;
     }
     return true;
 }
@@ -1403,6 +1386,7 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         return SpawnStatus::NoResources;
     }
     ProcessId id = 0;
+    const ProcessRecord* inherited_from = nullptr;
     {
         Sync::SpinLockGuard guard(process_lock);
         ProcessRecord* parent_record = nullptr;
@@ -1439,6 +1423,16 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         process->session_leader = (flags & User::SpawnSessionLeader) != 0;
         process->next = process_list;
         process_list = process;
+        inherited_from = parent_record;
+    }
+    // The parent is the caller, which cannot change its descriptors while it waits here.
+    if (inherited_from != nullptr)
+    {
+        Files::Inherit(&process->files, &inherited_from->files);
+    }
+    else
+    {
+        Files::OpenConsole(&process->files);
     }
 
     size_t path_length = 0;
@@ -1463,6 +1457,7 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
     process->program.execution_context.preemption_enabled = true;
     if (!loaded || !Scheduler::CreateTask(RunProcess, process, &process->task))
     {
+        Files::CloseAll(&process->files);
         ReleaseUserProgram(&process->program);
         RemoveProcess(process);
         return SpawnStatus::NoResources;

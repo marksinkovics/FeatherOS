@@ -47,7 +47,10 @@ enum class SplitResult : unsigned char
 
 // Splits line in place by the kernel's rules for a program's arguments: spaces separate words,
 // and double quotes group them and are dropped. words gets a null pointer after the last word.
-inline SplitResult SplitCommandLine(char* line, char** words, size_t capacity, size_t* count)
+// If quoted is not null, quoted[i] says whether word i held a quote, so the shell can tell an
+// operator such as > from a quoted ">".
+inline SplitResult SplitCommandLine(char* line, char** words, size_t capacity, size_t* count,
+                                    bool* quoted = nullptr)
 {
     *count = 0;
     char* output = line;
@@ -63,13 +66,15 @@ inline SplitResult SplitCommandLine(char* line, char** words, size_t capacity, s
         {
             return SplitResult::TooManyWords;
         }
-        words[(*count)++] = output;
-        bool quoted = false;
-        while (*input != '\0' && (quoted || *input != ' '))
+        words[*count] = output;
+        bool inside_quotes = false;
+        bool had_quote = false;
+        while (*input != '\0' && (inside_quotes || *input != ' '))
         {
             if (*input == '"')
             {
-                quoted = !quoted;
+                inside_quotes = !inside_quotes;
+                had_quote = true;
             }
             else
             {
@@ -77,10 +82,15 @@ inline SplitResult SplitCommandLine(char* line, char** words, size_t capacity, s
             }
             ++input;
         }
-        if (quoted)
+        if (inside_quotes)
         {
             return SplitResult::UnclosedQuote;
         }
+        if (quoted != nullptr)
+        {
+            quoted[*count] = had_quote;
+        }
+        ++*count;
         // The word's source was at least as long, so this never overtakes the input.
         const bool at_end = *input == '\0';
         *output++ = '\0';
@@ -91,6 +101,99 @@ inline SplitResult SplitCommandLine(char* line, char** words, size_t capacity, s
     }
     words[*count] = nullptr;
     return SplitResult::Done;
+}
+
+enum class RedirectKind : unsigned char
+{
+    // < file
+    Input,
+    // > file
+    Output,
+    // >> file
+    Append,
+    // 2> file
+    Error,
+    // 2>&1
+    ErrorToOutput,
+};
+
+struct Redirect
+{
+    RedirectKind kind;
+    // Null for 2>&1.
+    const char* path;
+};
+
+enum class RedirectResult : unsigned char
+{
+    Done,
+    MissingPath,
+    TooMany,
+};
+
+// Takes the redirections out of words, in order, and closes the gap they leave. An operator is a
+// word of its own or starts the word naming the file (">out.txt"); quoted words are never
+// operators.
+inline RedirectResult ExtractRedirects(char** words, const bool* quoted, size_t* count,
+                                       Redirect* redirects, size_t capacity, size_t* redirect_count)
+{
+    *redirect_count = 0;
+    size_t kept = 0;
+    for (size_t index = 0; index < *count; ++index)
+    {
+        char* word = words[index];
+        RedirectKind kind = RedirectKind::Output;
+        size_t operator_length = 0;
+        if (!quoted[index])
+        {
+            if (strcmp(word, "2>&1") == 0)
+            {
+                kind = RedirectKind::ErrorToOutput;
+                operator_length = 4;
+            }
+            else if (strncmp(word, "2>", 2) == 0)
+            {
+                kind = RedirectKind::Error;
+                operator_length = 2;
+            }
+            else if (strncmp(word, ">>", 2) == 0)
+            {
+                kind = RedirectKind::Append;
+                operator_length = 2;
+            }
+            else if (word[0] == '>' || word[0] == '<')
+            {
+                kind = word[0] == '>' ? RedirectKind::Output : RedirectKind::Input;
+                operator_length = 1;
+            }
+        }
+        if (operator_length == 0)
+        {
+            words[kept++] = word;
+            continue;
+        }
+        if (*redirect_count == capacity)
+        {
+            return RedirectResult::TooMany;
+        }
+        const char* path = nullptr;
+        if (kind != RedirectKind::ErrorToOutput)
+        {
+            path = word + operator_length;
+            if (*path == '\0')
+            {
+                if (index + 1 == *count)
+                {
+                    return RedirectResult::MissingPath;
+                }
+                path = words[++index];
+            }
+        }
+        redirects[(*redirect_count)++] = {kind, path};
+    }
+    *count = kept;
+    words[kept] = nullptr;
+    return RedirectResult::Done;
 }
 
 } // namespace FeatherOS::User

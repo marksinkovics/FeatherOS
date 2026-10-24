@@ -36,9 +36,12 @@ enum class SyscallNumber : uint64_t
     StatDescriptor = 23,   // (descriptor, status) -> 0
     ProcessId = 24,        // () -> the caller's process ID
     ParentProcessId = 25,  // () -> the parent's process ID; 0 for init
+    Duplicate = 26,        // (descriptor, target, flags) -> the new descriptor
+    DescriptorFlags = 27,  // (descriptor, set, flags) -> the flags, after setting them if set
 };
 
-// Spawn flags. A child normally takes the console from its parent; a background child does not.
+// Spawn flags. A child inherits every descriptor that is not close-on-exec, and normally takes
+// the console from its parent; a background child does not.
 // A session leader's descendants form Ctrl+C jobs, and the leader itself is never interrupted.
 constexpr uint64_t SpawnBackground = 1U << 0;
 constexpr uint64_t SpawnSessionLeader = 1U << 1;
@@ -65,16 +68,24 @@ constexpr uint64_t OpenWrite = 1U << 1;
 // With OpenWrite: create the file if it is missing, or empty it if it exists.
 constexpr uint64_t OpenCreate = 1U << 2;
 constexpr uint64_t OpenTruncate = 1U << 3;
-// With OpenWrite: start at the end of the file.
+// With OpenWrite: every write goes to the end of the file.
 constexpr uint64_t OpenAppend = 1U << 4;
+// The descriptor is not passed to children.
+constexpr uint64_t OpenCloseOnExec = 1U << 5;
 constexpr uint64_t MaximumPathLength = 64;
-// Descriptors 0-2 are the console in every process. Each is readable and writable, like a
-// terminal: reading returns one line, ending in '\n', and only the foreground process may read.
+// Descriptors 0-2 start as the console, unless the parent passed other files there. The console
+// is readable and writable, like a terminal: reading returns one line, ending in '\n', and only
+// the foreground process may read. A new descriptor gets the lowest free number.
 constexpr uint64_t StandardInput = 0;
 constexpr uint64_t StandardOutput = 1;
 constexpr uint64_t StandardError = 2;
-constexpr uint64_t FirstFileDescriptor = 3;
-constexpr uint64_t MaximumOpenFiles = 16;
+constexpr uint64_t MaximumDescriptors = 32;
+// Duplicate flags: replace exactly the target descriptor, as dup2 does, rather than taking the
+// lowest free one at or above it; and mark the new descriptor close-on-exec.
+constexpr uint64_t DuplicateExact = 1U << 0;
+constexpr uint64_t DuplicateCloseOnExec = 1U << 1;
+// DescriptorFlags bits.
+constexpr uint64_t DescriptorCloseOnExec = 1U << 0;
 
 struct DirectoryEntry
 {

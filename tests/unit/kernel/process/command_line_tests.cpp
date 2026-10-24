@@ -132,3 +132,54 @@ TEST_CASE("only whole decimal numbers parse")
         REQUIRE_FALSE(FeatherOS::User::ParseUnsigned(text, &value));
     }
 }
+
+TEST_CASE("redirections leave the words and keep their order")
+{
+    char line[] = "sort < in.txt >out.txt 2>&1 extra \">\" 2> errors";
+    char* words[FeatherOS::User::MaximumArgumentCount + 1];
+    bool quoted[FeatherOS::User::MaximumArgumentCount];
+    size_t count = 0;
+    REQUIRE(SplitCommandLine(line, words, FeatherOS::User::MaximumArgumentCount + 1, &count,
+                             quoted) == SplitResult::Done);
+    FeatherOS::User::Redirect redirects[4];
+    size_t redirect_count = 0;
+    REQUIRE(FeatherOS::User::ExtractRedirects(words, quoted, &count, redirects, 4,
+                                              &redirect_count) ==
+            FeatherOS::User::RedirectResult::Done);
+    REQUIRE(count == 3);
+    REQUIRE(std::string(words[0]) == "sort");
+    REQUIRE(std::string(words[1]) == "extra");
+    REQUIRE(std::string(words[2]) == ">");
+    REQUIRE(words[3] == nullptr);
+    REQUIRE(redirect_count == 4);
+    REQUIRE(redirects[0].kind == FeatherOS::User::RedirectKind::Input);
+    REQUIRE(std::string(redirects[0].path) == "in.txt");
+    REQUIRE(redirects[1].kind == FeatherOS::User::RedirectKind::Output);
+    REQUIRE(std::string(redirects[1].path) == "out.txt");
+    REQUIRE(redirects[2].kind == FeatherOS::User::RedirectKind::ErrorToOutput);
+    REQUIRE(redirects[2].path == nullptr);
+    REQUIRE(redirects[3].kind == FeatherOS::User::RedirectKind::Error);
+    REQUIRE(std::string(redirects[3].path) == "errors");
+}
+
+TEST_CASE("a redirection without a file, or too many, is refused")
+{
+    auto extract = [](std::string text, size_t capacity)
+    {
+        std::vector<char> line(text.begin(), text.end());
+        line.push_back('\0');
+        char* words[FeatherOS::User::MaximumArgumentCount + 1];
+        bool quoted[FeatherOS::User::MaximumArgumentCount];
+        size_t count = 0;
+        REQUIRE(SplitCommandLine(line.data(), words, FeatherOS::User::MaximumArgumentCount + 1,
+                                 &count, quoted) == SplitResult::Done);
+        FeatherOS::User::Redirect redirects[4];
+        size_t redirect_count = 0;
+        return FeatherOS::User::ExtractRedirects(words, quoted, &count, redirects, capacity,
+                                                 &redirect_count);
+    };
+    REQUIRE(extract("echo hi >", 4) == FeatherOS::User::RedirectResult::MissingPath);
+    REQUIRE(extract("echo hi >>a >>b", 1) == FeatherOS::User::RedirectResult::TooMany);
+    REQUIRE(extract("echo \"a > b\"", 4) == FeatherOS::User::RedirectResult::Done);
+}
+

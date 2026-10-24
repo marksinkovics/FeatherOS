@@ -136,13 +136,15 @@ uint64_t RecordRemove(void* context, uint64_t path)
 constexpr FeatherOS::Syscall::Handlers WriteOnly = {
     CaptureCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-    nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    nullptr,          nullptr};
 constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     CaptureCharacter, RecordReadLine,   RecordSpawn,    RecordWait,       ReadFixedClock,
     RecordExtendHeap, RecordSleep,      ReadFixedUptime, ReadFixedCpu,    RecordOpen,
     RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeekFrom, RecordRemove,
     RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek,
-    RecordDescriptor, RecordSeek,       RecordSeek,      ReadFixedProcessId, ReadFixedParentProcessId};
+    RecordDescriptor, RecordSeek,       RecordSeek,      ReadFixedProcessId, ReadFixedParentProcessId,
+    RecordSeekFrom,   RecordSeekFrom};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)
@@ -339,3 +341,22 @@ TEST_CASE("syscall dispatcher routes file syscalls with their arguments")
         REQUIRE(output.last_arguments[1] == 0xA000);
     }
 }
+
+TEST_CASE("syscall duplicate and descriptor-flags pass three arguments")
+{
+    OutputTarget output;
+    FeatherOS::Syscall::Result result = FeatherOS::Syscall::Dispatch(
+        MakeRequest(Number::Duplicate, 4, 1, FeatherOS::User::DuplicateExact), AllHandlers,
+        &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 4);
+    REQUIRE(output.last_arguments[1] == 1);
+    REQUIRE(output.last_arguments[2] == FeatherOS::User::DuplicateExact);
+    result = FeatherOS::Syscall::Dispatch(
+        MakeRequest(Number::DescriptorFlags, 5, 1, FeatherOS::User::DescriptorCloseOnExec),
+        AllHandlers, &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 5);
+    REQUIRE(output.last_arguments[2] == FeatherOS::User::DescriptorCloseOnExec);
+}
+

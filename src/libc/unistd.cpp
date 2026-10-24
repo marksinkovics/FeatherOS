@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <sched.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -16,31 +17,6 @@ namespace
 {
 
 constexpr int KnownOpenFlags = O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_CLOEXEC;
-
-// The kernel starts an O_APPEND descriptor at the end of the file, but POSIX wants every write
-// there, so write moves it first. Bit n stands for descriptor n.
-uint32_t append_descriptors = 0;
-
-bool IsAppending(int descriptor)
-{
-    return descriptor >= 0 && descriptor < 32 && (append_descriptors & (1U << descriptor)) != 0;
-}
-
-void SetAppending(int descriptor, bool appending)
-{
-    if (descriptor < 0 || descriptor >= 32)
-    {
-        return;
-    }
-    if (appending)
-    {
-        append_descriptors |= 1U << descriptor;
-    }
-    else
-    {
-        append_descriptors &= ~(1U << descriptor);
-    }
-}
 
 } // namespace
 
@@ -73,6 +49,10 @@ int open(const char* path, int flags, ...)
     {
         open_flags |= FeatherOS::User::OpenAppend;
     }
+    if ((flags & O_CLOEXEC) != 0)
+    {
+        open_flags |= FeatherOS::User::OpenCloseOnExec;
+    }
     // Only one program can write a file at a time, so checking first leaves no race that
     // matters.
     struct stat status;
@@ -81,9 +61,7 @@ int open(const char* path, int flags, ...)
         errno = EEXIST;
         return -1;
     }
-    const int descriptor = Check<int>(FeatherOS::User::OpenFile(path, open_flags));
-    SetAppending(descriptor, descriptor >= 0 && (flags & O_APPEND) != 0);
-    return descriptor;
+    return Check<int>(FeatherOS::User::OpenFile(path, open_flags));
 }
 
 int creat(const char* path, mode_t mode)
@@ -99,22 +77,70 @@ ssize_t read(int descriptor, void* buffer, size_t count)
 
 ssize_t write(int descriptor, const void* buffer, size_t count)
 {
-    if (IsAppending(descriptor) && lseek(descriptor, 0, SEEK_END) < 0)
-    {
-        return -1;
-    }
     return Check<ssize_t>(
         FeatherOS::User::WriteFile(static_cast<uint64_t>(descriptor), buffer, count));
 }
 
 int close(int descriptor)
 {
-    const int result = Check<int>(FeatherOS::User::CloseFile(static_cast<uint64_t>(descriptor)));
-    if (result == 0)
+    return Check<int>(FeatherOS::User::CloseFile(static_cast<uint64_t>(descriptor)));
+}
+
+int dup(int descriptor)
+{
+    return Check<int>(FeatherOS::User::Duplicate(static_cast<uint64_t>(descriptor), 0, 0));
+}
+
+int dup2(int descriptor, int target)
+{
+    if (target < 0)
     {
-        SetAppending(descriptor, false);
+        errno = EBADF;
+        return -1;
     }
-    return result;
+    return Check<int>(FeatherOS::User::Duplicate(static_cast<uint64_t>(descriptor),
+                                                 static_cast<uint64_t>(target),
+                                                 FeatherOS::User::DuplicateExact));
+}
+
+int fcntl(int descriptor, int command, ...)
+{
+    va_list arguments;
+    va_start(arguments, command);
+    const int argument = command == F_GETFD ? 0 : va_arg(arguments, int);
+    va_end(arguments);
+    const auto target = static_cast<uint64_t>(descriptor);
+    switch (command)
+    {
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC:
+        if (argument < 0)
+        {
+            errno = EINVAL;
+            return -1;
+        }
+        return Check<int>(FeatherOS::User::Duplicate(
+            target, static_cast<uint64_t>(argument),
+            command == F_DUPFD_CLOEXEC ? FeatherOS::User::DuplicateCloseOnExec : 0));
+    case F_GETFD:
+    case F_SETFD:
+    {
+        const uint64_t requested =
+            (argument & FD_CLOEXEC) != 0 ? FeatherOS::User::DescriptorCloseOnExec : 0;
+        const int flags =
+            Check<int>(FeatherOS::User::DescriptorFlags(target, command == F_SETFD, requested));
+        if (flags < 0 || command == F_SETFD)
+        {
+            return flags < 0 ? -1 : 0;
+        }
+        return (static_cast<uint64_t>(flags) & FeatherOS::User::DescriptorCloseOnExec) != 0
+                   ? FD_CLOEXEC
+                   : 0;
+    }
+    default:
+        errno = EINVAL;
+        return -1;
+    }
 }
 
 off_t lseek(int descriptor, off_t offset, int whence)

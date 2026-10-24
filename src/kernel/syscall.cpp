@@ -131,6 +131,17 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return, handlers.parent_process_id(context)};
     }
+    if (request.number == static_cast<uint64_t>(Number::Duplicate) && handlers.duplicate != nullptr)
+    {
+        return {Action::Return,
+                handlers.duplicate(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::DescriptorFlags) &&
+        handlers.descriptor_flags != nullptr)
+    {
+        return {Action::Return,
+                handlers.descriptor_flags(context, arguments[0], arguments[1], arguments[2])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

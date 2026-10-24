@@ -29,8 +29,9 @@ constexpr char Help[] =
     "Checks the C library: startup and arguments, constructors, string.h, ctype.h,\n"
     "stdlib.h, errno, setjmp, exit handlers, the console descriptors, stat, process\n"
     "IDs, the environment, the heap, stdio, files and directories, /dev, /tmp,\n"
-    "/proc, time, posix_spawn, the FeatherOS extensions, and floating point. It\n"
-    "asks for three lines of input at \"> \" prompts.";
+    "/proc, time, posix_spawn with file actions, dup and fcntl, the FeatherOS\n"
+    "extensions, and floating point. It asks for three lines of input at \"> \"\n"
+    "prompts.";
 
 #if defined(__x86_64__)
 constexpr uintptr_t KernelAddress = 0xFFFF800000000000;
@@ -390,6 +391,9 @@ void CheckConsoleDescriptors()
     Check(read(STDIN_FILENO, line, 1) == -1 && errno == EBADF, "read a closed stdin");
     errno = 0;
     Check(close(STDIN_FILENO) == -1 && errno == EBADF, "close stdin twice");
+    // The console is one open file behind 0, 1 and 2, so a copy of stdout is stdin again.
+    Check(dup2(STDOUT_FILENO, STDIN_FILENO) == STDIN_FILENO && isatty(STDIN_FILENO),
+          "dup2 puts the console back on stdin");
 }
 
 void CheckFileStatus()
@@ -959,6 +963,64 @@ void CheckSystemCalls()
           "featheros_read_line needs room");
 }
 
+void CheckDescriptors()
+{
+    const int copy = dup(STDOUT_FILENO);
+    Check(copy > STDERR_FILENO && WriteAll(copy, "libctest: written through dup\n") &&
+              close(copy) == 0,
+          "dup of the console");
+    const int file = open("/tmp/libctest-dup.txt", O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    Check(file >= 0 && fcntl(file, F_GETFD) == FD_CLOEXEC && fcntl(file, F_SETFD, 0) == 0 &&
+              fcntl(file, F_GETFD) == 0,
+          "O_CLOEXEC and F_GETFD/F_SETFD");
+    const int saved = fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 20);
+    Check(saved >= 20 && dup2(file, STDOUT_FILENO) == STDOUT_FILENO &&
+              write(STDOUT_FILENO, "into the file", 13) == 13 &&
+              dup2(saved, STDOUT_FILENO) == STDOUT_FILENO && close(saved) == 0,
+          "dup2 over stdout and back");
+    char text[16] = {};
+    Check(lseek(file, 0, SEEK_SET) == 0 && read(file, text, sizeof(text)) == 13 &&
+              strcmp(text, "into the file") == 0 && close(file) == 0,
+          "dup2 shares the file");
+    errno = 0;
+    Check(dup2(STDOUT_FILENO, -1) == -1 && errno == EBADF && dup(99) == -1 && errno == EBADF,
+          "bad descriptors for dup");
+
+    posix_spawn_file_actions_t actions;
+    char* echo_arguments[] = {const_cast<char*>("echo"), const_cast<char*>("into a file"), nullptr};
+    pid_t child = 0;
+    int status = -1;
+    Check(posix_spawn_file_actions_init(&actions) == 0 &&
+              posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/tmp/libctest-out.txt",
+                                               O_WRONLY | O_CREAT | O_TRUNC, 0644) == 0 &&
+              posix_spawn(&child, "echo", &actions, nullptr, echo_arguments, environ) == 0 &&
+              waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+              FileContains("/tmp/libctest-out.txt", "into a file\n"),
+          "posix_spawn_file_actions_addopen");
+    Check(WriteAll(STDOUT_FILENO, "libctest: stdout is back after posix_spawn\n"),
+          "file actions leave the caller's descriptors");
+
+    const int input = open("/tmp/libctest-out.txt", O_RDONLY | O_CLOEXEC);
+    char* upper_arguments[] = {const_cast<char*>("upper"), nullptr};
+    Check(input >= 0 && posix_spawn_file_actions_init(&actions) == 0 &&
+              posix_spawn_file_actions_adddup2(&actions, input, STDIN_FILENO) == 0 &&
+              posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/tmp/libctest-upper.txt",
+                                               O_WRONLY | O_CREAT | O_TRUNC, 0644) == 0 &&
+              posix_spawn(&child, "upper", &actions, nullptr, upper_arguments, environ) == 0 &&
+              waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+              WEXITSTATUS(status) == 0 && close(input) == 0 &&
+              FileContains("/tmp/libctest-upper.txt", "INTO A FILE\n"),
+          "posix_spawn_file_actions_adddup2 onto stdin");
+    Check(posix_spawn_file_actions_init(&actions) == 0 &&
+              posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/tmp/missing", O_RDONLY,
+                                               0) == 0 &&
+              posix_spawn(&child, "upper", &actions, nullptr, upper_arguments, environ) == ENOENT,
+          "a failing file action fails posix_spawn");
+    Check(unlink("/tmp/libctest-dup.txt") == 0 && unlink("/tmp/libctest-out.txt") == 0 &&
+              unlink("/tmp/libctest-upper.txt") == 0,
+          "removing the descriptor test files");
+}
+
 void CheckScanning()
 {
     int count = 0;
@@ -1120,6 +1182,7 @@ int main(int argc, char** argv)
     CheckTime();
     CheckSpawn();
     CheckSpawnAttributes();
+    CheckDescriptors();
     CheckSystemCalls();
     CheckScanning();
     CheckFloatingPoint();

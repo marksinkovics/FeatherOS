@@ -177,12 +177,18 @@ Moved: storage drivers for physical hardware, to M16.
 
 **Remaining parts, in order** (agreed after Part 3):
 4. **Virtual files** (complete): `/dev/null`, `/dev/zero`, `/dev/random`, a RAM-backed `/tmp`, `/proc/<pid>/status` and `/proc/meminfo`. This adds file kinds other than disk files, which pipes reuse, and `ps` reads `/proc`.
-5. **Signals, pipes and jobs:** signals and `kill`, `pipe` and `dup2`, and the shell's `|`, `>`, `<` and `&`. `primes` can then return results through a pipe instead of its exit status.
+5. **Signals, pipes and jobs** (in progress), in five steps: (1, complete) one descriptor table with shared open files, `dup`/`dup2`/`fcntl`, `O_CLOEXEC`, inheritance through `Spawn`, `posix_spawn` file actions, and the shell's `<`, `>`, `>>`, `2>` and `2>&1`; (2) `pipe` and the shell's `|`; (3) process groups, so a pipeline is one Ctrl+C job, and `&` with `jobs`; (4) signals; (5) `primes` over pipes. In detail: signals and `kill`, `pipe` and `dup2`, and the shell's `|`, `>`, `<` and `&`. `primes` can then return results through a pipe instead of its exit status.
 6. **Process tools:** `ps` and `top`, with per-process CPU time from the scheduler's tick accounting.
 7. **Terminal:** raw keyboard input and cursor control, then shell history and line editing, then `edit`.
 8. **Threads:** user threads with TLS, the thread-safe C library, and the TLB shootdown.
 
 `cron`, more shell utilities and program packaging, and a more capable `calc` fit between the parts. `fork` stays optional.
+
+**Part 5, step 1 (complete): descriptors and redirection.**
+- **Kernel:** each process has 32 descriptors naming reference-counted open files, with the console as one shared open file behind 0–2. `Duplicate` and `DescriptorFlags` syscalls give `dup`, `dup2` and `fcntl`, `OpenCloseOnExec` gives `O_CLOEXEC`, and `Spawn` passes every other descriptor to the child. `O_APPEND` moved into the kernel, so writes through any copy land at the end.
+- **C library:** `posix_spawn_file_actions_adddup2`/`addopen`/`addclose`, applied to the caller's descriptors around the spawn and put back afterwards.
+- **Shell:** `<`, `>`, `>>`, `2>` and `2>&1`, parsed by `ExtractRedirects` in `src/user/command_line.h`; a quoted `">"` stays a word. `cat` reads its input without a file, and `upper` converts all of it when it is not the console.
+- **Tests:** host tests for sharing, `dup2`, close-on-exec, inheritance, append and redirection parsing; `libctest` (306 checks) and the shell test redirect on both architectures. The shell test's time limit rose from 30 to 45 seconds for the longer AArch64 session.
 
 **Part 4 (complete): virtual files.**
 - **VFS:** `/dev`, `/proc` and `/tmp` are mounted beside `/system`. Each open file records its kind (archive, disk, device, memory or generated), which replaces the disk-only flag.

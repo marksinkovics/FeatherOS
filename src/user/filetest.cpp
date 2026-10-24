@@ -38,7 +38,7 @@ void Check(bool passed, const char* name)
 
 bool Valid(uint64_t descriptor)
 {
-    return !IsSyscallError(descriptor) && descriptor >= FirstFileDescriptor;
+    return !IsSyscallError(descriptor) && descriptor > StandardError;
 }
 
 bool SameBytes(const uint8_t* left, const uint8_t* right, uint64_t length)
@@ -125,10 +125,12 @@ void CheckInitramfsAndLimits()
     Check(OpenFile(InitramfsFile, OpenWrite) == SyscallErrorReadOnly, "writing the initramfs");
     Check(RemoveFile(InitramfsFile) == SyscallErrorReadOnly, "removing from the initramfs");
 
-    uint64_t descriptors[MaximumOpenFiles];
+    // The console holds descriptors 0-2.
+    constexpr uint64_t FileDescriptors = MaximumDescriptors - 3;
+    uint64_t descriptors[FileDescriptors];
     descriptors[0] = archive_file;
     bool all_opened = true;
-    for (uint64_t index = 1; index < MaximumOpenFiles; ++index)
+    for (uint64_t index = 1; index < FileDescriptors; ++index)
     {
         descriptors[index] = OpenFile(InitramfsFile, OpenRead);
         all_opened = all_opened && Valid(descriptors[index]);

@@ -194,11 +194,12 @@ TEST_CASE("/tmp works through file descriptors with the disk's sharing rules")
 {
     FeatherOS::Tmpfs::Reset();
     FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
     REQUIRE(FeatherOS::Files::CheckDirectory("/tmp") == 0);
     REQUIRE(FeatherOS::Files::MakeDirectory("/tmp/work") == 0);
     const uint64_t writer =
         FeatherOS::Files::Open(&table, "/tmp/work/Notes.txt", OpenWrite | OpenCreate);
-    REQUIRE(writer == FeatherOS::User::FirstFileDescriptor);
+    REQUIRE(writer == FeatherOS::User::StandardError + 1);
     REQUIRE(FeatherOS::Files::Write(&table, writer, "hello tmp", 9) == 9);
     REQUIRE(FeatherOS::Files::Open(&table, "/tmp/work/Notes.txt", OpenRead) ==
             FeatherOS::User::SyscallErrorBusy);
@@ -232,6 +233,7 @@ TEST_CASE("/tmp works through file descriptors with the disk's sharing rules")
 TEST_CASE("/dev devices read, take writes, and cannot be created or removed")
 {
     FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
     REQUIRE(List("/dev") == std::vector<std::string>{"null", "zero", "random"});
     const uint64_t null_device =
         FeatherOS::Files::Open(&table, "/dev/null", OpenRead | OpenWrite | OpenTruncate);
@@ -285,6 +287,7 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
     REQUIRE_FALSE(FeatherOS::VFS::IsDirectory("/proc/01"));
 
     FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
     FeatherOS::User::FileStatus status{};
     REQUIRE(FeatherOS::Files::Stat("/proc/1/status", &status) == 0);
     REQUIRE(status.type == FeatherOS::User::FileType::Regular);

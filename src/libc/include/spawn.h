@@ -10,10 +10,24 @@
 #define POSIX_SPAWN_SETPGROUP 0x02
 #define POSIX_SPAWN_SETSID 0x80
 
-// File actions exist so portable code compiles, but none can be added yet.
+#define POSIX_SPAWN_MAXIMUM_FILE_ACTIONS 8
+
+// File actions run in order before the child starts, on descriptors it then inherits: the C
+// library applies them to the caller's own descriptors around the Spawn syscall and puts those
+// back afterwards, which is safe while programs have one thread.
+struct __posix_spawn_file_action
+{
+    int kind;
+    int descriptor;
+    int source;
+    int flags;
+    char path[64];
+};
+
 typedef struct
 {
-    int unused;
+    int count;
+    struct __posix_spawn_file_action actions[POSIX_SPAWN_MAXIMUM_FILE_ACTIONS];
 } posix_spawn_file_actions_t;
 
 typedef struct
@@ -34,6 +48,13 @@ int posix_spawnp(pid_t* pid, const char* file, const posix_spawn_file_actions_t*
                  const posix_spawnattr_t* attributes, char* const argv[], char* const envp[]);
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t* file_actions);
 int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* file_actions);
+// Each fails with ENOMEM past POSIX_SPAWN_MAXIMUM_FILE_ACTIONS, and addopen with ENAMETOOLONG
+// for a path over 63 characters.
+int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t* file_actions, int descriptor,
+                                     int target);
+int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t* file_actions, int descriptor,
+                                     const char* path, int flags, mode_t mode);
+int posix_spawn_file_actions_addclose(posix_spawn_file_actions_t* file_actions, int descriptor);
 int posix_spawnattr_init(posix_spawnattr_t* attributes);
 int posix_spawnattr_destroy(posix_spawnattr_t* attributes);
 int posix_spawnattr_getflags(const posix_spawnattr_t* attributes, short* flags);

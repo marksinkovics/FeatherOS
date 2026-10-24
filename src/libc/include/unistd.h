@@ -32,6 +32,9 @@ extern char** environ;
 ssize_t read(int descriptor, void* buffer, size_t count);
 ssize_t write(int descriptor, const void* buffer, size_t count);
 int close(int descriptor);
+// Copies share the file's offset, and are not close-on-exec.
+int dup(int descriptor);
+int dup2(int descriptor, int target);
 // Offsets past the end of the file fail with EINVAL.
 off_t lseek(int descriptor, off_t offset, int whence);
 int unlink(const char* path);

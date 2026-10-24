@@ -181,7 +181,9 @@ Differences:
 
 - **Descriptors:**
   - `read`, `write`, `close` and `lseek`.
-  - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND`. `O_CLOEXEC` is accepted and ignored.
+  - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC`. The lowest free descriptor is used, out of 32.
+  - `dup` and `dup2` share the open file and its offset. `fcntl` supports `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD` and `F_SETFD` (`FD_CLOEXEC`); `F_GETFL`, `F_SETFL` and locks are not provided.
+  - Programs started with `posix_spawn` inherit every descriptor not marked close-on-exec.
   - With `O_APPEND`, every write goes to the end, as POSIX requires.
   - `O_CREAT` and `O_TRUNC` need write access.
   - Offsets past the end of a file fail with `EINVAL`, because files cannot have holes.
@@ -199,7 +201,7 @@ Differences:
 
 Not provided:
 - `fork` and the `exec*` family, because processes start with `posix_spawn`
-- `dup`, `dup2` and `pipe`, until pipes exist
+- `pipe`, until pipes exist (part 5)
 - `link`, `symlink` and `rename`
 - `chmod` and `chown`
 - `getuid` and the other user and group functions
@@ -228,7 +230,9 @@ Not provided:
 | `POSIX_SPAWN_SETSID` | The child leads a new session: Ctrl+C stops at it, and it may call `reboot`. init starts the shell this way. |
 | `POSIX_SPAWN_SETPGROUP` | The child starts in the background, in its own group, without the console. Its console reads fail with `EIO`. Only group 0 (a new group) is accepted. |
 
-Other flags fail with `EINVAL`. File actions can be created and destroyed, but none can be added yet.
+Other flags fail with `EINVAL`.
+
+**File actions.** `posix_spawn_file_actions_adddup2`, `addopen` and `addclose` run in order, at most 8 per spawn. The C library applies them to the caller's own descriptors around the `Spawn` syscall and puts those back afterwards. That is safe because programs have one thread, but a failing action makes `posix_spawn` return its error without starting the child. `addopen` paths are at most 63 characters.
 
 **`waitpid` and `wait`.** They use the Linux status encoding with `WIFEXITED`, `WEXITSTATUS`, `WIFSIGNALED` and `WTERMSIG`, plus `WNOHANG`. There are no signals yet, but two outcomes are reported as if signals ended the child:
 - a CPU exception reports signal 11 (`SIGSEGV`)
@@ -262,7 +266,7 @@ These need kernel features that do not exist yet. Each one is planned in [roadma
 | --- | --- | --- |
 | `signal.h`, `kill`, `sigaction` | No signals; Ctrl+C ends the foreground job | M11 (process signals) |
 | `fork`, `exec*` | Processes start with `Spawn`; `fork` needs copy-on-write | M11, if adopted |
-| `pipe`, `dup`, `dup2`, redirection | No pipes yet | M11 |
+| `pipe` | No pipes yet | M11 part 5 |
 | `pthread.h`, C11 `threads.h`, TLS | Single-threaded processes | M11 (user threads), which also makes the library thread-safe |
 | `mmap`, `munmap` | The heap is the only growable mapping, so free space below used blocks cannot be returned | [ideas.md](ideas.md) |
 | `locale.h`, `wchar.h`, multibyte | ASCII and the `"C"` locale only | Not scheduled |
