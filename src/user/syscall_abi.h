@@ -38,6 +38,7 @@ enum class SyscallNumber : uint64_t
     ParentProcessId = 25,  // () -> the parent's process ID; 0 for init
     Duplicate = 26,        // (descriptor, target, flags) -> the new descriptor
     DescriptorFlags = 27,  // (descriptor, set, flags) -> the flags, after setting them if set
+    Pipe = 28,             // (descriptors, flags) -> 0; stores the read end, then the write end
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec, and normally takes
@@ -84,6 +85,8 @@ constexpr uint64_t MaximumDescriptors = 32;
 // lowest free one at or above it; and mark the new descriptor close-on-exec.
 constexpr uint64_t DuplicateExact = 1U << 0;
 constexpr uint64_t DuplicateCloseOnExec = 1U << 1;
+// Pipe flag: both new descriptors are close-on-exec.
+constexpr uint64_t PipeCloseOnExec = 1U << 0;
 // DescriptorFlags bits.
 constexpr uint64_t DescriptorCloseOnExec = 1U << 0;
 
@@ -102,6 +105,7 @@ enum class FileType : uint32_t
     Console = 3,
     // Under /dev.
     Device = 4,
+    Pipe = 5,
 };
 
 struct FileStatus
@@ -133,7 +137,7 @@ constexpr uint64_t SyscallErrorReadOnly = UINT64_MAX - 11;
 constexpr uint64_t SyscallErrorExists = UINT64_MAX - 12;
 constexpr uint64_t SyscallErrorNotDirectory = UINT64_MAX - 13;
 constexpr uint64_t SyscallErrorNotEmpty = UINT64_MAX - 14;
-// The console cannot seek.
+// The console and pipes cannot seek.
 constexpr uint64_t SyscallErrorNotSeekable = UINT64_MAX - 15;
 constexpr uint64_t SyscallErrorNameTooLong = UINT64_MAX - 16;
 constexpr uint64_t SyscallErrorIsDirectory = UINT64_MAX - 17;
@@ -143,6 +147,8 @@ constexpr uint64_t SyscallErrorNoMemory = UINT64_MAX - 19;
 constexpr uint64_t SyscallErrorNotExecutable = UINT64_MAX - 20;
 // The result does not fit the caller's buffer.
 constexpr uint64_t SyscallErrorRange = UINT64_MAX - 21;
+// A write to a pipe that nobody can read any more.
+constexpr uint64_t SyscallErrorBrokenPipe = UINT64_MAX - 22;
 
 constexpr bool IsSyscallError(uint64_t value)
 {

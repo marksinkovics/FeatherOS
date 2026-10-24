@@ -2,6 +2,7 @@
 #define FEATHEROS_FILES_H
 
 #include "kernel/filesystem/vfs.h"
+#include "kernel/pipe.h"
 #include "user/syscall_abi.h"
 
 #include <stdint.h>
@@ -20,6 +21,7 @@ enum class Kind : uint8_t
     None,
     Console,
     File,
+    Pipe,
 };
 
 struct Slot
@@ -41,8 +43,14 @@ void Inherit(Table* child, const Table* parent);
 // Reads and writes on the console go through the process instead of this table.
 Kind KindOf(const Table* table, uint64_t descriptor);
 uint64_t Open(Table* table, const char* path, uint64_t flags);
-uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length);
-uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t length);
+// A pipe read waits for data and a pipe write for space, without holding the filesystem lock,
+// until interrupted says to stop.
+uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
+              Pipes::InterruptCheck interrupted = nullptr);
+uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t length,
+               Pipes::InterruptCheck interrupted = nullptr);
+// Puts a new pipe's read end and write end at the two lowest free descriptors.
+uint64_t CreatePipe(Table* table, uint64_t flags, uint64_t* read_end, uint64_t* write_end);
 // offset is signed, added to the origin whence names; returns the new offset.
 uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset, uint64_t whence);
 uint64_t Close(Table* table, uint64_t descriptor);

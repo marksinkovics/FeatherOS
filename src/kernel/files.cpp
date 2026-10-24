@@ -9,6 +9,7 @@ namespace FeatherOS::Files
 struct OpenFile
 {
     VFS::FileHandle handle;
+    Pipes::Pipe* pipe;
     // Descriptors naming this file, in every process.
     uint32_t references;
     Kind kind;
@@ -42,7 +43,7 @@ Sync::Mutex file_system_lock;
 DiskFileUse disk_files[MaximumOpenDiskFiles];
 uint32_t disk_file_count = 0;
 // Every process's console descriptors share this one, which is never freed.
-OpenFile console = {{}, 1, Kind::Console, true, true, false};
+OpenFile console = {{}, nullptr, 1, Kind::Console, true, true, false};
 
 uint64_t UseKey(const VFS::FileHandle& handle)
 {
@@ -132,6 +133,12 @@ void ReleaseLocked(OpenFile* file)
 {
     if (file == &console || --file->references > 0)
     {
+        return;
+    }
+    if (file->kind == Kind::Pipe)
+    {
+        Pipes::CloseEnd(file->pipe, file->writable);
+        Memory::Deallocate(file);
         return;
     }
     if (VFS::IsTracked(file->handle))
@@ -312,6 +319,7 @@ uint64_t Open(Table* table, const char* path, uint64_t flags)
     }
 
     file->handle = handle;
+    file->pipe = nullptr;
     file->references = 1;
     file->kind = Kind::File;
     file->readable = (flags & User::OpenRead) != 0;
@@ -327,8 +335,28 @@ uint64_t Open(Table* table, const char* path, uint64_t flags)
     return descriptor;
 }
 
-uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length)
+// The pipe stays allocated while the caller waits on it: the caller's own descriptor holds a
+// reference, and only the caller can close that.
+Pipes::Pipe* FindPipe(Table* table, uint64_t descriptor, bool write_end)
 {
+    Sync::MutexGuard guard(file_system_lock);
+    Slot* slot = FindSlot(table, descriptor);
+    if (slot == nullptr || slot->file->kind != Kind::Pipe || slot->file->writable != write_end)
+    {
+        return nullptr;
+    }
+    return slot->file->pipe;
+}
+
+uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
+              Pipes::InterruptCheck interrupted)
+{
+    if (KindOf(table, descriptor) == Kind::Pipe)
+    {
+        Pipes::Pipe* pipe = FindPipe(table, descriptor, false);
+        return pipe == nullptr ? User::SyscallErrorBadDescriptor
+                               : Pipes::Read(pipe, buffer, length, interrupted);
+    }
     Sync::MutexGuard guard(file_system_lock);
     OpenFile* file = FindFile(table, descriptor);
     if (file == nullptr || !file->readable)
@@ -340,8 +368,15 @@ uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length)
                                                                  : User::SyscallErrorFailed;
 }
 
-uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t length)
+uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t length,
+               Pipes::InterruptCheck interrupted)
 {
+    if (KindOf(table, descriptor) == Kind::Pipe)
+    {
+        Pipes::Pipe* pipe = FindPipe(table, descriptor, true);
+        return pipe == nullptr ? User::SyscallErrorBadDescriptor
+                               : Pipes::Write(pipe, buffer, length, interrupted);
+    }
     Sync::MutexGuard guard(file_system_lock);
     OpenFile* file = FindFile(table, descriptor);
     if (file == nullptr || !file->writable)
@@ -357,6 +392,58 @@ uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t l
     const bool complete = VFS::Write(&file->handle, buffer, length, &bytes_written);
     // A short write (such as a full disk) still reports the bytes that did land.
     return complete || bytes_written > 0 ? bytes_written : User::SyscallErrorFailed;
+}
+
+// Field by field: assigning the whole open file at once would need memset, which the kernel
+// lacks.
+void SetPipeEnd(OpenFile* file, Pipes::Pipe* pipe, bool write_end)
+{
+    file->handle = {};
+    file->pipe = pipe;
+    file->references = 1;
+    file->kind = Kind::Pipe;
+    file->readable = !write_end;
+    file->writable = write_end;
+    file->append = false;
+}
+
+uint64_t CreatePipe(Table* table, uint64_t flags, uint64_t* read_end, uint64_t* write_end)
+{
+    if ((flags & ~User::PipeCloseOnExec) != 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    const uint64_t reader = FreeSlotLocked(table, 0);
+    const uint64_t writer =
+        User::IsSyscallError(reader) ? reader : FreeSlotLocked(table, reader + 1);
+    if (User::IsSyscallError(writer))
+    {
+        return writer;
+    }
+    auto* reading = static_cast<OpenFile*>(Memory::Allocate(sizeof(OpenFile)));
+    auto* writing = static_cast<OpenFile*>(Memory::Allocate(sizeof(OpenFile)));
+    Pipes::Pipe* pipe = reading == nullptr || writing == nullptr ? nullptr : Pipes::Create();
+    if (pipe == nullptr)
+    {
+        if (reading != nullptr)
+        {
+            Memory::Deallocate(reading);
+        }
+        if (writing != nullptr)
+        {
+            Memory::Deallocate(writing);
+        }
+        return User::SyscallErrorNoMemory;
+    }
+    SetPipeEnd(reading, pipe, false);
+    SetPipeEnd(writing, pipe, true);
+    const bool close_on_exec = (flags & User::PipeCloseOnExec) != 0;
+    table->slots[reader] = {reading, close_on_exec};
+    table->slots[writer] = {writing, close_on_exec};
+    *read_end = reader;
+    *write_end = writer;
+    return 0;
 }
 
 uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset, uint64_t whence)
@@ -619,6 +706,11 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
     if (file->kind == Kind::Console)
     {
         *status = {0, User::FileType::Console, false};
+        return 0;
+    }
+    if (file->kind == Kind::Pipe)
+    {
+        *status = {Pipes::Buffered(file->pipe), User::FileType::Pipe, !file->writable};
         return 0;
     }
     status->type = file->handle.kind == VFS::FileKind::Device ? User::FileType::Device

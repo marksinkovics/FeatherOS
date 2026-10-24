@@ -72,6 +72,9 @@ SHELL_INPUT = (
     b"echo first redirected line > /tmp/r.txt\n"
     b"echo second redirected line >> /tmp/r.txt\n"
     b"upper < /tmp/r.txt\ncat < /tmp/r.txt\ncat < /tmp/none\n"
+    b"echo through the pipe | upper\nls /dev|upper\n"
+    b"echo two stages|upper|cat > /tmp/p.txt\ncat /tmp/p.txt\n"
+    b"echo a | | upper\n"
     b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
     b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\nfptest 8\n"
@@ -87,6 +90,9 @@ CONTROL_C = b"\x03"
 SHELL_INTERRUPT_INPUT = (
     b"primes 1 1000000000\n",
     INTERRUPT_RUNNING,
+    # The reader of an interrupted writer sees its input end and exits too.
+    b"primes 1 1000000000 | upper\n",
+    INTERRUPT_RUNNING,
     b"sleep 100000\n",
     INTERRUPT_RUNNING,
     b"upper\n",
@@ -96,7 +102,7 @@ SHELL_INTERRUPT_INPUT = (
     CONTROL_C,
     b"calc 1 +\n",
 )
-EXPECTED_INTERRUPTS = 5
+EXPECTED_INTERRUPTS = 6
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
@@ -138,7 +144,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 306 checks passed",
+    "libctest: 316 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
@@ -161,6 +167,11 @@ EXPECTED_SHELL_OUTPUT = (
     "\nfirst redirected line",
     "\nsecond redirected line",
     "shell: /tmp/none: No such file or directory",
+    # Pipelines; the typed commands are lower case.
+    "THROUGH THE PIPE",
+    "RANDOM",
+    "\nTWO STAGES",
+    "shell: a pipeline has an empty command",
     "hello feather os",
     "upper> ",
     "MIXED CASE",

@@ -28,6 +28,11 @@ bool Deallocate(void* pointer)
     return true;
 }
 
+void* AllocateZeroed(size_t count, size_t size)
+{
+    return std::calloc(count, size);
+}
+
 } // namespace FeatherOS::Memory
 
 namespace FeatherOS::Random

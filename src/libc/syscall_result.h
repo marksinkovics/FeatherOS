@@ -57,6 +57,8 @@ constexpr int ErrorNumber(uint64_t result)
         return ENOEXEC;
     case User::SyscallErrorRange:
         return ERANGE;
+    case User::SyscallErrorBrokenPipe:
+        return EPIPE;
     default:
         return EIO;
     }

@@ -29,7 +29,7 @@ constexpr char Help[] =
     "Checks the C library: startup and arguments, constructors, string.h, ctype.h,\n"
     "stdlib.h, errno, setjmp, exit handlers, the console descriptors, stat, process\n"
     "IDs, the environment, the heap, stdio, files and directories, /dev, /tmp,\n"
-    "/proc, time, posix_spawn with file actions, dup and fcntl, the FeatherOS\n"
+    "/proc, time, posix_spawn with file actions, dup, fcntl, pipes, the FeatherOS\n"
     "extensions, and floating point. It asks for three lines of input at \"> \"\n"
     "prompts.";
 
@@ -1021,6 +1021,75 @@ void CheckDescriptors()
           "removing the descriptor test files");
 }
 
+// Everything a descriptor yields until its end, up to size - 1 bytes.
+size_t ReadToEnd(int descriptor, char* text, size_t size)
+{
+    size_t length = 0;
+    for (ssize_t count = 1; count > 0 && length < size - 1; length += static_cast<size_t>(count))
+    {
+        count = read(descriptor, text + length, size - 1 - length);
+        if (count < 0)
+        {
+            break;
+        }
+    }
+    text[length] = '\0';
+    return length;
+}
+
+void CheckPipes()
+{
+    int ends[2] = {-1, -1};
+    Check(pipe(ends) == 0 && ends[0] > STDERR_FILENO && ends[1] == ends[0] + 1, "pipe");
+    struct stat status;
+    Check(fstat(ends[0], &status) == 0 && S_ISFIFO(status.st_mode) && !isatty(ends[0]),
+          "a pipe is S_IFIFO");
+    errno = 0;
+    Check(lseek(ends[0], 0, SEEK_SET) == -1 && errno == ESPIPE, "pipes cannot seek");
+    char text[64];
+    Check(write(ends[1], "through a pipe", 14) == 14 && read(ends[0], text, 7) == 7 &&
+              memcmp(text, "through", 7) == 0,
+          "bytes come out in order");
+    Check(close(ends[1]) == 0 && ReadToEnd(ends[0], text, sizeof(text)) == 7 &&
+              strcmp(text, " a pipe") == 0 && read(ends[0], text, 1) == 0,
+          "the end of a pipe once its writer closes");
+    close(ends[0]);
+
+    Check(pipe(ends) == 0 && close(ends[0]) == 0, "closing the read end");
+    errno = 0;
+    Check(write(ends[1], "lost", 4) == -1 && errno == EPIPE, "EPIPE without a reader");
+    close(ends[1]);
+
+    Check(pipe2(ends, O_CLOEXEC) == 0 && fcntl(ends[0], F_GETFD) == FD_CLOEXEC &&
+              fcntl(ends[1], F_GETFD) == FD_CLOEXEC,
+          "pipe2 with O_CLOEXEC");
+    posix_spawn_file_actions_t actions;
+    char* echo_arguments[] = {const_cast<char*>("echo"), const_cast<char*>("from a child"),
+                              nullptr};
+    pid_t child = 0;
+    int child_status = -1;
+    Check(posix_spawn_file_actions_init(&actions) == 0 &&
+              posix_spawn_file_actions_adddup2(&actions, ends[1], STDOUT_FILENO) == 0 &&
+              posix_spawn(&child, "echo", &actions, nullptr, echo_arguments, environ) == 0 &&
+              close(ends[1]) == 0 && ReadToEnd(ends[0], text, sizeof(text)) == 13 &&
+              strcmp(text, "from a child\n") == 0 && waitpid(child, &child_status, 0) == child &&
+              close(ends[0]) == 0,
+          "reading a child's output through a pipe");
+
+    char* upper_arguments[] = {const_cast<char*>("upper"), nullptr};
+    Check(pipe2(ends, O_CLOEXEC) == 0 && posix_spawn_file_actions_init(&actions) == 0 &&
+              posix_spawn_file_actions_adddup2(&actions, ends[0], STDIN_FILENO) == 0 &&
+              posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/tmp/libctest-pipe.txt",
+                                               O_WRONLY | O_CREAT | O_TRUNC, 0644) == 0 &&
+              posix_spawn(&child, "upper", &actions, nullptr, upper_arguments, environ) == 0 &&
+              close(ends[0]) == 0 && write(ends[1], "piped words\n", 12) == 12 &&
+              close(ends[1]) == 0 && waitpid(child, &child_status, 0) == child &&
+              WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0 &&
+              FileContains("/tmp/libctest-pipe.txt", "PIPED WORDS\n") &&
+              unlink("/tmp/libctest-pipe.txt") == 0,
+          "writing a child's input through a pipe");
+}
+
 void CheckScanning()
 {
     int count = 0;
@@ -1183,6 +1252,7 @@ int main(int argc, char** argv)
     CheckSpawn();
     CheckSpawnAttributes();
     CheckDescriptors();
+    CheckPipes();
     CheckSystemCalls();
     CheckScanning();
     CheckFloatingPoint();

@@ -370,6 +370,9 @@ char* strerror(int error)
     case EROFS:
         message = "Read-only file system";
         break;
+    case EPIPE:
+        message = "Broken pipe";
+        break;
     case EDOM:
         message = "Argument out of domain";
         break;

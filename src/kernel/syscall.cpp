@@ -142,6 +142,10 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
         return {Action::Return,
                 handlers.descriptor_flags(context, arguments[0], arguments[1], arguments[2])};
     }
+    if (request.number == static_cast<uint64_t>(Number::Pipe) && handlers.pipe != nullptr)
+    {
+        return {Action::Return, handlers.pipe(context, arguments[0], arguments[1])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

@@ -8,7 +8,8 @@
 
 #define EOF (-1)
 #define BUFSIZ 512
-// The kernel's per-process descriptor limit, plus the three console streams.
+// Streams that can be open at once, counting stdin, stdout and stderr. Each has a 512-byte
+// buffer, so this is kept below the kernel's 32 descriptors.
 #define FOPEN_MAX 19
 #define SEEK_SET 0
 #define SEEK_CUR 1

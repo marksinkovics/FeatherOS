@@ -183,3 +183,53 @@ TEST_CASE("a redirection without a file, or too many, is refused")
     REQUIRE(extract("echo \"a > b\"", 4) == FeatherOS::User::RedirectResult::Done);
 }
 
+TEST_CASE("unquoted pipes get spaces around them")
+{
+    char output[64];
+    REQUIRE(FeatherOS::User::SeparatePipes("ls|upper", output, sizeof(output)));
+    REQUIRE(std::string(output) == "ls | upper");
+    REQUIRE(FeatherOS::User::SeparatePipes("echo \"a|b\" |cat", output, sizeof(output)));
+    REQUIRE(std::string(output) == "echo \"a|b\"  | cat");
+    REQUIRE_FALSE(FeatherOS::User::SeparatePipes("a|b", output, 5));
+}
+
+TEST_CASE("a pipeline splits into stages at unquoted bars")
+{
+    char line[] = "cat notes.txt | upper > out.txt | echo \"|\"";
+    char* words[FeatherOS::User::MaximumArgumentCount + 1];
+    bool quoted[FeatherOS::User::MaximumArgumentCount];
+    size_t count = 0;
+    REQUIRE(SplitCommandLine(line, words, FeatherOS::User::MaximumArgumentCount + 1, &count,
+                             quoted) == SplitResult::Done);
+    FeatherOS::User::Stage stages[4];
+    size_t stage_count = 0;
+    REQUIRE(FeatherOS::User::SplitPipeline(words, quoted, count, stages, 4, &stage_count) ==
+            FeatherOS::User::PipelineResult::Done);
+    REQUIRE(stage_count == 3);
+    REQUIRE(stages[0].count == 2);
+    REQUIRE(std::string(stages[0].words[1]) == "notes.txt");
+    REQUIRE(stages[0].words[2] == nullptr);
+    REQUIRE(stages[1].count == 3);
+    REQUIRE(std::string(stages[1].words[0]) == "upper");
+    REQUIRE(stages[2].count == 2);
+    REQUIRE(std::string(stages[2].words[1]) == "|");
+    REQUIRE(stages[2].quoted[1]);
+
+    auto split = [](std::string text, size_t capacity)
+    {
+        std::vector<char> buffer(text.begin(), text.end());
+        buffer.push_back('\0');
+        char* parts[FeatherOS::User::MaximumArgumentCount + 1];
+        bool marks[FeatherOS::User::MaximumArgumentCount];
+        size_t total = 0;
+        REQUIRE(SplitCommandLine(buffer.data(), parts, FeatherOS::User::MaximumArgumentCount + 1,
+                                 &total, marks) == SplitResult::Done);
+        FeatherOS::User::Stage found[4];
+        size_t found_count = 0;
+        return FeatherOS::User::SplitPipeline(parts, marks, total, found, capacity, &found_count);
+    };
+    REQUIRE(split("ls | | cat", 4) == FeatherOS::User::PipelineResult::EmptyStage);
+    REQUIRE(split("ls |", 4) == FeatherOS::User::PipelineResult::EmptyStage);
+    REQUIRE(split("a | b | c", 2) == FeatherOS::User::PipelineResult::TooManyStages);
+}
+

@@ -184,6 +184,7 @@ Differences:
   - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC`. The lowest free descriptor is used, out of 32.
   - `dup` and `dup2` share the open file and its offset. `fcntl` supports `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD` and `F_SETFD` (`FD_CLOEXEC`); `F_GETFL`, `F_SETFL` and locks are not provided.
   - Programs started with `posix_spawn` inherit every descriptor not marked close-on-exec.
+  - `pipe` and `pipe2` (with `O_CLOEXEC`) make a 4 KiB pipe. `PIPE_BUF` is 512: writes up to that size are never split. Reading returns 0 once every write end is closed; writing with no read end left fails with `EPIPE`, since there is no `SIGPIPE` yet. `fstat` reports `S_IFIFO`, and seeking fails with `ESPIPE`. `O_NONBLOCK` is not supported.
   - With `O_APPEND`, every write goes to the end, as POSIX requires.
   - `O_CREAT` and `O_TRUNC` need write access.
   - Offsets past the end of a file fail with `EINVAL`, because files cannot have holes.
@@ -201,7 +202,6 @@ Differences:
 
 Not provided:
 - `fork` and the `exec*` family, because processes start with `posix_spawn`
-- `pipe`, until pipes exist (part 5)
 - `link`, `symlink` and `rename`
 - `chmod` and `chown`
 - `getuid` and the other user and group functions
@@ -266,7 +266,6 @@ These need kernel features that do not exist yet. Each one is planned in [roadma
 | --- | --- | --- |
 | `signal.h`, `kill`, `sigaction` | No signals; Ctrl+C ends the foreground job | M11 (process signals) |
 | `fork`, `exec*` | Processes start with `Spawn`; `fork` needs copy-on-write | M11, if adopted |
-| `pipe` | No pipes yet | M11 part 5 |
 | `pthread.h`, C11 `threads.h`, TLS | Single-threaded processes | M11 (user threads), which also makes the library thread-safe |
 | `mmap`, `munmap` | The heap is the only growable mapping, so free space below used blocks cannot be returned | [ideas.md](ideas.md) |
 | `locale.h`, `wchar.h`, multibyte | ASCII and the `"C"` locale only | Not scheduled |

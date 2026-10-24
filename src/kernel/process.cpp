@@ -800,6 +800,13 @@ uint64_t OpenSyscall(void* context, uint64_t path, uint64_t flags)
     return Files::Open(&process->files, path_text, flags);
 }
 
+// Ctrl+C or an exiting parent marks the process; blocking calls then give up.
+bool CallerInterrupted()
+{
+    const auto* context = static_cast<const UserExecutionContext*>(Scheduler::CurrentUserContext());
+    return context != nullptr && context->kill_requested;
+}
+
 // Console reads return one line at a time, ending in '\n'; what does not fit the caller's buffer
 // is kept for its next read.
 uint64_t ReadConsole(ProcessRecord* process, uint64_t buffer, uint64_t length)
@@ -847,6 +854,22 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
     if (kind == Files::Kind::Console)
     {
         return length == 0 ? 0 : ReadConsole(process, buffer, length);
+    }
+    // One chunk at most, since a pipe read returns as soon as any data is there.
+    if (kind == Files::Kind::Pipe)
+    {
+        if (!UserRangeWritable(*process, buffer, length))
+        {
+            return User::SyscallErrorBadAddress;
+        }
+        const uint64_t wanted = length < FileChunkSize ? length : FileChunkSize;
+        const uint64_t count =
+            Files::Read(&process->files, descriptor, chunk, wanted, CallerInterrupted);
+        if (User::IsSyscallError(count) || count == 0)
+        {
+            return count;
+        }
+        return CopyToUser(*process, buffer, chunk, count) ? count : User::SyscallErrorBadAddress;
     }
     if (length == 0)
     {
@@ -911,7 +934,8 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
             total += wanted;
             continue;
         }
-        const uint64_t count = Files::Write(&process->files, descriptor, chunk, wanted);
+        const uint64_t count =
+            Files::Write(&process->files, descriptor, chunk, wanted, CallerInterrupted);
         if (User::IsSyscallError(count))
         {
             return total > 0 ? total : count;
@@ -939,6 +963,28 @@ uint64_t DuplicateSyscall(void* context, uint64_t descriptor, uint64_t target, u
 {
     return Files::Duplicate(&static_cast<ProcessRecord*>(context)->files, descriptor, target,
                             flags);
+}
+
+uint64_t PipeSyscall(void* context, uint64_t descriptors, uint64_t flags)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    uint64_t ends[2];
+    if (!UserRangeWritable(*process, descriptors, sizeof(ends)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    const uint64_t result = Files::CreatePipe(&process->files, flags, &ends[0], &ends[1]);
+    if (User::IsSyscallError(result))
+    {
+        return result;
+    }
+    if (!CopyToUser(*process, descriptors, ends, sizeof(ends)))
+    {
+        Files::Close(&process->files, ends[0]);
+        Files::Close(&process->files, ends[1]);
+        return User::SyscallErrorBadAddress;
+    }
+    return 0;
 }
 
 uint64_t DescriptorFlagsSyscall(void* context, uint64_t descriptor, uint64_t set, uint64_t flags)
@@ -1126,6 +1172,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     ParentProcessIdSyscall,
     DuplicateSyscall,
     DescriptorFlagsSyscall,
+    PipeSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.

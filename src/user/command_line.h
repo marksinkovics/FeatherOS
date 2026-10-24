@@ -196,6 +196,76 @@ inline RedirectResult ExtractRedirects(char** words, const bool* quoted, size_t*
     return RedirectResult::Done;
 }
 
+// Copies line with spaces around each unquoted '|', so "ls|cat" splits like "ls | cat". Fails if
+// the result does not fit.
+inline bool SeparatePipes(const char* line, char* output, size_t capacity)
+{
+    size_t length = 0;
+    bool inside_quotes = false;
+    for (; *line != '\0'; ++line)
+    {
+        const bool operator_character = *line == '|' && !inside_quotes;
+        inside_quotes = *line == '"' ? !inside_quotes : inside_quotes;
+        if (length + (operator_character ? 3 : 1) >= capacity)
+        {
+            return false;
+        }
+        if (operator_character)
+        {
+            output[length++] = ' ';
+            output[length++] = '|';
+            output[length++] = ' ';
+            continue;
+        }
+        output[length++] = *line;
+    }
+    output[length] = '\0';
+    return true;
+}
+
+enum class PipelineResult : unsigned char
+{
+    Done,
+    EmptyStage,
+    TooManyStages,
+};
+
+struct Stage
+{
+    // A null pointer follows the stage's last word.
+    char** words;
+    size_t count;
+    const bool* quoted;
+};
+
+// Cuts words at each unquoted "|" word, which becomes the null pointer ending its stage.
+inline PipelineResult SplitPipeline(char** words, const bool* quoted, size_t count, Stage* stages,
+                                    size_t capacity, size_t* stage_count)
+{
+    *stage_count = 0;
+    size_t start = 0;
+    for (size_t index = 0; index <= count; ++index)
+    {
+        const bool at_pipe = index < count && !quoted[index] && strcmp(words[index], "|") == 0;
+        if (!at_pipe && index < count)
+        {
+            continue;
+        }
+        if (index == start)
+        {
+            return PipelineResult::EmptyStage;
+        }
+        if (*stage_count == capacity)
+        {
+            return PipelineResult::TooManyStages;
+        }
+        stages[(*stage_count)++] = {words + start, index - start, quoted + start};
+        words[index] = nullptr;
+        start = index + 1;
+    }
+    return PipelineResult::Done;
+}
+
 } // namespace FeatherOS::User
 
 #endif

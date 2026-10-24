@@ -14,4 +14,9 @@
 #define ULLONG_MAX (LLONG_MAX * 2ULL + 1ULL)
 #endif
 
+// The kernel's limits, as POSIX names them.
+#define PIPE_BUF 512
+#define OPEN_MAX 32
+#define PATH_MAX 64
+
 #endif

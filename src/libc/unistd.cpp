@@ -86,6 +86,29 @@ int close(int descriptor)
     return Check<int>(FeatherOS::User::CloseFile(static_cast<uint64_t>(descriptor)));
 }
 
+int pipe(int descriptors[2])
+{
+    return pipe2(descriptors, 0);
+}
+
+int pipe2(int descriptors[2], int flags)
+{
+    if ((flags & ~O_CLOEXEC) != 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    uint64_t ends[2];
+    if (Check<int>(FeatherOS::User::CreatePipe(
+            ends, (flags & O_CLOEXEC) != 0 ? FeatherOS::User::PipeCloseOnExec : 0)) < 0)
+    {
+        return -1;
+    }
+    descriptors[0] = static_cast<int>(ends[0]);
+    descriptors[1] = static_cast<int>(ends[1]);
+    return 0;
+}
+
 int dup(int descriptor)
 {
     return Check<int>(FeatherOS::User::Duplicate(static_cast<uint64_t>(descriptor), 0, 0));

@@ -32,6 +32,12 @@ extern char** environ;
 ssize_t read(int descriptor, void* buffer, size_t count);
 ssize_t write(int descriptor, const void* buffer, size_t count);
 int close(int descriptor);
+// descriptors[0] gets the read end and descriptors[1] the write end. A pipe holds 4 KiB; writes
+// of up to PIPE_BUF bytes are never split. Reading returns 0 once every write end is closed,
+// and writing fails with EPIPE once every read end is.
+int pipe(int descriptors[2]);
+// flags may hold O_CLOEXEC.
+int pipe2(int descriptors[2], int flags);
 // Copies share the file's offset, and are not close-on-exec.
 int dup(int descriptor);
 int dup2(int descriptor, int target);

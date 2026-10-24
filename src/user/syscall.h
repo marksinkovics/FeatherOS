@@ -170,6 +170,11 @@ inline uint64_t DescriptorFlags(uint64_t descriptor, bool set, uint64_t flags)
     return Syscall(SyscallNumber::DescriptorFlags, descriptor, set ? 1 : 0, flags);
 }
 
+inline uint64_t CreatePipe(uint64_t (&descriptors)[2], uint64_t flags)
+{
+    return Syscall(SyscallNumber::Pipe, reinterpret_cast<uint64_t>(descriptors), flags);
+}
+
 inline uint64_t ProcessId()
 {
     return Syscall(SyscallNumber::ProcessId);
