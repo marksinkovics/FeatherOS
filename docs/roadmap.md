@@ -156,7 +156,7 @@ Moved: storage drivers for physical hardware, to M16.
 - Add `shutdown` and `reboot`: PSCI `SYSTEM_OFF`/`SYSTEM_RESET` on AArch64; on x86-64, ACPI S5 through the FADT's PM1a control port (`\_S5` sleep type found by scanning the DSDT) and the ACPI reset register with the keyboard-controller reset as a fallback. Restrict them to the session leader, stop the other CPUs, flush the disk (virtio-blk flush), and halt if power-off fails. Test that QEMU exits on `shutdown` and boots again after `reboot`.
 - Expand the userspace runtime and libc around a documented, deliberately scoped POSIX subset (Part 3 below).
 - Add useful shell utilities and a way to package and launch programs.
-- Add a full-screen text editor (`edit`, in the style of nano), needed to write code on the OS for M17 and M18.
+- Add a full-screen text editor (`vi`, a small vi), needed to write code on the OS for M17 and M18.
 - Add `ps`, `top` and `kill`, with per-process CPU time from the scheduler's tick accounting.
 - Add virtual files:
   - `/dev/null` and `/dev/zero`
@@ -179,10 +179,17 @@ Moved: storage drivers for physical hardware, to M16.
 4. **Virtual files** (complete): `/dev/null`, `/dev/zero`, `/dev/random`, a RAM-backed `/tmp`, `/proc/<pid>/status` and `/proc/meminfo`. This adds file kinds other than disk files, which pipes reuse, and `ps` reads `/proc`.
 5. **Signals, pipes and jobs** (complete), in five steps: (1, complete) one descriptor table with shared open files, `dup`/`dup2`/`fcntl`, `O_CLOEXEC`, inheritance through `Spawn`, `posix_spawn` file actions, and the shell's `<`, `>`, `>>`, `2>` and `2>&1`; (2, complete) `pipe` and the shell's `|`; (3, complete) process groups, so a pipeline is one Ctrl+C job, and `&` with `jobs`; (4, complete) signals; (5, complete) `primes` over pipes. In detail: signals and `kill`, `pipe` and `dup2`, and the shell's `|`, `>`, `<` and `&`. `primes` can then return results through a pipe instead of its exit status.
 6. **Process tools** (complete): `ps` and `top`, with per-process CPU time from the scheduler's tick accounting.
-7. **Terminal** (in progress), in five steps: (1, complete) VT100 cursor control and the terminal size; (2, complete) raw keyboard input and termios; (3, complete) shell line editing and history; (4) `edit`; (5) `top` redrawing in place (`clear` came with step 3).
+7. **Terminal** (in progress), in five steps: (1, complete) VT100 cursor control and the terminal size; (2, complete) raw keyboard input and termios; (3, complete) shell line editing and history; (4, complete) `vi`; (5) `top` redrawing in place (`clear` came with step 3).
 8. **Threads:** user threads with TLS, the thread-safe C library, and the TLB shootdown.
 
 `cron`, more shell utilities and program packaging, and a more capable `calc` fit between the parts. `fork` stays optional.
+
+**Part 7, step 4 (complete): `vi`.** A small vi replaces the planned nano-style `edit`. The engine (`src/user/vi_editor.cpp`, host-tested) has normal, insert, `:` and `/` modes:
+- **Moving:** `h j k l` and the arrows, `w b e`, `0 ^ $`, `gg G`, `+ -`, Enter, paging with Ctrl+F, Ctrl+B, Ctrl+D and Ctrl+U, and counts.
+- **Editing:** `i a I A o O`, `x X D dd J r`, `yy Y p P` with a character or line register, and multi-step `u` and Ctrl+R over whole-buffer snapshots (at most 100 steps and 512 KiB).
+- **Commands:** `:w [file]`, `:q`, `:q!`, `:wq`, `:x`, `ZZ`, `ZQ`, `:N` and `:$`, plus `/` and `?` searches with `n` and `N` that wrap around.
+
+The screen redraws only the rows that changed, expands tabs to 8 columns, and scrolls long lines sideways together, as vim does without wrapping. `src/user/vi.cpp` adds files, the terminal size and raw input, and draws on the alternate screen (`CSI ?1049 h`, new in the kernel terminal), so leaving vi shows the shell as it was. Host tests cover each command, undo and redo, writing and quitting, search, and the screen as the kernel's terminal draws it. The shell test creates and edits a file in two sessions, which the smoke harness drives with a new `TypeWhen` step that types once a program shows some text.
 
 **Part 7, step 3 (complete): shell line editing and history.**
 - **Programs:** the shell edits its line in raw mode with `src/user/line_editor.h` (host-tested): the cursor keys, Home, End, Delete, the usual Ctrl keys (A, E, B, F, D, H, U, K, W, L, P, N), Ctrl+C to discard, and Up and Down through the last 32 lines, with a `history` built-in. Lines that wrap redraw with relative cursor moves at the console's width. `src/user/raw_terminal.h` switches to raw input and reads keys, telling a lone Escape from a sequence, for the shell and `keys`. A `clear` command, the shortcuts in the readme and the shell's `help`, and QEMU's window scaling by default (`QEMU_ZOOM=0` turns it off) came with it.
@@ -191,7 +198,7 @@ Moved: storage drivers for physical hardware, to M16.
 **Part 7, step 2 (complete): raw keyboard input.**
 - **Kernel:** input is one byte stream in the form a VT100 terminal sends. A shared key map (`src/kernel/input/keyboard.cpp`, host-tested) turns key codes into bytes for both keyboards, adding the cursor keys, Home, End, Insert, Delete, Page Up and Down, Tab, Shift+Tab, Escape and every Ctrl+letter. The PS/2 driver now maps its `E0` keys, and the two drivers no longer keep copies of the layout. A `TerminalMode` syscall sets canonical or raw input, echo, Ctrl+C as a signal or a byte, `\r` to `\n`, and a raw read's minimum and timeout; the settings return to the defaults when the process that changed them exits. Line editing now skips escape sequences, and a serial Ctrl+C keeps its place among the bytes around it, even when two CPUs poll the port.
 - **C library:** `termios.h` with `tcgetattr`, `tcsetattr` and `cfmakeraw`.
-- **Programs:** `keys` prints each key pressed, using `src/user/key_decoder.h`, which the shell and `edit` will reuse.
+- **Programs:** `keys` prints each key pressed, using `src/user/key_decoder.h`, which the shell and `vi` reuse.
 - **Tests:** host tests for the key map, the decoder (split, unknown and overlong sequences, a lone Escape) and the byte queue; `libctest` (359 checks) covers the settings, raw reads with a timeout and the reset when a child exits in raw mode; the shell test types every special key into `keys` over serial, and the input test sends them through `sendkey` on both keyboards.
 
 **Part 7, step 1 (complete): terminal output.**

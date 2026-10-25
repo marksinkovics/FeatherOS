@@ -27,7 +27,8 @@ struct TermConfig
 // draw full screens: CSI n A/B/C/D move the cursor, CSI row;column H places it (row 1 is the
 // first row below the bar), CSI n J and CSI n K erase the screen and the line, CSI 7 m and
 // CSI 27 m (or 0 m) turn reverse video on and off, CSI s and CSI u save and restore the cursor,
-// CSI ?25 l and h hide and show it, and \r and \b move it within the line.
+// CSI ?25 l and h hide and show it, CSI ?1049 h and l switch to an alternate screen and back,
+// and \r and \b move it within the line.
 class Term
 {
 public:
@@ -38,8 +39,8 @@ public:
     // Blanks the cell before the cursor and moves back onto it, across a line wrap if needed.
     void EraseCharacter();
     void SetCursorVisible(bool visible);
-    // Back to normal video with the cursor enabled, as after a full-screen program that did not
-    // restore them.
+    // Back to the main screen and normal video with the cursor enabled, as after a full-screen
+    // program that did not restore them.
     void ResetModes();
     // The top row: left text from its start, right text against its end.
     void SetStatus(const char* left, const char* right);
@@ -84,6 +85,13 @@ private:
     bool m_private_sequence = false;
     // Programs hide the cursor with CSI ?25 l; it shows only while also visible for input.
     bool m_cursor_enabled = true;
+    // The main screen's text rows and cursor, kept while a full-screen program draws on the
+    // alternate screen, so leaving it shows the shell as it was.
+    bool m_alternate_screen = false;
+    uint8_t m_main_buffer[FeatherOS::TermConfig::Row][FeatherOS::TermConfig::Column];
+    uint8_t m_main_attributes[FeatherOS::TermConfig::Row][FeatherOS::TermConfig::Column];
+    uint32_t m_main_row = 0;
+    uint32_t m_main_column = 0;
     uint32_t m_saved_row = FirstContentRow;
     uint32_t m_saved_column = 0;
     uint32_t m_pending_scroll_rows = 0;
@@ -110,6 +118,7 @@ private:
     void ExecuteControl(char command);
     void MoveCursor(uint32_t row, uint32_t column);
     void ClearCells(uint32_t row, uint32_t first_column, uint32_t end_column);
+    void SwitchScreen(bool alternate);
     void Scroll();
     void ApplyPendingScroll();
     void DrawCell(uint32_t row, uint32_t column);

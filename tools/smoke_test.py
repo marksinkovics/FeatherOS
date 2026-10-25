@@ -123,6 +123,35 @@ EXPECTED_SHELL_EDITS = {
 EXPECTED_HISTORY_LINE = re.compile(
     r"^ +\d+  echo edited line\r?$", re.MULTILINE
 )
+
+
+class TypeWhen:
+    """Keys typed once text appears, for a program that shows no prompt."""
+
+    def __init__(self, text, keys):
+        self.text = text.encode()
+        self.keys = keys
+
+
+# vi creates a file, edits it with inserts, motions, a yank and put, undo, a
+# search and r, and writes it; a second session refuses :q after a change and
+# leaves with :q!. upper prints the file each time, in capitals that vi's own
+# screen never shows.
+SHELL_VI_INPUT = (
+    b"vi /tmp/vi.txt\n",
+    TypeWhen(
+        '"/tmp/vi.txt" [New]',
+        b"ihello world\x1bothird line\x1b0Osecond line\x1bgg$xuGyypddggJu"
+        b"/third\nrT:wq\n",
+    ),
+    b"upper < /tmp/vi.txt\n",
+    b"cd /tmp\n",
+    b"vi vi.txt\n",
+    TypeWhen('"vi.txt" 3L, 35B', b"x:q\n:q!\n"),
+    b"upper < vi.txt\n",
+    b"cd\n",
+)
+EXPECTED_VI_LINES = {"HELLO WORLD": 2, "SECOND LINE": 2, "THIRD LINE": 2}
 KEYS_READY = "keys: press keys; q quits"
 # keys reads raw input: every special key, Ctrl+C as a byte, then q to quit.
 SHELL_KEYS_INPUT = (
@@ -227,6 +256,7 @@ EXPECTED_SHELL_OUTPUT = (
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
+    "No write since last change (add ! to override)",
     # env prints the variables init.conf sets, which the shell passes on.
     "HOME=/home",
     "PATH=/system",
@@ -404,6 +434,9 @@ QEMU_CPU_COUNT = 4
 SMP_MESSAGE = f"KERN/I: SMP: {QEMU_CPU_COUNT} CPUs online with IPIs and timers"
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
 ANSI_ESCAPE_BYTES = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
+# A program leaving the alternate screen returns to the shell's line, as a
+# newline would, which prompt detection relies on.
+LEAVE_ALTERNATE_SCREEN = b"\x1b[?1049l"
 
 
 def PartitionOffset(disk):
@@ -739,6 +772,7 @@ def main():
         pending_lines = (
             SHELL_INPUT.splitlines(keepends=True)
             + list(SHELL_EDIT_INPUT)
+            + list(SHELL_VI_INPUT)
             + list(SHELL_KEYS_INPUT)
             + list(SHELL_INTERRUPT_INPUT)
         )
@@ -822,10 +856,23 @@ def main():
             output_closed = True
             break
         captured.extend(chunk)
-        clean_output = ANSI_ESCAPE_BYTES.sub(b"", captured)
+        clean_output = ANSI_ESCAPE_BYTES.sub(
+            b"", captured.replace(LEAVE_ALTERNATE_SCREEN, b"\n")
+        )
         prompt_count = len(LINE_PROMPT.findall(clean_output))
         try:
-            while pending_lines and lines_sent < prompt_count:
+            while (
+                pending_lines
+                and isinstance(pending_lines[0], TypeWhen)
+                and pending_lines[0].text in clean_output
+            ):
+                process.stdin.write(pending_lines.pop(0).keys)
+                process.stdin.flush()
+            while (
+                pending_lines
+                and not isinstance(pending_lines[0], TypeWhen)
+                and lines_sent < prompt_count
+            ):
                 line = pending_lines.pop(0)
                 pieces = (
                     [line]
@@ -1062,6 +1109,13 @@ def main():
             output
         ):
             print(f"FAIL: line editing printed {edits}", file=sys.stderr)
+            return 1
+        vi_lines = {
+            text: len(re.findall(rf"^{text}\r?$", output, re.MULTILINE))
+            for text in EXPECTED_VI_LINES
+        }
+        if vi_lines != EXPECTED_VI_LINES:
+            print(f"FAIL: vi wrote {vi_lines}", file=sys.stderr)
             return 1
         if CLEAR_SEQUENCE not in captured:
             print("FAIL: clear did not clear the screen", file=sys.stderr)

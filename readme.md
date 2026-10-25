@@ -48,6 +48,27 @@ At the shell prompt:
 
 While a command runs, Ctrl+C stops it, along with the rest of its pipeline. Programs that read a line of their own, such as `calc` and `upper`, support Backspace only. `keys` shows what any key sends.
 
+### vi
+
+`vi [file]` edits a file. It starts in normal mode, where keys are commands; `i` and the other insert keys type text until Escape.
+
+| Keys | Action |
+| --- | --- |
+| h j k l, the arrows | Move left, down, up, right |
+| w b e | Next word, previous word, end of word |
+| 0 ^ $, Home End | Start of line, first non-blank, end of line |
+| gg G, :N | First line, last line (or line N with a count), line N |
+| Ctrl+F Ctrl+B, Page Up Page Down, Ctrl+D Ctrl+U | Page down and up, half a page down and up |
+| i a I A o O | Insert before or after the cursor, at the start or end of the line, on a new line below or above |
+| x X D | Delete the character under or before the cursor, or to the end of the line |
+| dd yy p P | Delete or copy a line, put after or before the cursor |
+| J r | Join with the next line, replace one character |
+| u Ctrl+R | Undo, redo |
+| /text ?text n N | Search forward or back, repeat the search the same or the other way |
+| :w [file] :q :q! :wq :x ZZ | Write, quit, quit without saving, write and quit |
+
+A number before a command repeats it, as in `3dd` or `5j`.
+
 ## Code Quality
 
 Install the formatting and lint tools listed in [development requirements](docs/development.md). Run `bash tools/quality.sh --fix` to apply available fixes. Install the pre-commit hook with `pre-commit install`; it quietly blocks commits when checks fail and shows diagnostics for issues that need manual repair.

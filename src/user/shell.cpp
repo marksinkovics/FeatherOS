@@ -668,6 +668,7 @@ int main(int argc, char** argv)
                 "sleep <ms>, upper, uptime, filetest, fptest, libctest, ls, cat <file>, write [-a] "
                 "<file> <text>, "
                 "rm <file>, mkdir <dir>, rmdir <dir>, env, kill [-signal] <pid>, ps, keys, clear, "
+                "vi [file], "
                 "top [-n "
                 "count], cd [dir], pwd, "
                 "jobs, "

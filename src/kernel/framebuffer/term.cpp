@@ -171,6 +171,44 @@ void Term::MoveCursor(uint32_t row, uint32_t column)
     m_column_index = column >= m_columns ? m_columns - 1 : column;
 }
 
+// Entering saves the main screen's text rows and cursor and starts on a blank screen; leaving
+// brings them back. The status bar is never part of either.
+void Term::SwitchScreen(bool alternate)
+{
+    if (alternate == m_alternate_screen)
+    {
+        return;
+    }
+    for (uint32_t row = FirstContentRow; row < m_rows; ++row)
+    {
+        for (uint32_t column = 0; column < m_columns; ++column)
+        {
+            if (alternate)
+            {
+                m_main_buffer[row][column] = m_buffer[row][column];
+                m_main_attributes[row][column] = m_attributes[row][column];
+                m_buffer[row][column] = ' ';
+                m_attributes[row][column] = 0;
+            }
+            else
+            {
+                m_buffer[row][column] = m_main_buffer[row][column];
+                m_attributes[row][column] = m_main_attributes[row][column];
+            }
+        }
+    }
+    if (alternate)
+    {
+        m_main_row = m_row_index;
+        m_main_column = m_column_index;
+    }
+    else
+    {
+        MoveCursor(m_main_row, m_main_column);
+    }
+    m_alternate_screen = alternate;
+}
+
 void Term::ClearCells(uint32_t row, uint32_t first_column, uint32_t end_column)
 {
     for (uint32_t column = first_column; column < end_column && column < m_columns; ++column)
@@ -253,6 +291,10 @@ void Term::ExecuteControl(char command)
         {
             m_cursor_enabled = command == 'h';
         }
+        else if (m_private_sequence && mode == 1049)
+        {
+            SwitchScreen(command == 'h');
+        }
         break;
     default:
         break;
@@ -306,6 +348,7 @@ void Term::SetCursorVisible(bool visible)
 
 void Term::ResetModes()
 {
+    SwitchScreen(false);
     m_attribute = 0;
     m_escape_state = EscapeState::Text;
     m_cursor_enabled = true;

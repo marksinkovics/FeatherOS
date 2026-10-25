@@ -278,7 +278,7 @@ TEST_CASE("terminal follows VT100 cursor, erase and reverse-video sequences")
     REQUIRE(terminal.CursorColumn() == 7);
 
     // Unknown sequences are swallowed rather than printed.
-    terminal.Print("\x1b[?1049h\x1b[5n.");
+    terminal.Print("\x1b[?2004h\x1b[5n.");
     REQUIRE(row_text(2, 8) == "nrevnxy.");
 
     terminal.SetStatus("edit", "");
@@ -289,4 +289,55 @@ TEST_CASE("terminal follows VT100 cursor, erase and reverse-video sequences")
         REQUIRE_FALSE(terminal.ReversedAt(row, 1));
     }
     REQUIRE(row_text(0, 5) == " edit");
+}
+
+TEST_CASE("the alternate screen keeps the main screen to come back to")
+{
+    constexpr uint64_t width = 320;
+    constexpr uint64_t height = 112;
+    std::array<uint8_t, width * height * 4> pixels{};
+    limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, width * 4, 32);
+    Framebuffer framebuffer;
+    REQUIRE(framebuffer.init(&descriptor));
+    FeatherOS::Term terminal;
+    terminal.Init(&framebuffer);
+    terminal.SetStatus("shell", "");
+    const auto row_text = [&](uint32_t row)
+    {
+        std::string text;
+        for (uint32_t column = 0; column < 6; ++column)
+        {
+            text += static_cast<char>(terminal.CharacterAt(row, column));
+        }
+        return text;
+    };
+    terminal.Print("shell\n> vi");
+    REQUIRE(terminal.CursorRow() == 2);
+    REQUIRE(terminal.CursorColumn() == 4);
+    const auto main_screen = pixels;
+
+    terminal.Print("\x1b[?1049h");
+    REQUIRE(row_text(1) == "      ");
+    REQUIRE(row_text(2) == "      ");
+    terminal.Print("\x1b[1;1H\x1b[7meditor\x1b[0m\x1b[4;1H~");
+    REQUIRE(row_text(1) == "editor");
+    REQUIRE(terminal.ReversedAt(1, 0));
+    // Entering again changes nothing, and the status bar belongs to neither screen.
+    terminal.Print("\x1b[?1049h");
+    REQUIRE(row_text(1) == "editor");
+    REQUIRE(row_text(0) == " shell");
+
+    terminal.Print("\x1b[?1049l");
+    REQUIRE(row_text(1) == "shell ");
+    REQUIRE(row_text(2) == "> vi  ");
+    REQUIRE(row_text(4) == "      ");
+    REQUIRE_FALSE(terminal.ReversedAt(1, 0));
+    REQUIRE(terminal.CursorRow() == 2);
+    REQUIRE(terminal.CursorColumn() == 4);
+    REQUIRE(pixels == main_screen);
+
+    // A program that exits on the alternate screen is taken off it.
+    terminal.Print("\x1b[?1049hgone");
+    terminal.ResetModes();
+    REQUIRE(row_text(2) == "> vi  ");
 }
