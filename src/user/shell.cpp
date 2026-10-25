@@ -354,6 +354,37 @@ void WaitForJobs()
     }
 }
 
+// kill %n names job n's process group, as in other shells; the kill program gets -group.
+// Other commands keep %n as it is.
+bool ExpandJobReferences(char** words, const bool* quoted, size_t count, char (*storage)[24])
+{
+    if (count == 0 || strcmp(words[0], "kill") != 0)
+    {
+        return true;
+    }
+    for (size_t index = 1; index < count; ++index)
+    {
+        unsigned long long number = 0;
+        if (quoted[index] || words[index][0] != '%' || !ParseUnsigned(words[index] + 1, &number))
+        {
+            continue;
+        }
+        const Job* found = nullptr;
+        for (const Job& job : jobs)
+        {
+            found = job.number != 0 && job.number == static_cast<int>(number) ? &job : found;
+        }
+        if (found == nullptr)
+        {
+            printf("kill: %s: no such job\n", words[index]);
+            return false;
+        }
+        snprintf(storage[index], sizeof(storage[index]), "-%d", found->group);
+        words[index] = storage[index];
+    }
+    return true;
+}
+
 // Runs one command, or a pipeline of up to MaximumStages, as one process group, so Ctrl+C stops
 // all of it. The shell waits for it unless it ends in &. The shell's pipe descriptors are
 // close-on-exec, so each child gets only the ends file actions give it, and the reader sees the
@@ -375,6 +406,11 @@ void RunCommand(const char* line)
     {
         puts(split == SplitResult::UnclosedQuote ? "shell: unclosed quote"
                                                  : "shell: too many arguments");
+        return;
+    }
+    static char job_references[MaximumPipelineWords][24];
+    if (!ExpandJobReferences(words, quoted, count, job_references))
+    {
         return;
     }
     const bool background = TakeBackgroundMarker(words, quoted, &count);
@@ -495,7 +531,7 @@ constexpr char Help[] =
     "input and output can be redirected: < file, > file, >> file, 2> file, 2>&1;\n"
     "a | b connects one command's output to the next one's input, and a trailing &\n"
     "runs a command in the background: jobs lists those, fg [n] brings one back,\n"
-    "and wait waits for all of them.";
+    "and wait waits for all of them. kill %n signals job n.";
 
 int main(int argc, char** argv)
 {
@@ -575,7 +611,8 @@ int main(int argc, char** argv)
                 "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
                 "sleep <ms>, upper, uptime, filetest, fptest, libctest, ls, cat <file>, write [-a] "
                 "<file> <text>, "
-                "rm <file>, mkdir <dir>, rmdir <dir>, env, kill [-signal] <pid>, cd [dir], pwd, "
+                "rm <file>, mkdir <dir>, rmdir <dir>, env, kill [-signal] <pid>, ps, top [-n "
+                "count], cd [dir], pwd, "
                 "jobs, "
                 "fg [n], wait, "
                 "exit, "

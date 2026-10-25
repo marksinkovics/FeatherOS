@@ -7,6 +7,7 @@
 #include <sched.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/reboot.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -295,6 +296,38 @@ int reboot(int command)
 pid_t getpid()
 {
     return static_cast<pid_t>(FeatherOS::User::ProcessId());
+}
+
+long sysconf(int name)
+{
+    if (name == _SC_OPEN_MAX)
+    {
+        return static_cast<long>(FeatherOS::User::MaximumDescriptors);
+    }
+    if (name == _SC_PAGESIZE)
+    {
+        return 4096;
+    }
+    if (name != _SC_NPROCESSORS_CONF && name != _SC_NPROCESSORS_ONLN)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    // Every CPU the kernel started is online, so both counts are the same.
+    const int descriptor = open("/proc/stat", O_RDONLY);
+    char text[256];
+    const ssize_t length = descriptor < 0 ? -1 : read(descriptor, text, sizeof(text) - 1);
+    if (descriptor >= 0)
+    {
+        close(descriptor);
+    }
+    if (length <= 0)
+    {
+        return -1;
+    }
+    text[length] = '\0';
+    const char* cpus = strstr(text, "Cpus:\t");
+    return cpus == nullptr ? -1 : strtol(cpus + 6, nullptr, 10);
 }
 
 pid_t getpgrp()

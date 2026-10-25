@@ -29,6 +29,9 @@ struct Task
     TaskState state;
     TaskPriority priority;
     uint64_t exit_status;
+    // Timer ticks the task was running for, and the CPU it last ran on.
+    uint64_t run_ticks;
+    uint32_t last_cpu;
     // 0 = no deadline.
     uint64_t wake_tick;
     const WaitQueue* wait_queue;
@@ -85,6 +88,8 @@ void ResetTask(Task& task)
     task.state = TaskState::Empty;
     task.priority = TaskPriority::Normal;
     task.exit_status = 0;
+    task.run_ticks = 0;
+    task.last_cpu = 0;
     task.wake_tick = 0;
     task.wait_queue = nullptr;
     task.user_context = nullptr;
@@ -203,6 +208,7 @@ bool Schedule()
         next->state = TaskState::Running;
     }
     CurrentTask() = next;
+    next->last_cpu = Cpu::CurrentIndex();
     ActivateTaskAddressSpace(next);
     // Kernel code does not touch these registers, so the next task's can be loaded before the
     // switch, and a new task starts with its initial state already in place.
@@ -402,6 +408,10 @@ void OnTimerTick(uint64_t tick)
 
     // Interrupt handlers run with interrupts masked.
     scheduler_lock.Lock();
+    if (CurrentTask() != &IdleTask())
+    {
+        ++CurrentTask()->run_ticks;
+    }
     Task* task = &boot_task;
     do
     {
@@ -504,6 +514,23 @@ bool SetPriority(TaskId task_id, TaskPriority priority)
         return false;
     }
     task->priority = priority;
+    return true;
+}
+
+bool GetUsage(TaskId task_id, uint64_t* run_ticks, uint32_t* last_cpu)
+{
+    if (!initialized)
+    {
+        return false;
+    }
+    Sync::SpinLockGuard guard(scheduler_lock);
+    const Task* task = FindTask(task_id);
+    if (task == nullptr)
+    {
+        return false;
+    }
+    *run_ticks = task->run_ticks;
+    *last_cpu = task->last_cpu;
     return true;
 }
 

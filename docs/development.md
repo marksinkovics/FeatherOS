@@ -133,8 +133,9 @@ The VFS (`src/kernel/filesystem/vfs.cpp`) sends each path to one of five filesys
 
 - **`/dev`** (`devices.cpp`) holds `null`, whose reads end at once; `zero`, which reads as zero bytes; and `random`, which reads from `Random::Next`, mixing `RDRAND`/`RNDR` with the cycle counter. All three take and discard writes, report size 0 and file type `Device` (`S_IFCHR`), and accept any seek. Nothing else can be created in `/dev`.
 - **`/tmp`** (`tmpfs.cpp`) is a RAM filesystem with nested directories and case-sensitive names, up to 63 characters. It holds at most 128 files and directories and 4 MiB of data, on the kernel heap, and a write past that is short. Its contents last until restart. Open files follow the disk's rules (one writer or many readers, and no removing an open file), and `rmdir /tmp` fails with `SyscallErrorBusy`, like `/`.
-- **`/proc`** (`procfs.cpp`) is read-only. It lists `meminfo` and one directory per process, by ascending ID, each holding `status`. A file's text is made when it is opened, so a reader sees one snapshot.
-  - `status` gives `Name`, `State` (`R`, `S` or `Z`, as on Linux), `Pid`, `PPid`, `Pgid`, `Pages` mapped, `PageLimit` and `OpenFiles`.
+- **`/proc`** (`procfs.cpp`) is read-only. It lists `meminfo`, `stat`, and one directory per process, by ascending ID, each holding `status`. A file's text is made when it is opened, so a reader sees one snapshot.
+  - `status` gives `Name`, `State` (`R`, `S` or `Z`, as on Linux), `Pid`, `PPid`, `Pgid`, `Pages` mapped, `PageLimit`, `OpenFiles`, `CpuTimeMs` (the timer ticks the process ran for, on any CPU), `LastCpu` and `StartTimeMs` (uptime when it was spawned).
+  - `stat` gives `UptimeMs`, `Cpus`, and each CPU's busy time as `Cpu<n>BusyMs`, the ticks it ran a task rather than idling.
   - `meminfo` gives `MemTotal` and `MemFree` from the page allocator, the kernel heap's mapped size (`KernelHeap`) and the memory `/tmp` holds (`Tmp`), in kB.
   - The file system takes its data from `process.cpp` through callbacks (`Procfs::SetSource`), so the host tests can supply their own.
   - `/proc/self` is rewritten to `/proc/<pid>` when a syscall resolves a path (`Path::ReplaceProcSelf`).
@@ -297,7 +298,9 @@ The shell reads lines with `featheros_read_line` and a prompt showing its workin
 - `cat [file]` prints a file, or its input without one; the console shows tabs as spaces and drops other control characters. `write [-a] <file> <text...>` writes the words and a newline to a file, replacing it or, with `-a`, appending. `rm <file>` deletes a file. Names are relative to the working directory, and `cat` also tries `/system` for a missing relative name, so `cat hello.txt` works anywhere.
 - `filetest` runs 33 checks of the file syscalls: creation, multi-cluster writes, reads, seeks, appends, the one-writer and no-removing-open-files rules, bad pointers and flags, the read-only initramfs, the 16-descriptor limit, and a child that exits with a file still open.
 - `uptime` prints the time since boot as `H:MM:SS`.
-- `kill [-signal] <pid>...` sends `SIGTERM`, or the named or numbered signal, to each process, or to a group as `-group`; `kill -l` lists the signals.
+- `kill [-signal] <pid>...` sends `SIGTERM`, or the named or numbered signal, to each process, or to a group as `-group`; `kill -l` lists the signals. In the shell, `kill %n` names job `n`.
+- `ps` lists every process from `/proc`: ID, parent, group, state, the CPU it last ran on, its CPU time, and its name.
+- `top [-n count] [-d milliseconds]` samples `/proc` every second (or `-d`, at least 100 ms) and prints the processes busiest first, with `%CPU` of one CPU and the whole system's use, until Ctrl+C or `count` refreshes. Each refresh prints a new table, since the console cannot redraw yet.
 
 Every program except the boot self-test prints its usage and purpose for `<name> -h` or `<name> --help` (`HelpRequested` in `src/user/command_line.h`), and the shell's `help` points to this. To add a program, create `src/user/<name>.cpp` with a `main(argc, argv)` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. `FEATHEROS_START_PROGRAMS` is for programs that define `_start(const ProgramArguments*)` themselves and skip the C library's startup, which only `test_program` does. `filetest` and `hardening` still call `src/user/syscall.h` directly where they test the kernel's exact errors.
 

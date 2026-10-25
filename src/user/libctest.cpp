@@ -1111,6 +1111,48 @@ void CheckKill()
     signal(SIGCHLD, SIG_DFL);
 }
 
+unsigned long long OwnCpuMilliseconds()
+{
+    FILE* file = fopen("/proc/self/status", "r");
+    char line[64];
+    unsigned long long milliseconds = 0;
+    while (file != nullptr && fgets(line, sizeof(line), file) != nullptr)
+    {
+        sscanf(line, "CpuTimeMs:\t%llu", &milliseconds);
+    }
+    if (file != nullptr)
+    {
+        fclose(file);
+    }
+    return milliseconds;
+}
+
+void CheckProcessAccounting()
+{
+    const long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    Check(cpus >= 1 && sysconf(_SC_NPROCESSORS_CONF) == cpus && sysconf(_SC_PAGESIZE) == 4096 &&
+              sysconf(_SC_OPEN_MAX) == 32,
+          "sysconf");
+    errno = 0;
+    Check(sysconf(9999) == -1 && errno == EINVAL, "sysconf with an unknown name");
+    Check(FileContains("/proc/self/status", "LastCpu:\t") &&
+              FileContains("/proc/self/status", "StartTimeMs:\t") &&
+              FileContains("/proc/stat", "Cpu0BusyMs:\t"),
+          "/proc reports CPU time");
+    // Spinning for 300 ms must show up as CPU time, counted in 10 ms timer ticks.
+    const unsigned long long before = OwnCpuMilliseconds();
+    timespec start{};
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    volatile unsigned long long spins = 0;
+    do
+    {
+        spins = spins + 1;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+    } while ((now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000 < 300);
+    Check(OwnCpuMilliseconds() >= before + 150, "CPU time grows while the process runs");
+}
+
 void CheckSystemCalls()
 {
     void* const failed = reinterpret_cast<void*>(-1);
@@ -1444,6 +1486,7 @@ int main(int argc, char** argv)
     CheckSignalSets();
     CheckSignalHandlers();
     CheckKill();
+    CheckProcessAccounting();
     CheckDescriptors();
     CheckPipes();
     CheckSystemCalls();

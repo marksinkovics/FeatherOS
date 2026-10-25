@@ -16,6 +16,7 @@
 #include "kernel/process_arguments.h"
 #include "kernel/random.h"
 #include "kernel/scheduler.h"
+#include "kernel/smp.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/syscall.h"
 #include "kernel/time/timer.h"
@@ -56,6 +57,8 @@ struct ProcessRecord
     ProcessId parent;
     // Ctrl+C and console input go to every process in the foreground group.
     ProcessId group;
+    // The tick the process was spawned at, for ps.
+    uint64_t start_tick;
     uint32_t live_children;
     Scheduler::TaskId task;
     char name[MaximumCommandNameLength + 1];
@@ -1394,6 +1397,12 @@ uint64_t RunProcess(void* context)
     return exit_status;
 }
 
+uint64_t TicksToMilliseconds(uint64_t ticks)
+{
+    const uint64_t ticks_per_second = Time::TicksPerSecond();
+    return ticks_per_second == 0 ? 0 : ticks * 1000 / ticks_per_second;
+}
+
 // Processes are listed by ascending ID.
 bool ProcessAt(uint32_t index, uint64_t* process_id)
 {
@@ -1454,7 +1463,26 @@ bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
     {
         status->open_files += slot.file != nullptr ? 1 : 0;
     }
+    uint64_t run_ticks = 0;
+    uint32_t last_cpu = 0;
+    Scheduler::GetUsage(process->task, &run_ticks, &last_cpu);
+    status->cpu_milliseconds = TicksToMilliseconds(run_ticks);
+    status->last_cpu = last_cpu;
+    status->start_milliseconds = TicksToMilliseconds(process->start_tick);
     return true;
+}
+
+static_assert(Cpu::MaximumCpus <= Procfs::MaximumCpus, "/proc/stat reports every CPU");
+
+void DescribeSystem(Procfs::SystemStatus* status)
+{
+    status->uptime_milliseconds = TicksToMilliseconds(Time::TickCount());
+    status->cpu_count = Smp::OnlineCpuCount();
+    for (uint32_t cpu = 0; cpu < Procfs::MaximumCpus; ++cpu)
+    {
+        status->busy_milliseconds[cpu] =
+            cpu < Cpu::MaximumCpus ? TicksToMilliseconds(Scheduler::BusyTickCount(cpu)) : 0;
+    }
 }
 
 void DescribeMemory(Procfs::MemoryStatus* status)
@@ -1490,7 +1518,7 @@ UserLayout RandomUserLayout()
 
 void Initialize(uint64_t offset)
 {
-    Procfs::SetSource({ProcessAt, DescribeProcess, DescribeMemory});
+    Procfs::SetSource({ProcessAt, DescribeProcess, DescribeMemory, DescribeSystem});
     hhdm_offset = offset;
     Sync::SpinLockGuard guard(process_lock);
     process_list = nullptr;
@@ -1694,6 +1722,7 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         process->id = id;
         process->parent = parent;
         process->session_leader = (flags & User::SpawnSessionLeader) != 0;
+        process->start_tick = Time::TickCount();
         if (requested_group != 0)
         {
             process->group = requested_group;

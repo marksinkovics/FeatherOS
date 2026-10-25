@@ -20,6 +20,13 @@
 
 // access modes. With no users, R_OK and X_OK hold for every file; W_OK fails only for the
 // read-only initramfs.
+// sysconf names, with Linux's values.
+#define _SC_OPEN_MAX 4
+#define _SC_PAGESIZE 30
+#define _SC_PAGE_SIZE _SC_PAGESIZE
+#define _SC_NPROCESSORS_CONF 83
+#define _SC_NPROCESSORS_ONLN 84
+
 #define F_OK 0
 #define X_OK 1
 #define W_OK 2
@@ -68,6 +75,8 @@ int tcsetpgrp(int descriptor, pid_t group);
 __attribute__((__noreturn__)) void _exit(int status);
 // Waits for a signal; returns -1 with EINTR once its handler has run.
 int pause(void);
+// The CPU counts come from /proc/stat; other names fail with EINVAL.
+long sysconf(int name);
 
 __END_DECLS
 

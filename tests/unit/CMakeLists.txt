@@ -25,6 +25,7 @@ add_executable(featheros_unit_tests
     kernel/process/command_line_tests.cpp
     kernel/process/init_config_tests.cpp
     kernel/process/process_arguments_tests.cpp
+    kernel/process/process_table_tests.cpp
     kernel/process/signals_tests.cpp
     kernel/syscall/syscall_tests.cpp
     kernel/time/calendar_tests.cpp

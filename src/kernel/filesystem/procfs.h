@@ -6,13 +6,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// The generated files mounted at /proc: "meminfo", and a directory per process holding
+// The generated files mounted at /proc: "meminfo", "stat", and a directory per process holding
 // "status". Paths are relative to the mount ("" is the root). A file's text is made when it is
 // opened, so a reader sees one consistent snapshot.
 namespace FeatherOS::Procfs
 {
 
 constexpr size_t MaximumFileSize = 1024;
+constexpr uint32_t MaximumCpus = 16;
 
 struct ProcessStatus
 {
@@ -25,6 +26,10 @@ struct ProcessStatus
     uint64_t pages;
     uint64_t page_limit;
     uint64_t open_files;
+    // Time spent running, on any CPU, the CPU it last ran on, and when it started, as uptime.
+    uint64_t cpu_milliseconds;
+    uint32_t last_cpu;
+    uint64_t start_milliseconds;
 };
 
 struct MemoryStatus
@@ -35,6 +40,14 @@ struct MemoryStatus
     uint64_t tmp_bytes;
 };
 
+struct SystemStatus
+{
+    uint64_t uptime_milliseconds;
+    uint32_t cpu_count;
+    // How long each CPU ran tasks rather than idling.
+    uint64_t busy_milliseconds[MaximumCpus];
+};
+
 // The kernel's process table and memory counters, which the host tests replace.
 struct Source
 {
@@ -42,6 +55,7 @@ struct Source
     bool (*process_at)(uint32_t index, uint64_t* process_id);
     bool (*process_status)(uint64_t process_id, ProcessStatus* status);
     void (*memory_status)(MemoryStatus* status);
+    void (*system_status)(SystemStatus* status);
 };
 
 void SetSource(const Source& source);

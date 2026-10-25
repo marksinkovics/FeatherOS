@@ -12,11 +12,13 @@ enum class Kind : uint8_t
     None,
     Root,
     MemoryInfo,
+    SystemStat,
     ProcessDirectory,
     ProcessStatusFile,
 };
 
 constexpr char MemoryInfoName[] = "meminfo";
+constexpr char SystemStatName[] = "stat";
 constexpr char StatusName[] = "status";
 
 Source source = {};
@@ -69,6 +71,10 @@ Kind Classify(const char* path, uint64_t* process_id)
     if (Equals(path, MemoryInfoName))
     {
         return Kind::MemoryInfo;
+    }
+    if (Equals(path, SystemStatName))
+    {
+        return Kind::SystemStat;
     }
     const char* rest;
     if (!ParseProcessId(path, process_id, &rest) || !ProcessExists(*process_id))
@@ -149,6 +155,27 @@ bool Generate(const char* path, char* buffer, size_t* length)
                                      memory.kernel_heap_bytes / 1024, memory.tmp_bytes / 1024);
         break;
     }
+    case Kind::SystemStat:
+    {
+        if (source.system_status == nullptr)
+        {
+            return false;
+        }
+        // The source fills every field it reports; zeroing the whole struct would need memset.
+        SystemStatus system;
+        source.system_status(&system);
+        formatted = String::FormatTo(buffer, MaximumFileSize, "UptimeMs:\t{}\nCpus:\t{}\n",
+                                     system.uptime_milliseconds, system.cpu_count);
+        size_t used = Length(buffer);
+        const uint32_t cpus = system.cpu_count < MaximumCpus ? system.cpu_count : MaximumCpus;
+        for (uint32_t cpu = 0; formatted && cpu < cpus; ++cpu)
+        {
+            formatted = String::FormatTo(buffer + used, MaximumFileSize - used,
+                                         "Cpu{}BusyMs:\t{}\n", cpu, system.busy_milliseconds[cpu]);
+            used += Length(buffer + used);
+        }
+        break;
+    }
     case Kind::ProcessStatusFile:
     {
         ProcessStatus status;
@@ -159,9 +186,10 @@ bool Generate(const char* path, char* buffer, size_t* length)
         formatted = String::FormatTo(
             buffer, MaximumFileSize,
             "Name:\t{}\nState:\t{} ({})\nPid:\t{}\nPPid:\t{}\nPgid:\t{}\nPages:\t{}\n"
-            "PageLimit:\t{}\nOpenFiles:\t{}\n",
+            "PageLimit:\t{}\nOpenFiles:\t{}\nCpuTimeMs:\t{}\nLastCpu:\t{}\nStartTimeMs:\t{}\n",
             status.name, status.state, StateName(status.state), status.process_id, status.parent_id,
-            status.group, status.pages, status.page_limit, status.open_files);
+            status.group, status.pages, status.page_limit, status.open_files,
+            status.cpu_milliseconds, status.last_cpu, status.start_milliseconds);
         break;
     }
     default:
@@ -207,12 +235,12 @@ bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entr
     {
         return false;
     }
-    if (index == 0)
+    if (index == 0 || index == 1)
     {
-        SetEntry(entry, MemoryInfoName, false);
+        SetEntry(entry, index == 0 ? MemoryInfoName : SystemStatName, false);
         return true;
     }
-    if (source.process_at == nullptr || !source.process_at(index - 1, &process_id))
+    if (source.process_at == nullptr || !source.process_at(index - 2, &process_id))
     {
         return false;
     }

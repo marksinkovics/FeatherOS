@@ -103,6 +103,9 @@ bool FakeProcessStatus(uint64_t process_id, FeatherOS::Procfs::ProcessStatus* st
     status->pages = 37;
     status->page_limit = 1024;
     status->open_files = 2;
+    status->cpu_milliseconds = process_id * 10;
+    status->last_cpu = 3;
+    status->start_milliseconds = 1500;
     return true;
 }
 
@@ -114,9 +117,18 @@ void FakeMemoryStatus(FeatherOS::Procfs::MemoryStatus* status)
     status->tmp_bytes = FeatherOS::Tmpfs::UsedBytes();
 }
 
+void FakeSystemStatus(FeatherOS::Procfs::SystemStatus* status)
+{
+    status->uptime_milliseconds = 61000;
+    status->cpu_count = 2;
+    status->busy_milliseconds[0] = 700;
+    status->busy_milliseconds[1] = 30;
+}
+
 void UseFakeProcesses()
 {
-    FeatherOS::Procfs::SetSource({FakeProcessAt, FakeProcessStatus, FakeMemoryStatus});
+    FeatherOS::Procfs::SetSource(
+        {FakeProcessAt, FakeProcessStatus, FakeMemoryStatus, FakeSystemStatus});
 }
 
 } // namespace
@@ -282,10 +294,14 @@ TEST_CASE("/dev devices read, take writes, and cannot be created or removed")
 TEST_CASE("/proc lists processes and generates their status and meminfo")
 {
     UseFakeProcesses();
-    REQUIRE(List("/proc") == std::vector<std::string>{"meminfo", "1/", "4/", "12/"});
+    REQUIRE(List("/proc") == std::vector<std::string>{"meminfo", "stat", "1/", "4/", "12/"});
     REQUIRE(List("/proc/4") == std::vector<std::string>{"status"});
-    REQUIRE(ReadAll("/proc/12/status") == "Name:\tshell\nState:\tR (running)\nPid:\t12\nPPid:\t1\nPgid:\t4\n"
-                                          "Pages:\t37\nPageLimit:\t1024\nOpenFiles:\t2\n");
+    REQUIRE(ReadAll("/proc/12/status") ==
+            "Name:\tshell\nState:\tR (running)\nPid:\t12\nPPid:\t1\nPgid:\t4\nPages:\t37\n"
+            "PageLimit:\t1024\nOpenFiles:\t2\nCpuTimeMs:\t120\nLastCpu:\t3\n"
+            "StartTimeMs:\t1500\n");
+    REQUIRE(ReadAll("/proc/stat") ==
+            "UptimeMs:\t61000\nCpus:\t2\nCpu0BusyMs:\t700\nCpu1BusyMs:\t30\n");
     REQUIRE(ReadAll("/proc/meminfo") ==
             "MemTotal:\t262144 kB\nMemFree:\t204800 kB\nKernelHeap:\t64 kB\nTmp:\t0 kB\n");
     REQUIRE(FeatherOS::VFS::IsDirectory("/proc/1"));

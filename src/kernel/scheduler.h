@@ -47,6 +47,8 @@ void DisablePreemption();
 void OnTimerTick(uint64_t tick);
 uint64_t BusyTickCount(uint32_t cpu_index);
 TaskState GetState(TaskId task_id);
+// Timer ticks the task has run for, on any CPU, and the CPU it last ran on.
+bool GetUsage(TaskId task_id, uint64_t* run_ticks, uint32_t* last_cpu);
 
 void WaitOn(WaitQueue& queue, Sync::SpinLock& lock, uint64_t deadline_tick = 0);
 void WakeAll(WaitQueue& queue);

@@ -84,6 +84,10 @@ SHELL_INPUT = (
     b"primes 1 1000000 > /dev/null &\njobs\n"
     b"echo the shell kept the console\nwait\n"
     b"kill -l\nkill 99999\nkill -TERM 1\n"
+    # top must show a busy background worker using most of a CPU, which
+    # kill %1 then stops.
+    b"ps\nprimes 1 1000000000 > /dev/null &\ntop -n 1 -d 500\nkill %1\nwait\n"
+    b"kill %7\n"
     b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
     b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\nprimes 16 20000\n"
@@ -157,7 +161,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 344 checks passed",
+    "libctest: 348 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
@@ -196,6 +200,11 @@ EXPECTED_SHELL_OUTPUT = (
     " 9 KILL",
     "kill: 99999: no such process",
     "kill: 1: Operation not permitted",
+    "  PID  PPID  PGID S CPU     TIME NAME",
+    "  PID S  %CPU CPU     TIME NAME",
+    "top: up ",
+    "Terminated  primes 1 1000000000 > /dev/null &",
+    "kill: %7: no such job",
     "hello feather os",
     "upper> ",
     "MIXED CASE",
@@ -621,7 +630,7 @@ def main():
     elif args.expect_power:
         pending_lines = [f"{args.expect_power}\n".encode()]
     lines_sent = 0
-    end_search_start = 0
+    markers_before_end = {}
     qmp_connection = None
     qmp_channel = None
     input_error = None
@@ -703,7 +712,9 @@ def main():
                     process.stdin.flush()
                     time.sleep(0.02)
                 lines_sent += 1
-                end_search_start = len(clean_output)
+                markers_before_end = {
+                    marker: clean_output.count(marker) for marker in markers
+                }
                 while pending_lines and pending_lines[0] is INTERRUPT_RUNNING:
                     pending_lines.pop(0)
                     time.sleep(INTERRUPT_DELAY_SECONDS)
@@ -768,9 +779,11 @@ def main():
                 input_error = str(error)
             input_sent = True
         # The end marker may also appear earlier in a scripted session, so
-        # only output after the last typed line can end it.
+        # only a new one after the last typed line ends it. Counting copies
+        # holds even when stripping escape codes shifts earlier output.
         if not pending_lines and any(
-            marker in clean_output[end_search_start:] for marker in markers
+            clean_output.count(marker) > markers_before_end.get(marker, 0)
+            for marker in markers
         ):
             break
         if (
@@ -968,6 +981,20 @@ def main():
         ):
             print(
                 f"FAIL: two aslr runs did not get distinct layouts: {layouts}",
+                file=sys.stderr,
+            )
+            return 1
+        busy = [
+            int(percent)
+            for percent in re.findall(
+                r"^\s*\d+ R\s+(\d+)\.\d\s+\d+\s+\S+ primes\r?$",
+                output,
+                re.MULTILINE,
+            )
+        ]
+        if not busy or max(busy) < 50:
+            print(
+                f"FAIL: top did not show a busy primes worker: {busy}",
                 file=sys.stderr,
             )
             return 1

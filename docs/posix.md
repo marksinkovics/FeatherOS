@@ -53,7 +53,7 @@ These come from the kernel and apply everywhere below.
 | `/system` | The read-only initramfs, which holds every program |
 | `/dev` | `null`, `zero` and `random`, as on Linux; all take writes |
 | `/tmp` | A RAM filesystem, emptied on restart: at most 128 entries and 4 MiB, with case-sensitive names |
-| `/proc` | Read-only: `meminfo`, and `<pid>/status` for each process; `/proc/self` is the caller |
+| `/proc` | Read-only: `meminfo`, `stat` (uptime and CPU use), and `<pid>/status` for each process; `/proc/self` is the caller |
 
 Disk names ignore case and are at most 63 characters, and no file can have holes. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
 
@@ -198,6 +198,7 @@ Differences:
 - **Processes:** `getpid`, `getppid`, `getpgrp`, `getpgid` and `_exit`. `tcgetpgrp` and `tcsetpgrp` work on the console, the only terminal; only init and session leaders (the shell) may move it, to their own group or one holding one of their children, and others get `EPERM`. `setpgid`, `setsid` and `getsid` are not provided: groups and sessions are chosen when `posix_spawn` starts the child.
 - **Sleeping:** `sleep` and `usleep`.
 - **`environ`.**
+- **`sysconf`:** `_SC_NPROCESSORS_ONLN` and `_SC_NPROCESSORS_CONF` (the same, from `/proc/stat`), `_SC_PAGESIZE` and `_SC_OPEN_MAX`; other names fail with `EINVAL`.
 - **`sbrk`:** moves the end of the heap that `malloc` also uses. A negative increment returns the whole pages above the new end to the kernel, and going below the heap's start fails with `EINVAL`. `malloc` never lowers the break below memory a program got from `sbrk` itself. `brk` is not provided.
 
 Not provided:
