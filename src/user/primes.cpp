@@ -1,30 +1,30 @@
 #include "command_line.h"
-#include "process.h"
-#include "syscall.h"
 
+#include <fcntl.h>
 #include <sched.h>
+#include <spawn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <time.h>
+#include <unistd.h>
 
 using namespace FeatherOS::User;
 
 namespace
 {
 
-constexpr uint64_t MaximumWorkers = 16;
-constexpr uint64_t DefaultLimit = 10000000;
-constexpr uint64_t MaximumLimit = 1000000000;
-// Workers return their result as an exit status, since there are no pipes yet: the prime count
-// above a mask of the CPUs they ran on. That needs the kernel's 64-bit status, which exit and
-// waitpid cut to 8 bits, so workers are started, ended and waited for with raw syscalls.
-constexpr uint64_t CpuMaskBits = 8;
-constexpr uint64_t CpuSampleInterval = 1024;
+constexpr unsigned long long MaximumWorkers = 16;
+constexpr unsigned long long DefaultLimit = 10000000;
+constexpr unsigned long long MaximumLimit = 1000000000;
+// Each worker writes one line to its pipe: its prime count and a mask of the CPUs it ran on.
+constexpr unsigned CpuMaskBits = 64;
+constexpr unsigned long long CpuSampleInterval = 1024;
 
-bool IsOddPrime(uint64_t candidate)
+bool IsOddPrime(unsigned long long candidate)
 {
-    for (uint64_t divisor = 3; divisor * divisor <= candidate; divisor += 2)
+    for (unsigned long long divisor = 3; divisor * divisor <= candidate; divisor += 2)
     {
         if (candidate % divisor == 0)
         {
@@ -34,33 +34,39 @@ bool IsOddPrime(uint64_t candidate)
     return true;
 }
 
+unsigned long long CurrentCpuBit()
+{
+    return 1ULL << (static_cast<unsigned>(sched_getcpu()) % CpuMaskBits);
+}
+
 // Worker index of count tests every count-th odd number from 3, so all workers get similar
 // numbers and finish together.
-[[noreturn]] void RunWorker(uint64_t index, uint64_t count, uint64_t limit)
+int RunWorker(unsigned long long index, unsigned long long count, unsigned long long limit)
 {
-    uint64_t primes = 0;
-    uint64_t cpus = 0;
-    uint64_t tested = 0;
-    for (uint64_t candidate = 3 + 2 * index; candidate < limit; candidate += 2 * count)
+    unsigned long long primes = 0;
+    unsigned long long cpus = 0;
+    unsigned long long tested = 0;
+    for (unsigned long long candidate = 3 + 2 * index; candidate < limit; candidate += 2 * count)
     {
         if (tested++ % CpuSampleInterval == 0)
         {
-            cpus |= 1ULL << (static_cast<uint64_t>(sched_getcpu()) % CpuMaskBits);
+            cpus |= CurrentCpuBit();
         }
         primes += IsOddPrime(candidate) ? 1 : 0;
     }
-    cpus |= 1ULL << (static_cast<uint64_t>(sched_getcpu()) % CpuMaskBits);
-    Exit(primes << CpuMaskBits | cpus);
+    cpus |= CurrentCpuBit();
+    printf("%llu %llu\n", primes, cpus);
+    return 0;
 }
 
-void WriteCpus(uint64_t cpus)
+void WriteCpus(unsigned long long cpus)
 {
     bool first = true;
-    for (uint64_t cpu = 0; cpu < CpuMaskBits; ++cpu)
+    for (unsigned cpu = 0; cpu < CpuMaskBits; ++cpu)
     {
         if ((cpus & (1ULL << cpu)) != 0)
         {
-            printf(first ? "%llu" : ",%llu", static_cast<unsigned long long>(cpu));
+            printf(first ? "%u" : ",%u", cpu);
             first = false;
         }
     }
@@ -73,12 +79,64 @@ uint64_t MillisecondsSinceBoot()
     return static_cast<uint64_t>(now.tv_sec) * 1000 + static_cast<uint64_t>(now.tv_nsec) / 1000000;
 }
 
+// Starts worker index with its output going into a new pipe; returns the pipe's read end, or -1.
+int StartWorker(unsigned long long index, unsigned long long workers, unsigned long long limit,
+                pid_t* child)
+{
+    char index_text[24];
+    char workers_text[24];
+    char limit_text[24];
+    snprintf(index_text, sizeof(index_text), "%llu", index);
+    snprintf(workers_text, sizeof(workers_text), "%llu", workers);
+    snprintf(limit_text, sizeof(limit_text), "%llu", limit);
+    char name[] = "primes";
+    char mode[] = "worker";
+    char* arguments[] = {name, mode, index_text, workers_text, limit_text, nullptr};
+    // Close-on-exec, so the workers get only the copy at their standard output, and the read
+    // ends see the end of the data once each worker exits.
+    int ends[2];
+    if (pipe2(ends, O_CLOEXEC) != 0)
+    {
+        return -1;
+    }
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, ends[1], STDOUT_FILENO);
+    const int error = posix_spawn(child, "primes", &actions, nullptr, arguments, environ);
+    close(ends[1]);
+    if (error != 0)
+    {
+        close(ends[0]);
+        return -1;
+    }
+    return ends[0];
+}
+
+// Reads the worker's line and reaps it; false if it did not finish its count.
+bool CollectWorker(int output, pid_t child, unsigned long long* primes, unsigned long long* cpus)
+{
+    FILE* stream = fdopen(output, "r");
+    const bool parsed = stream != nullptr && fscanf(stream, "%llu %llu", primes, cpus) == 2;
+    if (stream != nullptr)
+    {
+        fclose(stream);
+    }
+    else
+    {
+        close(output);
+    }
+    int status = 0;
+    return waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+           parsed;
+}
+
 } // namespace
 
 constexpr char Help[] =
     "usage: primes <workers 1-16> [limit]\n"
     "Counts the primes below limit (default 10000000, at most 1000000000) with\n"
-    "worker processes and shows the CPUs each ran on. Compare primes 1 with primes 4.";
+    "worker processes, which report through pipes, and shows the CPUs each ran on.\n"
+    "Compare primes 1 with primes 4.";
 
 int main(int argc, char** argv)
 {
@@ -91,9 +149,9 @@ int main(int argc, char** argv)
     unsigned long long limit = DefaultLimit;
     unsigned long long index = 0;
     if (argc == 5 && strcmp(argv[1], "worker") == 0 && ParseUnsigned(argv[2], &index) &&
-        ParseUnsigned(argv[3], &workers) && ParseUnsigned(argv[4], &limit))
+        ParseUnsigned(argv[3], &workers) && ParseUnsigned(argv[4], &limit) && workers > 0)
     {
-        RunWorker(index, workers, limit);
+        return RunWorker(index, workers, limit);
     }
     if ((argc != 2 && argc != 3) || !ParseUnsigned(argv[1], &workers) || workers == 0 ||
         workers > MaximumWorkers ||
@@ -104,14 +162,12 @@ int main(int argc, char** argv)
     }
 
     const uint64_t start = MillisecondsSinceBoot();
-    uint64_t children[MaximumWorkers];
-    for (uint64_t worker = 0; worker < workers; ++worker)
+    pid_t children[MaximumWorkers];
+    int outputs[MaximumWorkers];
+    for (unsigned long long worker = 0; worker < workers; ++worker)
     {
-        char command[MaximumCommandLineLength];
-        snprintf(command, sizeof(command), "primes worker %llu %llu %llu",
-                 static_cast<unsigned long long>(worker), workers, limit);
-        children[worker] = Spawn(command);
-        if (IsSyscallError(children[worker]))
+        outputs[worker] = StartWorker(worker, workers, limit, &children[worker]);
+        if (outputs[worker] < 0)
         {
             puts("primes: could not start a worker");
             return 1;
@@ -119,26 +175,23 @@ int main(int argc, char** argv)
     }
 
     // 2 is the only even prime; the workers test odd numbers.
-    uint64_t total = limit > 2 ? 1 : 0;
-    for (uint64_t worker = 0; worker < workers; ++worker)
+    unsigned long long total = limit > 2 ? 1 : 0;
+    for (unsigned long long worker = 0; worker < workers; ++worker)
     {
-        uint64_t status;
-        if (IsSyscallError(Wait(children[worker], &status)) || status == ExitStatusFault ||
-            status == ExitStatusKernelAccessFault)
+        unsigned long long primes = 0;
+        unsigned long long cpus = 0;
+        if (!CollectWorker(outputs[worker], children[worker], &primes, &cpus))
         {
             puts("primes: a worker failed");
             return 1;
         }
-        const uint64_t primes = status >> CpuMaskBits;
         total += primes;
-        printf("primes: worker %llu found %llu on CPU ", static_cast<unsigned long long>(worker),
-               static_cast<unsigned long long>(primes));
-        WriteCpus(status & ((1ULL << CpuMaskBits) - 1));
+        printf("primes: worker %llu found %llu on CPU ", worker, primes);
+        WriteCpus(cpus);
         putchar('\n');
     }
     const uint64_t elapsed = MillisecondsSinceBoot() - start;
-    printf("primes: %llu primes below %llu with %llu %s in %llu ms\n",
-           static_cast<unsigned long long>(total), limit, workers,
+    printf("primes: %llu primes below %llu with %llu %s in %llu ms\n", total, limit, workers,
            workers == 1 ? "worker" : "workers", static_cast<unsigned long long>(elapsed));
     return 0;
 }

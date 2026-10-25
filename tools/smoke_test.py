@@ -81,11 +81,13 @@ SHELL_INPUT = (
     b"upper &\nsleep 1000 &\njobs\nwait\nsleep 800 &\nfg\n"
     # A background job that starts a program of its own must not take the
     # console from the shell.
-    b"primes 1 1000000 &\njobs\necho the shell kept the console\nwait\n"
+    b"primes 1 1000000 > /dev/null &\njobs\n"
+    b"echo the shell kept the console\nwait\n"
     b"kill -l\nkill 99999\nkill -TERM 1\n"
     b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
-    b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\nfptest 8\n"
+    b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\nprimes 16 20000\n"
+    b"fptest 8\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
 )
 # Ctrl+C for a command that shows no prompt of its own, sent while it runs.
@@ -190,7 +192,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Exit 1  upper &",
     "\nsleep 800 &",
     "\nthe shell kept the console",
-    "Done  primes 1 1000000 &",
+    "Done  primes 1 1000000 > /dev/null &",
     " 9 KILL",
     "kill: 99999: no such process",
     "kill: 1: Operation not permitted",
@@ -205,6 +207,8 @@ EXPECTED_SHELL_OUTPUT = (
     "hardening: 48 checks passed",
     "fptest: 8 of 8 workers kept their registers",
     "primes: 9592 primes below 100000 with 4 workers in ",
+    # Sixteen workers keep sixteen pipes open at once.
+    "primes: 2262 primes below 20000 with 16 workers in ",
     "calc> ",
     "0.333333",
     "calc: division by zero",
@@ -283,7 +287,7 @@ LINE_PROMPT = re.compile(rb"^(?:upper|calc|/[^\n>]*)?> ", re.MULTILINE)
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
 # The scripted shell session runs many programs; AArch64 emulation is slower.
-SHELL_TIMEOUT_SECONDS = 45
+SHELL_TIMEOUT_SECONDS = 60
 QEMU_CPU_COUNT = 4
 SMP_MESSAGE = f"KERN/I: SMP: {QEMU_CPU_COUNT} CPUs online with IPIs and timers"
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
@@ -967,8 +971,9 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        if len(PRIMES_WORKER_OUTPUT.findall(output)) != 4:
-            print("FAIL: primes did not report four workers", file=sys.stderr)
+        # primes 4 and primes 16 report one line per worker.
+        if len(PRIMES_WORKER_OUTPUT.findall(output)) != 20:
+            print("FAIL: primes did not report every worker", file=sys.stderr)
             return 1
         # A prompt may precede the echo on the same line.
         interrupts = len(re.findall(r"\^C\r?$", output, re.MULTILINE))

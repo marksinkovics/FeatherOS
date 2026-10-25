@@ -177,12 +177,14 @@ Moved: storage drivers for physical hardware, to M16.
 
 **Remaining parts, in order** (agreed after Part 3):
 4. **Virtual files** (complete): `/dev/null`, `/dev/zero`, `/dev/random`, a RAM-backed `/tmp`, `/proc/<pid>/status` and `/proc/meminfo`. This adds file kinds other than disk files, which pipes reuse, and `ps` reads `/proc`.
-5. **Signals, pipes and jobs** (in progress), in five steps: (1, complete) one descriptor table with shared open files, `dup`/`dup2`/`fcntl`, `O_CLOEXEC`, inheritance through `Spawn`, `posix_spawn` file actions, and the shell's `<`, `>`, `>>`, `2>` and `2>&1`; (2, complete) `pipe` and the shell's `|`; (3, complete) process groups, so a pipeline is one Ctrl+C job, and `&` with `jobs`; (4, complete) signals; (5) `primes` over pipes. In detail: signals and `kill`, `pipe` and `dup2`, and the shell's `|`, `>`, `<` and `&`. `primes` can then return results through a pipe instead of its exit status.
+5. **Signals, pipes and jobs** (complete), in five steps: (1, complete) one descriptor table with shared open files, `dup`/`dup2`/`fcntl`, `O_CLOEXEC`, inheritance through `Spawn`, `posix_spawn` file actions, and the shell's `<`, `>`, `>>`, `2>` and `2>&1`; (2, complete) `pipe` and the shell's `|`; (3, complete) process groups, so a pipeline is one Ctrl+C job, and `&` with `jobs`; (4, complete) signals; (5, complete) `primes` over pipes. In detail: signals and `kill`, `pipe` and `dup2`, and the shell's `|`, `>`, `<` and `&`. `primes` can then return results through a pipe instead of its exit status.
 6. **Process tools:** `ps` and `top`, with per-process CPU time from the scheduler's tick accounting.
 7. **Terminal:** raw keyboard input and cursor control, then shell history and line editing, then `edit`.
 8. **Threads:** user threads with TLS, the thread-safe C library, and the TLB shootdown.
 
 `cron`, more shell utilities and program packaging, and a more capable `calc` fit between the parts. `fork` stays optional.
+
+**Part 5, step 5 (complete): `primes` over pipes.** Each worker now writes its count and CPU mask as a line to a pipe of its own, which `primes` reads with `fdopen` and `fscanf` before reaping the worker, so `primes` uses only the C library. The shell test adds `primes 16 20000`, which holds sixteen pipes open at once, and its time limit rose to 60 seconds for the longer AArch64 session. This completes Part 5.
 
 **Part 5, step 4 (complete): signals.**
 - **Kernel:** each program has pending and blocked signals and an action per signal (`src/kernel/signals.cpp`, host-tested), delivered on every return to user mode. Handlers run on the user stack behind a frame that saves the registers and floating-point state on both architectures; `SignalReturn` puts them back after checking the addresses, flags and floating-point control bits. Ctrl+C now sends `SIGINT`, a dying parent `SIGKILL`, a broken pipe `SIGPIPE` and a child's exit `SIGCHLD`. `Kill`, `SignalAction`, `SignalMask`, `SignalReturn` and `Pause` syscalls; `Sleep`, `Wait` and console and pipe I/O give up with `EINTR` when a signal arrives. A signal's exit status is `ExitStatusSignalBase + n`, replacing `ExitStatusInterrupted`.
