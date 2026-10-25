@@ -67,26 +67,43 @@ check_clang_format() {
         -print0 | xargs -0 clang-format --dry-run --Werror
 }
 
+# Each clang-tidy run compiles its file, so files are checked in parallel.
+job_count() {
+    if command -v sysctl >/dev/null 2>&1 && sysctl -n hw.ncpu >/dev/null 2>&1; then
+        sysctl -n hw.ncpu
+    elif command -v nproc >/dev/null 2>&1; then
+        nproc
+    else
+        echo 4
+    fi
+}
+
+# The sources clang-tidy checks for one architecture: the shared ones and that arch's own.
+tidy_sources() {
+    local arch="$1"
+    find "$REPO_ROOT/src" -type f \
+        \( -name '*.c' -o -name '*.cpp' \) \
+        ! -path "$REPO_ROOT/src/kernel/arch/*" \
+        ! -path "$REPO_ROOT/src/libc/arch/*" \
+        -print0
+    find "$REPO_ROOT/src/kernel/arch/$arch" "$REPO_ROOT/src/libc/arch/$arch" -type f \
+        \( -name '*.c' -o -name '*.cpp' \) \
+        -print0
+}
+
 check_clang_tidy() {
     local arch="$1"
-    local clang_tidy_args=(-p "$REPO_ROOT/build/$arch")
-    if [[ "${2:-}" == "--fix" ]]; then
-        clang_tidy_args=(--fix "${clang_tidy_args[@]}")
-    fi
     if [[ ! -d "$REPO_ROOT/src/kernel/arch/$arch" ]]; then
         fail "unsupported architecture for clang-tidy: $arch"
     fi
-
-    {
-        find "$REPO_ROOT/src" -type f \
-            \( -name '*.c' -o -name '*.cpp' \) \
-            ! -path "$REPO_ROOT/src/kernel/arch/*" \
-            ! -path "$REPO_ROOT/src/libc/arch/*" \
-            -print0
-        find "$REPO_ROOT/src/kernel/arch/$arch" "$REPO_ROOT/src/libc/arch/$arch" -type f \
-            \( -name '*.c' -o -name '*.cpp' \) \
-            -print0
-    } | xargs -0 clang-tidy "${clang_tidy_args[@]}"
+    if [[ "${2:-}" != "--fix" ]]; then
+        tidy_sources "$arch" | xargs -0 -n 4 -P "$(job_count)" clang-tidy -p "$REPO_ROOT/build/$arch"
+        return
+    fi
+    # Fixing stays serial: parallel runs fixing the same header would overwrite each other's
+    # edits. run-clang-tidy avoids that, but it also applies the fixes clang-tidy only suggests
+    # in notes, such as casts for bugprone-implicit-widening-of-multiplication-result.
+    tidy_sources "$arch" | xargs -0 clang-tidy --fix -p "$REPO_ROOT/build/$arch"
 }
 
 check_sources() {
