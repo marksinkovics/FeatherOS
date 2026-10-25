@@ -72,6 +72,7 @@ struct Handlers
                               uint64_t old_action);
     uint64_t (*signal_mask)(void* context, uint64_t how, uint64_t set);
     uint64_t (*pause)(void* context);
+    uint64_t (*terminal_size)(void* context);
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

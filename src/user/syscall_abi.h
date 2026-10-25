@@ -46,6 +46,7 @@ enum class SyscallNumber : uint64_t
     SignalMask = 33,       // (how, set) -> the previous blocked mask
     SignalReturn = 34,     // () -> resumes what a signal handler interrupted
     Pause = 35,            // () -> SyscallErrorInterrupted once a signal arrives
+    TerminalSize = 36,     // () -> rows in bits 32-63, columns in bits 0-31
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec and joins its

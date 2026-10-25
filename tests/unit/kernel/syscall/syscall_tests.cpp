@@ -137,14 +137,14 @@ constexpr FeatherOS::Syscall::Handlers WriteOnly = {
     CaptureCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-    nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     CaptureCharacter, RecordReadLine,   RecordSpawn,    RecordWait,       ReadFixedClock,
     RecordExtendHeap, RecordSleep,      ReadFixedUptime, ReadFixedCpu,    RecordOpen,
     RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeekFrom, RecordRemove,
     RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek,
     RecordDescriptor, RecordSeek,       RecordSeek,      ReadFixedProcessId, ReadFixedParentProcessId,
-    RecordSeekFrom,   RecordSeekFrom,   RecordSeek, RecordDescriptor, RecordSeek, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId};
+    RecordSeekFrom,   RecordSeekFrom,   RecordSeek, RecordDescriptor, RecordSeek, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, ReadFixedProcessId};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)

@@ -179,10 +179,15 @@ Moved: storage drivers for physical hardware, to M16.
 4. **Virtual files** (complete): `/dev/null`, `/dev/zero`, `/dev/random`, a RAM-backed `/tmp`, `/proc/<pid>/status` and `/proc/meminfo`. This adds file kinds other than disk files, which pipes reuse, and `ps` reads `/proc`.
 5. **Signals, pipes and jobs** (complete), in five steps: (1, complete) one descriptor table with shared open files, `dup`/`dup2`/`fcntl`, `O_CLOEXEC`, inheritance through `Spawn`, `posix_spawn` file actions, and the shell's `<`, `>`, `>>`, `2>` and `2>&1`; (2, complete) `pipe` and the shell's `|`; (3, complete) process groups, so a pipeline is one Ctrl+C job, and `&` with `jobs`; (4, complete) signals; (5, complete) `primes` over pipes. In detail: signals and `kill`, `pipe` and `dup2`, and the shell's `|`, `>`, `<` and `&`. `primes` can then return results through a pipe instead of its exit status.
 6. **Process tools** (complete): `ps` and `top`, with per-process CPU time from the scheduler's tick accounting.
-7. **Terminal:** raw keyboard input and cursor control, then shell history and line editing, then `edit`.
+7. **Terminal** (in progress), in five steps: (1, complete) VT100 cursor control and the terminal size; (2) raw keyboard input and termios; (3) shell line editing and history; (4) `edit`; (5) `top` redrawing in place and `clear`.
 8. **Threads:** user threads with TLS, the thread-safe C library, and the TLB shootdown.
 
 `cron`, more shell utilities and program packaging, and a more capable `calc` fit between the parts. `fork` stays optional.
+
+**Part 7, step 1 (complete): terminal output.**
+- **Kernel:** the framebuffer console (`src/kernel/framebuffer/term.cpp`) understands a VT100 subset: `CSI A/B/C/D/G/d/H/f` move the cursor, `CSI J` and `CSI K` erase, `CSI 7 m`, `27 m` and `0 m` switch reverse video, `CSI s/u` and `ESC 7/8` save and restore the cursor, `CSI ?25 l/h` hide and show it, and `\r` and `\b` move within the line. Unknown sequences are swallowed. The console passes ESC, `\r` and `\b` through, and a `TerminalSize` syscall reports the text area below the status bar.
+- **C library:** `sys/ioctl.h` with `ioctl(TIOCGWINSZ)`.
+- **Tests:** a host test for the escape parser, including sequences split across writes; `libctest` (351 checks) reads the console size and checks `ENOTTY` and `EINVAL`.
 
 **Part 6 (complete): process tools.**
 - **Kernel:** the scheduler counts each task's timer ticks and remembers the CPU it last ran on, and a process records when it was spawned. `/proc/<pid>/status` gains `CpuTimeMs`, `LastCpu` and `StartTimeMs`, and a new `/proc/stat` gives the uptime, the CPU count and each CPU's busy time.

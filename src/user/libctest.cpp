@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -694,6 +695,18 @@ void CheckDescriptorFiles()
     errno = 0;
     Check(lseek(STDOUT_FILENO, 0, SEEK_SET) == -1 && errno == ESPIPE, "lseek on the console");
     Check(isatty(STDOUT_FILENO) == 1, "isatty on the console");
+    struct winsize window = {};
+    Check(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0 && window.ws_row >= 1 &&
+              window.ws_col >= 1,
+          "ioctl reads the console size");
+    errno = 0;
+    Check(ioctl(STDOUT_FILENO, 0x1234, &window) == -1 && errno == EINVAL,
+          "ioctl with an unknown request");
+    const int text = open("/system/hello.txt", O_RDONLY);
+    errno = 0;
+    Check(text >= 3 && ioctl(text, TIOCGWINSZ, &window) == -1 && errno == ENOTTY &&
+              close(text) == 0,
+          "ioctl on a file");
     Check(access("/system/hello.txt", R_OK) == 0, "access to read");
     errno = 0;
     Check(access("/system/hello.txt", W_OK) == -1 && errno == EROFS, "access to write");

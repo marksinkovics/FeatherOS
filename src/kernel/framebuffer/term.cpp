@@ -27,12 +27,18 @@ void Term::Init(Framebuffer* framebuffer)
     m_columns -= 2 * m_column_offset;
     m_row_index = FirstContentRow;
     m_column_index = 0;
+    m_attribute = 0;
+    m_escape_state = EscapeState::Text;
+    m_cursor_enabled = true;
+    m_saved_row = FirstContentRow;
+    m_saved_column = 0;
 
     for (uint32_t row = 0; row < TermConfig::Row; ++row)
     {
         for (uint32_t column = 0; column < TermConfig::Column; ++column)
         {
             m_buffer[row][column] = ' ';
+            m_attributes[row][column] = 0;
         }
     }
 }
@@ -59,22 +65,197 @@ void Term::Write(const char* str)
 
     for (uint32_t index = 0; str[index] != '\0'; ++index)
     {
-        const char character = str[index];
-        if (character != '\n')
+        if (!HandleEscape(str[index]))
         {
-            m_buffer[m_row_index][m_column_index] = character;
-            ++m_column_index;
+            WriteCharacter(str[index]);
         }
-        // The cursor wraps as soon as a row fills, so it always rests on a visible cell.
-        if (character == '\n' || m_column_index == m_columns)
+    }
+}
+
+void Term::WriteCharacter(char character)
+{
+    if (character == '\r')
+    {
+        m_column_index = 0;
+        return;
+    }
+    if (character == '\b')
+    {
+        m_column_index = m_column_index > 0 ? m_column_index - 1 : 0;
+        return;
+    }
+    if (character != '\n')
+    {
+        m_buffer[m_row_index][m_column_index] = character;
+        m_attributes[m_row_index][m_column_index] = m_attribute;
+        ++m_column_index;
+    }
+    // The cursor wraps as soon as a row fills, so it always rests on a visible cell.
+    if (character == '\n' || m_column_index == m_columns)
+    {
+        m_column_index = 0;
+        ++m_row_index;
+        if (m_row_index >= m_rows)
         {
-            m_column_index = 0;
-            ++m_row_index;
-            if (m_row_index >= m_rows)
+            Scroll();
+        }
+    }
+}
+
+// Sequences may arrive split across writes, so the parser keeps its state between calls.
+bool Term::HandleEscape(char character)
+{
+    switch (m_escape_state)
+    {
+    case EscapeState::Text:
+        if (character != '\x1b')
+        {
+            return false;
+        }
+        m_escape_state = EscapeState::Escape;
+        return true;
+    case EscapeState::Escape:
+        if (character == '[')
+        {
+            m_escape_state = EscapeState::Control;
+            m_parameter_count = 0;
+            m_private_sequence = false;
+            for (uint32_t& parameter : m_parameters)
             {
-                Scroll();
+                parameter = 0;
+            }
+            return true;
+        }
+        // ESC 7 and ESC 8 also save and restore the cursor; other sequences are ignored.
+        if (character == '7' || character == '8')
+        {
+            ExecuteControl(character == '7' ? 's' : 'u');
+        }
+        m_escape_state = EscapeState::Text;
+        return true;
+    case EscapeState::Control:
+        break;
+    }
+    if (character >= '0' && character <= '9')
+    {
+        m_parameter_count = m_parameter_count == 0 ? 1 : m_parameter_count;
+        uint32_t& parameter = m_parameters[m_parameter_count - 1];
+        parameter =
+            parameter < 10000 ? parameter * 10 + static_cast<uint32_t>(character - '0') : parameter;
+        return true;
+    }
+    if (character == ';')
+    {
+        m_parameter_count = m_parameter_count == 0 ? 2 : m_parameter_count + 1;
+        m_parameter_count =
+            m_parameter_count > MaximumParameters ? MaximumParameters : m_parameter_count;
+        return true;
+    }
+    if (character == '?' && m_parameter_count == 0)
+    {
+        m_private_sequence = true;
+        return true;
+    }
+    // Bytes from @ to ~ end the sequence; others, such as intermediate bytes, are skipped.
+    if (character >= '@' && character <= '~')
+    {
+        ExecuteControl(character);
+        m_escape_state = EscapeState::Text;
+    }
+    return true;
+}
+
+void Term::MoveCursor(uint32_t row, uint32_t column)
+{
+    m_row_index = row < FirstContentRow ? FirstContentRow : row >= m_rows ? m_rows - 1 : row;
+    m_column_index = column >= m_columns ? m_columns - 1 : column;
+}
+
+void Term::ClearCells(uint32_t row, uint32_t first_column, uint32_t end_column)
+{
+    for (uint32_t column = first_column; column < end_column && column < m_columns; ++column)
+    {
+        m_buffer[row][column] = ' ';
+        m_attributes[row][column] = 0;
+    }
+}
+
+void Term::ExecuteControl(char command)
+{
+    // A missing or zero parameter counts as 1 for movement, and as 0 for erasing modes.
+    auto count = [this](uint32_t index)
+    { return index < m_parameter_count && m_parameters[index] != 0 ? m_parameters[index] : 1; };
+    const uint32_t mode = m_parameter_count > 0 ? m_parameters[0] : 0;
+    switch (command)
+    {
+    case 'A':
+        MoveCursor(m_row_index > count(0) ? m_row_index - count(0) : 0, m_column_index);
+        break;
+    case 'B':
+        MoveCursor(m_row_index + count(0), m_column_index);
+        break;
+    case 'C':
+        MoveCursor(m_row_index, m_column_index + count(0));
+        break;
+    case 'D':
+        MoveCursor(m_row_index, m_column_index > count(0) ? m_column_index - count(0) : 0);
+        break;
+    case 'G':
+        MoveCursor(m_row_index, count(0) - 1);
+        break;
+    case 'd':
+        MoveCursor(FirstContentRow + count(0) - 1, m_column_index);
+        break;
+    case 'H':
+    case 'f':
+        MoveCursor(FirstContentRow + count(0) - 1, count(1) - 1);
+        break;
+    case 'J':
+        for (uint32_t row = FirstContentRow; row < m_rows; ++row)
+        {
+            const bool before = row < m_row_index;
+            const bool after = row > m_row_index;
+            if (mode >= 2 || (mode == 0 && after) || (mode == 1 && before))
+            {
+                ClearCells(row, 0, m_columns);
             }
         }
+        if (mode == 0)
+        {
+            ClearCells(m_row_index, m_column_index, m_columns);
+        }
+        else if (mode == 1)
+        {
+            ClearCells(m_row_index, 0, m_column_index + 1);
+        }
+        break;
+    case 'K':
+        ClearCells(m_row_index, mode == 0 ? m_column_index : 0,
+                   mode == 1 ? m_column_index + 1 : m_columns);
+        break;
+    case 'm':
+        for (uint32_t index = 0; index < (m_parameter_count == 0 ? 1 : m_parameter_count); ++index)
+        {
+            const uint32_t value = m_parameters[index];
+            m_attribute = value == 0 || value == 27 ? 0 : value == 7 ? Reverse : m_attribute;
+        }
+        break;
+    case 's':
+        m_saved_row = m_row_index;
+        m_saved_column = m_column_index;
+        break;
+    case 'u':
+        MoveCursor(m_saved_row, m_saved_column);
+        break;
+    case 'h':
+    case 'l':
+        if (m_private_sequence && mode == 25)
+        {
+            m_cursor_enabled = command == 'h';
+        }
+        break;
+    default:
+        break;
     }
 }
 
@@ -85,13 +266,10 @@ void Term::Scroll()
         for (uint32_t column = 0; column < m_columns; ++column)
         {
             m_buffer[row - 1][column] = m_buffer[row][column];
+            m_attributes[row - 1][column] = m_attributes[row][column];
         }
     }
-
-    for (uint32_t column = 0; column < m_columns; ++column)
-    {
-        m_buffer[m_rows - 1][column] = ' ';
-    }
+    ClearCells(m_rows - 1, 0, m_columns);
     m_row_index = m_rows - 1;
     ++m_pending_scroll_rows;
 }
@@ -116,6 +294,7 @@ void Term::EraseCharacter()
         return;
     }
     m_buffer[m_row_index][m_column_index] = ' ';
+    m_attributes[m_row_index][m_column_index] = 0;
     Refresh();
 }
 
@@ -161,9 +340,34 @@ uint8_t Term::CharacterAt(uint32_t row, uint32_t column) const
     return row < m_rows && column < m_columns ? m_buffer[row][column] : 0;
 }
 
+bool Term::ReversedAt(uint32_t row, uint32_t column) const
+{
+    return row < m_rows && column < m_columns && (m_attributes[row][column] & Reverse) != 0;
+}
+
+uint32_t Term::CursorRow() const
+{
+    return m_row_index;
+}
+
+uint32_t Term::CursorColumn() const
+{
+    return m_column_index;
+}
+
+uint32_t Term::ContentRows() const
+{
+    return m_rows > FirstContentRow ? m_rows - FirstContentRow : 0;
+}
+
+uint32_t Term::Columns() const
+{
+    return m_columns;
+}
+
 bool Term::CursorAt(uint32_t row, uint32_t column) const
 {
-    return m_cursor_visible && row == m_row_index && column == m_column_index;
+    return m_cursor_visible && m_cursor_enabled && row == m_row_index && column == m_column_index;
 }
 
 void Term::MarkDirty(uint32_t row, uint32_t* dirty_top, uint32_t* dirty_bottom) const
@@ -196,6 +400,7 @@ void Term::Refresh()
             for (uint32_t column = 0; column < TermConfig::Column; ++column)
             {
                 m_screen[row][column] = rendered;
+                m_screen_attributes[row][column] = 0;
             }
         }
         m_pending_scroll_rows = 0;
@@ -216,12 +421,14 @@ void Term::Refresh()
     {
         for (uint32_t column = 0; column < m_columns; ++column)
         {
-            if (m_buffer[row][column] == m_screen[row][column])
+            if (m_buffer[row][column] == m_screen[row][column] &&
+                m_attributes[row][column] == m_screen_attributes[row][column])
             {
                 continue;
             }
             DrawCell(row, column);
             m_screen[row][column] = m_buffer[row][column];
+            m_screen_attributes[row][column] = m_attributes[row][column];
             MarkDirty(row, &dirty_top, &dirty_bottom);
         }
     }
@@ -277,6 +484,8 @@ void Term::ApplyPendingScroll()
         for (uint32_t column = 0; column < m_columns; ++column)
         {
             m_screen[row][column] = source_row < m_rows ? m_screen[source_row][column] : ' ';
+            m_screen_attributes[row][column] =
+                source_row < m_rows ? m_screen_attributes[source_row][column] : 0;
         }
     }
     // The rendered cursor moved up with the pixels, or scrolled off.
@@ -294,7 +503,9 @@ void Term::DrawCell(uint32_t row, uint32_t column)
 {
     const uint32_t x = (column + m_column_offset) * FONT_WIDTH;
     const uint32_t y = (row + m_row_offset) * FONT_HEIGHT;
-    const bool inverted = row == StatusRow || CursorAt(row, column);
+    // The cursor shows as the opposite of the cell's own colors.
+    const bool reversed = row == StatusRow || (m_attributes[row][column] & Reverse) != 0;
+    const bool inverted = CursorAt(row, column) ? !reversed : reversed;
     const uint32_t background = inverted ? m_fg_color : m_bg_color;
     const uint32_t foreground = inverted ? m_bg_color : m_fg_color;
     uint8_t font_index = 0;

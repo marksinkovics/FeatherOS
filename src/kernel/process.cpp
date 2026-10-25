@@ -1129,6 +1129,14 @@ uint64_t SignalMaskSyscall(void* context, uint64_t how, uint64_t set)
         &static_cast<ProcessRecord*>(context)->program.execution_context.signals, how, set);
 }
 
+uint64_t TerminalSizeSyscall(void*)
+{
+    uint32_t rows = 0;
+    uint32_t columns = 0;
+    Console::Size(&rows, &columns);
+    return (static_cast<uint64_t>(rows) << 32) | columns;
+}
+
 // Waits until a signal arrives; the program then takes it on the way back to user mode.
 uint64_t PauseSyscall(void*)
 {
@@ -1353,6 +1361,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     SignalActionSyscall,
     SignalMaskSyscall,
     PauseSyscall,
+    TerminalSizeSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.

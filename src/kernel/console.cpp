@@ -227,7 +227,10 @@ void Write(const char* text, size_t length)
     for (size_t index = 0; index < length; ++index)
     {
         const auto byte = static_cast<unsigned char>(text[index]);
-        if (byte < 0x20 && byte != '\n' && byte != '\t')
+        // Escape, carriage return and backspace drive the terminal (see Term); other control
+        // bytes are dropped.
+        if (byte < 0x20 && byte != '\n' && byte != '\t' && byte != '\x1b' && byte != '\r' &&
+            byte != '\b')
         {
             continue;
         }
@@ -241,6 +244,18 @@ void Write(const char* text, size_t length)
     {
         flush();
     }
+}
+
+void Size(uint32_t* rows, uint32_t* columns)
+{
+    if (console_term == nullptr || console_term->ContentRows() == 0)
+    {
+        *rows = 24;
+        *columns = 80;
+        return;
+    }
+    *rows = console_term->ContentRows();
+    *columns = console_term->Columns();
 }
 
 bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* line_length)

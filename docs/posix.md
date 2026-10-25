@@ -261,6 +261,10 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
 
 `sched_getcpu`, the glibc extension, returns the CPU the caller was running on. That may change as soon as it returns.
 
+### `sys/ioctl.h`
+
+Only `ioctl(fd, TIOCGWINSZ, &size)` on the console, which fills `ws_row` and `ws_col` with the text area below the status bar (80×24 without a framebuffer) and leaves the pixel sizes 0. Other descriptors fail with `ENOTTY`, and other requests with `EINVAL`. The console understands the VT100 sequences listed in `docs/development.md`.
+
 ### `sys/reboot.h`
 
 `reboot(RB_POWER_OFF)` and `reboot(RB_AUTOBOOT)`, with Linux's values. Only init and session leaders may call it. The kernel then stops every process, flushes the disk, and powers off or restarts. Anyone else gets `EPERM`.

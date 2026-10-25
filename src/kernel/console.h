@@ -2,6 +2,7 @@
 #define FEATHEROS_CONSOLE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 namespace FeatherOS
 {
@@ -18,9 +19,12 @@ void Initialize(Term* term);
 void NotifyStatusChanged();
 void WriteCharacter(char character);
 void WriteLine(const char* text);
-// Prints printable ASCII and newlines as one unit, so other output cannot interleave with it. Tab
-// prints as a space, bytes above 0x7F as '?', and other control bytes are dropped.
+// Prints printable ASCII and newlines as one unit, so other output cannot interleave with it.
+// Escape sequences, \r and \b pass through to the terminal and serial. Tab prints as a space,
+// bytes above 0x7F as '?', and other control bytes are dropped.
 void Write(const char* text, size_t length);
+// The text area below the status bar, or a serial terminal's usual 24 by 80 without a screen.
+void Size(uint32_t* rows, uint32_t* columns);
 // Shows prompt, then echoes and edits input until Enter. Interrupts are enabled while waiting.
 // buffer receives at most capacity - 1 characters and a terminator. Returns false when Ctrl+C
 // interrupted the calling program.

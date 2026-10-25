@@ -8,6 +8,7 @@ add_library(featheros_c STATIC
     errno.cpp
     exit.cpp
     featheros.cpp
+    ioctl.cpp
     malloc.cpp
     signal.cpp
     math.cpp
