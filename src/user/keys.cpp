@@ -1,9 +1,8 @@
 #include "command_line.h"
 #include "key_decoder.h"
+#include "raw_terminal.h"
 
 #include <stdio.h>
-#include <termios.h>
-#include <unistd.h>
 
 constexpr char Help[] = "usage: keys\n"
                         "Switches the console to raw input and prints the name of each key\n"
@@ -92,57 +91,27 @@ int main(int argc, char** argv)
         puts(Help);
         return 0;
     }
-    termios original;
-    if (tcgetattr(STDIN_FILENO, &original) != 0)
-    {
-        perror("keys");
-        return 1;
-    }
-    termios raw = original;
-    cfmakeraw(&raw);
-    // A tenth of a second tells a lone Escape key from the start of a sequence.
-    termios waiting = raw;
-    waiting.c_cc[VMIN] = 0;
-    waiting.c_cc[VTIME] = 1;
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0)
+    FeatherOS::User::RawTerminal terminal;
+    if (!terminal.Enter())
     {
         perror("keys");
         return 1;
     }
     puts("keys: press keys; q quits");
     fflush(stdout);
-    FeatherOS::User::KeyDecoder decoder;
+    KeyPress press;
     bool running = true;
     while (running)
     {
-        char bytes[16];
-        const ssize_t count = read(STDIN_FILENO, bytes, sizeof(bytes));
-        if (count < 0)
+        if (!terminal.ReadKey(&press))
         {
             perror("keys");
             break;
         }
-        KeyPress presses[FeatherOS::User::KeyDecoder::MaximumPresses];
-        if (count == 0)
-        {
-            const size_t found = decoder.Flush(presses);
-            for (size_t index = 0; index < found && running; ++index)
-            {
-                running = Show(presses[index]);
-            }
-        }
-        for (ssize_t byte = 0; byte < count && running; ++byte)
-        {
-            const size_t found = decoder.Feed(bytes[byte], presses);
-            for (size_t index = 0; index < found && running; ++index)
-            {
-                running = Show(presses[index]);
-            }
-        }
+        running = Show(press);
         fflush(stdout);
-        tcsetattr(STDIN_FILENO, TCSANOW, decoder.Pending() ? &waiting : &raw);
     }
-    tcsetattr(STDIN_FILENO, TCSANOW, &original);
+    terminal.Leave();
     puts("keys: done");
     return 0;
 }

@@ -100,6 +100,29 @@ class WholeWrite(bytes):
     """Input written in one piece, so escape sequences arrive together."""
 
 
+# Line editing at the shell prompt: Home and Right, Up to recall, Ctrl+U and
+# Ctrl+W, Delete, and a lone Escape, which the editor ignores.
+SHELL_EDIT_INPUT = (
+    WholeWrite(b"eco edited line\x1b[H\x1b[C\x1b[Ch\n"),
+    WholeWrite(b"\x1b[A\n"),
+    WholeWrite(b"echo wrong\x15echo right words\x17\x17after-kill\n"),
+    WholeWrite(b"echo deleteXX\x1b[D\x1b[D\x1b[3~\x1b[3~ done\n"),
+    WholeWrite(b"echo esc\x1b ok\n"),
+    b"history\n",
+    b"clear\n",
+)
+CLEAR_SEQUENCE = b"\x1b[H\x1b[2J"
+# Program output lines, which the edited input lines echoed before them do not
+# match, and how often each must appear.
+EXPECTED_SHELL_EDITS = {
+    "edited line": 2,
+    "after-kill": 1,
+    "delete done": 1,
+    "esc ok": 1,
+}
+EXPECTED_HISTORY_LINE = re.compile(
+    r"^ +\d+  echo edited line\r?$", re.MULTILINE
+)
 KEYS_READY = "keys: press keys; q quits"
 # keys reads raw input: every special key, Ctrl+C as a byte, then q to quit.
 SHELL_KEYS_INPUT = (
@@ -326,7 +349,6 @@ STORAGE_SHELL_OUTPUT = {
     ),
 }
 USER_PREEMPTION_OUTPUTS = {"x86_64": b"UIu", "aarch64": b"AIa"}
-INPUT_ACCEPTED_MESSAGE = "KERN/I: Input line accepted"
 # Ctrl+C at the shell prompt only discards the line; "ab" is then an unknown
 # command, and keys takes raw input from the same keyboard.
 INPUT_LINE_KEYS = (
@@ -335,6 +357,19 @@ INPUT_LINE_KEYS = (
     "b",
     "x",
     "backspace",
+    "ret",
+    # Left then z gives "echo azb"; Up recalls it.
+    "e",
+    "c",
+    "h",
+    "o",
+    "spc",
+    "a",
+    "b",
+    "left",
+    "z",
+    "ret",
+    "up",
     "ret",
     "k",
     "e",
@@ -703,6 +738,7 @@ def main():
     elif args.expect_shell:
         pending_lines = (
             SHELL_INPUT.splitlines(keepends=True)
+            + list(SHELL_EDIT_INPUT)
             + list(SHELL_KEYS_INPUT)
             + list(SHELL_INTERRUPT_INPUT)
         )
@@ -1018,6 +1054,18 @@ def main():
         if missing:
             print(f"FAIL: shell output is missing {missing}", file=sys.stderr)
             return 1
+        edits = {
+            text: len(re.findall(rf"^{text}\r?$", output, re.MULTILINE))
+            for text in EXPECTED_SHELL_EDITS
+        }
+        if edits != EXPECTED_SHELL_EDITS or not EXPECTED_HISTORY_LINE.search(
+            output
+        ):
+            print(f"FAIL: line editing printed {edits}", file=sys.stderr)
+            return 1
+        if CLEAR_SEQUENCE not in captured:
+            print("FAIL: clear did not clear the screen", file=sys.stderr)
+            return 1
         keys = [
             line.strip()
             for line in output.splitlines()
@@ -1137,9 +1185,14 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        if INPUT_ACCEPTED_MESSAGE not in output:
+        if "Unknown command: ab" not in output:
             print(
-                "FAIL: kernel did not accept the injected input line",
+                "FAIL: the shell did not run the typed line", file=sys.stderr
+            )
+            return 1
+        if len(re.findall(r"^azb\r?$", output, re.MULTILINE)) != 2:
+            print(
+                "FAIL: the cursor keys and history did not edit the line",
                 file=sys.stderr,
             )
             return 1

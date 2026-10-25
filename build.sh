@@ -275,7 +275,7 @@ run() {
         if [[ "${QEMU_NO_REBOOT:-OFF}" == ON || "${QEMU_NO_REBOOT:-OFF}" == 1 ]]; then
             run_args+=(--no-reboot)
         fi
-        if [[ "${QEMU_ZOOM:-OFF}" == ON || "${QEMU_ZOOM:-OFF}" == 1 ]]; then
+        if [[ "${QEMU_ZOOM:-ON}" != OFF && "${QEMU_ZOOM:-ON}" != 0 ]]; then
             run_args+=(--zoom)
         fi
         python3 "$SCRIPT_DIR/tools/qemu_run.py" \
@@ -293,7 +293,7 @@ run() {
         if [[ "${QEMU_NO_REBOOT:-OFF}" == ON || "${QEMU_NO_REBOOT:-OFF}" == 1 ]]; then
             run_args+=(--no-reboot)
         fi
-        if [[ "${QEMU_ZOOM:-OFF}" == ON || "${QEMU_ZOOM:-OFF}" == 1 ]]; then
+        if [[ "${QEMU_ZOOM:-ON}" != OFF && "${QEMU_ZOOM:-ON}" != 0 ]]; then
             run_args+=(--zoom)
         fi
         python3 "$SCRIPT_DIR/tools/qemu_run.py" \

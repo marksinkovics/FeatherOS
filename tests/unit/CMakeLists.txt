@@ -24,6 +24,7 @@ add_executable(featheros_unit_tests
     kernel/memory/memory_map_tests.cpp
     kernel/process/calculator_tests.cpp
     kernel/process/command_line_tests.cpp
+    kernel/process/line_editor_tests.cpp
     kernel/process/init_config_tests.cpp
     kernel/process/process_arguments_tests.cpp
     kernel/process/process_table_tests.cpp

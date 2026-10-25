@@ -1,4 +1,6 @@
 #include "command_line.h"
+#include "line_editor.h"
+#include "raw_terminal.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -8,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/reboot.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -105,6 +108,48 @@ void ReportReadFailure(int error)
         return;
     }
     printf("shell: could not read input: %s\n", strerror(error));
+}
+
+// Edits the line in raw mode, with history, when standard input is the console; otherwise the
+// kernel edits it. Ctrl+C discards the line and asks again.
+bool ReadCommandLine(const char* prompt, char* line, size_t size, LineHistory* history)
+{
+    fflush(stdout);
+    RawTerminal terminal;
+    if (!terminal.Enter())
+    {
+        return featheros_read_line(prompt, line, size) >= 0;
+    }
+    winsize window = {};
+    const size_t columns = ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0 ? window.ws_col : 80;
+    LineEditor editor;
+    editor.Begin(prompt, columns, history);
+    for (;;)
+    {
+        write(STDOUT_FILENO, editor.Output(), editor.OutputLength());
+        editor.ClearOutput();
+        KeyPress press;
+        if (!terminal.ReadKey(&press))
+        {
+            const int error = errno;
+            terminal.Leave();
+            errno = error;
+            return false;
+        }
+        const LineEditor::Status status = editor.Press(press);
+        if (status == LineEditor::Status::Accepted)
+        {
+            write(STDOUT_FILENO, editor.Output(), editor.OutputLength());
+            terminal.Leave();
+            snprintf(line, size, "%s", editor.Line());
+            return true;
+        }
+        if (status == LineEditor::Status::Cancelled)
+        {
+            write(STDOUT_FILENO, editor.Output(), editor.OutputLength());
+            editor.Begin(prompt, columns, history);
+        }
+    }
 }
 
 // Silent for Ctrl+C and for a pipeline's writer whose reader left, as in other shells.
@@ -531,7 +576,9 @@ constexpr char Help[] =
     "input and output can be redirected: < file, > file, >> file, 2> file, 2>&1;\n"
     "a | b connects one command's output to the next one's input, and a trailing &\n"
     "runs a command in the background: jobs lists those, fg [n] brings one back,\n"
-    "and wait waits for all of them. kill %n signals job n.";
+    "and wait waits for all of them. kill %n signals job n. The arrow keys, Home,\n"
+    "End and Delete edit the line, Up and Down recall earlier lines, and history\n"
+    "lists them.";
 
 int main(int argc, char** argv)
 {
@@ -542,6 +589,7 @@ int main(int argc, char** argv)
     }
     puts("FeatherOS shell. Type 'help' for commands.");
     char line[MaximumCommandLineLength];
+    LineHistory history;
     // "<working directory>> ", such as "/home/docs> ".
     char prompt[MaximumPathLength + 3];
     for (;;)
@@ -552,7 +600,7 @@ int main(int argc, char** argv)
         }
         strcat(prompt, "> ");
         ReapJobs();
-        if (featheros_read_line(prompt, line, sizeof(line)) < 0)
+        if (!ReadCommandLine(prompt, line, sizeof(line), &history))
         {
             ReportReadFailure(errno);
             return 1;
@@ -594,6 +642,14 @@ int main(int argc, char** argv)
             ListJobs();
             continue;
         }
+        if (strcmp(command, "history") == 0)
+        {
+            for (size_t age = history.Count(); age > 0; --age)
+            {
+                printf("%5zu  %s\n", history.Count() - age + 1, history.Entry(age - 1));
+            }
+            continue;
+        }
         if (strcmp(command, "fg") == 0 || strncmp(command, "fg ", 3) == 0)
         {
             ForegroundCommand(command + 2);
@@ -611,12 +667,16 @@ int main(int argc, char** argv)
                 "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
                 "sleep <ms>, upper, uptime, filetest, fptest, libctest, ls, cat <file>, write [-a] "
                 "<file> <text>, "
-                "rm <file>, mkdir <dir>, rmdir <dir>, env, kill [-signal] <pid>, ps, keys, top [-n "
+                "rm <file>, mkdir <dir>, rmdir <dir>, env, kill [-signal] <pid>, ps, keys, clear, "
+                "top [-n "
                 "count], cd [dir], pwd, "
                 "jobs, "
-                "fg [n], wait, "
+                "fg [n], wait, history, "
                 "exit, "
                 "shutdown, reboot, help");
+            puts("Editing: Left, Right, Home, End, Delete; Up and Down recall lines; Ctrl+A and "
+                 "Ctrl+E go to the start and end, Ctrl+U, Ctrl+K and Ctrl+W erase, Ctrl+L "
+                 "clears the screen, Ctrl+C discards the line.");
             puts("Run <command> --help to see what a command does.");
             continue;
         }
