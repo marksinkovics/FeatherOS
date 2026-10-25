@@ -20,6 +20,7 @@
 #include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1166,6 +1167,55 @@ void CheckProcessAccounting()
     Check(OwnCpuMilliseconds() >= before + 150, "CPU time grows while the process runs");
 }
 
+void CheckTerminalSettings()
+{
+    termios original;
+    Check(tcgetattr(STDIN_FILENO, &original) == 0 && (original.c_lflag & ICANON) != 0 &&
+              (original.c_lflag & ECHO) != 0 && (original.c_lflag & ISIG) != 0 &&
+              (original.c_iflag & ICRNL) != 0 && original.c_cc[VMIN] == 1 &&
+              original.c_cc[VTIME] == 0,
+          "tcgetattr reports line input");
+    termios raw = original;
+    cfmakeraw(&raw);
+    raw.c_cc[VMIN] = 0;
+    termios check;
+    Check(tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0 && tcgetattr(STDIN_FILENO, &check) == 0 &&
+              (check.c_lflag & (ICANON | ECHO | ISIG)) == 0 && (check.c_iflag & ICRNL) == 0 &&
+              check.c_cc[VMIN] == 0,
+          "tcsetattr switches to raw input");
+    char bytes[8];
+    Check(read(STDIN_FILENO, bytes, sizeof(bytes)) == 0, "a raw read without a minimum returns");
+    raw.c_cc[VTIME] = 2;
+    struct timespec before;
+    struct timespec after;
+    clock_gettime(CLOCK_MONOTONIC, &before);
+    const bool timed_read =
+        tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0 && read(STDIN_FILENO, bytes, 1) == 0;
+    clock_gettime(CLOCK_MONOTONIC, &after);
+    const long elapsed_ms =
+        (after.tv_sec - before.tv_sec) * 1000 + (after.tv_nsec - before.tv_nsec) / 1000000;
+    Check(timed_read && elapsed_ms >= 150 && elapsed_ms < 2000, "a raw read times out");
+    Check(tcsetattr(STDIN_FILENO, TCSAFLUSH, &original) == 0 &&
+              tcgetattr(STDIN_FILENO, &check) == 0 && (check.c_lflag & ICANON) != 0,
+          "tcsetattr restores line input");
+    errno = 0;
+    Check(tcsetattr(STDIN_FILENO, 99, &original) == -1 && errno == EINVAL,
+          "tcsetattr with an unknown action");
+    const int file = open("/system/hello.txt", O_RDONLY);
+    errno = 0;
+    Check(file >= 3 && tcgetattr(file, &check) == -1 && errno == ENOTTY && close(file) == 0,
+          "tcgetattr on a file");
+    // The child switches to raw input and exits without switching back.
+    char* arguments[] = {const_cast<char*>("libctest"), const_cast<char*>("raw-exit"), nullptr};
+    pid_t child = 0;
+    int status = -1;
+    Check(posix_spawn(&child, "libctest", nullptr, nullptr, arguments, environ) == 0 &&
+              waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+              WEXITSTATUS(status) == 0 && tcgetattr(STDIN_FILENO, &check) == 0 &&
+              (check.c_lflag & ICANON) != 0,
+          "terminal settings reset when their owner exits");
+}
+
 void CheckSystemCalls()
 {
     void* const failed = reinterpret_cast<void*>(-1);
@@ -1466,6 +1516,19 @@ int main(int argc, char** argv)
     {
         return 7;
     }
+    if (argc == 2 && strcmp(argv[1], "raw-exit") == 0)
+    {
+        termios raw;
+        if (tcgetattr(STDIN_FILENO, &raw) != 0)
+        {
+            return 1;
+        }
+        cfmakeraw(&raw);
+        return tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0 && tcgetattr(STDIN_FILENO, &raw) == 0 &&
+                       (raw.c_lflag & ICANON) == 0
+                   ? 0
+                   : 1;
+    }
     // The child CheckAssert starts: a failed assert prints its message and aborts.
     if (argc == 2 && strcmp(argv[1], "assert") == 0)
     {
@@ -1503,6 +1566,7 @@ int main(int argc, char** argv)
     CheckDescriptors();
     CheckPipes();
     CheckSystemCalls();
+    CheckTerminalSettings();
     CheckScanning();
     CheckFloatingPoint();
     CheckAssert();

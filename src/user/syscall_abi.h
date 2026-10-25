@@ -47,6 +47,7 @@ enum class SyscallNumber : uint64_t
     SignalReturn = 34,     // () -> resumes what a signal handler interrupted
     Pause = 35,            // () -> SyscallErrorInterrupted once a signal arrives
     TerminalSize = 36,     // () -> rows in bits 32-63, columns in bits 0-31
+    TerminalMode = 37,     // (new_settings, old_settings) -> 0; either pointer may be null
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec and joins its
@@ -206,6 +207,27 @@ constexpr uint64_t SignalNoDefer = 1U << 1;
 constexpr uint64_t SignalMaskBlock = 0;
 constexpr uint64_t SignalMaskUnblock = 1;
 constexpr uint64_t SignalMaskSet = 2;
+
+// The console's input settings. Canonical reads return one edited line at a time; otherwise a
+// read returns once `minimum` bytes arrived, and `timeout`, in tenths of a second, limits the wait
+// for the first byte (minimum 0) or between bytes. With TerminalSignals, Ctrl+C sends SIGINT
+// instead of arriving as byte 3. Only the foreground group may change them, and the process that
+// did keeps them until it changes them back or exits, which restores the defaults.
+struct TerminalSettings
+{
+    uint32_t flags;
+    uint8_t minimum;
+    uint8_t timeout;
+    uint16_t reserved;
+};
+
+constexpr uint32_t TerminalCanonical = 1U << 0;
+constexpr uint32_t TerminalEcho = 1U << 1;
+constexpr uint32_t TerminalSignals = 1U << 2;
+// Reads deliver Enter's '\r' as '\n'.
+constexpr uint32_t TerminalCarriageReturnToNewline = 1U << 3;
+constexpr uint32_t TerminalDefaultFlags =
+    TerminalCanonical | TerminalEcho | TerminalSignals | TerminalCarriageReturnToNewline;
 
 // Exit statuses the kernel reports for programs it terminated: after a CPU exception, or because
 // of signal n, as ExitStatusSignalBase + n.

@@ -860,13 +860,30 @@ uint64_t OpenSyscall(void* context, uint64_t path, uint64_t flags)
     return Files::Open(&process->files, path_text, flags);
 }
 
-// Console reads return one line at a time, ending in '\n'; what does not fit the caller's buffer
-// is kept for its next read.
+// Canonical console reads return one line at a time, ending in '\n'; what does not fit the
+// caller's buffer is kept for its next read, even if the settings change in between.
 uint64_t ReadConsole(ProcessRecord* process, uint64_t buffer, uint64_t length)
 {
     if (!UserRangeWritable(*process, buffer, length))
     {
         return User::SyscallErrorBadAddress;
+    }
+    if (process->console_input_offset == process->console_input_length &&
+        (Console::Settings().flags & User::TerminalCanonical) == 0)
+    {
+        if (!InForegroundGroup(*process))
+        {
+            return User::SyscallErrorNotForeground;
+        }
+        char bytes[FileChunkSize];
+        size_t count = 0;
+        if (!Console::ReadBytes(bytes, length < sizeof(bytes) ? length : sizeof(bytes), &count))
+        {
+            return User::SyscallErrorInterrupted;
+        }
+        return count == 0 || CopyToUser(*process, buffer, bytes, count)
+                   ? count
+                   : User::SyscallErrorBadAddress;
     }
     if (process->console_input_offset == process->console_input_length)
     {
@@ -1137,6 +1154,39 @@ uint64_t TerminalSizeSyscall(void*)
     return (static_cast<uint64_t>(rows) << 32) | columns;
 }
 
+uint64_t TerminalModeSyscall(void* context, uint64_t new_settings, uint64_t old_settings)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    User::TerminalSettings requested;
+    if (new_settings != 0 && !CopyFromUser(*process, new_settings, &requested, sizeof(requested)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    if (old_settings != 0 && !UserRangeWritable(*process, old_settings, sizeof(requested)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    if (new_settings != 0 &&
+        ((requested.flags & ~User::TerminalDefaultFlags) != 0 || requested.reserved != 0))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    if (new_settings != 0 && !InForegroundGroup(*process))
+    {
+        return User::SyscallErrorNotForeground;
+    }
+    const User::TerminalSettings previous = Console::Settings();
+    if (new_settings != 0)
+    {
+        Console::SetSettings(requested, process->id);
+    }
+    if (old_settings != 0 && !CopyToUser(*process, old_settings, &previous, sizeof(previous)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    return 0;
+}
+
 // Waits until a signal arrives; the program then takes it on the way back to user mode.
 uint64_t PauseSyscall(void*)
 {
@@ -1362,6 +1412,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     SignalMaskSyscall,
     PauseSyscall,
     TerminalSizeSyscall,
+    TerminalModeSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -1370,6 +1421,7 @@ uint64_t RunProcess(void* context)
     auto* process = static_cast<ProcessRecord*>(context);
     const uint64_t exit_status = RunUserProgram(&process->program);
     Files::CloseAll(&process->files);
+    Console::ReleaseSettings(process->id);
     for (;;)
     {
         ProcessId child = 0;

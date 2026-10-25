@@ -304,6 +304,14 @@ void Term::SetCursorVisible(bool visible)
     Refresh();
 }
 
+void Term::ResetModes()
+{
+    m_attribute = 0;
+    m_escape_state = EscapeState::Text;
+    m_cursor_enabled = true;
+    Refresh();
+}
+
 void Term::SetStatus(const char* left, const char* right)
 {
     if (m_rows == 0 || m_columns == 0)

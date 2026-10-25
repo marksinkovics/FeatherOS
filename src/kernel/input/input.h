@@ -1,35 +1,26 @@
 #ifndef FEATHEROS_INPUT_H
 #define FEATHEROS_INPUT_H
 
+#include <stddef.h>
 #include <stdint.h>
 
+// One queue of input bytes from the keyboards and the serial port, as a terminal sends them (see
+// Keyboard). A serial "\r\n" counts as one '\r'.
 namespace FeatherOS::Input
 {
 
-enum class EventType : uint8_t
-{
-    Character,
-    Backspace,
-    Enter,
-    // Ctrl+C.
-    Interrupt,
-};
+constexpr char InterruptByte = '\x03';
 
-struct Event
-{
-    EventType type;
-    char character;
-};
-
-// Returns true when it consumed the Ctrl+C; otherwise the Interrupt event is queued for the reader.
+// Returns true when it consumed the Ctrl+C; otherwise the byte is queued for the reader.
 // It may run in interrupt context, outside the queue lock.
 using InterruptHandler = bool (*)();
 
 void SetInterruptHandler(InterruptHandler handler);
-void SubmitEvent(Event event);
+// A key's bytes are queued whole or, when the queue is full, not at all.
+void SubmitBytes(const char* bytes, size_t length);
 void Poll();
-bool TryReadEvent(Event* event);
-void WaitForEvent(uint64_t deadline_tick);
+bool TryReadByte(char* byte);
+void WaitForInput(uint64_t deadline_tick);
 
 } // namespace FeatherOS::Input
 

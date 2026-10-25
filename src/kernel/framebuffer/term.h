@@ -38,6 +38,9 @@ public:
     // Blanks the cell before the cursor and moves back onto it, across a line wrap if needed.
     void EraseCharacter();
     void SetCursorVisible(bool visible);
+    // Back to normal video with the cursor enabled, as after a full-screen program that did not
+    // restore them.
+    void ResetModes();
     // The top row: left text from its start, right text against its end.
     void SetStatus(const char* left, const char* right);
     uint8_t CharacterAt(uint32_t row, uint32_t column) const;

@@ -117,6 +117,7 @@ The CMake build compiles each program listed in `src/user/CMakeLists.txt` (`src/
 | 34 | `SignalReturn()` | Made by the restorer: puts back what a handler interrupted |
 | 35 | `Pause()` | Waits for a signal, then returns `SyscallErrorInterrupted` |
 | 36 | `TerminalSize()` | Returns the console's text rows in bits 32–63 and columns in bits 0–31: the area below the status bar, or 24×80 without a framebuffer |
+| 37 | `TerminalMode(new_settings, old_settings)` | Reads and sets the console's `TerminalSettings`: canonical lines or raw bytes, echo, Ctrl+C as `SIGINT`, Enter as `\n`, and a raw read's minimum and timeout. Only the foreground group may set them (`SyscallErrorNotForeground`); see Shell And Console Input |
 
 The kernel resolves every user pointer through the caller's page tables before touching it, so unmapped, read-only, or kernel addresses fail with `SyscallErrorBadAddress` instead of faulting. Blocking syscalls re-enable interrupts and yield to other tasks while they wait.
 
@@ -300,12 +301,31 @@ The shell reads lines with `featheros_read_line` and a prompt showing its workin
 - `filetest` runs 33 checks of the file syscalls: creation, multi-cluster writes, reads, seeks, appends, the one-writer and no-removing-open-files rules, bad pointers and flags, the read-only initramfs, the 16-descriptor limit, and a child that exits with a file still open.
 - `uptime` prints the time since boot as `H:MM:SS`.
 - `kill [-signal] <pid>...` sends `SIGTERM`, or the named or numbered signal, to each process, or to a group as `-group`; `kill -l` lists the signals. In the shell, `kill %n` names job `n`.
+- `keys` switches the console to raw input and prints the name of each key pressed (`up`, `ctrl-a`, `page-down`, `escape`, …), Ctrl+C included, until `q`. It decodes keys with `src/user/key_decoder.h`, which also reads the SS3 and `ESC [ 1 ~` forms some terminals send, and waits a tenth of a second to tell a lone Escape from the start of a sequence.
 - `ps` lists every process from `/proc`: ID, parent, group, state, the CPU it last ran on, its CPU time, and its name.
 - `top [-n count] [-d milliseconds]` samples `/proc` every second (or `-d`, at least 100 ms) and prints the processes busiest first, with `%CPU` of one CPU and the whole system's use, until Ctrl+C or `count` refreshes. Each refresh prints a new table, since the console cannot redraw yet.
 
 Every program except the boot self-test prints its usage and purpose for `<name> -h` or `<name> --help` (`HelpRequested` in `src/user/command_line.h`), and the shell's `help` points to this. To add a program, create `src/user/<name>.cpp` with a `main(argc, argv)` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. `FEATHEROS_START_PROGRAMS` is for programs that define `_start(const ProgramArguments*)` themselves and skip the C library's startup, which only `test_program` does. `filetest` and `hardening` still call `src/user/syscall.h` directly where they test the kernel's exact errors.
 
-Interactive runs accept keys from the QEMU window on both architectures. x86-64 uses PS/2; AArch64 uses virtio-input on QEMU `virt`. The launching terminal's serial console also remains available. The kernel console (`src/kernel/console.cpp`) handles line editing for `ReadLine`: the prompt and the typed line appear inline in the scrolling text with a block cursor, like a normal terminal, and it supports printable ASCII, Backspace (also across a wrapped line), and Enter, echoing input to serial. Program output appears on both serial and the framebuffer console.
+Interactive runs accept keys from the QEMU window on both architectures. x86-64 uses PS/2; AArch64 uses virtio-input on QEMU `virt`. The launching terminal's serial console also remains available. Program output appears on both serial and the framebuffer console.
+
+Input reaches the console as one byte stream (`src/kernel/input/input.cpp`), in the form a VT100 terminal sends it. Serial bytes arrive as typed, with `\r\n` counted once. The keyboard drivers only turn scancodes into key codes (PS/2 set 1, including its `E0` keys, or virtio-input codes, which match for the main keys). `src/kernel/input/keyboard.cpp` then maps them for both architectures, with the US layout, Shift, Caps Lock and Ctrl:
+
+| Key | Bytes |
+| --- | --- |
+| Enter, Backspace, Tab, Escape | `\r`, `0x7F`, `\t`, `ESC` |
+| Ctrl+A to Ctrl+Z, Ctrl+[ \ ] | 1 to 26, 27 to 29 |
+| Up, Down, Right, Left | `ESC [ A`, `B`, `C`, `D` |
+| Home, End | `ESC [ H`, `ESC [ F` |
+| Insert, Delete, Page Up, Page Down | `ESC [ 2 ~`, `3 ~`, `5 ~`, `6 ~` |
+| Shift+Tab | `ESC [ Z` |
+
+Ctrl+C (byte 3) goes to the console's interrupt handler first, in order with the bytes around it, and is queued only if the handler declines it. The console has terminal settings (`TerminalMode`, behind `tcgetattr` and `tcsetattr`), which start as canonical input with echo, signals, and Enter as `\n`:
+- **Canonical:** `ReadLine` and console reads edit a line: the prompt and the typed line appear inline in the scrolling text with a block cursor, like a normal terminal. Printable ASCII is inserted, Backspace erases (also across a wrapped line), and Enter ends the line. Escape sequences are skipped, so the cursor keys do nothing yet. Input is echoed to serial and the screen unless echo is off.
+- **Raw** (canonical off): a read returns bytes as they arrive, without editing, once `minimum` bytes are there. `timeout`, in tenths of a second, limits the wait for the first byte when `minimum` is 0, and the wait between bytes otherwise; with both 0 a read returns at once. Echo, when on, prints what arrives.
+- **Signals:** with them off, Ctrl+C arrives as byte 3 instead of sending `SIGINT`.
+
+Only the foreground group may change the settings. The process that changed them owns them: when it exits, even after a fault or `SIGKILL`, the console returns to the defaults and the terminal to normal video with the cursor shown, so a crashed full-screen program cannot leave the shell in raw mode.
 
 The framebuffer's top row is a status bar. Its left side names the foreground program (`kernel` before the shell starts). Its right side shows busy CPUs over online CPUs, then the UTC date and time as `Mon Oct 19 9:36:05 PM`. A CPU counts as busy when the scheduler's timer ticks found it running a task other than its idle task for at least half of the last second. A high-priority kernel task redraws the bar once a second and when the foreground program changes. Its clock is read from the RTC once and then advanced by timer ticks.
 
@@ -325,7 +345,7 @@ Below the bar, the console understands a VT100 subset, so programs can draw full
 
 Other sequences are read and ignored. Serial output carries the same bytes, so a terminal emulator on the serial port follows them too. `ioctl(TIOCGWINSZ)` reports the text area's size.
 
-`CALC_TEST=ON` checks a calculator expression, an unknown command, and a blank line; `SHELL_TEST=ON` checks init's startup line and its restart of the shell after `exit`, `filetest`, `cd` and `pwd` from `/home` with relative paths, `/`, and `/system`, `ls /dev`, a file written to `/tmp`, `/proc/self/status` and `/proc/meminfo`, `fptest 8`, `libctest` with a quoted argument and a console read, `env` with the variables from `init.conf`, `--help`/`-h`, Ctrl+C on a CPU-bound `primes`, a `sleep`, `upper` and `calc` waiting for input, and the shell prompt, plus `echo` arguments, foreground input in `upper`, the interactive `calc> ` prompt and its errors, `primes 4 100000` and `primes 16 20000` (the counts and one report per worker, through pipes), a nonzero exit status, the `uptime` format, and that `date` is within two minutes of the host clock. `INPUT_TEST=ON` runs the keyboard test, including Ctrl+C at the prompt. Pass each with `./build.sh test --arch x86_64` or `--arch aarch64`.
+`CALC_TEST=ON` checks a calculator expression, an unknown command, and a blank line; `SHELL_TEST=ON` checks init's startup line and its restart of the shell after `exit`, `filetest`, `cd` and `pwd` from `/home` with relative paths, `/`, and `/system`, `ls /dev`, a file written to `/tmp`, `/proc/self/status` and `/proc/meminfo`, `fptest 8`, `libctest` with a quoted argument and a console read, `env` with the variables from `init.conf`, `--help`/`-h`, Ctrl+C on a CPU-bound `primes`, a `sleep`, `upper` and `calc` waiting for input, and the shell prompt, plus `echo` arguments, foreground input in `upper`, the interactive `calc> ` prompt and its errors, `primes 4 100000` and `primes 16 20000` (the counts and one report per worker, through pipes), a nonzero exit status, the `uptime` format, and that `date` is within two minutes of the host clock. `INPUT_TEST=ON` runs the keyboard test through QEMU's `sendkey`, which exercises PS/2 on x86-64 and virtio-input on AArch64: Ctrl+C at the prompt, typing with Backspace and Enter, and then special keys in `keys` (`up`, `home`, `delete`, `esc`, `ctrl-a`, `shift-tab`). The shell test also runs `keys` over serial with every special key and Ctrl+C as a byte. Pass each with `./build.sh test --arch x86_64` or `--arch aarch64`.
 
 To run only one architecture's panic check, use `PANIC_TEST=ON`; this intentionally panics during startup, and the smoke test passes only when it observes the expected panic record:
 

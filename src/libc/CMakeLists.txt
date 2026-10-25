@@ -9,6 +9,7 @@ add_library(featheros_c STATIC
     exit.cpp
     featheros.cpp
     ioctl.cpp
+    termios.cpp
     malloc.cpp
     signal.cpp
     math.cpp

@@ -1,6 +1,8 @@
 #ifndef FEATHEROS_CONSOLE_H
 #define FEATHEROS_CONSOLE_H
 
+#include "user/syscall_abi.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -25,10 +27,20 @@ void WriteLine(const char* text);
 void Write(const char* text, size_t length);
 // The text area below the status bar, or a serial terminal's usual 24 by 80 without a screen.
 void Size(uint32_t* rows, uint32_t* columns);
-// Shows prompt, then echoes and edits input until Enter. Interrupts are enabled while waiting.
-// buffer receives at most capacity - 1 characters and a terminator. Returns false when Ctrl+C
-// interrupted the calling program.
+// Shows prompt, then edits input until Enter, echoing it unless the settings turn echo off.
+// Interrupts are enabled while waiting. buffer receives at most capacity - 1 characters and a
+// terminator. Returns false when a signal interrupted the calling program.
 bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* length);
+// A non-canonical read, as the settings' minimum and timeout describe. Returns false when a signal
+// interrupted the calling program before any byte arrived.
+bool ReadBytes(char* buffer, size_t capacity, size_t* length);
+
+User::TerminalSettings Settings();
+bool IsDefault(const User::TerminalSettings& settings);
+// owner keeps settings other than the defaults until it sets the defaults or ReleaseSettings
+// restores them, together with the terminal's cursor and video modes.
+void SetSettings(const User::TerminalSettings& settings, uint64_t owner);
+void ReleaseSettings(uint64_t owner);
 
 } // namespace FeatherOS::Console
 

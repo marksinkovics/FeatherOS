@@ -3,6 +3,7 @@
 #include "kernel/arch/keyboard.h"
 #include "interrupts.h"
 #include "kernel/input/input.h"
+#include "kernel/input/keyboard.h"
 #include "kernel/memory/device_memory.h"
 #include "kernel/memory/page_allocator.h"
 
@@ -102,9 +103,7 @@ uint64_t queue_physical_address = 0;
 uint64_t device_hhdm_offset = 0;
 volatile uint8_t* queue_virtual_address = nullptr;
 uint16_t last_used_index = 0;
-bool shift_pressed = false;
-bool control_pressed = false;
-bool caps_lock_enabled = false;
+Input::Keyboard keyboard;
 
 uint32_t ReadBigEndian32(const uint8_t* data)
 {
@@ -375,127 +374,14 @@ void WriteQueueAddress(uint32_t offset, uint64_t address)
     Registers()[(offset + 4) / 4] = static_cast<uint32_t>(address >> 32);
 }
 
-char TranslateKeyCode(uint16_t code)
-{
-    if (code >= 2 && code <= 11)
-    {
-        static constexpr char number_row[] = "1234567890";
-        static constexpr char shifted_number_row[] = "!@#$%^&*()";
-        const uint16_t index = code == 11 ? 9 : code - 2;
-        return shift_pressed ? shifted_number_row[index] : number_row[index];
-    }
-
-    char character = '\0';
-    if (code >= 16 && code <= 25)
-    {
-        character = "qwertyuiop"[code - 16];
-    }
-    else if (code >= 30 && code <= 38)
-    {
-        character = "asdfghjkl"[code - 30];
-    }
-    else if (code >= 44 && code <= 50)
-    {
-        character = "zxcvbnm"[code - 44];
-    }
-    else
-    {
-        switch (code)
-        {
-        case 12:
-            character = shift_pressed ? '_' : '-';
-            break;
-        case 13:
-            character = shift_pressed ? '+' : '=';
-            break;
-        case 26:
-            character = shift_pressed ? '{' : '[';
-            break;
-        case 27:
-            character = shift_pressed ? '}' : ']';
-            break;
-        case 39:
-            character = shift_pressed ? ':' : ';';
-            break;
-        case 40:
-            character = shift_pressed ? '"' : '\'';
-            break;
-        case 41:
-            character = shift_pressed ? '~' : '`';
-            break;
-        case 43:
-            character = shift_pressed ? '|' : '\\';
-            break;
-        case 51:
-            character = shift_pressed ? '<' : ',';
-            break;
-        case 52:
-            character = shift_pressed ? '>' : '.';
-            break;
-        case 53:
-            character = shift_pressed ? '?' : '/';
-            break;
-        case 57:
-            character = ' ';
-            break;
-        default:
-            break;
-        }
-    }
-
-    if (character >= 'a' && character <= 'z' && (shift_pressed != caps_lock_enabled))
-    {
-        character = static_cast<char>(character - 'a' + 'A');
-    }
-    return character;
-}
-
+// A key event's value is 0 for a release, 1 for a press and 2 for a held key's repeat.
 void HandleKeyEvent(uint16_t code, uint32_t value)
 {
-    if (code == 42 || code == 54)
+    char bytes[Input::Keyboard::MaximumKeyBytes];
+    const size_t length = keyboard.Press(code, value != 0, bytes);
+    if (length > 0)
     {
-        shift_pressed = value != 0;
-        return;
-    }
-    if (code == 29 || code == 97)
-    {
-        control_pressed = value != 0;
-        return;
-    }
-    if (code == 58)
-    {
-        if (value == 1)
-        {
-            caps_lock_enabled = !caps_lock_enabled;
-        }
-        return;
-    }
-    if (value == 0)
-    {
-        return;
-    }
-    if (code == 14)
-    {
-        Input::SubmitEvent({Input::EventType::Backspace, '\0'});
-    }
-    else if (code == 28)
-    {
-        Input::SubmitEvent({Input::EventType::Enter, '\0'});
-    }
-    else if (control_pressed)
-    {
-        if (code == 46)
-        {
-            Input::SubmitEvent({Input::EventType::Interrupt, '\0'});
-        }
-    }
-    else
-    {
-        const char character = TranslateKeyCode(code);
-        if (character != '\0')
-        {
-            Input::SubmitEvent({Input::EventType::Character, character});
-        }
+        Input::SubmitBytes(bytes, length);
     }
 }
 

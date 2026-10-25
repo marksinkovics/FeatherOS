@@ -94,6 +94,45 @@ SHELL_INPUT = (
     b"fptest 8\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
 )
+
+
+class WholeWrite(bytes):
+    """Input written in one piece, so escape sequences arrive together."""
+
+
+KEYS_READY = "keys: press keys; q quits"
+# keys reads raw input: every special key, Ctrl+C as a byte, then q to quit.
+SHELL_KEYS_INPUT = (
+    b"keys\n",
+    WholeWrite(
+        b"\x1b[A\x1b[B\x1b[C\x1b[D\x1b[H\x1b[F\x1b[2~\x1b[3~\x1b[5~\x1b[6~"
+        b"\x1b[Z\x1bOA\x1b[1~\t\x01\x03\x7f \rxq"
+    ),
+)
+EXPECTED_KEYS = [
+    KEYS_READY,
+    "keys: up",
+    "keys: down",
+    "keys: right",
+    "keys: left",
+    "keys: home",
+    "keys: end",
+    "keys: insert",
+    "keys: delete",
+    "keys: page-up",
+    "keys: page-down",
+    "keys: shift-tab",
+    "keys: up",
+    "keys: home",
+    "keys: tab",
+    "keys: ctrl-a",
+    "keys: ctrl-c",
+    "keys: backspace",
+    "keys: space",
+    "keys: enter",
+    "keys: x",
+    "keys: done",
+]
 # Ctrl+C for a command that shows no prompt of its own, sent while it runs.
 INTERRUPT_RUNNING = object()
 INTERRUPT_DELAY_SECONDS = 1.5
@@ -161,7 +200,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 351 checks passed",
+    "libctest: 359 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
@@ -288,11 +327,40 @@ STORAGE_SHELL_OUTPUT = {
 }
 USER_PREEMPTION_OUTPUTS = {"x86_64": b"UIu", "aarch64": b"AIa"}
 INPUT_ACCEPTED_MESSAGE = "KERN/I: Input line accepted"
+# Ctrl+C at the shell prompt only discards the line; "ab" is then an unknown
+# command, and keys takes raw input from the same keyboard.
+INPUT_LINE_KEYS = (
+    "ctrl-c",
+    "a",
+    "b",
+    "x",
+    "backspace",
+    "ret",
+    "k",
+    "e",
+    "y",
+    "s",
+    "ret",
+)
+INPUT_RAW_KEYS = ("up", "home", "delete", "esc", "ctrl-a", "shift-tab", "q")
+EXPECTED_INPUT_KEYS = [
+    KEYS_READY,
+    "keys: up",
+    "keys: home",
+    "keys: delete",
+    "keys: escape",
+    "keys: ctrl-a",
+    "keys: shift-tab",
+    "keys: done",
+]
 # The shell's prompt shows its working directory, such as "/home> ".
 SHELL_PROMPT = re.compile(rb"^/[^\n>]*> ", re.MULTILINE)
 # Each scripted shell line is typed only once a prompt asks for it, so
 # typed-ahead input never overflows the kernel's input queue.
-LINE_PROMPT = re.compile(rb"^(?:upper|calc|/[^\n>]*)?> ", re.MULTILINE)
+LINE_PROMPT = re.compile(
+    rb"^(?:(?:upper|calc|/[^\n>]*)?> |keys: press keys; q quits\r?$)",
+    re.MULTILINE,
+)
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
 # The scripted shell session runs many programs; AArch64 emulation is slower.
@@ -402,6 +470,17 @@ def SendQmpCommand(channel, command_id, execute, arguments=None):
             if "error" in response:
                 raise RuntimeError(response["error"].get("desc", "QMP error"))
             return response
+
+
+def SendQmpKeys(channel, first_id, keys):
+    for offset, key in enumerate(keys):
+        SendQmpCommand(
+            channel,
+            first_id + offset,
+            "human-monitor-command",
+            {"command-line": f"sendkey {key}"},
+        )
+    return first_id + len(keys)
 
 
 def OpenQmpChannel(socket_path):
@@ -616,12 +695,16 @@ def main():
     )
     deadline = time.monotonic() + timeout
     input_sent = False
+    raw_keys_sent = False
+    qmp_command_id = 2
     pending_lines = []
     if args.expect_calc:
         pending_lines = CALC_INPUT.splitlines(keepends=True)
     elif args.expect_shell:
-        pending_lines = SHELL_INPUT.splitlines(keepends=True) + list(
-            SHELL_INTERRUPT_INPUT
+        pending_lines = (
+            SHELL_INPUT.splitlines(keepends=True)
+            + list(SHELL_KEYS_INPUT)
+            + list(SHELL_INTERRUPT_INPUT)
         )
     elif args.expect_storage_boot:
         pending_lines = STORAGE_SHELL_INPUT[
@@ -674,7 +757,7 @@ def main():
         elif args.expect_user_preemption:
             markers = (EXPECTED_USER_PREEMPTION.encode(),)
         elif args.expect_input:
-            markers = (INPUT_ACCEPTED_MESSAGE.encode(), PANIC_MARKER.encode())
+            markers = (EXPECTED_INPUT_KEYS[-1].encode(), PANIC_MARKER.encode())
         elif args.expect_calc:
             markers = (EXPECTED_CALC.encode(), PANIC_MARKER.encode())
         elif args.expect_shell:
@@ -707,8 +790,14 @@ def main():
         prompt_count = len(LINE_PROMPT.findall(clean_output))
         try:
             while pending_lines and lines_sent < prompt_count:
-                for character in pending_lines.pop(0):
-                    process.stdin.write(bytes((character,)))
+                line = pending_lines.pop(0)
+                pieces = (
+                    [line]
+                    if isinstance(line, WholeWrite)
+                    else [bytes((character,)) for character in line]
+                )
+                for piece in pieces:
+                    process.stdin.write(piece)
                     process.stdin.flush()
                     time.sleep(0.02)
                 lines_sent += 1
@@ -723,61 +812,26 @@ def main():
         except OSError as error:
             input_error = str(error)
             pending_lines = []
-        if (
-            args.expect_input
-            and not input_sent
-            and SHELL_PROMPT.search(clean_output)
-        ):
-            try:
-                if use_qmp_keyboard:
-                    qmp_connection, qmp_channel = OpenQmpChannel(
-                        qmp_socket_path
-                    )
-                    # Ctrl+C at the shell prompt only discards the line.
-                    SendQmpCommand(
-                        qmp_channel,
-                        7,
-                        "human-monitor-command",
-                        {"command-line": "sendkey ctrl-c"},
-                    )
-                    SendQmpCommand(
-                        qmp_channel,
-                        2,
-                        "human-monitor-command",
-                        {"command-line": "sendkey a"},
-                    )
-                    SendQmpCommand(
-                        qmp_channel,
-                        3,
-                        "human-monitor-command",
-                        {"command-line": "sendkey b"},
-                    )
-                    SendQmpCommand(
-                        qmp_channel,
-                        4,
-                        "human-monitor-command",
-                        {"command-line": "sendkey x"},
-                    )
-                    SendQmpCommand(
-                        qmp_channel,
-                        5,
-                        "human-monitor-command",
-                        {"command-line": "sendkey backspace"},
-                    )
-                    SendQmpCommand(
-                        qmp_channel,
-                        6,
-                        "human-monitor-command",
-                        {"command-line": "sendkey ret"},
-                    )
-                else:
-                    for character in b"\x03abx\x7f\n":
-                        process.stdin.write(bytes((character,)))
-                        process.stdin.flush()
-                        time.sleep(0.02)
-            except (OSError, RuntimeError, json.JSONDecodeError) as error:
-                input_error = str(error)
+        try:
+            if (
+                args.expect_input
+                and not input_sent
+                and SHELL_PROMPT.search(clean_output)
+            ):
+                qmp_connection, qmp_channel = OpenQmpChannel(qmp_socket_path)
+                qmp_command_id = SendQmpKeys(qmp_channel, 2, INPUT_LINE_KEYS)
+                input_sent = True
+            if (
+                args.expect_input
+                and not raw_keys_sent
+                and KEYS_READY.encode() in clean_output
+            ):
+                SendQmpKeys(qmp_channel, qmp_command_id, INPUT_RAW_KEYS)
+                raw_keys_sent = True
+        except (OSError, RuntimeError, json.JSONDecodeError) as error:
+            input_error = str(error)
             input_sent = True
+            raw_keys_sent = True
         # The end marker may also appear earlier in a scripted session, so
         # only a new one after the last typed line ends it. Counting copies
         # holds even when stripping escape codes shifts earlier output.
@@ -964,6 +1018,14 @@ def main():
         if missing:
             print(f"FAIL: shell output is missing {missing}", file=sys.stderr)
             return 1
+        keys = [
+            line.strip()
+            for line in output.splitlines()
+            if line.startswith("keys: ")
+        ]
+        if keys != EXPECTED_KEYS:
+            print(f"FAIL: keys reported {keys}", file=sys.stderr)
+            return 1
         exhausted = [int(pages) for pages in EXHAUST_OUTPUT.findall(output)]
         if (
             len(exhausted) != 2
@@ -1090,9 +1152,17 @@ def main():
         if b"> ^C" not in captured:
             print("FAIL: Ctrl+C was not echoed at the prompt", file=sys.stderr)
             return 1
+        keys = [
+            line.strip()
+            for line in output.splitlines()
+            if line.startswith("keys: ")
+        ]
+        if keys != EXPECTED_INPUT_KEYS:
+            print(f"FAIL: keys reported {keys}", file=sys.stderr)
+            return 1
         print(
-            "PASS: keyboard/serial input, Ctrl+C, backspace, and Enter were "
-            "handled"
+            "PASS: keyboard input, Ctrl+C, backspace, Enter, and raw special "
+            "keys were handled"
         )
         return 0
     if PANIC_MARKER in output:

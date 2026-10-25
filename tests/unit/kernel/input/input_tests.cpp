@@ -6,7 +6,7 @@
 #include "kernel/scheduler.h"
 
 #include <deque>
-#include <vector>
+#include <string>
 
 namespace
 {
@@ -17,12 +17,23 @@ int wait_count = 0;
 uint64_t last_wait_deadline = 0;
 bool lock_held_during_wait = false;
 
-void DrainEvents()
+void DrainInput()
 {
-    FeatherOS::Input::Event event;
-    while (FeatherOS::Input::TryReadEvent(&event))
+    char byte;
+    while (FeatherOS::Input::TryReadByte(&byte))
     {
     }
+}
+
+std::string ReadAll()
+{
+    std::string text;
+    char byte;
+    while (FeatherOS::Input::TryReadByte(&byte))
+    {
+        text += byte;
+    }
+    return text;
 }
 
 } // namespace
@@ -74,59 +85,40 @@ bool ReadCharacter(char* character)
 
 } // namespace FeatherOS::Serial
 
-TEST_CASE("serial input becomes normalized key events")
+TEST_CASE("serial input arrives as typed, with CR LF counted once")
 {
-    DrainEvents();
-    serial_input = {'a', '\r', '\n', 'b', '\b', '\x7f', '\t', 'Z'};
+    DrainInput();
+    serial_input = {'a', '\r', '\n', 'b', '\x7f', '\x1b', '[', 'A', '\n', '\n'};
     FeatherOS::Input::Poll();
-
-    FeatherOS::Input::Event event;
-    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
-    REQUIRE(event.type == FeatherOS::Input::EventType::Character);
-    REQUIRE(event.character == 'a');
-
-    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
-    REQUIRE(event.type == FeatherOS::Input::EventType::Enter);
-
-    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
-    REQUIRE(event.type == FeatherOS::Input::EventType::Character);
-    REQUIRE(event.character == 'b');
-
-    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
-    REQUIRE(event.type == FeatherOS::Input::EventType::Backspace);
-    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
-    REQUIRE(event.type == FeatherOS::Input::EventType::Backspace);
-
-    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
-    REQUIRE(event.type == FeatherOS::Input::EventType::Character);
-    REQUIRE(event.character == 'Z');
-    REQUIRE_FALSE(FeatherOS::Input::TryReadEvent(&event));
+    REQUIRE(ReadAll() == "a\rb\x7f\x1b[A\n\n");
+    char byte;
+    REQUIRE_FALSE(FeatherOS::Input::TryReadByte(&byte));
+    REQUIRE_FALSE(FeatherOS::Input::TryReadByte(nullptr));
 }
 
-TEST_CASE("input event queue is bounded and preserves FIFO order")
+TEST_CASE("input queue is bounded and keeps a key's bytes together")
 {
-    DrainEvents();
-    for (uint32_t index = 0; index < 67; ++index)
+    DrainInput();
+    std::string expected;
+    for (uint32_t index = 0; index < 254; ++index)
     {
-        FeatherOS::Input::SubmitEvent(
-            {FeatherOS::Input::EventType::Character, static_cast<char>('a' + index % 26)});
+        const char byte = static_cast<char>('a' + index % 26);
+        FeatherOS::Input::SubmitBytes(&byte, 1);
+        expected += byte;
     }
-
-    FeatherOS::Input::Event event;
-    for (uint32_t index = 0; index < 64; ++index)
-    {
-        REQUIRE(FeatherOS::Input::TryReadEvent(&event));
-        REQUIRE(event.type == FeatherOS::Input::EventType::Character);
-        REQUIRE(event.character == static_cast<char>('a' + index % 26));
-    }
-    REQUIRE_FALSE(FeatherOS::Input::TryReadEvent(&event));
-    REQUIRE_FALSE(FeatherOS::Input::TryReadEvent(nullptr));
+    // Three bytes do not fit in the two left, so none of them is queued.
+    FeatherOS::Input::SubmitBytes("\x1b[A", 3);
+    FeatherOS::Input::SubmitBytes("xy", 2);
+    expected += "xy";
+    FeatherOS::Input::SubmitBytes("z", 1);
+    REQUIRE(ReadAll() == expected);
 }
+
 TEST_CASE("input arrival wakes waiting readers")
 {
-    DrainEvents();
+    DrainInput();
     wake_count = 0;
-    FeatherOS::Input::SubmitEvent({FeatherOS::Input::EventType::Enter, '\0'});
+    FeatherOS::Input::SubmitBytes("\r", 1);
     REQUIRE(wake_count == 1);
 
     serial_input.clear();
@@ -136,27 +128,27 @@ TEST_CASE("input arrival wakes waiting readers")
     serial_input = {'x'};
     FeatherOS::Input::Poll();
     REQUIRE(wake_count == 2);
-    DrainEvents();
+    DrainInput();
 }
 
 TEST_CASE("waiting for input blocks only while the queue is empty")
 {
-    DrainEvents();
+    DrainInput();
     wait_count = 0;
-    FeatherOS::Input::WaitForEvent(250);
+    FeatherOS::Input::WaitForInput(250);
     REQUIRE(wait_count == 1);
     REQUIRE(last_wait_deadline == 250);
     REQUIRE(lock_held_during_wait);
 
-    FeatherOS::Input::SubmitEvent({FeatherOS::Input::EventType::Character, 'q'});
-    FeatherOS::Input::WaitForEvent(0);
+    FeatherOS::Input::SubmitBytes("q", 1);
+    FeatherOS::Input::WaitForInput(0);
     REQUIRE(wait_count == 1);
-    DrainEvents();
+    DrainInput();
 }
 
-TEST_CASE("Ctrl+C goes to the interrupt handler, or is queued when it declines")
+TEST_CASE("Ctrl+C goes to the interrupt handler, or is queued in order when it declines")
 {
-    DrainEvents();
+    DrainInput();
     static int handler_calls = 0;
     static bool consume = true;
     FeatherOS::Input::SetInterruptHandler(
@@ -169,23 +161,19 @@ TEST_CASE("Ctrl+C goes to the interrupt handler, or is queued when it declines")
     serial_input = {'a', '\x03', 'b'};
     FeatherOS::Input::Poll();
     REQUIRE(handler_calls == 1);
-    FeatherOS::Input::Event event;
-    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
-    REQUIRE(event.character == 'a');
-    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
-    REQUIRE(event.character == 'b');
-    REQUIRE_FALSE(FeatherOS::Input::TryReadEvent(&event));
+    REQUIRE(ReadAll() == "ab");
 
     consume = false;
-    FeatherOS::Input::SubmitEvent({FeatherOS::Input::EventType::Interrupt, '\0'});
+    FeatherOS::Input::SubmitBytes("\x03", 1);
     REQUIRE(handler_calls == 2);
-    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
-    REQUIRE(event.type == FeatherOS::Input::EventType::Interrupt);
+    serial_input = {'x', '\x03', 'q'};
+    FeatherOS::Input::Poll();
+    REQUIRE(handler_calls == 3);
+    REQUIRE(ReadAll() == "\x03x\x03q");
 
     FeatherOS::Input::SetInterruptHandler(nullptr);
     serial_input = {'\x03'};
     FeatherOS::Input::Poll();
-    REQUIRE(handler_calls == 2);
-    REQUIRE(FeatherOS::Input::TryReadEvent(&event));
-    REQUIRE(event.type == FeatherOS::Input::EventType::Interrupt);
+    REQUIRE(handler_calls == 3);
+    REQUIRE(ReadAll() == "\x03");
 }

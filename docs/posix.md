@@ -265,6 +265,15 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
 
 Only `ioctl(fd, TIOCGWINSZ, &size)` on the console, which fills `ws_row` and `ws_col` with the text area below the status bar (80×24 without a framebuffer) and leaves the pixel sizes 0. Other descriptors fail with `ENOTTY`, and other requests with `EINVAL`. The console understands the VT100 sequences listed in `docs/development.md`.
 
+### `termios.h`
+
+`tcgetattr`, `tcsetattr` and `cfmakeraw` on the console; other descriptors fail with `ENOTTY`. The constants have FeatherOS's own values.
+- **What has an effect:** `ICANON`, `ECHO` and `ISIG` in `c_lflag`, `ICRNL` in `c_iflag`, and `c_cc[VMIN]` and `c_cc[VTIME]` for non-canonical reads, with the POSIX meanings. The console's settings start with all four flags on, `VMIN` 1 and `VTIME` 0.
+- **Accepted without effect:** the other flags that `cfmakeraw` clears (`BRKINT`, `IXON`, `OPOST`, `IEXTEN`, …). The console never changes output, and `tcgetattr` always reports `OPOST` and `CS8`. `VINTR`, `VERASE` and `VEOF` report Ctrl+C, Backspace and Ctrl+D but cannot be changed, and there is no end-of-file key yet.
+- **Actions:** `TCSANOW`, `TCSADRAIN` and `TCSAFLUSH` all apply at once; `TCSAFLUSH` keeps input already typed.
+- **Who may change them:** only the foreground group (`EIO` otherwise, as for a background read). When the program that changed them exits, the console returns to the defaults, so a program that crashes in raw mode does not leave the shell there.
+- **Missing:** `cfgetispeed` and the other speed functions, `tcflush`, `tcdrain` and `tcsendbreak`.
+
 ### `sys/reboot.h`
 
 `reboot(RB_POWER_OFF)` and `reboot(RB_AUTOBOOT)`, with Linux's values. Only init and session leaders may call it. The kernel then stops every process, flushes the disk, and powers off or restarts. Anyone else gets `EPERM`.

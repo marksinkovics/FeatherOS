@@ -184,6 +184,11 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return, handlers.terminal_size(context)};
     }
+    if (request.number == static_cast<uint64_t>(Number::TerminalMode) &&
+        handlers.terminal_mode != nullptr)
+    {
+        return {Action::Return, handlers.terminal_mode(context, arguments[0], arguments[1])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 
