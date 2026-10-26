@@ -26,6 +26,10 @@ struct UserExecutionContext
     void* program;
     // Other CPUs may send signals; each is taken the next time the program returns to user mode.
     Signals::State signals;
+    // Each thread of a process has its own context; the main thread is 1.
+    uint64_t thread_id;
+    // Set with exit_requested when ThreadExit ended only this thread, not the whole process.
+    bool thread_exit_only;
 };
 
 } // namespace FeatherOS

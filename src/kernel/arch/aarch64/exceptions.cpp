@@ -76,6 +76,9 @@ constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {WriteSyscallChar
                                                                 nullptr,
                                                                 nullptr,
                                                                 nullptr,
+                                                                nullptr,
+                                                                nullptr,
+                                                                nullptr,
                                                                 nullptr};
 
 } // namespace
@@ -127,6 +130,7 @@ bool RunUserTest(uint64_t entry_point, uint64_t stack_pointer, uint64_t argument
     user_context->exit_status = UINT64_MAX;
     user_context->active = true;
     user_context->exit_requested = false;
+    user_context->thread_exit_only = false;
     FeatherOS::Scheduler::SetCurrentUserContext(user_context);
     aarch64_enter_user(entry_point, stack_pointer, argument_pointer, user_context);
     user_context->active = false;
@@ -336,9 +340,10 @@ extern "C" void FeatherOS_AArch64_ExceptionDispatch(ExceptionContext* context)
             DeliverSignals(user_context, context->registers, &context->elr, &context->spsr);
             return;
         }
-        user_context->exit_status = result.action == FeatherOS::Syscall::Action::Exit
-                                        ? result.value
-                                        : FeatherOS::User::ExitStatusFault;
+        const bool exit = result.action == FeatherOS::Syscall::Action::Exit ||
+                          result.action == FeatherOS::Syscall::Action::ExitThread;
+        user_context->exit_status = exit ? result.value : FeatherOS::User::ExitStatusFault;
+        user_context->thread_exit_only = result.action == FeatherOS::Syscall::Action::ExitThread;
         user_context->exit_requested = true;
         ReturnToKernel(user_context, &context->registers[0], &context->elr, &context->spsr);
         return;

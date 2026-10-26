@@ -28,7 +28,7 @@ Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS`
 
 **Exit.** `exit` runs `atexit` handlers and C++ static destructors, newest first. It then runs `.fini_array`, flushes the stdio streams, and passes the low 8 bits of the status to the kernel. `abort` raises `SIGABRT`, so a handler runs first, and ends the program with it even if the handler returns.
 
-**Threads.** Programs are single-threaded, so nothing in the library takes a lock. `errno` is already behind `__errno_location()`, so it can become per-thread when threads arrive (see M11 in [roadmap.md](roadmap.md)).
+**Threads.** `pthread.h` starts and joins threads, but the library itself is not thread-safe yet: `malloc`, stdio streams and `errno` must stay in one thread at a time, and nothing takes a lock. `errno` is already behind `__errno_location()`, so it can become per-thread (see M11 Part 8 in [roadmap.md](roadmap.md)).
 
 ## Limits that shape the API
 
@@ -234,7 +234,7 @@ Not provided:
 
 Other flags fail with `EINVAL`.
 
-**File actions.** `posix_spawn_file_actions_adddup2`, `addopen` and `addclose` run in order, at most 8 per spawn. The C library applies them to the caller's own descriptors around the `Spawn` syscall and puts those back afterwards. That is safe because programs have one thread, but a failing action makes `posix_spawn` return its error without starting the child. `addopen` paths are at most 63 characters.
+**File actions.** `posix_spawn_file_actions_adddup2`, `addopen` and `addclose` run in order, at most 8 per spawn. The C library applies them to the caller's own descriptors around the `Spawn` syscall and puts those back afterwards. Another thread using those descriptors meanwhile would see the child's, so spawn with file actions from one thread at a time. A failing action makes `posix_spawn` return its error without starting the child. `addopen` paths are at most 63 characters.
 
 **`waitpid` and `wait`.** They use the Linux status encoding with `WIFEXITED`, `WEXITSTATUS`, `WIFSIGNALED` and `WTERMSIG`, plus `WNOHANG`. There are no signals yet, but two outcomes are reported as if signals ended the child:
 - a CPU exception reports signal 11 (`SIGSEGV`)
@@ -259,7 +259,16 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
 
 ### `sched.h`
 
-`sched_getcpu`, the glibc extension, returns the CPU the caller was running on. That may change as soon as it returns.
+`sched_getcpu`, the glibc extension, returns the CPU the caller was running on. That may change as soon as it returns. `sched_yield` lets other ready threads run first.
+
+### `pthread.h`
+
+`pthread_create`, `pthread_join`, `pthread_exit`, `pthread_self`, `pthread_equal`, `pthread_attr_init` and `pthread_attr_destroy`. They return an error number rather than setting `errno`.
+- **Limits:** at most 16 threads per process, the main one included (`EAGAIN` past that). Each gets a kernel-managed stack of up to 63 pages, growing on demand behind a guard page, so attributes have nothing to set and stack sizes cannot be chosen.
+- **Joining:** `pthread_join` refuses the caller itself (`EDEADLK`), the main thread, and unknown or already joined threads (`ESRCH`). Every thread is joinable; `pthread_detach` comes with step 3 of M11 Part 8.
+- **Ending:** `exit`, a fault or a terminating signal in any thread ends the whole process. `pthread_exit` ends one thread; in the last thread running it exits as `exit(0)` does.
+- **Signals:** actions are shared; masks are per thread, but there is no `pthread_sigmask` yet (`sigprocmask` sets the calling thread's). Signals sent to the process go to the main thread, or to the first live one after it has ended.
+- **Missing:** mutexes, condition variables, `pthread_once`, `pthread_detach`, thread-local storage and `pthread_kill` (M11 Part 8, steps 2–4).
 
 ### `sys/ioctl.h`
 
@@ -297,7 +306,7 @@ These need kernel features that do not exist yet. Each one is planned in [roadma
 | `SA_SIGINFO`, `sigsuspend`, `alarm`, real-time signals | Handlers get only the signal number; no timers send signals | Not scheduled |
 | Stopping and continuing processes (`SIGSTOP`, `SIGTSTP`, job control stops) | Processes cannot be stopped | Not scheduled |
 | `fork`, `exec*` | Processes start with `Spawn`; `fork` needs copy-on-write | M11, if adopted |
-| `pthread.h`, C11 `threads.h`, TLS | Single-threaded processes | M11 (user threads), which also makes the library thread-safe |
+| Mutexes, condition variables, TLS, C11 `threads.h` | Threads exist, but there is no way to wait on a lock yet | M11 Part 8, steps 2–4, which also make the library thread-safe |
 | `mmap`, `munmap` | The heap is the only growable mapping, so free space below used blocks cannot be returned | [ideas.md](ideas.md) |
 | `locale.h`, `wchar.h`, multibyte | ASCII and the `"C"` locale only | Not scheduled |
 | Time zones | Everything is UTC | Not scheduled |

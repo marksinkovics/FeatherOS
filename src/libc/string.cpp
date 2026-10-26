@@ -430,6 +430,9 @@ char* strerror(int error)
     case ENAMETOOLONG:
         message = "File name too long";
         break;
+    case EDEADLK:
+        message = "Resource deadlock avoided";
+        break;
     case ENOSYS:
         message = "Function not implemented";
         break;

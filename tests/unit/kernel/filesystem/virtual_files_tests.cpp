@@ -106,6 +106,7 @@ bool FakeProcessStatus(uint64_t process_id, FeatherOS::Procfs::ProcessStatus* st
     status->cpu_milliseconds = process_id * 10;
     status->last_cpu = 3;
     status->start_milliseconds = 1500;
+    status->threads = 3;
     return true;
 }
 
@@ -299,7 +300,7 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
     REQUIRE(ReadAll("/proc/12/status") ==
             "Name:\tshell\nState:\tR (running)\nPid:\t12\nPPid:\t1\nPgid:\t4\nPages:\t37\n"
             "PageLimit:\t1024\nOpenFiles:\t2\nCpuTimeMs:\t120\nLastCpu:\t3\n"
-            "StartTimeMs:\t1500\n");
+            "StartTimeMs:\t1500\nThreads:\t3\n");
     REQUIRE(ReadAll("/proc/stat") ==
             "UptimeMs:\t61000\nCpus:\t2\nCpu0BusyMs:\t700\nCpu1BusyMs:\t30\n");
     REQUIRE(ReadAll("/proc/meminfo") ==

@@ -91,6 +91,7 @@ SHELL_INPUT = (
     b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
     b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\nprimes 16 20000\n"
+    b"threads 4 100000\nthreads 15 20000\n"
     b"fptest 8\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
 )
@@ -221,6 +222,9 @@ DATE_OUTPUT = re.compile(
 WORKING_DIRECTORY_OUTPUT = re.compile(r"^(/home(?:/work)?)\r?$", re.MULTILINE)
 WORK_FILE_OUTPUT = re.compile(r"^in work\r?$", re.MULTILINE)
 UPTIME_OUTPUT = re.compile(r"^uptime: \d+:\d{2}:\d{2}\r?$", re.MULTILINE)
+THREADS_WORKER_OUTPUT = re.compile(
+    r"^threads: thread \d+ found \d+ on CPU \d+(?:,\d+)*\r?$", re.MULTILINE
+)
 PRIMES_WORKER_OUTPUT = re.compile(
     r"^primes: worker \d+ found \d+ on CPU \d+(?:,\d+)*\r?$", re.MULTILINE
 )
@@ -254,7 +258,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 359 checks passed",
+    "libctest: 372 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
@@ -308,11 +312,14 @@ EXPECTED_SHELL_OUTPUT = (
     # memtest overflow ends at the stack guard page with ExitStatusFault.
     "shell: program terminated by a CPU exception",
     "sleep: slept 1100 ms",
-    "hardening: 48 checks passed",
+    "hardening: 50 checks passed",
     "fptest: 8 of 8 workers kept their registers",
     "primes: 9592 primes below 100000 with 4 workers in ",
     # Sixteen workers keep sixteen pipes open at once.
     "primes: 2262 primes below 20000 with 16 workers in ",
+    # Threads of one process find the same counts as worker processes.
+    "threads: 9592 primes below 100000 with 4 threads in ",
+    "threads: 2262 primes below 20000 with 15 threads in ",
     "calc> ",
     "0.333333",
     "calc: division by zero",
@@ -1169,6 +1176,9 @@ def main():
         # primes 4 and primes 16 report one line per worker.
         if len(PRIMES_WORKER_OUTPUT.findall(output)) != 20:
             print("FAIL: primes did not report every worker", file=sys.stderr)
+            return 1
+        if len(THREADS_WORKER_OUTPUT.findall(output)) != 19:
+            print("FAIL: threads did not report every thread", file=sys.stderr)
             return 1
         # A prompt may precede the echo on the same line.
         interrupts = len(re.findall(r"\^C\r?$", output, re.MULTILINE))

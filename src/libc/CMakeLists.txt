@@ -24,6 +24,7 @@ add_library(featheros_c STATIC
     ../user/calendar.cpp
     termios.cpp
     malloc.cpp
+    pthread.cpp
     signal.cpp
     math.cpp
     spawn.cpp

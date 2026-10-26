@@ -10,6 +10,11 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Exit, arguments[0]};
     }
+    if (request.number == static_cast<uint64_t>(Number::ThreadExit) &&
+        handlers.thread_create != nullptr)
+    {
+        return {Action::ExitThread, arguments[0]};
+    }
     if (request.number == static_cast<uint64_t>(Number::SignalReturn))
     {
         return {Action::SignalReturn, 0};
@@ -188,6 +193,21 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
         handlers.terminal_mode != nullptr)
     {
         return {Action::Return, handlers.terminal_mode(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ThreadCreate) &&
+        handlers.thread_create != nullptr)
+    {
+        return {Action::Return,
+                handlers.thread_create(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ThreadJoin) &&
+        handlers.thread_join != nullptr)
+    {
+        return {Action::Return, handlers.thread_join(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ThreadId) && handlers.thread_id != nullptr)
+    {
+        return {Action::Return, handlers.thread_id(context)};
     }
     return {Action::Invalid, UINT64_MAX};
 }

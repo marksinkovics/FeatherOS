@@ -281,6 +281,12 @@ int sched_getcpu()
     return static_cast<int>(FeatherOS::User::CurrentCpu());
 }
 
+int sched_yield()
+{
+    FeatherOS::User::Syscall(FeatherOS::User::SyscallNumber::Sleep, 0);
+    return 0;
+}
+
 int reboot(int command)
 {
     if (command != RB_AUTOBOOT && command != RB_POWER_OFF)

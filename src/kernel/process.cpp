@@ -19,6 +19,7 @@
 #include "kernel/smp.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/syscall.h"
+#include "kernel/thread_stacks.h"
 #include "kernel/time/timer.h"
 #if defined(ARCH_x86_64)
 #include "kernel/arch/x86_64/exceptions.h"
@@ -50,6 +51,24 @@ constexpr uint16_t UserMachine = ELF::MachineAArch64;
 constexpr char UserProgramSuffix[] = "-aarch64.elf";
 #endif
 
+struct ProcessRecord;
+
+// A thread other than the main one, whose context is in the process's program. A slot is free
+// while id is 0; its stack slot is the slot's index plus one.
+struct ThreadRecord
+{
+    ProcessRecord* process;
+    uint64_t id;
+    // 0 until the task exists.
+    Scheduler::TaskId task;
+    uint64_t entry;
+    uint64_t block;
+    uint64_t stack_pointer;
+    // Set while a thread, or the exiting process, waits for this one to end.
+    bool joining;
+    UserExecutionContext context;
+};
+
 struct ProcessRecord
 {
     ProcessRecord* next;
@@ -72,6 +91,11 @@ struct ProcessRecord
     uint8_t console_input_length;
     uint8_t console_input_offset;
     UserProgram program;
+    ThreadRecord threads[User::MaximumThreads - 1];
+    uint64_t next_thread_id;
+    // Set when exit, a fault or a terminating signal ends the process while threads may run.
+    bool exiting;
+    uint64_t exit_status;
 };
 
 uint64_t hhdm_offset = 0;
@@ -383,13 +407,38 @@ void SendSignalLocked(ProcessRecord* process, int signal)
     {
         return;
     }
-    Signals::Send(&process->program.execution_context.signals, signal);
-    Scheduler::WakeTask(process->task);
+    // SIGKILL reaches every thread; other signals go to the main thread, or the first live one.
+    const bool main_running = Scheduler::GetState(process->task) != Scheduler::TaskState::Complete;
+    if (signal == User::SignalKill || main_running)
+    {
+        Signals::Send(&process->program.execution_context.signals, signal);
+        Scheduler::WakeTask(process->task);
+    }
+    for (ThreadRecord& thread : process->threads)
+    {
+        if (thread.task == 0 || (signal != User::SignalKill && Scheduler::GetState(thread.task) ==
+                                                                   Scheduler::TaskState::Complete))
+        {
+            continue;
+        }
+        Signals::Send(&thread.context.signals, signal);
+        Scheduler::WakeTask(thread.task);
+        if (signal != User::SignalKill && !main_running)
+        {
+            return;
+        }
+    }
 }
 
 void RequestKillLocked(ProcessRecord* process)
 {
     SendSignalLocked(process, User::SignalKill);
+}
+
+// The calling thread's context; its process is the syscall context.
+UserExecutionContext* CallerContext()
+{
+    return static_cast<UserExecutionContext*>(Scheduler::CurrentUserContext());
 }
 
 // A signal the caller would take, such as SIGINT from Ctrl+C; blocking calls then give up. It
@@ -732,6 +781,13 @@ uint64_t ShrinkHeap(UserProgram& program, uint64_t decrement)
     {
         return User::SyscallErrorInvalidArgument;
     }
+    // Unmapping flushes only this CPU's TLB, which is enough only while one thread uses the
+    // address space; with threads the pages stay mapped above the break for later growth.
+    if (program.stack_slots != 1)
+    {
+        program.heap_break = previous_break - decrement;
+        return previous_break;
+    }
     const uint64_t page_size = Memory::PageSize;
     const uint64_t new_break = previous_break - decrement;
     const uint64_t page_end = (previous_break + page_size - 1) & ~(page_size - 1);
@@ -753,14 +809,15 @@ uint64_t ShrinkHeap(UserProgram& program, uint64_t decrement)
 uint64_t ExtendHeapSyscall(void* context, uint64_t increment)
 {
     UserProgram& program = static_cast<ProcessRecord*>(context)->program;
+    Sync::SpinLockGuard guard(program.memory_lock);
     if (static_cast<int64_t>(increment) < 0)
     {
         return ShrinkHeap(program, 0 - increment);
     }
     const uint64_t previous_break = program.heap_break;
-    // The heap may grow up to, but never into, the stack region's guard page.
+    // The heap may grow up to, but never into, the lowest thread stack slot's guard page.
     const uint64_t stack_region_base =
-        program.layout.stack_top - UserStackRegionPages * Memory::PageSize;
+        ThreadStacks::Bottom(program.layout.stack_top, UserStackRegionPages, User::MaximumThreads);
     if (previous_break > stack_region_base || increment > stack_region_base - previous_break)
     {
         return User::SyscallErrorInvalidArgument;
@@ -813,6 +870,11 @@ uint64_t SleepSyscall(void*, uint64_t milliseconds)
     }
     // Round up so the program sleeps at least as long as it asked. A signal ends it early, and
     // other wakeups go back to sleep.
+    if (milliseconds == 0)
+    {
+        Scheduler::Yield();
+        return 0;
+    }
     const uint64_t ticks = (milliseconds * ticks_per_second + 999) / 1000;
     const uint64_t deadline = Time::TickCount() + ticks;
     while (Time::TickCount() < deadline)
@@ -1010,7 +1072,7 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
         // unless it handles or ignores it.
         if (count == User::SyscallErrorBrokenPipe)
         {
-            Signals::Send(&process->program.execution_context.signals, User::SignalPipe);
+            Signals::Send(&CallerContext()->signals, User::SignalPipe);
         }
         if (User::IsSyscallError(count))
         {
@@ -1129,9 +1191,23 @@ uint64_t SignalActionSyscall(void* context, uint64_t signal, uint64_t new_action
     {
         return User::SyscallErrorBadAddress;
     }
-    const uint64_t result = Signals::SetAction(&process->program.execution_context.signals,
-                                               static_cast<int>(signal > INT32_MAX ? 0 : signal),
+    const int number = static_cast<int>(signal > INT32_MAX ? 0 : signal);
+    const uint64_t result = Signals::SetAction(&CallerContext()->signals, number,
                                                new_action != 0 ? &requested : nullptr, &previous);
+    // Actions belong to the process, so every thread's copy changes with the caller's.
+    if (result == 0 && new_action != 0)
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        Signals::SetAction(&process->program.execution_context.signals, number, &requested,
+                           nullptr);
+        for (ThreadRecord& thread : process->threads)
+        {
+            if (thread.id != 0)
+            {
+                Signals::SetAction(&thread.context.signals, number, &requested, nullptr);
+            }
+        }
+    }
     if (result == 0 && old_action != 0 &&
         !CopyToUser(*process, old_action, &previous, sizeof(previous)))
     {
@@ -1140,10 +1216,253 @@ uint64_t SignalActionSyscall(void* context, uint64_t signal, uint64_t new_action
     return result;
 }
 
-uint64_t SignalMaskSyscall(void* context, uint64_t how, uint64_t set)
+// Each thread has its own mask.
+uint64_t SignalMaskSyscall(void*, uint64_t how, uint64_t set)
 {
-    return Signals::ChangeMask(
-        &static_cast<ProcessRecord*>(context)->program.execution_context.signals, how, set);
+    return Signals::ChangeMask(&CallerContext()->signals, how, set);
+}
+
+// Ends the process for exit, a fault or a terminating signal in any thread: the first status
+// wins, and every other thread gets SIGKILL.
+void ExitProcess(ProcessRecord* process, uint64_t status)
+{
+    Sync::SpinLockGuard guard(process_lock);
+    if (process->exiting)
+    {
+        return;
+    }
+    process->exiting = true;
+    process->exit_status = status;
+    SendSignalLocked(process, User::SignalKill);
+}
+
+void RunInUserMode(UserProgram* program, uint64_t entry, uint64_t stack_pointer, uint64_t argument,
+                   UserExecutionContext* context)
+{
+    if (!Memory::ActivateAddressSpace(program->address_space))
+    {
+        context->exit_status = User::ExitStatusFault;
+        context->thread_exit_only = false;
+        Memory::ActivateKernelAddressSpace();
+        return;
+    }
+#if defined(ARCH_x86_64)
+    Arch::X86_64::RunUserTest(entry, stack_pointer, argument, context);
+#elif defined(ARCH_aarch64)
+    Arch::AArch64::RunUserTest(entry, stack_pointer, argument, context);
+#endif
+    Memory::ActivateKernelAddressSpace();
+}
+
+// A thread's task; its result is the value ThreadJoin reports.
+uint64_t RunThread(void* context)
+{
+    auto* thread = static_cast<ThreadRecord*>(context);
+    RunInUserMode(&thread->process->program, thread->entry, thread->stack_pointer, thread->block,
+                  &thread->context);
+    if (!thread->context.thread_exit_only)
+    {
+        ExitProcess(thread->process, thread->context.exit_status);
+    }
+    return thread->context.exit_status;
+}
+
+uint64_t ThreadCreateSyscall(void* context, uint64_t entry, uint64_t first, uint64_t second)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    UserExecutionContext* caller = CallerContext();
+    if (entry == 0 || entry >= UserAddressLimit)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    ThreadRecord* thread = nullptr;
+    uint32_t slot = 0;
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        if (process->exiting)
+        {
+            return User::SyscallErrorInterrupted;
+        }
+        for (uint32_t index = 0; index < User::MaximumThreads - 1 && thread == nullptr; ++index)
+        {
+            if (process->threads[index].id == 0)
+            {
+                thread = &process->threads[index];
+                slot = index + 1;
+            }
+        }
+        if (thread == nullptr)
+        {
+            return User::SyscallErrorWouldBlock;
+        }
+        thread->id = process->next_thread_id++;
+        thread->task = 0;
+        thread->joining = false;
+    }
+    UserProgram& program = process->program;
+    {
+        Sync::SpinLockGuard guard(program.memory_lock);
+        program.stack_slots |= 1U << slot;
+    }
+    const uint64_t stack_top =
+        ThreadStacks::Top(program.layout.stack_top, UserStackRegionPages, slot);
+    const uint64_t block = stack_top - 2 * sizeof(uint64_t);
+    const uint64_t values[2] = {first, second};
+    if (!CopyToCurrentUser(caller, block, values, sizeof(values)))
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        thread->id = 0;
+        return User::SyscallErrorNoMemory;
+    }
+    thread->process = process;
+    thread->entry = entry;
+    thread->block = block;
+#if defined(ARCH_x86_64)
+    // As at any function's start: 8 bytes past a 16-byte boundary.
+    thread->stack_pointer = block - 8;
+#else
+    thread->stack_pointer = block;
+#endif
+    // Field by field: the AArch64 kernel has no memcpy for a structure copy.
+    UserExecutionContext& thread_context = thread->context;
+    const UserExecutionContext& main_context = program.execution_context;
+    thread_context.address_space_root_physical_address =
+        main_context.address_space_root_physical_address;
+    thread_context.kernel_stack_pointer = 0;
+    thread_context.previous_kernel_stack_pointer = 0;
+    thread_context.exit_status = User::ExitStatusFault;
+    thread_context.active = false;
+    thread_context.exit_requested = false;
+    thread_context.preemption_enabled = true;
+    thread_context.syscall_handlers = main_context.syscall_handlers;
+    thread_context.syscall_context = main_context.syscall_context;
+    thread_context.program = main_context.program;
+    thread_context.thread_id = thread->id;
+    thread_context.thread_exit_only = false;
+    // A new thread keeps the caller's mask and the process's actions, with nothing pending.
+    thread_context.signals.pending = 0;
+    thread_context.signals.blocked = caller->signals.blocked;
+    for (uint32_t signal = 0; signal < User::SignalCount; ++signal)
+    {
+        User::SignalAction& action = thread_context.signals.actions[signal];
+        const User::SignalAction& source = caller->signals.actions[signal];
+        action.handler = source.handler;
+        action.mask = source.mask;
+        action.flags = source.flags;
+        action.restorer = source.restorer;
+    }
+    Scheduler::TaskId task = 0;
+    if (!Scheduler::CreateTask(RunThread, thread, &task))
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        thread->id = 0;
+        return User::SyscallErrorNoMemory;
+    }
+    Sync::SpinLockGuard guard(process_lock);
+    thread->task = task;
+    // The process may have begun exiting while the task was created.
+    if (process->exiting)
+    {
+        Signals::Send(&thread->context.signals, User::SignalKill);
+        Scheduler::WakeTask(task);
+    }
+    return thread->id;
+}
+
+uint64_t ThreadJoinSyscall(void* context, uint64_t thread_id, uint64_t value)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    if (thread_id == CallerContext()->thread_id || thread_id == 1)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    if (value != 0 && !UserRangeWritable(*process, value, sizeof(uint64_t)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    ThreadRecord* thread = nullptr;
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        for (ThreadRecord& candidate : process->threads)
+        {
+            if (candidate.id == thread_id && candidate.task != 0)
+            {
+                thread = &candidate;
+            }
+        }
+        if (thread == nullptr)
+        {
+            return User::SyscallErrorNotFound;
+        }
+        if (thread->joining)
+        {
+            return User::SyscallErrorInvalidArgument;
+        }
+        thread->joining = true;
+    }
+    uint64_t result = 0;
+    if (!Scheduler::Wait(thread->task, &result, CallerInterrupted))
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        thread->joining = false;
+        return User::SyscallErrorInterrupted;
+    }
+    Scheduler::ReapTask(thread->task);
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        thread->task = 0;
+        thread->joining = false;
+        thread->id = 0;
+    }
+    if (value != 0 && !CopyToUser(*process, value, &result, sizeof(result)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    return 0;
+}
+
+uint64_t ThreadIdSyscall(void*)
+{
+    return CallerContext()->thread_id;
+}
+
+// Every thread but the main one, which the process's own task runs, has ended once this returns.
+void WaitForThreads(ProcessRecord* process)
+{
+    for (;;)
+    {
+        ThreadRecord* thread = nullptr;
+        bool remaining = false;
+        {
+            Sync::SpinLockGuard guard(process_lock);
+            for (ThreadRecord& candidate : process->threads)
+            {
+                remaining = remaining || candidate.id != 0;
+                if (thread == nullptr && candidate.id != 0 && candidate.task != 0 &&
+                    !candidate.joining)
+                {
+                    thread = &candidate;
+                    thread->joining = true;
+                }
+            }
+        }
+        if (thread == nullptr)
+        {
+            // A thread still being created or joined by another ends soon: SIGKILL reached it.
+            if (!remaining)
+            {
+                return;
+            }
+            Scheduler::Yield();
+            continue;
+        }
+        Scheduler::Wait(thread->task, nullptr);
+        Scheduler::ReapTask(thread->task);
+        Sync::SpinLockGuard guard(process_lock);
+        thread->task = 0;
+        thread->joining = false;
+        thread->id = 0;
+    }
 }
 
 uint64_t TerminalSizeSyscall(void*)
@@ -1413,13 +1732,24 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     PauseSyscall,
     TerminalSizeSyscall,
     TerminalModeSyscall,
+    ThreadCreateSyscall,
+    ThreadJoinSyscall,
+    ThreadIdSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
 uint64_t RunProcess(void* context)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    const uint64_t exit_status = RunUserProgram(&process->program);
+    const uint64_t main_status = RunUserProgram(&process->program);
+    // After pthread_exit in the main thread, the process lives on until its last thread ends.
+    if (!process->program.execution_context.thread_exit_only)
+    {
+        ExitProcess(process, main_status);
+    }
+    WaitForThreads(process);
+    const uint64_t exit_status = process->exiting ? process->exit_status : 0;
+    process->exit_status = exit_status;
     Files::CloseAll(&process->files);
     Console::ReleaseSettings(process->id);
     for (;;)
@@ -1513,7 +1843,33 @@ bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
         status->name[length] = process->name[length];
     }
     status->name[length] = '\0';
-    status->state = StateLetter(Scheduler::GetState(process->task));
+    // A process whose main thread used pthread_exit shows the state of a thread still running.
+    Scheduler::TaskState state = Scheduler::GetState(process->task);
+    status->threads = state != Scheduler::TaskState::Complete ? 1 : 0;
+    uint64_t run_ticks = 0;
+    uint32_t last_cpu = 0;
+    Scheduler::GetUsage(process->task, &run_ticks, &last_cpu);
+    for (const ThreadRecord& thread : process->threads)
+    {
+        uint64_t thread_ticks = 0;
+        uint32_t thread_cpu = 0;
+        if (thread.task == 0 || !Scheduler::GetUsage(thread.task, &thread_ticks, &thread_cpu))
+        {
+            continue;
+        }
+        run_ticks += thread_ticks;
+        const Scheduler::TaskState thread_state = Scheduler::GetState(thread.task);
+        if (thread_state != Scheduler::TaskState::Complete)
+        {
+            ++status->threads;
+            if (state == Scheduler::TaskState::Complete)
+            {
+                state = thread_state;
+                last_cpu = thread_cpu;
+            }
+        }
+    }
+    status->state = StateLetter(state);
     status->process_id = process->id;
     status->parent_id = process->parent;
     status->group = process->group;
@@ -1524,9 +1880,6 @@ bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
     {
         status->open_files += slot.file != nullptr ? 1 : 0;
     }
-    uint64_t run_ticks = 0;
-    uint32_t last_cpu = 0;
-    Scheduler::GetUsage(process->task, &run_ticks, &last_cpu);
     status->cpu_milliseconds = TicksToMilliseconds(run_ticks);
     status->last_cpu = last_cpu;
     status->start_milliseconds = TicksToMilliseconds(process->start_tick);
@@ -1565,12 +1918,12 @@ UserLayout DefaultUserLayout()
 
 UserLayout RandomUserLayout()
 {
-    // Keep the whole stack region inside the window and leave room for the guard and arguments
-    // pages above the stack top.
-    constexpr uint64_t SlotCount = RandomStackWindowPages - UserStackRegionPages - 2;
+    // Keep every thread's stack region inside the window and leave room for the guard and
+    // arguments pages above the stack top.
+    constexpr uint64_t StackPages = UserStackRegionPages * User::MaximumThreads;
+    constexpr uint64_t SlotCount = RandomStackWindowPages - StackPages - 2;
     const uint64_t stack_top =
-        RandomStackWindowBase +
-        (UserStackRegionPages + Random::Next() % SlotCount) * Memory::PageSize;
+        RandomStackWindowBase + (StackPages + Random::Next() % SlotCount) * Memory::PageSize;
     const uint64_t image_base =
         RandomImageWindowBase + (Random::Next() % RandomImageWindowPages) * Memory::PageSize;
     return {image_base, stack_top, stack_top + Memory::PageSize,
@@ -1592,6 +1945,7 @@ void InitializeUserProgram(UserProgram* program)
     program->address_space.root_physical_address = 0;
     program->mapped_page_count = 0;
     program->page_limit = DefaultProcessPageLimit;
+    program->stack_slots = 1;
     program->entry_point = 0;
     program->stack_pointer = 0;
     program->argument_pointer = 0;
@@ -1608,6 +1962,8 @@ void InitializeUserProgram(UserProgram* program)
     program->execution_context.syscall_handlers = nullptr;
     program->execution_context.syscall_context = nullptr;
     program->execution_context.program = program;
+    program->execution_context.thread_id = 1;
+    program->execution_context.thread_exit_only = false;
     Signals::Reset(&program->execution_context.signals);
 }
 
@@ -1632,14 +1988,23 @@ bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address)
         return false;
     }
     auto* program = static_cast<UserProgram*>(context->program);
-    const uint64_t stack_top = program->layout.stack_top;
-    const uint64_t stack_region_base = stack_top - UserStackRegionPages * Memory::PageSize;
-    if (fault_address < stack_region_base + Memory::PageSize || fault_address >= stack_top)
+    Sync::SpinLockGuard guard(program->memory_lock);
+    uint32_t slot = 0;
+    if (!ThreadStacks::Find(program->layout.stack_top, UserStackRegionPages, User::MaximumThreads,
+                            fault_address, &slot) ||
+        (program->stack_slots & (1U << slot)) == 0)
     {
         return false;
     }
     const uint64_t page_address = fault_address & ~(Memory::PageSize - 1);
     uint64_t physical_address;
+    bool writable;
+    // Another CPU may have mapped it first.
+    if (Memory::TranslateUserPage(program->address_space, page_address, &physical_address,
+                                  &writable))
+    {
+        return true;
+    }
     if (!AllocateProgramPage(program, &physical_address))
     {
         return false;
@@ -1689,19 +2054,12 @@ bool CopyFromCurrentUser(UserExecutionContext* context, uint64_t address, void* 
 uint64_t RunUserProgram(void* context)
 {
     auto* program = static_cast<UserProgram*>(context);
-    if (program == nullptr || !Memory::ActivateAddressSpace(program->address_space))
+    if (program == nullptr)
     {
-        Memory::ActivateKernelAddressSpace();
         return User::ExitStatusFault;
     }
-#if defined(ARCH_x86_64)
-    Arch::X86_64::RunUserTest(program->entry_point, program->stack_pointer,
-                              program->argument_pointer, &program->execution_context);
-#elif defined(ARCH_aarch64)
-    Arch::AArch64::RunUserTest(program->entry_point, program->stack_pointer,
-                               program->argument_pointer, &program->execution_context);
-#endif
-    Memory::ActivateKernelAddressSpace();
+    RunInUserMode(program, program->entry_point, program->stack_pointer, program->argument_pointer,
+                  &program->execution_context);
     return program->execution_context.exit_status;
 }
 
@@ -1781,6 +2139,7 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         }
         id = next_process_id++;
         process->id = id;
+        process->next_thread_id = 2;
         process->parent = parent;
         process->session_leader = (flags & User::SpawnSessionLeader) != 0;
         process->start_tick = Time::TickCount();
@@ -1869,7 +2228,7 @@ bool Wait(ProcessId process_id, uint64_t* exit_status)
     }
     if (exit_status != nullptr)
     {
-        *exit_status = process->program.execution_context.exit_status;
+        *exit_status = process->exit_status;
     }
     ReleaseUserProgram(&process->program);
     {

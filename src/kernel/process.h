@@ -3,6 +3,7 @@
 
 #include "kernel/elf/elf_loader.h"
 #include "kernel/memory/virtual_memory.h"
+#include "kernel/sync/spinlock.h"
 #include "kernel/user_context.h"
 #include "user/process.h"
 
@@ -50,12 +51,17 @@ struct UserLayout
 UserLayout DefaultUserLayout();
 UserLayout RandomUserLayout();
 
-// An ELF image loaded into its own address space, ready to run as a scheduler task.
+// An ELF image loaded into its own address space, ready to run as a scheduler task. Its threads
+// share it; execution_context is the main thread's.
 struct UserProgram
 {
     Memory::AddressSpace address_space;
+    // Threads on different CPUs map pages at once: it guards the mappings and the page count.
+    Sync::SpinLock memory_lock;
     uint32_t mapped_page_count;
     uint32_t page_limit;
+    // Bit n is set once thread stack slot n has been used; slot 0 is the main thread's.
+    uint32_t stack_slots;
     uint64_t entry_point;
     uint64_t stack_pointer;
     uint64_t argument_pointer;

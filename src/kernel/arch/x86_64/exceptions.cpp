@@ -203,6 +203,9 @@ constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {WriteSyscallChar
                                                                 nullptr,
                                                                 nullptr,
                                                                 nullptr,
+                                                                nullptr,
+                                                                nullptr,
+                                                                nullptr,
                                                                 nullptr};
 
 template <size_t Size> uint64_t StackTop(uint8_t (&stack)[Size])
@@ -330,6 +333,7 @@ bool RunUserTest(uint64_t entry_point, uint64_t stack_pointer, uint64_t argument
     user_context->exit_status = UINT64_MAX;
     user_context->active = true;
     user_context->exit_requested = false;
+    user_context->thread_exit_only = false;
     FeatherOS::Scheduler::SetCurrentUserContext(user_context);
     x86_64_enter_user(entry_point, stack_pointer, argument_pointer, user_context);
     CurrentTss().rsp0 = user_context->previous_kernel_stack_pointer;
@@ -537,9 +541,10 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
             DeliverSignals(context);
             return;
         }
-        user_context->exit_status = result.action == FeatherOS::Syscall::Action::Exit
-                                        ? result.value
-                                        : FeatherOS::User::ExitStatusFault;
+        const bool exit = result.action == FeatherOS::Syscall::Action::Exit ||
+                          result.action == FeatherOS::Syscall::Action::ExitThread;
+        user_context->exit_status = exit ? result.value : FeatherOS::User::ExitStatusFault;
+        user_context->thread_exit_only = result.action == FeatherOS::Syscall::Action::ExitThread;
         user_context->exit_requested = true;
         return;
     }

@@ -13,7 +13,9 @@ using Number = User::SyscallNumber;
 enum class Action : uint8_t
 {
     Return,
+    // Exit ends the process; ExitThread only the calling thread.
     Exit,
+    ExitThread,
     // The architecture code puts back the registers a signal handler's frame saved.
     SignalReturn,
     Invalid,
@@ -74,6 +76,9 @@ struct Handlers
     uint64_t (*pause)(void* context);
     uint64_t (*terminal_size)(void* context);
     uint64_t (*terminal_mode)(void* context, uint64_t new_settings, uint64_t old_settings);
+    uint64_t (*thread_create)(void* context, uint64_t entry, uint64_t first, uint64_t second);
+    uint64_t (*thread_join)(void* context, uint64_t thread, uint64_t value);
+    uint64_t (*thread_id)(void* context);
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

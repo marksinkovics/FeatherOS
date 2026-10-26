@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#include <pthread.h>
+#include <sched.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -1167,6 +1169,196 @@ void CheckProcessAccounting()
     Check(OwnCpuMilliseconds() >= before + 150, "CPU time grows while the process runs");
 }
 
+// Threads here only compute and touch their own data: the C library is not thread-safe yet.
+struct SumTask
+{
+    unsigned long first;
+    unsigned long last;
+    unsigned long sum;
+    pthread_t self;
+};
+
+void* SumRange(void* argument)
+{
+    auto* task = static_cast<SumTask*>(argument);
+    task->self = pthread_self();
+    for (unsigned long value = task->first; value <= task->last; ++value)
+    {
+        task->sum += value;
+    }
+    return task;
+}
+
+int release_threads = 0;
+
+void* WaitForRelease(void*)
+{
+    while (__atomic_load_n(&release_threads, __ATOMIC_ACQUIRE) == 0)
+    {
+        sched_yield();
+    }
+    return nullptr;
+}
+
+// Several pages deep, so a thread's stack has to grow on demand.
+unsigned long DeepSum(unsigned depth)
+{
+    volatile char page[4096];
+    page[0] = static_cast<char>(depth);
+    return depth == 0 ? 0
+                      : depth + DeepSum(depth - 1) + static_cast<unsigned long>(page[0] - depth);
+}
+
+void* DeepStack(void*)
+{
+    return reinterpret_cast<void*>(DeepSum(40));
+}
+
+int RunChild(const char* mode)
+{
+    char* arguments[] = {const_cast<char*>("libctest"), const_cast<char*>(mode), nullptr};
+    pid_t child = 0;
+    int status = -1;
+    if (posix_spawn(&child, "libctest", nullptr, nullptr, arguments, environ) != 0 ||
+        waitpid(child, &status, 0) != child)
+    {
+        return -1;
+    }
+    return status;
+}
+
+void CheckThreads()
+{
+    SumTask tasks[4];
+    pthread_t threads[4];
+    bool created = true;
+    for (unsigned long index = 0; index < 4; ++index)
+    {
+        tasks[index] = {index * 1000 + 1, index * 1000 + 1000, 0, 0};
+        created = created && pthread_create(&threads[index], nullptr, SumRange, &tasks[index]) == 0;
+    }
+    Check(created, "pthread_create");
+    bool joined = true;
+    for (unsigned long index = 0; index < 4; ++index)
+    {
+        void* value = nullptr;
+        joined = joined && pthread_join(threads[index], &value) == 0 && value == &tasks[index] &&
+                 tasks[index].sum == (index * 1000 + 1 + index * 1000 + 1000) * 500;
+    }
+    Check(joined, "pthread_join returns each thread's value");
+    Check(pthread_self() == 1 && pthread_equal(tasks[0].self, threads[0]) != 0 &&
+              pthread_equal(tasks[0].self, tasks[1].self) == 0,
+          "pthread_self");
+    Check(pthread_join(pthread_self(), nullptr) == EDEADLK &&
+              pthread_join(threads[0], nullptr) == ESRCH && pthread_join(999, nullptr) == ESRCH,
+          "pthread_join refuses itself and unknown threads");
+
+    pthread_t waiting[15];
+    int created_count = 0;
+    while (created_count < 15 &&
+           pthread_create(&waiting[created_count], nullptr, WaitForRelease, nullptr) == 0)
+    {
+        ++created_count;
+    }
+    pthread_t extra = 0;
+    Check(created_count == 15 && pthread_create(&extra, nullptr, WaitForRelease, nullptr) == EAGAIN,
+          "16 threads at most");
+    char text[512];
+    FILE* status_file = fopen("/proc/self/status", "r");
+    const size_t length =
+        status_file == nullptr ? 0 : fread(text, 1, sizeof(text) - 1, status_file);
+    if (status_file != nullptr)
+    {
+        fclose(status_file);
+    }
+    text[length] = '\0';
+    Check(strstr(text, "Threads:\t16\n") != nullptr, "/proc counts the threads");
+    __atomic_store_n(&release_threads, 1, __ATOMIC_RELEASE);
+    bool all_joined = true;
+    for (int index = 0; index < created_count; ++index)
+    {
+        all_joined = pthread_join(waiting[index], nullptr) == 0 && all_joined;
+    }
+    Check(all_joined, "joined threads free their slots");
+    pthread_t deep = 0;
+    void* deep_value = nullptr;
+    Check(pthread_create(&deep, nullptr, DeepStack, nullptr) == 0 &&
+              pthread_join(deep, &deep_value) == 0 &&
+              deep_value == reinterpret_cast<void*>(40UL * 41 / 2),
+          "a thread's stack grows on demand");
+
+    int status = RunChild("thread-exit");
+    Check(WIFEXITED(status) && WEXITSTATUS(status) == 9, "exit in a thread ends the process");
+    status = RunChild("thread-fault");
+    Check(WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV,
+          "a fault in a thread ends the process");
+    status = RunChild("main-exit");
+    Check(WIFEXITED(status) && WEXITSTATUS(status) == 4,
+          "the process outlives a main thread that calls pthread_exit");
+    status = RunChild("main-exit-last");
+    Check(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "the last pthread_exit ends the process with status 0");
+    char* arguments[] = {const_cast<char*>("libctest"), const_cast<char*>("thread-block"), nullptr};
+    pid_t child = 0;
+    const timespec pause_time = {0, 50000000};
+    Check(posix_spawn(&child, "libctest", nullptr, nullptr, arguments, environ) == 0 &&
+              nanosleep(&pause_time, nullptr) == 0 && kill(child, SIGTERM) == 0 &&
+              waitpid(child, &status, 0) == child && WIFSIGNALED(status) &&
+              WTERMSIG(status) == SIGTERM,
+          "a signal ends a process whose threads are all blocked");
+}
+
+void* ExitFromThread(void*)
+{
+    exit(9);
+}
+
+void* FaultInThread(void*)
+{
+    *static_cast<volatile int*>(nullptr) = 1;
+    return nullptr;
+}
+
+void* ExitAfterMain(void* argument)
+{
+    const timespec pause_time = {0, 30000000};
+    nanosleep(&pause_time, nullptr);
+    if (argument != nullptr)
+    {
+        exit(4);
+    }
+    return nullptr;
+}
+
+void* BlockForever(void*)
+{
+    for (;;)
+    {
+        pause();
+    }
+}
+
+// The children CheckThreads starts.
+int RunThreadChild(const char* mode)
+{
+    pthread_t thread = 0;
+    if (strcmp(mode, "thread-exit") == 0 || strcmp(mode, "thread-fault") == 0)
+    {
+        pthread_create(&thread, nullptr, mode[7] == 'e' ? ExitFromThread : FaultInThread, nullptr);
+        pthread_join(thread, nullptr);
+        return 1;
+    }
+    if (strcmp(mode, "thread-block") == 0)
+    {
+        pthread_create(&thread, nullptr, BlockForever, nullptr);
+        pthread_join(thread, nullptr);
+        return 1;
+    }
+    pthread_create(&thread, nullptr, ExitAfterMain,
+                   strcmp(mode, "main-exit") == 0 ? reinterpret_cast<void*>(1) : nullptr);
+    pthread_exit(nullptr);
+}
+
 void CheckTerminalSettings()
 {
     termios original;
@@ -1516,6 +1708,14 @@ int main(int argc, char** argv)
     {
         return 7;
     }
+    if (argc == 2 && strncmp(argv[1], "thread-", 7) == 0)
+    {
+        return RunThreadChild(argv[1]);
+    }
+    if (argc == 2 && strncmp(argv[1], "main-exit", 9) == 0)
+    {
+        return RunThreadChild(argv[1]);
+    }
     if (argc == 2 && strcmp(argv[1], "raw-exit") == 0)
     {
         termios raw;
@@ -1567,6 +1767,7 @@ int main(int argc, char** argv)
     CheckPipes();
     CheckSystemCalls();
     CheckTerminalSettings();
+    CheckThreads();
     CheckScanning();
     CheckFloatingPoint();
     CheckAssert();

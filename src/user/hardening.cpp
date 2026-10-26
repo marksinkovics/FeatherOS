@@ -107,6 +107,10 @@ int main(int argc, char** argv)
     Check(ExtendHeap(static_cast<uint64_t>(INT64_MIN)) == SyscallErrorInvalidArgument,
           "shrinking the heap below its start");
     Check(Sleep(UINT64_MAX) == SyscallErrorInvalidArgument, "oversized Sleep");
+    Check(Syscall(SyscallNumber::ThreadCreate, KernelAddress, 0, 0) == SyscallErrorInvalidArgument,
+          "a thread starting in the kernel");
+    Check(Syscall(SyscallNumber::ThreadJoin, 2, KernelAddress) == SyscallErrorBadAddress,
+          "kernel ThreadJoin value");
     const uint64_t bad_elf = Spawn("badelf");
     Check(IsSyscallError(bad_elf) && bad_elf != SyscallErrorNotFound, "kernel-half ELF");
 

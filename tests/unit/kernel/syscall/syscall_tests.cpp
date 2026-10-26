@@ -144,7 +144,7 @@ constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeekFrom, RecordRemove,
     RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek,
     RecordDescriptor, RecordSeek,       RecordSeek,      ReadFixedProcessId, ReadFixedParentProcessId,
-    RecordSeekFrom,   RecordSeekFrom,   RecordSeek, RecordDescriptor, RecordSeek, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, ReadFixedProcessId, RecordSeek};
+    RecordSeekFrom,   RecordSeekFrom,   RecordSeek, RecordDescriptor, RecordSeek, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, ReadFixedProcessId, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)
@@ -379,6 +379,26 @@ TEST_CASE("syscall signal-return is left to the architecture code")
     REQUIRE(output.last_arguments[0] == 0x7000);
     REQUIRE(output.last_arguments[1] == 0x7100);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::TerminalMode), WriteOnly, &output)
+                .action == Action::Invalid);
+    const auto create = FeatherOS::Syscall::Dispatch(
+        MakeRequest(Number::ThreadCreate, 0x1000, 0x2000, 0x3000), AllHandlers, &output);
+    REQUIRE(create.action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0x1000);
+    REQUIRE(output.last_arguments[1] == 0x2000);
+    REQUIRE(output.last_arguments[2] == 0x3000);
+    const auto join = FeatherOS::Syscall::Dispatch(MakeRequest(Number::ThreadJoin, 3, 0x4000),
+                                                   AllHandlers, &output);
+    REQUIRE(join.action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 3);
+    REQUIRE(output.last_arguments[1] == 0x4000);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ThreadId), AllHandlers, &output)
+                .action == Action::Return);
+    // Ending one thread needs a program that can have threads.
+    const auto thread_exit =
+        FeatherOS::Syscall::Dispatch(MakeRequest(Number::ThreadExit, 42), AllHandlers, &output);
+    REQUIRE(thread_exit.action == Action::ExitThread);
+    REQUIRE(thread_exit.value == 42);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ThreadExit, 1), WriteOnly, &output)
                 .action == Action::Invalid);
 }
 

@@ -48,6 +48,10 @@ enum class SyscallNumber : uint64_t
     Pause = 35,            // () -> SyscallErrorInterrupted once a signal arrives
     TerminalSize = 36,     // () -> rows in bits 32-63, columns in bits 0-31
     TerminalMode = 37,     // (new_settings, old_settings) -> 0; either pointer may be null
+    ThreadCreate = 38,     // (entry, first, second) -> the new thread's ID
+    ThreadExit = 39,       // (value) -> does not return; ends only the calling thread
+    ThreadJoin = 40,       // (thread, value) -> 0 once the thread ended; stores its value
+    ThreadId = 41,         // () -> the calling thread's ID; 1 for the main thread
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec and joins its
@@ -73,6 +77,10 @@ constexpr uint64_t SeekFromEnd = 2;
 // Spawn's environment is "NAME=value" strings, each with its terminator, then an empty string.
 // A null pointer gives the child an empty environment.
 constexpr uint64_t MaximumEnvironmentSize = 1024;
+// Threads per process, the main thread included. A new thread starts at entry with its first
+// argument pointing to {first, second} at the top of its own stack; past the limit ThreadCreate
+// fails with SyscallErrorWouldBlock.
+constexpr uint64_t MaximumThreads = 16;
 constexpr uint64_t MaximumEnvironmentVariables = 32;
 
 // Paths are absolute ("/home/notes.txt") or relative to the process's working directory, which

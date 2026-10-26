@@ -30,6 +30,8 @@ struct ProcessStatus
     uint64_t cpu_milliseconds;
     uint32_t last_cpu;
     uint64_t start_milliseconds;
+    // Threads still running, the main one included; CPU time counts every thread.
+    uint32_t threads;
 };
 
 struct MemoryStatus

@@ -62,6 +62,7 @@ set(SRC
     ${SRCROOT}/cpu.cpp
     ${SRCROOT}/syscall.cpp
     ${SRCROOT}/string/format.cpp
+    ${SRCROOT}/thread_stacks.cpp
     ${SRCROOT}/../user/calendar.cpp
     ${SRCROOT}/time/timer.cpp
     ${SERIAL_SRC}

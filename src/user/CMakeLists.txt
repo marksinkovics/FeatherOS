@@ -7,7 +7,7 @@ set(FEATHEROS_PROGRAMS
     init:init shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout
     memtest:memtest sleep:sleep hardening:hardening aslr:aslr uptime:uptime primes:primes
     filetest:filetest ls:ls cat:cat write:write rm:rm mkdir:mkdir rmdir:rmdir env:env
-    fptest:fptest libctest:libctest kill:kill ps:ps top:top keys:keys clear:clear vi:vi
+    fptest:fptest libctest:libctest kill:kill ps:ps top:top keys:keys clear:clear vi:vi threads:threads
 )
 # Programs that define _start themselves instead of linking the C library's, which calls main.
 # The kernel's own tests run test_program and read the raw arguments block.
@@ -24,6 +24,7 @@ add_library(featheros_user_support STATIC
     init_config.cpp
     key_decoder.cpp
     line_editor.cpp
+    prime_count.cpp
     process_table.cpp
     raw_terminal.cpp
     vi_editor.cpp
