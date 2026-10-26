@@ -47,6 +47,7 @@ void DisablePreemption();
 void OnTimerTick(uint64_t tick);
 uint64_t BusyTickCount(uint32_t cpu_index);
 TaskState GetState(TaskId task_id);
+TaskId CurrentTaskId();
 // Timer ticks the task has run for, on any CPU, and the CPU it last ran on.
 bool GetUsage(TaskId task_id, uint64_t* run_ticks, uint32_t* last_cpu);
 

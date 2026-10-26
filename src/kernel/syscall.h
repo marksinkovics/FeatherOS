@@ -79,6 +79,10 @@ struct Handlers
     uint64_t (*thread_create)(void* context, uint64_t entry, uint64_t first, uint64_t second);
     uint64_t (*thread_join)(void* context, uint64_t thread, uint64_t value);
     uint64_t (*thread_id)(void* context);
+    uint64_t (*futex_wait)(void* context, uint64_t address, uint64_t expected,
+                           uint64_t milliseconds);
+    uint64_t (*futex_wake)(void* context, uint64_t address, uint64_t count);
+    uint64_t (*thread_detach)(void* context, uint64_t thread);
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

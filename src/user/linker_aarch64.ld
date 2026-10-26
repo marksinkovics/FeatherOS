@@ -10,6 +10,7 @@ PHDRS
     rodata PT_LOAD FLAGS(0x04);
     data PT_LOAD FLAGS(0x06);
     dynamic PT_DYNAMIC FLAGS(0x06);
+    tls PT_TLS FLAGS(0x04);
 }
 
 SECTIONS
@@ -51,6 +52,16 @@ SECTIONS
     .data : {
         *(.data .data.* .data.rel.ro .data.rel.ro.*)
     } :data
+
+    /* The template each thread's thread-local block starts from: initial values, then the zeros
+       .tbss stands for, which take no space in the file or the data segment. */
+    .tdata : {
+        *(.tdata .tdata.*)
+    } :data :tls
+
+    .tbss : {
+        *(.tbss .tbss.*)
+    } :data :tls
 
     /* Function pointers the C library's _start and exit call: global constructors and
        destructors. */

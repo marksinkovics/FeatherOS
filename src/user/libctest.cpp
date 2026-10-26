@@ -1214,6 +1214,366 @@ void* DeepStack(void*)
     return reinterpret_cast<void*>(DeepSum(40));
 }
 
+__thread int tls_counter = 5;
+__thread char tls_zeroed[100];
+alignas(64) thread_local char tls_aligned[64];
+
+struct TlsReport
+{
+    int start;
+    bool zeroed;
+    bool aligned;
+    uintptr_t address;
+};
+
+void* ReportThreadLocal(void* argument)
+{
+    auto* report = static_cast<TlsReport*>(argument);
+    report->start = tls_counter;
+    report->zeroed = true;
+    for (const char byte : tls_zeroed)
+    {
+        report->zeroed = report->zeroed && byte == 0;
+    }
+    report->aligned = reinterpret_cast<uintptr_t>(tls_aligned) % 64 == 0;
+    report->address = reinterpret_cast<uintptr_t>(&tls_counter);
+    // Leaves data behind for the next thread that gets this stack slot.
+    tls_counter = 1000;
+    memset(tls_zeroed, 'x', sizeof(tls_zeroed));
+    return nullptr;
+}
+
+// Runs four threads and checks each started from the template with its own copy.
+bool ThreadLocalRound()
+{
+    TlsReport reports[4] = {};
+    pthread_t threads[4];
+    bool fine = true;
+    for (int index = 0; index < 4; ++index)
+    {
+        fine = pthread_create(&threads[index], nullptr, ReportThreadLocal, &reports[index]) == 0 &&
+               fine;
+    }
+    for (int index = 0; index < 4; ++index)
+    {
+        fine = pthread_join(threads[index], nullptr) == 0 && fine;
+        fine = fine && reports[index].start == 5 && reports[index].zeroed &&
+               reports[index].aligned &&
+               reports[index].address != reinterpret_cast<uintptr_t>(&tls_counter);
+        for (int other = 0; other < index; ++other)
+        {
+            fine = fine && reports[other].address != reports[index].address;
+        }
+    }
+    return fine;
+}
+
+pthread_mutex_t counter_mutex = PTHREAD_MUTEX_INITIALIZER;
+unsigned long shared_counter = 0;
+
+void* CountUnderMutex(void*)
+{
+    for (int round = 0; round < 20000; ++round)
+    {
+        pthread_mutex_lock(&counter_mutex);
+        // A plain read and write: without the mutex, increments from other CPUs would be lost.
+        shared_counter = shared_counter + 1;
+        pthread_mutex_unlock(&counter_mutex);
+    }
+    return nullptr;
+}
+
+void* TryLockFromThread(void* argument)
+{
+    return reinterpret_cast<void*>(
+        static_cast<uintptr_t>(pthread_mutex_trylock(static_cast<pthread_mutex_t*>(argument))));
+}
+
+void* UnlockFromThread(void* argument)
+{
+    return reinterpret_cast<void*>(
+        static_cast<uintptr_t>(pthread_mutex_unlock(static_cast<pthread_mutex_t*>(argument))));
+}
+
+uintptr_t RunWithMutex(void* (*function)(void*), pthread_mutex_t* mutex)
+{
+    pthread_t thread = 0;
+    void* value = nullptr;
+    pthread_create(&thread, nullptr, function, mutex);
+    pthread_join(thread, &value);
+    return reinterpret_cast<uintptr_t>(value);
+}
+
+// A bounded queue that producers fill and consumers drain, each side waiting on a condition.
+struct Queue
+{
+    pthread_mutex_t mutex;
+    pthread_cond_t not_empty;
+    pthread_cond_t not_full;
+    int items[8];
+    int count;
+    int produced;
+    long consumed_sum;
+};
+
+constexpr int ItemsPerProducer = 500;
+
+void* Produce(void* argument)
+{
+    auto* queue = static_cast<Queue*>(argument);
+    for (int item = 1; item <= ItemsPerProducer; ++item)
+    {
+        pthread_mutex_lock(&queue->mutex);
+        while (queue->count == 8)
+        {
+            pthread_cond_wait(&queue->not_full, &queue->mutex);
+        }
+        queue->items[queue->count++] = item;
+        pthread_cond_signal(&queue->not_empty);
+        pthread_mutex_unlock(&queue->mutex);
+    }
+    return nullptr;
+}
+
+void* Consume(void* argument)
+{
+    auto* queue = static_cast<Queue*>(argument);
+    for (int taken = 0; taken < ItemsPerProducer; ++taken)
+    {
+        pthread_mutex_lock(&queue->mutex);
+        while (queue->count == 0)
+        {
+            pthread_cond_wait(&queue->not_empty, &queue->mutex);
+        }
+        queue->consumed_sum += queue->items[--queue->count];
+        pthread_cond_signal(&queue->not_full);
+        pthread_mutex_unlock(&queue->mutex);
+    }
+    return nullptr;
+}
+
+struct Gate
+{
+    pthread_mutex_t mutex;
+    pthread_cond_t opened;
+    bool open;
+    int waiting;
+};
+
+void* WaitAtGate(void* argument)
+{
+    auto* gate = static_cast<Gate*>(argument);
+    pthread_mutex_lock(&gate->mutex);
+    ++gate->waiting;
+    while (!gate->open)
+    {
+        pthread_cond_wait(&gate->opened, &gate->mutex);
+    }
+    pthread_mutex_unlock(&gate->mutex);
+    return nullptr;
+}
+
+pthread_once_t once_control = PTHREAD_ONCE_INIT;
+int once_runs = 0;
+
+void RunOnce()
+{
+    ++once_runs;
+}
+
+void* CallOnce(void*)
+{
+    pthread_once(&once_control, RunOnce);
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(once_runs));
+}
+
+int detached_go = 0;
+int detached_done = 0;
+
+// Waits for the go-ahead, so the join attempt meets a thread that is still running.
+void* FinishDetached(void*)
+{
+    while (__atomic_load_n(&detached_go, __ATOMIC_ACQUIRE) == 0)
+    {
+        sched_yield();
+    }
+    __atomic_store_n(&detached_done, 1, __ATOMIC_RELEASE);
+    return nullptr;
+}
+
+void CheckSynchronization()
+{
+    pthread_t threads[8];
+    for (pthread_t& thread : threads)
+    {
+        pthread_create(&thread, nullptr, CountUnderMutex, nullptr);
+    }
+    for (const pthread_t thread : threads)
+    {
+        pthread_join(thread, nullptr);
+    }
+    Check(shared_counter == 8 * 20000, "a mutex keeps a shared counter exact across threads");
+
+    pthread_mutex_t mutex;
+    pthread_mutex_init(&mutex, nullptr);
+    pthread_mutex_lock(&mutex);
+    const uintptr_t busy = RunWithMutex(TryLockFromThread, &mutex);
+    pthread_mutex_unlock(&mutex);
+    Check(busy == EBUSY && pthread_mutex_trylock(&mutex) == 0 &&
+              pthread_mutex_unlock(&mutex) == 0 && pthread_mutex_destroy(&mutex) == 0,
+          "pthread_mutex_trylock");
+
+    pthread_mutexattr_t attributes;
+    pthread_mutexattr_init(&attributes);
+    pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_ERRORCHECK);
+    pthread_mutex_init(&mutex, &attributes);
+    pthread_mutex_lock(&mutex);
+    Check(pthread_mutex_lock(&mutex) == EDEADLK &&
+              RunWithMutex(UnlockFromThread, &mutex) == EPERM &&
+              pthread_mutex_unlock(&mutex) == 0 && pthread_mutex_unlock(&mutex) == EPERM,
+          "an error-checking mutex refuses a relock and a stranger's unlock");
+    pthread_mutexattr_settype(&attributes, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&mutex, &attributes);
+    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&mutex);
+    pthread_mutex_unlock(&mutex);
+    const uintptr_t still_held = RunWithMutex(TryLockFromThread, &mutex);
+    pthread_mutex_unlock(&mutex);
+    const uintptr_t released = RunWithMutex(TryLockFromThread, &mutex);
+    Check(still_held == EBUSY && released == 0, "a recursive mutex counts its owner's locks");
+
+    Queue queue = {
+        PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, PTHREAD_COND_INITIALIZER, {}, 0, 0, 0};
+    pthread_t workers[4];
+    pthread_create(&workers[0], nullptr, Produce, &queue);
+    pthread_create(&workers[1], nullptr, Produce, &queue);
+    pthread_create(&workers[2], nullptr, Consume, &queue);
+    pthread_create(&workers[3], nullptr, Consume, &queue);
+    for (const pthread_t worker : workers)
+    {
+        pthread_join(worker, nullptr);
+    }
+    Check(queue.count == 0 &&
+              queue.consumed_sum == 2L * ItemsPerProducer * (ItemsPerProducer + 1) / 2,
+          "condition variables hand items from producers to consumers");
+
+    Gate gate = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, false, 0};
+    pthread_t waiters[4];
+    for (pthread_t& waiter : waiters)
+    {
+        pthread_create(&waiter, nullptr, WaitAtGate, &gate);
+    }
+    for (bool all_waiting = false; !all_waiting;)
+    {
+        pthread_mutex_lock(&gate.mutex);
+        all_waiting = gate.waiting == 4;
+        pthread_mutex_unlock(&gate.mutex);
+        sched_yield();
+    }
+    pthread_mutex_lock(&gate.mutex);
+    gate.open = true;
+    pthread_cond_broadcast(&gate.opened);
+    pthread_mutex_unlock(&gate.mutex);
+    bool released_all = true;
+    for (const pthread_t waiter : waiters)
+    {
+        released_all = pthread_join(waiter, nullptr) == 0 && released_all;
+    }
+    Check(released_all, "pthread_cond_broadcast wakes every waiter");
+
+    pthread_condattr_t condition_attributes;
+    pthread_condattr_init(&condition_attributes);
+    pthread_condattr_setclock(&condition_attributes, CLOCK_MONOTONIC);
+    pthread_cond_t never;
+    pthread_cond_init(&never, &condition_attributes);
+    struct timespec start;
+    struct timespec deadline;
+    struct timespec end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    deadline = start;
+    deadline.tv_nsec += 60000000;
+    if (deadline.tv_nsec >= 1000000000)
+    {
+        deadline.tv_nsec -= 1000000000;
+        ++deadline.tv_sec;
+    }
+    pthread_mutex_init(&mutex, nullptr);
+    pthread_mutex_lock(&mutex);
+    const int timed = pthread_cond_timedwait(&never, &mutex, &deadline);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    const long waited =
+        (end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1000000;
+    Check(timed == ETIMEDOUT && waited >= 50 && waited < 2000 && pthread_mutex_unlock(&mutex) == 0,
+          "pthread_cond_timedwait gives up at its deadline, holding the mutex");
+
+    for (pthread_t& thread : threads)
+    {
+        pthread_create(&thread, nullptr, CallOnce, nullptr);
+    }
+    bool once_seen = true;
+    for (const pthread_t thread : threads)
+    {
+        void* value = nullptr;
+        once_seen =
+            pthread_join(thread, &value) == 0 && value == reinterpret_cast<void*>(1) && once_seen;
+    }
+    Check(once_runs == 1 && once_seen, "pthread_once runs its routine once, before any return");
+
+    pthread_attr_t detached;
+    pthread_attr_init(&detached);
+    pthread_attr_setdetachstate(&detached, PTHREAD_CREATE_DETACHED);
+    pthread_t detached_thread = 0;
+    Check(pthread_create(&detached_thread, &detached, FinishDetached, nullptr) == 0 &&
+              pthread_join(detached_thread, nullptr) == EINVAL,
+          "a detached thread cannot be joined");
+    __atomic_store_n(&detached_go, 1, __ATOMIC_RELEASE);
+    while (__atomic_load_n(&detached_done, __ATOMIC_ACQUIRE) == 0)
+    {
+        sched_yield();
+    }
+    // Once it has ended, its slot is free again: 15 joinable threads fit beside the main one.
+    pthread_t full[15];
+    int started = 0;
+    __atomic_store_n(&release_threads, 0, __ATOMIC_RELEASE);
+    for (int attempt = 0; attempt < 100 && started < 15; ++attempt)
+    {
+        if (pthread_create(&full[started], nullptr, WaitForRelease, nullptr) == 0)
+        {
+            ++started;
+        }
+        else
+        {
+            sched_yield();
+        }
+    }
+    __atomic_store_n(&release_threads, 1, __ATOMIC_RELEASE);
+    for (int index = 0; index < started; ++index)
+    {
+        pthread_join(full[index], nullptr);
+    }
+    Check(started == 15, "a detached thread gives its slot back when it ends");
+}
+
+void CheckThreadLocalStorage()
+{
+    bool zeroed = true;
+    for (const char byte : tls_zeroed)
+    {
+        zeroed = zeroed && byte == 0;
+    }
+    Check(tls_counter == 5 && zeroed && reinterpret_cast<uintptr_t>(tls_aligned) % 64 == 0,
+          "thread-local variables start from their template");
+    tls_counter = 77;
+    memset(tls_zeroed, 'm', sizeof(tls_zeroed));
+    Check(ThreadLocalRound(), "each thread gets its own thread-local variables");
+    Check(tls_counter == 77 && tls_zeroed[99] == 'm',
+          "a thread's thread-local changes stay its own");
+    Check(ThreadLocalRound(), "a reused stack slot starts from the template again");
+    static thread_local int counted = 0;
+    ++counted;
+    Check(counted == 1, "thread_local in a function");
+}
+
 int RunChild(const char* mode)
 {
     char* arguments[] = {const_cast<char*>("libctest"), const_cast<char*>(mode), nullptr};
@@ -1768,6 +2128,8 @@ int main(int argc, char** argv)
     CheckSystemCalls();
     CheckTerminalSettings();
     CheckThreads();
+    CheckThreadLocalStorage();
+    CheckSynchronization();
     CheckScanning();
     CheckFloatingPoint();
     CheckAssert();

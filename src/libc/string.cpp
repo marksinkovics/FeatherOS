@@ -430,6 +430,9 @@ char* strerror(int error)
     case ENAMETOOLONG:
         message = "File name too long";
         break;
+    case ETIMEDOUT:
+        message = "Connection timed out";
+        break;
     case EDEADLK:
         message = "Resource deadlock avoided";
         break;

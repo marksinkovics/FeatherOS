@@ -59,6 +59,8 @@ constexpr int ErrorNumber(uint64_t result)
         return ERANGE;
     case User::SyscallErrorBrokenPipe:
         return EPIPE;
+    case User::SyscallErrorTimedOut:
+        return ETIMEDOUT;
     default:
         return EIO;
     }

@@ -4,6 +4,7 @@
 #include "kernel/arch/serial.h"
 #include "kernel/input/input.h"
 #include "kernel/scheduler.h"
+#include "support/scheduler_stubs.h"
 
 #include <deque>
 #include <string>
@@ -12,10 +13,6 @@ namespace
 {
 
 std::deque<char> serial_input;
-int wake_count = 0;
-int wait_count = 0;
-uint64_t last_wait_deadline = 0;
-bool lock_held_during_wait = false;
 
 void DrainInput()
 {
@@ -52,22 +49,6 @@ void Restore(uint64_t)
 
 } // namespace FeatherOS::Arch::Interrupts
 
-namespace FeatherOS::Scheduler
-{
-
-void WaitOn(WaitQueue&, Sync::SpinLock& lock, uint64_t deadline_tick)
-{
-    ++wait_count;
-    last_wait_deadline = deadline_tick;
-    lock_held_during_wait = lock.IsLocked();
-}
-
-void WakeAll(WaitQueue&)
-{
-    ++wake_count;
-}
-
-} // namespace FeatherOS::Scheduler
 
 namespace FeatherOS::Serial
 {
@@ -117,32 +98,32 @@ TEST_CASE("input queue is bounded and keeps a key's bytes together")
 TEST_CASE("input arrival wakes waiting readers")
 {
     DrainInput();
-    wake_count = 0;
+    TestScheduler::wake_count = 0;
     FeatherOS::Input::SubmitBytes("\r", 1);
-    REQUIRE(wake_count == 1);
+    REQUIRE(TestScheduler::wake_count == 1);
 
     serial_input.clear();
     FeatherOS::Input::Poll();
-    REQUIRE(wake_count == 1);
+    REQUIRE(TestScheduler::wake_count == 1);
 
     serial_input = {'x'};
     FeatherOS::Input::Poll();
-    REQUIRE(wake_count == 2);
+    REQUIRE(TestScheduler::wake_count == 2);
     DrainInput();
 }
 
 TEST_CASE("waiting for input blocks only while the queue is empty")
 {
     DrainInput();
-    wait_count = 0;
+    TestScheduler::wait_count = 0;
     FeatherOS::Input::WaitForInput(250);
-    REQUIRE(wait_count == 1);
-    REQUIRE(last_wait_deadline == 250);
-    REQUIRE(lock_held_during_wait);
+    REQUIRE(TestScheduler::wait_count == 1);
+    REQUIRE(TestScheduler::last_wait_deadline == 250);
+    REQUIRE(TestScheduler::lock_held_during_wait);
 
     FeatherOS::Input::SubmitBytes("q", 1);
     FeatherOS::Input::WaitForInput(0);
-    REQUIRE(wait_count == 1);
+    REQUIRE(TestScheduler::wait_count == 1);
     DrainInput();
 }
 

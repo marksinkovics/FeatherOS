@@ -209,6 +209,22 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return, handlers.thread_id(context)};
     }
+    if (request.number == static_cast<uint64_t>(Number::FutexWait) &&
+        handlers.futex_wait != nullptr)
+    {
+        return {Action::Return,
+                handlers.futex_wait(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::FutexWake) &&
+        handlers.futex_wake != nullptr)
+    {
+        return {Action::Return, handlers.futex_wake(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ThreadDetach) &&
+        handlers.thread_detach != nullptr)
+    {
+        return {Action::Return, handlers.thread_detach(context, arguments[0])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

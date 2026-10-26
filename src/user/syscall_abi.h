@@ -52,6 +52,9 @@ enum class SyscallNumber : uint64_t
     ThreadExit = 39,       // (value) -> does not return; ends only the calling thread
     ThreadJoin = 40,       // (thread, value) -> 0 once the thread ended; stores its value
     ThreadId = 41,         // () -> the calling thread's ID; 1 for the main thread
+    FutexWait = 42,        // (address, expected, milliseconds) -> 0 once woken; 0 ms waits forever
+    FutexWake = 43,        // (address, count) -> how many waiters it woke
+    ThreadDetach = 44,     // (thread) -> 0; its slot is freed once it ends, without a join
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec and joins its
@@ -171,6 +174,8 @@ constexpr uint64_t SyscallErrorNotExecutable = UINT64_MAX - 20;
 constexpr uint64_t SyscallErrorRange = UINT64_MAX - 21;
 // A write to a pipe that nobody can read any more.
 constexpr uint64_t SyscallErrorBrokenPipe = UINT64_MAX - 22;
+// A wait with a time limit reached it first.
+constexpr uint64_t SyscallErrorTimedOut = UINT64_MAX - 23;
 
 constexpr bool IsSyscallError(uint64_t value)
 {

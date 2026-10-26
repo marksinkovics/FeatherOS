@@ -2,10 +2,12 @@
 
 #include "kernel/arch/cpu_features.h"
 #include "kernel/arch/rtc.h"
+#include "kernel/arch/thread_pointer.h"
 #include "kernel/console.h"
 #include "kernel/cpu.h"
 #include "kernel/filesystem/initramfs.h"
 #include "kernel/files.h"
+#include "kernel/futex.h"
 #include "kernel/filesystem/path.h"
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/tmpfs.h"
@@ -19,6 +21,7 @@
 #include "kernel/smp.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/syscall.h"
+#include "kernel/thread_local_storage.h"
 #include "kernel/thread_stacks.h"
 #include "kernel/time/timer.h"
 #if defined(ARCH_x86_64)
@@ -66,6 +69,8 @@ struct ThreadRecord
     uint64_t stack_pointer;
     // Set while a thread, or the exiting process, waits for this one to end.
     bool joining;
+    // Nobody will join it: its slot is reclaimed once it has ended.
+    bool detached;
     UserExecutionContext context;
 };
 
@@ -265,6 +270,85 @@ bool ProtectUserSegment(void* context, uint64_t virtual_address, uint64_t memory
     return true;
 }
 
+// Maps a zeroed page of a thread stack slot unless one is there; memory_lock must be held.
+bool MapStackPageLocked(UserProgram* program, uint64_t page_address)
+{
+    uint64_t physical_address;
+    bool writable;
+    // Another CPU may have mapped it first.
+    if (Memory::TranslateUserPage(program->address_space, page_address, &physical_address,
+                                  &writable))
+    {
+        return true;
+    }
+    if (!AllocateProgramPage(program, &physical_address))
+    {
+        return false;
+    }
+    if (!Memory::MapPage(program->address_space, page_address, physical_address,
+                         Memory::PageFlags::Read | Memory::PageFlags::Write |
+                             Memory::PageFlags::User))
+    {
+        Memory::FreePageFrame(physical_address);
+        --program->mapped_page_count;
+        return false;
+    }
+    return true;
+}
+
+// Builds a thread's TLS area at the top of its stack slot: the program's template, zeros up to
+// the block's size, and the control block, cleared first since a reused slot holds the last
+// thread's data. The program's address space must be active. The thread's stack starts below
+// *area_bottom.
+bool SetUpThreadArea(UserProgram* program, uint64_t slot_top, uint64_t* thread_pointer,
+                     uint64_t* area_bottom)
+{
+#if defined(ARCH_x86_64)
+    constexpr auto Variant = ThreadLocalStorage::Variant::BlockBelowPointer;
+#elif defined(ARCH_aarch64)
+    constexpr auto Variant = ThreadLocalStorage::Variant::BlockAbovePointer;
+#endif
+    ThreadLocalStorage::Layout layout;
+    if (!ThreadLocalStorage::Place(Variant, slot_top, program->tls_memory_size,
+                                   program->tls_alignment, &layout))
+    {
+        return false;
+    }
+    {
+        Sync::SpinLockGuard guard(program->memory_lock);
+        for (uint64_t page = layout.bottom & ~(Memory::PageSize - 1); page < slot_top;
+             page += Memory::PageSize)
+        {
+            if (!MapStackPageLocked(program, page))
+            {
+                return false;
+            }
+        }
+    }
+    auto* area = reinterpret_cast<volatile uint8_t*>(static_cast<uintptr_t>(layout.bottom));
+    const auto* source =
+        reinterpret_cast<const volatile uint8_t*>(static_cast<uintptr_t>(program->tls_template));
+    const uint64_t block_offset = layout.block - layout.bottom;
+    const Arch::CpuFeatures::UserAccessWindow user_access;
+    for (uint64_t index = 0; index < slot_top - layout.bottom; ++index)
+    {
+        area[index] = 0;
+    }
+    for (uint64_t index = 0; index < program->tls_file_size; ++index)
+    {
+        area[block_offset + index] = source[index];
+    }
+#if defined(ARCH_x86_64)
+    // The x86-64 ABI reads the thread pointer back from its first word, as %fs:0.
+    auto* self =
+        reinterpret_cast<volatile uint64_t*>(static_cast<uintptr_t>(layout.thread_pointer));
+    *self = layout.thread_pointer;
+#endif
+    *thread_pointer = layout.thread_pointer;
+    *area_bottom = layout.bottom;
+    return true;
+}
+
 bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& arguments,
                      UserProgram* program)
 {
@@ -287,6 +371,13 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     if (!ELF::LoadSegments(image, load_bias, operations))
     {
         return false;
+    }
+    if (image.has_tls)
+    {
+        program->tls_template = image.tls_virtual_address + load_bias;
+        program->tls_file_size = image.tls_file_size;
+        program->tls_memory_size = image.tls_memory_size;
+        program->tls_alignment = image.tls_alignment;
     }
 
     uint64_t stack_physical_address;
@@ -323,12 +414,18 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     }
 
     program->entry_point = image.entry_point + load_bias;
+    uint64_t stack_start = 0;
+    if (!SetUpThreadArea(program, program->layout.stack_top,
+                         &program->execution_context.thread_pointer, &stack_start))
+    {
+        return false;
+    }
 #if defined(ARCH_x86_64)
     // A function starts with rsp 8 bytes past a 16-byte boundary, as a call leaves it. Code that
     // keeps SSE values on the stack relies on that alignment.
-    program->stack_pointer = program->layout.stack_top - 8;
+    program->stack_pointer = stack_start - 8;
 #else
-    program->stack_pointer = program->layout.stack_top;
+    program->stack_pointer = stack_start;
 #endif
     program->heap_start += program->layout.heap_offset * Memory::PageSize;
     program->heap_break = program->heap_start;
@@ -1246,6 +1343,7 @@ void RunInUserMode(UserProgram* program, uint64_t entry, uint64_t stack_pointer,
         Memory::ActivateKernelAddressSpace();
         return;
     }
+    Arch::ThreadPointer::Write(context->thread_pointer);
 #if defined(ARCH_x86_64)
     Arch::X86_64::RunUserTest(entry, stack_pointer, argument, context);
 #elif defined(ARCH_aarch64)
@@ -1285,9 +1383,19 @@ uint64_t ThreadCreateSyscall(void* context, uint64_t entry, uint64_t first, uint
         }
         for (uint32_t index = 0; index < User::MaximumThreads - 1 && thread == nullptr; ++index)
         {
-            if (process->threads[index].id == 0)
+            ThreadRecord& candidate = process->threads[index];
+            // A detached thread that has ended gives its slot back here.
+            if (candidate.id != 0 && candidate.detached && candidate.task != 0 &&
+                !candidate.joining &&
+                Scheduler::GetState(candidate.task) == Scheduler::TaskState::Complete)
             {
-                thread = &process->threads[index];
+                Scheduler::ReapTask(candidate.task);
+                candidate.id = 0;
+                candidate.task = 0;
+            }
+            if (candidate.id == 0)
+            {
+                thread = &candidate;
                 slot = index + 1;
             }
         }
@@ -1298,6 +1406,7 @@ uint64_t ThreadCreateSyscall(void* context, uint64_t entry, uint64_t first, uint
         thread->id = process->next_thread_id++;
         thread->task = 0;
         thread->joining = false;
+        thread->detached = false;
     }
     UserProgram& program = process->program;
     {
@@ -1306,9 +1415,12 @@ uint64_t ThreadCreateSyscall(void* context, uint64_t entry, uint64_t first, uint
     }
     const uint64_t stack_top =
         ThreadStacks::Top(program.layout.stack_top, UserStackRegionPages, slot);
-    const uint64_t block = stack_top - 2 * sizeof(uint64_t);
+    uint64_t thread_pointer = 0;
+    uint64_t area_bottom = 0;
+    const bool area_ready = SetUpThreadArea(&program, stack_top, &thread_pointer, &area_bottom);
+    const uint64_t block = area_bottom - 2 * sizeof(uint64_t);
     const uint64_t values[2] = {first, second};
-    if (!CopyToCurrentUser(caller, block, values, sizeof(values)))
+    if (!area_ready || !CopyToCurrentUser(caller, block, values, sizeof(values)))
     {
         Sync::SpinLockGuard guard(process_lock);
         thread->id = 0;
@@ -1339,6 +1451,7 @@ uint64_t ThreadCreateSyscall(void* context, uint64_t entry, uint64_t first, uint
     thread_context.program = main_context.program;
     thread_context.thread_id = thread->id;
     thread_context.thread_exit_only = false;
+    thread_context.thread_pointer = thread_pointer;
     // A new thread keeps the caller's mask and the process's actions, with nothing pending.
     thread_context.signals.pending = 0;
     thread_context.signals.blocked = caller->signals.blocked;
@@ -1394,7 +1507,7 @@ uint64_t ThreadJoinSyscall(void* context, uint64_t thread_id, uint64_t value)
         {
             return User::SyscallErrorNotFound;
         }
-        if (thread->joining)
+        if (thread->joining || thread->detached)
         {
             return User::SyscallErrorInvalidArgument;
         }
@@ -1424,6 +1537,61 @@ uint64_t ThreadJoinSyscall(void* context, uint64_t thread_id, uint64_t value)
 uint64_t ThreadIdSyscall(void*)
 {
     return CallerContext()->thread_id;
+}
+
+uint64_t ThreadDetachSyscall(void* context, uint64_t thread_id)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Sync::SpinLockGuard guard(process_lock);
+    for (ThreadRecord& thread : process->threads)
+    {
+        if (thread.id != thread_id || thread.task == 0)
+        {
+            continue;
+        }
+        if (thread.joining || thread.detached)
+        {
+            return User::SyscallErrorInvalidArgument;
+        }
+        thread.detached = true;
+        if (Scheduler::GetState(thread.task) == Scheduler::TaskState::Complete)
+        {
+            Scheduler::ReapTask(thread.task);
+            thread.id = 0;
+            thread.task = 0;
+        }
+        return 0;
+    }
+    return User::SyscallErrorNotFound;
+}
+
+bool ReadUserWord(const void* owner, uint64_t address, uint32_t* value)
+{
+    return CopyFromUser(*static_cast<const ProcessRecord*>(owner), address, value, sizeof(*value));
+}
+
+// The word must be 4-byte aligned; a wait of 0 milliseconds has no time limit.
+uint64_t FutexWaitSyscall(void* context, uint64_t address, uint64_t expected, uint64_t milliseconds)
+{
+    const uint64_t ticks_per_second = Time::TicksPerSecond();
+    if (address % sizeof(uint32_t) != 0 || expected > UINT32_MAX || ticks_per_second == 0 ||
+        milliseconds > 24ULL * 60 * 60 * 1000)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    const uint64_t deadline =
+        milliseconds == 0 ? 0 : Time::TickCount() + (milliseconds * ticks_per_second + 999) / 1000;
+    return Futex::Wait(context, address, static_cast<uint32_t>(expected), deadline, ReadUserWord,
+                       CallerInterrupted);
+}
+
+uint64_t FutexWakeSyscall(void* context, uint64_t address, uint64_t count)
+{
+    if (address % sizeof(uint32_t) != 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    return Futex::Wake(context, address, count);
 }
 
 // Every thread but the main one, which the process's own task runs, has ended once this returns.
@@ -1735,6 +1903,9 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     ThreadCreateSyscall,
     ThreadJoinSyscall,
     ThreadIdSyscall,
+    FutexWaitSyscall,
+    FutexWakeSyscall,
+    ThreadDetachSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -1946,6 +2117,10 @@ void InitializeUserProgram(UserProgram* program)
     program->mapped_page_count = 0;
     program->page_limit = DefaultProcessPageLimit;
     program->stack_slots = 1;
+    program->tls_template = 0;
+    program->tls_file_size = 0;
+    program->tls_memory_size = 0;
+    program->tls_alignment = 1;
     program->entry_point = 0;
     program->stack_pointer = 0;
     program->argument_pointer = 0;
@@ -1964,6 +2139,7 @@ void InitializeUserProgram(UserProgram* program)
     program->execution_context.program = program;
     program->execution_context.thread_id = 1;
     program->execution_context.thread_exit_only = false;
+    program->execution_context.thread_pointer = 0;
     Signals::Reset(&program->execution_context.signals);
 }
 
@@ -1996,28 +2172,7 @@ bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address)
     {
         return false;
     }
-    const uint64_t page_address = fault_address & ~(Memory::PageSize - 1);
-    uint64_t physical_address;
-    bool writable;
-    // Another CPU may have mapped it first.
-    if (Memory::TranslateUserPage(program->address_space, page_address, &physical_address,
-                                  &writable))
-    {
-        return true;
-    }
-    if (!AllocateProgramPage(program, &physical_address))
-    {
-        return false;
-    }
-    if (!Memory::MapPage(program->address_space, page_address, physical_address,
-                         Memory::PageFlags::Read | Memory::PageFlags::Write |
-                             Memory::PageFlags::User))
-    {
-        Memory::FreePageFrame(physical_address);
-        --program->mapped_page_count;
-        return false;
-    }
-    return true;
+    return MapStackPageLocked(program, fault_address & ~(Memory::PageSize - 1));
 }
 
 bool CopyToCurrentUser(UserExecutionContext* context, uint64_t address, const void* source,

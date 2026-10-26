@@ -144,7 +144,7 @@ constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeekFrom, RecordRemove,
     RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek,
     RecordDescriptor, RecordSeek,       RecordSeek,      ReadFixedProcessId, ReadFixedParentProcessId,
-    RecordSeekFrom,   RecordSeekFrom,   RecordSeek, RecordDescriptor, RecordSeek, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, ReadFixedProcessId, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId};
+    RecordSeekFrom,   RecordSeekFrom,   RecordSeek, RecordDescriptor, RecordSeek, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, ReadFixedProcessId, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, RecordSeekFrom, RecordSeek, RecordDescriptor};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)
@@ -400,5 +400,19 @@ TEST_CASE("syscall signal-return is left to the architecture code")
     REQUIRE(thread_exit.value == 42);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ThreadExit, 1), WriteOnly, &output)
                 .action == Action::Invalid);
+    const auto futex_wait = FeatherOS::Syscall::Dispatch(
+        MakeRequest(Number::FutexWait, 0x5000, 2, 30), AllHandlers, &output);
+    REQUIRE(futex_wait.action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0x5000);
+    REQUIRE(output.last_arguments[1] == 2);
+    REQUIRE(output.last_arguments[2] == 30);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::FutexWake, 0x5000, 1), AllHandlers,
+                                         &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[1] == 1);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ThreadDetach, 4), AllHandlers,
+                                         &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 4);
 }
 

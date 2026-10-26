@@ -19,12 +19,15 @@ add_executable(featheros_unit_tests
     kernel/elf/elf_loader_tests.cpp
     kernel/framebuffer/framebuffer_tests.cpp
     kernel/input/input_tests.cpp
+    kernel/process/futex_tests.cpp
+    support/scheduler_stubs.cpp
     kernel/input/keyboard_tests.cpp
     kernel/klogger/klogger_tests.cpp
     kernel/memory/memory_map_tests.cpp
     kernel/process/calculator_tests.cpp
     kernel/process/command_line_tests.cpp
     kernel/process/line_editor_tests.cpp
+    kernel/process/thread_local_storage_tests.cpp
     kernel/process/thread_stacks_tests.cpp
     kernel/process/vi_editor_tests.cpp
     kernel/process/init_config_tests.cpp
@@ -83,8 +86,10 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
     "${FEATHEROS_ROOT}/src/kernel/process_arguments.cpp"
     "${FEATHEROS_ROOT}/src/kernel/syscall.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/thread_local_storage.cpp"
     "${FEATHEROS_ROOT}/src/kernel/thread_stacks.cpp"
     "${FEATHEROS_ROOT}/src/kernel/files.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/futex.cpp"
     "${FEATHEROS_ROOT}/src/kernel/pipe.cpp"
     "${FEATHEROS_ROOT}/src/kernel/signals.cpp"
     "${FEATHEROS_ROOT}/src/kernel/string/format.cpp"
@@ -93,6 +98,7 @@ target_compile_features(featheros_unit_tests PRIVATE cxx_std_17)
 target_compile_definitions(featheros_unit_tests PRIVATE FEATHEROS_HOST_TEST)
 target_include_directories(featheros_unit_tests PRIVATE
     "${FEATHEROS_ROOT}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
     "${FEATHEROS_ROOT}/deps/limine"
 )
 target_link_libraries(featheros_unit_tests PRIVATE Catch2::Catch2WithMain)

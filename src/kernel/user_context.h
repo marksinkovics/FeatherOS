@@ -30,6 +30,8 @@ struct UserExecutionContext
     uint64_t thread_id;
     // Set with exit_requested when ThreadExit ended only this thread, not the whole process.
     bool thread_exit_only;
+    // Loaded into the thread pointer register before the thread first enters user mode.
+    uint64_t thread_pointer;
 };
 
 } // namespace FeatherOS

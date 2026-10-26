@@ -62,6 +62,11 @@ struct UserProgram
     uint32_t page_limit;
     // Bit n is set once thread stack slot n has been used; slot 0 is the main thread's.
     uint32_t stack_slots;
+    // The PT_TLS template in the program's memory; each thread's TLS block starts as a copy.
+    uint64_t tls_template;
+    uint64_t tls_file_size;
+    uint64_t tls_memory_size;
+    uint64_t tls_alignment;
     uint64_t entry_point;
     uint64_t stack_pointer;
     uint64_t argument_pointer;

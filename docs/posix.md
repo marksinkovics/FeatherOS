@@ -265,10 +265,14 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
 
 `pthread_create`, `pthread_join`, `pthread_exit`, `pthread_self`, `pthread_equal`, `pthread_attr_init` and `pthread_attr_destroy`. They return an error number rather than setting `errno`.
 - **Limits:** at most 16 threads per process, the main one included (`EAGAIN` past that). Each gets a kernel-managed stack of up to 63 pages, growing on demand behind a guard page, so attributes have nothing to set and stack sizes cannot be chosen.
-- **Joining:** `pthread_join` refuses the caller itself (`EDEADLK`), the main thread, and unknown or already joined threads (`ESRCH`). Every thread is joinable; `pthread_detach` comes with step 3 of M11 Part 8.
+- **Joining:** `pthread_join` refuses the caller itself (`EDEADLK`), the main thread, unknown or already joined threads (`ESRCH`) and detached ones (`EINVAL`). `pthread_detach`, or `PTHREAD_CREATE_DETACHED` in `pthread_attr_setdetachstate`, frees a thread's slot once it ends.
+- **Mutexes:** `pthread_mutex_init`, `lock`, `trylock`, `unlock` and `destroy`, with `PTHREAD_MUTEX_INITIALIZER` and the `NORMAL`, `ERRORCHECK` and `RECURSIVE` types through `pthread_mutexattr_settype`. A contended mutex sleeps in the kernel (`FutexWait`); an uncontended lock and unlock make no syscall. `ERRORCHECK` returns `EDEADLK` for a relock by its owner and `EPERM` for an unlock by another thread; `RECURSIVE` counts its owner's locks. There is no `pthread_mutex_timedlock`, robust or priority-inheritance mutexes.
+- **Condition variables:** `pthread_cond_wait`, `timedwait`, `signal` and `broadcast`, with `PTHREAD_COND_INITIALIZER` and `pthread_condattr_setclock`. Wakeups may be spurious, as POSIX allows, so wait in a loop. The deadline is on `CLOCK_REALTIME`, which counts whole seconds here, unless the attributes chose `CLOCK_MONOTONIC`.
+- **`pthread_once`:** the first caller runs the routine while later ones sleep until it returns.
 - **Ending:** `exit`, a fault or a terminating signal in any thread ends the whole process. `pthread_exit` ends one thread; in the last thread running it exits as `exit(0)` does.
 - **Signals:** actions are shared; masks are per thread, but there is no `pthread_sigmask` yet (`sigprocmask` sets the calling thread's). Signals sent to the process go to the main thread, or to the first live one after it has ended.
-- **Missing:** mutexes, condition variables, `pthread_once`, `pthread_detach`, thread-local storage and `pthread_kill` (M11 Part 8, steps 2–4).
+- **Thread-local storage:** `__thread` and `thread_local` work for variables with constant initializers, at most 16 KiB per thread; each thread's copy starts from the program's initial values. `thread_local` objects with destructors are not supported yet, since there is no `__cxa_thread_atexit` (planned for M11 Part 8, step 4).
+- **Missing:** read-write locks, barriers, spinlocks, `pthread_key_*`, `pthread_cancel`, `pthread_kill` and `pthread_sigmask`.
 
 ### `sys/ioctl.h`
 
@@ -306,7 +310,7 @@ These need kernel features that do not exist yet. Each one is planned in [roadma
 | `SA_SIGINFO`, `sigsuspend`, `alarm`, real-time signals | Handlers get only the signal number; no timers send signals | Not scheduled |
 | Stopping and continuing processes (`SIGSTOP`, `SIGTSTP`, job control stops) | Processes cannot be stopped | Not scheduled |
 | `fork`, `exec*` | Processes start with `Spawn`; `fork` needs copy-on-write | M11, if adopted |
-| Mutexes, condition variables, TLS, C11 `threads.h` | Threads exist, but there is no way to wait on a lock yet | M11 Part 8, steps 2–4, which also make the library thread-safe |
+| C11 `threads.h`, read-write locks, barriers, thread-specific keys | Not needed by any program yet | Not scheduled |
 | `mmap`, `munmap` | The heap is the only growable mapping, so free space below used blocks cannot be returned | [ideas.md](ideas.md) |
 | `locale.h`, `wchar.h`, multibyte | ASCII and the `"C"` locale only | Not scheduled |
 | Time zones | Everything is UTC | Not scheduled |
