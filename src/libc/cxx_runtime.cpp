@@ -1,4 +1,5 @@
 #include "libc/exit_handlers.h"
+#include "libc/lock.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -16,19 +17,79 @@ extern "C" int __cxa_atexit(void (*destructor)(void*), void* object, void*)
     return FeatherOS::LibC::AddExitHandler(destructor, object) ? 0 : -1;
 }
 
-// Guards a function-local static's first initialization. Programs are single-threaded, so no
-// lock is needed yet; only the guard's first byte is used.
+extern "C" int __cxa_thread_atexit(void (*destructor)(void*), void* object, void*)
+{
+    return FeatherOS::LibC::AddThreadExitHandler(destructor, object) ? 0 : -1;
+}
+
+// Guards a function-local static's first initialization. The compiler only checks the first
+// byte, which says it is done; the word at offset 4 says whether a thread is running the
+// initializer (1), with others asleep waiting for it (2).
+namespace
+{
+
+uint8_t* GuardDone(int64_t* guard)
+{
+    return reinterpret_cast<uint8_t*>(guard);
+}
+
+int* GuardState(int64_t* guard)
+{
+    return reinterpret_cast<int*>(guard) + 1;
+}
+
+} // namespace
+
 extern "C" int __cxa_guard_acquire(int64_t* guard)
 {
-    return *reinterpret_cast<uint8_t*>(guard) == 0 ? 1 : 0;
+    int* state = GuardState(guard);
+    for (;;)
+    {
+        if (__atomic_load_n(GuardDone(guard), __ATOMIC_ACQUIRE) != 0)
+        {
+            return 0;
+        }
+        int expected = 0;
+        if (__atomic_compare_exchange_n(state, &expected, 1, false, __ATOMIC_ACQUIRE,
+                                        __ATOMIC_ACQUIRE))
+        {
+            // Another thread may have finished just before.
+            if (__atomic_load_n(GuardDone(guard), __ATOMIC_ACQUIRE) != 0)
+            {
+                __atomic_store_n(state, 0, __ATOMIC_RELEASE);
+                return 0;
+            }
+            return 1;
+        }
+        if (expected == 1)
+        {
+            __atomic_compare_exchange_n(state, &expected, 2, false, __ATOMIC_ACQUIRE,
+                                        __ATOMIC_ACQUIRE);
+        }
+        if (expected != 0)
+        {
+            FeatherOS::LibC::FutexWait(state, 2);
+        }
+    }
 }
 
 extern "C" void __cxa_guard_release(int64_t* guard)
 {
-    *reinterpret_cast<uint8_t*>(guard) = 1;
+    __atomic_store_n(GuardDone(guard), 1, __ATOMIC_RELEASE);
+    if (__atomic_exchange_n(GuardState(guard), 0, __ATOMIC_RELEASE) == 2)
+    {
+        FeatherOS::LibC::FutexWake(GuardState(guard), INT32_MAX);
+    }
 }
 
-extern "C" void __cxa_guard_abort(int64_t*) {}
+// The initializer failed, so a waiting thread tries it instead.
+extern "C" void __cxa_guard_abort(int64_t* guard)
+{
+    if (__atomic_exchange_n(GuardState(guard), 0, __ATOMIC_RELEASE) == 2)
+    {
+        FeatherOS::LibC::FutexWake(GuardState(guard), INT32_MAX);
+    }
+}
 
 extern "C" void __cxa_pure_virtual()
 {

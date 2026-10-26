@@ -1,3 +1,5 @@
+#include "exit_handlers.h"
+#include "lock.h"
 #include "syscall_result.h"
 #include "user/syscall.h"
 
@@ -13,54 +15,17 @@ namespace
 
 // The main thread counts too, so the last thread to call pthread_exit knows to end the process.
 int live_threads = 1;
-// Each thread's ID, so pthread_self needs no syscall. The template's 1 is the main thread's.
-__thread pthread_t current_thread = 1;
-
-// Sleeps while *word holds expected, for at most milliseconds (0 waits forever).
-uint64_t FutexWait(int* word, int expected, uint64_t milliseconds = 0)
-{
-    return FeatherOS::User::Syscall(FeatherOS::User::SyscallNumber::FutexWait,
-                                    reinterpret_cast<uint64_t>(word),
-                                    static_cast<uint32_t>(expected), milliseconds);
-}
-
-void FutexWake(int* word, uint64_t count)
-{
-    FeatherOS::User::Syscall(FeatherOS::User::SyscallNumber::FutexWake,
-                             reinterpret_cast<uint64_t>(word), count);
-}
-
-// Takes the lock word, marking it contended (2) whenever it had to wait, so the unlock that
-// follows wakes the next waiter.
-void LockWord(int* state, int contended_from_start)
-{
-    int current = 0;
-    if (contended_from_start == 0 &&
-        __atomic_compare_exchange_n(state, &current, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
-    {
-        return;
-    }
-    current = __atomic_exchange_n(state, 2, __ATOMIC_ACQUIRE);
-    while (current != 0)
-    {
-        FutexWait(state, 2);
-        current = __atomic_exchange_n(state, 2, __ATOMIC_ACQUIRE);
-    }
-}
-
-void UnlockWord(int* state)
-{
-    if (__atomic_exchange_n(state, 0, __ATOMIC_RELEASE) == 2)
-    {
-        FutexWake(state, 1);
-    }
-}
+using FeatherOS::LibC::CurrentThread;
+using FeatherOS::LibC::FutexWait;
+using FeatherOS::LibC::FutexWake;
+using FeatherOS::LibC::LockWord;
+using FeatherOS::LibC::UnlockWord;
 
 // The owner checks ERRORCHECK and RECURSIVE mutexes make; 0 lets the caller take the lock.
 int CheckOwnerLock(pthread_mutex_t* mutex)
 {
     if (mutex->type == PTHREAD_MUTEX_NORMAL ||
-        __atomic_load_n(&mutex->owner, __ATOMIC_RELAXED) != current_thread)
+        __atomic_load_n(&mutex->owner, __ATOMIC_RELAXED) != CurrentThread())
     {
         return 0;
     }
@@ -74,11 +39,11 @@ int CheckOwnerLock(pthread_mutex_t* mutex)
 
 void TakeOwnership(pthread_mutex_t* mutex)
 {
-    __atomic_store_n(&mutex->owner, current_thread, __ATOMIC_RELAXED);
+    __atomic_store_n(&mutex->owner, CurrentThread(), __ATOMIC_RELAXED);
     mutex->count = 1;
 }
 
-int LockMutex(pthread_mutex_t* mutex, int contended)
+int LockMutex(pthread_mutex_t* mutex, bool contended)
 {
     const int owned = CheckOwnerLock(mutex);
     if (owned != 0)
@@ -104,6 +69,7 @@ uint64_t MillisecondsUntil(clockid_t clock, const struct timespec* deadline, boo
 
 [[noreturn]] void EndThread(void* value)
 {
+    FeatherOS::LibC::RunThreadExitHandlers();
     if (__atomic_sub_fetch(&live_threads, 1, __ATOMIC_ACQ_REL) == 0)
     {
         exit(0);
@@ -116,7 +82,8 @@ uint64_t MillisecondsUntil(clockid_t clock, const struct timespec* deadline, boo
 // Every new thread starts here, with block pointing to {start, argument} at its stack's top.
 extern "C" [[noreturn]] void FeatherOSThreadStart(const uint64_t* block)
 {
-    current_thread = FeatherOS::User::Syscall(FeatherOS::User::SyscallNumber::ThreadId);
+    FeatherOS::LibC::SetCurrentThread(
+        FeatherOS::User::Syscall(FeatherOS::User::SyscallNumber::ThreadId));
     auto* start = reinterpret_cast<void* (*)(void*)>(block[0]);
     EndThread(start(reinterpret_cast<void*>(block[1])));
 }
@@ -185,7 +152,7 @@ void pthread_exit(void* value)
 
 pthread_t pthread_self(void)
 {
-    return current_thread;
+    return CurrentThread();
 }
 
 int pthread_detach(pthread_t thread)
@@ -247,7 +214,7 @@ int pthread_mutex_destroy(pthread_mutex_t* mutex)
 
 int pthread_mutex_lock(pthread_mutex_t* mutex)
 {
-    return LockMutex(mutex, 0);
+    return LockMutex(mutex, false);
 }
 
 int pthread_mutex_trylock(pthread_mutex_t* mutex)
@@ -257,9 +224,7 @@ int pthread_mutex_trylock(pthread_mutex_t* mutex)
     {
         return owned < 0 ? 0 : EBUSY;
     }
-    int unlocked = 0;
-    if (!__atomic_compare_exchange_n(&mutex->state, &unlocked, 1, false, __ATOMIC_ACQUIRE,
-                                     __ATOMIC_RELAXED))
+    if (!FeatherOS::LibC::TryLockWord(&mutex->state))
     {
         return EBUSY;
     }
@@ -271,7 +236,7 @@ int pthread_mutex_unlock(pthread_mutex_t* mutex)
 {
     if (mutex->type != PTHREAD_MUTEX_NORMAL)
     {
-        if (__atomic_load_n(&mutex->owner, __ATOMIC_RELAXED) != current_thread)
+        if (__atomic_load_n(&mutex->owner, __ATOMIC_RELAXED) != CurrentThread())
         {
             return EPERM;
         }
@@ -357,7 +322,7 @@ int pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex,
                         : FutexWait(sequence, seen, milliseconds);
     }
     // Another thread may be waiting by now, so the mutex is taken as contended.
-    LockMutex(mutex, 1);
+    LockMutex(mutex, true);
     mutex->count = count;
     return result == FeatherOS::User::SyscallErrorTimedOut ? ETIMEDOUT : 0;
 }

@@ -3,7 +3,8 @@
 namespace
 {
 
-int error_number = 0;
+// Each thread has its own.
+__thread int error_number = 0;
 
 } // namespace
 

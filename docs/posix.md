@@ -28,7 +28,13 @@ Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS`
 
 **Exit.** `exit` runs `atexit` handlers and C++ static destructors, newest first. It then runs `.fini_array`, flushes the stdio streams, and passes the low 8 bits of the status to the kernel. `abort` raises `SIGABRT`, so a handler runs first, and ends the program with it even if the handler returns.
 
-**Threads.** `pthread.h` starts and joins threads, but the library itself is not thread-safe yet: `malloc`, stdio streams and `errno` must stay in one thread at a time, and nothing takes a lock. `errno` is already behind `__errno_location()`, so it can become per-thread (see M11 Part 8 in [roadmap.md](roadmap.md)).
+**Threads.** The library is thread-safe where POSIX requires it. Its own locks (`src/libc/lock.cpp`) sleep in the kernel only while contended.
+- `errno` is per thread, through TLS behind `__errno_location()`.
+- `malloc`, `calloc`, `realloc` and `free` share one lock.
+- Every stdio function locks its stream for the whole call, so a `printf` line from one thread never mixes with another's; `flockfile` holds the lock across calls. Opening, closing and `fflush(NULL)` also take a lock over the list of streams. At `exit`, a stream another thread holds is not flushed, since that thread may be blocked reading for good.
+- `atexit` and `__cxa_atexit` registration is locked, and a function-local static's initializer runs once while other threads wait (`__cxa_guard_*`).
+- `__cxa_thread_atexit` runs `thread_local` destructors in their own thread, newest first, when it ends; `exit` runs the calling thread's before the `atexit` handlers.
+- Not thread-safe, as POSIX allows: `strtok` (use `strtok_r`), `rand`, `getenv` against `setenv`/`putenv`, and the time functions that return a static buffer (`gmtime`, `asctime`, `ctime`; use the `_r` forms). A signal handler must not call stdio or `malloc`.
 
 ## Limits that shape the API
 
@@ -271,7 +277,7 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
 - **`pthread_once`:** the first caller runs the routine while later ones sleep until it returns.
 - **Ending:** `exit`, a fault or a terminating signal in any thread ends the whole process. `pthread_exit` ends one thread; in the last thread running it exits as `exit(0)` does.
 - **Signals:** actions are shared; masks are per thread, but there is no `pthread_sigmask` yet (`sigprocmask` sets the calling thread's). Signals sent to the process go to the main thread, or to the first live one after it has ended.
-- **Thread-local storage:** `__thread` and `thread_local` work for variables with constant initializers, at most 16 KiB per thread; each thread's copy starts from the program's initial values. `thread_local` objects with destructors are not supported yet, since there is no `__cxa_thread_atexit` (planned for M11 Part 8, step 4).
+- **Thread-local storage:** `__thread` and `thread_local` work for variables with constant initializers, at most 16 KiB per thread; each thread's copy starts from the program's initial values. `thread_local` objects with constructors and destructors work too.
 - **Missing:** read-write locks, barriers, spinlocks, `pthread_key_*`, `pthread_cancel`, `pthread_kill` and `pthread_sigmask`.
 
 ### `sys/ioctl.h`

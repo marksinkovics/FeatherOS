@@ -1,4 +1,5 @@
 #include "libc/heap_allocator.h"
+#include "libc/lock.h"
 #include "user/syscall.h"
 
 #include <errno.h>
@@ -14,6 +15,8 @@ using FeatherOS::LibC::HeapAllocator;
 
 HeapAllocator allocator;
 bool initialized = false;
+// One lock over the whole heap: threads allocate one at a time.
+FeatherOS::LibC::Lock heap_lock;
 
 // Grows the program break, first padding it to the allocator's alignment.
 void* GrowHeap(size_t bytes, void*)
@@ -71,7 +74,11 @@ HeapAllocator& Heap()
 
 void* malloc(size_t size)
 {
-    void* pointer = Heap().Allocate(size);
+    void* pointer = nullptr;
+    {
+        const FeatherOS::LibC::Guard<FeatherOS::LibC::Lock> guard(heap_lock);
+        pointer = Heap().Allocate(size);
+    }
     if (pointer == nullptr)
     {
         errno = ENOMEM;
@@ -81,7 +88,16 @@ void* malloc(size_t size)
 
 void free(void* pointer)
 {
-    if (pointer != nullptr && !Heap().Free(pointer))
+    if (pointer == nullptr)
+    {
+        return;
+    }
+    bool freed = false;
+    {
+        const FeatherOS::LibC::Guard<FeatherOS::LibC::Lock> guard(heap_lock);
+        freed = Heap().Free(pointer);
+    }
+    if (!freed)
     {
         InvalidPointer("free");
     }
@@ -114,8 +130,12 @@ void* realloc(void* pointer, size_t size)
         free(pointer);
         return nullptr;
     }
-    bool invalid;
-    void* resized = Heap().Resize(pointer, size, &invalid);
+    bool invalid = false;
+    void* resized = nullptr;
+    {
+        const FeatherOS::LibC::Guard<FeatherOS::LibC::Lock> guard(heap_lock);
+        resized = Heap().Resize(pointer, size, &invalid);
+    }
     if (invalid)
     {
         InvalidPointer("realloc");

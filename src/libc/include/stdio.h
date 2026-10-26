@@ -66,6 +66,11 @@ int feof(FILE* stream);
 int ferror(FILE* stream);
 void clearerr(FILE* stream);
 int fileno(FILE* stream);
+// Holds the stream's lock across several calls, so another thread's output cannot come between
+// them; the lock is recursive, so the holder's own calls still work.
+void flockfile(FILE* stream);
+int ftrylockfile(FILE* stream);
+void funlockfile(FILE* stream);
 
 int remove(const char* path);
 void perror(const char* prefix);

@@ -9,6 +9,7 @@ add_library(featheros_c STATIC
     exit.cpp
     featheros.cpp
     ioctl.cpp
+    lock.cpp
     big_integer.cpp
     environment_table.cpp
     float_bits.cpp

@@ -1554,6 +1554,253 @@ void CheckSynchronization()
     Check(started == 15, "a detached thread gives its slot back when it ends");
 }
 
+int RunChild(const char* mode);
+
+void* ReportErrno(void*)
+{
+    errno = 0;
+    close(-1);
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(errno));
+}
+
+// Each thread keeps 16 blocks of its own pattern live at once and checks every block before
+// freeing it, so a heap shared without a lock would show up as a corrupted pattern.
+void* HammerHeap(void* argument)
+{
+    const auto seed = static_cast<unsigned char>(reinterpret_cast<uintptr_t>(argument));
+    unsigned char* blocks[16] = {};
+    size_t sizes[16] = {};
+    uintptr_t failures = 0;
+    for (unsigned round = 0; round < 2000; ++round)
+    {
+        const unsigned slot = round % 16;
+        if (blocks[slot] != nullptr)
+        {
+            for (size_t index = 0; index < sizes[slot]; ++index)
+            {
+                failures += blocks[slot][index] != seed ? 1 : 0;
+            }
+            free(blocks[slot]);
+        }
+        sizes[slot] = (round * 37 + seed) % 700 + 1;
+        blocks[slot] = static_cast<unsigned char*>(malloc(sizes[slot]));
+        if (blocks[slot] == nullptr)
+        {
+            return reinterpret_cast<void*>(uintptr_t{1});
+        }
+        if (round % 5 == 0)
+        {
+            sizes[slot] += 100;
+            blocks[slot] = static_cast<unsigned char*>(realloc(blocks[slot], sizes[slot]));
+        }
+        memset(blocks[slot], seed, sizes[slot]);
+    }
+    for (unsigned char* block : blocks)
+    {
+        free(block);
+    }
+    return reinterpret_cast<void*>(failures);
+}
+
+FILE* shared_lines = nullptr;
+
+void* WriteLines(void* argument)
+{
+    const auto writer = static_cast<int>(reinterpret_cast<uintptr_t>(argument));
+    for (int line = 0; line < 100; ++line)
+    {
+        fprintf(shared_lines, "writer %d line %d end\n", writer, line);
+    }
+    return nullptr;
+}
+
+int slow_constructions = 0;
+
+struct SlowInit
+{
+    int value;
+
+    SlowInit() : value(0)
+    {
+        __atomic_add_fetch(&slow_constructions, 1, __ATOMIC_ACQ_REL);
+        for (int pause = 0; pause < 20; ++pause)
+        {
+            sched_yield();
+        }
+        value = 42;
+    }
+};
+
+void* ReadSlowStatic(void*)
+{
+    static SlowInit object;
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(object.value));
+}
+
+struct Destroyed
+{
+    int id;
+    pthread_t thread;
+};
+
+Destroyed destroyed[8];
+int destroyed_count = 0;
+
+struct Tracked
+{
+    int id;
+
+    explicit Tracked(int number) : id(number) {}
+
+    ~Tracked()
+    {
+        const int index = __atomic_fetch_add(&destroyed_count, 1, __ATOMIC_ACQ_REL);
+        destroyed[index] = {id, pthread_self()};
+    }
+};
+
+thread_local Tracked first_tracked(1);
+thread_local Tracked second_tracked(2);
+
+void* UseTracked(void*)
+{
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(first_tracked.id + second_tracked.id));
+}
+
+void* TryLockStdout(void*)
+{
+    const int locked = ftrylockfile(stdout);
+    if (locked == 0)
+    {
+        funlockfile(stdout);
+    }
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(locked == 0 ? 1 : 0));
+}
+
+void CheckThreadSafeLibrary()
+{
+    errno = EINTR;
+    pthread_t thread = 0;
+    void* value = nullptr;
+    Check(pthread_create(&thread, nullptr, ReportErrno, nullptr) == 0 &&
+              pthread_join(thread, &value) == 0 &&
+              value == reinterpret_cast<void*>(static_cast<uintptr_t>(EBADF)) && errno == EINTR,
+          "each thread has its own errno");
+
+    pthread_t threads[8];
+    for (uintptr_t index = 0; index < 8; ++index)
+    {
+        pthread_create(&threads[index], nullptr, HammerHeap, reinterpret_cast<void*>(index + 0x40));
+    }
+    bool heap_intact = true;
+    for (const pthread_t worker : threads)
+    {
+        heap_intact = pthread_join(worker, &value) == 0 && value == nullptr && heap_intact;
+    }
+    Check(heap_intact, "malloc, realloc and free from many threads at once");
+
+    shared_lines = fopen("/tmp/lines.txt", "w");
+    for (uintptr_t index = 0; index < 4; ++index)
+    {
+        pthread_create(&threads[index], nullptr, WriteLines, reinterpret_cast<void*>(index));
+    }
+    for (uintptr_t index = 0; index < 4; ++index)
+    {
+        pthread_join(threads[index], nullptr);
+    }
+    fclose(shared_lines);
+    FILE* lines = fopen("/tmp/lines.txt", "r");
+    char text[64];
+    int whole = 0;
+    int read_count = 0;
+    while (lines != nullptr && fgets(text, sizeof(text), lines) != nullptr)
+    {
+        int writer = -1;
+        int line = -1;
+        char end[8] = {};
+        ++read_count;
+        whole += sscanf(text, "writer %d line %d %7s", &writer, &line, end) == 3 &&
+                         strcmp(end, "end") == 0 && writer >= 0 && writer < 4
+                     ? 1
+                     : 0;
+    }
+    if (lines != nullptr)
+    {
+        fclose(lines);
+    }
+    unlink("/tmp/lines.txt");
+    Check(read_count == 400 && whole == 400, "each fprintf call's line stays whole");
+
+    for (pthread_t& worker : threads)
+    {
+        pthread_create(&worker, nullptr, ReadSlowStatic, nullptr);
+    }
+    bool all_initialized = true;
+    for (const pthread_t worker : threads)
+    {
+        all_initialized = pthread_join(worker, &value) == 0 &&
+                          value == reinterpret_cast<void*>(uintptr_t{42}) && all_initialized;
+    }
+    Check(all_initialized && slow_constructions == 1,
+          "a function-local static is built once while other threads wait");
+
+    Check(pthread_create(&thread, nullptr, UseTracked, nullptr) == 0 &&
+              pthread_join(thread, &value) == 0 && value == reinterpret_cast<void*>(uintptr_t{3}) &&
+              destroyed_count == 2 && destroyed[0].id == 2 && destroyed[1].id == 1 &&
+              destroyed[0].thread == thread && destroyed[1].thread == thread,
+          "thread_local destructors run in their thread, newest first");
+
+    flockfile(stdout);
+    pthread_create(&thread, nullptr, TryLockStdout, nullptr);
+    pthread_join(thread, &value);
+    const bool excluded = value == nullptr;
+    funlockfile(stdout);
+    pthread_create(&thread, nullptr, TryLockStdout, nullptr);
+    pthread_join(thread, &value);
+    Check(excluded && value == reinterpret_cast<void*>(uintptr_t{1}),
+          "flockfile keeps other threads off a stream");
+
+    const int status = RunChild("thread-local-exit");
+    char order[8] = {};
+    const int order_file = open("/tmp/order.txt", O_RDONLY);
+    const ssize_t order_length = order_file < 0 ? -1 : read(order_file, order, sizeof(order) - 1);
+    if (order_file >= 0)
+    {
+        close(order_file);
+    }
+    unlink("/tmp/order.txt");
+    Check(WIFEXITED(status) && WEXITSTATUS(status) == 0 && order_length == 2 &&
+              strcmp(order, "TA") == 0,
+          "exit runs thread_local destructors before atexit handlers");
+}
+
+int order_file = -1;
+
+struct WritesAtExit
+{
+    bool used = false;
+
+    ~WritesAtExit()
+    {
+        write(order_file, "T", 1);
+    }
+};
+
+thread_local WritesAtExit writes_at_exit;
+
+void WriteAtexitMark()
+{
+    write(order_file, "A", 1);
+}
+
+int RunThreadLocalExitChild()
+{
+    order_file = open("/tmp/order.txt", O_WRONLY | O_CREAT | O_TRUNC);
+    atexit(WriteAtexitMark);
+    writes_at_exit.used = true;
+    exit(0);
+}
+
 void CheckThreadLocalStorage()
 {
     bool zeroed = true;
@@ -2068,6 +2315,10 @@ int main(int argc, char** argv)
     {
         return 7;
     }
+    if (argc == 2 && strcmp(argv[1], "thread-local-exit") == 0)
+    {
+        return RunThreadLocalExitChild();
+    }
     if (argc == 2 && strncmp(argv[1], "thread-", 7) == 0)
     {
         return RunThreadChild(argv[1]);
@@ -2130,6 +2381,7 @@ int main(int argc, char** argv)
     CheckThreads();
     CheckThreadLocalStorage();
     CheckSynchronization();
+    CheckThreadSafeLibrary();
     CheckScanning();
     CheckFloatingPoint();
     CheckAssert();

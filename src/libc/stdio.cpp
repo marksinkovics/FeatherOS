@@ -1,5 +1,6 @@
 #include "libc/exit_handlers.h"
 #include "libc/format.h"
+#include "libc/lock.h"
 #include "libc/scan.h"
 #include "libc/syscall_result.h"
 #include "user/syscall.h"
@@ -44,17 +45,25 @@ struct FeatherFile
     size_t position;
     long offset;
     unsigned char buffer[BUFSIZ];
+    // Every public function holds it, so each call's output or input stays whole; flockfile
+    // holds it across calls.
+    FeatherOS::LibC::RecursiveLock lock;
 };
 
 namespace
 {
 
 FeatherFile standard_streams[3] = {
-    {0, Readable | Writable | InUse | Console, _IOLBF, false, NoPushback, 0, 0, 0, {}},
-    {1, Readable | Writable | InUse | Console, _IOLBF, false, NoPushback, 0, 0, 0, {}},
-    {2, Readable | Writable | InUse | Console, _IONBF, false, NoPushback, 0, 0, 0, {}},
+    {0, Readable | Writable | InUse | Console, _IOLBF, false, NoPushback, 0, 0, 0, {}, {}},
+    {1, Readable | Writable | InUse | Console, _IOLBF, false, NoPushback, 0, 0, 0, {}, {}},
+    {2, Readable | Writable | InUse | Console, _IONBF, false, NoPushback, 0, 0, 0, {}, {}},
 };
 FeatherFile opened_streams[FOPEN_MAX - 3];
+// Taken before any stream's lock: guards which streams are open.
+FeatherOS::LibC::Lock streams_lock;
+
+using StreamGuard = FeatherOS::LibC::Guard<FeatherOS::LibC::RecursiveLock>;
+using ListGuard = FeatherOS::LibC::Guard<FeatherOS::LibC::Lock>;
 
 bool WriteAll(FeatherFile* stream, const unsigned char* bytes, size_t count)
 {
@@ -232,6 +241,7 @@ bool ParseMode(const char* mode, unsigned* flags, uint64_t* open_flags)
 
 FeatherFile* NewStream(int descriptor, unsigned flags)
 {
+    const ListGuard guard(streams_lock);
     for (FeatherFile& stream : opened_streams)
     {
         if ((stream.flags & InUse) != 0)
@@ -248,6 +258,7 @@ FeatherFile* NewStream(int descriptor, unsigned flags)
                   0,
                   0,
                   0,
+                  {},
                   {}};
         return &stream;
     }
@@ -255,9 +266,33 @@ FeatherFile* NewStream(int descriptor, unsigned flags)
     return nullptr;
 }
 
+// At exit, a stream another thread holds is skipped: that thread may be blocked reading the
+// console for good, and waiting for it would keep the program from ending.
 void FlushAll()
 {
-    fflush(nullptr);
+    const ListGuard guard(streams_lock);
+    const auto flush = [](FeatherFile* stream)
+    {
+        if (stream->lock.TryAcquire())
+        {
+            if (!stream->reading)
+            {
+                Settle(stream);
+            }
+            stream->lock.Release();
+        }
+    };
+    for (FeatherFile& standard : standard_streams)
+    {
+        flush(&standard);
+    }
+    for (FeatherFile& opened : opened_streams)
+    {
+        if ((opened.flags & InUse) != 0)
+        {
+            flush(&opened);
+        }
+    }
 }
 
 __attribute__((constructor)) void RegisterExitFlush()
@@ -363,8 +398,14 @@ FILE* fdopen(int descriptor, const char* mode)
 
 int fclose(FILE* stream)
 {
-    const bool flushed = Settle(stream);
-    const bool closed = close(stream->descriptor) == 0;
+    const ListGuard list_guard(streams_lock);
+    bool flushed = false;
+    bool closed = false;
+    {
+        const StreamGuard guard(stream->lock);
+        flushed = Settle(stream);
+        closed = close(stream->descriptor) == 0;
+    }
     stream->flags = 0;
     return flushed && closed ? 0 : EOF;
 }
@@ -373,8 +414,10 @@ int fflush(FILE* stream)
 {
     if (stream != nullptr)
     {
+        const StreamGuard guard(stream->lock);
         return stream->reading || Settle(stream) ? 0 : EOF;
     }
+    const ListGuard list_guard(streams_lock);
     int result = 0;
     for (FeatherFile& standard : standard_streams)
     {
@@ -392,6 +435,7 @@ int fflush(FILE* stream)
 
 int setvbuf(FILE* stream, char*, int mode, size_t)
 {
+    const StreamGuard guard(stream->lock);
     if (mode != _IOFBF && mode != _IOLBF && mode != _IONBF)
     {
         errno = EINVAL;
@@ -412,6 +456,7 @@ void setbuf(FILE* stream, char* buffer)
 
 size_t fread(void* buffer, size_t size, size_t count, FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     if (size == 0 || count == 0)
     {
         return 0;
@@ -434,6 +479,7 @@ size_t fread(void* buffer, size_t size, size_t count, FILE* stream)
 
 size_t fwrite(const void* buffer, size_t size, size_t count, FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     if (size == 0 || count == 0)
     {
         return 0;
@@ -457,21 +503,24 @@ size_t fwrite(const void* buffer, size_t size, size_t count, FILE* stream)
 
 int fgetc(FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     return GetByte(stream);
 }
 
 int getc(FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     return GetByte(stream);
 }
 
 int getchar()
 {
-    return GetByte(stdin);
+    return fgetc(stdin);
 }
 
 int ungetc(int character, FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     if (character == EOF || stream->pushback != NoPushback)
     {
         return EOF;
@@ -488,6 +537,7 @@ int ungetc(int character, FILE* stream)
 
 char* fgets(char* buffer, int size, FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     if (size <= 0)
     {
         return nullptr;
@@ -516,6 +566,7 @@ char* fgets(char* buffer, int size, FILE* stream)
 
 ssize_t getline(char** line, size_t* capacity, FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     if (line == nullptr || capacity == nullptr)
     {
         errno = EINVAL;
@@ -552,6 +603,7 @@ ssize_t getline(char** line, size_t* capacity, FILE* stream)
 
 int fputc(int character, FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     const auto byte = static_cast<unsigned char>(character);
     return PutByte(stream, byte) && FinishOutput(stream) ? byte : EOF;
 }
@@ -568,6 +620,7 @@ int putchar(int character)
 
 int fputs(const char* text, FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     for (; *text != '\0'; ++text)
     {
         if (!PutByte(stream, static_cast<unsigned char>(*text)))
@@ -580,11 +633,28 @@ int fputs(const char* text, FILE* stream)
 
 int puts(const char* text)
 {
+    const StreamGuard guard(stdout->lock);
     return fputs(text, stdout) == 0 && fputc('\n', stdout) != EOF ? 0 : EOF;
+}
+
+void flockfile(FILE* stream)
+{
+    stream->lock.Acquire();
+}
+
+int ftrylockfile(FILE* stream)
+{
+    return stream->lock.TryAcquire() ? 0 : -1;
+}
+
+void funlockfile(FILE* stream)
+{
+    stream->lock.Release();
 }
 
 int fseek(FILE* stream, long offset, int whence)
 {
+    const StreamGuard guard(stream->lock);
     if ((stream->flags & Console) != 0)
     {
         errno = ESPIPE;
@@ -628,6 +698,7 @@ int fseek(FILE* stream, long offset, int whence)
 
 long ftell(FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     if ((stream->flags & Console) != 0)
     {
         errno = ESPIPE;
@@ -647,22 +718,26 @@ long ftell(FILE* stream)
 
 void rewind(FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     fseek(stream, 0, SEEK_SET);
     stream->flags &= ~static_cast<unsigned>(Failed);
 }
 
 int feof(FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     return (stream->flags & AtEnd) != 0;
 }
 
 int ferror(FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     return (stream->flags & Failed) != 0;
 }
 
 void clearerr(FILE* stream)
 {
+    const StreamGuard guard(stream->lock);
     stream->flags &= ~static_cast<unsigned>(AtEnd | Failed);
 }
 
@@ -696,6 +771,7 @@ void perror(const char* prefix)
 
 int vfprintf(FILE* stream, const char* format, va_list arguments)
 {
+    const StreamGuard guard(stream->lock);
     StreamSink sink = {stream};
     const int count = FeatherOS::LibC::FormatTo(sink, format, arguments);
     return FinishOutput(stream) && !sink.failed ? count : -1;
@@ -809,6 +885,7 @@ struct TextSource
 
 int vfscanf(FILE* stream, const char* format, va_list arguments)
 {
+    const StreamGuard guard(stream->lock);
     StreamSource source = {stream};
     return FeatherOS::LibC::ScanFrom(source, format, arguments);
 }

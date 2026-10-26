@@ -258,7 +258,7 @@ EXPECTED_SHELL_OUTPUT = (
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
     "SPAWNED=yes",
-    "libctest: 387 checks passed",
+    "libctest: 394 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",

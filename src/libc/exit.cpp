@@ -1,4 +1,5 @@
 #include "libc/exit_handlers.h"
+#include "libc/lock.h"
 #include "user/syscall.h"
 
 #include <stddef.h>
@@ -25,10 +26,22 @@ constexpr int AbortStatus = 134;
 
 ExitHandler handlers[MaximumExitHandlers];
 size_t handler_count = 0;
+FeatherOS::LibC::Lock handlers_lock;
 void (*exit_flush)() = nullptr;
+
+// thread_local objects with destructors, newest first, for the thread that built them.
+struct ThreadExitHandler
+{
+    void (*function)(void*);
+    void* argument;
+    ThreadExitHandler* next;
+};
+
+__thread ThreadExitHandler* thread_exit_handlers = nullptr;
 
 bool AddHandler(const ExitHandler& handler)
 {
+    const FeatherOS::LibC::Guard<FeatherOS::LibC::Lock> guard(handlers_lock);
     if (handler_count == MaximumExitHandlers)
     {
         return false;
@@ -55,6 +68,30 @@ void SetExitFlush(void (*flush)())
     exit_flush = flush;
 }
 
+bool AddThreadExitHandler(void (*function)(void*), void* argument)
+{
+    auto* handler = static_cast<ThreadExitHandler*>(malloc(sizeof(ThreadExitHandler)));
+    if (handler == nullptr)
+    {
+        return false;
+    }
+    *handler = {function, argument, thread_exit_handlers};
+    thread_exit_handlers = handler;
+    return true;
+}
+
+// A destructor may build another thread_local object, so the list is read again each time.
+void RunThreadExitHandlers()
+{
+    while (thread_exit_handlers != nullptr)
+    {
+        ThreadExitHandler* handler = thread_exit_handlers;
+        thread_exit_handlers = handler->next;
+        handler->function(handler->argument);
+        free(handler);
+    }
+}
+
 } // namespace FeatherOS::LibC
 
 extern "C" int atexit(void (*function)())
@@ -64,10 +101,20 @@ extern "C" int atexit(void (*function)())
 
 extern "C" void exit(int status)
 {
+    // The calling thread's thread_local objects go first, as C++ requires.
+    FeatherOS::LibC::RunThreadExitHandlers();
     // Handlers run newest first; one may register another, which then runs next.
-    while (handler_count > 0)
+    for (;;)
     {
-        const ExitHandler handler = handlers[--handler_count];
+        ExitHandler handler;
+        {
+            const FeatherOS::LibC::Guard<FeatherOS::LibC::Lock> guard(handlers_lock);
+            if (handler_count == 0)
+            {
+                break;
+            }
+            handler = handlers[--handler_count];
+        }
         if (handler.plain != nullptr)
         {
             handler.plain();

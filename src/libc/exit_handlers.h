@@ -8,6 +8,10 @@ namespace FeatherOS::LibC
 bool AddExitHandler(void (*function)(void*), void* argument);
 // stdio registers its flush here, so programs that never use stdio do not link it.
 void SetExitFlush(void (*flush)());
+// For __cxa_thread_atexit: the calling thread's own handlers, which its end (and, for the thread
+// that calls exit, exit itself) runs newest first.
+bool AddThreadExitHandler(void (*function)(void*), void* argument);
+void RunThreadExitHandlers();
 
 } // namespace FeatherOS::LibC
 
