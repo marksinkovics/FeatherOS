@@ -117,6 +117,15 @@ bool UnmapUserPage(AddressSpace& address_space, uint64_t virtual_address,
 #endif
 }
 
+void ShootDownUserMappings(const AddressSpace& address_space)
+{
+#if defined(ARCH_x86_64)
+    Arch::X86_64::ShootDownUserMappings(address_space);
+#elif defined(ARCH_aarch64)
+    Arch::AArch64::ShootDownUserMappings(address_space);
+#endif
+}
+
 bool ActivateAddressSpace(const AddressSpace& address_space)
 {
 #if defined(ARCH_x86_64)

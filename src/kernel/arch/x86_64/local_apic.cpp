@@ -1,4 +1,5 @@
 #include "local_apic.h"
+#include "virtual_memory.h"
 
 #include "kernel/arch/interrupts.h"
 #include "kernel/cpu.h"
@@ -154,6 +155,11 @@ void HandleInterrupt(uint64_t vector)
     }
     // Acknowledge first: the handler may switch to another task before returning.
     Register(EndOfInterruptRegister) = 0;
+    // A TLB shootdown also arrives as an IPI; it is served before the handler may switch tasks.
+    if (vector == IpiVector)
+    {
+        FeatherOS::Memory::Arch::X86_64::ServiceShootDown();
+    }
     const Handler handler = vector == IpiVector ? ipi_handler : timer_handler;
     if (handler != nullptr)
     {

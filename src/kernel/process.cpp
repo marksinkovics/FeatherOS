@@ -869,48 +869,95 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
     return 0;
 }
 
+// Frees frames unmapped from program once no CPU can still reach them through its TLB.
+void FreeUnmappedFrames(const UserProgram& program, const uint64_t* frames, size_t count)
+{
+    if (count == 0)
+    {
+        return;
+    }
+    Memory::ShootDownUserMappings(program.address_space);
+    for (size_t index = 0; index < count; ++index)
+    {
+        Memory::FreePageFrame(frames[index]);
+    }
+}
+
 // Unmaps the whole pages between the new and the old break, and frees their frames. The page
-// holding the new break stays, with its old contents.
+// holding the new break stays, with its old contents. Pages are unmapped under the memory lock
+// and freed after it, since freeing waits for the other CPUs running the process.
 uint64_t ShrinkHeap(UserProgram& program, uint64_t decrement)
 {
-    const uint64_t previous_break = program.heap_break;
-    if (decrement > previous_break - program.heap_start)
-    {
-        return User::SyscallErrorInvalidArgument;
-    }
-    // Unmapping flushes only this CPU's TLB, which is enough only while one thread uses the
-    // address space; with threads the pages stay mapped above the break for later growth.
-    if (program.stack_slots != 1)
-    {
-        program.heap_break = previous_break - decrement;
-        return previous_break;
-    }
     const uint64_t page_size = Memory::PageSize;
-    const uint64_t new_break = previous_break - decrement;
-    const uint64_t page_end = (previous_break + page_size - 1) & ~(page_size - 1);
-    for (uint64_t page_address = (new_break + page_size - 1) & ~(page_size - 1);
-         page_address < page_end; page_address += page_size)
+    // Sized from the request, before the lock: at most one frame per page it spans, plus one.
+    const size_t capacity =
+        static_cast<size_t>(decrement / page_size > program.page_limit ? program.page_limit
+                                                                       : decrement / page_size + 1);
+    auto* frames = static_cast<uint64_t*>(Memory::AllocateZeroed(capacity, sizeof(uint64_t)));
+    if (frames == nullptr)
     {
-        uint64_t physical_address;
-        if (Memory::UnmapUserPage(program.address_space, page_address, &physical_address))
+        return User::SyscallErrorNoMemory;
+    }
+    size_t count = 0;
+    uint64_t previous_break = 0;
+    {
+        Sync::SpinLockGuard guard(program.memory_lock);
+        previous_break = program.heap_break;
+        if (decrement > previous_break - program.heap_start)
         {
-            Memory::FreePageFrame(physical_address);
-            --program.mapped_page_count;
+            Memory::Deallocate(frames);
+            return User::SyscallErrorInvalidArgument;
+        }
+        const uint64_t new_break = previous_break - decrement;
+        const uint64_t page_end = (previous_break + page_size - 1) & ~(page_size - 1);
+        for (uint64_t page_address = (new_break + page_size - 1) & ~(page_size - 1);
+             page_address < page_end && count < capacity; page_address += page_size)
+        {
+            uint64_t physical_address;
+            if (Memory::UnmapUserPage(program.address_space, page_address, &physical_address))
+            {
+                frames[count++] = physical_address;
+                --program.mapped_page_count;
+            }
+        }
+        program.heap_break = new_break;
+    }
+    FreeUnmappedFrames(program, frames, count);
+    Memory::Deallocate(frames);
+    return previous_break;
+}
+
+// A joined thread's stack, TLS area included, goes back; the next thread in the slot maps fresh
+// pages as it needs them.
+void ReleaseStackSlot(UserProgram& program, uint32_t slot)
+{
+    const uint64_t top = ThreadStacks::Top(program.layout.stack_top, UserStackRegionPages, slot);
+    const uint64_t bottom = top - (UserStackRegionPages - 1) * Memory::PageSize;
+    uint64_t frames[UserStackRegionPages];
+    size_t count = 0;
+    {
+        Sync::SpinLockGuard guard(program.memory_lock);
+        for (uint64_t page = bottom; page < top; page += Memory::PageSize)
+        {
+            if (Memory::UnmapUserPage(program.address_space, page, &frames[count]))
+            {
+                ++count;
+                --program.mapped_page_count;
+            }
         }
     }
-    program.heap_break = new_break;
-    return previous_break;
+    FreeUnmappedFrames(program, frames, count);
 }
 
 // A negative increment, as a two's-complement value, shrinks the heap.
 uint64_t ExtendHeapSyscall(void* context, uint64_t increment)
 {
     UserProgram& program = static_cast<ProcessRecord*>(context)->program;
-    Sync::SpinLockGuard guard(program.memory_lock);
     if (static_cast<int64_t>(increment) < 0)
     {
         return ShrinkHeap(program, 0 - increment);
     }
+    Sync::SpinLockGuard guard(program.memory_lock);
     const uint64_t previous_break = program.heap_break;
     // The heap may grow up to, but never into, the lowest thread stack slot's guard page.
     const uint64_t stack_region_base =
@@ -1521,6 +1568,8 @@ uint64_t ThreadJoinSyscall(void* context, uint64_t thread_id, uint64_t value)
         return User::SyscallErrorInterrupted;
     }
     Scheduler::ReapTask(thread->task);
+    // While the slot is still taken, so no new thread maps pages in it meanwhile.
+    ReleaseStackSlot(process->program, static_cast<uint32_t>(thread - process->threads) + 1);
     {
         Sync::SpinLockGuard guard(process_lock);
         thread->task = 0;

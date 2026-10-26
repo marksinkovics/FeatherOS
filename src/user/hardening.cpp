@@ -1,6 +1,7 @@
 #include "command_line.h"
 #include "syscall.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,18 @@ bool ChildTerminated(const char* command_line)
            (status == ExitStatusFault || status == ExitStatusKernelAccessFault);
 }
 
+volatile uint8_t* shared_page = nullptr;
+int reader_started = 0;
+
+// Keeps reading on its own CPU, so its TLB holds the page while the main thread returns it.
+void* ReadSharedPage(void*)
+{
+    for (unsigned long sum = 0;; sum += shared_page[0])
+    {
+        __atomic_store_n(&reader_started, 1, __ATOMIC_RELEASE);
+    }
+}
+
 [[noreturn]] void RunViolation(const char* name)
 {
     if (strcmp(name, "exec-heap") == 0)
@@ -57,6 +70,20 @@ bool ChildTerminated(const char* command_line)
         page[4096] = 1;
         sbrk(-2 * 4096);
         page[4096] = 2;
+    }
+    else if (strcmp(name, "freed-heap-threads") == 0)
+    {
+        auto* pages = static_cast<volatile uint8_t*>(sbrk(2 * 4096));
+        shared_page = pages + 4096;
+        shared_page[0] = 1;
+        pthread_t reader = 0;
+        pthread_create(&reader, nullptr, ReadSharedPage, nullptr);
+        while (__atomic_load_n(&reader_started, __ATOMIC_ACQUIRE) == 0)
+        {
+        }
+        sbrk(-2 * 4096);
+        // Without a shootdown the reader would go on through its stale translation.
+        Sleep(500);
     }
     else if (strcmp(name, "write-code") == 0)
     {
@@ -116,6 +143,8 @@ int main(int argc, char** argv)
 
     Check(ChildTerminated("hardening exec-heap"), "executing the heap");
     Check(ChildTerminated("hardening freed-heap"), "using a page the heap returned");
+    Check(ChildTerminated("hardening freed-heap-threads"),
+          "a thread on another CPU using a page the heap returned");
     Check(ChildTerminated("hardening write-code"), "writing code");
     Check(ChildTerminated("hardening kernel-read"), "reading kernel memory");
     Check(ChildTerminated("hardening bad-syscall"), "invalid syscall number");

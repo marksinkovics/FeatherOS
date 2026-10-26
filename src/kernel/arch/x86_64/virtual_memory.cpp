@@ -1,5 +1,6 @@
 #include "virtual_memory.h"
 
+#include "kernel/arch/interrupts.h"
 #include "kernel/cpu.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/sync/spinlock.h"
@@ -28,6 +29,16 @@ uint64_t kernel_root_physical_address = 0;
 // Kernel tables are shared by every address space and CPU; held while any table is edited.
 FeatherOS::Sync::SpinLock page_table_lock;
 uint64_t active_root_physical_addresses[FeatherOS::Cpu::MaximumCpus] = {};
+
+// A CPU asked to flush finds requested ahead of completed; it reloads CR3, which drops every
+// user translation (they are never global), and catches completed up.
+struct alignas(64) FlushRequest
+{
+    uint64_t requested;
+    uint64_t completed;
+};
+
+FlushRequest flush_requests[FeatherOS::Cpu::MaximumCpus] = {};
 
 bool IsActiveOnAnyCpu(uint64_t root_physical_address)
 {
@@ -462,16 +473,63 @@ bool ActivateAddressSpace(const AddressSpace& address_space)
         return false;
     }
     const uint64_t root = address_space.root_physical_address;
+    // Recorded before the switch: a shootdown that misses this CPU must have changed the page
+    // tables before this CPU starts reading them.
+    __atomic_store_n(&active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()], root,
+                     __ATOMIC_SEQ_CST);
     asm volatile("mov %0, %%cr3" : : "r"(root) : "memory");
-    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = root;
     return true;
 }
 
 void ActivateKernelAddressSpace()
 {
     const uint64_t root = kernel_root_physical_address;
+    __atomic_store_n(&active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()], root,
+                     __ATOMIC_SEQ_CST);
     asm volatile("mov %0, %%cr3" : : "r"(root) : "memory");
-    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = root;
+}
+
+void ServiceShootDown()
+{
+    FlushRequest& request = flush_requests[FeatherOS::Cpu::CurrentIndex()];
+    const uint64_t wanted = __atomic_load_n(&request.requested, __ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&request.completed, __ATOMIC_RELAXED) == wanted)
+    {
+        return;
+    }
+    uint64_t cr3;
+    asm volatile("mov %%cr3, %0\n\tmov %0, %%cr3" : "=r"(cr3) : : "memory");
+    __atomic_store_n(&request.completed, wanted, __ATOMIC_RELEASE);
+}
+
+// invlpg flushes only this CPU, so every other CPU running the address space gets an IPI and is
+// waited for. While waiting, this CPU serves requests aimed at itself, so two CPUs shooting down
+// at once never wait on each other.
+void ShootDownUserMappings(const AddressSpace& address_space)
+{
+    const uint64_t root = address_space.root_physical_address;
+    const uint32_t self = FeatherOS::Cpu::CurrentIndex();
+    uint64_t wanted[FeatherOS::Cpu::MaximumCpus] = {};
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    for (uint32_t cpu = 0; cpu < FeatherOS::Cpu::MaximumCpus; ++cpu)
+    {
+        if (cpu == self ||
+            __atomic_load_n(&active_root_physical_addresses[cpu], __ATOMIC_SEQ_CST) != root)
+        {
+            continue;
+        }
+        wanted[cpu] = __atomic_add_fetch(&flush_requests[cpu].requested, 1, __ATOMIC_ACQ_REL);
+        FeatherOS::Arch::Interrupts::SendIpi(cpu);
+    }
+    for (uint32_t cpu = 0; cpu < FeatherOS::Cpu::MaximumCpus; ++cpu)
+    {
+        while (wanted[cpu] != 0 &&
+               __atomic_load_n(&flush_requests[cpu].completed, __ATOMIC_ACQUIRE) < wanted[cpu])
+        {
+            ServiceShootDown();
+            FeatherOS::Sync::CpuRelax();
+        }
+    }
 }
 
 bool UnmapPage(uint64_t virtual_address)

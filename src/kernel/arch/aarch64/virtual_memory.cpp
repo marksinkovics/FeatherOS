@@ -483,6 +483,10 @@ bool UnmapUserPage(AddressSpace& address_space, uint64_t virtual_address,
     return true;
 }
 
+// Nothing to send: UnmapUserPage's tlbi vaae1is is broadcast to every CPU in the inner-shareable
+// domain, and its dsb ish waits until they have all dropped the translation.
+void ShootDownUserMappings(const AddressSpace&) {}
+
 bool ActivateAddressSpace(const AddressSpace& address_space)
 {
     if (address_space.root_physical_address == 0 ||

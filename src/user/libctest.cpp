@@ -1677,6 +1677,41 @@ void* TryLockStdout(void*)
     return reinterpret_cast<void*>(static_cast<uintptr_t>(locked == 0 ? 1 : 0));
 }
 
+unsigned long ReadOwnPages()
+{
+    char text[512];
+    FILE* status_file = fopen("/proc/self/status", "r");
+    const size_t length =
+        status_file == nullptr ? 0 : fread(text, 1, sizeof(text) - 1, status_file);
+    if (status_file != nullptr)
+    {
+        fclose(status_file);
+    }
+    text[length] = '\0';
+    const char* pages = strstr(text, "\nPages:\t");
+    return pages == nullptr ? 0 : strtoul(pages + 8, nullptr, 10);
+}
+
+void CheckMemoryReturns()
+{
+    const unsigned long before = ReadOwnPages();
+    pthread_t deep = 0;
+    pthread_create(&deep, nullptr, DeepStack, nullptr);
+    pthread_join(deep, nullptr);
+    const unsigned long after = ReadOwnPages();
+    Check(before > 0 && after <= before, "a joined thread's stack pages go back");
+
+    // This process has threads by now, so the pages the heap returns need a TLB shootdown.
+    void* const start = sbrk(0);
+    void* block = malloc(512 * 1024);
+    const unsigned long grown = ReadOwnPages();
+    free(block);
+    Check(block != nullptr && grown > after + 100 &&
+              static_cast<char*>(sbrk(0)) < static_cast<char*>(start) + 256 * 1024 &&
+              ReadOwnPages() < grown - 100,
+          "a process with threads still gives heap pages back");
+}
+
 void CheckThreadSafeLibrary()
 {
     errno = EINTR;
@@ -2382,6 +2417,7 @@ int main(int argc, char** argv)
     CheckThreadLocalStorage();
     CheckSynchronization();
     CheckThreadSafeLibrary();
+    CheckMemoryReturns();
     CheckScanning();
     CheckFloatingPoint();
     CheckAssert();
