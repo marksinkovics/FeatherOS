@@ -51,11 +51,12 @@ Get the code lint-clean **before** running any QEMU smoke test or `test-all`. Al
 ## Conventions
 
 - Shared code goes in `src/kernel/`. Anything CPU- or board-specific goes under `arch/<arch>/`. Never share GDT/TSS/IDT concepts with AArch64. Full rules: "Architecture Boundaries" in `docs/roadmap.md`.
+- Put implementations in `.cpp` files and only declarations in headers; templates are the exception.
 - Keep comments minimal: only for education (hardware quirks, non-obvious invariants) or when the code can't be understood without them. Never describe what a function does; that goes stale when the code changes.
 - Namespaces are `FeatherOS::<Subsystem>`, with PascalCase functions. clang-format uses LLVM style, 4-space indent, 100 columns.
 - Early logging and panic must not allocate. Physical addresses use explicit 64-bit types, and code must not hard-code physical memory addresses (obtain them from the Limine memory map).
 - Every feature should land with tests on **both** architectures: a QEMU case in `test_boot_matrix.py` and, where logic is host-testable, a unit test.
-- To add a user program, create `src/user/<name>.cpp` with a `main` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. Use libc, not raw syscalls, unless the program tests the kernel ABI itself. A missing POSIX call belongs in `src/libc/`, documented in `docs/posix.md`.
+- To add a user program, create `src/user/<name>.cpp` with a `main` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. Use libc, not raw syscalls, unless the program tests the kernel ABI itself. Code shared between programs goes in a header with declarations and a `.cpp` listed in `featheros_user_support` (and in `tests/unit/CMakeLists.txt` when host-tested). A missing POSIX call belongs in `src/libc/`, documented in `docs/posix.md`.
 - When a milestone completes, update `docs/roadmap.md` (mark it Complete and add a summary), `docs/development.md` (user-facing details), and the Status section above.
 
 ## Deeper docs

@@ -9,6 +9,19 @@ add_library(featheros_c STATIC
     exit.cpp
     featheros.cpp
     ioctl.cpp
+    big_integer.cpp
+    environment_table.cpp
+    float_bits.cpp
+    float_format.cpp
+    float_parse.cpp
+    format.cpp
+    heap_allocator.cpp
+    heap_sort.cpp
+    math_functions.cpp
+    scan.cpp
+    spawn_request.cpp
+    time_format.cpp
+    ../user/calendar.cpp
     termios.cpp
     malloc.cpp
     signal.cpp

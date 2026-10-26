@@ -22,22 +22,8 @@ struct BufferSink
     size_t capacity;
     size_t length = 0;
 
-    void Put(char character)
-    {
-        if (length + 1 < capacity)
-        {
-            buffer[length] = character;
-        }
-        ++length;
-    }
-
-    void Terminate() const
-    {
-        if (capacity > 0)
-        {
-            buffer[length < capacity ? length : capacity - 1] = '\0';
-        }
-    }
+    void Put(char character);
+    void Terminate() const;
 };
 
 namespace FormatDetail
@@ -94,15 +80,7 @@ private:
     int count = 0;
 };
 
-inline size_t Length(const char* text, int maximum)
-{
-    size_t length = 0;
-    while ((maximum < 0 || length < static_cast<size_t>(maximum)) && text[length] != '\0')
-    {
-        ++length;
-    }
-    return length;
-}
+size_t Length(const char* text, int maximum);
 
 // Pads text, already converted, to the field width on whichever side the flags ask for.
 template <typename Sink>
@@ -193,46 +171,8 @@ void WriteInteger(Writer<Sink>& writer, const Specification& specification, uint
     }
 }
 
-inline int64_t SignedArgument(const Specification& specification, va_list* arguments)
-{
-    switch (specification.length)
-    {
-    case 'l':
-        return specification.doubled_length ? va_arg(*arguments, long long)
-                                            : va_arg(*arguments, long);
-    case 'j':
-        return va_arg(*arguments, intmax_t);
-    case 'z':
-    case 't':
-        return va_arg(*arguments, ptrdiff_t);
-    case 'h':
-        return specification.doubled_length ? static_cast<signed char>(va_arg(*arguments, int))
-                                            : static_cast<short>(va_arg(*arguments, int));
-    default:
-        return va_arg(*arguments, int);
-    }
-}
-
-inline uint64_t UnsignedArgument(const Specification& specification, va_list* arguments)
-{
-    switch (specification.length)
-    {
-    case 'l':
-        return specification.doubled_length ? va_arg(*arguments, unsigned long long)
-                                            : va_arg(*arguments, unsigned long);
-    case 'j':
-        return va_arg(*arguments, uintmax_t);
-    case 'z':
-    case 't':
-        return va_arg(*arguments, size_t);
-    case 'h':
-        return specification.doubled_length
-                   ? static_cast<unsigned char>(va_arg(*arguments, unsigned int))
-                   : static_cast<unsigned short>(va_arg(*arguments, unsigned int));
-    default:
-        return va_arg(*arguments, unsigned int);
-    }
-}
+int64_t SignedArgument(const Specification& specification, va_list* arguments);
+uint64_t UnsignedArgument(const Specification& specification, va_list* arguments);
 
 template <typename Sink>
 void WriteFloat(Writer<Sink>& writer, const Specification& specification, char conversion,
@@ -267,10 +207,7 @@ void WriteFloat(Writer<Sink>& writer, const Specification& specification, char c
     }
 }
 
-inline bool IsDigit(char character)
-{
-    return character >= '0' && character <= '9';
-}
+bool IsDigit(char character);
 
 } // namespace FormatDetail
 

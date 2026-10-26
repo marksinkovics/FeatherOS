@@ -69,64 +69,10 @@ private:
     size_t consumed = 0;
 };
 
-inline bool InSet(const unsigned char* set, int character)
-{
-    return (set[static_cast<unsigned char>(character) / 8] &
-            (1U << (static_cast<unsigned char>(character) % 8))) != 0;
-}
+bool InSet(const unsigned char* set, int character);
 
 // Parses "[...]" after the '[' and returns the character after its ']', or nullptr.
-inline const char* ParseSet(const char* format, unsigned char (&set)[32])
-{
-    bool negate = false;
-    if (*format == '^')
-    {
-        negate = true;
-        ++format;
-    }
-    for (unsigned char& bits : set)
-    {
-        bits = 0;
-    }
-    auto add = [&set](unsigned char character)
-    {
-        set[character / 8] =
-            static_cast<unsigned char>(set[character / 8] | (1U << (character % 8)));
-    };
-    // A ']' first in the set is a member, not the end.
-    if (*format == ']')
-    {
-        add(']');
-        ++format;
-    }
-    for (; *format != '\0' && *format != ']'; ++format)
-    {
-        const auto first = static_cast<unsigned char>(*format);
-        if (format[1] == '-' && format[2] != ']' && format[2] != '\0')
-        {
-            const auto last = static_cast<unsigned char>(format[2]);
-            for (unsigned value = first; value <= last; ++value)
-            {
-                add(static_cast<unsigned char>(value));
-            }
-            format += 2;
-            continue;
-        }
-        add(first);
-    }
-    if (*format != ']')
-    {
-        return nullptr;
-    }
-    if (negate)
-    {
-        for (unsigned char& bits : set)
-        {
-            bits = static_cast<unsigned char>(~bits);
-        }
-    }
-    return format + 1;
-}
+const char* ParseSet(const char* format, unsigned char (&set)[32]);
 
 // Reads the longest prefix that can begin an integer in base (0 picks it from the prefix,
 // as strtol does) into text; false if no digit was read.
@@ -179,16 +125,8 @@ bool ReadInteger(Reader<Source>& reader, int base, size_t width, char (&text)[Ma
 
 constexpr size_t MaximumFloatLength = 512;
 
-inline bool IsHexDigit(int character)
-{
-    return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') ||
-           (character >= 'A' && character <= 'F');
-}
-
-inline int LowerCase(int character)
-{
-    return character >= 'A' && character <= 'Z' ? character - 'A' + 'a' : character;
-}
+bool IsHexDigit(int character);
+int LowerCase(int character);
 
 // Reads the longest prefix of a strtod number into text: a sign, then "inf", "infinity",
 // "nan", or hex or decimal digits with a point and an exponent. Since only one character can be
@@ -263,49 +201,7 @@ template <typename Value> void Store(void* target, Value value)
     *static_cast<Value*>(target) = value;
 }
 
-inline void StoreInteger(char length, bool doubled, bool is_signed, uint64_t value, void* target)
-{
-    switch (length)
-    {
-    case 'h':
-        if (doubled)
-        {
-            is_signed ? Store(target, static_cast<signed char>(value))
-                      : Store(target, static_cast<unsigned char>(value));
-        }
-        else
-        {
-            is_signed ? Store(target, static_cast<short>(value))
-                      : Store(target, static_cast<unsigned short>(value));
-        }
-        return;
-    case 'l':
-        if (doubled)
-        {
-            is_signed ? Store(target, static_cast<long long>(value))
-                      : Store(target, static_cast<unsigned long long>(value));
-        }
-        else
-        {
-            is_signed ? Store(target, static_cast<long>(value))
-                      : Store(target, static_cast<unsigned long>(value));
-        }
-        return;
-    case 'j':
-        is_signed ? Store(target, static_cast<intmax_t>(value))
-                  : Store(target, static_cast<uintmax_t>(value));
-        return;
-    case 'z':
-    case 't':
-        is_signed ? Store(target, static_cast<ptrdiff_t>(value))
-                  : Store(target, static_cast<size_t>(value));
-        return;
-    default:
-        is_signed ? Store(target, static_cast<int>(value))
-                  : Store(target, static_cast<unsigned int>(value));
-        return;
-    }
-}
+void StoreInteger(char length, bool doubled, bool is_signed, uint64_t value, void* target);
 
 } // namespace ScanDetail
 

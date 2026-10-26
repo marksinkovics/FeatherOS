@@ -17,6 +17,21 @@ set(FEATHEROS_START_PROGRAMS
 
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker_${ARCH}.ld)
 
+# Helpers the programs share; each program links only the parts it uses.
+add_library(featheros_user_support STATIC
+    calculator.cpp
+    command_line.cpp
+    init_config.cpp
+    key_decoder.cpp
+    line_editor.cpp
+    process_table.cpp
+    raw_terminal.cpp
+    vi_editor.cpp
+)
+target_compile_options(featheros_user_support PRIVATE ${FEATHEROS_USER_FLAGS})
+target_link_libraries(featheros_user_support PRIVATE featheros_c)
+set_target_properties(featheros_user_support PROPERTIES CXX_STANDARD 17)
+
 function(featheros_add_program entry)
     string(REPLACE ":" ";" parts ${entry})
     list(GET parts 0 name)
@@ -27,7 +42,7 @@ function(featheros_add_program entry)
     target_link_options(${target} PRIVATE ${FEATHEROS_USER_FLAGS}
         -Wl,-pie -Wl,--no-dynamic-linker -Wl,-z,text -Wl,-T,${USER_LINKER_SCRIPT}
         -Wl,-e,_start -Wl,--build-id=none -Wl,-z,max-page-size=0x1000)
-    target_link_libraries(${target} PRIVATE ${ARGN} featheros_c)
+    target_link_libraries(${target} PRIVATE ${ARGN} featheros_user_support featheros_c)
     set_target_properties(${target} PROPERTIES
         OUTPUT_NAME ${name}-${ARCH}
         SUFFIX .elf
@@ -43,4 +58,3 @@ endforeach ()
 foreach (entry ${FEATHEROS_START_PROGRAMS})
     featheros_add_program(${entry})
 endforeach ()
-target_sources(user_vi PRIVATE vi_editor.cpp)

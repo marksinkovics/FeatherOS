@@ -27,6 +27,7 @@ public:
 
     // A final newline ends the last line rather than starting an empty one.
     bool Load(const char* text, size_t length);
+
     void Swap(ViBuffer& other);
     size_t Count() const;
     const ViLine& Line(size_t index) const;
@@ -79,6 +80,7 @@ public:
 
     // name is null for a buffer that has no file yet; new_file says the file did not exist.
     bool Open(const char* name, const char* text, size_t length, bool new_file);
+
     void Resize(size_t rows, size_t columns);
     Status Press(const KeyPress& press);
     void Render();
@@ -158,6 +160,7 @@ private:
 
     // Puts the cursor back on a character: past the end only in insert mode.
     void ClampColumn();
+
     void GoToLine(size_t line, size_t column);
     void FirstNonBlank();
     void MoveVertically(size_t line);
@@ -165,11 +168,13 @@ private:
     // Undo keeps whole-buffer snapshots, which is simple and cheap for the small files written
     // here; the oldest are dropped past the step and byte limits.
     static void ClearSnapshots(Snapshot* snapshots, size_t* count);
+
     bool TakeSnapshot(Snapshot* snapshot) const;
     void PushSnapshot(Snapshot* stack, size_t* count, const Snapshot& snapshot);
 
     // Called before a change; false when there is no memory to undo it, so the change is skipped.
     bool BeginChange();
+
     void EndChange();
     void Restore(Snapshot* from, size_t* from_count, Snapshot* to, size_t* to_count,
                  const char* empty_message);
@@ -179,6 +184,7 @@ private:
 
     // Word motions treat the end of each line as a blank, and stop at empty lines, as vi does.
     int ClassAt(size_t line, size_t column) const;
+
     bool Next(size_t* line, size_t* column) const;
     bool Previous(size_t* line, size_t* column) const;
     bool EmptyLine(size_t line) const;
@@ -201,6 +207,7 @@ private:
 
     // Normal-mode motions written as characters; false for other keys.
     bool MoveByCharacter(char character, size_t count, bool counted);
+
     void DeleteCharacters(size_t first, size_t count);
     void DeleteLines(size_t count);
     void Put(bool after);
