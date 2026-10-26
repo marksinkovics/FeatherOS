@@ -151,6 +151,8 @@ SHELL_VI_INPUT = (
     b"upper < vi.txt\n",
     b"cd\n",
 )
+# Without -n, top redraws in place on the alternate screen until q.
+SHELL_TOP_INPUT = (b"top -d 200\n", TypeWhen("; q quits", b"q"))
 EXPECTED_VI_LINES = {"HELLO WORLD": 2, "SECOND LINE": 2, "THIRD LINE": 2}
 KEYS_READY = "keys: press keys; q quits"
 # keys reads raw input: every special key, Ctrl+C as a byte, then q to quit.
@@ -257,6 +259,7 @@ EXPECTED_SHELL_OUTPUT = (
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
     "No write since last change (add ! to override)",
+    "; q quits",
     # env prints the variables init.conf sets, which the shell passes on.
     "HOME=/home",
     "PATH=/system",
@@ -773,6 +776,7 @@ def main():
             SHELL_INPUT.splitlines(keepends=True)
             + list(SHELL_EDIT_INPUT)
             + list(SHELL_VI_INPUT)
+            + list(SHELL_TOP_INPUT)
             + list(SHELL_KEYS_INPUT)
             + list(SHELL_INTERRUPT_INPUT)
         )

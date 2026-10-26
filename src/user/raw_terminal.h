@@ -20,13 +20,16 @@ public:
     void Leave();
     // False when a read fails, as after a signal (EINTR); errno says why.
     bool ReadKey(KeyPress* press);
+    // Waits at most tenths of a second, up to 255; *pressed says whether a key came in time.
+    bool ReadKeyWithin(unsigned tenths, KeyPress* press, bool* pressed);
 
 private:
     termios m_original = {};
     termios m_raw = {};
-    termios m_waiting = {};
     bool m_active = false;
-    bool m_waiting_active = false;
+    // The minimum and timeout last set, so a read changes them only when it needs others.
+    cc_t m_minimum = 1;
+    cc_t m_timeout = 0;
     KeyDecoder m_decoder;
     KeyPress m_presses[KeyDecoder::MaximumPresses] = {};
     size_t m_press_count = 0;
@@ -35,8 +38,9 @@ private:
     size_t m_byte_count = 0;
     size_t m_next_byte = 0;
 
-    // Reads more bytes, waiting only briefly while a sequence is incomplete; then none may come.
-    bool Fill();
+    // Reads more bytes, waiting at most tenths of a second (0 waits for ever), or only a tenth
+    // while a sequence is incomplete; in both cases none may come.
+    bool Fill(unsigned tenths);
 };
 
 } // namespace FeatherOS::User

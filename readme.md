@@ -46,7 +46,7 @@ At the shell prompt:
 | Ctrl+C | Discard the line |
 | Enter | Run the line |
 
-While a command runs, Ctrl+C stops it, along with the rest of its pipeline. Programs that read a line of their own, such as `calc` and `upper`, support Backspace only. `keys` shows what any key sends.
+While a command runs, Ctrl+C stops it, along with the rest of its pipeline. `top` redraws in place until `q`. Programs that read a line of their own, such as `calc` and `upper`, support Backspace only. `keys` shows what any key sends.
 
 ### vi
 

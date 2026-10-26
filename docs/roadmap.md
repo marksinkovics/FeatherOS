@@ -179,10 +179,12 @@ Moved: storage drivers for physical hardware, to M16.
 4. **Virtual files** (complete): `/dev/null`, `/dev/zero`, `/dev/random`, a RAM-backed `/tmp`, `/proc/<pid>/status` and `/proc/meminfo`. This adds file kinds other than disk files, which pipes reuse, and `ps` reads `/proc`.
 5. **Signals, pipes and jobs** (complete), in five steps: (1, complete) one descriptor table with shared open files, `dup`/`dup2`/`fcntl`, `O_CLOEXEC`, inheritance through `Spawn`, `posix_spawn` file actions, and the shell's `<`, `>`, `>>`, `2>` and `2>&1`; (2, complete) `pipe` and the shell's `|`; (3, complete) process groups, so a pipeline is one Ctrl+C job, and `&` with `jobs`; (4, complete) signals; (5, complete) `primes` over pipes. In detail: signals and `kill`, `pipe` and `dup2`, and the shell's `|`, `>`, `<` and `&`. `primes` can then return results through a pipe instead of its exit status.
 6. **Process tools** (complete): `ps` and `top`, with per-process CPU time from the scheduler's tick accounting.
-7. **Terminal** (in progress), in five steps: (1, complete) VT100 cursor control and the terminal size; (2, complete) raw keyboard input and termios; (3, complete) shell line editing and history; (4, complete) `vi`; (5) `top` redrawing in place (`clear` came with step 3).
+7. **Terminal** (complete), in five steps: (1, complete) VT100 cursor control and the terminal size; (2, complete) raw keyboard input and termios; (3, complete) shell line editing and history; (4, complete) `vi`; (5, complete) `top` redrawing in place (`clear` came with step 3).
 8. **Threads:** user threads with TLS, the thread-safe C library, and the TLB shootdown.
 
 `cron`, more shell utilities and program packaging, and a more capable `calc` fit between the parts. `fork` stays optional.
+
+**Part 7, step 5 (complete): `top` in place.** On the console, without `-n`, `top` takes the alternate screen, redraws its table over the last one, cut to the screen's height, and quits on `q`, Escape or Ctrl+C. It reads keys in raw mode with a timeout (`RawTerminal::ReadKeyWithin`), so the wait between refreshes answers a key at once, and the kernel restores the screen if `top` dies. With `-n`, or output that is not the console, it prints tables one after another as before. The shell test quits an interactive `top` with `q`. This completes Part 7: the console is a VT100-style terminal with raw input, the shell edits lines with history, and `vi` and `top` run full screen.
 
 **Part 7, step 4 (complete): `vi`.** A small vi replaces the planned nano-style `edit`. The engine (`src/user/vi_editor.cpp`, host-tested) has normal, insert, `:` and `/` modes:
 - **Moving:** `h j k l` and the arrows, `w b e`, `0 ^ $`, `gg G`, `+ -`, Enter, paging with Ctrl+F, Ctrl+B, Ctrl+D and Ctrl+U, and counts.
