@@ -435,6 +435,16 @@ Scheduled right after M14, whose xHCI stack it uses. The goal is to plug in a US
 
 **Complete when:** on both targets, a QEMU USB drive with each filesystem is detected, mounted under `/media`, written and cleanly ejected, and the host repair tool finds no errors.
 
+### 20. C++23 And Sanitizers
+
+Scheduled right after M11, before the next feature milestone, so later work starts on a stricter base. Each part lands on its own, with the full matrix on both targets.
+
+- **Part 1: one language standard.** The kernel builds as `gnu++11`, libc and the programs as `gnu++17`, and the host tests with the compiler's default. Move all of them to `gnu++23`, which GCC 14 and Apple clang 17 both support. A trial build as C++23 found no errors and six warnings, all `++` on a `volatile` (deprecated since C++20), in `arch/aarch64/keyboard.cpp`, `scheduler.cpp`, `time/timer.cpp`, `libctest.cpp` and `test_program.cpp`. C++23 rather than C++20, because C++23 allows `|=` and `&=` on `volatile` again, which the device-register code relies on. Also clear whatever new clang-tidy findings the standard brings.
+- **Part 2: sanitizers for the host tests.** Build and run the Catch2 tests with AddressSanitizer and UndefinedBehaviorSanitizer (`-fsanitize=address,undefined`), as a `build.sh` option or the default for `unit-test`, and fix what they find. Leak checking is not available on macOS arm64, so it covers out-of-bounds access, use after free and undefined behaviour.
+- **Part 3: safer tables and globals.** Fill the syscall handler tables (`process.cpp`, both `arch/*/exceptions.cpp`, and the tests' tables) with C++20 designated initializers, so each entry names its slot and a new syscall no longer edits the architecture files. Mark the global spinlocks, mutexes and wait queues `constinit`, so the compiler checks that they need no constructor, which early boot code relies on.
+
+**Complete when:** every target builds as `gnu++23` without warnings, the host tests pass under both sanitizers, and the syscall tables use designated initializers.
+
 ## Architecture Boundaries
 
 - Keep framebuffer terminal, logging API, panic/assert API, VFS, syscall definitions, and scheduler policy architecture-neutral when possible.
