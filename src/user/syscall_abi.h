@@ -55,6 +55,7 @@ enum class SyscallNumber : uint64_t
     FutexWait = 42,        // (address, expected, milliseconds) -> 0 once woken; 0 ms waits forever
     FutexWake = 43,        // (address, count) -> how many waiters it woke
     ThreadDetach = 44,     // (thread) -> 0; its slot is freed once it ends, without a join
+    Rename = 45,           // (from, to) -> 0; replaces a file at to, within one filesystem
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec and joins its
@@ -176,6 +177,8 @@ constexpr uint64_t SyscallErrorRange = UINT64_MAX - 21;
 constexpr uint64_t SyscallErrorBrokenPipe = UINT64_MAX - 22;
 // A wait with a time limit reached it first.
 constexpr uint64_t SyscallErrorTimedOut = UINT64_MAX - 23;
+// A rename between two filesystems, such as the disk and /tmp.
+constexpr uint64_t SyscallErrorCrossDevice = UINT64_MAX - 24;
 
 constexpr bool IsSyscallError(uint64_t value)
 {

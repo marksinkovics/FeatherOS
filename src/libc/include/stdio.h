@@ -73,6 +73,9 @@ int ftrylockfile(FILE* stream);
 void funlockfile(FILE* stream);
 
 int remove(const char* path);
+// Within one filesystem (EXDEV between the disk and /tmp). A file at to is replaced; a directory
+// there fails with EEXIST. Open files cannot be renamed (EBUSY).
+int rename(const char* from, const char* to);
 void perror(const char* prefix);
 
 int printf(const char* format, ...) __FEATHEROS_PRINTF(1, 2);

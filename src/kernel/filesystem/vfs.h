@@ -65,6 +65,9 @@ bool IsMountPoint(const char* path);
 // Disk and /tmp files are tracked while open, so they are not removed or written twice at once.
 bool IsTracked(const FileHandle& file);
 bool RemoveDirectory(const char* path);
+bool SameFilesystem(const char* left, const char* right);
+// Within one disk or /tmp; to must not exist, unless it names from in another case on the disk.
+bool Rename(const char* from, const char* to);
 // Lists a directory, such as "/", "/home/docs", or "/system"; "/" starts with the mount points.
 // False past the last entry.
 bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry);

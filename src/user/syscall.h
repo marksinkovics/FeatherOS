@@ -128,6 +128,12 @@ inline uint64_t RemoveDirectory(const char* path)
     return Syscall(SyscallNumber::RemoveDirectory, reinterpret_cast<uint64_t>(path));
 }
 
+inline uint64_t Rename(const char* from, const char* to)
+{
+    return Syscall(SyscallNumber::Rename, reinterpret_cast<uint64_t>(from),
+                   reinterpret_cast<uint64_t>(to));
+}
+
 inline uint64_t Shutdown(uint64_t action)
 {
     return Syscall(SyscallNumber::Shutdown, action);

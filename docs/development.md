@@ -125,6 +125,7 @@ The CMake build compiles each program listed in `src/user/CMakeLists.txt` (`src/
 | 42 | `FutexWait(address, expected, milliseconds)` | Sleeps while the aligned 32-bit word at `address` holds `expected`, until a `FutexWake` on it, a signal, or the time limit (0 has none); `SyscallErrorWouldBlock` when the word already differs, `SyscallErrorTimedOut` at the limit |
 | 43 | `FutexWake(address, count)` | Wakes up to `count` of the word's waiters in the caller's process, oldest first, and returns how many |
 | 44 | `ThreadDetach(thread)` | Marks a thread so its slot is freed once it ends, without a join; it can no longer be joined |
+| 45 | `Rename(from, to)` | Moves a file or directory within the disk or `/tmp`, replacing a file at `to`; open files cannot move (`SyscallErrorBusy`), a directory cannot go inside itself, and another filesystem gives `SyscallErrorCrossDevice` |
 
 The kernel resolves every user pointer through the caller's page tables before touching it, so unmapped, read-only, or kernel addresses fail with `SyscallErrorBadAddress` instead of faulting. Blocking syscalls re-enable interrupts and yield to other tasks while they wait.
 
@@ -320,6 +321,7 @@ The shell shows a prompt with its working directory, such as `/home> `, and edit
 - `cat [file]` prints a file, or its input without one; the console shows tabs as spaces and drops other control characters. `write [-a] <file> <text...>` writes the words and a newline to a file, replacing it or, with `-a`, appending. `rm <file>` deletes a file. Names are relative to the working directory, and `cat` also tries `/system` for a missing relative name, so `cat hello.txt` works anywhere.
 - Text tools, which read their files or, without any, their input, so they work in pipelines (shared logic in `src/user/text_tools.cpp`):
   - `cp <source> <target>` copies a file, into a directory under the source's name; `touch <file>...` creates empty files (there are no file times to change).
+  - `mv <source> <target>` renames or moves a file or directory the same way, with the `Rename` syscall. On the disk this rewrites only directory entries (a moved directory's `..` follows it), and a new case for the same name works. Between the disk and `/tmp` it copies a file and removes the original; directories cannot move between them.
   - `head [-n lines] [file...]` and `tail [-n lines] [file]` print the first or last 10 (or `-n`) lines.
   - `wc [-lwc] [file...]` counts lines, words and bytes, with a total for several files.
   - `grep [-ivnc] <text> [file...]` prints the lines containing plain text: `-i` ignores case, `-v` inverts, `-n` numbers, `-c` counts. It exits with 0 on a match, 1 without, 2 on an error.

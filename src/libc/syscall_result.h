@@ -61,6 +61,8 @@ constexpr int ErrorNumber(uint64_t result)
         return EPIPE;
     case User::SyscallErrorTimedOut:
         return ETIMEDOUT;
+    case User::SyscallErrorCrossDevice:
+        return EXDEV;
     default:
         return EIO;
     }

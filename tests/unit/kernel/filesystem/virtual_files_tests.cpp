@@ -188,6 +188,30 @@ TEST_CASE("tmpfs directories nest, and names are case-sensitive")
     REQUIRE(FeatherOS::Tmpfs::RemoveDirectory("docs"));
 }
 
+TEST_CASE("tmpfs renames move nodes, but never into themselves")
+{
+    FeatherOS::Tmpfs::Reset();
+    uint32_t node = 0;
+    uint32_t moved = 0;
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory("docs"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory("docs/old"));
+    REQUIRE(FeatherOS::Tmpfs::Create("docs/old/a.txt", &node));
+    REQUIRE(FeatherOS::Tmpfs::Create("b.txt", &moved));
+    REQUIRE(FeatherOS::Tmpfs::Rename("docs/old", "archive"));
+    REQUIRE(FeatherOS::Tmpfs::Open("archive/a.txt", &moved));
+    REQUIRE(moved == node);
+    REQUIRE(FeatherOS::Tmpfs::Rename("archive", "docs/archive"));
+    REQUIRE(FeatherOS::Tmpfs::Rename("b.txt", "docs/B.txt"));
+    std::vector<std::string> names = List("/tmp/docs");
+    std::sort(names.begin(), names.end());
+    REQUIRE(names == std::vector<std::string>{"B.txt", "archive/"});
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename("docs", "docs/archive/inner"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename("docs/B.txt", "docs/archive"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename("docs/B.txt", "missing/B.txt"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename("", "root"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename("gone", "here"));
+}
+
 TEST_CASE("tmpfs stops at its node and byte limits")
 {
     FeatherOS::Tmpfs::Reset();
@@ -247,6 +271,13 @@ TEST_CASE("/tmp works through file descriptors with the disk's sharing rules")
     REQUIRE(FeatherOS::Files::Remove("/tmp/work/Notes.txt") == 0);
     REQUIRE(FeatherOS::Files::RemoveDirectory("/tmp/work") == 0);
     REQUIRE(FeatherOS::Files::RemoveDirectory("/tmp") == FeatherOS::User::SyscallErrorBusy);
+
+    const uint64_t open_file = FeatherOS::Files::Open(&table, "/tmp/a.txt", OpenWrite | OpenCreate);
+    REQUIRE(FeatherOS::Files::Rename("/tmp/a.txt", "/tmp/b.txt") ==
+            FeatherOS::User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Close(&table, open_file) == 0);
+    REQUIRE(FeatherOS::Files::Rename("/tmp/a.txt", "/tmp/b.txt") == 0);
+    REQUIRE(List("/tmp") == std::vector<std::string>{"b.txt"});
 }
 
 TEST_CASE("/dev devices read, take writes, and cannot be created or removed")

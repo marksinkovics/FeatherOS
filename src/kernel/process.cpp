@@ -1789,6 +1789,19 @@ uint64_t RemoveDirectorySyscall(void* context, uint64_t path)
     return PathSyscall(context, path, Files::RemoveDirectory);
 }
 
+uint64_t RenameSyscall(void* context, uint64_t from, uint64_t to)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    char from_text[User::MaximumPathLength];
+    char to_text[User::MaximumPathLength];
+    uint64_t copied = CopyPathFromUser(*process, from, from_text);
+    if (copied == 0)
+    {
+        copied = CopyPathFromUser(*process, to, to_text);
+    }
+    return copied != 0 ? copied : Files::Rename(from_text, to_text);
+}
+
 uint64_t ChangeDirectorySyscall(void* context, uint64_t path)
 {
     auto* process = static_cast<ProcessRecord*>(context);
@@ -1955,6 +1968,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     FutexWaitSyscall,
     FutexWakeSyscall,
     ThreadDetachSyscall,
+    RenameSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.

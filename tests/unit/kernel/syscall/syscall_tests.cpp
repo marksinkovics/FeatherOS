@@ -144,7 +144,7 @@ constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeekFrom, RecordRemove,
     RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek,
     RecordDescriptor, RecordSeek,       RecordSeek,      ReadFixedProcessId, ReadFixedParentProcessId,
-    RecordSeekFrom,   RecordSeekFrom,   RecordSeek, RecordDescriptor, RecordSeek, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, ReadFixedProcessId, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, RecordSeekFrom, RecordSeek, RecordDescriptor};
+    RecordSeekFrom,   RecordSeekFrom,   RecordSeek, RecordDescriptor, RecordSeek, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, ReadFixedProcessId, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, RecordSeekFrom, RecordSeek, RecordDescriptor, RecordSeek};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)
@@ -414,5 +414,10 @@ TEST_CASE("syscall signal-return is left to the architecture code")
                                          &output)
                 .action == Action::Return);
     REQUIRE(output.last_arguments[0] == 4);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Rename, 0x7000, 0x7100), AllHandlers,
+                                         &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0x7000);
+    REQUIRE(output.last_arguments[1] == 0x7100);
 }
 

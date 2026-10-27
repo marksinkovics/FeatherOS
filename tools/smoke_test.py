@@ -80,6 +80,11 @@ SHELL_INPUT = (
     b"write /tmp/n.txt 10\nwrite -a /tmp/n.txt 9\n"
     b"write -a /tmp/n.txt 100\nsort -n /tmp/n.txt\n"
     b"sort -rn /tmp/n.txt\ngrep nothing /tmp/n.txt\n"
+    # mv renames within a filesystem, and copies between /tmp and the disk.
+    b"mkdir /tmp/box\nmv /tmp/copy.txt /tmp/box\nmv /tmp/box /tmp/crate\n"
+    b"wc -l /tmp/crate/copy.txt\nmv /tmp/crate /tmp/crate/inner\n"
+    b"mv /tmp/crate/copy.txt work\nwc -l /tmp/crate/copy.txt\n"
+    b'mv work/copy.txt "work/Moved Copy.txt"\nwc -w "work/moved copy.txt"\n'
     b"echo first redirected line > /tmp/r.txt\n"
     b"echo second redirected line >> /tmp/r.txt\n"
     b"upper < /tmp/r.txt\ncat < /tmp/r.txt\ncat < /tmp/none\n"
@@ -179,6 +184,10 @@ EXPECTED_TEXT_TOOLS = (
     r"^0 /tmp/new\.txt\r?$",
     r"^9\r?\n10\r?\n100\r?$",
     r"^100\r?\n10\r?\n9\r?$",
+    r"^4 /tmp/crate/copy\.txt\r?$",
+    r"^mv: /tmp/crate: Invalid argument\r?$",
+    r"^wc: /tmp/crate/copy\.txt: No such file or directory\r?$",
+    r"^4 work/moved copy\.txt\r?$",
 )
 EXPECTED_VI_LINES = {"HELLO WORLD": 2, "SECOND LINE": 2, "THIRD LINE": 2}
 KEYS_READY = "keys: press keys; q quits"

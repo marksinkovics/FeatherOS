@@ -67,6 +67,8 @@ uint64_t MakeDirectory(const char* path);
 uint64_t CheckDirectory(const char* path);
 // Fails unless the directory is empty.
 uint64_t RemoveDirectory(const char* path);
+// Within one filesystem; replaces a file at to, but neither a directory nor an open file.
+uint64_t Rename(const char* from, const char* to);
 uint64_t Stat(const char* path, User::FileStatus* status);
 uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* status);
 void CloseAll(Table* table);

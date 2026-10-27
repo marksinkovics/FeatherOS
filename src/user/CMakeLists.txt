@@ -7,7 +7,7 @@ set(FEATHEROS_PROGRAMS
     init:init shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout
     memtest:memtest sleep:sleep hardening:hardening aslr:aslr uptime:uptime primes:primes
     filetest:filetest ls:ls cat:cat write:write rm:rm mkdir:mkdir rmdir:rmdir env:env
-    fptest:fptest libctest:libctest kill:kill ps:ps top:top keys:keys clear:clear vi:vi threads:threads cp:cp touch:touch head:head tail:tail wc:wc
+    fptest:fptest libctest:libctest kill:kill ps:ps top:top keys:keys clear:clear vi:vi threads:threads cp:cp mv:mv touch:touch head:head tail:tail wc:wc
     grep:grep sort:sort
 )
 # Programs that define _start themselves instead of linking the C library's, which calls main.
@@ -22,6 +22,7 @@ set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker_${ARCH}.ld)
 add_library(featheros_user_support STATIC
     calculator.cpp
     command_line.cpp
+    file_copy.cpp
     init_config.cpp
     key_decoder.cpp
     line_editor.cpp

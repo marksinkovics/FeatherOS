@@ -83,7 +83,7 @@ The `is*` classifiers, `tolower` and `toupper`, for ASCII only, since `"C"` is t
 
 `errno`, with these error numbers, at Linux's values:
 
-`EPERM ENOENT ESRCH EINTR EIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST ENOTDIR EISDIR EINVAL EMFILE ENOTTY ENOSPC ESPIPE EROFS EDOM ERANGE ENAMETOOLONG ENOSYS ENOTEMPTY EOVERFLOW EILSEQ`
+`EPERM ENOENT ESRCH EINTR EIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST EXDEV ENOTDIR EISDIR EINVAL EMFILE ENOTTY ENOSPC ESPIPE EROFS EPIPE EDOM ERANGE EDEADLK ENAMETOOLONG ENOSYS ENOTEMPTY EOVERFLOW EILSEQ ETIMEDOUT`
 
 Each kernel error maps to one of them. A read by a program that is not in the foreground fails with `EIO`, as a background read does on Linux when there are no signals to stop the program.
 
@@ -114,7 +114,7 @@ Not provided:
 - **Buffers and errors:** `fclose`, `fflush`, `setvbuf` and `setbuf`. `setvbuf` uses only the mode: every stream keeps its own 512-byte buffer. `feof`, `ferror`, `clearerr` and `fileno` are also provided.
 - **Reading and writing:** `fread`, `fwrite`, `fgetc`, `getc`, `getchar`, `ungetc`, `fgets`, `getline`, `fputc`, `putc`, `putchar`, `fputs` and `puts`.
 - **Seeking:** `fseek`, `ftell` and `rewind`. Offsets past the end of a file fail with `EINVAL`, and the console cannot seek (`ESPIPE`).
-- **Files:** `remove`, and `perror`.
+- **Files:** `remove`, `rename` and `perror`. `rename` works within one filesystem only (`EXDEV` between the disk and `/tmp`), replaces a file but not a directory (`EEXIST`), and refuses open files (`EBUSY`).
 
 **Formatting.** The family is `printf`, `fprintf`, `dprintf`, `sprintf` and `snprintf`, plus their `v` forms. It supports:
 - every flag, width and precision (including `*`)
@@ -129,7 +129,7 @@ Floating-point output is exact: it is computed with big integers, and matches gl
 - `%c`, `%s`, scansets (`%[...]`), `%n`, `%%`, assignment suppression (`%*d`) and field widths
 
 Not provided:
-- `tmpfile`, `tmpnam`, `rename`, `popen` and `freopen`
+- `tmpfile`, `tmpnam`, `popen` and `freopen`
 - the wide-character functions
 
 Use `remove` and `fopen` in place of the file functions.
@@ -209,7 +209,7 @@ Differences:
 
 Not provided:
 - `fork` and the `exec*` family, because processes start with `posix_spawn`
-- `link`, `symlink` and `rename`
+- `link` and `symlink`
 - `chmod` and `chown`
 - `getuid` and the other user and group functions
 - `ftruncate`, `fsync` and `fcntl`

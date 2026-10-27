@@ -221,6 +221,31 @@ uint64_t MissingErrorLocked(const char* path)
     return ExistsLocked(path) ? User::SyscallErrorNotDirectory : User::SyscallErrorNotFound;
 }
 
+// The use key of the disk or /tmp file at path; false for anything else.
+bool FileKeyLocked(const char* path, uint64_t* key)
+{
+    VFS::FileHandle handle;
+    if (!VFS::Open(path, &handle))
+    {
+        return false;
+    }
+    const bool tracked = VFS::IsTracked(handle);
+    *key = UseKey(handle);
+    VFS::Close(&handle);
+    return tracked;
+}
+
+// By characters alone, which is enough for resolved paths.
+bool IsWithin(const char* path, const char* base)
+{
+    uint64_t length = 0;
+    while (base[length] != '\0' && path[length] == base[length])
+    {
+        ++length;
+    }
+    return base[length] == '\0' && (path[length] == '\0' || path[length] == '/');
+}
+
 } // namespace
 
 void OpenConsole(Table* table)
@@ -664,6 +689,75 @@ uint64_t RemoveDirectory(const char* path)
         return User::SyscallErrorNotEmpty;
     }
     return VFS::RemoveDirectory(path) ? 0 : User::SyscallErrorFailed;
+}
+
+uint64_t Rename(const char* from, const char* to)
+{
+    if (from == nullptr || to == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    if (!ExistsLocked(from))
+    {
+        return User::SyscallErrorNotFound;
+    }
+    if (VFS::IsReadOnly(from) || VFS::IsReadOnly(to))
+    {
+        return User::SyscallErrorReadOnly;
+    }
+    if (VFS::IsMountPoint(from) || VFS::IsMountPoint(to))
+    {
+        return User::SyscallErrorBusy;
+    }
+    if (!VFS::SameFilesystem(from, to))
+    {
+        return User::SyscallErrorCrossDevice;
+    }
+    if (IsWithin(to, from))
+    {
+        return IsWithin(from, to) ? 0 : User::SyscallErrorInvalidArgument;
+    }
+    const bool directory = VFS::IsDirectory(from);
+    uint64_t source_key = 0;
+    if (!directory)
+    {
+        if (!FileKeyLocked(from, &source_key))
+        {
+            return User::SyscallErrorReadOnly;
+        }
+        // A disk file's handles record where its directory entry is, which a rename moves.
+        if (FindUse(source_key) != nullptr)
+        {
+            return User::SyscallErrorBusy;
+        }
+    }
+    uint64_t target_key = 0;
+    if (FileKeyLocked(to, &target_key) && (directory || target_key != source_key))
+    {
+        if (directory)
+        {
+            return User::SyscallErrorNotDirectory;
+        }
+        if (FindUse(target_key) != nullptr)
+        {
+            return User::SyscallErrorBusy;
+        }
+        if (!VFS::Remove(to))
+        {
+            return User::SyscallErrorFailed;
+        }
+    }
+    if (VFS::Rename(from, to))
+    {
+        return 0;
+    }
+    if (ExistsLocked(to))
+    {
+        return VFS::IsDirectory(to) && !directory ? User::SyscallErrorIsDirectory
+                                                  : User::SyscallErrorExists;
+    }
+    return ParentExistsLocked(to) ? User::SyscallErrorFailed : User::SyscallErrorNotFound;
 }
 
 uint64_t Stat(const char* path, User::FileStatus* status)

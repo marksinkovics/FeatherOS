@@ -587,4 +587,32 @@ bool Remove(const char* path)
                                  : false;
 }
 
+bool SameFilesystem(const char* left, const char* right)
+{
+    if (left == nullptr || right == nullptr)
+    {
+        return false;
+    }
+    const char* inner;
+    return Locate(left, &inner) == Locate(right, &inner);
+}
+
+bool Rename(const char* from, const char* to)
+{
+    if (from == nullptr || to == nullptr)
+    {
+        return false;
+    }
+    const char* from_inner;
+    const char* to_inner;
+    const Mount mount = Locate(from, &from_inner);
+    if (Locate(to, &to_inner) != mount || *from_inner == '\0' || *to_inner == '\0')
+    {
+        return false;
+    }
+    return mount == Mount::Disk  ? FAT16::Rename(from_inner, to_inner)
+           : mount == Mount::Tmp ? Tmpfs::Rename(from_inner, to_inner)
+                                 : false;
+}
+
 } // namespace FeatherOS::VFS

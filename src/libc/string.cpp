@@ -430,6 +430,9 @@ char* strerror(int error)
     case ENAMETOOLONG:
         message = "File name too long";
         break;
+    case EXDEV:
+        message = "Invalid cross-device link";
+        break;
     case ETIMEDOUT:
         message = "Connection timed out";
         break;

@@ -30,6 +30,8 @@ bool Remove(const char* path);
 bool MakeDirectory(const char* path);
 // Only an empty directory can be removed, and never the root.
 bool RemoveDirectory(const char* path);
+// Fails if to exists, or would put a directory inside itself. Open files keep their node.
+bool Rename(const char* from, const char* to);
 bool IsDirectory(const char* path);
 bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry);
 uint64_t UsedBytes();

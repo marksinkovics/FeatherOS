@@ -838,13 +838,14 @@ bool WriteRawEntry(Slot slot, const uint8_t* bytes)
     return BlockDevice::WriteSector(sector_number, sector);
 }
 
+// The bytes after the name and flags (times and size) come from model when there is one.
 bool WriteEntry(Slot slot, const uint8_t (&name)[11], uint8_t attributes, uint32_t first_cluster,
-                uint8_t case_flags)
+                uint8_t case_flags, const uint8_t* model = nullptr)
 {
     uint8_t entry[RootEntrySize];
     for (uint32_t index = 0; index < RootEntrySize; ++index)
     {
-        entry[index] = index < sizeof(name) ? name[index] : 0;
+        entry[index] = index < sizeof(name) ? name[index] : (model != nullptr ? model[index] : 0);
     }
     entry[11] = attributes;
     entry[12] = case_flags;
@@ -876,7 +877,7 @@ bool ShortNameTaken(uint32_t directory, const uint8_t (&short_name)[11], bool* t
 // Writes name into directory: as a short entry when it fits 8.3 with one case per part, or as
 // long-name entries followed by a generated, unique "BASIS~N" short entry.
 bool CreateEntry(uint32_t directory, const char* name, uint8_t attributes, uint32_t first_cluster,
-                 Slot* entry_slot)
+                 Slot* entry_slot, const uint8_t* model = nullptr)
 {
     if (!FatNames::IsValidName(name))
     {
@@ -927,7 +928,7 @@ bool CreateEntry(uint32_t directory, const char* name, uint8_t attributes, uint3
         }
     }
     *entry_slot = {directory, first.index + long_entries};
-    return WriteEntry(*entry_slot, short_name, attributes, first_cluster, case_flags);
+    return WriteEntry(*entry_slot, short_name, attributes, first_cluster, case_flags, model);
 }
 
 bool MarkDeleted(uint32_t directory, uint32_t first_slot, uint32_t last_slot)
@@ -948,6 +949,48 @@ bool MarkDeleted(uint32_t directory, uint32_t first_slot, uint32_t last_slot)
         }
     }
     return true;
+}
+
+// Each step up goes through a "..", and a path has at most this many components.
+constexpr uint32_t MaximumDepth = MaximumPathLength / 2;
+
+// False when directory is cluster or lies inside it.
+bool OutsideOf(uint32_t directory, uint32_t cluster)
+{
+    for (uint32_t depth = 0; depth < MaximumDepth; ++depth)
+    {
+        if (directory == cluster)
+        {
+            return false;
+        }
+        if (directory == RootDirectory)
+        {
+            return true;
+        }
+        Found parent;
+        if (FindEntry(directory, "..", &parent) != Lookup::Found)
+        {
+            return false;
+        }
+        directory = parent.file.first_cluster;
+    }
+    return false;
+}
+
+bool SetParent(uint32_t directory, uint32_t parent)
+{
+    Found dot_dot;
+    uint8_t sector[BytesPerSector];
+    uint64_t sector_number;
+    uint8_t* entry;
+    if (FindEntry(directory, "..", &dot_dot) != Lookup::Found ||
+        !ReadSlot({dot_dot.file.directory_cluster, dot_dot.file.entry_index}, sector,
+                  &sector_number, &entry))
+    {
+        return false;
+    }
+    WriteLittleEndian16(entry + 26, static_cast<uint16_t>(parent));
+    return BlockDevice::WriteSector(sector_number, sector);
 }
 
 } // namespace
@@ -1095,6 +1138,61 @@ bool Remove(const char* path)
            (found.attributes & DirectoryAttribute) == 0 &&
            MarkDeleted(directory, found.first_slot, found.file.entry_index) &&
            (found.file.first_cluster == 0 || FreeChain(found.file.first_cluster));
+}
+
+bool Rename(const char* from, const char* to)
+{
+    char from_buffer[MaximumPathLength];
+    char to_buffer[MaximumPathLength];
+    uint32_t from_directory;
+    uint32_t to_directory;
+    const char* from_leaf;
+    const char* to_leaf;
+    Found source;
+    Found existing;
+    if (!mounted ||
+        FindPath(from, from_buffer, &from_directory, &from_leaf, &source) != Lookup::Found ||
+        FatNames::SameName(from_leaf, ".") || FatNames::SameName(from_leaf, ".."))
+    {
+        return false;
+    }
+    const Lookup target = FindPath(to, to_buffer, &to_directory, &to_leaf, &existing);
+    const bool same_entry = target == Lookup::Found &&
+                            existing.file.directory_cluster == source.file.directory_cluster &&
+                            existing.file.entry_index == source.file.entry_index;
+    const bool directory = (source.attributes & DirectoryAttribute) != 0;
+    if ((target != Lookup::Missing && !same_entry) || !FatNames::IsValidName(to_leaf) ||
+        (directory && !OutsideOf(to_directory, source.file.first_cluster)))
+    {
+        return false;
+    }
+    uint8_t sector[BytesPerSector];
+    uint64_t sector_number;
+    uint8_t* entry;
+    if (!ReadSlot({source.file.directory_cluster, source.file.entry_index}, sector, &sector_number,
+                  &entry))
+    {
+        return false;
+    }
+    uint8_t model[RootEntrySize];
+    for (uint32_t index = 0; index < RootEntrySize; ++index)
+    {
+        model[index] = entry[index];
+    }
+    Slot slot;
+    // A new case for the same name needs the old entry gone first, so a crash can leak the
+    // file's clusters. Otherwise the new entry comes first, and a crash leaves both names.
+    if (same_entry)
+    {
+        return MarkDeleted(from_directory, source.first_slot, source.file.entry_index) &&
+               CreateEntry(to_directory, to_leaf, source.attributes, source.file.first_cluster,
+                           &slot, model);
+    }
+    return CreateEntry(to_directory, to_leaf, source.attributes, source.file.first_cluster, &slot,
+                       model) &&
+           (!directory || to_directory == from_directory ||
+            SetParent(source.file.first_cluster, to_directory)) &&
+           MarkDeleted(from_directory, source.first_slot, source.file.entry_index);
 }
 
 bool IsDirectory(const char* path)

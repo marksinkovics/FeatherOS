@@ -756,6 +756,11 @@ int remove(const char* path)
     return FeatherOS::LibC::Check<int>(result);
 }
 
+int rename(const char* from, const char* to)
+{
+    return FeatherOS::LibC::Check<int>(FeatherOS::User::Rename(from, to));
+}
+
 void perror(const char* prefix)
 {
     const char* message = strerror(errno);

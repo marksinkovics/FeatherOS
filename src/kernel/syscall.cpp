@@ -225,6 +225,10 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return, handlers.thread_detach(context, arguments[0])};
     }
+    if (request.number == static_cast<uint64_t>(Number::Rename) && handlers.rename != nullptr)
+    {
+        return {Action::Return, handlers.rename(context, arguments[0], arguments[1])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

@@ -760,6 +760,12 @@ std::vector<std::string> ListDiskRoot()
     return names;
 }
 
+std::vector<std::string> Sorted(std::vector<std::string> names)
+{
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
 void WriteWhole(const char* path, const std::string& contents)
 {
     FeatherOS::VFS::FileHandle file{};
@@ -832,6 +838,85 @@ TEST_CASE("FAT16 removes only empty directories and frees their clusters")
     REQUIRE(ListDiskRoot() == std::vector<std::string>{"BLOCK.TXT"});
     REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/scratch"));
     REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/"));
+}
+
+TEST_CASE("FAT16 renames files and directories, keeping their data")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    WriteWhole("/a.txt", Pattern(700));
+    WriteWhole("/c.txt", "c");
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/docs"));
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/docs/old"));
+    WriteWhole("/docs/old/x.txt", "deep");
+    const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
+
+    REQUIRE(FeatherOS::VFS::Rename("/a.txt", "/b.txt"));
+    REQUIRE(FeatherOS::VFS::Rename("/b.txt", "/A much longer name.txt"));
+    REQUIRE(FeatherOS::VFS::Rename("/a much longer NAME.txt", "/a MUCH longer name.txt"));
+    REQUIRE(FeatherOS::VFS::Rename("/c.txt", "/C.TXT"));
+    REQUIRE(ReadWhole("/a MUCH longer name.txt") == Pattern(700));
+    REQUIRE(Sorted(ListDiskRoot()) ==
+            std::vector<std::string>{"BLOCK.TXT", "C.TXT", "a MUCH longer name.txt", "docs/"});
+
+    // A moved directory's ".." follows it.
+    REQUIRE(FeatherOS::VFS::Rename("/docs/old", "/old"));
+    REQUIRE(ReadWhole("/old/../BLOCK.TXT") == "contents");
+    REQUIRE(FeatherOS::VFS::Rename("/old", "/docs/archive"));
+    REQUIRE(ReadWhole("/docs/archive/x.txt") == "deep");
+    REQUIRE(ReadWhole("/docs/archive/../../BLOCK.TXT") == "contents");
+    REQUIRE(ListDirectory("/docs") == std::vector<std::string>{"archive/"});
+    REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before);
+
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/docs", "/docs/archive/inner"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/docs", "/DOCS/inner"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/C.TXT", "/BLOCK.TXT"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/C.TXT", "/missing/c.txt"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/C.TXT", "/bad:name"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/gone", "/here"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/docs/..", "/up"));
+    REQUIRE(ReadWhole("/C.TXT") == "c");
+}
+
+TEST_CASE("rename replaces files and refuses directories, open files, and other filesystems")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
+    WriteWhole("/new.txt", "new");
+    REQUIRE(FeatherOS::Files::MakeDirectory("/docs") == 0);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/other") == 0);
+
+    REQUIRE(FeatherOS::Files::Rename("/new.txt", "/BLOCK.TXT") == 0);
+    REQUIRE(ReadWhole("/BLOCK.TXT") == "new");
+    REQUIRE(FeatherOS::Files::Rename("/BLOCK.TXT", "/BLOCK.TXT") == 0);
+    REQUIRE(FeatherOS::Files::Rename("/BLOCK.TXT", "/block.txt") == 0);
+    REQUIRE(Sorted(ListDiskRoot()) == std::vector<std::string>{"block.txt", "docs/", "other/"});
+
+    REQUIRE(FeatherOS::Files::Rename("/gone", "/here") == FeatherOS::User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/tmp/block.txt") ==
+            FeatherOS::User::SyscallErrorCrossDevice);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/system/block.txt") ==
+            FeatherOS::User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Rename("/tmp", "/temporary") == FeatherOS::User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Rename("/docs", "/docs/sub") ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Rename("/docs", "/block.txt") ==
+            FeatherOS::User::SyscallErrorNotDirectory);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/docs") ==
+            FeatherOS::User::SyscallErrorIsDirectory);
+    REQUIRE(FeatherOS::Files::Rename("/docs", "/other") == FeatherOS::User::SyscallErrorExists);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/missing/block.txt") ==
+            FeatherOS::User::SyscallErrorNotFound);
+
+    const uint64_t reader = FeatherOS::Files::Open(&table, "/block.txt", OpenRead);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/docs/block.txt") ==
+            FeatherOS::User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Close(&table, reader) == 0);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/docs/block.txt") == 0);
+    REQUIRE(FeatherOS::Files::Rename("/docs", "/other/docs") == 0);
+    REQUIRE(ReadWhole("/other/docs/block.txt") == "new");
 }
 
 TEST_CASE("open-file sharing rules tell apart files with the same slot in different directories")

@@ -343,6 +343,34 @@ bool RemoveDirectory(const char* path)
     return true;
 }
 
+bool Rename(const char* from, const char* to)
+{
+    uint32_t node;
+    uint32_t parent;
+    const char* name;
+    uint32_t existing;
+    if (from == nullptr || to == nullptr || !Lookup(from, &node) || node == RootNode ||
+        !LookupParent(to, &parent, &name) || Lookup(to, &existing))
+    {
+        return false;
+    }
+    for (uint32_t ancestor = parent; ancestor != RootNode; ancestor = nodes[ancestor].parent)
+    {
+        if (ancestor == node)
+        {
+            return false;
+        }
+    }
+    uint32_t length = 0;
+    for (; name[length] != '\0'; ++length)
+    {
+        nodes[node].name[length] = name[length];
+    }
+    nodes[node].name[length] = '\0';
+    nodes[node].parent = parent;
+    return true;
+}
+
 bool IsDirectory(const char* path)
 {
     uint32_t node;
