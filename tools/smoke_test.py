@@ -69,6 +69,17 @@ SHELL_INPUT = (
     b"cat work/a.txt\ncd /\nls\ncat hello.txt\ncd nowhere\ncd\npwd\n"
     b"ls /dev\nwrite /tmp/note.txt kept in tmp\ncat /tmp/note.txt\n"
     b"cat /proc/self/status\ncat /proc/meminfo\n"
+    # The text tools, on files and through pipes.
+    b"write /tmp/w.txt zeta\nwrite -a /tmp/w.txt alpha\n"
+    b"write -a /tmp/w.txt mu\nwrite -a /tmp/w.txt alpha\n"
+    b"sort -u /tmp/w.txt\ncat /tmp/w.txt | sort -r\n"
+    b"grep -n alpha /tmp/w.txt\ncat /tmp/w.txt | grep -c -i ALPHA\n"
+    b"grep -v alpha /tmp/w.txt\nwc /tmp/w.txt\nhead -n 2 /tmp/w.txt\n"
+    b"cat /tmp/w.txt | tail -n 2\ncp /tmp/w.txt /tmp/copy.txt\n"
+    b"wc -l /tmp/copy.txt\ntouch /tmp/new.txt\nwc -c /tmp/new.txt\n"
+    b"write /tmp/n.txt 10\nwrite -a /tmp/n.txt 9\n"
+    b"write -a /tmp/n.txt 100\nsort -n /tmp/n.txt\n"
+    b"sort -rn /tmp/n.txt\ngrep nothing /tmp/n.txt\n"
     b"echo first redirected line > /tmp/r.txt\n"
     b"echo second redirected line >> /tmp/r.txt\n"
     b"upper < /tmp/r.txt\ncat < /tmp/r.txt\ncat < /tmp/none\n"
@@ -154,6 +165,21 @@ SHELL_VI_INPUT = (
 )
 # Without -n, top redraws in place on the alternate screen until q.
 SHELL_TOP_INPUT = (b"top -d 200\n", TypeWhen("; q quits", b"q"))
+# Each pattern spans the lines one text-tool command printed, in order.
+EXPECTED_TEXT_TOOLS = (
+    r"^alpha\r?\nmu\r?\nzeta\r?$",
+    r"^zeta\r?\nmu\r?\nalpha\r?\nalpha\r?$",
+    r"^2:alpha\r?\n4:alpha\r?$",
+    r"^2\r?$",
+    r"^zeta\r?\nmu\r?$",
+    r"^4 4 20 /tmp/w\.txt\r?$",
+    r"^zeta\r?\nalpha\r?$",
+    r"^mu\r?\nalpha\r?$",
+    r"^4 /tmp/copy\.txt\r?$",
+    r"^0 /tmp/new\.txt\r?$",
+    r"^9\r?\n10\r?\n100\r?$",
+    r"^100\r?\n10\r?\n9\r?$",
+)
 EXPECTED_VI_LINES = {"HELLO WORLD": 2, "SECOND LINE": 2, "THIRD LINE": 2}
 KEYS_READY = "keys: press keys; q quits"
 # keys reads raw input: every special key, Ctrl+C as a byte, then q to quit.
@@ -439,7 +465,7 @@ LINE_PROMPT = re.compile(
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
 # The scripted shell session runs many programs; AArch64 emulation is slower.
-SHELL_TIMEOUT_SECONDS = 60
+SHELL_TIMEOUT_SECONDS = 90
 QEMU_CPU_COUNT = 4
 SMP_MESSAGE = f"KERN/I: SMP: {QEMU_CPU_COUNT} CPUs online with IPIs and timers"
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
@@ -962,6 +988,15 @@ def main():
     output = captured.decode("utf-8", errors="replace")
 
     output = ANSI_ESCAPE.sub("", output)
+    # The whole session, so a failure can be read without running again.
+    output_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "build",
+        args.arch,
+        "smoke-output.txt",
+    )
+    with open(output_path, "w", encoding="utf-8") as saved:
+        saved.write(output)
     serial_lines = [line for line in output.splitlines() if "KERN/" in line]
     if serial_lines:
         print("\n".join(serial_lines))
@@ -1127,6 +1162,17 @@ def main():
         }
         if vi_lines != EXPECTED_VI_LINES:
             print(f"FAIL: vi wrote {vi_lines}", file=sys.stderr)
+            return 1
+        missing_tools = [
+            pattern
+            for pattern in EXPECTED_TEXT_TOOLS
+            if not re.search(pattern, output, re.MULTILINE)
+        ]
+        if missing_tools:
+            print(
+                f"FAIL: text tools did not print {missing_tools}",
+                file=sys.stderr,
+            )
             return 1
         if CLEAR_SEQUENCE not in captured:
             print("FAIL: clear did not clear the screen", file=sys.stderr)

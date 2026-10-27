@@ -12,6 +12,19 @@ These are directions that are not scheduled yet. The planned milestones are in [
 - **Claude on FeatherOS:** a `claude` chat program that calls the Claude API over HTTPS. Later, an agent that reads files and runs shell tools on the OS. Needs M10, TLS, an HTTP client and a JSON parser.
 - **A windowed GUI,** a basic browser, and 3D graphics (see the sections below).
 
+## System Tools
+
+Moved out of M11 to keep it focused; each can come back as a milestone of its own.
+- **A `cron` service.** A `crond` program that init runs as a `respawn` service. It reads a `/system/crontab`, or `cron` lines in `init.conf`, in the five-field form `minute hour day month weekday command`, with `*`, lists, ranges and steps (`*/5`) and `@hourly`-style shortcuts, all in UTC. It sleeps until the next due minute, starts each job in the background with `posix_spawn` and logs its exit status as init does; missed runs are not caught up. The parser and the next-run calculation are host-testable, and a QEMU test needs a seconds field or a test clock, since it cannot wait whole minutes.
+- **Packaging programs.** A package format on the USTAR reader the initramfs already uses, a host tool that builds packages, and `pkg install`, `remove` and `list`, which unpack into `/bin` and record what each package installed. Needs programs on the disk (M11 Part 10).
+- **A more capable `calc`.**
+  - **Operators:** `^`, `%`, factorial and bitwise integer operations.
+  - **Functions and constants:** `sqrt`, `sin`, `cos`, `tan`, `log`, `exp` and `abs`, from `math.h`, with `pi` and `e`. These switch to floating point, while plain arithmetic stays exact.
+  - **Variables:** `x = 3`, then `x * 2`, and `ans` for the last result.
+  - **Number formats:** hexadecimal and binary input and output.
+
+  The work is almost all in the host-tested `calculator.cpp`.
+
 ## Networking Applications
 
 - **TLS 1.3:** our own SHA-256, HMAC/HKDF, ChaCha20-Poly1305 and AES-GCM, X25519, and certificate-chain checks with a built-in root-certificate list. Fine for a hobby OS, but not trusted with real secrets.

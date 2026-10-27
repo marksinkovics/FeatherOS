@@ -318,6 +318,12 @@ The shell shows a prompt with its working directory, such as `/home> `, and edit
 - `env` prints the environment, one `NAME=value` per line.
 - `ls [directory]` lists a directory (the working directory by default) with file sizes, marking subdirectories with `/`. `mkdir <dir>` and `rmdir <dir>` create and remove (empty) directories.
 - `cat [file]` prints a file, or its input without one; the console shows tabs as spaces and drops other control characters. `write [-a] <file> <text...>` writes the words and a newline to a file, replacing it or, with `-a`, appending. `rm <file>` deletes a file. Names are relative to the working directory, and `cat` also tries `/system` for a missing relative name, so `cat hello.txt` works anywhere.
+- Text tools, which read their files or, without any, their input, so they work in pipelines (shared logic in `src/user/text_tools.cpp`):
+  - `cp <source> <target>` copies a file, into a directory under the source's name; `touch <file>...` creates empty files (there are no file times to change).
+  - `head [-n lines] [file...]` and `tail [-n lines] [file]` print the first or last 10 (or `-n`) lines.
+  - `wc [-lwc] [file...]` counts lines, words and bytes, with a total for several files.
+  - `grep [-ivnc] <text> [file...]` prints the lines containing plain text: `-i` ignores case, `-v` inverts, `-n` numbers, `-c` counts. It exits with 0 on a match, 1 without, 2 on an error.
+  - `sort [-rnu] [file...]` sorts lines by bytes, or with `-n` by their leading numbers; `-r` reverses and `-u` drops repeats.
 - `filetest` runs 33 checks of the file syscalls: creation, multi-cluster writes, reads, seeks, appends, the one-writer and no-removing-open-files rules, bad pointers and flags, the read-only initramfs, the 16-descriptor limit, and a child that exits with a file still open.
 - `uptime` prints the time since boot as `H:MM:SS`.
 - `kill [-signal] <pid>...` sends `SIGTERM`, or the named or numbered signal, to each process, or to a group as `-group`; `kill -l` lists the signals. In the shell, `kill %n` names job `n`.

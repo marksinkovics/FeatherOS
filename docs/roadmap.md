@@ -155,7 +155,7 @@ Moved: storage drivers for physical hardware, to M16.
 - Add an init process and define service startup and shutdown behavior.
 - Add `shutdown` and `reboot`: PSCI `SYSTEM_OFF`/`SYSTEM_RESET` on AArch64; on x86-64, ACPI S5 through the FADT's PM1a control port (`\_S5` sleep type found by scanning the DSDT) and the ACPI reset register with the keyboard-controller reset as a fallback. Restrict them to the session leader, stop the other CPUs, flush the disk (virtio-blk flush), and halt if power-off fails. Test that QEMU exits on `shutdown` and boots again after `reboot`.
 - Expand the userspace runtime and libc around a documented, deliberately scoped POSIX subset (Part 3 below).
-- Add useful shell utilities and a way to package and launch programs.
+- Add a core set of shell utilities, and run programs from the disk as well as the initramfs (Parts 9 and 10). Packaging programs moved to [ideas.md](ideas.md).
 - Add a full-screen text editor (`vi`, a small vi), needed to write code on the OS for M17 and M18.
 - Add `ps`, `top` and `kill`, with per-process CPU time from the scheduler's tick accounting.
 - Add virtual files:
@@ -163,9 +163,9 @@ Moved: storage drivers for physical hardware, to M16.
   - `/dev/random`, backed by `RDRAND`/`RNDR`
   - `/proc/<pid>/status` and `/proc/meminfo`
 - Add a RAM-backed `/tmp`.
-- Add a `cron`-style service that init runs, starting programs on a schedule.
+- ~~Add a `cron`-style service that init runs, starting programs on a schedule.~~ Moved to [ideas.md](ideas.md).
 - Broaden syscall coverage and the userspace library, and add pipes, background jobs, and process signals.
-- Improve the shell with line editing beyond Backspace, command history, a documented command set, and a more capable `calc`.
+- Improve the shell with line editing beyond Backspace, command history and a documented command set. A more capable `calc` moved to [ideas.md](ideas.md).
 - ~~Add kill/abort for a stuck child and reclaim a child's resources when its parent exits first.~~ Done early (see M15): Ctrl+C interrupts the foreground job, and an exiting parent terminates and reaps its children.
 - Add user threads with thread-local storage (`PT_TLS`, moved from M13). The C library must become thread-safe at the same time:
   - a lock in `malloc`, with a futex-style syscall so a waiting thread sleeps instead of spinning
@@ -187,7 +187,10 @@ Moved: storage drivers for physical hardware, to M16.
    4. **A thread-safe C library** (complete): a lock in `malloc`, `errno` per thread through TLS, locked `__cxa_guard_*`, and locked stdio streams. Also `__cxa_thread_atexit`, so `thread_local` objects with destructors work: a per-thread list in TLS that a thread's end and `exit` (for the main thread, before the `atexit` handlers) run newest first, tested for running in the right thread and in reverse order.
    5. **TLB shootdown** (complete): unmapping in an address space that other CPUs may be running sends them an IPI to flush it, so the heap can shrink again with threads, and thread stacks can be freed.
 
-`cron`, more shell utilities and program packaging, and a more capable `calc` fit between the parts. `fork` stays optional.
+9. **Core shell utilities** (in progress; step 1 complete: `cp`, `touch`, `head`, `tail`, `wc`, `grep` and `sort` over `src/user/text_tools.cpp`, host-tested, with the shell test running each, and the test's time limit raised to 90 seconds; next: step 2, `Rename` and `mv`): `cp`, `mv`, `touch`, `head`, `tail`, `wc`, `grep` and `sort`, each with `--help`, working on files and on standard input so they fit in pipelines. `mv` needs a `Rename` syscall and renaming in FAT16 (in one directory and across directories, long names included); across filesystems it copies and removes. `grep` matches plain text first, with `-i`, `-v`, `-n` and `-c`; `sort` sorts lines, with `-r`, `-n` and `-u`. Host tests cover the parts that are logic (line splitting, matching, sorting, FAT16 renaming), and the shell test runs each tool in a pipeline on both targets. These come first, since Part 10 tests itself with `cp`.
+10. **Programs from the disk:** `Spawn` starts an ELF from any path the VFS can read (the disk or `/tmp`), not only `<name>-<arch>.elf` from the initramfs. The kernel reads the file into its own memory, up to a size limit, and checks it as it checks initramfs programs; FAT16 has no execute bit, so any regular file may be tried, and one that is not a valid program fails with `ENOEXEC`. `posix_spawnp` and the shell search `PATH`, which becomes `/system:/bin`, and a name with a `/` runs that file. Tests copy a program to `/bin` and to `/tmp` with `cp` and run it from both, check that a missing or invalid file fails cleanly, and check the program limits (page limit, arguments, ASLR) for disk programs too.
+
+`cron`, packaging programs and a more capable `calc` moved to [ideas.md](ideas.md). `fork` stays optional.
 
 **Part 8, step 5 (complete): TLB shootdown.** `Memory::ShootDownUserMappings` returns once no CPU can still use a translation for a page unmapped from an address space, and unmapped frames are freed only after it. On x86-64 it sends an IPI to each other CPU whose active root is the address space and waits for it to reload `CR3`, serving its own requests while it waits, and `ActivateAddressSpace` records the root before loading it so a CPU switching in cannot be missed. On AArch64 the `tlbi vaae1is` that unmapping already used is broadcast in hardware, so nothing more is sent. The heap now shrinks in processes with threads, unmapping under the memory lock and freeing after it, and a joined thread's stack goes back. `hardening` (51 checks) runs a child whose thread keeps reading a heap page on another CPU while the main thread returns it: the thread must fault, and it did not when the x86-64 shootdown was disabled. `libctest` (396 checks) checks that a joined thread's pages and a threaded process's heap tail go back. This completes Part 8, and so every part agreed for M11.
 
@@ -332,7 +335,7 @@ Out of scope for Part 3:
 - signals and pipes: covered by the later bullet.
 - pthreads, sockets, users and permissions, `mmap`, `termios`, locales, and wide characters.
 
-**Complete when:** init starts and supervises basic services, and users can run a documented set of utilities and programs through the shell on both targets.
+**Complete when:** init starts and supervises basic services, and users can run a documented set of utilities and programs through the shell on both targets, including programs installed on the disk.
 
 ### 12. Security And Hardening (Complete)
 

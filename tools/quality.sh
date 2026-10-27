@@ -16,6 +16,7 @@ SHELL_FILES=(
     "$REPO_ROOT/build.sh"
     "$REPO_ROOT/toolchains/build_toolchain.sh"
     "$REPO_ROOT/tools/gen_font.sh"
+    "$REPO_ROOT/tools/check.sh"
     "$REPO_ROOT/tools/quality.sh"
 )
 

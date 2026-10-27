@@ -662,19 +662,21 @@ int main(int argc, char** argv)
         }
         if (strcmp(command, "help") == 0)
         {
-            puts("Commands: calc [expression], date, echo <words...>, fanout <n>, "
-                 "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
-                 "sleep <ms>, threads <threads> [limit], upper, uptime, filetest, fptest, "
-                 "libctest, ls, cat <file>, write [-a] "
-                 "<file> <text>, "
-                 "rm <file>, mkdir <dir>, rmdir <dir>, env, kill [-signal] <pid>, ps, keys, clear, "
-                 "vi [file], "
-                 "top [-n "
-                 "count], cd [dir], pwd, "
-                 "jobs, "
-                 "fg [n], wait, history, "
-                 "exit, "
-                 "shutdown, reboot, help");
+            puts(
+                "Commands: calc [expression], date, echo <words...>, fanout <n>, "
+                "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
+                "sleep <ms>, threads <threads> [limit], upper, uptime, filetest, fptest, "
+                "libctest, ls, cat <file>, write [-a] "
+                "<file> <text>, "
+                "rm <file>, cp <source> <target>, touch <file>, head, tail, wc, grep <text>, sort, "
+                "mkdir <dir>, rmdir <dir>, env, kill [-signal] <pid>, ps, keys, clear, "
+                "vi [file], "
+                "top [-n "
+                "count], cd [dir], pwd, "
+                "jobs, "
+                "fg [n], wait, history, "
+                "exit, "
+                "shutdown, reboot, help");
             puts("Editing: Left, Right, Home, End, Delete; Up and Down recall lines; Ctrl+A and "
                  "Ctrl+E go to the start and end, Ctrl+U, Ctrl+K and Ctrl+W erase, Ctrl+L "
                  "clears the screen, Ctrl+C discards the line.");

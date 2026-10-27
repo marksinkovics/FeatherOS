@@ -27,6 +27,7 @@ add_executable(featheros_unit_tests
     kernel/process/calculator_tests.cpp
     kernel/process/command_line_tests.cpp
     kernel/process/line_editor_tests.cpp
+    kernel/process/text_tools_tests.cpp
     kernel/process/thread_local_storage_tests.cpp
     kernel/process/thread_stacks_tests.cpp
     kernel/process/vi_editor_tests.cpp
@@ -81,6 +82,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/user/key_decoder.cpp"
     "${FEATHEROS_ROOT}/src/user/line_editor.cpp"
     "${FEATHEROS_ROOT}/src/user/process_table.cpp"
+    "${FEATHEROS_ROOT}/src/user/text_tools.cpp"
     "${FEATHEROS_ROOT}/src/user/vi_editor.cpp"
     "${FEATHEROS_ROOT}/src/kernel/klogger.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
