@@ -62,13 +62,176 @@ CALC_INPUT = b"nope\n\ncalc 4 + 66 - (3 / 4)\n"
 # Covers argv, foreground input in a child, and nonzero exit statuses.
 SHELL_INPUT = (
     b"echo hello   feather os\nupper\nmixed Case\ndate\nuptime\nfanout 6\n"
-    b"date --help\nprimes -h\nfiletest\n"
+    b'date --help\nprimes -h\nfiletest\nlibctest one "two words"\n'
+    # libctest reads these at its "> " prompts: read(), fgets(), scanf().
+    b"typed into stdin\nread by fgets\n42 answer\nenv\n"
     b"mkdir work\ncd work\nwrite a.txt in work\npwd\ncat a.txt\ncd ..\n"
     b"cat work/a.txt\ncd /\nls\ncat hello.txt\ncd nowhere\ncd\npwd\n"
+    b"ls /dev\nwrite /tmp/note.txt kept in tmp\ncat /tmp/note.txt\n"
+    b"cat /proc/self/status\ncat /proc/meminfo\n"
+    # The text tools, on files and through pipes.
+    b"write /tmp/w.txt zeta\nwrite -a /tmp/w.txt alpha\n"
+    b"write -a /tmp/w.txt mu\nwrite -a /tmp/w.txt alpha\n"
+    b"sort -u /tmp/w.txt\ncat /tmp/w.txt | sort -r\n"
+    b"grep -n alpha /tmp/w.txt\ncat /tmp/w.txt | grep -c -i ALPHA\n"
+    b"grep -v alpha /tmp/w.txt\nwc /tmp/w.txt\nhead -n 2 /tmp/w.txt\n"
+    b"cat /tmp/w.txt | tail -n 2\ncp /tmp/w.txt /tmp/copy.txt\n"
+    b"wc -l /tmp/copy.txt\ntouch /tmp/new.txt\nwc -c /tmp/new.txt\n"
+    b"write /tmp/n.txt 10\nwrite -a /tmp/n.txt 9\n"
+    b"write -a /tmp/n.txt 100\nsort -n /tmp/n.txt\n"
+    b"sort -rn /tmp/n.txt\ngrep nothing /tmp/n.txt\n"
+    # mv renames within a filesystem, and copies between /tmp and the disk.
+    b"mkdir /tmp/box\nmv /tmp/copy.txt /tmp/box\nmv /tmp/box /tmp/crate\n"
+    b"wc -l /tmp/crate/copy.txt\nmv /tmp/crate /tmp/crate/inner\n"
+    b"mv /tmp/crate/copy.txt work\nwc -l /tmp/crate/copy.txt\n"
+    b'mv work/copy.txt "work/Moved Copy.txt"\nwc -w "work/moved copy.txt"\n'
+    b"echo first redirected line > /tmp/r.txt\n"
+    b"echo second redirected line >> /tmp/r.txt\n"
+    b"upper < /tmp/r.txt\ncat < /tmp/r.txt\ncat < /tmp/none\n"
+    b"echo through the pipe | upper\nls /dev|upper\n"
+    b"echo two stages|upper|cat > /tmp/p.txt\ncat /tmp/p.txt\n"
+    b"echo a | | upper\n"
+    # A pipeline is one foreground group, so its first command can read the
+    # console.
+    b"upper | upper\ntwo uppers\n"
+    b"upper &\nsleep 1000 &\njobs\nwait\nsleep 800 &\nfg\n"
+    # A background job that starts a program of its own must not take the
+    # console from the shell.
+    b"primes 1 1000000 > /dev/null &\njobs\n"
+    b"echo the shell kept the console\nwait\n"
+    b"kill -l\nkill 99999\nkill -TERM 1\n"
+    # top must show a busy background worker using most of a CPU, which
+    # kill %1 then stops.
+    b"ps\nprimes 1 1000000000 > /dev/null &\ntop -n 1 -d 500\nkill %1\nwait\n"
+    b"kill %7\n"
+    b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
-    b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\n"
+    b"sleep 1100\nhardening\naslr\naslr\n"
+    # Programs copied to the disk and /tmp run by PATH, by path and from the
+    # working directory, under the same limits as those in /system.
+    b"cp /system/upper /bin/shout\necho from the disk | shout\n"
+    b"cp /system/cat /bin/kitty\nkitty /proc/self/status\n"
+    b'cp /system/echo /tmp/say\n/tmp/say "two  words" a b\n'
+    b"cp /system/aslr /tmp/aslr\n/tmp/aslr\ncd /tmp\n./aslr\ncd\n"
+    b"cp /system/memtest /bin/memtest\n/bin/memtest exhaust\n"
+    b"/bin/nothing\n/system/hello.txt\n/tmp\n"
+    b"primes 4 100000\nprimes 16 20000\n"
+    b"threads 4 100000\nthreads 15 20000\n"
+    b"fptest 8\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
 )
+
+
+class WholeWrite(bytes):
+    """Input written in one piece, so escape sequences arrive together."""
+
+
+# Line editing at the shell prompt: Home and Right, Up to recall, Ctrl+U and
+# Ctrl+W, Delete, and a lone Escape, which the editor ignores.
+SHELL_EDIT_INPUT = (
+    WholeWrite(b"eco edited line\x1b[H\x1b[C\x1b[Ch\n"),
+    WholeWrite(b"\x1b[A\n"),
+    WholeWrite(b"echo wrong\x15echo right words\x17\x17after-kill\n"),
+    WholeWrite(b"echo deleteXX\x1b[D\x1b[D\x1b[3~\x1b[3~ done\n"),
+    WholeWrite(b"echo esc\x1b ok\n"),
+    b"history\n",
+    b"clear\n",
+)
+CLEAR_SEQUENCE = b"\x1b[H\x1b[2J"
+# Program output lines, which the edited input lines echoed before them do not
+# match, and how often each must appear.
+EXPECTED_SHELL_EDITS = {
+    "edited line": 2,
+    "after-kill": 1,
+    "delete done": 1,
+    "esc ok": 1,
+}
+EXPECTED_HISTORY_LINE = re.compile(
+    r"^ +\d+  echo edited line\r?$", re.MULTILINE
+)
+
+
+class TypeWhen:
+    """Keys typed once text appears, for a program that shows no prompt."""
+
+    def __init__(self, text, keys):
+        self.text = text.encode()
+        self.keys = keys
+
+
+# vi creates a file, edits it with inserts, motions, a yank and put, undo, a
+# search and r, and writes it; a second session refuses :q after a change and
+# leaves with :q!. upper prints the file each time, in capitals that vi's own
+# screen never shows.
+SHELL_VI_INPUT = (
+    b"vi /tmp/vi.txt\n",
+    TypeWhen(
+        '"/tmp/vi.txt" [New]',
+        b"ihello world\x1bothird line\x1b0Osecond line\x1bgg$xuGyypddggJu"
+        b"/third\nrT:wq\n",
+    ),
+    b"upper < /tmp/vi.txt\n",
+    b"cd /tmp\n",
+    b"vi vi.txt\n",
+    TypeWhen('"vi.txt" 3L, 35B', b"x:q\n:q!\n"),
+    b"upper < vi.txt\n",
+    b"cd\n",
+)
+# Without -n, top redraws in place on the alternate screen until q.
+SHELL_TOP_INPUT = (b"top -d 200\n", TypeWhen("; q quits", b"q"))
+# Each pattern spans the lines one text-tool command printed, in order.
+EXPECTED_TEXT_TOOLS = (
+    r"^alpha\r?\nmu\r?\nzeta\r?$",
+    r"^zeta\r?\nmu\r?\nalpha\r?\nalpha\r?$",
+    r"^2:alpha\r?\n4:alpha\r?$",
+    r"^2\r?$",
+    r"^zeta\r?\nmu\r?$",
+    r"^4 4 20 /tmp/w\.txt\r?$",
+    r"^zeta\r?\nalpha\r?$",
+    r"^mu\r?\nalpha\r?$",
+    r"^4 /tmp/copy\.txt\r?$",
+    r"^0 /tmp/new\.txt\r?$",
+    r"^9\r?\n10\r?\n100\r?$",
+    r"^100\r?\n10\r?\n9\r?$",
+    r"^4 /tmp/crate/copy\.txt\r?$",
+    r"^mv: /tmp/crate: Invalid argument\r?$",
+    r"^wc: /tmp/crate/copy\.txt: No such file or directory\r?$",
+    r"^4 work/moved copy\.txt\r?$",
+)
+EXPECTED_VI_LINES = {"HELLO WORLD": 2, "SECOND LINE": 2, "THIRD LINE": 2}
+KEYS_READY = "keys: press keys; q quits"
+# keys reads raw input: every special key, Ctrl+C as a byte, then q to quit.
+SHELL_KEYS_INPUT = (
+    b"keys\n",
+    WholeWrite(
+        b"\x1b[A\x1b[B\x1b[C\x1b[D\x1b[H\x1b[F\x1b[2~\x1b[3~\x1b[5~\x1b[6~"
+        b"\x1b[Z\x1bOA\x1b[1~\t\x01\x03\x7f \rxq"
+    ),
+)
+EXPECTED_KEYS = [
+    KEYS_READY,
+    "keys: up",
+    "keys: down",
+    "keys: right",
+    "keys: left",
+    "keys: home",
+    "keys: end",
+    "keys: insert",
+    "keys: delete",
+    "keys: page-up",
+    "keys: page-down",
+    "keys: shift-tab",
+    "keys: up",
+    "keys: home",
+    "keys: tab",
+    "keys: ctrl-a",
+    "keys: ctrl-c",
+    "keys: backspace",
+    "keys: space",
+    "keys: enter",
+    "keys: x",
+    "keys: done",
+]
 # Ctrl+C for a command that shows no prompt of its own, sent while it runs.
 INTERRUPT_RUNNING = object()
 INTERRUPT_DELAY_SECONDS = 1.5
@@ -79,6 +242,12 @@ CONTROL_C = b"\x03"
 SHELL_INTERRUPT_INPUT = (
     b"primes 1 1000000000\n",
     INTERRUPT_RUNNING,
+    # The reader of an interrupted writer sees its input end and exits too.
+    b"primes 1 1000000000 | upper\n",
+    INTERRUPT_RUNNING,
+    # Ctrl+C reaches every command in the foreground group.
+    b"sleep 100000 | sleep 100000\n",
+    INTERRUPT_RUNNING,
     b"sleep 100000\n",
     INTERRUPT_RUNNING,
     b"upper\n",
@@ -88,35 +257,98 @@ SHELL_INTERRUPT_INPUT = (
     CONTROL_C,
     b"calc 1 +\n",
 )
-EXPECTED_INTERRUPTS = 5
+EXPECTED_INTERRUPTS = 7
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
 )
 # pwd prints the directory alone; prompts follow it with "> ".
-WORKING_DIRECTORY_OUTPUT = re.compile(r"^(/disk(?:/work)?)\r?$", re.MULTILINE)
+WORKING_DIRECTORY_OUTPUT = re.compile(r"^(/home(?:/work)?)\r?$", re.MULTILINE)
 WORK_FILE_OUTPUT = re.compile(r"^in work\r?$", re.MULTILINE)
 UPTIME_OUTPUT = re.compile(r"^uptime: \d+:\d{2}:\d{2}\r?$", re.MULTILINE)
+THREADS_WORKER_OUTPUT = re.compile(
+    r"^threads: thread \d+ found \d+ on CPU \d+(?:,\d+)*\r?$", re.MULTILINE
+)
 PRIMES_WORKER_OUTPUT = re.compile(
     r"^primes: worker \d+ found \d+ on CPU \d+(?:,\d+)*\r?$", re.MULTILINE
 )
 EXHAUST_OUTPUT = re.compile(
-    r"^memtest: page limit reached after (\d+) heap pages\r?$", re.MULTILINE
+    r"^memtest: page limit reached after (\d+) heap pages, twice\r?$",
+    re.MULTILINE,
 )
-# The 1024-page limit also covers the image, stack, and arguments pages.
-MINIMUM_EXHAUST_PAGES = 1000
+# The 1024-page limit also covers the stack, the arguments page, and the
+# image, which is about 20 pages with the C library linked in.
+MINIMUM_EXHAUST_PAGES = 960
 ASLR_OUTPUT = re.compile(
     r"^aslr: image=(\d+) stack=(\d+) args=(\d+) heap=(\d+)\r?$", re.MULTILINE
 )
 # QEMU's RTC follows the host clock; allow for boot time and slow hosts.
 MAXIMUM_CLOCK_SKEW_SECONDS = 120
 EXPECTED_SHELL_OUTPUT = (
+    "init: FeatherOS is starting its services",
+    # init restarts the console service after the shell's exit command.
+    "init: shell exited with status 0",
+    "init: restarting shell",
     "usage: date",
     "usage: primes <workers 1-16> [limit]",
     "filetest: 33 checks passed",
-    "disk/",
+    "libctest: standard output works",
+    "libctest: standard error works",
+    "libctest: printf works 7",
+    "libctest: dprintf 3",
+    "libctest: fprintf to stderr",
+    "libctest: perror: No such file or directory",
+    "libctest: puts works",
+    "Assertion `argc == 1' failed.",
+    "spawned by posix_spawn",
+    "spawned from the disk",
+    "SPAWNED=yes",
+    "libctest: 407 checks passed",
+    "libctest: written through dup",
+    "libctest: stdout is back after posix_spawn",
+    "libctest: exit handlers ran in order",
+    "No write since last change (add ! to override)",
+    "; q quits",
+    # env prints the variables init.conf sets, which the shell passes on.
+    "HOME=/home",
+    "PATH=/system:/bin",
+    "system/",
+    "home/",
     "FeatherOS initramfs is ready.",
     "cd: nowhere: no such directory",
+    # /dev, /tmp, and /proc; the console shows tabs as spaces.
+    "random                  0",
+    "kept in tmp",
+    "Name: cat",
+    "MemTotal: ",
+    # Redirection; cat's lines start lines of their own, unlike the typed
+    # commands that contain the same words.
+    "FIRST REDIRECTED LINE",
+    "SECOND REDIRECTED LINE",
+    "\nfirst redirected line",
+    "\nsecond redirected line",
+    "shell: /tmp/none: No such file or directory",
+    # Pipelines; the typed commands are lower case.
+    "THROUGH THE PIPE",
+    "RANDOM",
+    "\nTWO STAGES",
+    "shell: a pipeline has an empty command",
+    "TWO UPPERS",
+    # Background jobs: upper cannot read the console there and fails.
+    "Running  sleep 1000 &",
+    "Done  sleep 1000 &",
+    "Exit 1  upper &",
+    "\nsleep 800 &",
+    "\nthe shell kept the console",
+    "Done  primes 1 1000000 > /dev/null &",
+    " 9 KILL",
+    "kill: 99999: no such process",
+    "kill: 1: Operation not permitted",
+    "  PID  PPID  PGID S CPU     TIME NAME",
+    "  PID S  %CPU CPU     TIME NAME",
+    "top: up ",
+    "Terminated  primes 1 1000000000 > /dev/null &",
+    "kill: %7: no such job",
     "hello feather os",
     "upper> ",
     "MIXED CASE",
@@ -125,8 +357,20 @@ EXPECTED_SHELL_OUTPUT = (
     # memtest overflow ends at the stack guard page with ExitStatusFault.
     "shell: program terminated by a CPU exception",
     "sleep: slept 1100 ms",
-    "hardening: 44 checks passed",
+    "hardening: 61 checks passed",
+    "FROM THE DISK",
+    "Name: kitty",
+    "\ntwo  words a b",
+    "shell: /bin/nothing: No such file or directory",
+    "shell: /system/hello.txt: Exec format error",
+    "shell: /tmp: Is a directory",
+    "fptest: 8 of 8 workers kept their registers",
     "primes: 9592 primes below 100000 with 4 workers in ",
+    # Sixteen workers keep sixteen pipes open at once.
+    "primes: 2262 primes below 20000 with 16 workers in ",
+    # Threads of one process find the same counts as worker processes.
+    "threads: 9592 primes below 100000 with 4 threads in ",
+    "threads: 2262 primes below 20000 with 15 threads in ",
     "calc> ",
     "0.333333",
     "calc: division by zero",
@@ -142,6 +386,18 @@ EXPECTED_SMP = (
     "KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact; "
     "busy CPUs counted"
 )
+POWER_MESSAGES = {
+    "shutdown": (
+        "KERN/I: Shutdown: stopping processes",
+        "KERN/I: Shutdown: disk flushed",
+        "KERN/I: Powering off",
+    ),
+    "reboot": (
+        "KERN/I: Shutdown: stopping processes",
+        "KERN/I: Shutdown: disk flushed",
+        "KERN/I: Restarting",
+    ),
+}
 STORAGE_MESSAGE = (
     "KERN/STORAGE: sector and FAT16 file writes verified; boot count "
 )
@@ -151,7 +407,7 @@ PERSISTENT_FILE_LINES = 200
 STORAGE_SHELL_INPUT = {
     1: b"write notes.txt first line\nwrite -a notes.txt second line\n"
     b"cat notes.txt\nmkdir docs\nwrite docs/plan.txt nested hello\n"
-    b'cat "read me first.txt"\nwrite "My Plans.txt" long name test\n'
+    b'cat "/read me first.txt"\nwrite "My Plans.txt" long name test\n'
     b"ls docs\nls\n",
     2: b"cat notes.txt\nrm notes.txt\ncat notes.txt\nrm notes.txt\n"
     b"cat docs/plan.txt\nrmdir docs\nrm docs/plan.txt\nrmdir docs\n"
@@ -162,7 +418,8 @@ PLAN_CONTENTS = b"nested hello\n"
 LONG_NAME_CONTENTS = b"long name test\n"
 NOTES_OUTPUT = re.compile(r"^first line\r?\nsecond line\r?$", re.MULTILINE)
 # The disk also holds BLOCK.TXT and the kernel test's PERSIST.TXT.
-# The disk also holds Read Me First.txt, written by mtools.
+# The shell runs in /home; the disk's root also holds BLOCK.TXT, the kernel
+# test's PERSIST.TXT, and Read Me First.txt, written by mtools.
 STORAGE_SHELL_OUTPUT = {
     1: (
         "\nLong names from mtools work.",
@@ -170,7 +427,7 @@ STORAGE_SHELL_OUTPUT = {
         "notes.txt",
         "My Plans.txt",
         "docs/",
-        "1 directory, 5 files, ",
+        "1 directory, 2 files, ",
     ),
     2: (
         "cat: cannot open notes.txt",
@@ -179,24 +436,68 @@ STORAGE_SHELL_OUTPUT = {
         "rmdir: docs: not an empty directory",
         "\nlong name test",
         "ls: docs: no such directory",
-        "3 files, ",
+        "0 files, ",
     ),
 }
 USER_PREEMPTION_OUTPUTS = {"x86_64": b"UIu", "aarch64": b"AIa"}
-INPUT_ACCEPTED_MESSAGE = "KERN/I: Input line accepted"
-# The shell's prompt shows its working directory, such as "/disk> ".
+# Ctrl+C at the shell prompt only discards the line; "ab" is then an unknown
+# command, and keys takes raw input from the same keyboard.
+INPUT_LINE_KEYS = (
+    "ctrl-c",
+    "a",
+    "b",
+    "x",
+    "backspace",
+    "ret",
+    # Left then z gives "echo azb"; Up recalls it.
+    "e",
+    "c",
+    "h",
+    "o",
+    "spc",
+    "a",
+    "b",
+    "left",
+    "z",
+    "ret",
+    "up",
+    "ret",
+    "k",
+    "e",
+    "y",
+    "s",
+    "ret",
+)
+INPUT_RAW_KEYS = ("up", "home", "delete", "esc", "ctrl-a", "shift-tab", "q")
+EXPECTED_INPUT_KEYS = [
+    KEYS_READY,
+    "keys: up",
+    "keys: home",
+    "keys: delete",
+    "keys: escape",
+    "keys: ctrl-a",
+    "keys: shift-tab",
+    "keys: done",
+]
+# The shell's prompt shows its working directory, such as "/home> ".
 SHELL_PROMPT = re.compile(rb"^/[^\n>]*> ", re.MULTILINE)
 # Each scripted shell line is typed only once a prompt asks for it, so
 # typed-ahead input never overflows the kernel's input queue.
-LINE_PROMPT = re.compile(rb"^(?:upper|calc|/[^\n>]*)?> ", re.MULTILINE)
+LINE_PROMPT = re.compile(
+    rb"^(?:(?:upper|calc|/[^\n>]*)?> |keys: press keys; q quits\r?$)",
+    re.MULTILINE,
+)
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
 # The scripted shell session runs many programs; AArch64 emulation is slower.
-SHELL_TIMEOUT_SECONDS = 30
+SHELL_TIMEOUT_SECONDS = 90
 QEMU_CPU_COUNT = 4
 SMP_MESSAGE = f"KERN/I: SMP: {QEMU_CPU_COUNT} CPUs online with IPIs and timers"
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
 ANSI_ESCAPE_BYTES = re.compile(rb"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
+# A program leaving the alternate screen returns to the shell's line, as a
+# newline would, which prompt detection relies on.
+LEAVE_ALTERNATE_SCREEN = b"\x1b[?1049l"
 
 
 def PartitionOffset(disk):
@@ -248,30 +549,37 @@ def VerifyDiskImage(disk_path, boot_count):
     if listing.returncode != 0 or "SCRATCH" in listing.stdout:
         return "mtools still lists the removed scratch file"
     notes = subprocess.run(
-        ["mtype", "-i", image, "::NOTES.TXT"],
+        ["mtype", "-i", image, "::home/notes.txt"],
         capture_output=True,
         env=environment,
         check=False,
     )
     plan = subprocess.run(
-        ["mtype", "-i", image, "::DOCS/PLAN.TXT"],
+        ["mtype", "-i", image, "::home/docs/plan.txt"],
         capture_output=True,
         env=environment,
         check=False,
     )
     if boot_count == 1 and notes.stdout != NOTES_CONTENTS:
-        return "mtools read different NOTES.TXT contents"
+        return "mtools read different home/notes.txt contents"
     long_name = subprocess.run(
-        ["mtype", "-i", image, "::My Plans.txt"],
+        ["mtype", "-i", image, "::home/My Plans.txt"],
         capture_output=True,
         env=environment,
         check=False,
     )
     if boot_count == 1 and plan.stdout != PLAN_CONTENTS:
-        return "mtools read different DOCS/PLAN.TXT contents"
+        return "mtools read different home/docs/plan.txt contents"
     if boot_count == 1 and long_name.stdout != LONG_NAME_CONTENTS:
         return "mtools read different 'My Plans.txt' contents"
-    listed = listing.stdout.upper()
+    home_listing = subprocess.run(
+        ["mdir", "-b", "-i", image, "::home"],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+    listed = home_listing.stdout.upper()
     if boot_count == 2 and any(
         name in listed for name in ("NOTES", "DOCS", "MY PLANS")
     ):
@@ -291,6 +599,17 @@ def SendQmpCommand(channel, command_id, execute, arguments=None):
             if "error" in response:
                 raise RuntimeError(response["error"].get("desc", "QMP error"))
             return response
+
+
+def SendQmpKeys(channel, first_id, keys):
+    for offset, key in enumerate(keys):
+        SendQmpCommand(
+            channel,
+            first_id + offset,
+            "human-monitor-command",
+            {"command-line": f"sendkey {key}"},
+        )
+    return first_id + len(keys)
 
 
 def OpenQmpChannel(socket_path):
@@ -351,6 +670,12 @@ def main():
         "--expect-smp",
         action="store_true",
         help="Expect tasks to run concurrently on several CPUs",
+    )
+    parser.add_argument(
+        "--expect-power",
+        choices=("shutdown", "reboot"),
+        help="Run the shell's shutdown or reboot and expect QEMU to exit or "
+        "boot again",
     )
     parser.add_argument(
         "--expect-storage-boot",
@@ -468,8 +793,8 @@ def main():
             "stdio",
             "-monitor",
             "none",
-            "-no-reboot",
-            "-no-shutdown",
+            *(() if args.expect_power == "reboot" else ("-no-reboot",)),
+            *(() if args.expect_power == "shutdown" else ("-no-shutdown",)),
             "-cdrom",
             args.iso,
         ]
@@ -481,6 +806,7 @@ def main():
         args.expect_calc
         or args.expect_shell
         or args.expect_storage_boot
+        or args.expect_power
         or (args.expect_input and not use_qmp_keyboard)
     )
     process = subprocess.Popen(
@@ -493,23 +819,33 @@ def main():
     captured = bytearray()
     timeout = (
         SHELL_TIMEOUT_SECONDS
-        if args.expect_shell or args.expect_storage_boot
+        if args.expect_shell or args.expect_storage_boot or args.expect_power
         else QEMU_TIMEOUT_SECONDS
     )
     deadline = time.monotonic() + timeout
     input_sent = False
+    raw_keys_sent = False
+    qmp_command_id = 2
     pending_lines = []
     if args.expect_calc:
         pending_lines = CALC_INPUT.splitlines(keepends=True)
     elif args.expect_shell:
-        pending_lines = SHELL_INPUT.splitlines(keepends=True) + list(
-            SHELL_INTERRUPT_INPUT
+        pending_lines = (
+            SHELL_INPUT.splitlines(keepends=True)
+            + list(SHELL_EDIT_INPUT)
+            + list(SHELL_VI_INPUT)
+            + list(SHELL_TOP_INPUT)
+            + list(SHELL_KEYS_INPUT)
+            + list(SHELL_INTERRUPT_INPUT)
         )
     elif args.expect_storage_boot:
         pending_lines = STORAGE_SHELL_INPUT[
             args.expect_storage_boot
         ].splitlines(keepends=True)
+    elif args.expect_power:
+        pending_lines = [f"{args.expect_power}\n".encode()]
     lines_sent = 0
+    markers_before_end = {}
     qmp_connection = None
     qmp_channel = None
     input_error = None
@@ -523,6 +859,7 @@ def main():
             args.expect_scheduler,
             args.expect_smp,
             args.expect_storage_boot,
+            args.expect_power,
             args.expect_user_preemption,
             args.expect_input,
             args.expect_calc,
@@ -541,6 +878,9 @@ def main():
             markers = (EXPECTED_SCHEDULER.encode(),)
         elif args.expect_smp:
             markers = (EXPECTED_SMP.encode(), PANIC_MARKER.encode())
+        elif args.expect_power:
+            # A shutdown ends when QEMU exits; a reboot when the shell is back.
+            markers = (PANIC_MARKER.encode(),)
         elif args.expect_storage_boot:
             markers = (
                 STORAGE_SHELL_OUTPUT[args.expect_storage_boot][-1].encode(),
@@ -549,7 +889,7 @@ def main():
         elif args.expect_user_preemption:
             markers = (EXPECTED_USER_PREEMPTION.encode(),)
         elif args.expect_input:
-            markers = (INPUT_ACCEPTED_MESSAGE.encode(), PANIC_MARKER.encode())
+            markers = (EXPECTED_INPUT_KEYS[-1].encode(), PANIC_MARKER.encode())
         elif args.expect_calc:
             markers = (EXPECTED_CALC.encode(), PANIC_MARKER.encode())
         elif args.expect_shell:
@@ -562,6 +902,7 @@ def main():
     else:
         markers = (SHELL_BANNER.encode(), PANIC_MARKER.encode())
 
+    output_closed = False
     while process.poll() is None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -574,17 +915,40 @@ def main():
 
         chunk = os.read(process.stdout.fileno(), 4096)
         if not chunk:
+            output_closed = True
             break
         captured.extend(chunk)
-        clean_output = ANSI_ESCAPE_BYTES.sub(b"", captured)
+        clean_output = ANSI_ESCAPE_BYTES.sub(
+            b"", captured.replace(LEAVE_ALTERNATE_SCREEN, b"\n")
+        )
         prompt_count = len(LINE_PROMPT.findall(clean_output))
         try:
-            while pending_lines and lines_sent < prompt_count:
-                for character in pending_lines.pop(0):
-                    process.stdin.write(bytes((character,)))
+            while (
+                pending_lines
+                and isinstance(pending_lines[0], TypeWhen)
+                and pending_lines[0].text in clean_output
+            ):
+                process.stdin.write(pending_lines.pop(0).keys)
+                process.stdin.flush()
+            while (
+                pending_lines
+                and not isinstance(pending_lines[0], TypeWhen)
+                and lines_sent < prompt_count
+            ):
+                line = pending_lines.pop(0)
+                pieces = (
+                    [line]
+                    if isinstance(line, WholeWrite)
+                    else [bytes((character,)) for character in line]
+                )
+                for piece in pieces:
+                    process.stdin.write(piece)
                     process.stdin.flush()
                     time.sleep(0.02)
                 lines_sent += 1
+                markers_before_end = {
+                    marker: clean_output.count(marker) for marker in markers
+                }
                 while pending_lines and pending_lines[0] is INTERRUPT_RUNNING:
                     pending_lines.pop(0)
                     time.sleep(INTERRUPT_DELAY_SECONDS)
@@ -593,64 +957,43 @@ def main():
         except OSError as error:
             input_error = str(error)
             pending_lines = []
-        if (
-            args.expect_input
-            and not input_sent
-            and SHELL_PROMPT.search(clean_output)
-        ):
-            try:
-                if use_qmp_keyboard:
-                    qmp_connection, qmp_channel = OpenQmpChannel(
-                        qmp_socket_path
-                    )
-                    # Ctrl+C at the shell prompt only discards the line.
-                    SendQmpCommand(
-                        qmp_channel,
-                        7,
-                        "human-monitor-command",
-                        {"command-line": "sendkey ctrl-c"},
-                    )
-                    SendQmpCommand(
-                        qmp_channel,
-                        2,
-                        "human-monitor-command",
-                        {"command-line": "sendkey a"},
-                    )
-                    SendQmpCommand(
-                        qmp_channel,
-                        3,
-                        "human-monitor-command",
-                        {"command-line": "sendkey b"},
-                    )
-                    SendQmpCommand(
-                        qmp_channel,
-                        4,
-                        "human-monitor-command",
-                        {"command-line": "sendkey x"},
-                    )
-                    SendQmpCommand(
-                        qmp_channel,
-                        5,
-                        "human-monitor-command",
-                        {"command-line": "sendkey backspace"},
-                    )
-                    SendQmpCommand(
-                        qmp_channel,
-                        6,
-                        "human-monitor-command",
-                        {"command-line": "sendkey ret"},
-                    )
-                else:
-                    for character in b"\x03abx\x7f\n":
-                        process.stdin.write(bytes((character,)))
-                        process.stdin.flush()
-                        time.sleep(0.02)
-            except (OSError, RuntimeError, json.JSONDecodeError) as error:
-                input_error = str(error)
+        try:
+            if (
+                args.expect_input
+                and not input_sent
+                and SHELL_PROMPT.search(clean_output)
+            ):
+                qmp_connection, qmp_channel = OpenQmpChannel(qmp_socket_path)
+                qmp_command_id = SendQmpKeys(qmp_channel, 2, INPUT_LINE_KEYS)
+                input_sent = True
+            if (
+                args.expect_input
+                and not raw_keys_sent
+                and KEYS_READY.encode() in clean_output
+            ):
+                SendQmpKeys(qmp_channel, qmp_command_id, INPUT_RAW_KEYS)
+                raw_keys_sent = True
+        except (OSError, RuntimeError, json.JSONDecodeError) as error:
+            input_error = str(error)
             input_sent = True
-        if any(marker in clean_output for marker in markers):
+            raw_keys_sent = True
+        # The end marker may also appear earlier in a scripted session, so
+        # only a new one after the last typed line ends it. Counting copies
+        # holds even when stripping escape codes shifts earlier output.
+        if not pending_lines and any(
+            clean_output.count(marker) > markers_before_end.get(marker, 0)
+            for marker in markers
+        ):
+            break
+        if (
+            args.expect_power == "reboot"
+            and clean_output.count(SHELL_BANNER.encode()) >= 2
+        ):
             break
 
+    # QEMU closes its output as it exits, which can come before the
+    # process can be reaped.
+    exited_by_itself = output_closed or process.poll() is not None
     if process.poll() is None:
         process.terminate()
     try:
@@ -670,6 +1013,15 @@ def main():
     output = captured.decode("utf-8", errors="replace")
 
     output = ANSI_ESCAPE.sub("", output)
+    # The whole session, so a failure can be read without running again.
+    output_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "build",
+        args.arch,
+        "smoke-output.txt",
+    )
+    with open(output_path, "w", encoding="utf-8") as saved:
+        saved.write(output)
     serial_lines = [line for line in output.splitlines() if "KERN/" in line]
     if serial_lines:
         print("\n".join(serial_lines))
@@ -727,6 +1079,31 @@ def main():
             return 1
         print("PASS: timer preemption and task lifecycle passed")
         return 0
+    if args.expect_power:
+        expected = POWER_MESSAGES[args.expect_power]
+        missing = [text for text in expected if text not in output]
+        boots = output.count(
+            "KERN/I: Limine transferred control to the kernel"
+        )
+        if missing or PANIC_MARKER in output:
+            print(f"FAIL: power output is missing {missing}", file=sys.stderr)
+            return 1
+        if args.expect_power == "shutdown" and not exited_by_itself:
+            print("FAIL: QEMU kept running after shutdown", file=sys.stderr)
+            return 1
+        if args.expect_power == "reboot" and boots < 2:
+            print("FAIL: the system did not boot again", file=sys.stderr)
+            return 1
+        outcome = (
+            "powered off"
+            if args.expect_power == "shutdown"
+            else "booted again"
+        )
+        print(
+            f"PASS: {args.expect_power} stopped processes, flushed the disk, "
+            f"and {outcome}"
+        )
+        return 0
     if args.expect_storage_boot:
         expected = f"{STORAGE_MESSAGE}{args.expect_storage_boot}"
         if (
@@ -780,16 +1157,64 @@ def main():
         print("PASS: unknown command rejected; calculator returned 69.25")
         return 0
     if args.expect_shell:
+        # The shell exits with one of these when it cannot read a command.
+        read_failure = re.search(
+            r"^shell: (?:lost the console|could not read input).*$",
+            output,
+            re.MULTILINE,
+        )
+        if read_failure:
+            print(f"FAIL: {read_failure.group(0).strip()}", file=sys.stderr)
+            return 1
         missing = [
             text for text in EXPECTED_SHELL_OUTPUT if text not in output
         ]
         if missing:
             print(f"FAIL: shell output is missing {missing}", file=sys.stderr)
             return 1
+        edits = {
+            text: len(re.findall(rf"^{text}\r?$", output, re.MULTILINE))
+            for text in EXPECTED_SHELL_EDITS
+        }
+        if edits != EXPECTED_SHELL_EDITS or not EXPECTED_HISTORY_LINE.search(
+            output
+        ):
+            print(f"FAIL: line editing printed {edits}", file=sys.stderr)
+            return 1
+        vi_lines = {
+            text: len(re.findall(rf"^{text}\r?$", output, re.MULTILINE))
+            for text in EXPECTED_VI_LINES
+        }
+        if vi_lines != EXPECTED_VI_LINES:
+            print(f"FAIL: vi wrote {vi_lines}", file=sys.stderr)
+            return 1
+        missing_tools = [
+            pattern
+            for pattern in EXPECTED_TEXT_TOOLS
+            if not re.search(pattern, output, re.MULTILINE)
+        ]
+        if missing_tools:
+            print(
+                f"FAIL: text tools did not print {missing_tools}",
+                file=sys.stderr,
+            )
+            return 1
+        if CLEAR_SEQUENCE not in captured:
+            print("FAIL: clear did not clear the screen", file=sys.stderr)
+            return 1
+        keys = [
+            line.strip()
+            for line in output.splitlines()
+            if line.startswith("keys: ")
+        ]
+        if keys != EXPECTED_KEYS:
+            print(f"FAIL: keys reported {keys}", file=sys.stderr)
+            return 1
+        # memtest exhaust runs twice from /system and once from the disk.
         exhausted = [int(pages) for pages in EXHAUST_OUTPUT.findall(output)]
         if (
-            len(exhausted) != 2
-            or exhausted[0] != exhausted[1]
+            len(exhausted) != 3
+            or len(set(exhausted)) != 1
             or exhausted[0] < MINIMUM_EXHAUST_PAGES
         ):
             print(
@@ -797,17 +1222,36 @@ def main():
                 file=sys.stderr,
             )
             return 1
+        # aslr runs twice from /system and twice from /tmp.
         layouts = ASLR_OUTPUT.findall(output)
-        if len(layouts) != 2 or any(
-            first == second for first, second in zip(*layouts)
+        if len(layouts) != 4 or any(
+            len(set(field)) != len(field) for field in zip(*layouts)
         ):
             print(
-                f"FAIL: two aslr runs did not get distinct layouts: {layouts}",
+                f"FAIL: aslr runs did not get distinct layouts: {layouts}",
                 file=sys.stderr,
             )
             return 1
-        if len(PRIMES_WORKER_OUTPUT.findall(output)) != 4:
-            print("FAIL: primes did not report four workers", file=sys.stderr)
+        busy = [
+            int(percent)
+            for percent in re.findall(
+                r"^\s*\d+ R\s+(\d+)\.\d\s+\d+\s+\S+ primes\r?$",
+                output,
+                re.MULTILINE,
+            )
+        ]
+        if not busy or max(busy) < 50:
+            print(
+                f"FAIL: top did not show a busy primes worker: {busy}",
+                file=sys.stderr,
+            )
+            return 1
+        # primes 4 and primes 16 report one line per worker.
+        if len(PRIMES_WORKER_OUTPUT.findall(output)) != 20:
+            print("FAIL: primes did not report every worker", file=sys.stderr)
+            return 1
+        if len(THREADS_WORKER_OUTPUT.findall(output)) != 19:
+            print("FAIL: threads did not report every thread", file=sys.stderr)
             return 1
         # A prompt may precede the echo on the same line.
         interrupts = len(re.findall(r"\^C\r?$", output, re.MULTILINE))
@@ -822,7 +1266,7 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        if WORKING_DIRECTORY_OUTPUT.findall(output) != ["/disk/work", "/disk"]:
+        if WORKING_DIRECTORY_OUTPUT.findall(output) != ["/home/work", "/home"]:
             print(
                 "FAIL: pwd did not follow cd: "
                 f"{WORKING_DIRECTORY_OUTPUT.findall(output)}",
@@ -882,9 +1326,14 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        if INPUT_ACCEPTED_MESSAGE not in output:
+        if "Unknown command: ab" not in output:
             print(
-                "FAIL: kernel did not accept the injected input line",
+                "FAIL: the shell did not run the typed line", file=sys.stderr
+            )
+            return 1
+        if len(re.findall(r"^azb\r?$", output, re.MULTILINE)) != 2:
+            print(
+                "FAIL: the cursor keys and history did not edit the line",
                 file=sys.stderr,
             )
             return 1
@@ -897,9 +1346,17 @@ def main():
         if b"> ^C" not in captured:
             print("FAIL: Ctrl+C was not echoed at the prompt", file=sys.stderr)
             return 1
+        keys = [
+            line.strip()
+            for line in output.splitlines()
+            if line.startswith("keys: ")
+        ]
+        if keys != EXPECTED_INPUT_KEYS:
+            print(f"FAIL: keys reported {keys}", file=sys.stderr)
+            return 1
         print(
-            "PASS: keyboard/serial input, Ctrl+C, backspace, and Enter were "
-            "handled"
+            "PASS: keyboard input, Ctrl+C, backspace, Enter, and raw special "
+            "keys were handled"
         )
         return 0
     if PANIC_MARKER in output:

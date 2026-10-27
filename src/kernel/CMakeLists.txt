@@ -11,9 +11,12 @@ if (ARCH STREQUAL "x86_64")
         ${SRCROOT}/arch/x86_64/interrupts.cpp
         ${SRCROOT}/arch/x86_64/local_apic.cpp
         ${SRCROOT}/arch/x86_64/cpu_features.cpp
+        ${SRCROOT}/arch/x86_64/floating_point.cpp
+        ${SRCROOT}/arch/x86_64/thread_pointer.cpp
         ${SRCROOT}/arch/x86_64/keyboard.cpp
         ${SRCROOT}/arch/x86_64/block_device.cpp
         ${SRCROOT}/arch/x86_64/rtc.cpp
+        ${SRCROOT}/arch/x86_64/power.cpp
     )
     set(SCHEDULER_CONTEXT_SRC ${SRCROOT}/arch/x86_64/context_switch.asm)
 elseif (ARCH STREQUAL "aarch64")
@@ -25,9 +28,12 @@ elseif (ARCH STREQUAL "aarch64")
         ${SRCROOT}/arch/aarch64/exceptions.S
         ${SRCROOT}/arch/aarch64/interrupts.cpp
         ${SRCROOT}/arch/aarch64/cpu_features.cpp
+        ${SRCROOT}/arch/aarch64/floating_point.cpp
+        ${SRCROOT}/arch/aarch64/thread_pointer.cpp
         ${SRCROOT}/arch/aarch64/keyboard.cpp
         ${SRCROOT}/arch/aarch64/block_device.cpp
         ${SRCROOT}/arch/aarch64/rtc.cpp
+        ${SRCROOT}/arch/aarch64/power.cpp
     )
     set(SCHEDULER_CONTEXT_SRC ${SRCROOT}/arch/aarch64/context_switch.S)
 else ()
@@ -47,6 +53,10 @@ set(SRC
     ${SRCROOT}/panic.cpp
     ${SRCROOT}/console.cpp
     ${SRCROOT}/files.cpp
+    ${SRCROOT}/futex.cpp
+    ${SRCROOT}/pipe.cpp
+    ${SRCROOT}/signals.cpp
+    ${SRCROOT}/power.cpp
     ${SRCROOT}/process.cpp
     ${SRCROOT}/process_arguments.cpp
     ${SRCROOT}/scheduler.cpp
@@ -55,6 +65,9 @@ set(SRC
     ${SRCROOT}/cpu.cpp
     ${SRCROOT}/syscall.cpp
     ${SRCROOT}/string/format.cpp
+    ${SRCROOT}/thread_local_storage.cpp
+    ${SRCROOT}/thread_stacks.cpp
+    ${SRCROOT}/../user/calendar.cpp
     ${SRCROOT}/time/timer.cpp
     ${SERIAL_SRC}
     ${TIMER_SRC}
@@ -69,9 +82,13 @@ set(SRC
     ${SRCROOT}/filesystem/fat_names.cpp
     ${SRCROOT}/filesystem/path.cpp
     ${SRCROOT}/storage/partition.cpp
+    ${SRCROOT}/filesystem/devices.cpp
+    ${SRCROOT}/filesystem/procfs.cpp
+    ${SRCROOT}/filesystem/tmpfs.cpp
     ${SRCROOT}/filesystem/vfs.cpp
     ${SRCROOT}/elf/elf_loader.cpp
     ${SRCROOT}/input/input.cpp
+    ${SRCROOT}/input/keyboard.cpp
     ${SRCROOT}/kernel_runtime.cpp
     ${SRCROOT}/kernel.cpp
 )

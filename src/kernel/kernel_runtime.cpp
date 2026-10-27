@@ -12,6 +12,7 @@
 #include "kernel/framebuffer/term.h"
 #include "kernel/halt.h"
 #include "kernel/input/input.h"
+#include "kernel/arch/power.h"
 #include "kernel/klogger.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/panic.h"
@@ -99,11 +100,10 @@ void LoadTestExecutable(KLogger& logger, const BootInfo& boot_info)
 {
     // Only the user-preemption test build needs the platform data for its timer.
     (void)boot_info;
+    constexpr char test_path[] = "test";
 #if defined(ARCH_x86_64)
-    constexpr char test_path[] = "test-x86_64.elf";
     constexpr uint16_t user_machine = ELF::MachineX86_64;
 #elif defined(ARCH_aarch64)
-    constexpr char test_path[] = "test-aarch64.elf";
     constexpr uint16_t user_machine = ELF::MachineAArch64;
 #endif
 
@@ -229,12 +229,11 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     constexpr char expected_contents[] = "FeatherOS FAT16 volume OK";
     VFS::FileInfo file_info;
     VFS::FileHandle file;
-    if (!VFS::Stat("/disk/BLOCK.TXT", &file_info) ||
-        file_info.size != sizeof(expected_contents) - 1)
+    if (!VFS::Stat("/BLOCK.TXT", &file_info) || file_info.size != sizeof(expected_contents) - 1)
     {
         Panic("VFS could not stat FAT16 BLOCK.TXT");
     }
-    if (!VFS::Open("/disk/BLOCK.TXT", &file))
+    if (!VFS::Open("/BLOCK.TXT", &file))
     {
         Panic("VFS could not open FAT16 BLOCK.TXT");
     }
@@ -352,24 +351,24 @@ void StartSecondaryCpus(KLogger& logger, limine_smp_response* smp)
     }
     Console::Initialize(display_ready ? &term : nullptr);
 
-    // The shell is an ordinary initramfs program; restart it if it ever exits.
+    // init starts and supervises the services in /init.conf; restart it if it ever exits.
     for (;;)
     {
-        Process::ProcessId shell;
-        if (Process::Spawn("shell", 0, &shell) != Process::SpawnStatus::Started)
+        Process::ProcessId init;
+        if (Process::Spawn("init", nullptr, 0, 0, &init) != Process::SpawnStatus::Started)
         {
-            Panic("Could not start the initramfs shell");
+            Panic("Could not start init");
         }
         uint64_t exit_status;
-        if (!Process::Wait(shell, &exit_status))
+        if (!Process::Wait(init, &exit_status))
         {
-            Panic("Could not wait for the shell");
+            Panic("Could not wait for init");
         }
         char message[64];
-        if (!String::FormatTo(message, sizeof(message), "Shell exited with status {}; restarting",
+        if (!String::FormatTo(message, sizeof(message), "init exited with status {}; restarting",
                               exit_status))
         {
-            Panic("Shell status formatting failed");
+            Panic("init status formatting failed");
         }
         logger.Warning(message);
     }
@@ -380,6 +379,7 @@ void StartSecondaryCpus(KLogger& logger, limine_smp_response* smp)
 [[noreturn]] void Run(KLogger& logger, const BootInfo& boot_info)
 {
     Process::Initialize(boot_info.hhdm_offset);
+    Arch::Power::Initialize(boot_info.acpi_rsdp_physical, boot_info.platform_data);
     InitializeDisplay(logger, boot_info.framebuffer);
     MountInitramfs(logger, boot_info);
     LoadTestExecutable(logger, boot_info);

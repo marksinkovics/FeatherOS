@@ -37,6 +37,13 @@ bool ProtectPage(AddressSpace& address_space, uint64_t virtual_address, PageFlag
 // Resolves a present, user-accessible 4 KiB page; fails for unmapped and kernel-only addresses.
 bool TranslateUserPage(const AddressSpace& address_space, uint64_t virtual_address,
                        uint64_t* physical_address, bool* writable);
+// Removes a present user page and returns its frame, which the caller frees only after
+// ShootDownUserMappings: until then, another CPU running the address space may still reach it.
+bool UnmapUserPage(AddressSpace& address_space, uint64_t virtual_address,
+                   uint64_t* physical_address);
+// Returns once no CPU can still use a translation for a page unmapped from address_space. Call
+// it with no spinlock held, since it waits for the other CPUs.
+void ShootDownUserMappings(const AddressSpace& address_space);
 bool ActivateAddressSpace(const AddressSpace& address_space);
 void ActivateKernelAddressSpace();
 

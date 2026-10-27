@@ -68,4 +68,56 @@ bool BuildProgramArguments(const char* command_line, uint64_t user_address,
     return true;
 }
 
+bool CopyEnvironment(const char* environment, size_t size, User::ProgramArguments* arguments)
+{
+    if (arguments == nullptr)
+    {
+        return false;
+    }
+    arguments->environment_count = 0;
+    arguments->environment[0] = '\0';
+    if (environment == nullptr)
+    {
+        return true;
+    }
+    if (size > User::MaximumEnvironmentSize)
+    {
+        size = User::MaximumEnvironmentSize;
+    }
+    size_t offset = 0;
+    uint64_t count = 0;
+    for (;;)
+    {
+        if (offset >= size)
+        {
+            return false;
+        }
+        if (environment[offset] == '\0')
+        {
+            break;
+        }
+        if (count == User::MaximumEnvironmentVariables || environment[offset] == '=')
+        {
+            return false;
+        }
+        bool named = false;
+        for (; offset < size && environment[offset] != '\0'; ++offset)
+        {
+            named = named || environment[offset] == '=';
+        }
+        if (!named || offset == size)
+        {
+            return false;
+        }
+        ++offset;
+        ++count;
+    }
+    for (size_t index = 0; index <= offset; ++index)
+    {
+        arguments->environment[index] = environment[index];
+    }
+    arguments->environment_count = count;
+    return true;
+}
+
 } // namespace FeatherOS::Process

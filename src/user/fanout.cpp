@@ -1,45 +1,51 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <spawn.h>
+#include <stdio.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 constexpr char Help[] = "usage: fanout <1-16>\n"
                         "Starts that many echo children at once, then waits for all of them.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    constexpr uint64_t MaximumChildren = 16;
-    uint64_t count;
-    if (arguments == nullptr || arguments->argument_count != 2 ||
-        !ParseUnsignedNumber(arguments->argument_values[1], &count) || count == 0 ||
+    if (FeatherOS::User::HelpRequested(argc, argv))
+    {
+        puts(Help);
+        return 0;
+    }
+    constexpr unsigned long long MaximumChildren = 16;
+    unsigned long long count = 0;
+    if (argc != 2 || !FeatherOS::User::ParseUnsigned(argv[1], &count) || count == 0 ||
         count > MaximumChildren)
     {
-        WriteLine("usage: fanout <1-16>");
-        Exit(1);
+        puts("usage: fanout <1-16>");
+        return 1;
     }
 
-    uint64_t children[MaximumChildren];
-    for (uint64_t index = 0; index < count; ++index)
+    char echo[] = "echo";
+    char child_word[] = "child";
+    char* const arguments[] = {echo, child_word, nullptr};
+    pid_t children[MaximumChildren];
+    for (unsigned long long index = 0; index < count; ++index)
     {
-        children[index] = Spawn("echo child");
-        if (children[index] >= SyscallErrorBase)
+        if (posix_spawnp(&children[index], "echo", nullptr, nullptr, arguments, environ) != 0)
         {
-            WriteLine("fanout: spawn failed");
-            Exit(1);
+            puts("fanout: spawn failed");
+            return 1;
         }
     }
-    for (uint64_t index = 0; index < count; ++index)
+    for (unsigned long long index = 0; index < count; ++index)
     {
-        uint64_t status;
-        if (Wait(children[index], &status) >= SyscallErrorBase || status != 0)
+        int status = 0;
+        if (waitpid(children[index], &status, 0) != children[index] || !WIFEXITED(status) ||
+            WEXITSTATUS(status) != 0)
         {
-            WriteLine("fanout: child failed");
-            Exit(1);
+            puts("fanout: child failed");
+            return 1;
         }
     }
-    WriteText("fanout: ");
-    WriteNumber(count);
-    WriteLine(" children exited");
-    Exit(0);
+    printf("fanout: %llu children exited\n", count);
+    return 0;
 }

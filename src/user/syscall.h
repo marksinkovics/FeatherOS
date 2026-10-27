@@ -49,15 +49,17 @@ inline uint64_t ReadLine(char* buffer, uint64_t capacity, const char* prompt)
 }
 
 // Starts the program named by the first word of command_line; returns its process ID.
-inline uint64_t Spawn(const char* command_line)
+inline uint64_t Spawn(const char* command_line, uint64_t flags = 0,
+                      const char* environment = nullptr)
 {
-    return Syscall(SyscallNumber::Spawn, reinterpret_cast<uint64_t>(command_line));
+    return Syscall(SyscallNumber::Spawn, reinterpret_cast<uint64_t>(command_line), flags,
+                   reinterpret_cast<uint64_t>(environment));
 }
 
 // Waits for a child started with Spawn and stores its exit status.
-inline uint64_t Wait(uint64_t process_id, uint64_t* status)
+inline uint64_t Wait(uint64_t process_id, uint64_t* status, uint64_t flags = 0)
 {
-    return Syscall(SyscallNumber::Wait, process_id, reinterpret_cast<uint64_t>(status));
+    return Syscall(SyscallNumber::Wait, process_id, reinterpret_cast<uint64_t>(status), flags);
 }
 
 // Returns the current UTC time in seconds since 1970-01-01, or a syscall error.
@@ -106,9 +108,9 @@ inline uint64_t CloseFile(uint64_t descriptor)
     return Syscall(SyscallNumber::Close, descriptor);
 }
 
-inline uint64_t SeekFile(uint64_t descriptor, uint64_t offset)
+inline uint64_t SeekFile(uint64_t descriptor, uint64_t offset, uint64_t whence = SeekFromStart)
 {
-    return Syscall(SyscallNumber::Seek, descriptor, offset);
+    return Syscall(SyscallNumber::Seek, descriptor, offset, whence);
 }
 
 inline uint64_t RemoveFile(const char* path)
@@ -126,6 +128,17 @@ inline uint64_t RemoveDirectory(const char* path)
     return Syscall(SyscallNumber::RemoveDirectory, reinterpret_cast<uint64_t>(path));
 }
 
+inline uint64_t Rename(const char* from, const char* to)
+{
+    return Syscall(SyscallNumber::Rename, reinterpret_cast<uint64_t>(from),
+                   reinterpret_cast<uint64_t>(to));
+}
+
+inline uint64_t Shutdown(uint64_t action)
+{
+    return Syscall(SyscallNumber::Shutdown, action);
+}
+
 inline uint64_t ChangeDirectory(const char* path)
 {
     return Syscall(SyscallNumber::ChangeDirectory, reinterpret_cast<uint64_t>(path));
@@ -140,6 +153,52 @@ inline uint64_t ReadDirectory(const char* path, uint64_t index, DirectoryEntry* 
 {
     return Syscall(SyscallNumber::ReadDirectory, reinterpret_cast<uint64_t>(path), index,
                    reinterpret_cast<uint64_t>(entry));
+}
+
+inline uint64_t Stat(const char* path, FileStatus* status)
+{
+    return Syscall(SyscallNumber::Stat, reinterpret_cast<uint64_t>(path),
+                   reinterpret_cast<uint64_t>(status));
+}
+
+inline uint64_t StatDescriptor(uint64_t descriptor, FileStatus* status)
+{
+    return Syscall(SyscallNumber::StatDescriptor, descriptor, reinterpret_cast<uint64_t>(status));
+}
+
+inline uint64_t Duplicate(uint64_t descriptor, uint64_t target, uint64_t flags)
+{
+    return Syscall(SyscallNumber::Duplicate, descriptor, target, flags);
+}
+
+inline uint64_t DescriptorFlags(uint64_t descriptor, bool set, uint64_t flags)
+{
+    return Syscall(SyscallNumber::DescriptorFlags, descriptor, set ? 1 : 0, flags);
+}
+
+inline uint64_t CreatePipe(uint64_t (&descriptors)[2], uint64_t flags)
+{
+    return Syscall(SyscallNumber::Pipe, reinterpret_cast<uint64_t>(descriptors), flags);
+}
+
+inline uint64_t ProcessGroup(uint64_t process_id)
+{
+    return Syscall(SyscallNumber::ProcessGroup, process_id);
+}
+
+inline uint64_t ForegroundGroup(bool set, uint64_t group)
+{
+    return Syscall(SyscallNumber::ForegroundGroup, set ? 1 : 0, group);
+}
+
+inline uint64_t ProcessId()
+{
+    return Syscall(SyscallNumber::ProcessId);
+}
+
+inline uint64_t ParentProcessId()
+{
+    return Syscall(SyscallNumber::ParentProcessId);
 }
 
 } // namespace FeatherOS::User

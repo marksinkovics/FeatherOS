@@ -10,6 +10,15 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Exit, arguments[0]};
     }
+    if (request.number == static_cast<uint64_t>(Number::ThreadExit) &&
+        handlers.thread_create != nullptr)
+    {
+        return {Action::ExitThread, arguments[0]};
+    }
+    if (request.number == static_cast<uint64_t>(Number::SignalReturn))
+    {
+        return {Action::SignalReturn, 0};
+    }
     if (request.number == static_cast<uint64_t>(Number::WriteCharacter))
     {
         const uint64_t character = arguments[0];
@@ -28,11 +37,11 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     }
     if (request.number == static_cast<uint64_t>(Number::Spawn) && handlers.spawn != nullptr)
     {
-        return {Action::Return, handlers.spawn(context, arguments[0])};
+        return {Action::Return, handlers.spawn(context, arguments[0], arguments[1], arguments[2])};
     }
     if (request.number == static_cast<uint64_t>(Number::Wait) && handlers.wait != nullptr)
     {
-        return {Action::Return, handlers.wait(context, arguments[0], arguments[1])};
+        return {Action::Return, handlers.wait(context, arguments[0], arguments[1], arguments[2])};
     }
     if (request.number == static_cast<uint64_t>(Number::ReadClock) &&
         handlers.read_clock != nullptr)
@@ -76,7 +85,7 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     }
     if (request.number == static_cast<uint64_t>(Number::Seek) && handlers.seek != nullptr)
     {
-        return {Action::Return, handlers.seek(context, arguments[0], arguments[1])};
+        return {Action::Return, handlers.seek(context, arguments[0], arguments[1], arguments[2])};
     }
     if (request.number == static_cast<uint64_t>(Number::Remove) && handlers.remove != nullptr)
     {
@@ -107,6 +116,118 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
         handlers.current_directory != nullptr)
     {
         return {Action::Return, handlers.current_directory(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Shutdown) && handlers.shutdown != nullptr)
+    {
+        return {Action::Return, handlers.shutdown(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Stat) && handlers.stat != nullptr)
+    {
+        return {Action::Return, handlers.stat(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::StatDescriptor) &&
+        handlers.stat_descriptor != nullptr)
+    {
+        return {Action::Return, handlers.stat_descriptor(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ProcessId) &&
+        handlers.process_id != nullptr)
+    {
+        return {Action::Return, handlers.process_id(context)};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ParentProcessId) &&
+        handlers.parent_process_id != nullptr)
+    {
+        return {Action::Return, handlers.parent_process_id(context)};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Duplicate) && handlers.duplicate != nullptr)
+    {
+        return {Action::Return,
+                handlers.duplicate(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::DescriptorFlags) &&
+        handlers.descriptor_flags != nullptr)
+    {
+        return {Action::Return,
+                handlers.descriptor_flags(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Pipe) && handlers.pipe != nullptr)
+    {
+        return {Action::Return, handlers.pipe(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ProcessGroup) &&
+        handlers.process_group != nullptr)
+    {
+        return {Action::Return, handlers.process_group(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ForegroundGroup) &&
+        handlers.foreground_group != nullptr)
+    {
+        return {Action::Return, handlers.foreground_group(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Kill) && handlers.kill != nullptr)
+    {
+        return {Action::Return, handlers.kill(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::SignalAction) &&
+        handlers.signal_action != nullptr)
+    {
+        return {Action::Return,
+                handlers.signal_action(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::SignalMask) &&
+        handlers.signal_mask != nullptr)
+    {
+        return {Action::Return, handlers.signal_mask(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Pause) && handlers.pause != nullptr)
+    {
+        return {Action::Return, handlers.pause(context)};
+    }
+    if (request.number == static_cast<uint64_t>(Number::TerminalSize) &&
+        handlers.terminal_size != nullptr)
+    {
+        return {Action::Return, handlers.terminal_size(context)};
+    }
+    if (request.number == static_cast<uint64_t>(Number::TerminalMode) &&
+        handlers.terminal_mode != nullptr)
+    {
+        return {Action::Return, handlers.terminal_mode(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ThreadCreate) &&
+        handlers.thread_create != nullptr)
+    {
+        return {Action::Return,
+                handlers.thread_create(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ThreadJoin) &&
+        handlers.thread_join != nullptr)
+    {
+        return {Action::Return, handlers.thread_join(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ThreadId) && handlers.thread_id != nullptr)
+    {
+        return {Action::Return, handlers.thread_id(context)};
+    }
+    if (request.number == static_cast<uint64_t>(Number::FutexWait) &&
+        handlers.futex_wait != nullptr)
+    {
+        return {Action::Return,
+                handlers.futex_wait(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::FutexWake) &&
+        handlers.futex_wake != nullptr)
+    {
+        return {Action::Return, handlers.futex_wake(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ThreadDetach) &&
+        handlers.thread_detach != nullptr)
+    {
+        return {Action::Return, handlers.thread_detach(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Rename) && handlers.rename != nullptr)
+    {
+        return {Action::Return, handlers.rename(context, arguments[0], arguments[1])};
     }
     return {Action::Invalid, UINT64_MAX};
 }

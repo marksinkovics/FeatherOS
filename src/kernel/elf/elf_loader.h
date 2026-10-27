@@ -26,7 +26,17 @@ struct Image
     bool position_independent;
     uint64_t dynamic_offset;
     uint64_t dynamic_size;
+    // The PT_TLS template at its link address, inside a load segment: each thread's block starts
+    // as its first tls_file_size bytes followed by zeros, tls_memory_size bytes in all.
+    bool has_tls;
+    uint64_t tls_virtual_address;
+    uint64_t tls_file_size;
+    uint64_t tls_memory_size;
+    uint64_t tls_alignment;
 };
+
+// The largest thread-local block a program may have.
+constexpr uint64_t MaximumThreadLocalSize = 16 * 1024;
 
 struct LoadSegment
 {

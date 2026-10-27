@@ -16,6 +16,11 @@ bool MapPage(AddressSpace& address_space, uint64_t virtual_address, uint64_t phy
 bool ProtectPage(AddressSpace& address_space, uint64_t virtual_address, PageFlags flags);
 bool TranslateUserPage(const AddressSpace& address_space, uint64_t virtual_address,
                        uint64_t* physical_address, bool* writable);
+bool UnmapUserPage(AddressSpace& address_space, uint64_t virtual_address,
+                   uint64_t* physical_address);
+void ShootDownUserMappings(const AddressSpace& address_space);
+// Run from the IPI handler: does any flush another CPU asked of this one.
+void ServiceShootDown();
 bool ActivateAddressSpace(const AddressSpace& address_space);
 void ActivateKernelAddressSpace();
 

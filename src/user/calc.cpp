@@ -1,6 +1,9 @@
 #include "calculator.h"
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
+
+#include <featheros.h>
+#include <stdio.h>
+#include <string.h>
 
 using namespace FeatherOS::User;
 
@@ -16,22 +19,20 @@ bool PrintCalculation(const char* expression)
     {
         char text[FormattedRationalLength];
         FormatRational(result.value, text);
-        WriteLine(text);
+        puts(text);
         return true;
     }
     case CalculationError::UnexpectedCharacter:
-        WriteText("calc: unexpected '");
-        WriteCharacter(static_cast<uint64_t>(expression[result.position]));
-        WriteLine("'");
+        printf("calc: unexpected '%c'\n", expression[result.position]);
         return false;
     case CalculationError::UnexpectedEnd:
-        WriteLine("calc: unexpected end of expression");
+        puts("calc: unexpected end of expression");
         return false;
     case CalculationError::DivisionByZero:
-        WriteLine("calc: division by zero");
+        puts("calc: division by zero");
         return false;
     case CalculationError::Overflow:
-        WriteLine("calc: number too large");
+        puts("calc: number too large");
         return false;
     }
     return false;
@@ -53,32 +54,37 @@ constexpr char Help[] =
     "Evaluates + - * / with parentheses and decimals, e.g. calc 4 + 66 - (3 / 4).\n"
     "Without an expression, reads one per line at a calc> prompt; type exit to quit.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    if (arguments != nullptr && arguments->argument_count > 1)
+    if (HelpRequested(argc, argv))
     {
-        const char* expression = SkipSpaces(arguments->command_line);
-        while (*expression != ' ')
+        puts(Help);
+        return 0;
+    }
+    char line[64];
+    if (argc > 1)
+    {
+        size_t length = 0;
+        for (int index = 1; index < argc && length < sizeof(line); ++index)
         {
-            ++expression;
+            length += static_cast<size_t>(snprintf(line + length, sizeof(line) - length,
+                                                   index > 1 ? " %s" : "%s", argv[index]));
         }
-        Exit(PrintCalculation(expression) ? 0 : 1);
+        return PrintCalculation(line) ? 0 : 1;
     }
 
-    WriteLine("Type an expression, or 'exit' to quit.");
-    char line[MaximumCommandLineLength];
+    puts("Type an expression, or 'exit' to quit.");
     for (;;)
     {
-        if (IsSyscallError(ReadLine(line, sizeof(line), "calc> ")))
+        if (featheros_read_line("calc> ", line, sizeof(line)) < 0)
         {
-            WriteLine("calc: could not read input");
-            Exit(1);
+            puts("calc: could not read input");
+            return 1;
         }
         const char* expression = SkipSpaces(line);
-        if (StringEquals(expression, "exit") || StringEquals(expression, "quit"))
+        if (strcmp(expression, "exit") == 0 || strcmp(expression, "quit") == 0)
         {
-            Exit(0);
+            return 0;
         }
         if (*expression != '\0')
         {

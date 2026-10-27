@@ -1,26 +1,21 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <stdio.h>
 
 constexpr char Help[] = "usage: echo <words...>\n"
                         "Prints its arguments separated by single spaces.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    if (arguments == nullptr)
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        Exit(2);
+        puts(Help);
+        return 0;
     }
-    for (uint64_t index = 1; index < arguments->argument_count; ++index)
+    for (int index = 1; index < argc; ++index)
     {
-        if (index > 1)
-        {
-            WriteCharacter(' ');
-        }
-        WriteText(arguments->argument_values[index]);
+        printf(index > 1 ? " %s" : "%s", argv[index]);
     }
-    WriteCharacter('\n');
-    Exit(0);
+    putchar('\n');
+    return 0;
 }

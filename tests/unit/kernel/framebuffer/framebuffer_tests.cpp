@@ -209,3 +209,135 @@ TEST_CASE("incremental terminal rendering matches a full redraw")
     terminal.Redraw();
     REQUIRE(pixels == incremental);
 }
+
+TEST_CASE("terminal follows VT100 cursor, erase and reverse-video sequences")
+{
+    constexpr uint64_t width = 320;
+    constexpr uint64_t height = 112;
+    std::array<uint8_t, width * height * 4> pixels{};
+    limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, width * 4, 32);
+    Framebuffer framebuffer;
+    REQUIRE(framebuffer.init(&descriptor));
+
+    FeatherOS::Term terminal;
+    terminal.Init(&framebuffer);
+    REQUIRE(terminal.ContentRows() == 4);
+    REQUIRE(terminal.Columns() == 38);
+    const auto row_text = [&](uint32_t row, uint32_t length)
+    {
+        std::string text;
+        for (uint32_t column = 0; column < length; ++column)
+        {
+            text += static_cast<char>(terminal.CharacterAt(row, column));
+        }
+        return text;
+    };
+
+    terminal.Print("hello\rJ\bX");
+    REQUIRE(row_text(1, 6) == "Xello ");
+
+    // Row 1 is the first row below the status bar.
+    terminal.Print("\x1b[3;4Habc");
+    REQUIRE(row_text(3, 7) == "   abc ");
+    REQUIRE(terminal.CursorRow() == 3);
+    REQUIRE(terminal.CursorColumn() == 6);
+    terminal.Print("\x1b[2D\x1b[A!");
+    REQUIRE(row_text(2, 6) == "    ! ");
+    terminal.Print("\x1b[99B\x1b[99C");
+    REQUIRE(terminal.CursorRow() == 4);
+    REQUIRE(terminal.CursorColumn() == 37);
+    terminal.Print("\x1b[1;1H\x1b[0;0H");
+    REQUIRE(terminal.CursorRow() == 1);
+    REQUIRE(terminal.CursorColumn() == 0);
+
+    // A sequence split across writes still applies.
+    terminal.Print("\x1b[");
+    terminal.Print("3");
+    terminal.Print(";2Hq");
+    REQUIRE(row_text(3, 2) == " q");
+
+    terminal.Print("\x1b[3;5H\x1b[K");
+    REQUIRE(row_text(3, 7) == " q a   ");
+    terminal.Print("\x1b[1;3H\x1b[1K");
+    REQUIRE(row_text(1, 5) == "   lo");
+
+    terminal.Print("\x1b[2;1Hn\x1b[7mrev\x1b[27mn\x1b[7mx\x1b[0my");
+    REQUIRE(row_text(2, 7) == "nrevnxy");
+    REQUIRE_FALSE(terminal.ReversedAt(2, 0));
+    REQUIRE(terminal.ReversedAt(2, 1));
+    REQUIRE(terminal.ReversedAt(2, 3));
+    REQUIRE_FALSE(terminal.ReversedAt(2, 4));
+    REQUIRE(terminal.ReversedAt(2, 5));
+    REQUIRE_FALSE(terminal.ReversedAt(2, 6));
+
+    terminal.Print("\x1b[s\x1b[4;9H\x1b[u");
+    REQUIRE(terminal.CursorRow() == 2);
+    REQUIRE(terminal.CursorColumn() == 7);
+    terminal.Print("\x1b" "7\x1b[1;1H\x1b" "8");
+    REQUIRE(terminal.CursorRow() == 2);
+    REQUIRE(terminal.CursorColumn() == 7);
+
+    // Unknown sequences are swallowed rather than printed.
+    terminal.Print("\x1b[?2004h\x1b[5n.");
+    REQUIRE(row_text(2, 8) == "nrevnxy.");
+
+    terminal.SetStatus("edit", "");
+    terminal.Print("\x1b[2J");
+    for (uint32_t row = 1; row <= 4; ++row)
+    {
+        REQUIRE(row_text(row, 38) == std::string(38, ' '));
+        REQUIRE_FALSE(terminal.ReversedAt(row, 1));
+    }
+    REQUIRE(row_text(0, 5) == " edit");
+}
+
+TEST_CASE("the alternate screen keeps the main screen to come back to")
+{
+    constexpr uint64_t width = 320;
+    constexpr uint64_t height = 112;
+    std::array<uint8_t, width * height * 4> pixels{};
+    limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, width * 4, 32);
+    Framebuffer framebuffer;
+    REQUIRE(framebuffer.init(&descriptor));
+    FeatherOS::Term terminal;
+    terminal.Init(&framebuffer);
+    terminal.SetStatus("shell", "");
+    const auto row_text = [&](uint32_t row)
+    {
+        std::string text;
+        for (uint32_t column = 0; column < 6; ++column)
+        {
+            text += static_cast<char>(terminal.CharacterAt(row, column));
+        }
+        return text;
+    };
+    terminal.Print("shell\n> vi");
+    REQUIRE(terminal.CursorRow() == 2);
+    REQUIRE(terminal.CursorColumn() == 4);
+    const auto main_screen = pixels;
+
+    terminal.Print("\x1b[?1049h");
+    REQUIRE(row_text(1) == "      ");
+    REQUIRE(row_text(2) == "      ");
+    terminal.Print("\x1b[1;1H\x1b[7meditor\x1b[0m\x1b[4;1H~");
+    REQUIRE(row_text(1) == "editor");
+    REQUIRE(terminal.ReversedAt(1, 0));
+    // Entering again changes nothing, and the status bar belongs to neither screen.
+    terminal.Print("\x1b[?1049h");
+    REQUIRE(row_text(1) == "editor");
+    REQUIRE(row_text(0) == " shell");
+
+    terminal.Print("\x1b[?1049l");
+    REQUIRE(row_text(1) == "shell ");
+    REQUIRE(row_text(2) == "> vi  ");
+    REQUIRE(row_text(4) == "      ");
+    REQUIRE_FALSE(terminal.ReversedAt(1, 0));
+    REQUIRE(terminal.CursorRow() == 2);
+    REQUIRE(terminal.CursorColumn() == 4);
+    REQUIRE(pixels == main_screen);
+
+    // A program that exits on the alternate screen is taken off it.
+    terminal.Print("\x1b[?1049hgone");
+    terminal.ResetModes();
+    REQUIRE(row_text(2) == "> vi  ");
+}

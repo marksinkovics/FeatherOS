@@ -954,8 +954,8 @@ uint8_t PatternByte(uint32_t index, uint64_t boot_count)
 }
 
 // The host-side check in tools/smoke_test.py rebuilds the same text.
-constexpr char PersistentFile[] = "/disk/PERSIST.TXT";
-constexpr char ScratchFile[] = "/disk/SCRATCH.TMP";
+constexpr char PersistentFile[] = "/PERSIST.TXT";
+constexpr char ScratchFile[] = "/SCRATCH.TMP";
 constexpr uint32_t PersistentLines = 200;
 
 uint64_t FormatLine(char (&line)[48], uint64_t boot_count, uint32_t line_number)

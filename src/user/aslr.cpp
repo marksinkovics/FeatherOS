@@ -1,7 +1,10 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <featheros.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 
 namespace
 {
@@ -12,28 +15,27 @@ const char* const relocated_labels[] = {"relocated"};
 
 } // namespace
 
-constexpr char Help[] =
-    "usage: aslr\n"
-    "Prints where this run's image, stack, arguments block, and heap were placed;\n"
-    "run it twice to see address-space layout randomization.";
+constexpr char Help[] = "usage: aslr\n"
+                        "Prints where this run's image, stack, arguments, and heap were placed;\n"
+                        "run it twice to see address-space layout randomization.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    if (!StringEquals(relocated_labels[0], "relocated"))
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        WriteLine("aslr: relocations were not applied");
-        Exit(1);
+        puts(Help);
+        return 0;
     }
-    volatile uint64_t stack_marker = 0;
-    WriteText("aslr: image=");
-    WriteNumber(reinterpret_cast<uint64_t>(&_start));
-    WriteText(" stack=");
-    WriteNumber(reinterpret_cast<uint64_t>(&stack_marker));
-    WriteText(" args=");
-    WriteNumber(reinterpret_cast<uint64_t>(arguments));
-    WriteText(" heap=");
-    WriteNumber(ExtendHeap(0));
-    WriteCharacter('\n');
-    Exit(0);
+    if (strcmp(relocated_labels[0], "relocated") != 0)
+    {
+        puts("aslr: relocations were not applied");
+        return 1;
+    }
+    volatile int stack_marker = 0;
+    printf("aslr: image=%lu stack=%lu args=%lu heap=%lu\n",
+           static_cast<unsigned long>(reinterpret_cast<uintptr_t>(&relocated_labels)),
+           static_cast<unsigned long>(reinterpret_cast<uintptr_t>(&stack_marker)),
+           static_cast<unsigned long>(reinterpret_cast<uintptr_t>(featheros_arguments_page())),
+           static_cast<unsigned long>(reinterpret_cast<uintptr_t>(sbrk(0))));
+    return 0;
 }

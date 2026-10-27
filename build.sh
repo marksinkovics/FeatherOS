@@ -171,39 +171,27 @@ iso() {
     fi
     local initramfs_path="$build_dir/initramfs.tar"
     local block_image="$build_dir/virtio-disk.img"
-    local user_compiler
-    local user_linker_script
-    local -a user_arch_flags=()
-    if [ "$ARCH" = "x86_64" ]; then
-        _require_tools x86_64-elf-g++
-        user_compiler=x86_64-elf-g++
-        user_linker_script="$SCRIPT_DIR/src/user/linker_x86_64.ld"
-        # Context switches do not save SSE state, so user code must not use it.
-        user_arch_flags=(-mno-red-zone -mgeneral-regs-only)
-    else
-        _require_tools aarch64-elf-g++
-        user_compiler=aarch64-elf-g++
-        user_linker_script="$SCRIPT_DIR/src/user/linker_aarch64.ld"
-        user_arch_flags=(-mcpu=generic -march=armv8-a+nofp+nosimd -mcmodel=small)
+    # The CMake build compiles the programs (src/user/CMakeLists.txt) into this directory.
+    local programs_dir="$build_dir/programs"
+    local -a programs=("$programs_dir"/*-"$ARCH".elf)
+    if [ ! -f "${programs[0]}" ]; then
+        _err "No user programs in $programs_dir, run './build.sh build' first."
+        exit 1
     fi
+    # The initramfs is /system, where each program is a file named after it, as "ls".
+    local system_dir="$build_dir/system"
+    rm -rf "$system_dir"
+    mkdir -p "$system_dir"
+    cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" "$system_dir/"
+    local program
+    for program in "${programs[@]}"; do
+        local name="${program##*/}"
+        cp "$program" "$system_dir/${name%-"$ARCH".elf}"
+    done
+    python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$system_dir/badelf"
     # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
     export COPYFILE_DISABLE=1
-    tar -cf "$initramfs_path" -C "$SCRIPT_DIR/initramfs" hello.txt
-    local user_program
-    for user_program in test:test_program shell:shell calc:calc echo:echo upper:upper date:date fanout:fanout memtest:memtest sleep:sleep hardening:hardening aslr:aslr uptime:uptime primes:primes filetest:filetest ls:ls cat:cat write:write rm:rm mkdir:mkdir rmdir:rmdir; do
-        local user_elf="${user_program%%:*}-$ARCH.elf"
-        "$user_compiler" \
-            -ffreestanding -fno-builtin -fno-exceptions -fno-rtti -fno-stack-protector \
-            -fpie -nostdlib -nodefaultlibs \
-            -Wl,-pie -Wl,--no-dynamic-linker -Wl,-z,text \
-            -Wl,-T,"$user_linker_script" -Wl,-e,_start -Wl,--build-id=none \
-            -Wl,-z,max-page-size=0x1000 "${user_arch_flags[@]}" \
-            -I"$SCRIPT_DIR/src/user" "$SCRIPT_DIR/src/user/${user_program#*:}.cpp" \
-            -o "$build_dir/$user_elf"
-        tar -rf "$initramfs_path" -C "$build_dir" "$user_elf"
-    done
-    python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$build_dir/badelf-$ARCH.elf"
-    tar -rf "$initramfs_path" -C "$build_dir" "badelf-$ARCH.elf"
+    (cd "$system_dir" && tar -cf "$initramfs_path" -- *)
     python3 "$SCRIPT_DIR/tools/create_test_disk.py" "$block_image" \
         "$SCRIPT_DIR/initramfs/block.txt" --layout "${DISK_LAYOUT:-mbr}"
 
@@ -291,22 +279,36 @@ run() {
         local build_dir
         build_dir=$(_build_dir)
         _print "Run AArch64 in QEMU (serial log: build/aarch64/serial.log)"
+        local run_args=()
+        if [[ "${QEMU_NO_REBOOT:-OFF}" == ON || "${QEMU_NO_REBOOT:-OFF}" == 1 ]]; then
+            run_args+=(--no-reboot)
+        fi
+        if [[ "${QEMU_ZOOM:-ON}" != OFF && "${QEMU_ZOOM:-ON}" != 0 ]]; then
+            run_args+=(--zoom)
+        fi
         python3 "$SCRIPT_DIR/tools/qemu_run.py" \
             --arch aarch64 \
             --firmware "$firmware" \
             --disk "$build_dir/virtio-disk.img" \
             --log-file "$build_dir/serial.log" \
-            "$iso_path"
+            "${run_args[@]}" "$iso_path"
     elif [ "$ARCH" = "x86_64" ]; then
         _require_tools qemu-system-x86_64 python3
         local build_dir
         build_dir=$(_build_dir)
         _print "Run x86_64 in QEMU (serial log: build/x86_64/serial.log)"
+        local run_args=()
+        if [[ "${QEMU_NO_REBOOT:-OFF}" == ON || "${QEMU_NO_REBOOT:-OFF}" == 1 ]]; then
+            run_args+=(--no-reboot)
+        fi
+        if [[ "${QEMU_ZOOM:-ON}" != OFF && "${QEMU_ZOOM:-ON}" != 0 ]]; then
+            run_args+=(--zoom)
+        fi
         python3 "$SCRIPT_DIR/tools/qemu_run.py" \
             --arch x86_64 \
             --disk "$build_dir/virtio-disk.img" \
             --log-file "$build_dir/serial.log" \
-            "$iso_path"
+            "${run_args[@]}" "$iso_path"
     else
         _err "QEMU launch is not supported for ARCH='$ARCH'."
         exit 1
@@ -354,6 +356,9 @@ smoke_test() {
     fi
     if [[ -n "${QEMU_CPU:-}" ]]; then
         smoke_args+=(--cpu "$QEMU_CPU")
+    fi
+    if [[ -n "${POWER_TEST:-}" ]]; then
+        smoke_args+=(--expect-power "$POWER_TEST")
     fi
 
     iso_path=$(_kernel_iso)

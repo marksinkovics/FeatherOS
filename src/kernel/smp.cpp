@@ -1,6 +1,7 @@
 #include "smp.h"
 
 #include "kernel/arch/cpu_features.h"
+#include "kernel/arch/floating_point.h"
 #include "kernel/arch/interrupts.h"
 #include "kernel/arch/serial.h"
 #include "kernel/cpu.h"
@@ -27,9 +28,21 @@ constexpr uint64_t CpuTimerTimeoutTicks = 50;
 
 uint32_t online_cpu_count = 1;
 uint32_t ipi_counts[Cpu::MaximumCpus] = {};
+bool halt_requested = false;
+uint32_t halted_cpus = 0;
+constexpr uint64_t HaltSpinLimit = 100000000;
 
 void OnIpi()
 {
+    if (__atomic_load_n(&halt_requested, __ATOMIC_ACQUIRE))
+    {
+        __atomic_fetch_add(&halted_cpus, 1U, __ATOMIC_RELEASE);
+        Arch::Interrupts::SaveAndDisable();
+        for (;;)
+        {
+            Arch::Interrupts::WaitForInterrupt();
+        }
+    }
     __atomic_fetch_add(&ipi_counts[Cpu::CurrentIndex()], 1U, __ATOMIC_RELAXED);
 }
 
@@ -39,6 +52,7 @@ void OnIpi()
     Cpu::InstallLocalState(cpu_index);
     InitializeSecondaryCpuExceptions(cpu_index);
     Arch::CpuFeatures::InitializeCurrentCpu();
+    Arch::FloatingPoint::InitializeCurrentCpu();
     if (Cpu::CurrentIndex() != cpu_index)
     {
         Panic("CPU-local state does not match the started CPU");
@@ -143,6 +157,29 @@ uint32_t StartSecondaryCpus(limine_smp_response* response)
 uint32_t OnlineCpuCount()
 {
     return __atomic_load_n(&online_cpu_count, __ATOMIC_ACQUIRE);
+}
+
+bool StopOtherCpus()
+{
+    const uint32_t self = Cpu::CurrentIndex();
+    const uint32_t others = OnlineCpuCount() - 1;
+    __atomic_store_n(&halt_requested, true, __ATOMIC_RELEASE);
+    for (uint32_t cpu = 0; cpu < OnlineCpuCount(); ++cpu)
+    {
+        if (cpu != self)
+        {
+            Arch::Interrupts::SendIpi(cpu);
+        }
+    }
+    for (uint64_t spin = 0; spin < HaltSpinLimit; ++spin)
+    {
+        if (__atomic_load_n(&halted_cpus, __ATOMIC_ACQUIRE) == others)
+        {
+            return true;
+        }
+        Sync::CpuRelax();
+    }
+    return false;
 }
 
 } // namespace FeatherOS::Smp

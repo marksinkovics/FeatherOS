@@ -1,5 +1,6 @@
 #include "kernel/config.h"
 #include "kernel/arch/cpu_features.h"
+#include "kernel/arch/floating_point.h"
 #include "kernel/arch/serial.h"
 #include "kernel/cpu.h"
 #include "kernel/exception.h"
@@ -54,6 +55,9 @@ __attribute__((used,
 
 __attribute__((used, section(".limine_requests"))) volatile limine_smp_request smp_request = {
     .id = LIMINE_SMP_REQUEST, .revision = 0, .response = nullptr, .flags = 0};
+
+__attribute__((used, section(".limine_requests"))) volatile limine_rsdp_request rsdp_request = {
+    .id = LIMINE_RSDP_REQUEST, .revision = 0, .response = nullptr};
 
 #if defined(ARCH_aarch64)
 __attribute__((used, section(".limine_requests"))) volatile limine_dtb_request dtb_request = {
@@ -137,6 +141,7 @@ extern "C" void kmain()
 
     FeatherOS::InitializeExceptions();
     FeatherOS::Arch::CpuFeatures::InitializeCurrentCpu();
+    FeatherOS::Arch::FloatingPoint::InitializeCurrentCpu();
 
     for (size_t i = 0; &__init_array[i] != __init_array_end; i++)
     {
@@ -172,6 +177,10 @@ extern "C" void kmain()
         .initramfs_data = initramfs_module == nullptr ? nullptr : initramfs_module->address,
         .initramfs_size = initramfs_module == nullptr ? 0 : initramfs_module->size,
         .smp = smp_request.response,
+        // Base revision 3 reports the RSDP's physical address in this pointer-typed field.
+        .acpi_rsdp_physical = rsdp_request.response == nullptr
+                                  ? 0
+                                  : reinterpret_cast<uintptr_t>(rsdp_request.response->address),
     };
     FeatherOS::KernelRuntime::Run(klogger, boot_info);
 }

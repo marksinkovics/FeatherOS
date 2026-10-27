@@ -1,37 +1,41 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <stdio.h>
+#include <time.h>
 
 constexpr char Help[] =
     "usage: sleep <milliseconds>\n"
     "Waits at least that long without using a CPU, checked against the wall clock.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    uint64_t milliseconds;
-    if (arguments == nullptr || arguments->argument_count != 2 ||
-        !ParseUnsignedNumber(arguments->argument_values[1], &milliseconds))
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        WriteLine("usage: sleep <milliseconds>");
-        Exit(1);
+        puts(Help);
+        return 0;
     }
-    const uint64_t start = ReadClock();
-    if (IsSyscallError(start) || IsSyscallError(Sleep(milliseconds)))
+    unsigned long long milliseconds = 0;
+    if (argc != 2 || !FeatherOS::User::ParseUnsigned(argv[1], &milliseconds))
     {
-        WriteLine("sleep: failed");
-        Exit(1);
+        puts("usage: sleep <milliseconds>");
+        return 1;
     }
-    const uint64_t end = ReadClock();
+    const timespec duration = {static_cast<time_t>(milliseconds / 1000),
+                               static_cast<long>(milliseconds % 1000 * 1000000)};
+    const time_t start = time(nullptr);
+    if (start == static_cast<time_t>(-1) || nanosleep(&duration, nullptr) != 0)
+    {
+        puts("sleep: failed");
+        return 1;
+    }
+    const time_t end = time(nullptr);
     // The clock has one-second resolution, so only whole seconds can be checked.
-    if (IsSyscallError(end) || end - start < milliseconds / 1000)
+    if (end == static_cast<time_t>(-1) ||
+        static_cast<unsigned long long>(end - start) < milliseconds / 1000)
     {
-        WriteLine("sleep: woke too early");
-        Exit(1);
+        puts("sleep: woke too early");
+        return 1;
     }
-    WriteText("sleep: slept ");
-    WriteNumber(milliseconds);
-    WriteLine(" ms");
-    Exit(0);
+    printf("sleep: slept %llu ms\n", milliseconds);
+    return 0;
 }

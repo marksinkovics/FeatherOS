@@ -21,9 +21,15 @@ namespace FeatherOS::Console
 namespace
 {
 
+constexpr User::TerminalSettings DefaultSettings = {User::TerminalDefaultFlags, 1, 0, 0};
+
 Term* console_term = nullptr;
 // Programs on different CPUs share one terminal.
 Sync::SpinLock display_lock;
+
+Sync::SpinLock settings_lock;
+User::TerminalSettings settings = DefaultSettings;
+uint64_t settings_owner = 0;
 
 Sync::SpinLock status_lock;
 Scheduler::WaitQueue status_waiters;
@@ -123,7 +129,7 @@ uint64_t StatusTaskMain(void*)
 
 bool InterruptForegroundJob()
 {
-    if (!Process::InterruptForegroundJob())
+    if ((Settings().flags & User::TerminalSignals) == 0 || !Process::InterruptForegroundJob())
     {
         return false;
     }
@@ -140,7 +146,64 @@ bool InterruptForegroundJob()
 bool CallerInterrupted()
 {
     const auto* context = static_cast<const UserExecutionContext*>(Scheduler::CurrentUserContext());
-    return context != nullptr && context->kill_requested;
+    return context != nullptr && Signals::Deliverable(context->signals) != 0;
+}
+
+// Line editing has no use for the cursor and function keys, so their escape sequences are skipped.
+enum class SequenceState : uint8_t
+{
+    None,
+    Escape,
+    Control,
+};
+
+// Returns true when byte belongs to an escape sequence. After a lone Escape key, the next byte
+// counts as typed unless it starts a sequence.
+bool SkipSequence(SequenceState* state, char byte)
+{
+    switch (*state)
+    {
+    case SequenceState::None:
+        break;
+    case SequenceState::Escape:
+        *state = byte == '[' || byte == 'O' ? SequenceState::Control : SequenceState::None;
+        if (*state == SequenceState::Control)
+        {
+            return true;
+        }
+        break;
+    case SequenceState::Control:
+        if (byte >= 0x40 && byte <= 0x7E)
+        {
+            *state = SequenceState::None;
+        }
+        return true;
+    }
+    if (byte == '\x1b')
+    {
+        *state = SequenceState::Escape;
+        return true;
+    }
+    return false;
+}
+
+void SetCursorVisible(bool visible)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    if (console_term != nullptr)
+    {
+        console_term->SetCursorVisible(visible);
+    }
+}
+
+void Echo(const char* text)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    Serial::Write(text);
+    if (console_term != nullptr)
+    {
+        console_term->Print(text);
+    }
 }
 
 void ShowPrompt(const char* prompt)
@@ -198,6 +261,66 @@ void WriteCharacter(char character)
     }
 }
 
+void WriteLine(const char* text)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    Serial::Write(text);
+    Serial::Write("\n");
+    if (console_term != nullptr)
+    {
+        console_term->PrintLn(text);
+    }
+}
+
+void Write(const char* text, size_t length)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    char chunk[65];
+    size_t used = 0;
+    auto flush = [&]()
+    {
+        chunk[used] = '\0';
+        Serial::Write(chunk);
+        if (console_term != nullptr)
+        {
+            console_term->Print(chunk);
+        }
+        used = 0;
+    };
+    for (size_t index = 0; index < length; ++index)
+    {
+        const auto byte = static_cast<unsigned char>(text[index]);
+        // Escape, carriage return and backspace drive the terminal (see Term); other control
+        // bytes are dropped.
+        if (byte < 0x20 && byte != '\n' && byte != '\t' && byte != '\x1b' && byte != '\r' &&
+            byte != '\b')
+        {
+            continue;
+        }
+        chunk[used++] = byte == '\t' ? ' ' : byte > 0x7E ? '?' : static_cast<char>(byte);
+        if (used == sizeof(chunk) - 1)
+        {
+            flush();
+        }
+    }
+    if (used > 0)
+    {
+        flush();
+    }
+}
+
+void Size(uint32_t* rows, uint32_t* columns)
+{
+    if (console_term == nullptr || console_term->ContentRows() == 0)
+    {
+        *rows = 24;
+        *columns = 80;
+        return;
+    }
+    *rows = console_term->ContentRows();
+    *columns = console_term->Columns();
+}
+
 bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* line_length)
 {
     if (buffer == nullptr || capacity == 0 || line_length == nullptr)
@@ -210,22 +333,28 @@ bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* line_le
     }
     ShowPrompt(prompt);
 
+    const bool echo = (Settings().flags & User::TerminalEcho) != 0;
     size_t length = 0;
     buffer[0] = '\0';
     // Syscalls arrive with interrupts masked; timer ticks and keyboard IRQs must run here.
     const uint64_t interrupt_state = Arch::Interrupts::SaveAndDisable();
     Arch::Interrupts::Enable();
+    SequenceState sequence = SequenceState::None;
     bool line_complete = false;
     bool interrupted = false;
     while (!line_complete && !interrupted)
     {
         Input::Poll();
-        Input::Event event;
         interrupted = CallerInterrupted();
+        char byte;
         // Stop at Enter so input typed ahead stays queued for the next reader.
-        while (!line_complete && !interrupted && Input::TryReadEvent(&event))
+        while (!line_complete && !interrupted && Input::TryReadByte(&byte))
         {
-            if (event.type == Input::EventType::Interrupt)
+            if (SkipSequence(&sequence, byte))
+            {
+                continue;
+            }
+            if (byte == Input::InterruptByte)
             {
                 // Nothing to terminate, so Ctrl+C only discards the line.
                 {
@@ -242,47 +371,56 @@ bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* line_le
                 ShowPrompt(prompt);
                 continue;
             }
-            Sync::SpinLockGuard guard(display_lock);
-            if (event.type == Input::EventType::Character)
+            if (byte >= 0x20 && byte <= 0x7E)
             {
                 if (length < capacity - 1)
                 {
-                    buffer[length++] = event.character;
+                    buffer[length++] = byte;
                     buffer[length] = '\0';
-                    const char echo[] = {event.character, '\0'};
-                    Serial::Write(echo);
-                    if (console_term != nullptr)
+                    const char text[] = {byte, '\0'};
+                    if (echo)
                     {
-                        console_term->Print(echo);
+                        Echo(text);
                     }
                 }
             }
-            else if (event.type == Input::EventType::Backspace)
+            else if (byte == '\x7f' || byte == '\b')
             {
                 if (length > 0)
                 {
                     buffer[--length] = '\0';
-                    Serial::Write("\b \b");
-                    if (console_term != nullptr)
+                    Sync::SpinLockGuard guard(display_lock);
+                    if (echo)
                     {
-                        console_term->EraseCharacter();
+                        Serial::Write("\b \b");
+                        if (console_term != nullptr)
+                        {
+                            console_term->EraseCharacter();
+                        }
                     }
                 }
             }
-            else
+            else if (byte == '\r' || byte == '\n')
             {
-                Serial::Write("\n");
+                Sync::SpinLockGuard guard(display_lock);
+                if (echo)
+                {
+                    Serial::Write("\n");
+                }
                 if (console_term != nullptr)
                 {
                     console_term->SetCursorVisible(false);
-                    console_term->Print("\n");
+                    if (echo)
+                    {
+                        console_term->Print("\n");
+                    }
                 }
                 line_complete = true;
             }
         }
         if (!line_complete && !interrupted)
         {
-            Input::WaitForEvent(0);
+            Input::WaitForInput(0);
             interrupted = CallerInterrupted();
         }
     }
@@ -294,6 +432,99 @@ bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* line_le
     Arch::Interrupts::Restore(interrupt_state);
     *line_length = length;
     return line_complete;
+}
+
+bool ReadBytes(char* buffer, size_t capacity, size_t* length)
+{
+    const User::TerminalSettings current = Settings();
+    const size_t wanted = current.minimum < capacity ? current.minimum : capacity;
+    const uint64_t timeout_ticks =
+        static_cast<uint64_t>(current.timeout) * Time::TicksPerSecond() / 10;
+    // Without a minimum the timeout runs from the start of the read; otherwise from the last byte.
+    uint64_t deadline = Time::TickCount() + timeout_ticks;
+    SetCursorVisible(true);
+    const uint64_t interrupt_state = Arch::Interrupts::SaveAndDisable();
+    Arch::Interrupts::Enable();
+    size_t count = 0;
+    bool interrupted = false;
+    for (;;)
+    {
+        Input::Poll();
+        const size_t before = count;
+        char byte;
+        while (count < capacity && Input::TryReadByte(&byte))
+        {
+            if (byte == '\r' && (current.flags & User::TerminalCarriageReturnToNewline) != 0)
+            {
+                byte = '\n';
+            }
+            buffer[count++] = byte;
+        }
+        if (count > before)
+        {
+            if ((current.flags & User::TerminalEcho) != 0)
+            {
+                Write(buffer + before, count - before);
+            }
+            deadline = Time::TickCount() + timeout_ticks;
+        }
+        const bool timed_out = current.timeout != 0 && Time::TickCount() >= deadline;
+        if (current.minimum == 0 ? count > 0 || current.timeout == 0 || timed_out
+                                 : count >= wanted || (count > 0 && timed_out))
+        {
+            break;
+        }
+        interrupted = CallerInterrupted();
+        if (interrupted)
+        {
+            break;
+        }
+        const bool timer_running = current.timeout != 0 && (current.minimum == 0 || count > 0);
+        Input::WaitForInput(timer_running ? deadline : 0);
+    }
+    Arch::Interrupts::SaveAndDisable();
+    Arch::Interrupts::Restore(interrupt_state);
+    SetCursorVisible(false);
+    *length = count;
+    return count > 0 || !interrupted;
+}
+
+User::TerminalSettings Settings()
+{
+    Sync::SpinLockGuard guard(settings_lock);
+    return settings;
+}
+
+bool IsDefault(const User::TerminalSettings& candidate)
+{
+    return candidate.flags == DefaultSettings.flags &&
+           candidate.minimum == DefaultSettings.minimum &&
+           candidate.timeout == DefaultSettings.timeout;
+}
+
+void SetSettings(const User::TerminalSettings& requested, uint64_t owner)
+{
+    Sync::SpinLockGuard guard(settings_lock);
+    settings = requested;
+    settings_owner = IsDefault(requested) ? 0 : owner;
+}
+
+void ReleaseSettings(uint64_t owner)
+{
+    {
+        Sync::SpinLockGuard guard(settings_lock);
+        if (owner == 0 || settings_owner != owner)
+        {
+            return;
+        }
+        settings = DefaultSettings;
+        settings_owner = 0;
+    }
+    Sync::SpinLockGuard guard(display_lock);
+    if (console_term != nullptr)
+    {
+        console_term->ResetModes();
+    }
 }
 
 } // namespace FeatherOS::Console

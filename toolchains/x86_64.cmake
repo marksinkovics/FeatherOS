@@ -20,7 +20,9 @@ SET(CMAKE_EXE_LINKER_FLAGS      "${COMMON_LDFLAGS} --sysroot=${CMAKE_FIND_ROOT_P
 SET(CMAKE_SHARED_LINKER_FLAGS   "--sysroot=${CMAKE_FIND_ROOT_PATH}")
 SET(CMAKE_MODULE_LINKER_FLAGS   "--sysroot=${CMAKE_FIND_ROOT_PATH}")
 
-set(COMMON_FLAGS               "-g -ffreestanding -falign-functions -fomit-frame-pointer -finline-functions -Wno-unused-function -fno-builtin -Werror -Wno-unused-label -Wno-cpp -Wno-unused-parameter -nostdlib -nodefaultlibs -Wall -Wextra -O0 -Iinc -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -mno-red-zone -mcmodel=kernel")
+# -mgeneral-regs-only: the kernel leaves the FPU and SSE registers to user programs, so only a
+# context switch saves them (src/kernel/arch/floating_point.h).
+set(COMMON_FLAGS               "-g -ffreestanding -falign-functions -fomit-frame-pointer -finline-functions -Wno-unused-function -fno-builtin -Werror -Wno-unused-label -Wno-cpp -Wno-unused-parameter -nostdlib -nodefaultlibs -Wall -Wextra -O0 -Iinc -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only")
 set(COMMON_FLAGS_DEBUG         "-Os -g")
 set(COMMON_FLAGS_RELEASE       "-Os -DNDEBUG")
 

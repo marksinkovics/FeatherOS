@@ -208,11 +208,11 @@ TEST_CASE("FAT16 VFS reads files across cluster boundaries")
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
 
     FeatherOS::VFS::FileInfo info{};
-    REQUIRE(FeatherOS::VFS::Stat("/disk/BLOCK.TXT", &info));
+    REQUIRE(FeatherOS::VFS::Stat("/BLOCK.TXT", &info));
     REQUIRE(info.size == contents.size());
 
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE(FeatherOS::VFS::Open("/disk/BLOCK.TXT", &file));
+    REQUIRE(FeatherOS::VFS::Open("/BLOCK.TXT", &file));
     std::vector<char> output(contents.size());
     uint64_t bytes_read = 0;
     REQUIRE(FeatherOS::VFS::Read(&file, output.data(), output.size(), &bytes_read));
@@ -248,7 +248,7 @@ TEST_CASE("FAT16 VFS reports missing files")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::VFS::FileInfo info{};
-    REQUIRE_FALSE(FeatherOS::VFS::Stat("/disk/MISSING.TXT", &info));
+    REQUIRE_FALSE(FeatherOS::VFS::Stat("/MISSING.TXT", &info));
 }
 
 TEST_CASE("FAT16 VFS rejects corrupt cluster chains")
@@ -257,7 +257,7 @@ TEST_CASE("FAT16 VFS rejects corrupt cluster chains")
     WriteLittleEndian16(disk[PartitionStart + 1].data() + 4, 0xFFF7);
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE(FeatherOS::VFS::Open("/disk/BLOCK.TXT", &file));
+    REQUIRE(FeatherOS::VFS::Open("/BLOCK.TXT", &file));
     std::array<char, 700> contents{};
     uint64_t bytes_read = 0;
     REQUIRE_FALSE(FeatherOS::VFS::Read(&file, contents.data(), contents.size(), &bytes_read));
@@ -268,9 +268,9 @@ TEST_CASE("FAT16 VFS returns zero bytes at end of file")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE(FeatherOS::VFS::Open("/disk/BLOCK.TXT", &file));
+    REQUIRE(FeatherOS::VFS::Open("/BLOCK.TXT", &file));
     FeatherOS::VFS::FileInfo info{};
-    REQUIRE(FeatherOS::VFS::Stat("/disk/BLOCK.TXT", &info));
+    REQUIRE(FeatherOS::VFS::Stat("/BLOCK.TXT", &info));
     REQUIRE(FeatherOS::VFS::Seek(&file, info.size));
     char byte;
     uint64_t bytes_read = 1;
@@ -316,7 +316,7 @@ TEST_CASE("FAT16 creates a file and writes it across clusters")
     const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
 
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE(FeatherOS::VFS::Create("/disk/new.txt", &file));
+    REQUIRE(FeatherOS::VFS::Create("/new.txt", &file));
     const std::string contents = Pattern(1500);
     for (size_t offset = 0; offset < contents.size(); offset += 333)
     {
@@ -328,7 +328,7 @@ TEST_CASE("FAT16 creates a file and writes it across clusters")
     REQUIRE(file.size == contents.size());
     REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before - 3);
     REQUIRE(std::memcmp(disk[RootDirectorySector].data() + 32, "NEW     TXT", 11) == 0);
-    REQUIRE(ReadWhole("/disk/NEW.TXT") == contents);
+    REQUIRE(ReadWhole("/NEW.TXT") == contents);
 }
 
 TEST_CASE("FAT16 overwrites in place and appends at a cluster boundary")
@@ -336,7 +336,7 @@ TEST_CASE("FAT16 overwrites in place and appends at a cluster boundary")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE(FeatherOS::VFS::Create("/disk/EDIT.BIN", &file));
+    REQUIRE(FeatherOS::VFS::Create("/EDIT.BIN", &file));
     std::string expected = Pattern(512);
     uint64_t written = 0;
     REQUIRE(FeatherOS::VFS::Write(&file, expected.data(), expected.size(), &written));
@@ -346,7 +346,7 @@ TEST_CASE("FAT16 overwrites in place and appends at a cluster boundary")
     REQUIRE(FeatherOS::VFS::Write(&file, "XYZ", 3, &written));
     expected.replace(100, 3, "XYZ");
     REQUIRE(file.size == expected.size());
-    REQUIRE(ReadWhole("/disk/EDIT.BIN") == expected);
+    REQUIRE(ReadWhole("/EDIT.BIN") == expected);
 }
 
 TEST_CASE("FAT16 truncation frees the clusters a file no longer needs")
@@ -354,7 +354,7 @@ TEST_CASE("FAT16 truncation frees the clusters a file no longer needs")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE(FeatherOS::VFS::Create("/disk/SHRINK.TXT", &file));
+    REQUIRE(FeatherOS::VFS::Create("/SHRINK.TXT", &file));
     const std::string contents = Pattern(2000);
     uint64_t written = 0;
     REQUIRE(FeatherOS::VFS::Write(&file, contents.data(), contents.size(), &written));
@@ -362,13 +362,13 @@ TEST_CASE("FAT16 truncation frees the clusters a file no longer needs")
 
     REQUIRE(FeatherOS::VFS::Truncate(&file, 600));
     REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_full + 2);
-    REQUIRE(ReadWhole("/disk/SHRINK.TXT") == contents.substr(0, 600));
+    REQUIRE(ReadWhole("/SHRINK.TXT") == contents.substr(0, 600));
     REQUIRE_FALSE(FeatherOS::VFS::Truncate(&file, 601));
 
     REQUIRE(FeatherOS::VFS::Truncate(&file, 0));
     REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_full + 4);
     REQUIRE(file.first_cluster == 0);
-    REQUIRE(ReadWhole("/disk/SHRINK.TXT").empty());
+    REQUIRE(ReadWhole("/SHRINK.TXT").empty());
 }
 
 TEST_CASE("FAT16 removal frees the chain and the directory slot")
@@ -376,17 +376,17 @@ TEST_CASE("FAT16 removal frees the chain and the directory slot")
     MakeFat16Disk(std::string(700, 'x'));
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
-    REQUIRE(FeatherOS::VFS::Remove("/disk/BLOCK.TXT"));
+    REQUIRE(FeatherOS::VFS::Remove("/BLOCK.TXT"));
     FeatherOS::VFS::FileInfo info{};
-    REQUIRE_FALSE(FeatherOS::VFS::Stat("/disk/BLOCK.TXT", &info));
+    REQUIRE_FALSE(FeatherOS::VFS::Stat("/BLOCK.TXT", &info));
     REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before + 2);
     REQUIRE(FatEntry(2) == 0);
     REQUIRE(FatEntry(3) == 0);
     REQUIRE(disk[RootDirectorySector][0] == 0xE5);
-    REQUIRE_FALSE(FeatherOS::VFS::Remove("/disk/BLOCK.TXT"));
+    REQUIRE_FALSE(FeatherOS::VFS::Remove("/BLOCK.TXT"));
 
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE(FeatherOS::VFS::Create("/disk/AGAIN.TXT", &file));
+    REQUIRE(FeatherOS::VFS::Create("/AGAIN.TXT", &file));
     REQUIRE(file.entry_index == 0);
 }
 
@@ -395,21 +395,22 @@ TEST_CASE("FAT16 rejects bad names, duplicates, read-only paths, and a full root
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE_FALSE(FeatherOS::VFS::Create("/disk/BLOCK.TXT", &file));
-    REQUIRE_FALSE(FeatherOS::VFS::Create("/disk/BAD*.TXT", &file));
-    REQUIRE_FALSE(FeatherOS::VFS::Create(("/disk/" + std::string(64, 'n')).c_str(), &file));
-    REQUIRE_FALSE(FeatherOS::VFS::Create("/disk/trailing.", &file));
-    REQUIRE_FALSE(FeatherOS::VFS::Create("/disk/a:b", &file));
-    REQUIRE_FALSE(FeatherOS::VFS::Create("/hello.txt", &file));
-    REQUIRE_FALSE(FeatherOS::VFS::Remove("/hello.txt"));
+    REQUIRE_FALSE(FeatherOS::VFS::Create("/BLOCK.TXT", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::Create("/BAD*.TXT", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::Create(("/" + std::string(64, 'n')).c_str(), &file));
+    REQUIRE_FALSE(FeatherOS::VFS::Create("/trailing.", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::Create("/a:b", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::Create("/system/hello.txt", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::Remove("/system/hello.txt"));
+    REQUIRE_FALSE(FeatherOS::VFS::MakeDirectory("/system/sub"));
 
     // The fixture's root directory has 16 entries, and BLOCK.TXT uses one.
     for (int index = 0; index < 15; ++index)
     {
-        const std::string path = "/disk/F" + std::to_string(index) + ".TXT";
+        const std::string path = "/F" + std::to_string(index) + ".TXT";
         REQUIRE(FeatherOS::VFS::Create(path.c_str(), &file));
     }
-    REQUIRE_FALSE(FeatherOS::VFS::Create("/disk/FULL.TXT", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::Create("/FULL.TXT", &file));
 }
 
 TEST_CASE("FAT16 stops a write cleanly when the disk is full")
@@ -432,13 +433,13 @@ TEST_CASE("FAT16 stops a write cleanly when the disk is full")
     REQUIRE(FeatherOS::FAT16::FreeClusterCount() == 1);
 
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE(FeatherOS::VFS::Create("/disk/FULL.TXT", &file));
+    REQUIRE(FeatherOS::VFS::Create("/FULL.TXT", &file));
     const std::string contents = Pattern(1000);
     uint64_t written = 0;
     REQUIRE_FALSE(FeatherOS::VFS::Write(&file, contents.data(), contents.size(), &written));
     REQUIRE(written == 512);
     REQUIRE(file.size == 512);
-    REQUIRE(ReadWhole("/disk/FULL.TXT") == contents.substr(0, 512));
+    REQUIRE(ReadWhole("/FULL.TXT") == contents.substr(0, 512));
 }
 
 TEST_CASE("FAT16 refuses to free a looping cluster chain")
@@ -446,7 +447,7 @@ TEST_CASE("FAT16 refuses to free a looping cluster chain")
     MakeFat16Disk(std::string(700, 'x'));
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     WriteLittleEndian16(disk[PartitionStart + 1].data() + 6, 2);
-    REQUIRE_FALSE(FeatherOS::VFS::Remove("/disk/BLOCK.TXT"));
+    REQUIRE_FALSE(FeatherOS::VFS::Remove("/BLOCK.TXT"));
 }
 
 namespace
@@ -465,21 +466,22 @@ TEST_CASE("file descriptors start at 3 and are limited per process")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
     std::vector<uint64_t> descriptors;
-    for (uint64_t index = 0; index < FeatherOS::User::MaximumOpenFiles; ++index)
+    for (uint64_t index = 0; index < FeatherOS::User::MaximumDescriptors - 3; ++index)
     {
-        const uint64_t descriptor = FeatherOS::Files::Open(&table, "/disk/BLOCK.TXT", OpenRead);
-        REQUIRE(descriptor == FeatherOS::User::FirstFileDescriptor + index);
+        const uint64_t descriptor = FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead);
+        REQUIRE(descriptor == FeatherOS::User::StandardError + 1 + index);
         descriptors.push_back(descriptor);
     }
-    REQUIRE(FeatherOS::Files::Open(&table, "/disk/BLOCK.TXT", OpenRead) ==
+    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead) ==
             FeatherOS::User::SyscallErrorTooManyOpenFiles);
     REQUIRE(FeatherOS::Files::Close(&table, descriptors[4]) == 0);
-    REQUIRE(FeatherOS::Files::Open(&table, "/disk/BLOCK.TXT", OpenRead) == descriptors[4]);
+    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead) == descriptors[4]);
     FeatherOS::Files::CloseAll(&table);
     REQUIRE(FeatherOS::Files::Close(&table, descriptors[0]) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Close(&table, 0) == FeatherOS::User::SyscallErrorInvalidArgument);
+            FeatherOS::User::SyscallErrorBadDescriptor);
+    REQUIRE(FeatherOS::Files::Close(&table, 0) == FeatherOS::User::SyscallErrorBadDescriptor);
 }
 
 TEST_CASE("file descriptors validate flags and access modes")
@@ -489,26 +491,27 @@ TEST_CASE("file descriptors validate flags and access modes")
     const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "archive");
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     FeatherOS::Files::Table table{};
-    REQUIRE(FeatherOS::Files::Open(&table, "/disk/BLOCK.TXT", 0) ==
+    FeatherOS::Files::OpenConsole(&table);
+    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", 0) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Open(&table, "/disk/BLOCK.TXT", OpenRead | 64) ==
+    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead | 64) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Open(&table, "/disk/NEW.TXT", OpenRead | OpenCreate) ==
+    REQUIRE(FeatherOS::Files::Open(&table, "/NEW.TXT", OpenRead | OpenCreate) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Open(&table, "/disk/NEW.TXT", OpenWrite) ==
+    REQUIRE(FeatherOS::Files::Open(&table, "/NEW.TXT", OpenWrite) ==
             FeatherOS::User::SyscallErrorNotFound);
     REQUIRE(FeatherOS::Files::Open(&table, "hello.txt", OpenWrite) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Remove("hello.txt") == FeatherOS::User::SyscallErrorInvalidArgument);
+            FeatherOS::User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Remove("hello.txt") == FeatherOS::User::SyscallErrorReadOnly);
 
     const uint64_t reader = FeatherOS::Files::Open(&table, "hello.txt", OpenRead);
     char buffer[16];
     REQUIRE(FeatherOS::Files::Read(&table, reader, buffer, sizeof(buffer)) == 7);
     REQUIRE(FeatherOS::Files::Write(&table, reader, buffer, 1) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
-    const uint64_t writer = FeatherOS::Files::Open(&table, "/disk/NEW.TXT", OpenWrite | OpenCreate);
+            FeatherOS::User::SyscallErrorBadDescriptor);
+    const uint64_t writer = FeatherOS::Files::Open(&table, "/NEW.TXT", OpenWrite | OpenCreate);
     REQUIRE(FeatherOS::Files::Read(&table, writer, buffer, 1) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
+            FeatherOS::User::SyscallErrorBadDescriptor);
     FeatherOS::Files::CloseAll(&table);
 }
 
@@ -517,20 +520,31 @@ TEST_CASE("file descriptors read, write, seek, and truncate disk files")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
     const uint64_t writer =
-        FeatherOS::Files::Open(&table, "/disk/DATA.TXT", OpenWrite | OpenCreate | OpenTruncate);
+        FeatherOS::Files::Open(&table, "/DATA.TXT", OpenWrite | OpenCreate | OpenTruncate);
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(writer));
     const std::string contents = Pattern(1200);
     REQUIRE(FeatherOS::Files::Write(&table, writer, contents.data(), contents.size()) ==
             contents.size());
-    REQUIRE(FeatherOS::Files::Seek(&table, writer, 1201) ==
+    REQUIRE(FeatherOS::Files::Seek(&table, writer, 1201, FeatherOS::User::SeekFromStart) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Seek(&table, writer, 1200) == 0);
+    REQUIRE(FeatherOS::Files::Seek(&table, writer, 1200, FeatherOS::User::SeekFromStart) == 1200);
     REQUIRE(FeatherOS::Files::Write(&table, writer, "END", 3) == 3);
     REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
 
-    const uint64_t reader = FeatherOS::Files::Open(&table, "/disk/DATA.TXT", OpenRead);
-    REQUIRE(FeatherOS::Files::Seek(&table, reader, 1190) == 0);
+    const uint64_t reader = FeatherOS::Files::Open(&table, "/DATA.TXT", OpenRead);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, 1190, FeatherOS::User::SeekFromStart) == 1190);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, static_cast<uint64_t>(-10),
+                                   FeatherOS::User::SeekFromCurrent) == 1180);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, static_cast<uint64_t>(-3),
+                                   FeatherOS::User::SeekFromEnd) == 1200);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, static_cast<uint64_t>(-1204),
+                                   FeatherOS::User::SeekFromEnd) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, 0, 3) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Seek(&table, reader, 1190, FeatherOS::User::SeekFromStart) == 1190);
     char tail[32];
     REQUIRE(FeatherOS::Files::Read(&table, reader, tail, sizeof(tail)) == 13);
     REQUIRE(std::string(tail, 13) == contents.substr(1190) + "END");
@@ -538,9 +552,9 @@ TEST_CASE("file descriptors read, write, seek, and truncate disk files")
     REQUIRE(FeatherOS::Files::Close(&table, reader) == 0);
 
     const uint64_t truncating =
-        FeatherOS::Files::Open(&table, "/disk/DATA.TXT", OpenWrite | OpenTruncate);
+        FeatherOS::Files::Open(&table, "/DATA.TXT", OpenWrite | OpenTruncate);
     REQUIRE(FeatherOS::Files::Close(&table, truncating) == 0);
-    REQUIRE(ReadWhole("/disk/DATA.TXT").empty());
+    REQUIRE(ReadWhole("/DATA.TXT").empty());
 }
 
 TEST_CASE("disk files allow one writer or many readers, and open files cannot be removed")
@@ -548,24 +562,26 @@ TEST_CASE("disk files allow one writer or many readers, and open files cannot be
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table first{};
+    FeatherOS::Files::OpenConsole(&first);
     FeatherOS::Files::Table second{};
-    const uint64_t reader = FeatherOS::Files::Open(&first, "/disk/BLOCK.TXT", OpenRead);
+    FeatherOS::Files::OpenConsole(&second);
+    const uint64_t reader = FeatherOS::Files::Open(&first, "/BLOCK.TXT", OpenRead);
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(
-        FeatherOS::Files::Open(&second, "/disk/BLOCK.TXT", OpenRead)));
-    REQUIRE(FeatherOS::Files::Open(&second, "/disk/BLOCK.TXT", OpenWrite) ==
+        FeatherOS::Files::Open(&second, "/BLOCK.TXT", OpenRead)));
+    REQUIRE(FeatherOS::Files::Open(&second, "/BLOCK.TXT", OpenWrite) ==
             FeatherOS::User::SyscallErrorBusy);
-    REQUIRE(FeatherOS::Files::Remove("/disk/BLOCK.TXT") == FeatherOS::User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Remove("/BLOCK.TXT") == FeatherOS::User::SyscallErrorBusy);
     FeatherOS::Files::CloseAll(&second);
     REQUIRE(FeatherOS::Files::Close(&first, reader) == 0);
 
-    const uint64_t writer = FeatherOS::Files::Open(&first, "/disk/BLOCK.TXT", OpenWrite);
+    const uint64_t writer = FeatherOS::Files::Open(&first, "/BLOCK.TXT", OpenWrite);
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(writer));
-    REQUIRE(FeatherOS::Files::Open(&second, "/disk/BLOCK.TXT", OpenRead) ==
+    REQUIRE(FeatherOS::Files::Open(&second, "/BLOCK.TXT", OpenRead) ==
             FeatherOS::User::SyscallErrorBusy);
     // Exiting processes close everything, which makes the file removable again.
     FeatherOS::Files::CloseAll(&first);
-    REQUIRE(FeatherOS::Files::Remove("/disk/BLOCK.TXT") == 0);
-    REQUIRE(FeatherOS::Files::Remove("/disk/BLOCK.TXT") == FeatherOS::User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Remove("/BLOCK.TXT") == 0);
+    REQUIRE(FeatherOS::Files::Remove("/BLOCK.TXT") == FeatherOS::User::SyscallErrorNotFound);
 }
 
 TEST_CASE("directory listing skips deleted entries and names files as NAME.EXT")
@@ -573,29 +589,34 @@ TEST_CASE("directory listing skips deleted entries and names files as NAME.EXT")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE(FeatherOS::VFS::Create("/disk/GONE.TXT", &file));
-    REQUIRE(FeatherOS::VFS::Create("/disk/README", &file));
-    REQUIRE(FeatherOS::VFS::Remove("/disk/GONE.TXT"));
+    REQUIRE(FeatherOS::VFS::Create("/GONE.TXT", &file));
+    REQUIRE(FeatherOS::VFS::Create("/README", &file));
+    REQUIRE(FeatherOS::VFS::Remove("/GONE.TXT"));
 
     FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
     const uint64_t writer =
-        FeatherOS::Files::Open(&table, "/disk/README", OpenWrite | OpenAppend);
+        FeatherOS::Files::Open(&table, "/README", OpenWrite | OpenAppend);
     REQUIRE(FeatherOS::Files::Write(&table, writer, "abc", 3) == 3);
     REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
 
     FeatherOS::User::DirectoryEntry entry{};
-    REQUIRE(FeatherOS::Files::ReadDirectory("/disk", 0, &entry) == 0);
+    // Indices 0-3 of the root are the mount points.
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 0, &entry) == 0);
+    REQUIRE(std::string(entry.name) == "system");
+    REQUIRE(entry.directory);
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 4, &entry) == 0);
     REQUIRE(std::string(entry.name) == "BLOCK.TXT");
     REQUIRE(entry.size == 8);
-    REQUIRE(FeatherOS::Files::ReadDirectory("/disk/", 1, &entry) == 0);
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 5, &entry) == 0);
     REQUIRE(std::string(entry.name) == "README");
     REQUIRE(entry.size == 3);
-    REQUIRE(FeatherOS::Files::ReadDirectory("/disk/", 2, &entry) ==
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 6, &entry) ==
             FeatherOS::User::SyscallErrorNotFound);
-    REQUIRE(FeatherOS::Files::ReadDirectory("/other", 0, &entry) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::ReadDirectory("/disk/README", 0, &entry) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::ReadDirectory("/missing", 0, &entry) ==
+            FeatherOS::User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::ReadDirectory("/README", 0, &entry) ==
+            FeatherOS::User::SyscallErrorNotDirectory);
 }
 
 TEST_CASE("appending opens at the end of the file")
@@ -603,13 +624,14 @@ TEST_CASE("appending opens at the end of the file")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table table{};
-    REQUIRE(FeatherOS::Files::Open(&table, "/disk/BLOCK.TXT", OpenRead | OpenAppend) ==
+    FeatherOS::Files::OpenConsole(&table);
+    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead | OpenAppend) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
     const uint64_t appender =
-        FeatherOS::Files::Open(&table, "/disk/BLOCK.TXT", OpenWrite | OpenAppend);
+        FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenWrite | OpenAppend);
     REQUIRE(FeatherOS::Files::Write(&table, appender, "+more", 5) == 5);
     REQUIRE(FeatherOS::Files::Close(&table, appender) == 0);
-    REQUIRE(ReadWhole("/disk/BLOCK.TXT") == "contents+more");
+    REQUIRE(ReadWhole("/BLOCK.TXT") == "contents+more");
 }
 
 namespace
@@ -687,12 +709,12 @@ TEST_CASE("FAT16 mounts a partition from a GUID partition table")
     MakeFat16Disk("gpt contents");
     ConvertToGpt();
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    REQUIRE(ReadWhole("/disk/BLOCK.TXT") == "gpt contents");
+    REQUIRE(ReadWhole("/BLOCK.TXT") == "gpt contents");
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE(FeatherOS::VFS::Create("/disk/NEW.TXT", &file));
+    REQUIRE(FeatherOS::VFS::Create("/NEW.TXT", &file));
     uint64_t written = 0;
     REQUIRE(FeatherOS::VFS::Write(&file, "x", 1, &written));
-    REQUIRE(ReadWhole("/disk/NEW.TXT") == "x");
+    REQUIRE(ReadWhole("/NEW.TXT") == "x");
 }
 
 TEST_CASE("a GUID partition table with a bad header or entry CRC mounts nothing")
@@ -727,6 +749,23 @@ std::vector<std::string> ListDirectory(const char* path)
     return names;
 }
 
+// The disk's root entries, without the mount points listed first.
+std::vector<std::string> ListDiskRoot()
+{
+    std::vector<std::string> names = ListDirectory("/");
+    const std::vector<std::string> mounts = {"system/", "dev/", "proc/", "tmp/"};
+    REQUIRE(names.size() >= mounts.size());
+    REQUIRE(std::vector<std::string>(names.begin(), names.begin() + 4) == mounts);
+    names.erase(names.begin(), names.begin() + 4);
+    return names;
+}
+
+std::vector<std::string> Sorted(std::vector<std::string> names)
+{
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
 void WriteWhole(const char* path, const std::string& contents)
 {
     FeatherOS::VFS::FileHandle file{};
@@ -742,35 +781,34 @@ TEST_CASE("FAT16 creates nested directories and files inside them")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    REQUIRE(FeatherOS::VFS::MakeDirectory("/disk/docs"));
-    REQUIRE(FeatherOS::VFS::MakeDirectory("/disk/DOCS/old"));
-    REQUIRE_FALSE(FeatherOS::VFS::MakeDirectory("/disk/docs"));
-    REQUIRE_FALSE(FeatherOS::VFS::MakeDirectory("/disk/missing/sub"));
-    WriteWhole("/disk/docs/notes.txt", Pattern(700));
-    WriteWhole("/disk/docs/old/a.txt", "deep");
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/docs"));
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/DOCS/old"));
+    REQUIRE_FALSE(FeatherOS::VFS::MakeDirectory("/docs"));
+    REQUIRE_FALSE(FeatherOS::VFS::MakeDirectory("/missing/sub"));
+    WriteWhole("/docs/notes.txt", Pattern(700));
+    WriteWhole("/docs/old/a.txt", "deep");
 
-    REQUIRE(ListDirectory("/disk") == std::vector<std::string>{"BLOCK.TXT", "docs/"});
-    REQUIRE(ListDirectory("/disk/") == ListDirectory("/disk"));
-    REQUIRE(ListDirectory("/disk/docs") == std::vector<std::string>{"old/", "notes.txt"});
-    REQUIRE(ListDirectory("/disk/docs/old/") == std::vector<std::string>{"a.txt"});
-    REQUIRE(ReadWhole("/disk/docs/notes.txt") == Pattern(700));
-    REQUIRE(ReadWhole("/disk/docs/old/../old/./a.txt") == "deep");
-    REQUIRE(ReadWhole("/disk/docs/old/../../BLOCK.TXT") == "contents");
-    REQUIRE(ReadWhole("/disk/../BLOCK.TXT") == "contents");
+    REQUIRE(ListDiskRoot() == std::vector<std::string>{"BLOCK.TXT", "docs/"});
+    REQUIRE(ListDirectory("/docs") == std::vector<std::string>{"old/", "notes.txt"});
+    REQUIRE(ListDirectory("/docs/old/") == std::vector<std::string>{"a.txt"});
+    REQUIRE(ReadWhole("/docs/notes.txt") == Pattern(700));
+    REQUIRE(ReadWhole("/docs/old/../old/./a.txt") == "deep");
+    REQUIRE(ReadWhole("/docs/old/../../BLOCK.TXT") == "contents");
+    REQUIRE(ReadWhole("/../BLOCK.TXT") == "contents");
 
     // A directory is not a file, and a file is not a directory.
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE_FALSE(FeatherOS::VFS::Open("/disk/docs", &file));
-    REQUIRE_FALSE(FeatherOS::VFS::Remove("/disk/docs"));
-    REQUIRE_FALSE(FeatherOS::VFS::Open("/disk/BLOCK.TXT/x", &file));
-    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/disk/BLOCK.TXT"));
+    REQUIRE_FALSE(FeatherOS::VFS::Open("/docs", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::Remove("/docs"));
+    REQUIRE_FALSE(FeatherOS::VFS::Open("/BLOCK.TXT/x", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/BLOCK.TXT"));
 }
 
 TEST_CASE("FAT16 grows a subdirectory past its first cluster")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    REQUIRE(FeatherOS::VFS::MakeDirectory("/disk/many"));
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/many"));
     const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
     // One-sector clusters hold 16 entries, and "." and ".." take two of them.
     std::vector<std::string> expected;
@@ -778,12 +816,12 @@ TEST_CASE("FAT16 grows a subdirectory past its first cluster")
     {
         const std::string name = "F" + std::to_string(index) + ".TXT";
         FeatherOS::VFS::FileHandle file{};
-        REQUIRE(FeatherOS::VFS::Create(("/disk/many/" + name).c_str(), &file));
+        REQUIRE(FeatherOS::VFS::Create(("/many/" + name).c_str(), &file));
         expected.push_back(name);
     }
     REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before - 2);
-    REQUIRE(ListDirectory("/disk/many") == expected);
-    REQUIRE(ReadWhole("/disk/many/F39.TXT").empty());
+    REQUIRE(ListDirectory("/many") == expected);
+    REQUIRE(ReadWhole("/many/F39.TXT").empty());
 }
 
 TEST_CASE("FAT16 removes only empty directories and frees their clusters")
@@ -791,34 +829,114 @@ TEST_CASE("FAT16 removes only empty directories and frees their clusters")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
-    REQUIRE(FeatherOS::VFS::MakeDirectory("/disk/tmp"));
-    WriteWhole("/disk/tmp/x.txt", "x");
-    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/disk/tmp"));
-    REQUIRE(FeatherOS::VFS::Remove("/disk/tmp/x.txt"));
-    REQUIRE(FeatherOS::VFS::RemoveDirectory("/disk/tmp"));
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/scratch"));
+    WriteWhole("/scratch/x.txt", "x");
+    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/scratch"));
+    REQUIRE(FeatherOS::VFS::Remove("/scratch/x.txt"));
+    REQUIRE(FeatherOS::VFS::RemoveDirectory("/scratch"));
     REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before);
-    REQUIRE(ListDirectory("/disk") == std::vector<std::string>{"BLOCK.TXT"});
-    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/disk/tmp"));
-    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/disk"));
+    REQUIRE(ListDiskRoot() == std::vector<std::string>{"BLOCK.TXT"});
+    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/scratch"));
+    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/"));
+}
+
+TEST_CASE("FAT16 renames files and directories, keeping their data")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    WriteWhole("/a.txt", Pattern(700));
+    WriteWhole("/c.txt", "c");
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/docs"));
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/docs/old"));
+    WriteWhole("/docs/old/x.txt", "deep");
+    const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
+
+    REQUIRE(FeatherOS::VFS::Rename("/a.txt", "/b.txt"));
+    REQUIRE(FeatherOS::VFS::Rename("/b.txt", "/A much longer name.txt"));
+    REQUIRE(FeatherOS::VFS::Rename("/a much longer NAME.txt", "/a MUCH longer name.txt"));
+    REQUIRE(FeatherOS::VFS::Rename("/c.txt", "/C.TXT"));
+    REQUIRE(ReadWhole("/a MUCH longer name.txt") == Pattern(700));
+    REQUIRE(Sorted(ListDiskRoot()) ==
+            std::vector<std::string>{"BLOCK.TXT", "C.TXT", "a MUCH longer name.txt", "docs/"});
+
+    // A moved directory's ".." follows it.
+    REQUIRE(FeatherOS::VFS::Rename("/docs/old", "/old"));
+    REQUIRE(ReadWhole("/old/../BLOCK.TXT") == "contents");
+    REQUIRE(FeatherOS::VFS::Rename("/old", "/docs/archive"));
+    REQUIRE(ReadWhole("/docs/archive/x.txt") == "deep");
+    REQUIRE(ReadWhole("/docs/archive/../../BLOCK.TXT") == "contents");
+    REQUIRE(ListDirectory("/docs") == std::vector<std::string>{"archive/"});
+    REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before);
+
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/docs", "/docs/archive/inner"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/docs", "/DOCS/inner"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/C.TXT", "/BLOCK.TXT"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/C.TXT", "/missing/c.txt"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/C.TXT", "/bad:name"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/gone", "/here"));
+    REQUIRE_FALSE(FeatherOS::VFS::Rename("/docs/..", "/up"));
+    REQUIRE(ReadWhole("/C.TXT") == "c");
+}
+
+TEST_CASE("rename replaces files and refuses directories, open files, and other filesystems")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
+    WriteWhole("/new.txt", "new");
+    REQUIRE(FeatherOS::Files::MakeDirectory("/docs") == 0);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/other") == 0);
+
+    REQUIRE(FeatherOS::Files::Rename("/new.txt", "/BLOCK.TXT") == 0);
+    REQUIRE(ReadWhole("/BLOCK.TXT") == "new");
+    REQUIRE(FeatherOS::Files::Rename("/BLOCK.TXT", "/BLOCK.TXT") == 0);
+    REQUIRE(FeatherOS::Files::Rename("/BLOCK.TXT", "/block.txt") == 0);
+    REQUIRE(Sorted(ListDiskRoot()) == std::vector<std::string>{"block.txt", "docs/", "other/"});
+
+    REQUIRE(FeatherOS::Files::Rename("/gone", "/here") == FeatherOS::User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/tmp/block.txt") ==
+            FeatherOS::User::SyscallErrorCrossDevice);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/system/block.txt") ==
+            FeatherOS::User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Rename("/tmp", "/temporary") == FeatherOS::User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Rename("/docs", "/docs/sub") ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Rename("/docs", "/block.txt") ==
+            FeatherOS::User::SyscallErrorNotDirectory);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/docs") ==
+            FeatherOS::User::SyscallErrorIsDirectory);
+    REQUIRE(FeatherOS::Files::Rename("/docs", "/other") == FeatherOS::User::SyscallErrorExists);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/missing/block.txt") ==
+            FeatherOS::User::SyscallErrorNotFound);
+
+    const uint64_t reader = FeatherOS::Files::Open(&table, "/block.txt", OpenRead);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/docs/block.txt") ==
+            FeatherOS::User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Close(&table, reader) == 0);
+    REQUIRE(FeatherOS::Files::Rename("/block.txt", "/docs/block.txt") == 0);
+    REQUIRE(FeatherOS::Files::Rename("/docs", "/other/docs") == 0);
+    REQUIRE(ReadWhole("/other/docs/block.txt") == "new");
 }
 
 TEST_CASE("open-file sharing rules tell apart files with the same slot in different directories")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    REQUIRE(FeatherOS::VFS::MakeDirectory("/disk/a"));
-    REQUIRE(FeatherOS::VFS::MakeDirectory("/disk/b"));
-    WriteWhole("/disk/a/same.txt", "a");
-    WriteWhole("/disk/b/same.txt", "b");
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/a"));
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/b"));
+    WriteWhole("/a/same.txt", "a");
+    WriteWhole("/b/same.txt", "b");
     FeatherOS::Files::Table table{};
-    const uint64_t first = FeatherOS::Files::Open(&table, "/disk/a/same.txt", OpenWrite);
-    const uint64_t second = FeatherOS::Files::Open(&table, "/disk/b/same.txt", OpenWrite);
+    FeatherOS::Files::OpenConsole(&table);
+    const uint64_t first = FeatherOS::Files::Open(&table, "/a/same.txt", OpenWrite);
+    const uint64_t second = FeatherOS::Files::Open(&table, "/b/same.txt", OpenWrite);
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(first));
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(second));
-    REQUIRE(FeatherOS::Files::RemoveDirectory("/disk/a") == FeatherOS::User::SyscallErrorFailed);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/a") == FeatherOS::User::SyscallErrorNotEmpty);
     FeatherOS::Files::CloseAll(&table);
     FeatherOS::User::DirectoryEntry entry{};
-    REQUIRE(FeatherOS::Files::ReadDirectory("/disk", 1, &entry) == 0);
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 5, &entry) == 0);
     REQUIRE(std::string(entry.name) == "a");
     REQUIRE(entry.directory);
 }
@@ -827,8 +945,8 @@ TEST_CASE("FAT16 stores long names with numbered short aliases")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    WriteWhole("/disk/My Notes.txt", "first");
-    WriteWhole("/disk/My Notes2.txt", "second");
+    WriteWhole("/My Notes.txt", "first");
+    WriteWhole("/My Notes2.txt", "second");
     const uint8_t* root = disk[RootDirectorySector].data();
     // Slot 1 holds the long-name entry and slot 2 the short alias.
     REQUIRE(root[32 + 11] == FeatherOS::FatNames::LongNameAttribute);
@@ -837,42 +955,42 @@ TEST_CASE("FAT16 stores long names with numbered short aliases")
     REQUIRE(root[32 + 13] == FeatherOS::FatNames::Checksum(root + 64));
     REQUIRE(std::memcmp(root + 128, "MYNOTE~2TXT", 11) == 0);
 
-    REQUIRE(ListDirectory("/disk") ==
+    REQUIRE(ListDiskRoot() ==
             std::vector<std::string>{"BLOCK.TXT", "My Notes.txt", "My Notes2.txt"});
-    REQUIRE(ReadWhole("/disk/my notes.txt") == "first");
-    REQUIRE(ReadWhole("/disk/MYNOTE~1.TXT") == "first");
-    REQUIRE(ReadWhole("/disk/MY NOTES2.TXT") == "second");
+    REQUIRE(ReadWhole("/my notes.txt") == "first");
+    REQUIRE(ReadWhole("/MYNOTE~1.TXT") == "first");
+    REQUIRE(ReadWhole("/MY NOTES2.TXT") == "second");
     FeatherOS::VFS::FileHandle file{};
-    REQUIRE_FALSE(FeatherOS::VFS::Create("/disk/mynote~1.txt", &file));
-    REQUIRE_FALSE(FeatherOS::VFS::Create("/disk/MY NOTES.TXT", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::Create("/mynote~1.txt", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::Create("/MY NOTES.TXT", &file));
 }
 
 TEST_CASE("FAT16 keeps lower-case 8.3 names as short entries")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    WriteWhole("/disk/readme.md", "text");
+    WriteWhole("/readme.md", "text");
     const uint8_t* root = disk[RootDirectorySector].data();
     REQUIRE(std::memcmp(root + 32, "README  MD ", 11) == 0);
     REQUIRE(root[32 + 12] == 0x18);
-    REQUIRE(ListDirectory("/disk") == std::vector<std::string>{"BLOCK.TXT", "readme.md"});
-    REQUIRE(ReadWhole("/disk/README.MD") == "text");
+    REQUIRE(ListDiskRoot() == std::vector<std::string>{"BLOCK.TXT", "readme.md"});
+    REQUIRE(ReadWhole("/README.MD") == "text");
 }
 
 TEST_CASE("FAT16 removes a long-named file's name entries")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    WriteWhole("/disk/a much longer file name.text", "x");
-    REQUIRE(FeatherOS::VFS::Remove("/disk/A MUCH LONGER FILE NAME.TEXT"));
+    WriteWhole("/a much longer file name.text", "x");
+    REQUIRE(FeatherOS::VFS::Remove("/A MUCH LONGER FILE NAME.TEXT"));
     const uint8_t* root = disk[RootDirectorySector].data();
     for (uint32_t slot = 1; slot <= 4; ++slot)
     {
         REQUIRE(root[slot * 32] == 0xE5);
     }
-    REQUIRE(ListDirectory("/disk") == std::vector<std::string>{"BLOCK.TXT"});
-    WriteWhole("/disk/another long name.txt", "y");
-    REQUIRE(ListDirectory("/disk") ==
+    REQUIRE(ListDiskRoot() == std::vector<std::string>{"BLOCK.TXT"});
+    WriteWhole("/another long name.txt", "y");
+    REQUIRE(ListDiskRoot() ==
             std::vector<std::string>{"BLOCK.TXT", "another long name.txt"});
 }
 
@@ -880,35 +998,207 @@ TEST_CASE("FAT16 long-named directories grow to fit a name's entries")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    REQUIRE(FeatherOS::VFS::MakeDirectory("/disk/My Documents"));
+    REQUIRE(FeatherOS::VFS::MakeDirectory("/My Documents"));
     // "." and ".." plus ten short files leave four free slots in the first cluster, one too few
     // for a name needing four long-name entries and its short entry.
     for (int index = 0; index < 10; ++index)
     {
-        WriteWhole(("/disk/my documents/f" + std::to_string(index)).c_str(), "");
+        WriteWhole(("/my documents/f" + std::to_string(index)).c_str(), "");
     }
     const std::string long_name = "a name that needs four long entries.txt";
-    WriteWhole(("/disk/My Documents/" + long_name).c_str(), "deep");
-    REQUIRE(ReadWhole(("/disk/my documents/" + long_name).c_str()) == "deep");
-    REQUIRE(ListDirectory("/disk/My Documents").back() == long_name);
-    REQUIRE(ListDirectory("/disk") == std::vector<std::string>{"BLOCK.TXT", "My Documents/"});
-    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/disk/my documents"));
+    WriteWhole(("/My Documents/" + long_name).c_str(), "deep");
+    REQUIRE(ReadWhole(("/my documents/" + long_name).c_str()) == "deep");
+    REQUIRE(ListDirectory("/My Documents").back() == long_name);
+    REQUIRE(ListDiskRoot() == std::vector<std::string>{"BLOCK.TXT", "My Documents/"});
+    REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/my documents"));
 }
 
-TEST_CASE("the VFS root lists the disk mount point and the initramfs files")
+TEST_CASE("the VFS root is the disk, with the initramfs and virtual filesystems mounted in it")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "archive");
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     REQUIRE(FeatherOS::VFS::IsDirectory("/"));
-    REQUIRE(ListDirectory("/") == std::vector<std::string>{"disk/", "hello.txt"});
-    REQUIRE(ReadWhole("/hello.txt") == "archive");
+    REQUIRE(ListDirectory("/") ==
+            std::vector<std::string>{"system/", "dev/", "proc/", "tmp/", "BLOCK.TXT"});
+    REQUIRE(ListDirectory("/system") == std::vector<std::string>{"hello.txt"});
+    REQUIRE(ReadWhole("/system/hello.txt") == "archive");
     FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
     REQUIRE(FeatherOS::Files::CheckDirectory("/") == 0);
-    REQUIRE(FeatherOS::Files::CheckDirectory("/disk") == 0);
-    REQUIRE(FeatherOS::Files::CheckDirectory("/hello.txt") ==
+    REQUIRE(FeatherOS::Files::CheckDirectory("/system") == 0);
+    REQUIRE(FeatherOS::Files::CheckDirectory("/system/hello.txt") ==
+            FeatherOS::User::SyscallErrorNotDirectory);
+    REQUIRE(FeatherOS::Files::CheckDirectory("/system/missing") ==
             FeatherOS::User::SyscallErrorNotFound);
-    REQUIRE(FeatherOS::Files::Open(&table, "/hello.txt", OpenWrite) ==
+    REQUIRE(FeatherOS::Files::Open(&table, "/system/hello.txt", OpenWrite) ==
+            FeatherOS::User::SyscallErrorReadOnly);
+}
+
+TEST_CASE("file syscalls report why a change failed")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "archive");
+    REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
+    FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/docs") == 0);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/docs") == FeatherOS::User::SyscallErrorExists);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/BLOCK.TXT") == FeatherOS::User::SyscallErrorExists);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/missing/docs") ==
+            FeatherOS::User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/system/docs") ==
+            FeatherOS::User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Open(&table, "/missing/new.txt", OpenWrite | OpenCreate) ==
+            FeatherOS::User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Open(&table, "/system/new.txt", OpenWrite | OpenCreate) ==
+            FeatherOS::User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Open(&table, "/docs", OpenRead) ==
+            FeatherOS::User::SyscallErrorIsDirectory);
+    REQUIRE(FeatherOS::Files::Remove("/docs") == FeatherOS::User::SyscallErrorIsDirectory);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/BLOCK.TXT") ==
+            FeatherOS::User::SyscallErrorNotDirectory);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/gone") == FeatherOS::User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/system") == FeatherOS::User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/") == FeatherOS::User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/docs") == 0);
+    REQUIRE(FeatherOS::Files::Seek(&table, 9, 0, FeatherOS::User::SeekFromStart) ==
+            FeatherOS::User::SyscallErrorBadDescriptor);
+}
+
+TEST_CASE("stat reports type, size, and whether a file is read-only")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "archive");
+    REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
+    FeatherOS::User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat("/BLOCK.TXT", &status) == 0);
+    REQUIRE(status.type == FeatherOS::User::FileType::Regular);
+    REQUIRE(status.size == 8);
+    REQUIRE_FALSE(status.read_only);
+    REQUIRE(FeatherOS::Files::Stat("/system/hello.txt", &status) == 0);
+    REQUIRE(status.type == FeatherOS::User::FileType::Regular);
+    REQUIRE(status.size == 7);
+    REQUIRE(status.read_only);
+    REQUIRE(FeatherOS::Files::Stat("/", &status) == 0);
+    REQUIRE(status.type == FeatherOS::User::FileType::Directory);
+    REQUIRE_FALSE(status.read_only);
+    REQUIRE(FeatherOS::Files::Stat("/system", &status) == 0);
+    REQUIRE(status.type == FeatherOS::User::FileType::Directory);
+    REQUIRE(status.read_only);
+    REQUIRE(FeatherOS::Files::Stat("/missing", &status) == FeatherOS::User::SyscallErrorNotFound);
+
+    FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
+    const uint64_t writer = FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenWrite | OpenAppend);
+    REQUIRE(FeatherOS::Files::Write(&table, writer, "++", 2) == 2);
+    REQUIRE(FeatherOS::Files::StatDescriptor(&table, writer, &status) == 0);
+    REQUIRE(status.size == 10);
+    REQUIRE_FALSE(status.read_only);
+    REQUIRE(FeatherOS::Files::StatDescriptor(&table, writer + 1, &status) ==
+            FeatherOS::User::SyscallErrorBadDescriptor);
+    FeatherOS::Files::CloseAll(&table);
+}
+
+TEST_CASE("dup shares the open file and its offset until the last descriptor closes")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
+    const uint64_t original = FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead | OpenWrite);
+    const uint64_t copy = FeatherOS::Files::Duplicate(&table, original, 0, 0);
+    REQUIRE(copy == original + 1);
+    char text[8] = {};
+    REQUIRE(FeatherOS::Files::Read(&table, original, text, 3) == 3);
+    REQUIRE(FeatherOS::Files::Read(&table, copy, text + 3, 5) == 5);
+    REQUIRE(std::string(text, 8) == "contents");
+    REQUIRE(FeatherOS::Files::Close(&table, original) == 0);
+    REQUIRE(FeatherOS::Files::Remove("/BLOCK.TXT") == FeatherOS::User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Seek(&table, copy, 0, FeatherOS::User::SeekFromStart) == 0);
+    REQUIRE(FeatherOS::Files::Close(&table, copy) == 0);
+    FeatherOS::Files::Table other{};
+    FeatherOS::Files::OpenConsole(&other);
+    const uint64_t writer = FeatherOS::Files::Open(&other, "/BLOCK.TXT", OpenWrite);
+    REQUIRE_FALSE(FeatherOS::User::IsSyscallError(writer));
+    FeatherOS::Files::CloseAll(&other);
+    FeatherOS::Files::CloseAll(&table);
+}
+
+TEST_CASE("dup2 replaces its target, and duplicates can be close-on-exec")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
+    const uint64_t file = FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead);
+    REQUIRE(FeatherOS::Files::KindOf(&table, 1) == FeatherOS::Files::Kind::Console);
+    REQUIRE(FeatherOS::Files::Duplicate(&table, file, 1, FeatherOS::User::DuplicateExact) == 1);
+    REQUIRE(FeatherOS::Files::KindOf(&table, 1) == FeatherOS::Files::Kind::File);
+    REQUIRE(FeatherOS::Files::Duplicate(&table, 1, 1, FeatherOS::User::DuplicateExact) == 1);
+    REQUIRE(FeatherOS::Files::Duplicate(&table, file, 10,
+                                        FeatherOS::User::DuplicateCloseOnExec) == 10);
+    REQUIRE(FeatherOS::Files::DescriptorFlags(&table, 10, false, 0) ==
+            FeatherOS::User::DescriptorCloseOnExec);
+    REQUIRE(FeatherOS::Files::DescriptorFlags(&table, 10, true, 0) == 0);
+    REQUIRE(FeatherOS::Files::DescriptorFlags(&table, file, true, 4) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Duplicate(&table, 20, 0, 0) ==
+            FeatherOS::User::SyscallErrorBadDescriptor);
+    REQUIRE(FeatherOS::Files::Duplicate(&table, file, FeatherOS::User::MaximumDescriptors,
+                                        FeatherOS::User::DuplicateExact) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Duplicate(&table, file, 0, 8) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::CountOpen(&table) == 5);
+    REQUIRE(FeatherOS::Files::Close(&table, 1) == 0);
+    REQUIRE(FeatherOS::Files::KindOf(&table, 1) == FeatherOS::Files::Kind::None);
+    REQUIRE(FeatherOS::Files::Seek(&table, 0, 0, FeatherOS::User::SeekFromStart) ==
+            FeatherOS::User::SyscallErrorNotSeekable);
+    FeatherOS::Files::CloseAll(&table);
+}
+
+TEST_CASE("children inherit descriptors that are not close-on-exec, sharing their offsets")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    FeatherOS::Files::Table parent{};
+    FeatherOS::Files::OpenConsole(&parent);
+    const uint64_t shared = FeatherOS::Files::Open(&parent, "/BLOCK.TXT", OpenRead);
+    const uint64_t private_file =
+        FeatherOS::Files::Open(&parent, "/BLOCK.TXT", OpenRead | FeatherOS::User::OpenCloseOnExec);
+    REQUIRE(FeatherOS::Files::Duplicate(&parent, shared, 0, FeatherOS::User::DuplicateExact) ==
+            0);
+    FeatherOS::Files::Table child{};
+    FeatherOS::Files::Inherit(&child, &parent);
+    REQUIRE(FeatherOS::Files::KindOf(&child, 0) == FeatherOS::Files::Kind::File);
+    REQUIRE(FeatherOS::Files::KindOf(&child, 1) == FeatherOS::Files::Kind::Console);
+    REQUIRE(FeatherOS::Files::KindOf(&child, shared) == FeatherOS::Files::Kind::File);
+    REQUIRE(FeatherOS::Files::KindOf(&child, private_file) == FeatherOS::Files::Kind::None);
+    char text[4] = {};
+    REQUIRE(FeatherOS::Files::Read(&child, 0, text, 4) == 4);
+    REQUIRE(FeatherOS::Files::Read(&parent, shared, text, 4) == 4);
+    REQUIRE(std::string(text, 4) == "ents");
+    FeatherOS::Files::CloseAll(&parent);
+    REQUIRE(FeatherOS::Files::Read(&child, shared, text, 4) == 0);
+    FeatherOS::Files::CloseAll(&child);
+    REQUIRE(FeatherOS::Files::Remove("/BLOCK.TXT") == 0);
+}
+
+TEST_CASE("append writes land at the end through every descriptor")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table);
+    const uint64_t appender = FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenWrite | OpenAppend);
+    const uint64_t copy = FeatherOS::Files::Duplicate(&table, appender, 0, 0);
+    REQUIRE(FeatherOS::Files::Seek(&table, appender, 0, FeatherOS::User::SeekFromStart) == 0);
+    REQUIRE(FeatherOS::Files::Write(&table, appender, "+", 1) == 1);
+    REQUIRE(FeatherOS::Files::Write(&table, copy, "-", 1) == 1);
+    FeatherOS::Files::CloseAll(&table);
+    REQUIRE(ReadWhole("/BLOCK.TXT") == "contents+-");
 }

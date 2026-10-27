@@ -1,22 +1,26 @@
-#include "calendar.h"
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <stdio.h>
+#include <time.h>
 
 constexpr char Help[] = "usage: date\n"
                         "Prints the current UTC date and time.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    const uint64_t seconds = ReadClock();
-    char text[FormattedCalendarTimeLength];
-    if (IsSyscallError(seconds) || !FormatCalendarTime(CalendarFromUnixSeconds(seconds), text))
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        WriteLine("date: clock unavailable");
-        Exit(1);
+        puts(Help);
+        return 0;
     }
-    WriteLine(text);
-    Exit(0);
+    const time_t now = time(nullptr);
+    char text[32];
+    if (now == static_cast<time_t>(-1) ||
+        strftime(text, sizeof(text), "%Y-%m-%d %H:%M:%S UTC", gmtime(&now)) == 0)
+    {
+        puts("date: clock unavailable");
+        return 1;
+    }
+    puts(text);
+    return 0;
 }

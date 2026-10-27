@@ -1,27 +1,49 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
 
-using namespace FeatherOS::User;
+#include <ctype.h>
+#include <featheros.h>
+#include <stdio.h>
+#include <unistd.h>
 
 constexpr char Help[] = "usage: upper\n"
-                        "Reads one line at an upper> prompt and prints it in upper case.";
+                        "Reads one line at an upper> prompt and prints it in upper case. When\n"
+                        "its input is a file or a pipe, it converts all of it instead.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+namespace
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    char line[MaximumCommandLineLength];
-    const uint64_t length = ReadLine(line, sizeof(line), "upper> ");
-    if (IsSyscallError(length))
+
+void PrintUpper(const char* text)
+{
+    for (; *text != '\0'; ++text)
     {
-        WriteLine("upper: could not read input");
-        Exit(1);
+        putchar(toupper(static_cast<unsigned char>(*text)));
     }
-    for (uint64_t index = 0; index < length; ++index)
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+    if (FeatherOS::User::HelpRequested(argc, argv))
     {
-        const char character = line[index];
-        WriteCharacter(static_cast<uint64_t>(
-            character >= 'a' && character <= 'z' ? character - 'a' + 'A' : character));
+        puts(Help);
+        return 0;
     }
-    WriteCharacter('\n');
-    Exit(0);
+    char line[64];
+    if (!isatty(STDIN_FILENO))
+    {
+        while (fgets(line, sizeof(line), stdin) != nullptr)
+        {
+            PrintUpper(line);
+        }
+        return ferror(stdin) ? 1 : 0;
+    }
+    if (featheros_read_line("upper> ", line, sizeof(line)) < 0)
+    {
+        puts("upper: could not read input");
+        return 1;
+    }
+    PrintUpper(line);
+    putchar('\n');
+    return 0;
 }

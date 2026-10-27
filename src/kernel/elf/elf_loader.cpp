@@ -9,6 +9,7 @@ constexpr uint64_t ElfHeaderSize = 64;
 constexpr uint64_t ProgramHeaderSize = 56;
 constexpr uint32_t ProgramLoad = 1;
 constexpr uint32_t ProgramDynamic = 2;
+constexpr uint32_t ProgramThreadLocal = 7;
 constexpr uint32_t SegmentExecutable = 1;
 constexpr uint16_t TypeExecutable = 2;
 constexpr uint16_t TypeSharedObject = 3;
@@ -248,6 +249,11 @@ bool Parse(const void* input, uint64_t size, uint16_t expected_machine, Image* i
     parsed.position_independent = type == TypeSharedObject;
     parsed.dynamic_offset = 0;
     parsed.dynamic_size = 0;
+    parsed.has_tls = false;
+    parsed.tls_virtual_address = 0;
+    parsed.tls_file_size = 0;
+    parsed.tls_memory_size = 0;
+    parsed.tls_alignment = 1;
     bool entry_is_executable = false;
     for (uint16_t index = 0; index < program_header_count; ++index)
     {
@@ -267,6 +273,22 @@ bool Parse(const void* input, uint64_t size, uint16_t expected_machine, Image* i
             parsed.dynamic_size = segment.file_size;
             continue;
         }
+        if (type == ProgramThreadLocal)
+        {
+            const uint64_t alignment = segment.alignment == 0 ? 1 : segment.alignment;
+            if (parsed.has_tls || segment.file_size > segment.memory_size ||
+                segment.memory_size > MaximumThreadLocalSize ||
+                (alignment & (alignment - 1)) != 0 || alignment > 4096)
+            {
+                return false;
+            }
+            parsed.has_tls = true;
+            parsed.tls_virtual_address = segment.virtual_address;
+            parsed.tls_file_size = segment.file_size;
+            parsed.tls_memory_size = segment.memory_size;
+            parsed.tls_alignment = alignment;
+            continue;
+        }
         if (type != ProgramLoad)
         {
             continue;
@@ -284,6 +306,23 @@ bool Parse(const void* input, uint64_t size, uint16_t expected_machine, Image* i
         }
     }
     if (parsed.load_segment_count == 0 || !entry_is_executable)
+    {
+        return false;
+    }
+    // New threads copy the template from the program's memory, so it must be loaded.
+    bool template_loaded = !parsed.has_tls;
+    for (uint16_t index = 0; index < program_header_count && !template_loaded; ++index)
+    {
+        LoadSegment segment;
+        uint32_t type;
+        template_loaded =
+            ReadProgramHeader(parsed, index, &segment, &type) && type == ProgramLoad &&
+            parsed.tls_virtual_address >= segment.virtual_address &&
+            parsed.tls_virtual_address - segment.virtual_address <= segment.memory_size &&
+            parsed.tls_file_size <=
+                segment.memory_size - (parsed.tls_virtual_address - segment.virtual_address);
+    }
+    if (!template_loaded)
     {
         return false;
     }

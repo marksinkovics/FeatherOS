@@ -1,6 +1,11 @@
-#include "process.h"
-#include "runtime.h"
+#include "command_line.h"
+#include "syscall.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// These checks call the kernel directly, since they test the exact errors it returns.
 using namespace FeatherOS::User;
 
 namespace
@@ -12,8 +17,8 @@ constexpr uint64_t KernelAddress = 0xFFFF800000000000;
 constexpr uint64_t KernelAddress = 0xFFFF000000000000;
 #endif
 
-constexpr char TestFile[] = "/disk/FILETEST.TXT";
-constexpr char InitramfsFile[] = "/hello.txt";
+constexpr char TestFile[] = "/FILETEST.TXT";
+constexpr char InitramfsFile[] = "/system/hello.txt";
 // Larger than one disk cluster, so the file spans several.
 constexpr uint64_t PatternSize = 3000;
 
@@ -25,16 +30,15 @@ void Check(bool passed, const char* name)
 {
     if (!passed)
     {
-        WriteText("filetest: failed ");
-        WriteLine(name);
-        Exit(1);
+        printf("filetest: failed %s\n", name);
+        exit(1);
     }
     ++passed_checks;
 }
 
 bool Valid(uint64_t descriptor)
 {
-    return !IsSyscallError(descriptor) && descriptor >= FirstFileDescriptor;
+    return !IsSyscallError(descriptor) && descriptor > StandardError;
 }
 
 bool SameBytes(const uint8_t* left, const uint8_t* right, uint64_t length)
@@ -56,21 +60,20 @@ void CheckArgumentsAndCreation()
     Check(OpenFile(TestFile, 0) == SyscallErrorInvalidArgument, "opening without access");
     Check(OpenFile(TestFile, OpenRead | OpenCreate) == SyscallErrorInvalidArgument,
           "creating without write access");
-    Check(OpenFile(kernel_pointer, OpenRead) == SyscallErrorInvalidArgument,
-          "a kernel path pointer");
+    Check(OpenFile(kernel_pointer, OpenRead) == SyscallErrorBadAddress, "a kernel path pointer");
 
     const uint64_t writer = OpenFile(TestFile, OpenWrite | OpenCreate | OpenTruncate);
     Check(Valid(writer), "creating a file");
     Check(WriteFile(writer, pattern, PatternSize) == PatternSize, "writing across clusters");
-    Check(WriteFile(writer, kernel_pointer, 16) == SyscallErrorInvalidArgument,
+    Check(WriteFile(writer, kernel_pointer, 16) == SyscallErrorBadAddress,
           "writing from kernel memory");
     Check(OpenFile(TestFile, OpenRead) == SyscallErrorBusy, "reading a file being written");
     Check(RemoveFile(TestFile) == SyscallErrorBusy, "removing an open file");
-    Check(ReadFile(writer, buffer, 1) == SyscallErrorInvalidArgument,
+    Check(ReadFile(writer, buffer, 1) == SyscallErrorBadDescriptor,
           "reading a write-only descriptor");
     Check(CloseFile(writer) == 0, "closing a descriptor");
-    Check(CloseFile(writer) == SyscallErrorInvalidArgument, "closing it twice");
-    Check(ReadFile(writer, buffer, 1) == SyscallErrorInvalidArgument, "using a closed descriptor");
+    Check(CloseFile(writer) == SyscallErrorBadDescriptor, "closing it twice");
+    Check(ReadFile(writer, buffer, 1) == SyscallErrorBadDescriptor, "using a closed descriptor");
 }
 
 void CheckReading()
@@ -91,25 +94,23 @@ void CheckReading()
     }
     Check(total == PatternSize && SameBytes(buffer, pattern, PatternSize), "reading it back");
     Check(ReadFile(reader, buffer, 10) == 0, "reading at the end of the file");
-    Check(ReadFile(reader, reinterpret_cast<void*>(KernelAddress), 10) ==
-              SyscallErrorInvalidArgument,
+    Check(ReadFile(reader, reinterpret_cast<void*>(KernelAddress), 10) == SyscallErrorBadAddress,
           "reading into kernel memory");
-    Check(SeekFile(second_reader, 100) == 0 && ReadFile(second_reader, buffer, 10) == 10 &&
+    Check(SeekFile(second_reader, 100) == 100 && ReadFile(second_reader, buffer, 10) == 10 &&
               SameBytes(buffer, pattern + 100, 10),
           "seeking");
     Check(SeekFile(second_reader, PatternSize + 1) == SyscallErrorInvalidArgument,
           "seeking past the end");
-    Check(WriteFile(reader, "x", 1) == SyscallErrorInvalidArgument,
-          "writing a read-only descriptor");
+    Check(WriteFile(reader, "x", 1) == SyscallErrorBadDescriptor, "writing a read-only descriptor");
     Check(CloseFile(reader) == 0 && CloseFile(second_reader) == 0, "closing both readers");
 
     const uint64_t appender = OpenFile(TestFile, OpenWrite);
-    Check(Valid(appender) && SeekFile(appender, PatternSize) == 0 &&
+    Check(Valid(appender) && SeekFile(appender, PatternSize) == PatternSize &&
               WriteFile(appender, "END", 3) == 3 && CloseFile(appender) == 0,
           "appending");
     const uint64_t tail_reader = OpenFile(TestFile, OpenRead);
-    Check(SeekFile(tail_reader, PatternSize - 1) == 0 && ReadFile(tail_reader, buffer, 10) == 4 &&
-              buffer[0] == pattern[PatternSize - 1] &&
+    Check(SeekFile(tail_reader, PatternSize - 1) == PatternSize - 1 &&
+              ReadFile(tail_reader, buffer, 10) == 4 && buffer[0] == pattern[PatternSize - 1] &&
               SameBytes(buffer + 1, reinterpret_cast<const uint8_t*>("END"), 3) &&
               CloseFile(tail_reader) == 0,
           "reading the appended bytes");
@@ -121,14 +122,15 @@ void CheckInitramfsAndLimits()
     Check(Valid(archive_file) && ReadFile(archive_file, buffer, 9) == 9 &&
               SameBytes(buffer, reinterpret_cast<const uint8_t*>("FeatherOS"), 9),
           "reading the initramfs");
-    Check(OpenFile(InitramfsFile, OpenWrite) == SyscallErrorInvalidArgument,
-          "writing the initramfs");
-    Check(RemoveFile(InitramfsFile) == SyscallErrorInvalidArgument, "removing from the initramfs");
+    Check(OpenFile(InitramfsFile, OpenWrite) == SyscallErrorReadOnly, "writing the initramfs");
+    Check(RemoveFile(InitramfsFile) == SyscallErrorReadOnly, "removing from the initramfs");
 
-    uint64_t descriptors[MaximumOpenFiles];
+    // The console holds descriptors 0-2.
+    constexpr uint64_t FileDescriptors = MaximumDescriptors - 3;
+    uint64_t descriptors[FileDescriptors];
     descriptors[0] = archive_file;
     bool all_opened = true;
-    for (uint64_t index = 1; index < MaximumOpenFiles; ++index)
+    for (uint64_t index = 1; index < FileDescriptors; ++index)
     {
         descriptors[index] = OpenFile(InitramfsFile, OpenRead);
         all_opened = all_opened && Valid(descriptors[index]);
@@ -144,18 +146,22 @@ void CheckInitramfsAndLimits()
 
 } // namespace
 
-constexpr char Help[] = "usage: filetest\n"
-                        "Runs checks of the file syscalls on /disk/: descriptors, sharing rules,\n"
-                        "bad pointers, the open-file limit, and cleanup when a process exits.";
+constexpr char Help[] =
+    "usage: filetest\n"
+    "Runs checks of the file syscalls on the disk: descriptors, sharing rules,\n"
+    "bad pointers, the open-file limit, and cleanup when a process exits.";
 
-extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
+int main(int argc, char** argv)
 {
-    ExitWithHelpIfRequested(arguments, Help);
-    // The child the main run spawns: it exits with a writer still open.
-    if (arguments != nullptr && arguments->argument_count == 2 &&
-        StringEquals(arguments->argument_values[1], "hold"))
+    if (HelpRequested(argc, argv))
     {
-        Exit(Valid(OpenFile(TestFile, OpenWrite)) ? 0 : 1);
+        puts(Help);
+        return 0;
+    }
+    // The child the main run spawns: it exits with a writer still open.
+    if (argc == 2 && strcmp(argv[1], "hold") == 0)
+    {
+        return Valid(OpenFile(TestFile, OpenWrite)) ? 0 : 1;
     }
 
     for (uint64_t index = 0; index < PatternSize; ++index)
@@ -177,8 +183,6 @@ extern "C" [[noreturn]] void _start(const ProgramArguments* arguments)
     Check(OpenFile(TestFile, OpenRead) == SyscallErrorNotFound, "the removed file is gone");
     Check(RemoveFile(TestFile) == SyscallErrorNotFound, "removing it twice");
 
-    WriteText("filetest: ");
-    WriteNumber(passed_checks);
-    WriteLine(" checks passed");
-    Exit(0);
+    printf("filetest: %llu checks passed\n", static_cast<unsigned long long>(passed_checks));
+    return 0;
 }

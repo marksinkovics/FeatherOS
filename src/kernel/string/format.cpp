@@ -172,3 +172,40 @@ bool FormatBuffer::Good() const
 }
 
 } // namespace FeatherOS::String
+
+namespace FeatherOS::String
+{
+
+bool Consume(FormatBuffer& output, const char*& format)
+{
+    while (*format != '\0')
+    {
+        if (format[0] == '{' && format[1] == '{')
+        {
+            if (!output.AppendCharacter('{'))
+            {
+                return false;
+            }
+            format += 2;
+        }
+        else if (format[0] == '}' && format[1] == '}')
+        {
+            if (!output.AppendCharacter('}'))
+            {
+                return false;
+            }
+            format += 2;
+        }
+        else if (*format == '{' || *format == '}')
+        {
+            return false;
+        }
+        else if (!output.AppendCharacter(*format++))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace FeatherOS::String

@@ -476,3 +476,46 @@ TEST_CASE("ELF64 segment loader rejects missing or failed memory callbacks")
     target.fail_protect = true;
     REQUIRE_FALSE(FeatherOS::ELF::LoadSegments(image, 0, OperationsFor(&target)));
 }
+TEST_CASE("ELF64 parser records a TLS template inside a load segment")
+{
+    const auto with_tls = [](uint64_t address, uint64_t file_size, uint64_t memory_size,
+                             uint64_t alignment)
+    {
+        std::vector<uint8_t> image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
+        Write16(image, 56, 2);
+        const size_t header = ProgramHeaderOffset + ProgramHeaderSize;
+        Write32(image, header, 7);
+        Write32(image, header + 4, 4);
+        Write64(image, header + 8, SegmentFileOffset);
+        Write64(image, header + 16, address);
+        Write64(image, header + 32, file_size);
+        Write64(image, header + 40, memory_size);
+        Write64(image, header + 48, alignment);
+        return image;
+    };
+    FeatherOS::ELF::Image parsed{};
+    std::vector<uint8_t> image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
+    REQUIRE(FeatherOS::ELF::Parse(image.data(), image.size(), FeatherOS::ELF::MachineX86_64,
+                                  &parsed));
+    REQUIRE_FALSE(parsed.has_tls);
+    REQUIRE(parsed.tls_alignment == 1);
+
+    image = with_tls(SegmentVirtualAddress + 2, 2, 64, 8);
+    REQUIRE(FeatherOS::ELF::Parse(image.data(), image.size(), FeatherOS::ELF::MachineX86_64,
+                                  &parsed));
+    REQUIRE(parsed.has_tls);
+    REQUIRE(parsed.tls_virtual_address == SegmentVirtualAddress + 2);
+    REQUIRE(parsed.tls_file_size == 2);
+    REQUIRE(parsed.tls_memory_size == 64);
+    REQUIRE(parsed.tls_alignment == 8);
+
+    // The template must be loaded, smaller than the block, small and aligned to a power of two.
+    for (const auto& bad : {with_tls(SegmentVirtualAddress + 15, 4, 8, 8),
+                            with_tls(0x900000, 2, 8, 8), with_tls(SegmentVirtualAddress, 8, 4, 8),
+                            with_tls(SegmentVirtualAddress, 2, 32 * 1024, 8),
+                            with_tls(SegmentVirtualAddress, 2, 8, 12)})
+    {
+        REQUIRE_FALSE(FeatherOS::ELF::Parse(bad.data(), bad.size(), FeatherOS::ELF::MachineX86_64,
+                                            &parsed));
+    }
+}

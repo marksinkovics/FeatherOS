@@ -1,6 +1,8 @@
 #include "scheduler.h"
 
+#include "kernel/arch/floating_point.h"
 #include "kernel/arch/interrupts.h"
+#include "kernel/arch/thread_pointer.h"
 #include "kernel/cpu.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/kernel_stack.h"
@@ -28,6 +30,9 @@ struct Task
     TaskState state;
     TaskPriority priority;
     uint64_t exit_status;
+    // Timer ticks the task was running for, and the CPU it last ran on.
+    uint64_t run_ticks;
+    uint32_t last_cpu;
     // 0 = no deadline.
     uint64_t wake_tick;
     const WaitQueue* wait_queue;
@@ -35,6 +40,9 @@ struct Task
     // Null for the boot task and secondary idle tasks, which run on the bootloader's stacks.
     uint8_t* stack;
     WaitQueue exit_queue;
+    // Saved while the task is switched out; they only ever hold user-mode values.
+    Arch::FloatingPoint::State floating_point;
+    uint64_t thread_pointer;
 };
 
 // Lock order: subsystem locks before the scheduler lock. It is held across context switches and
@@ -82,9 +90,13 @@ void ResetTask(Task& task)
     task.state = TaskState::Empty;
     task.priority = TaskPriority::Normal;
     task.exit_status = 0;
+    task.run_ticks = 0;
+    task.last_cpu = 0;
     task.wake_tick = 0;
     task.wait_queue = nullptr;
     task.user_context = nullptr;
+    task.thread_pointer = 0;
+    Arch::FloatingPoint::InitializeState(&task.floating_point);
 }
 
 Task* FindTask(TaskId task_id)
@@ -199,7 +211,14 @@ bool Schedule()
         next->state = TaskState::Running;
     }
     CurrentTask() = next;
+    next->last_cpu = Cpu::CurrentIndex();
     ActivateTaskAddressSpace(next);
+    // Kernel code does not touch these registers, so the next task's can be loaded before the
+    // switch, and a new task starts with its initial state already in place.
+    Arch::FloatingPoint::Save(&previous->floating_point);
+    Arch::FloatingPoint::Restore(&next->floating_point);
+    previous->thread_pointer = Arch::ThreadPointer::Read();
+    Arch::ThreadPointer::Write(next->thread_pointer);
     FeatherOS_Arch_SwitchContext(&previous->stack_pointer, next->stack_pointer);
     return true;
 }
@@ -394,6 +413,10 @@ void OnTimerTick(uint64_t tick)
 
     // Interrupt handlers run with interrupts masked.
     scheduler_lock.Lock();
+    if (CurrentTask() != &IdleTask())
+    {
+        ++CurrentTask()->run_ticks;
+    }
     Task* task = &boot_task;
     do
     {
@@ -426,7 +449,7 @@ uint64_t BusyTickCount(uint32_t cpu_index)
     return cpu_index < Cpu::MaximumCpus ? busy_ticks[cpu_index] : 0;
 }
 
-bool Wait(TaskId task_id, uint64_t* exit_status)
+bool Wait(TaskId task_id, uint64_t* exit_status, bool (*interrupted)())
 {
     if (!initialized)
     {
@@ -437,6 +460,11 @@ bool Wait(TaskId task_id, uint64_t* exit_status)
     Task* task = FindTask(task_id);
     while (task != nullptr && task != CurrentTask() && task->state != TaskState::Complete)
     {
+        if (interrupted != nullptr && interrupted())
+        {
+            scheduler_lock.UnlockIrqRestore(flags);
+            return false;
+        }
         CurrentTask()->state = TaskState::Blocked;
         CurrentTask()->wait_queue = &task->exit_queue;
         CurrentTask()->wake_tick = 0;
@@ -491,6 +519,23 @@ bool SetPriority(TaskId task_id, TaskPriority priority)
         return false;
     }
     task->priority = priority;
+    return true;
+}
+
+bool GetUsage(TaskId task_id, uint64_t* run_ticks, uint32_t* last_cpu)
+{
+    if (!initialized)
+    {
+        return false;
+    }
+    Sync::SpinLockGuard guard(scheduler_lock);
+    const Task* task = FindTask(task_id);
+    if (task == nullptr)
+    {
+        return false;
+    }
+    *run_ticks = task->run_ticks;
+    *last_cpu = task->last_cpu;
     return true;
 }
 
@@ -580,6 +625,11 @@ bool SleepUntil(uint64_t tick)
 void ActivateCurrentAddressSpace()
 {
     ActivateTaskAddressSpace(CurrentTask());
+}
+
+TaskId CurrentTaskId()
+{
+    return initialized ? CurrentTask()->id : 0;
 }
 
 void* CurrentUserContext()

@@ -50,6 +50,9 @@ bool Write(File* file, uint64_t offset, const void* buffer, uint64_t length,
 // Shrinks the file and frees the clusters it no longer needs.
 bool Truncate(File* file, uint64_t size);
 bool Remove(const char* path);
+// Moves an entry to another name or directory. Fails if to exists (unless it is from under
+// another case), or would put a directory inside itself. Open files must be closed first.
+bool Rename(const char* from, const char* to);
 uint32_t FreeClusterCount();
 bool IsDirectory(const char* path);
 // The index-th entry of the directory at path ("" for the root), without "." and "..";
