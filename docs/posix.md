@@ -16,7 +16,7 @@ int main(int argc, char** argv)
 }
 ```
 
-Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. The build places it in `/system`, where the shell finds it by name. Every program in `src/user/` is written this way, except `test_program`, a kernel self-test that defines `_start` itself.
+Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. The build places it in `/system` as `/system/<name>`, where the shell finds it by name. A copy anywhere else runs too, by its path (`/tmp/tool`, `./tool`) or by name from a directory in `PATH`, which is `/system:/bin`. Every program in `src/user/` is written this way, except `test_program`, a kernel self-test that defines `_start` itself.
 
 **Startup.** The C library's `_start` does four things before `main`:
 - copies the arguments to writable memory, since the kernel maps them read-only
@@ -24,7 +24,7 @@ Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS`
 - runs `.preinit_array` and `.init_array`, which include C++ static constructors and `__attribute__((constructor))` functions
 - calls `exit(main(argc, argv))`
 
-`argv[0]` is the program's name without `/system/`.
+`argv[0]` is the path the program was started with, or its name for a program in `/system`.
 
 **Exit.** `exit` runs `atexit` handlers and C++ static destructors, newest first. It then runs `.fini_array`, flushes the stdio streams, and passes the low 8 bits of the status to the kernel. `abort` raises `SIGABRT`, so a handler runs first, and ends the program with it even if the handler returns.
 
@@ -56,12 +56,12 @@ These come from the kernel and apply everywhere below.
 
 | Path | Contents |
 | --- | --- |
-| `/system` | The read-only initramfs, which holds every program |
+| `/system` | The read-only initramfs, which holds every bundled program as `/system/<name>` |
 | `/dev` | `null`, `zero` and `random`, as on Linux; all take writes |
 | `/tmp` | A RAM filesystem, emptied on restart: at most 128 entries and 4 MiB, with case-sensitive names |
 | `/proc` | Read-only: `meminfo`, `stat` (uptime and CPU use), and `<pid>/status` for each process; `/proc/self` is the caller |
 
-Disk names ignore case and are at most 63 characters, and no file can have holes. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
+`/bin`, an ordinary disk directory, is the second entry of the default `PATH`, for programs copied to the disk. Disk names ignore case and are at most 63 characters, and no file can have holes. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
 
 ## Headers
 
@@ -224,11 +224,12 @@ Not provided:
 
 ### `spawn.h` and `sys/wait.h`
 
-**`posix_spawn` and `posix_spawnp`.** The path names a program in `/system`, either as `/system/ls` or as `ls`; programs elsewhere fail with `ENOENT`.
-- **Arguments:** the kernel always makes the program's name its `argv[0]`.
-- **Errors:** an argument containing a double quote fails with `EINVAL`. A command line or environment over the limits fails with `E2BIG`.
+**`posix_spawn` and `posix_spawnp`.** The path names a program file anywhere the VFS can read: the disk, `/tmp`, or `/system`. A relative path such as `./tool` starts at the working directory. FeatherOS difference: a name without a `/` is looked up in `/system`, so `posix_spawn("ls", …)` runs `/system/ls`, where POSIX would look in the working directory.
+- **Programs:** FAT16 has no execute bit, so any regular file up to 1 MiB may be tried. The kernel reads it whole and checks it like a `/system` program; one that is not a valid program fails with `ENOEXEC`, as do devices, a larger file fails with `ENOMEM`, a directory with `EISDIR`, and a missing file with `ENOENT`.
+- **Arguments:** the kernel always makes the path its `argv[0]`, or the bare name for a program in `/system`.
+- **Errors:** the path or an argument containing a double quote fails with `EINVAL`. A command line or environment over the limits fails with `E2BIG`; the path counts toward the 63-character command line, and must resolve to at most 63 characters (`ENAMETOOLONG`).
 - **Console:** by default the child takes the console until it exits.
-- **PATH:** `posix_spawnp` does not search `PATH`, since every program is in `/system`.
+- **PATH:** `posix_spawnp` runs the first regular file it finds in the directories of the caller's `PATH`, or `/system:/bin` when `PATH` is unset; empty entries are skipped rather than meaning the working directory. A file name holding a `/` is used as it is. Unlike `execvp`, a file that is not a program is not run as a shell script; `posix_spawnp` returns `ENOEXEC`.
 
 **Attributes.** The supported flags are:
 

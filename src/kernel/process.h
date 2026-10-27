@@ -80,6 +80,8 @@ enum class SpawnStatus : uint8_t
 {
     Started,
     NotFound,
+    IsDirectory,
+    NameTooLong,
     InvalidExecutable,
     InvalidArguments,
     NoResources,
@@ -104,7 +106,8 @@ bool CopyFromCurrentUser(UserExecutionContext* context, uint64_t address, void* 
 // Scheduler task entry: runs a loaded program in user mode and returns its exit status.
 uint64_t RunUserProgram(void* program);
 
-// Starts "<name>-<arch>.elf" from the initramfs, where name is the first word of command_line.
+// Starts the program that command_line's first word names: a file in /system for a name without a
+// '/', otherwise a path relative to the parent's working directory.
 // environment is a kernel copy of a Spawn environment block, at most
 // User::MaximumEnvironmentSize bytes, or null for none. Unless flags has User::SpawnBackground,
 // the child becomes the foreground process that receives console input.

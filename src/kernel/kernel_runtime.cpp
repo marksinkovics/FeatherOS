@@ -100,11 +100,10 @@ void LoadTestExecutable(KLogger& logger, const BootInfo& boot_info)
 {
     // Only the user-preemption test build needs the platform data for its timer.
     (void)boot_info;
+    constexpr char test_path[] = "test";
 #if defined(ARCH_x86_64)
-    constexpr char test_path[] = "test-x86_64.elf";
     constexpr uint16_t user_machine = ELF::MachineX86_64;
 #elif defined(ARCH_aarch64)
-    constexpr char test_path[] = "test-aarch64.elf";
     constexpr uint16_t user_machine = ELF::MachineAArch64;
 #endif
 

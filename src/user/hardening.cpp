@@ -1,6 +1,8 @@
 #include "command_line.h"
+#include "process.h"
 #include "syscall.h"
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +39,63 @@ bool ChildTerminated(const char* command_line)
     uint64_t status = 0;
     return !IsSyscallError(child) && !IsSyscallError(Wait(child, &status)) &&
            (status == ExitStatusFault || status == ExitStatusKernelAccessFault);
+}
+
+// Writes the first size bytes of from, or size bytes of 'x' if from is null.
+bool WriteFile(const char* path, const char* from, size_t size)
+{
+    static char buffer[4096];
+    const int source = from == nullptr ? -1 : open(from, O_RDONLY);
+    const int target = open(path, O_WRONLY | O_CREAT | O_TRUNC);
+    memset(buffer, 'x', sizeof(buffer));
+    bool written = target >= 0 && (from == nullptr || source >= 0);
+    for (size_t done = 0; written && done < size;)
+    {
+        const size_t part = size - done < sizeof(buffer) ? size - done : sizeof(buffer);
+        const ssize_t length =
+            source >= 0 ? read(source, buffer, part) : static_cast<ssize_t>(part);
+        if (length == 0)
+        {
+            break;
+        }
+        written = length > 0 && write(target, buffer, static_cast<size_t>(length)) == length;
+        done += static_cast<size_t>(length);
+    }
+    if (source >= 0)
+    {
+        close(source);
+    }
+    return target >= 0 && close(target) == 0 && written;
+}
+
+// Programs from files other than the initramfs go through the same checks.
+void CheckProgramFiles()
+{
+    Check(Spawn("/tmp/missing") == SyscallErrorNotFound, "Spawn of a missing file");
+    Check(Spawn("/tmp") == SyscallErrorIsDirectory, "Spawn of a directory");
+    Check(Spawn("/dev/zero") == SyscallErrorNotExecutable, "Spawn of a device");
+    Check(Spawn("hello.txt") == SyscallErrorNotExecutable, "Spawn of a text file");
+    Check(WriteFile("/tmp/truncated", "/system/echo", 2048) &&
+              Spawn("/tmp/truncated") == SyscallErrorNotExecutable,
+          "Spawn of a truncated program");
+    Check(WriteFile("/tmp/badelf", "/system/badelf", MaximumProgramSize),
+          "copying the kernel-half ELF");
+    const uint64_t bad_elf = Spawn("/tmp/badelf");
+    Check(IsSyscallError(bad_elf) && bad_elf != SyscallErrorNotFound, "kernel-half ELF from /tmp");
+    Check(WriteFile("/tmp/large", nullptr, MaximumProgramSize + 1) &&
+              Spawn("/tmp/large") == SyscallErrorNoMemory,
+          "Spawn of a file over the size limit");
+    char original[MaximumPathLength];
+    char long_path[MaximumCommandLineLength - 2];
+    memset(long_path, 'p', sizeof(long_path) - 1);
+    long_path[0] = '.';
+    long_path[1] = '/';
+    long_path[sizeof(long_path) - 1] = '\0';
+    Check(getcwd(original, sizeof(original)) != nullptr && chdir("/tmp") == 0 &&
+              Spawn(long_path) == SyscallErrorNameTooLong && chdir(original) == 0,
+          "Spawn of a path too long once resolved");
+    Check(unlink("/tmp/truncated") == 0 && unlink("/tmp/badelf") == 0 && unlink("/tmp/large") == 0,
+          "removing the program files");
 }
 
 volatile uint8_t* shared_page = nullptr;
@@ -104,7 +163,7 @@ void* ReadSharedPage(void*)
 
 constexpr char Help[] =
     "usage: hardening\n"
-    "Runs 48 checks that the kernel rejects bad syscalls, pointers, ELF files,\n"
+    "Runs 61 checks that the kernel rejects bad syscalls, pointers, program files,\n"
     "and memory violations from user programs.";
 
 int main(int argc, char** argv)
@@ -140,6 +199,7 @@ int main(int argc, char** argv)
           "kernel ThreadJoin value");
     const uint64_t bad_elf = Spawn("badelf");
     Check(IsSyscallError(bad_elf) && bad_elf != SyscallErrorNotFound, "kernel-half ELF");
+    CheckProgramFiles();
 
     Check(ChildTerminated("hardening exec-heap"), "executing the heap");
     Check(ChildTerminated("hardening freed-heap"), "using a page the heap returned");

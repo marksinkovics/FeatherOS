@@ -26,9 +26,20 @@ SpawnRequestResult Build(const char* path, std::initializer_list<const char*> ar
     return result;
 }
 
+std::vector<std::string> Candidates(const char* search, const char* file)
+{
+    std::vector<std::string> candidates;
+    char candidate[FeatherOS::User::MaximumPathLength];
+    while (FeatherOS::LibC::NextSearchCandidate(&search, file, candidate))
+    {
+        candidates.emplace_back(candidate);
+    }
+    return candidates;
+}
+
 } // namespace
 
-TEST_CASE("spawn requests name a program in /system and quote arguments with spaces")
+TEST_CASE("spawn requests shorten /system paths and quote words with spaces")
 {
     std::string line;
     REQUIRE(Build("/system/ls", {"ls", "/home"}, &line) == SpawnRequestResult::Done);
@@ -39,12 +50,28 @@ TEST_CASE("spawn requests name a program in /system and quote arguments with spa
     REQUIRE(line == "echo");
 }
 
+TEST_CASE("spawn requests pass other paths on for the kernel to resolve")
+{
+    std::string line;
+    REQUIRE(Build("/bin/tool", {"tool", "a"}, &line) == SpawnRequestResult::Done);
+    REQUIRE(line == "/bin/tool a");
+    REQUIRE(Build("./ls", {"ls"}, &line) == SpawnRequestResult::Done);
+    REQUIRE(line == "./ls");
+    REQUIRE(Build("/system/", {"x"}, &line) == SpawnRequestResult::Done);
+    REQUIRE(line == "/system/");
+    REQUIRE(Build("/system/sub/tool", {"tool"}, &line) == SpawnRequestResult::Done);
+    REQUIRE(line == "/system/sub/tool");
+    REQUIRE(Build("/tmp/my tool", {"tool", "x"}, &line) == SpawnRequestResult::Done);
+    REQUIRE(line == "\"/tmp/my tool\" x");
+}
+
 TEST_CASE("spawn requests reject paths and arguments the kernel cannot run")
 {
     std::string line;
-    REQUIRE(Build("/home/tool", {"tool"}, &line) == SpawnRequestResult::NotFound);
-    REQUIRE(Build("/system/", {"x"}, &line) == SpawnRequestResult::NotFound);
-    REQUIRE(Build("./ls", {"ls"}, &line) == SpawnRequestResult::NotFound);
+    REQUIRE(Build("", {"x"}, &line) == SpawnRequestResult::NotFound);
+    REQUIRE(Build("/tmp/\"x\"", {"x"}, &line) == SpawnRequestResult::Invalid);
+    REQUIRE(Build(("/" + std::string(70, 'p')).c_str(), {"x"}, &line) ==
+            SpawnRequestResult::TooBig);
     REQUIRE(Build("echo", {"echo", "say \"hi\""}, &line) == SpawnRequestResult::Invalid);
     REQUIRE(Build("echo", {"echo", std::string(70, 'x').c_str()}, &line) ==
             SpawnRequestResult::TooBig);
@@ -70,4 +97,16 @@ TEST_CASE("spawn environments pack NAME=value strings into one block")
     std::string large = "BIG=" + std::string(FeatherOS::User::MaximumEnvironmentSize, 'x');
     char* too_big[] = {large.data(), nullptr};
     REQUIRE(FeatherOS::LibC::BuildEnvironmentBlock(too_big, block) == SpawnRequestResult::TooBig);
+}
+
+TEST_CASE("PATH searches join each directory to the file")
+{
+    REQUIRE(Candidates("/system:/bin", "ls") == std::vector<std::string>{"/system/ls", "/bin/ls"});
+    REQUIRE(Candidates("::/bin/:", "ls") == std::vector<std::string>{"/bin/ls"});
+    REQUIRE(Candidates("", "ls").empty());
+    // A candidate must fit in a path, terminator included.
+    const std::string long_directory = "/" + std::string(60, 'd');
+    const std::string search = long_directory + ":/" + std::string(59, 'e') + ":/bin";
+    REQUIRE(Candidates(search.c_str(), "ls") ==
+            std::vector<std::string>{"/" + std::string(59, 'e') + "/ls", "/bin/ls"});
 }

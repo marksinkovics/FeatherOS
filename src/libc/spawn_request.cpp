@@ -9,12 +9,6 @@ namespace FeatherOS::LibC
 namespace SpawnRequestDetail
 {
 
-bool IsNameCharacter(char character)
-{
-    return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
-           (character >= '0' && character <= '9') || character == '_' || character == '-';
-}
-
 LineWriter::LineWriter(char (&target)[User::MaximumCommandLineLength]) : line(target) {}
 
 bool LineWriter::Put(char character)
@@ -28,6 +22,36 @@ bool LineWriter::Put(char character)
     return true;
 }
 
+namespace
+{
+
+SpawnRequestResult PutWord(LineWriter* writer, const char* word)
+{
+    bool quoted = *word == '\0';
+    for (const char* character = word; *character != '\0'; ++character)
+    {
+        if (*character == '"')
+        {
+            return SpawnRequestResult::Invalid;
+        }
+        quoted = quoted || *character == ' ';
+    }
+    if (quoted && !writer->Put('"'))
+    {
+        return SpawnRequestResult::TooBig;
+    }
+    for (const char* character = word; *character != '\0'; ++character)
+    {
+        if (!writer->Put(*character))
+        {
+            return SpawnRequestResult::TooBig;
+        }
+    }
+    return quoted && !writer->Put('"') ? SpawnRequestResult::TooBig : SpawnRequestResult::Done;
+}
+
+} // namespace
+
 } // namespace SpawnRequestDetail
 
 } // namespace FeatherOS::LibC
@@ -40,64 +64,75 @@ SpawnRequestResult BuildCommandLine(const char* path, char* const arguments[],
 {
     using namespace SpawnRequestDetail;
     line[0] = '\0';
-    const char* name = path;
+    if (*path == '\0')
+    {
+        return SpawnRequestResult::NotFound;
+    }
+    const char* program = path;
     size_t prefix = 0;
     while (SystemPrefix[prefix] != '\0' && path[prefix] == SystemPrefix[prefix])
     {
         ++prefix;
     }
-    if (SystemPrefix[prefix] == '\0')
+    bool named = SystemPrefix[prefix] == '\0' && path[prefix] != '\0';
+    for (size_t index = prefix; named && path[index] != '\0'; ++index)
     {
-        name = path + prefix;
+        named = path[index] != '/';
     }
-    if (*name == '\0')
+    if (named)
     {
-        return SpawnRequestResult::NotFound;
+        program = path + prefix;
     }
     LineWriter writer(line);
-    for (const char* character = name; *character != '\0'; ++character)
-    {
-        if (!IsNameCharacter(*character))
-        {
-            return SpawnRequestResult::NotFound;
-        }
-        if (!writer.Put(*character))
-        {
-            return SpawnRequestResult::TooBig;
-        }
-    }
+    SpawnRequestResult result = PutWord(&writer, program);
     uint64_t count = 1;
-    for (size_t index = 1; arguments != nullptr && arguments[0] != nullptr && arguments[index];
+    for (size_t index = 1; result == SpawnRequestResult::Done && arguments != nullptr &&
+                           arguments[0] != nullptr && arguments[index] != nullptr;
          ++index)
     {
-        const char* argument = arguments[index];
-        bool quoted = *argument == '\0';
-        for (const char* character = argument; *character != '\0'; ++character)
-        {
-            if (*character == '"')
-            {
-                return SpawnRequestResult::Invalid;
-            }
-            quoted = quoted || *character == ' ';
-        }
-        if (++count > User::MaximumArgumentCount || !writer.Put(' ') ||
-            (quoted && !writer.Put('"')))
+        if (++count > User::MaximumArgumentCount || !writer.Put(' '))
         {
             return SpawnRequestResult::TooBig;
         }
-        for (const char* character = argument; *character != '\0'; ++character)
-        {
-            if (!writer.Put(*character))
-            {
-                return SpawnRequestResult::TooBig;
-            }
-        }
-        if (quoted && !writer.Put('"'))
-        {
-            return SpawnRequestResult::TooBig;
-        }
+        result = PutWord(&writer, arguments[index]);
     }
-    return SpawnRequestResult::Done;
+    return result;
+}
+
+bool NextSearchCandidate(const char** search, const char* file,
+                         char (&candidate)[User::MaximumPathLength])
+{
+    while (**search != '\0')
+    {
+        const char* directory = *search;
+        size_t length = 0;
+        while (directory[length] != '\0' && directory[length] != ':')
+        {
+            ++length;
+        }
+        *search = directory[length] == ':' ? directory + length + 1 : directory + length;
+        const size_t separator = length > 0 && directory[length - 1] != '/' ? 1 : 0;
+        size_t file_length = 0;
+        while (file[file_length] != '\0')
+        {
+            ++file_length;
+        }
+        if (length == 0 || length + separator + file_length >= sizeof(candidate))
+        {
+            continue;
+        }
+        for (size_t index = 0; index < length; ++index)
+        {
+            candidate[index] = directory[index];
+        }
+        candidate[length] = '/';
+        for (size_t index = 0; index <= file_length; ++index)
+        {
+            candidate[length + separator + index] = file[index];
+        }
+        return true;
+    }
+    return false;
 }
 
 SpawnRequestResult BuildEnvironmentBlock(char* const variables[],

@@ -216,7 +216,7 @@ pid_t StartStage(const Stage& stage, int input, int output, pid_t group, bool ba
     // Programs inherit the shell's environment, which init set up.
     const int error = posix_spawnp(&child, words[0], &actions, &attributes, words, environ);
     CloseRedirects(opened, redirect_count);
-    if (error == ENOENT)
+    if (error == ENOENT && strchr(words[0], '/') == nullptr)
     {
         printf("Unknown command: %s\n", words[0]);
     }
@@ -226,7 +226,7 @@ pid_t StartStage(const Stage& stage, int input, int output, pid_t group, bool ba
     }
     else if (error != 0)
     {
-        puts("shell: could not start program");
+        printf("shell: %s: %s\n", words[0], strerror(error));
     }
     return error == 0 ? child : 0;
 }
@@ -570,7 +570,8 @@ void ChangeDirectoryCommand(const char* argument)
 
 constexpr char Help[] =
     "usage: shell\n"
-    "Runs programs by name and waits for each one. Type help for the commands;\n"
+    "Runs programs and waits for each one: a name is looked up in the directories\n"
+    "of PATH, and a name with a / is a file. Type help for the commands;\n"
     "Ctrl+C stops the running command. The prompt shows the working directory,\n"
     "which cd changes (cd alone returns to /home) and programs inherit. A command's\n"
     "input and output can be redirected: < file, > file, >> file, 2> file, 2>&1;\n"
@@ -680,6 +681,8 @@ int main(int argc, char** argv)
             puts("Editing: Left, Right, Home, End, Delete; Up and Down recall lines; Ctrl+A and "
                  "Ctrl+E go to the start and end, Ctrl+U, Ctrl+K and Ctrl+W erase, Ctrl+L "
                  "clears the screen, Ctrl+C discards the line.");
+            puts("Programs are found in PATH (/system:/bin); run another file by its path, "
+                 "such as ./tool or /tmp/tool.");
             puts("Run <command> --help to see what a command does.");
             continue;
         }

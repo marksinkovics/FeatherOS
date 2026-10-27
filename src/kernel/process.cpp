@@ -5,7 +5,6 @@
 #include "kernel/arch/thread_pointer.h"
 #include "kernel/console.h"
 #include "kernel/cpu.h"
-#include "kernel/filesystem/initramfs.h"
 #include "kernel/files.h"
 #include "kernel/futex.h"
 #include "kernel/filesystem/path.h"
@@ -46,12 +45,13 @@ constexpr size_t MaximumPromptLength = User::MaximumPathLength + 8;
 // init, and so the shell, start in /home, or in / on a disk without one.
 constexpr char HomeDirectory[] = "/home";
 
+// Where a program named without a '/' is found.
+constexpr char SystemDirectory[] = "/system";
+
 #if defined(ARCH_x86_64)
 constexpr uint16_t UserMachine = ELF::MachineX86_64;
-constexpr char UserProgramSuffix[] = "-x86_64.elf";
 #elif defined(ARCH_aarch64)
 constexpr uint16_t UserMachine = ELF::MachineAArch64;
-constexpr char UserProgramSuffix[] = "-aarch64.elf";
 #endif
 
 struct ProcessRecord;
@@ -569,37 +569,35 @@ bool GroupJoinableLocked(const ProcessRecord& caller, ProcessId group)
     return false;
 }
 
-// Builds "<name>-<arch>.elf" from the first word of command_line, which may only contain
-// letters, digits, '_' or '-'.
-bool BuildProgramPath(const char* command_line,
-                      char (&path)[MaximumCommandNameLength + sizeof(UserProgramSuffix)])
+bool BuildProgramPath(const char* program, const char* working_directory,
+                      char (&path)[Path::MaximumLength])
 {
-    while (*command_line == ' ')
+    bool named = true;
+    for (const char* character = program; *character != '\0'; ++character)
     {
-        ++command_line;
+        named = named && *character != '/';
+    }
+    return Path::Resolve(named ? SystemDirectory : working_directory, program, path);
+}
+
+// The last part of the program's path, as much as fits.
+void SetProcessName(ProcessRecord* process, const char* program)
+{
+    const char* name = program;
+    for (const char* character = program; *character != '\0'; ++character)
+    {
+        if (*character == '/' && character[1] != '\0')
+        {
+            name = character + 1;
+        }
     }
     size_t length = 0;
-    for (; command_line[length] != '\0' && command_line[length] != ' '; ++length)
+    for (; name[length] != '\0' && name[length] != '/' && length < MaximumCommandNameLength;
+         ++length)
     {
-        const char character = command_line[length];
-        const bool valid =
-            (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
-            (character >= '0' && character <= '9') || character == '_' || character == '-';
-        if (!valid || length == MaximumCommandNameLength)
-        {
-            return false;
-        }
-        path[length] = character;
+        process->name[length] = name[length];
     }
-    if (length == 0)
-    {
-        return false;
-    }
-    for (size_t index = 0; index < sizeof(UserProgramSuffix); ++index)
-    {
-        path[length + index] = UserProgramSuffix[index];
-    }
-    return true;
+    process->name[length] = '\0';
 }
 
 // User pointers are resolved through the process page tables and accessed through the direct
@@ -820,6 +818,10 @@ uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags, uint
         return child;
     case SpawnStatus::NotFound:
         return User::SyscallErrorNotFound;
+    case SpawnStatus::IsDirectory:
+        return User::SyscallErrorIsDirectory;
+    case SpawnStatus::NameTooLong:
+        return User::SyscallErrorNameTooLong;
     case SpawnStatus::InvalidArguments:
         return User::SyscallErrorInvalidArgument;
     case SpawnStatus::InvalidExecutable:
@@ -2288,17 +2290,6 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
     {
         return SpawnStatus::InvalidArguments;
     }
-    char path[MaximumCommandNameLength + sizeof(UserProgramSuffix)];
-    Initramfs::File file;
-    if (!BuildProgramPath(command_line, path) || !Initramfs::Open(path, &file))
-    {
-        return SpawnStatus::NotFound;
-    }
-    ELF::Image image;
-    if (!ELF::Parse(file.data, file.size, UserMachine, &image))
-    {
-        return SpawnStatus::InvalidExecutable;
-    }
     // The arguments block holds pointers into itself, so its address is chosen first.
     const UserLayout layout = RandomUserLayout();
     User::ProgramArguments arguments;
@@ -2306,6 +2297,50 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         !CopyEnvironment(environment, User::MaximumEnvironmentSize, &arguments))
     {
         return SpawnStatus::InvalidArguments;
+    }
+    if (arguments.argument_count == 0)
+    {
+        return SpawnStatus::NotFound;
+    }
+    // The first argument, without the quotes that may group a path with spaces.
+    const char* program = arguments.argument_storage;
+    char working_directory[User::MaximumPathLength] = "/";
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        const ProcessRecord* parent_record = FindProcessLocked(parent);
+        for (size_t index = 0; parent_record != nullptr && index < sizeof(working_directory);
+             ++index)
+        {
+            working_directory[index] = parent_record->working_directory[index];
+            if (working_directory[index] == '\0')
+            {
+                break;
+            }
+        }
+    }
+    char path[Path::MaximumLength];
+    if (!BuildProgramPath(program, working_directory, path))
+    {
+        return SpawnStatus::NameTooLong;
+    }
+    Files::ProgramFile file;
+    switch (file.Read(path))
+    {
+    case 0:
+        break;
+    case User::SyscallErrorNotFound:
+        return SpawnStatus::NotFound;
+    case User::SyscallErrorIsDirectory:
+        return SpawnStatus::IsDirectory;
+    case User::SyscallErrorNotExecutable:
+        return SpawnStatus::InvalidExecutable;
+    default:
+        return SpawnStatus::NoResources;
+    }
+    ELF::Image image;
+    if (!ELF::Parse(file.Data(), file.Size(), UserMachine, &image))
+    {
+        return SpawnStatus::InvalidExecutable;
     }
 
     // Checked outside the process lock, since it reads the disk.
@@ -2388,17 +2423,7 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         Files::OpenConsole(&process->files);
     }
 
-    size_t path_length = 0;
-    while (path[path_length] != '\0')
-    {
-        ++path_length;
-    }
-    const size_t name_length = path_length - (sizeof(UserProgramSuffix) - 1);
-    for (size_t index = 0; index < name_length; ++index)
-    {
-        process->name[index] = path[index];
-    }
-    process->name[name_length] = '\0';
+    SetProcessName(process, program);
     arguments.process_id = id;
     InitializeUserProgram(&process->program);
     process->program.layout = layout;

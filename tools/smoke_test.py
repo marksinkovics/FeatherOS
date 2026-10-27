@@ -106,7 +106,16 @@ SHELL_INPUT = (
     b"kill %7\n"
     b"exit\n"
     b"memtest\nmemtest overflow\nmemtest exhaust\nmemtest exhaust\n"
-    b"sleep 1100\nhardening\naslr\naslr\nprimes 4 100000\nprimes 16 20000\n"
+    b"sleep 1100\nhardening\naslr\naslr\n"
+    # Programs copied to the disk and /tmp run by PATH, by path and from the
+    # working directory, under the same limits as those in /system.
+    b"cp /system/upper /bin/shout\necho from the disk | shout\n"
+    b"cp /system/cat /bin/kitty\nkitty /proc/self/status\n"
+    b'cp /system/echo /tmp/say\n/tmp/say "two  words" a b\n'
+    b"cp /system/aslr /tmp/aslr\n/tmp/aslr\ncd /tmp\n./aslr\ncd\n"
+    b"cp /system/memtest /bin/memtest\n/bin/memtest exhaust\n"
+    b"/bin/nothing\n/system/hello.txt\n/tmp\n"
+    b"primes 4 100000\nprimes 16 20000\n"
     b"threads 4 100000\nthreads 15 20000\n"
     b"fptest 8\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
@@ -292,8 +301,9 @@ EXPECTED_SHELL_OUTPUT = (
     "libctest: puts works",
     "Assertion `argc == 1' failed.",
     "spawned by posix_spawn",
+    "spawned from the disk",
     "SPAWNED=yes",
-    "libctest: 396 checks passed",
+    "libctest: 407 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
@@ -301,7 +311,7 @@ EXPECTED_SHELL_OUTPUT = (
     "; q quits",
     # env prints the variables init.conf sets, which the shell passes on.
     "HOME=/home",
-    "PATH=/system",
+    "PATH=/system:/bin",
     "system/",
     "home/",
     "FeatherOS initramfs is ready.",
@@ -347,7 +357,13 @@ EXPECTED_SHELL_OUTPUT = (
     # memtest overflow ends at the stack guard page with ExitStatusFault.
     "shell: program terminated by a CPU exception",
     "sleep: slept 1100 ms",
-    "hardening: 51 checks passed",
+    "hardening: 61 checks passed",
+    "FROM THE DISK",
+    "Name: kitty",
+    "\ntwo  words a b",
+    "shell: /bin/nothing: No such file or directory",
+    "shell: /system/hello.txt: Exec format error",
+    "shell: /tmp: Is a directory",
     "fptest: 8 of 8 workers kept their registers",
     "primes: 9592 primes below 100000 with 4 workers in ",
     # Sixteen workers keep sixteen pipes open at once.
@@ -1194,10 +1210,11 @@ def main():
         if keys != EXPECTED_KEYS:
             print(f"FAIL: keys reported {keys}", file=sys.stderr)
             return 1
+        # memtest exhaust runs twice from /system and once from the disk.
         exhausted = [int(pages) for pages in EXHAUST_OUTPUT.findall(output)]
         if (
-            len(exhausted) != 2
-            or exhausted[0] != exhausted[1]
+            len(exhausted) != 3
+            or len(set(exhausted)) != 1
             or exhausted[0] < MINIMUM_EXHAUST_PAGES
         ):
             print(
@@ -1205,12 +1222,13 @@ def main():
                 file=sys.stderr,
             )
             return 1
+        # aslr runs twice from /system and twice from /tmp.
         layouts = ASLR_OUTPUT.findall(output)
-        if len(layouts) != 2 or any(
-            first == second for first, second in zip(*layouts)
+        if len(layouts) != 4 or any(
+            len(set(field)) != len(field) for field in zip(*layouts)
         ):
             print(
-                f"FAIL: two aslr runs did not get distinct layouts: {layouts}",
+                f"FAIL: aslr runs did not get distinct layouts: {layouts}",
                 file=sys.stderr,
             )
             return 1

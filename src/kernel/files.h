@@ -72,6 +72,28 @@ uint64_t Rename(const char* from, const char* to);
 uint64_t Stat(const char* path, User::FileStatus* status);
 uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* status);
 void CloseAll(Table* table);
+
+// A program file for Spawn. Initramfs files are used in place; others are copied into a kernel
+// buffer, which lives as long as this object.
+class ProgramFile
+{
+public:
+    ProgramFile() = default;
+    ~ProgramFile();
+    ProgramFile(const ProgramFile&) = delete;
+    ProgramFile& operator=(const ProgramFile&) = delete;
+
+    // 0, or SyscallErrorNotFound, SyscallErrorIsDirectory, SyscallErrorNotExecutable for a device
+    // or an empty file, or SyscallErrorNoMemory past User::MaximumProgramSize.
+    uint64_t Read(const char* path);
+    const uint8_t* Data() const;
+    uint64_t Size() const;
+
+private:
+    const uint8_t* data = nullptr;
+    uint64_t size = 0;
+    uint8_t* buffer = nullptr;
+};
 // Waits for any filesystem call in progress, then blocks all later ones, for shutdown.
 void Quiesce();
 

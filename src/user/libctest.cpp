@@ -439,7 +439,7 @@ void CheckEnvironment()
     // init.conf sets these, and the shell passes them on.
     const char* home = getenv("HOME");
     Check(home != nullptr && strcmp(home, "/home") == 0, "inherited HOME");
-    Check(EnvironHas("PATH=/system"), "inherited PATH in environ");
+    Check(EnvironHas("PATH=/system:/bin"), "inherited PATH in environ");
     Check(getenv("NOT_SET") == nullptr, "missing variable");
 
     Check(setenv("FEATHER", "os", 0) == 0 && strcmp(getenv("FEATHER"), "os") == 0, "setenv");
@@ -458,7 +458,8 @@ void CheckEnvironment()
     memset(large, 'x', sizeof(large) - 1);
     errno = 0;
     Check(setenv("LARGE", large, 1) == -1 && errno == ENOMEM, "setenv past the size limit");
-    Check(unsetenv("FEATHER") == 0 && getenv("FEATHER") == nullptr && EnvironHas("PATH=/system"),
+    Check(unsetenv("FEATHER") == 0 && getenv("FEATHER") == nullptr &&
+              EnvironHas("PATH=/system:/bin"),
           "unsetenv");
     Check(unsetenv("FEATHER") == 0, "unsetenv a missing variable");
 }
@@ -906,9 +907,74 @@ void CheckSpawn()
           "WNOHANG while the child runs");
 
     Check(posix_spawn(&child, "/home/program", nullptr, nullptr, echo_arguments, environ) == ENOENT,
-          "posix_spawn outside /system");
+          "posix_spawn of a missing file");
     errno = 0;
     Check(waitpid(-1, &status, 0) == -1 && errno == ECHILD, "waitpid with no children");
+}
+
+bool CopyFile(const char* from, const char* to)
+{
+    FILE* source = fopen(from, "r");
+    FILE* target = source == nullptr ? nullptr : fopen(to, "w");
+    char buffer[512];
+    size_t length = 1;
+    while (target != nullptr && length > 0)
+    {
+        length = fread(buffer, 1, sizeof(buffer), source);
+        if (fwrite(buffer, 1, length, target) != length)
+        {
+            break;
+        }
+    }
+    const bool copied = target != nullptr && length == 0 && !ferror(source);
+    if (source != nullptr)
+    {
+        fclose(source);
+    }
+    return target != nullptr && fclose(target) == 0 && copied;
+}
+
+// 0 once the child exits with status 0, -1 if it fails, or the spawn's error.
+int SpawnAndWait(const char* program, bool search)
+{
+    char* arguments[] = {const_cast<char*>("echo"), const_cast<char*>("spawned from"),
+                         const_cast<char*>("the disk"), nullptr};
+    pid_t child = 0;
+    int status = -1;
+    const int error = search ? posix_spawnp(&child, program, nullptr, nullptr, arguments, environ)
+                             : posix_spawn(&child, program, nullptr, nullptr, arguments, environ);
+    if (error != 0)
+    {
+        return error;
+    }
+    return waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0
+               ? 0
+               : -1;
+}
+
+void CheckDiskPrograms()
+{
+    Check(CopyFile("/system/echo", "/tmp/disk-echo"), "copying a program to /tmp");
+    Check(SpawnAndWait("/tmp/disk-echo", false) == 0, "posix_spawn of a program in /tmp");
+    char original[PATH_MAX];
+    Check(getcwd(original, sizeof(original)) != nullptr && chdir("/tmp") == 0 &&
+              SpawnAndWait("./disk-echo", false) == 0 && chdir(original) == 0,
+          "posix_spawn of a relative path");
+    Check(SpawnAndWait("disk-echo", true) == ENOENT, "posix_spawnp of a program outside PATH");
+    Check(setenv("PATH", "::/nowhere:/tmp/", 1) == 0 && SpawnAndWait("disk-echo", true) == 0 &&
+              SpawnAndWait("echo", true) == ENOENT && setenv("PATH", "/system:/bin", 1) == 0,
+          "posix_spawnp searches PATH");
+    Check(unsetenv("PATH") == 0 && SpawnAndWait("echo", true) == 0 &&
+              setenv("PATH", "/system:/bin", 1) == 0,
+          "posix_spawnp without PATH");
+    Check(SpawnAndWait("/system/hello.txt", false) == ENOEXEC &&
+              SpawnAndWait("hello.txt", true) == ENOEXEC,
+          "a text file is not a program");
+    Check(SpawnAndWait("/dev/zero", false) == ENOEXEC, "a device is not a program");
+    Check(SpawnAndWait("/tmp", false) == EISDIR && SpawnAndWait("/tmp/", true) == EISDIR,
+          "a directory is not a program");
+    Check(SpawnAndWait("/tmp/missing", true) == ENOENT, "posix_spawnp of a missing path");
+    Check(unlink("/tmp/disk-echo") == 0, "removing the copied program");
 }
 
 void CheckSpawnAttributes()
@@ -2403,6 +2469,7 @@ int main(int argc, char** argv)
     CheckVirtualFiles();
     CheckTime();
     CheckSpawn();
+    CheckDiskPrograms();
     CheckSpawnAttributes();
     CheckProcessGroups();
     CheckSignalSets();

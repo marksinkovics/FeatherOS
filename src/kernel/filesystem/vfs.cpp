@@ -38,7 +38,7 @@ constexpr MountPoint MountPoints[] = {
 constexpr uint32_t MountPointCount = sizeof(MountPoints) / sizeof(MountPoints[0]);
 
 // Which filesystem holds path, and the path inside it ("" for its root). The bare names kernel
-// code uses ("init-x86_64.elf") name the initramfs.
+// code uses ("init") name the initramfs.
 Mount Locate(const char* path, const char** inner)
 {
     if (path[0] != '/')

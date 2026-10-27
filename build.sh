@@ -178,12 +178,20 @@ iso() {
         _err "No user programs in $programs_dir, run './build.sh build' first."
         exit 1
     fi
+    # The initramfs is /system, where each program is a file named after it, as "ls".
+    local system_dir="$build_dir/system"
+    rm -rf "$system_dir"
+    mkdir -p "$system_dir"
+    cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" "$system_dir/"
+    local program
+    for program in "${programs[@]}"; do
+        local name="${program##*/}"
+        cp "$program" "$system_dir/${name%-"$ARCH".elf}"
+    done
+    python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$system_dir/badelf"
     # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
     export COPYFILE_DISABLE=1
-    tar -cf "$initramfs_path" -C "$SCRIPT_DIR/initramfs" hello.txt init.conf
-    tar -rf "$initramfs_path" -C "$programs_dir" "${programs[@]##*/}"
-    python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$build_dir/badelf-$ARCH.elf"
-    tar -rf "$initramfs_path" -C "$build_dir" "badelf-$ARCH.elf"
+    (cd "$system_dir" && tar -cf "$initramfs_path" -- *)
     python3 "$SCRIPT_DIR/tools/create_test_disk.py" "$block_image" \
         "$SCRIPT_DIR/initramfs/block.txt" --layout "${DISK_LAYOUT:-mbr}"
 

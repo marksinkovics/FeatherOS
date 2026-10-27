@@ -280,6 +280,38 @@ TEST_CASE("/tmp works through file descriptors with the disk's sharing rules")
     REQUIRE(List("/tmp") == std::vector<std::string>{"b.txt"});
 }
 
+TEST_CASE("Spawn reads program files whole, up to a size limit")
+{
+    FeatherOS::Tmpfs::Reset();
+    FeatherOS::Files::Table table{};
+    const std::string contents(5000, 'p');
+    const uint64_t writer =
+        FeatherOS::Files::Open(&table, "/tmp/tool", OpenWrite | OpenCreate);
+    REQUIRE(FeatherOS::Files::Write(&table, writer, contents.data(), contents.size()) ==
+            contents.size());
+    REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
+    {
+        FeatherOS::Files::ProgramFile program;
+        REQUIRE(program.Read("/tmp/tool") == 0);
+        REQUIRE(std::string(reinterpret_cast<const char*>(program.Data()), program.Size()) ==
+                contents);
+    }
+
+    REQUIRE_FALSE(FeatherOS::User::IsSyscallError(
+        FeatherOS::Files::Open(&table, "/tmp/empty", OpenWrite | OpenCreate)));
+    const std::string large(FeatherOS::User::MaximumProgramSize + 1, 'x');
+    const uint64_t big = FeatherOS::Files::Open(&table, "/tmp/big", OpenWrite | OpenCreate);
+    REQUIRE(FeatherOS::Files::Write(&table, big, large.data(), large.size()) == large.size());
+    FeatherOS::Files::CloseAll(&table);
+    FeatherOS::Files::ProgramFile program;
+    REQUIRE(program.Read("/tmp/empty") == FeatherOS::User::SyscallErrorNotExecutable);
+    REQUIRE(program.Read("/tmp/big") == FeatherOS::User::SyscallErrorNoMemory);
+    REQUIRE(program.Read("/tmp/missing") == FeatherOS::User::SyscallErrorNotFound);
+    REQUIRE(program.Read("/tmp") == FeatherOS::User::SyscallErrorIsDirectory);
+    REQUIRE(program.Read("/dev/zero") == FeatherOS::User::SyscallErrorNotExecutable);
+    REQUIRE(program.Data() == nullptr);
+}
+
 TEST_CASE("/dev devices read, take writes, and cannot be created or removed")
 {
     FeatherOS::Files::Table table{};

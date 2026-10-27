@@ -835,4 +835,72 @@ void CloseAll(Table* table)
     }
 }
 
+ProgramFile::~ProgramFile()
+{
+    if (buffer != nullptr)
+    {
+        Memory::Deallocate(buffer);
+    }
+}
+
+uint64_t ProgramFile::Read(const char* path)
+{
+    if (path == nullptr || data != nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    VFS::FileHandle handle;
+    if (!VFS::Open(path, &handle))
+    {
+        return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorNotFound;
+    }
+    uint64_t result = 0;
+    if (handle.kind == VFS::FileKind::Device || handle.size == 0)
+    {
+        result = User::SyscallErrorNotExecutable;
+    }
+    else if (handle.size > User::MaximumProgramSize)
+    {
+        result = User::SyscallErrorNoMemory;
+    }
+    else if (handle.kind == VFS::FileKind::Archive)
+    {
+        data = handle.data;
+        size = handle.size;
+    }
+    else
+    {
+        buffer = static_cast<uint8_t*>(Memory::Allocate(handle.size));
+        uint64_t bytes_read = 0;
+        if (buffer == nullptr)
+        {
+            result = User::SyscallErrorNoMemory;
+        }
+        else if (!VFS::Read(&handle, buffer, handle.size, &bytes_read) || bytes_read != handle.size)
+        {
+            Memory::Deallocate(buffer);
+            buffer = nullptr;
+            result = User::SyscallErrorFailed;
+        }
+        else
+        {
+            data = buffer;
+            size = handle.size;
+        }
+    }
+    VFS::Close(&handle);
+    return result;
+}
+
+const uint8_t* ProgramFile::Data() const
+{
+    return data;
+}
+
+uint64_t ProgramFile::Size() const
+{
+    return size;
+}
+
 } // namespace FeatherOS::Files

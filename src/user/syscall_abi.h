@@ -68,6 +68,11 @@ constexpr uint64_t SpawnBackground = 1U << 0;
 constexpr uint64_t SpawnSessionLeader = 1U << 1;
 constexpr uint64_t SpawnSetGroup = 1U << 2;
 constexpr uint64_t SpawnGroupShift = 32;
+// Spawn's command line starts with the program: a name without '/' is a file in /system, and
+// anything else a path, relative to the caller's working directory. Any regular file up to this
+// size may be tried; one that is not a program fails with SyscallErrorNotExecutable, and a larger
+// one with SyscallErrorNoMemory.
+constexpr uint64_t MaximumProgramSize = 1024 * 1024;
 // Shutdown actions.
 constexpr uint64_t ShutdownPowerOff = 0;
 constexpr uint64_t ShutdownRestart = 1;

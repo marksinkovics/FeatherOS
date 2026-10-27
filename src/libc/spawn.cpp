@@ -6,7 +6,9 @@
 #include <fcntl.h>
 #include <spawn.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -15,6 +17,8 @@ namespace
 
 constexpr int SignalSegmentationFault = 11;
 constexpr uint64_t PollMilliseconds = 10;
+// posix_spawnp's search list when PATH is not set.
+constexpr char DefaultSearchPath[] = "/system:/bin";
 // The kernel's limit on running children per process.
 constexpr size_t MaximumChildren = 16;
 
@@ -260,7 +264,28 @@ int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t* 
 int posix_spawnp(pid_t* pid, const char* file, const posix_spawn_file_actions_t* file_actions,
                  const posix_spawnattr_t* attributes, char* const argv[], char* const envp[])
 {
-    return posix_spawn(pid, file, file_actions, attributes, argv, envp);
+    if (*file == '\0' || strchr(file, '/') != nullptr)
+    {
+        return posix_spawn(pid, file, file_actions, attributes, argv, envp);
+    }
+    const char* search = getenv("PATH");
+    if (search == nullptr)
+    {
+        search = DefaultSearchPath;
+    }
+    const int error = errno;
+    char candidate[FeatherOS::User::MaximumPathLength];
+    while (FeatherOS::LibC::NextSearchCandidate(&search, file, candidate))
+    {
+        struct stat status;
+        if (stat(candidate, &status) == 0 && S_ISREG(status.st_mode))
+        {
+            errno = error;
+            return posix_spawn(pid, candidate, file_actions, attributes, argv, envp);
+        }
+    }
+    errno = error;
+    return ENOENT;
 }
 
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t* file_actions)
