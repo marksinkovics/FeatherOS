@@ -47,7 +47,7 @@ struct Task
 
 // Lock order: subsystem locks before the scheduler lock. It is held across context switches and
 // released by the task that switches in.
-Sync::SpinLock scheduler_lock;
+constinit Sync::SpinLock scheduler_lock;
 Task boot_task;
 // Secondary CPUs run their idle task on the stack they started on; only the boot CPU needs one.
 Task idle_tasks[Cpu::MaximumCpus];
@@ -408,7 +408,8 @@ void OnTimerTick(uint64_t tick)
     }
     if (CurrentTask() != &IdleTask())
     {
-        ++busy_ticks[Cpu::CurrentIndex()];
+        const uint32_t cpu_index = Cpu::CurrentIndex();
+        busy_ticks[cpu_index] = busy_ticks[cpu_index] + 1;
     }
 
     // Interrupt handlers run with interrupts masked.

@@ -404,7 +404,20 @@ unit_test() {
     _require_tools cmake git ninja
 
     local unit_build_dir="$SCRIPT_DIR/build/unit-tests-ninja"
-    cmake --fresh -S "$SCRIPT_DIR/tests/unit" -B "$unit_build_dir" -G Ninja
+    local sanitize="${SANITIZE:-ON}"
+    local cmake_args=(-DFEATHEROS_SANITIZERS="$sanitize")
+    # Apple clang 17's AddressSanitizer runtime deadlocks before main on macOS 26, so sanitized
+    # builds use Homebrew LLVM, which quality.sh already needs for clang-tidy.
+    if [ "$sanitize" = ON ] && [ "$(uname -s)" = Darwin ]; then
+        local llvm_bin
+        llvm_bin="$(brew --prefix llvm 2>/dev/null)/bin"
+        if [ ! -x "$llvm_bin/clang++" ]; then
+            _err "Sanitized unit tests need Homebrew LLVM (brew install llvm), or set SANITIZE=OFF."
+            exit 1
+        fi
+        cmake_args+=(-DCMAKE_C_COMPILER="$llvm_bin/clang" -DCMAKE_CXX_COMPILER="$llvm_bin/clang++")
+    fi
+    cmake --fresh -S "$SCRIPT_DIR/tests/unit" -B "$unit_build_dir" -G Ninja "${cmake_args[@]}"
     cmake --build "$unit_build_dir" --parallel
     ctest --test-dir "$unit_build_dir" --output-on-failure
 }

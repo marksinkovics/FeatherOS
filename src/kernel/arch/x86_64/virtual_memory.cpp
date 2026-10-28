@@ -27,7 +27,7 @@ uint64_t hhdm_offset = 0;
 volatile uint64_t* root_table = nullptr;
 uint64_t kernel_root_physical_address = 0;
 // Kernel tables are shared by every address space and CPU; held while any table is edited.
-FeatherOS::Sync::SpinLock page_table_lock;
+constinit FeatherOS::Sync::SpinLock page_table_lock;
 uint64_t active_root_physical_addresses[FeatherOS::Cpu::MaximumCpus] = {};
 
 // A CPU asked to flush finds requested ahead of completed; it reloads CR3, which drops every

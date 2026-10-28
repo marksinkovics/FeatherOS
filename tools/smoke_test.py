@@ -489,8 +489,9 @@ LINE_PROMPT = re.compile(
 )
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
-# The scripted shell session runs many programs; AArch64 emulation is slower.
-SHELL_TIMEOUT_SECONDS = 90
+# The scripted shell session runs many programs; AArch64 emulation is slower,
+# and takes about 90 s for the whole session.
+SHELL_TIMEOUT_SECONDS = 180
 QEMU_CPU_COUNT = 4
 SMP_MESSAGE = f"KERN/I: SMP: {QEMU_CPU_COUNT} CPUs online with IPIs and timers"
 ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-_])")
@@ -903,9 +904,11 @@ def main():
         markers = (SHELL_BANNER.encode(), PANIC_MARKER.encode())
 
     output_closed = False
+    timed_out = False
     while process.poll() is None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            timed_out = True
             break
         readable, _, _ = select.select(
             [process.stdout], [], [], min(0.1, remaining)
@@ -994,6 +997,8 @@ def main():
     # QEMU closes its output as it exits, which can come before the
     # process can be reaped.
     exited_by_itself = output_closed or process.poll() is not None
+    # Missing output may mean the time ran out rather than the guest hanging.
+    limit_note = f" (stopped at the {timeout} s limit)" if timed_out else ""
     if process.poll() is None:
         process.terminate()
     try:
@@ -1086,7 +1091,10 @@ def main():
             "KERN/I: Limine transferred control to the kernel"
         )
         if missing or PANIC_MARKER in output:
-            print(f"FAIL: power output is missing {missing}", file=sys.stderr)
+            print(
+                f"FAIL: power output is missing {missing}{limit_note}",
+                file=sys.stderr,
+            )
             return 1
         if args.expect_power == "shutdown" and not exited_by_itself:
             print("FAIL: QEMU kept running after shutdown", file=sys.stderr)
@@ -1120,7 +1128,7 @@ def main():
         if missing or NOTES_OUTPUT.search(output) is None:
             print(
                 "FAIL: file tools output is missing "
-                f"{missing or 'the cat output'}",
+                f"{missing or 'the cat output'}{limit_note}",
                 file=sys.stderr,
             )
             return 1
@@ -1170,7 +1178,10 @@ def main():
             text for text in EXPECTED_SHELL_OUTPUT if text not in output
         ]
         if missing:
-            print(f"FAIL: shell output is missing {missing}", file=sys.stderr)
+            print(
+                f"FAIL: shell output is missing {missing}{limit_note}",
+                file=sys.stderr,
+            )
             return 1
         edits = {
             text: len(re.findall(rf"^{text}\r?$", output, re.MULTILINE))

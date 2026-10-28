@@ -60,7 +60,7 @@ FeatherFile standard_streams[3] = {
 };
 FeatherFile opened_streams[FOPEN_MAX - 3];
 // Taken before any stream's lock: guards which streams are open.
-FeatherOS::LibC::Lock streams_lock;
+constinit FeatherOS::LibC::Lock streams_lock;
 
 using StreamGuard = FeatherOS::LibC::Guard<FeatherOS::LibC::RecursiveLock>;
 using ListGuard = FeatherOS::LibC::Guard<FeatherOS::LibC::Lock>;

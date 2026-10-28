@@ -420,7 +420,7 @@ void OnKeyboardInterrupt()
             }
             available_ring[*available_index % QueueSize] = static_cast<uint16_t>(descriptor_id);
             asm volatile("dmb oshst" ::: "memory");
-            ++*available_index;
+            *available_index = *available_index + 1;
         }
         ++last_used_index;
     }

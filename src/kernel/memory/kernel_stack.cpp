@@ -23,7 +23,7 @@ struct FreeStack
 
 // Freed stacks stay mapped for reuse. Unmapping one would need a TLB shootdown, because
 // another CPU may still cache its translation.
-Sync::SpinLock stack_lock;
+constinit Sync::SpinLock stack_lock;
 FreeStack* free_stacks = nullptr;
 uint64_t next_slot = 0;
 

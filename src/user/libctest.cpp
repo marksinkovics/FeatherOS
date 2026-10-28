@@ -338,7 +338,7 @@ void CheckJumps()
 {
     volatile int passes = 0;
     const int first = setjmp(jump_target);
-    ++passes;
+    passes = passes + 1;
     if (first == 0)
     {
         longjmp(jump_target, 0);

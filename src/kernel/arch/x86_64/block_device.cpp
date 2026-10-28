@@ -79,7 +79,7 @@ bool read_only = false;
 bool flush_supported = false;
 bool initialized = false;
 // One request buffer serves every caller, so requests from different CPUs take turns.
-Sync::SpinLock device_lock;
+constinit Sync::SpinLock device_lock;
 
 void WritePort8(uint16_t port, uint8_t value)
 {

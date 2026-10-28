@@ -58,7 +58,15 @@ class BootMatrixTests(unittest.TestCase):
             text=True,
             check=False,
         )
-        self.assertEqual(result.returncode, 0, result.stdout)
+        message = result.stdout
+        session = REPO_ROOT / "build" / arch / "smoke-output.txt"
+        if result.returncode != 0 and session.exists():
+            # Later cases overwrite smoke-output.txt; keep the failed one.
+            name = f"smoke-output-{self._testMethodName}.txt"
+            kept = session.with_name(name)
+            kept.write_bytes(session.read_bytes())
+            message += f"\nsession saved to {kept.relative_to(REPO_ROOT)}"
+        self.assertEqual(result.returncode, 0, message)
 
     def test_01_x86_64_panic_reporting(self):
         self.run_boot_case("x86_64", panic_test=True)

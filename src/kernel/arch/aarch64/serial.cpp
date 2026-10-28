@@ -12,7 +12,7 @@ namespace Serial
 namespace
 {
 
-Sync::SpinLock write_lock;
+constinit Sync::SpinLock write_lock;
 
 const uint64_t UartPhysicalAddress = 0x09000000;
 constexpr uint64_t UartRegisterSize = 0x1000;

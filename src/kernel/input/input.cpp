@@ -11,12 +11,12 @@ namespace
 
 constexpr uint32_t QueueCapacity = 256;
 
-Sync::SpinLock queue_lock;
+constinit Sync::SpinLock queue_lock;
 // One caller reads the serial port at a time and keeps it while delivering a Ctrl+C, so bytes
 // typed after the Ctrl+C cannot be queued before it from another CPU. A timer tick that finds it
 // taken, perhaps by the code it interrupted, skips its poll.
-Sync::SpinLock poll_lock;
-Scheduler::WaitQueue input_waiters;
+constinit Sync::SpinLock poll_lock;
+constinit Scheduler::WaitQueue input_waiters;
 char queue[QueueCapacity];
 uint32_t queue_head = 0;
 uint32_t queue_tail = 0;

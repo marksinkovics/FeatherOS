@@ -26,7 +26,7 @@ constexpr int AbortStatus = 134;
 
 ExitHandler handlers[MaximumExitHandlers];
 size_t handler_count = 0;
-FeatherOS::LibC::Lock handlers_lock;
+constinit FeatherOS::LibC::Lock handlers_lock;
 void (*exit_flush)() = nullptr;
 
 // thread_local objects with destructors, newest first, for the thread that built them.

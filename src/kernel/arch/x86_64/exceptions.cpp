@@ -168,49 +168,8 @@ bool WriteSyscallCharacter(void*, char character)
     return true;
 }
 
-constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {WriteSyscallCharacter,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr,
-                                                                nullptr};
+constexpr FeatherOS::Syscall::Handlers SerialSyscallHandlers = {.write_character =
+                                                                    WriteSyscallCharacter};
 
 template <size_t Size> uint64_t StackTop(uint8_t (&stack)[Size])
 {

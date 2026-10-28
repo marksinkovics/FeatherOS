@@ -1,9 +1,19 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.20)
 project(FeatherOSUnitTests LANGUAGES C CXX)
 
 include(CTest)
 
 get_filename_component(FEATHEROS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+
+option(FEATHEROS_SANITIZERS "Build the unit tests with AddressSanitizer and UBSan" ON)
+if (FEATHEROS_SANITIZERS)
+    # Applied before Catch2 is added so it is instrumented too; a library built without ASan can
+    # report false container overflows in std::string and std::vector shared with the tests.
+    add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=all
+        -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif ()
+
 include("${FEATHEROS_ROOT}/deps/cmake/Catch2.cmake")
 featheros_fetch_catch2()
 
@@ -96,7 +106,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/signals.cpp"
     "${FEATHEROS_ROOT}/src/kernel/string/format.cpp"
 )
-target_compile_features(featheros_unit_tests PRIVATE cxx_std_17)
+target_compile_features(featheros_unit_tests PRIVATE cxx_std_23)
 target_compile_definitions(featheros_unit_tests PRIVATE FEATHEROS_HOST_TEST)
 target_include_directories(featheros_unit_tests PRIVATE
     "${FEATHEROS_ROOT}/src"

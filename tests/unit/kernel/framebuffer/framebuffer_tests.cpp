@@ -5,6 +5,11 @@
 #include "kernel/framebuffer/framebuffer.h"
 #include "kernel/framebuffer/term.h"
 
+extern "C"
+{
+#include "kernel/framebuffer/font.h"
+}
+
 #include <array>
 #include <string>
 
@@ -31,6 +36,23 @@ limine_framebuffer MakeFramebuffer(uint8_t* pixels, uint64_t width, uint64_t hei
 }
 
 } // namespace
+
+TEST_CASE("every printable character has its own glyph")
+{
+    uint8_t index = 0;
+    CHECK(indexForCharacter('!', &index) == 0);
+    CHECK(index == 0);
+    CHECK(indexForCharacter('~', &index) == 0);
+    CHECK(index == 93);
+    uint8_t apostrophe = 0;
+    uint8_t backtick = 0;
+    CHECK(indexForCharacter('\'', &apostrophe) == 0);
+    CHECK(indexForCharacter('`', &backtick) == 0);
+    CHECK(apostrophe != backtick);
+    CHECK(indexForCharacter(' ', &index) == -1);
+    CHECK(indexForCharacter('\0', &index) == -1);
+    CHECK(indexForCharacter('\x7f', &index) == -1);
+}
 
 TEST_CASE("framebuffer initializes and draws masked RGB pixels")
 {

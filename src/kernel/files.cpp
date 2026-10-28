@@ -39,7 +39,7 @@ struct DiskFileUse
 
 // Filesystem updates span many sectors; one lock keeps them from interleaving. It also guards
 // the descriptor tables and open-file references.
-Sync::Mutex file_system_lock;
+constinit Sync::Mutex file_system_lock;
 DiskFileUse disk_files[MaximumOpenDiskFiles];
 uint32_t disk_file_count = 0;
 // Every process's console descriptors share this one, which is never freed.

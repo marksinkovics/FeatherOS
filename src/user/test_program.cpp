@@ -18,7 +18,7 @@ void WaitForTimerPreemption()
     volatile uint64_t counter = 0;
     while (counter < 20000000)
     {
-        ++counter;
+        counter = counter + 1;
     }
 }
 

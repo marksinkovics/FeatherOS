@@ -25,14 +25,14 @@ constexpr User::TerminalSettings DefaultSettings = {User::TerminalDefaultFlags, 
 
 Term* console_term = nullptr;
 // Programs on different CPUs share one terminal.
-Sync::SpinLock display_lock;
+constinit Sync::SpinLock display_lock;
 
-Sync::SpinLock settings_lock;
+constinit Sync::SpinLock settings_lock;
 User::TerminalSettings settings = DefaultSettings;
 uint64_t settings_owner = 0;
 
-Sync::SpinLock status_lock;
-Scheduler::WaitQueue status_waiters;
+constinit Sync::SpinLock status_lock;
+constinit Scheduler::WaitQueue status_waiters;
 bool status_changed = false;
 bool status_running = false;
 // The bar's clock advances from one RTC read by timer ticks, so it never touches the RTC again.

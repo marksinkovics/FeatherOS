@@ -24,11 +24,11 @@ uint32_t ticks_per_second = 0;
 void OnTimerInterrupt()
 {
     const uint32_t cpu_index = Cpu::CurrentIndex();
-    ++cpu_ticks[cpu_index];
+    cpu_ticks[cpu_index] = cpu_ticks[cpu_index] + 1;
     // Every CPU ticks at the same rate, so one of them is enough to keep global time.
     if (cpu_index == 0)
     {
-        ++ticks;
+        ticks = ticks + 1;
         // The UART has no receive interrupt here.
         Input::Poll();
     }

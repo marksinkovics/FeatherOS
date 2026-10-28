@@ -133,18 +133,52 @@ uint64_t RecordRemove(void* context, uint64_t path)
     return 0;
 }
 
-constexpr FeatherOS::Syscall::Handlers WriteOnly = {
-    CaptureCharacter, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-    nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-    nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-    nullptr,          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+constexpr FeatherOS::Syscall::Handlers WriteOnly = {.write_character = CaptureCharacter};
 constexpr FeatherOS::Syscall::Handlers AllHandlers = {
-    CaptureCharacter, RecordReadLine,   RecordSpawn,    RecordWait,       ReadFixedClock,
-    RecordExtendHeap, RecordSleep,      ReadFixedUptime, ReadFixedCpu,    RecordOpen,
-    RecordTransfer,   RecordTransfer,   RecordDescriptor, RecordSeekFrom, RecordRemove,
-    RecordTransfer,   RecordRemove,     RecordRemove,    RecordRemove,     RecordSeek,
-    RecordDescriptor, RecordSeek,       RecordSeek,      ReadFixedProcessId, ReadFixedParentProcessId,
-    RecordSeekFrom,   RecordSeekFrom,   RecordSeek, RecordDescriptor, RecordSeek, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, ReadFixedProcessId, RecordSeek, RecordSeekFrom, RecordSeek, ReadFixedProcessId, RecordSeekFrom, RecordSeek, RecordDescriptor, RecordSeek};
+    .write_character = CaptureCharacter,
+    .read_line = RecordReadLine,
+    .spawn = RecordSpawn,
+    .wait = RecordWait,
+    .read_clock = ReadFixedClock,
+    .extend_heap = RecordExtendHeap,
+    .sleep = RecordSleep,
+    .read_uptime = ReadFixedUptime,
+    .current_cpu = ReadFixedCpu,
+    .open = RecordOpen,
+    .read = RecordTransfer,
+    .write = RecordTransfer,
+    .close = RecordDescriptor,
+    .seek = RecordSeekFrom,
+    .remove = RecordRemove,
+    .read_directory = RecordTransfer,
+    .make_directory = RecordRemove,
+    .remove_directory = RecordRemove,
+    .change_directory = RecordRemove,
+    .current_directory = RecordSeek,
+    .shutdown = RecordDescriptor,
+    .stat = RecordSeek,
+    .stat_descriptor = RecordSeek,
+    .process_id = ReadFixedProcessId,
+    .parent_process_id = ReadFixedParentProcessId,
+    .duplicate = RecordSeekFrom,
+    .descriptor_flags = RecordSeekFrom,
+    .pipe = RecordSeek,
+    .process_group = RecordDescriptor,
+    .foreground_group = RecordSeek,
+    .kill = RecordSeek,
+    .signal_action = RecordSeekFrom,
+    .signal_mask = RecordSeek,
+    .pause = ReadFixedProcessId,
+    .terminal_size = ReadFixedProcessId,
+    .terminal_mode = RecordSeek,
+    .thread_create = RecordSeekFrom,
+    .thread_join = RecordSeek,
+    .thread_id = ReadFixedProcessId,
+    .futex_wait = RecordSeekFrom,
+    .futex_wake = RecordSeek,
+    .thread_detach = RecordDescriptor,
+    .rename = RecordSeek,
+};
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
                                         uint64_t third = 0)
@@ -190,11 +224,7 @@ TEST_CASE("syscall dispatcher rejects invalid requests")
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::WriteCharacter, 0x80), WriteOnly,
                                          &output)
                 .action == Action::Invalid);
-    const FeatherOS::Syscall::Handlers no_output = {nullptr, nullptr, nullptr, nullptr, nullptr,
-                                                    nullptr, nullptr, nullptr, nullptr, nullptr,
-                                                    nullptr, nullptr, nullptr, nullptr, nullptr,
-                                                    nullptr, nullptr, nullptr, nullptr, nullptr,
-                                                    nullptr};
+    const FeatherOS::Syscall::Handlers no_output = {};
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::WriteCharacter, 'A'), no_output,
                                          &output)
                 .action == Action::Invalid);

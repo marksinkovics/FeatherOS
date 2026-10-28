@@ -9,7 +9,7 @@
 namespace
 {
 
-FeatherOS::Sync::SpinLock allocator_lock;
+constinit FeatherOS::Sync::SpinLock allocator_lock;
 volatile uint8_t* allocation_bitmap = nullptr;
 uint64_t frame_count = 0;
 uint64_t free_frame_count = 0;

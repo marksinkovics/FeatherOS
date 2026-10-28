@@ -25,7 +25,7 @@ void UnlockWord(int* state);
 
 struct Lock
 {
-    int state;
+    int state = 0;
 
     void Acquire()
     {

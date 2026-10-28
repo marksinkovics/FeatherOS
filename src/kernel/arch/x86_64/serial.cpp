@@ -11,7 +11,7 @@ namespace Serial
 namespace
 {
 
-Sync::SpinLock write_lock;
+constinit Sync::SpinLock write_lock;
 
 const uint16_t Port = 0x3F8; // Legacy COM1 base I/O port.
 

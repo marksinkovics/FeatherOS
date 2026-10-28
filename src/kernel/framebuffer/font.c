@@ -100,19 +100,11 @@ uint8_t font16_8[] = {
 
 int8_t indexForCharacter(char character, uint8_t* index)
 {
-    static const char* character_map =
-        "!\"#$%&'()*+,-./"
-        "0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_'abcdefghijklmnopqrstuvwxyz{|}~";
-    static const uint8_t character_map_size = 96;
-    int status = -1;
-    for (uint8_t i = 0; i < character_map_size; ++i)
+    // One glyph per printable ASCII character, '!' to '~' in order.
+    if (character < '!' || character > '~')
     {
-        if (character_map[i] == character)
-        {
-            status = 0;
-            *index = i;
-        }
+        return -1;
     }
-
-    return (int8_t)status;
+    *index = (uint8_t)(character - '!');
+    return 0;
 }

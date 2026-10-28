@@ -16,7 +16,7 @@ using FeatherOS::LibC::HeapAllocator;
 HeapAllocator allocator;
 bool initialized = false;
 // One lock over the whole heap: threads allocate one at a time.
-FeatherOS::LibC::Lock heap_lock;
+constinit FeatherOS::LibC::Lock heap_lock;
 
 // Grows the program break, first padding it to the allocator's alignment.
 void* GrowHeap(size_t bytes, void*)

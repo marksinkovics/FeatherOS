@@ -34,7 +34,7 @@ On macOS:
 brew install xorriso qemu mtools
 ```
 
-Install Ninja as well; kernel and unit-test CMake builds use the Ninja generator. GNU Make is still used to build Limine.
+Install Ninja and CMake 3.20 or newer as well; kernel and unit-test CMake builds use the Ninja generator. GNU Make is still used to build Limine. Every target, the kernel, libc, the programs and the host tests, is C++ built as `gnu++23`.
 
 - sudo apt-get install -y xorriso
 - sudo apt-get install -y qemu-system-x86-64
@@ -61,6 +61,8 @@ The integration tests use Python's built-in `unittest` framework and keep QEMU a
 ## Unit Tests
 
 Run `./build.sh unit-test` for native host tests of USTAR, FAT16 reads and writes, VFS, ELF loading, terminal rendering, syscall dispatch, program-argument parsing, calendar conversion, file-syscall error codes and `Stat`, Spawn environment validation, `init.conf` `env` lines, `Seek` origins, and the C library's integer parsing, sort, environment table, allocator, `printf` and `scanf` engines, `strftime`, and `posix_spawn` requests. CMake fetches the pinned Catch2 `v3.7.1` release on the first run, then CTest runs the cases from `build/unit-tests-ninja`. These tests use an in-memory block device; QEMU remains responsible for exercising real PCI/MMIO and boot integration.
+
+The tests and Catch2 are built with AddressSanitizer and UndefinedBehaviorSanitizer (`-fsanitize=address,undefined -fno-sanitize-recover=all`), so an out-of-bounds access, use after free or undefined behaviour fails the test that hits it. `SANITIZE=OFF ./build.sh unit-test` builds them without. On macOS the sanitized build uses Homebrew LLVM (`brew install llvm`, which `tools/quality.sh` also needs): Apple clang 17's AddressSanitizer runtime deadlocks before `main` on macOS 26. Leak checking is not available on macOS arm64.
 
 ## Initramfs
 

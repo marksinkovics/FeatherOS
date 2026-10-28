@@ -34,7 +34,6 @@ add_library(featheros_user_support STATIC
 )
 target_compile_options(featheros_user_support PRIVATE ${FEATHEROS_USER_FLAGS})
 target_link_libraries(featheros_user_support PRIVATE featheros_c)
-set_target_properties(featheros_user_support PROPERTIES CXX_STANDARD 17)
 
 function(featheros_add_program entry)
     string(REPLACE ":" ";" parts ${entry})
@@ -51,7 +50,6 @@ function(featheros_add_program entry)
         OUTPUT_NAME ${name}-${ARCH}
         SUFFIX .elf
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/programs
-        CXX_STANDARD 17
         LINK_DEPENDS ${USER_LINKER_SCRIPT}
     )
 endfunction()

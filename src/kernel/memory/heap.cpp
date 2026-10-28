@@ -11,7 +11,7 @@
 namespace
 {
 
-FeatherOS::Sync::SpinLock heap_lock;
+constinit FeatherOS::Sync::SpinLock heap_lock;
 
 constexpr uintptr_t HeapBase = 0xFFFFFD0000000000;
 constexpr size_t HeapAlignment = 16;

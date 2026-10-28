@@ -474,9 +474,17 @@ Scheduled right after M14, whose xHCI stack it uses. The goal is to plug in a US
 
 **Complete when:** on both targets, a QEMU USB drive with each filesystem is detected, mounted under `/media`, written and cleanly ejected, and the host repair tool finds no errors.
 
-### 20. C++23 And Sanitizers
+### 20. C++23 And Sanitizers (Complete)
+
+**Summary:** The kernel, libc, programs and host tests all build as `gnu++23`. The host tests run under AddressSanitizer and UndefinedBehaviorSanitizer, which found one font bug. Every syscall handler table uses designated initializers, and the global locks and wait queues are `constinit`. Along the way, the AArch64 shell smoke test's intermittent failure turned out not to be a guest hang. The scripted session had grown to about 90 s on AArch64, which was its whole time limit. The limit is now 180 s, and a failure that stopped at the limit says so.
 
 Scheduled right after M11, before the next feature milestone, so later work starts on a stricter base. Each part lands on its own, with the full matrix on both targets.
+
+**Part 1 (complete):** The kernel, libc, programs and host tests all build as `gnu++23` (CMake 3.20 or newer). Besides the six warnings from the trial build, four more `++` on a `volatile` sat in `kernel_test.cpp` code that only builds with a test toggle on. Each became `x = x + 1`. The standard brought no new clang-tidy findings.
+
+**Part 2 (complete):** `./build.sh unit-test` builds the Catch2 tests, and Catch2 itself, with `-fsanitize=address,undefined -fno-sanitize-recover=all`, and `SANITIZE=OFF` turns that off. On macOS it uses Homebrew LLVM, because Apple clang 17's AddressSanitizer runtime deadlocks before `main` on macOS 26. The sanitizers found one bug: `indexForCharacter` scanned 96 bytes of a 95-byte map. It returned a glyph past the end of the font for a NUL cell, and drew the apostrophe with the backtick's glyph. It now computes the index from the character.
+
+**Part 3 (complete):** `ProcessSyscallHandlers`, the serial tables in both `arch/*/exceptions.cpp` and the unit tests' tables name each slot with a designated initializer. Every `Syscall::Handlers` member defaults to `nullptr`, so a table lists only the syscalls it serves, and a new syscall no longer touches the architecture files. The kernel's 22 spinlocks, its file-system mutex and its 5 wait queues defined at namespace scope are `constinit`, and so are libc's three locks (`LibC::Lock` gained a `= 0` default so clang accepts it).
 
 - **Part 1: one language standard.** The kernel builds as `gnu++11`, libc and the programs as `gnu++17`, and the host tests with the compiler's default. Move all of them to `gnu++23`, which GCC 14 and Apple clang 17 both support. A trial build as C++23 found no errors and six warnings, all `++` on a `volatile` (deprecated since C++20), in `arch/aarch64/keyboard.cpp`, `scheduler.cpp`, `time/timer.cpp`, `libctest.cpp` and `test_program.cpp`. C++23 rather than C++20, because C++23 allows `|=` and `&=` on `volatile` again, which the device-register code relies on. Also clear whatever new clang-tidy findings the standard brings.
 - **Part 2: sanitizers for the host tests.** Build and run the Catch2 tests with AddressSanitizer and UndefinedBehaviorSanitizer (`-fsanitize=address,undefined`), as a `build.sh` option or the default for `unit-test`, and fix what they find. Leak checking is not available on macOS arm64, so it covers out-of-bounds access, use after free and undefined behaviour.

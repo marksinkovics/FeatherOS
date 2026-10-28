@@ -15,7 +15,7 @@ constexpr uint64_t DeviceWindowBase = 0xFFFFF00000000000;
 constexpr uint64_t DeviceWindowSize = 1ULL << 40;
 constexpr uint32_t MaximumDevicePages = 128;
 
-Sync::SpinLock device_lock;
+constinit Sync::SpinLock device_lock;
 uint64_t mapped_pages[MaximumDevicePages];
 uint32_t mapped_page_count = 0;
 

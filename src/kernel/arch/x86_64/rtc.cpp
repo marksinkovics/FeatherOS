@@ -28,7 +28,7 @@ constexpr uint32_t MaximumReadAttempts = 8;
 constexpr uint32_t MaximumUpdateWait = 1000000;
 
 // Each CMOS access is an index write followed by a data read, so CPUs must not interleave them.
-Sync::SpinLock cmos_lock;
+constinit Sync::SpinLock cmos_lock;
 
 struct RawTime
 {

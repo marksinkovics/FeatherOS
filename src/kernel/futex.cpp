@@ -20,9 +20,9 @@ struct Waiter
     bool woken;
 };
 
-Sync::SpinLock futex_lock;
+constinit Sync::SpinLock futex_lock;
 // Every waiter blocks on this queue, but wakes are aimed at single tasks.
-Scheduler::WaitQueue futex_queue;
+constinit Scheduler::WaitQueue futex_queue;
 Waiter* first_waiter = nullptr;
 Waiter* last_waiter = nullptr;
 

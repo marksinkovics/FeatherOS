@@ -214,7 +214,7 @@ volatile uint64_t gic_interrupt_count = 0;
 
 void OnGicInterrupt()
 {
-    ++gic_interrupt_count;
+    gic_interrupt_count = gic_interrupt_count + 1;
 }
 #endif
 
@@ -227,7 +227,7 @@ volatile uint64_t pit_interrupt_count = 0;
 
 void OnPitInterrupt()
 {
-    ++pit_interrupt_count;
+    pit_interrupt_count = pit_interrupt_count + 1;
 }
 
 } // namespace
@@ -278,9 +278,9 @@ namespace
 
 uint32_t scheduler_sequence = 0;
 volatile uint64_t preemption_progress[2] = {};
-Sync::SpinLock blocking_test_lock;
-Scheduler::WaitQueue blocking_test_queue;
-Scheduler::WaitQueue timeout_test_queue;
+constinit Sync::SpinLock blocking_test_lock;
+constinit Scheduler::WaitQueue blocking_test_queue;
+constinit Scheduler::WaitQueue timeout_test_queue;
 bool blocking_test_signaled = false;
 
 uint64_t FirstCooperativeTask(void*)
@@ -315,7 +315,7 @@ uint64_t FirstPreemptedTask(void*)
 {
     while (preemption_progress[1] == 0)
     {
-        ++preemption_progress[0];
+        preemption_progress[0] = preemption_progress[0] + 1;
     }
     return 53;
 }
@@ -324,7 +324,7 @@ uint64_t SecondPreemptedTask(void*)
 {
     do
     {
-        ++preemption_progress[1];
+        preemption_progress[1] = preemption_progress[1] + 1;
     } while (preemption_progress[0] == 0);
     return 67;
 }
@@ -856,7 +856,7 @@ constexpr uint32_t SmpTestTasks = 3;
 constexpr uint64_t SmpCounterIterations = 20000;
 constexpr uint64_t SmpStartTimeoutTicks = 200;
 
-Sync::SpinLock smp_counter_lock;
+constinit Sync::SpinLock smp_counter_lock;
 uint64_t smp_counter = 0;
 uint32_t smp_started_tasks = 0;
 uint32_t smp_concurrent_tasks = 0;
