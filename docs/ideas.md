@@ -54,17 +54,12 @@ Moved out of M11 to keep it focused; each can come back as a milestone of its ow
 - **PE (Windows `.exe`) and Mach-O:** load our own programs built in these formats. Clang can emit both with `-nostdlib`, for both architectures.
   - The useful work is the relocation formats: PE base relocations, and Mach-O rebase opcodes or chained fixups.
   - Running real Windows or macOS programs is not a goal. Both systems hide their kernel behind dynamic system libraries (`kernel32.dll`/`ntdll.dll`, `libSystem`), and their syscall numbers change between releases. Running those programs means re-implementing those libraries, which is Wine-sized work.
-- **Mac-built programs (Mach-O):** write a console program on the Mac, build it with Apple's clang, and run it on FeatherOS. Revisit once M11 Part 3 (the C library) is complete.
-  - **Build:** `clang -arch arm64|x86_64 -static -nostdlib -e _start`, linked against the FeatherOS libc built as Mach-O objects. macOS has no static `libSystem`, so the Mac's own C library cannot be used.
-  - **What the binary contains:** a static Mach-O executable with no dynamic loader. Its segments are `__PAGEZERO`, `__TEXT`, `__DATA` and `__LINKEDIT`, and an `LC_UNIXTHREAD` command gives the entry point. Without `-pie` it is fixed at `0x100000000`. With `-Wl,-pie` it slides, using classic local relocations.
-  - **Loader:**
-    - map the `LC_SEGMENT_64` segments with their protections, leaving `__PAGEZERO` unmapped
-    - take the entry point from the thread state
-    - apply the local relocations for ASLR
-    - ignore the code signature, UUID and build-version commands
-  - **ABI:** Darwin's calling convention differs from the standard one (arm64 variadic arguments go on the stack, `x18` is reserved, symbols have a leading `_`). This only matters inside the binary, so the libc must be compiled with the same Apple target. The kernel's syscall boundary is unaffected.
-  - **Limits:** no Apple frameworks and no C++ standard library (Apple's `libc++` is dynamic). Programs use only the FeatherOS libc and C++ runtime.
-  - **Tests:** LLVM's `ld64.lld` links Mach-O on Linux too, so the matrix test does not require a Mac.
+- **Mac-built programs (Mach-O):** run an ordinary console program built on the Mac (`clang hello.c`, no special flags) unchanged on FeatherOS, so the same file runs on both systems. Considered after M11 and deferred.
+  - **Why not a static build:** a Mach-O linked against the FeatherOS libc makes FeatherOS syscalls, and macOS refuses static executables anyway (every program goes through `dyld` and `libSystem`). That only makes the Mac a build machine, which cross-compiling to ELF already does.
+  - **Loader:** a small `dyld` stand-in. Map the `LC_SEGMENT_64` segments with their protections, leaving `__PAGEZERO` unmapped; take the entry point from `LC_MAIN`; apply chained fixups (rebases and binds) for ASLR and imports; ignore the code signature, UUID and build-version commands.
+  - **`libSystem.B.dylib` stand-in:** exports the symbols Mac programs import (`_printf`, `_malloc`, `_open`, `___stack_chk_guard`, ...), implemented over the FeatherOS libc. It covers a documented subset: stdio, files, memory, `posix_spawn`. Darwin export variants (`$INODE64`, `$UNIX2003`) and Darwin's calling convention (arm64 variadic arguments on the stack, `x18` reserved) must match.
+  - **Limits:** console C programs only. No Apple frameworks; C++ would also need a stand-in for `libc++.1.dylib`.
+  - **Tests:** `ld64.lld` linking against a stub `libSystem.tbd` builds test binaries on Linux too, so the matrix does not require a Mac.
 - **Linux compatibility:** the realistic way to run outside programs. Linux has a stable syscall interface, and statically linked Linux ELF programs exist. A Linux-syscall personality for a subset of calls could run static Linux tools unmodified. They are programs run on the OS, not code built into it.
 
 ## Platforms

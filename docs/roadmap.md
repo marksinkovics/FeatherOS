@@ -429,6 +429,13 @@ A compiler toolchain written from scratch that runs on FeatherOS. Porting GCC or
 
 **Complete when:** on both targets, FeatherOS compiles a C++ user program from source on its own disk and runs the result, and the matrix tests this.
 
+**Open decision: port TCC first.** Not decided yet. An alternative is to start with a port of TCC (Tiny C Compiler), an exception to the no-outside-code rule, and keep the stages above as a longer-term goal that TCC can be compared against.
+
+- **Why TCC:** it is small (about 1 MB), has x86-64 and AArch64 backends, writes ELF, and needs little beyond stdio, `malloc` and files. GCC and Clang need `mmap`, hundreds of MB per process and much of POSIX, and there is no small C++ compiler.
+- **Work:** build TCC against the FeatherOS libc and close the gaps it finds; make its output something the loader accepts (static-PIE, or teach the loader `ET_EXEC`); build its `libtcc1` runtime; and install the libc headers and objects on the disk.
+- **Gives:** a C compiler on FeatherOS on both targets, but no C++. The from-scratch C++ subset would still be needed for Stage 3.
+- **Complete when (for this part):** on both targets, TCC on FeatherOS compiles a C program from the disk and runs it, and the matrix tests this.
+
 ### 18. Scripting Languages
 
 Interpreters written from scratch, like the M17 toolchain.
@@ -447,10 +454,9 @@ Interpreters written from scratch, like the M17 toolchain.
 
 ### 19. Removable Drives And Foreign Filesystems
 
-Scheduled right after M14, whose xHCI stack it uses. The goal is to plug in a USB drive formatted as FAT, exFAT, ext4, NTFS or APFS, and read and write it.
+Scheduled right after M14, whose xHCI stack it uses. The goal is to plug in a USB drive formatted as FAT, exFAT, ext4, NTFS or APFS, and read and write it. The mount table, the filesystem driver interface and ext2/ext4 come from M22, so this milestone adds USB, hot-plug and the remaining filesystems.
 
 **Groundwork:**
-- **A mount table and a filesystem driver interface.** Today the VFS hard-codes `/` (FAT16) and `/system` (the initramfs).
 - **USB mass storage** on the M14 xHCI stack: the Bulk-Only Transport protocol carrying SCSI commands, with UAS later.
 - **Hot-plug:** detect the partitions on a new drive (the GPT/MBR code exists), mount each one at `/media/<label>`, and provide `mount`, `umount` and `eject`. Unmounting flushes everything first, so pulling the drive out afterwards is safe.
 
@@ -466,11 +472,12 @@ Scheduled right after M14, whose xHCI stack it uses. The goal is to plug in a US
 |---|---|---|---|
 | FAT32 | Microsoft FAT specification | Low: extends the FAT16 driver | `mkfs.fat`, `fsck.fat`, mtools |
 | exFAT | Microsoft's published exFAT specification | Low to medium: allocation bitmap, checksummed directory entry sets, UTF-16 names. The usual format of large USB drives | `mkfs.exfat`, `fsck.exfat` |
-| ext2, then ext4 | Linux kernel documentation | Medium to high. Order: ext2 read/write, ext4 read, then ext4 writes (extents, htree directories, CRC32C checksums, block groups, jbd2 journal transactions) | `mke2fs -d`, `e2fsck -fn` (e2fsprogs) |
 | NTFS | Reverse-engineered documentation (Linux ntfs3 and NTFS-3G docs) | High: MFT records and attributes, data runs, B+ tree directory indexes, `$Bitmap`, update sequence arrays. Mark the volume dirty while mounted. Compressed and encrypted files stay read-only | `mkntfs`, `ntfsfix -n` (NTFS-3G) |
 | APFS | Apple's "Apple File System Reference" | Highest: copy-on-write B-trees, object map, space manager, checkpoints and transaction IDs, Fletcher-64 checksums. FileVault-encrypted volumes also need AES-XTS and the keybag | `hdiutil create -fs APFS`, `fsck_apfs -n` on macOS |
 
-**Order:** FAT32 → exFAT → ext2/ext4 → NTFS → APFS. Each filesystem is read-only first, then gets writes.
+ext4 drives work through the M22 driver once USB mass storage is in place.
+
+**Order:** FAT32 → exFAT → NTFS → APFS. Each filesystem is read-only first, then gets writes.
 
 **Complete when:** on both targets, a QEMU USB drive with each filesystem is detected, mounted under `/media`, written and cleanly ejected, and the host repair tool finds no errors.
 
@@ -491,6 +498,49 @@ Scheduled right after M11, before the next feature milestone, so later work star
 - **Part 3: safer tables and globals.** Fill the syscall handler tables (`process.cpp`, both `arch/*/exceptions.cpp`, and the tests' tables) with C++20 designated initializers, so each entry names its slot and a new syscall no longer edits the architecture files. Mark the global spinlocks, mutexes and wait queues `constinit`, so the compiler checks that they need no constructor, which early boot code relies on.
 
 **Complete when:** every target builds as `gnu++23` without warnings, the host tests pass under both sanitizers, and the syscall tables use designated initializers.
+
+### 21. Embedded Swift For User Programs
+
+User programs written in Embedded Swift, built on the host with the swift.org toolchain (Swift 6 or newer; Xcode's toolchain does not reliably target ELF) and linked against the FeatherOS libc like the C++ programs. The kernel stays C++.
+
+- **Part 1: toolchain and build.** Find the toolchain in `build.sh` and CMake (Swift with Ninja), compile with `-enable-experimental-feature Embedded -target x86_64-unknown-none-elf` or `aarch64-none-none-elf`, and link the objects into the same static-PIE programs. A missing toolchain skips the Swift programs and says so, without failing the build.
+- **Part 2: C interop.** A module map over the libc headers (`stdio.h`, `stdlib.h`, `string.h`, `unistd.h`, `fcntl.h`, `pthread.h`, ...), and the symbols the Embedded Swift runtime expects: `posix_memalign`/`free` for ARC allocations, `memcpy`/`memset`/`memmove`, `arc4random_buf` for hashing, and `putchar` for `print`. Any that are missing go in `src/libc/` and `docs/posix.md`.
+- **Part 3: first programs.** A `hello` and a Swift version of a small existing tool (for example `wc` or `upper`), using structs, classes with ARC, generics and protocols. A program is registered like a C++ one, with a `.swift` source.
+- **Part 4: shared Swift code.** A small Swift support library over the libc (arguments, file reading, string output), so programs do not repeat C interop.
+- Document what Embedded Swift leaves out (reflection, `Codable`, Foundation, some existential types) in `docs/development.md`.
+
+**Complete when:** on both targets, Swift programs build from `src/user/`, run from the shell, and the matrix checks their output.
+
+### 22. Mount Table And ext2/ext4
+
+The filesystem half of M19, split out because it needs no USB: it is built and tested on the existing virtio-blk disk. It moves beyond the FAT16 limits (ASCII names of at most 63 characters, no permissions or links).
+
+**Feather Disk core:** the ext2/ext4 code lives in Feather Disk, a separate repo by the same author (dual MIT OR Apache-2.0) that also ships a Mac app mounting these filesystems through FSKit. FeatherOS pulls in only its `core/` (freestanding C++, no exceptions, RTTI or standard library) as a git subtree under `src/fs/`, and keeps its own VFS adapter and block-device glue. The core's driver interface covers probe, mount/unmount/sync, lookup, directory reads, attributes, read/write/truncate, create/remove/rename/mkdir/link/symlink and capabilities, with opaque 64-bit node IDs, plain error codes, and every allocation, lock, log and clock call going through its `host.h` hooks. Each part below lands in the core first, with unit tests over image files there, so it reaches the Mac app as soon as it lands.
+
+Feather Disk repo layout (proposed); only `core/` comes into FeatherOS:
+
+```
+core/          freestanding C++: no exceptions, RTTI or std library
+  include/fs/  block_device.h, host.h (alloc/lock/log/time hooks), filesystem.h
+  common/      block cache, bitmaps, CRC32C, UTF-8/16, little-endian helpers
+  ext/ ntfs/ … one directory per filesystem
+  probe.cpp    filesystem detection from superblocks
+partition/     MBR + GPT
+tests/         unit tests over image files; image scripts (mke2fs, e2fsck, …)
+tools/fscli/   mtools-style CLI (ls, cp in/out); built before the FSKit module
+mac/App/, mac/FSExtension/   SwiftUI app + thin Swift FSKit layer over core
+```
+
+- **Part 1: mount table.** A filesystem driver interface and a mount table in the VFS, with an adapter from the Feather Disk core's interface and its `host.h` hooks to the kernel's heap, locks, `KLogger` and clock, replacing the hard-coded `/` (FAT16) and `/system` (initramfs). FAT16, the initramfs, `/dev`, `/tmp` and `/proc` become drivers behind it. Add `mount` and `umount`, and `/proc/mounts`. Unmounting flushes everything first.
+- **Part 2: ext2 read.** Superblock, block groups, inodes, direct and indirect blocks, directories, symlinks. The test disk gets a second partition made with `mke2fs -d`.
+- **Part 3: ext2 write.** Block and inode bitmaps, create, write, truncate, delete, rename, `mkdir`/`rmdir`, symlinks and hard links. Permissions and owners are stored and shown by `ls`, though not yet enforced (FeatherOS has no users). After the OS writes, the host checks the image with `e2fsck -fn`, extending the `STORAGE_TEST` pattern.
+- **Part 3b: ext2 as root.** The test disk becomes a single ext2 partition mounted at `/`, built with `mke2fs -d` from Homebrew `e2fsprogs` (keg-only, so `build.sh` finds it), and `STORAGE_TEST` checks persistence with `e2fsck` instead of mtools. FAT16 moves to a second partition so its tests keep running; its driver stays for USB drives (M19) and a future EFI system partition.
+- **Part 4: ext4 read.** Extents, htree directories, CRC32C metadata checksums, 64-bit block numbers, flexible block groups. A volume whose journal needs recovery mounts read-only.
+- **Part 5: ext4 write.** Extent allocation and splitting, checksum updates, and jbd2 journal transactions, so a crash leaves a volume the host can recover.
+- **Part 5b: ext4 as root.** Switch the root partition to ext4.
+- **Safety:** each driver mounts read-only until its write path passes the matrix, as in M19.
+
+**Complete when:** on both targets, the root filesystem is ext4 from the Feather Disk core, ext2 and ext4 partitions on the virtio-blk disk are mounted, written and unmounted, the data survives a reboot, and `e2fsck -fn` finds no errors.
 
 ## Architecture Boundaries
 
