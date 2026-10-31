@@ -229,6 +229,80 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return, handlers.rename(context, arguments[0], arguments[1])};
     }
+    if (request.number == static_cast<uint64_t>(Number::Socket) && handlers.socket != nullptr)
+    {
+        return {Action::Return, handlers.socket(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Bind) && handlers.bind != nullptr)
+    {
+        return {Action::Return, handlers.bind(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::SendTo) && handlers.send_to != nullptr)
+    {
+        return {Action::Return,
+                handlers.send_to(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ReceiveFrom) &&
+        handlers.receive_from != nullptr)
+    {
+        return {Action::Return,
+                handlers.receive_from(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::SetSocketOption) &&
+        handlers.set_socket_option != nullptr)
+    {
+        return {Action::Return,
+                handlers.set_socket_option(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::NetworkSettings) &&
+        handlers.network_settings != nullptr)
+    {
+        return {Action::Return,
+                handlers.network_settings(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Connect) && handlers.connect != nullptr)
+    {
+        return {Action::Return, handlers.connect(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Listen) && handlers.listen != nullptr)
+    {
+        return {Action::Return, handlers.listen(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Accept) && handlers.accept != nullptr)
+    {
+        return {Action::Return, handlers.accept(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ShutdownSocket) &&
+        handlers.shutdown_socket != nullptr)
+    {
+        return {Action::Return, handlers.shutdown_socket(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::SocketName) &&
+        handlers.socket_name != nullptr)
+    {
+        return {Action::Return,
+                handlers.socket_name(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Poll) && handlers.poll != nullptr)
+    {
+        return {Action::Return, handlers.poll(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::SetClock) && handlers.set_clock != nullptr)
+    {
+        return {Action::Return, handlers.set_clock(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::FileStatusFlags) &&
+        handlers.file_status_flags != nullptr)
+    {
+        return {Action::Return,
+                handlers.file_status_flags(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::GetSocketOption) &&
+        handlers.get_socket_option != nullptr)
+    {
+        return {Action::Return,
+                handlers.get_socket_option(context, arguments[0], arguments[1], arguments[2])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

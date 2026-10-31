@@ -118,8 +118,7 @@ LineEditor::Status LineEditor::Press(const KeyPress& press)
     else if (control == 'l')
     {
         Append("\x1b[H\x1b[2J");
-        m_cursor_row = 0;
-        Refresh();
+        Redraw();
     }
     return Status::Editing;
 }
@@ -170,6 +169,12 @@ void LineEditor::AppendControl(size_t count, char command)
 bool LineEditor::AtRowStart(size_t position) const
 {
     return (m_prompt_length + position) % m_columns == 0;
+}
+
+void LineEditor::Redraw()
+{
+    m_cursor_row = 0;
+    Refresh();
 }
 
 void LineEditor::Refresh()

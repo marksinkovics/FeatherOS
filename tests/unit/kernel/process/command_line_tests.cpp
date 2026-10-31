@@ -133,6 +133,29 @@ TEST_CASE("only whole decimal numbers parse")
     }
 }
 
+TEST_CASE("seconds parse with an optional fraction")
+{
+    unsigned long long nanoseconds = 0;
+    REQUIRE(FeatherOS::User::ParseSeconds("2", &nanoseconds));
+    REQUIRE(nanoseconds == 2000000000);
+    REQUIRE(FeatherOS::User::ParseSeconds("0.5", &nanoseconds));
+    REQUIRE(nanoseconds == 500000000);
+    REQUIRE(FeatherOS::User::ParseSeconds(".25", &nanoseconds));
+    REQUIRE(nanoseconds == 250000000);
+    REQUIRE(FeatherOS::User::ParseSeconds("1.", &nanoseconds));
+    REQUIRE(nanoseconds == 1000000000);
+    REQUIRE(FeatherOS::User::ParseSeconds("3.0000000019", &nanoseconds));
+    REQUIRE(nanoseconds == 3000000001);
+    REQUIRE(FeatherOS::User::ParseSeconds("18446744073", &nanoseconds));
+    REQUIRE(nanoseconds == 18446744073000000000ULL);
+    for (const char* text : {"", ".", "-1", "+1", " 1", "1 ", "1.2.3", "1e3", "0x10", "1.5s",
+                             "18446744074", "18446744073.8"})
+    {
+        INFO(text);
+        REQUIRE_FALSE(FeatherOS::User::ParseSeconds(text, &nanoseconds));
+    }
+}
+
 TEST_CASE("redirections leave the words and keep their order")
 {
     char line[] = "sort < in.txt >out.txt 2>&1 extra \">\" 2> errors";

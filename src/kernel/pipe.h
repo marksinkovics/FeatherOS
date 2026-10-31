@@ -23,11 +23,17 @@ Pipe* Create();
 void CloseEnd(Pipe* pipe, bool write_end);
 // Waits until there is data, then returns what is there, up to length. Returns 0 once the
 // buffer is empty and no writer is left, and SyscallErrorInterrupted when interrupted says so.
-uint64_t Read(Pipe* pipe, void* buffer, uint64_t length, InterruptCheck interrupted);
+// Non-blocking, it fails with SyscallErrorWouldBlock instead of waiting.
+uint64_t Read(Pipe* pipe, void* buffer, uint64_t length, InterruptCheck interrupted,
+              bool nonblocking = false);
 // Waits until all of buffer fits, writing at most AtomicSize bytes in one piece. Fails with
-// SyscallErrorBrokenPipe when no reader is left.
-uint64_t Write(Pipe* pipe, const void* buffer, uint64_t length, InterruptCheck interrupted);
+// SyscallErrorBrokenPipe when no reader is left. Non-blocking, it writes the pieces that fit and
+// fails with SyscallErrorWouldBlock when not even the first does.
+uint64_t Write(Pipe* pipe, const void* buffer, uint64_t length, InterruptCheck interrupted,
+               bool nonblocking = false);
 uint64_t Buffered(Pipe* pipe);
+// User::Poll* events for one end: data or end of file to read, space to write, or no reader.
+int16_t PollEvents(Pipe* pipe, bool write_end);
 
 } // namespace FeatherOS::Pipes
 

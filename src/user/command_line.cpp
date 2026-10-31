@@ -34,6 +34,37 @@ bool ParseUnsigned(const char* text, unsigned long long* value)
     return true;
 }
 
+bool ParseSeconds(const char* text, unsigned long long* nanoseconds)
+{
+    constexpr unsigned long long NanosecondsPerSecond = 1000000000;
+    unsigned long long seconds = 0;
+    bool digits = false;
+    for (; *text >= '0' && *text <= '9'; ++text, digits = true)
+    {
+        const auto digit = static_cast<unsigned long long>(*text - '0');
+        if (seconds > (~0ULL / NanosecondsPerSecond - digit) / 10)
+        {
+            return false;
+        }
+        seconds = seconds * 10 + digit;
+    }
+    unsigned long long fraction = 0;
+    if (*text == '.')
+    {
+        unsigned long long place = NanosecondsPerSecond / 10;
+        for (++text; *text >= '0' && *text <= '9'; ++text, place /= 10, digits = true)
+        {
+            fraction += static_cast<unsigned long long>(*text - '0') * place;
+        }
+    }
+    if (!digits || *text != '\0' || fraction > ~0ULL - seconds * NanosecondsPerSecond)
+    {
+        return false;
+    }
+    *nanoseconds = seconds * NanosecondsPerSecond + fraction;
+    return true;
+}
+
 SplitResult SplitCommandLine(char* line, char** words, size_t capacity, size_t* count, bool* quoted)
 {
     *count = 0;

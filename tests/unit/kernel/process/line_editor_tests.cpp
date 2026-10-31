@@ -137,6 +137,23 @@ TEST_CASE("typing at the end of a line echoes only what changed")
     REQUIRE(TakeOutput(editor) == "> ");
 }
 
+TEST_CASE("a redraw starts from the cursor's row, even when the line wraps")
+{
+    LineEditor editor;
+    editor.Begin("> ", 80, nullptr);
+    Type(editor, "ls");
+    editor.Press(Special(Key::Left));
+    TakeOutput(editor);
+    editor.Redraw();
+    REQUIRE(TakeOutput(editor) == "\r> ls\x1b[J\x1b[4G");
+
+    editor.Begin("> ", 10, nullptr);
+    Type(editor, "abcdefghijkl");
+    TakeOutput(editor);
+    editor.Redraw();
+    REQUIRE(TakeOutput(editor) == "\r> abcdefghijkl\x1b[J\x1b[5G");
+}
+
 TEST_CASE("history recalls earlier lines and keeps the line being typed")
 {
     LineHistory history;

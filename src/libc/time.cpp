@@ -11,6 +11,7 @@ namespace
 {
 
 constexpr int64_t SecondsPerDay = 86400;
+constexpr uint64_t NanosecondsPerSecond = 1000000000;
 
 struct tm shared_time;
 char shared_text[32];
@@ -19,12 +20,13 @@ char shared_text[32];
 
 time_t time(time_t* result)
 {
-    const uint64_t seconds = FeatherOS::User::ReadClock();
-    if (FeatherOS::User::IsSyscallError(seconds))
+    const uint64_t nanoseconds = FeatherOS::User::ReadClock();
+    if (FeatherOS::User::IsSyscallError(nanoseconds))
     {
         errno = EIO;
         return -1;
     }
+    const uint64_t seconds = nanoseconds / NanosecondsPerSecond;
     if (result != nullptr)
     {
         *result = static_cast<time_t>(seconds);
@@ -125,12 +127,14 @@ int clock_gettime(clockid_t clock, struct timespec* result)
 {
     if (clock == CLOCK_REALTIME)
     {
-        const time_t seconds = time(nullptr);
-        if (seconds < 0)
+        const uint64_t nanoseconds = FeatherOS::User::ReadClock();
+        if (FeatherOS::User::IsSyscallError(nanoseconds))
         {
+            errno = EIO;
             return -1;
         }
-        *result = {seconds, 0};
+        *result = {static_cast<time_t>(nanoseconds / NanosecondsPerSecond),
+                   static_cast<long>(nanoseconds % NanosecondsPerSecond)};
         return 0;
     }
     if (clock == CLOCK_MONOTONIC)
@@ -147,6 +151,25 @@ int clock_gettime(clockid_t clock, struct timespec* result)
     }
     errno = EINVAL;
     return -1;
+}
+
+int clock_settime(clockid_t clock, const struct timespec* time)
+{
+    if (clock != CLOCK_REALTIME)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    if (time->tv_sec < 0 || time->tv_nsec < 0 ||
+        time->tv_nsec >= static_cast<long>(NanosecondsPerSecond) ||
+        static_cast<uint64_t>(time->tv_sec) > UINT64_MAX / 2 / NanosecondsPerSecond)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    const uint64_t nanoseconds = static_cast<uint64_t>(time->tv_sec) * NanosecondsPerSecond +
+                                 static_cast<uint64_t>(time->tv_nsec);
+    return FeatherOS::LibC::Check<int>(FeatherOS::User::SetClock(nanoseconds));
 }
 
 int nanosleep(const struct timespec* duration, struct timespec* remaining)

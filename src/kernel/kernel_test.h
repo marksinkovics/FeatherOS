@@ -11,6 +11,9 @@ void RunSmpTests();
 #if defined(FEATHEROS_STORAGE_TEST)
 void RunStorageTests();
 #endif
+#if defined(FEATHEROS_NETWORK_TEST)
+void RunNetworkTests();
+#endif
 
 } // namespace FeatherOS::KernelTest
 

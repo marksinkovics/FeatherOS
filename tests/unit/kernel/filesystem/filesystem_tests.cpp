@@ -4,6 +4,7 @@
 #include "kernel/filesystem/fat16.h"
 #include "kernel/filesystem/fat_names.h"
 #include "kernel/filesystem/initramfs.h"
+#include "kernel/filesystem/tmpfs.h"
 #include "kernel/filesystem/vfs.h"
 #include "kernel/storage/block_device.h"
 
@@ -12,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -105,10 +107,12 @@ void WriteOctal(char* field, size_t field_size, uint64_t value)
     }
 }
 
-std::vector<uint8_t> MakeTarArchive(const std::string& path, const std::string& contents)
+void AppendTarFile(std::vector<uint8_t>* archive, const std::string& path,
+                   const std::string& contents)
 {
-    std::vector<uint8_t> archive(3 * 512, 0);
-    auto* header = reinterpret_cast<char*>(archive.data());
+    const size_t offset = archive->size();
+    archive->resize(offset + 512 + (contents.size() + 511) / 512 * 512, 0);
+    auto* header = reinterpret_cast<char*>(archive->data() + offset);
     std::memcpy(header, path.c_str(), path.size());
     WriteOctal(header + 100, 8, 0644);
     WriteOctal(header + 108, 8, 0);
@@ -127,8 +131,23 @@ std::vector<uint8_t> MakeTarArchive(const std::string& path, const std::string& 
     std::snprintf(header + 148, 8, "%06llo", static_cast<unsigned long long>(checksum));
     header[154] = '\0';
     header[155] = ' ';
-    std::memcpy(archive.data() + 512, contents.data(), contents.size());
+    std::memcpy(archive->data() + offset + 512, contents.data(), contents.size());
+}
+
+std::vector<uint8_t> MakeTarArchive(const std::vector<std::pair<std::string, std::string>>& files)
+{
+    std::vector<uint8_t> archive;
+    for (const auto& [path, contents] : files)
+    {
+        AppendTarFile(&archive, path, contents);
+    }
+    archive.resize(archive.size() + 2 * 512, 0);
     return archive;
+}
+
+std::vector<uint8_t> MakeTarArchive(const std::string& path, const std::string& contents)
+{
+    return MakeTarArchive({{path, contents}});
 }
 
 } // namespace
@@ -166,7 +185,7 @@ bool WriteSector(uint64_t sector, const void* buffer)
 TEST_CASE("USTAR initramfs exposes file contents")
 {
     const std::string contents = "FeatherOS unit test archive";
-    const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", contents);
+    const std::vector<uint8_t> archive = MakeTarArchive("system/hello.txt", contents);
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
 
     FeatherOS::VFS::FileHandle file{};
@@ -179,22 +198,71 @@ TEST_CASE("USTAR initramfs exposes file contents")
     FeatherOS::VFS::Close(&file);
 }
 
+TEST_CASE("USTAR initramfs directories are separate mounts, with etc copied to /etc")
+{
+    const std::vector<uint8_t> archive = MakeTarArchive({{"system/ls", "program"},
+                                                         {"system/nested/deep", "hidden"},
+                                                         {"etc/hosts", "127.0.0.1 localhost\n"},
+                                                         {"etc/empty", ""},
+                                                         {"stray", "outside"}});
+    REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
+    FeatherOS::Tmpfs::Reset();
+    REQUIRE(FeatherOS::VFS::LoadEtc());
+
+    FeatherOS::VFS::FileInfo info{};
+    REQUIRE(FeatherOS::VFS::Stat("/etc/hosts", &info));
+    REQUIRE(info.size == 20);
+    REQUIRE(FeatherOS::VFS::Stat("/system/ls", &info));
+    REQUIRE(FeatherOS::VFS::Stat("ls", &info));
+    REQUIRE_FALSE(FeatherOS::VFS::Stat("/system/hosts", &info));
+    REQUIRE_FALSE(FeatherOS::VFS::Stat("/etc/ls", &info));
+    REQUIRE_FALSE(FeatherOS::VFS::Stat("stray", &info));
+    REQUIRE(FeatherOS::VFS::IsDirectory("/etc"));
+    REQUIRE(FeatherOS::VFS::IsReadOnly("/system/ls"));
+    REQUIRE_FALSE(FeatherOS::VFS::IsReadOnly("/etc/hosts"));
+
+    FeatherOS::FAT16::DirectoryEntry entry{};
+    REQUIRE(FeatherOS::VFS::ReadDirectory("/system", 0, &entry));
+    REQUIRE(std::string(entry.name) == "ls");
+    REQUIRE_FALSE(FeatherOS::VFS::ReadDirectory("/system", 1, &entry));
+    REQUIRE(FeatherOS::VFS::ReadDirectory("/etc", 0, &entry));
+    REQUIRE(std::string(entry.name) == "hosts");
+    REQUIRE(entry.size == 20);
+    REQUIRE(FeatherOS::VFS::ReadDirectory("/etc", 1, &entry));
+    REQUIRE(std::string(entry.name) == "empty");
+    REQUIRE(entry.size == 0);
+    REQUIRE_FALSE(FeatherOS::VFS::ReadDirectory("/etc", 2, &entry));
+
+    // A change lasts until the next boot copies the archive's file again.
+    FeatherOS::VFS::FileHandle file{};
+    uint64_t count = 0;
+    REQUIRE(FeatherOS::VFS::Open("/etc/hosts", &file));
+    REQUIRE(FeatherOS::VFS::Truncate(&file, 0));
+    REQUIRE(FeatherOS::VFS::Write(&file, "::1 me\n", 7, &count));
+    FeatherOS::VFS::Close(&file);
+    REQUIRE(FeatherOS::VFS::Stat("/etc/hosts", &info));
+    REQUIRE(info.size == 7);
+    REQUIRE(FeatherOS::VFS::LoadEtc());
+    REQUIRE(FeatherOS::VFS::Stat("/etc/hosts", &info));
+    REQUIRE(info.size == 20);
+}
+
 TEST_CASE("USTAR initramfs rejects a corrupt header checksum")
 {
-    std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "contents");
+    std::vector<uint8_t> archive = MakeTarArchive("system/hello.txt", "contents");
     archive[0] ^= 1;
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     FeatherOS::Initramfs::File file{};
-    REQUIRE_FALSE(FeatherOS::Initramfs::Open("hello.txt", &file));
+    REQUIRE_FALSE(FeatherOS::Initramfs::Open("system", "hello.txt", &file));
 }
 
 TEST_CASE("USTAR initramfs rejects a truncated file payload")
 {
-    std::vector<uint8_t> archive = MakeTarArchive("hello.txt", std::string(700, 'x'));
+    std::vector<uint8_t> archive = MakeTarArchive("system/hello.txt", std::string(700, 'x'));
     archive.resize(2 * 512);
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     FeatherOS::Initramfs::File file{};
-    REQUIRE_FALSE(FeatherOS::Initramfs::Open("hello.txt", &file));
+    REQUIRE_FALSE(FeatherOS::Initramfs::Open("system", "hello.txt", &file));
 }
 
 TEST_CASE("FAT16 VFS reads files across cluster boundaries")
@@ -488,13 +556,13 @@ TEST_CASE("file descriptors validate flags and access modes")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "archive");
+    const std::vector<uint8_t> archive = MakeTarArchive("system/hello.txt", "archive");
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     FeatherOS::Files::Table table{};
     FeatherOS::Files::OpenConsole(&table);
     REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", 0) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead | 64) ==
+    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead | 128) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
     REQUIRE(FeatherOS::Files::Open(&table, "/NEW.TXT", OpenRead | OpenCreate) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
@@ -601,17 +669,17 @@ TEST_CASE("directory listing skips deleted entries and names files as NAME.EXT")
     REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
 
     FeatherOS::User::DirectoryEntry entry{};
-    // Indices 0-3 of the root are the mount points.
+    // Indices 0-4 of the root are the mount points.
     REQUIRE(FeatherOS::Files::ReadDirectory("/", 0, &entry) == 0);
     REQUIRE(std::string(entry.name) == "system");
     REQUIRE(entry.directory);
-    REQUIRE(FeatherOS::Files::ReadDirectory("/", 4, &entry) == 0);
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 5, &entry) == 0);
     REQUIRE(std::string(entry.name) == "BLOCK.TXT");
     REQUIRE(entry.size == 8);
-    REQUIRE(FeatherOS::Files::ReadDirectory("/", 5, &entry) == 0);
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 6, &entry) == 0);
     REQUIRE(std::string(entry.name) == "README");
     REQUIRE(entry.size == 3);
-    REQUIRE(FeatherOS::Files::ReadDirectory("/", 6, &entry) ==
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 7, &entry) ==
             FeatherOS::User::SyscallErrorNotFound);
     REQUIRE(FeatherOS::Files::ReadDirectory("/missing", 0, &entry) ==
             FeatherOS::User::SyscallErrorNotFound);
@@ -753,10 +821,10 @@ std::vector<std::string> ListDirectory(const char* path)
 std::vector<std::string> ListDiskRoot()
 {
     std::vector<std::string> names = ListDirectory("/");
-    const std::vector<std::string> mounts = {"system/", "dev/", "proc/", "tmp/"};
+    const std::vector<std::string> mounts = {"system/", "etc/", "dev/", "proc/", "tmp/"};
     REQUIRE(names.size() >= mounts.size());
-    REQUIRE(std::vector<std::string>(names.begin(), names.begin() + 4) == mounts);
-    names.erase(names.begin(), names.begin() + 4);
+    REQUIRE(std::vector<std::string>(names.begin(), names.begin() + mounts.size()) == mounts);
+    names.erase(names.begin(), names.begin() + mounts.size());
     return names;
 }
 
@@ -936,7 +1004,7 @@ TEST_CASE("open-file sharing rules tell apart files with the same slot in differ
     REQUIRE(FeatherOS::Files::RemoveDirectory("/a") == FeatherOS::User::SyscallErrorNotEmpty);
     FeatherOS::Files::CloseAll(&table);
     FeatherOS::User::DirectoryEntry entry{};
-    REQUIRE(FeatherOS::Files::ReadDirectory("/", 5, &entry) == 0);
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 6, &entry) == 0);
     REQUIRE(std::string(entry.name) == "a");
     REQUIRE(entry.directory);
 }
@@ -1017,11 +1085,11 @@ TEST_CASE("the VFS root is the disk, with the initramfs and virtual filesystems 
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "archive");
+    const std::vector<uint8_t> archive = MakeTarArchive("system/hello.txt", "archive");
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     REQUIRE(FeatherOS::VFS::IsDirectory("/"));
     REQUIRE(ListDirectory("/") ==
-            std::vector<std::string>{"system/", "dev/", "proc/", "tmp/", "BLOCK.TXT"});
+            std::vector<std::string>{"system/", "etc/", "dev/", "proc/", "tmp/", "BLOCK.TXT"});
     REQUIRE(ListDirectory("/system") == std::vector<std::string>{"hello.txt"});
     REQUIRE(ReadWhole("/system/hello.txt") == "archive");
     FeatherOS::Files::Table table{};
@@ -1040,7 +1108,7 @@ TEST_CASE("file syscalls report why a change failed")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "archive");
+    const std::vector<uint8_t> archive = MakeTarArchive("system/hello.txt", "archive");
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     FeatherOS::Files::Table table{};
     FeatherOS::Files::OpenConsole(&table);
@@ -1072,7 +1140,7 @@ TEST_CASE("stat reports type, size, and whether a file is read-only")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    const std::vector<uint8_t> archive = MakeTarArchive("hello.txt", "archive");
+    const std::vector<uint8_t> archive = MakeTarArchive("system/hello.txt", "archive");
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     FeatherOS::User::FileStatus status{};
     REQUIRE(FeatherOS::Files::Stat("/BLOCK.TXT", &status) == 0);

@@ -136,6 +136,13 @@ bool TryReadByte(char* byte)
     return true;
 }
 
+bool HasInput()
+{
+    Poll();
+    Sync::SpinLockGuard guard(queue_lock);
+    return queue_size != 0;
+}
+
 void WaitForInput(uint64_t deadline_tick)
 {
     const uint64_t flags = queue_lock.LockIrqSave();
@@ -144,6 +151,12 @@ void WaitForInput(uint64_t deadline_tick)
         Scheduler::WaitOn(input_waiters, queue_lock, deadline_tick);
     }
     queue_lock.UnlockIrqRestore(flags);
+}
+
+void WakeWaiters()
+{
+    Sync::SpinLockGuard guard(queue_lock);
+    Scheduler::WakeAll(input_waiters);
 }
 
 } // namespace FeatherOS::Input

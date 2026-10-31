@@ -7,7 +7,9 @@ namespace FeatherOS::Tmpfs
 namespace
 {
 
-constexpr uint32_t RootNode = 0;
+// Each root's node is its index.
+constexpr uint32_t RootCount = 2;
+constexpr uint32_t MaximumNodes = RootCount + MaximumEntries;
 constexpr uint32_t NameCapacity = sizeof(FAT16::DirectoryEntry::name);
 constexpr uint64_t MinimumCapacity = 256;
 
@@ -26,25 +28,24 @@ Node nodes[MaximumNodes];
 // The sum of every file's capacity, which MaximumBytes limits.
 uint64_t used_bytes = 0;
 
-// Field by field: zeroing the whole node at once would need memset, which the kernel lacks.
-void ClearNode(Node& node)
+uint32_t RootNode(Root root)
 {
-    node.name[0] = '\0';
-    node.parent = RootNode;
-    node.used = false;
-    node.directory = false;
-    node.data = nullptr;
-    node.size = 0;
-    node.capacity = 0;
+    return static_cast<uint32_t>(root);
 }
 
-void EnsureRoot()
+bool IsRoot(uint32_t node)
 {
-    if (!nodes[RootNode].used)
+    return node < RootCount;
+}
+
+void EnsureRoot(Root root)
+{
+    Node& node = nodes[RootNode(root)];
+    if (!node.used)
     {
-        ClearNode(nodes[RootNode]);
-        nodes[RootNode].used = true;
-        nodes[RootNode].directory = true;
+        node = {};
+        node.used = true;
+        node.directory = true;
     }
 }
 
@@ -62,7 +63,7 @@ bool NameMatches(const Node& node, const char* name, uint32_t length)
 
 bool FindChild(uint32_t parent, const char* name, uint32_t length, uint32_t* child)
 {
-    for (uint32_t index = 1; index < MaximumNodes; ++index)
+    for (uint32_t index = RootCount; index < MaximumNodes; ++index)
     {
         if (nodes[index].used && nodes[index].parent == parent &&
             NameMatches(nodes[index], name, length))
@@ -74,10 +75,10 @@ bool FindChild(uint32_t parent, const char* name, uint32_t length, uint32_t* chi
     return false;
 }
 
-bool Lookup(const char* path, uint32_t* node)
+bool Lookup(Root root, const char* path, uint32_t* node)
 {
-    EnsureRoot();
-    uint32_t current = RootNode;
+    EnsureRoot(root);
+    uint32_t current = RootNode(root);
     while (*path != '\0')
     {
         uint32_t length = 0;
@@ -100,7 +101,7 @@ bool Lookup(const char* path, uint32_t* node)
 }
 
 // Finds the directory that will hold path's last component, and where that name starts.
-bool LookupParent(const char* path, uint32_t* parent, const char** name)
+bool LookupParent(Root root, const char* path, uint32_t* parent, const char** name)
 {
     uint32_t last_separator = 0;
     bool has_separator = false;
@@ -123,8 +124,8 @@ bool LookupParent(const char* path, uint32_t* parent, const char** name)
     }
     if (!has_separator)
     {
-        EnsureRoot();
-        *parent = RootNode;
+        EnsureRoot(root);
+        *parent = RootNode(root);
         return true;
     }
     char parent_path[NameCapacity];
@@ -137,25 +138,25 @@ bool LookupParent(const char* path, uint32_t* parent, const char** name)
         parent_path[index] = path[index];
     }
     parent_path[last_separator] = '\0';
-    return Lookup(parent_path, parent) && nodes[*parent].directory;
+    return Lookup(root, parent_path, parent) && nodes[*parent].directory;
 }
 
-bool AddNode(const char* path, bool directory, uint32_t* node)
+bool AddNode(Root root, const char* path, bool directory, uint32_t* node)
 {
     uint32_t parent;
     const char* name;
     uint32_t existing;
-    if (!LookupParent(path, &parent, &name) || Lookup(path, &existing))
+    if (!LookupParent(root, path, &parent, &name) || Lookup(root, path, &existing))
     {
         return false;
     }
-    for (uint32_t index = 1; index < MaximumNodes; ++index)
+    for (uint32_t index = RootCount; index < MaximumNodes; ++index)
     {
         if (nodes[index].used)
         {
             continue;
         }
-        ClearNode(nodes[index]);
+        nodes[index] = {};
         uint32_t length = 0;
         for (; name[length] != '\0'; ++length)
         {
@@ -226,10 +227,10 @@ bool IsFile(uint32_t node)
 
 } // namespace
 
-bool Open(const char* path, uint32_t* node)
+bool Open(Root root, const char* path, uint32_t* node)
 {
     uint32_t found;
-    if (path == nullptr || node == nullptr || !Lookup(path, &found) || nodes[found].directory)
+    if (path == nullptr || node == nullptr || !Lookup(root, path, &found) || nodes[found].directory)
     {
         return false;
     }
@@ -237,9 +238,9 @@ bool Open(const char* path, uint32_t* node)
     return true;
 }
 
-bool Create(const char* path, uint32_t* node)
+bool Create(Root root, const char* path, uint32_t* node)
 {
-    return path != nullptr && node != nullptr && AddNode(path, false, node);
+    return path != nullptr && node != nullptr && AddNode(root, path, false, node);
 }
 
 uint64_t Size(uint32_t node)
@@ -306,10 +307,10 @@ bool Truncate(uint32_t node, uint64_t size)
     return true;
 }
 
-bool Remove(const char* path)
+bool Remove(Root root, const char* path)
 {
     uint32_t node;
-    if (path == nullptr || !Open(path, &node))
+    if (path == nullptr || !Open(root, path, &node))
     {
         return false;
     }
@@ -318,21 +319,21 @@ bool Remove(const char* path)
     return true;
 }
 
-bool MakeDirectory(const char* path)
+bool MakeDirectory(Root root, const char* path)
 {
     uint32_t node;
-    return path != nullptr && AddNode(path, true, &node);
+    return path != nullptr && AddNode(root, path, true, &node);
 }
 
-bool RemoveDirectory(const char* path)
+bool RemoveDirectory(Root root, const char* path)
 {
     uint32_t node;
     uint32_t child;
-    if (path == nullptr || !Lookup(path, &node) || node == RootNode || !nodes[node].directory)
+    if (path == nullptr || !Lookup(root, path, &node) || IsRoot(node) || !nodes[node].directory)
     {
         return false;
     }
-    for (child = 1; child < MaximumNodes; ++child)
+    for (child = RootCount; child < MaximumNodes; ++child)
     {
         if (nodes[child].used && nodes[child].parent == node)
         {
@@ -343,18 +344,18 @@ bool RemoveDirectory(const char* path)
     return true;
 }
 
-bool Rename(const char* from, const char* to)
+bool Rename(Root root, const char* from, const char* to)
 {
     uint32_t node;
     uint32_t parent;
     const char* name;
     uint32_t existing;
-    if (from == nullptr || to == nullptr || !Lookup(from, &node) || node == RootNode ||
-        !LookupParent(to, &parent, &name) || Lookup(to, &existing))
+    if (from == nullptr || to == nullptr || !Lookup(root, from, &node) || IsRoot(node) ||
+        !LookupParent(root, to, &parent, &name) || Lookup(root, to, &existing))
     {
         return false;
     }
-    for (uint32_t ancestor = parent; ancestor != RootNode; ancestor = nodes[ancestor].parent)
+    for (uint32_t ancestor = parent; !IsRoot(ancestor); ancestor = nodes[ancestor].parent)
     {
         if (ancestor == node)
         {
@@ -371,22 +372,22 @@ bool Rename(const char* from, const char* to)
     return true;
 }
 
-bool IsDirectory(const char* path)
+bool IsDirectory(Root root, const char* path)
 {
     uint32_t node;
-    return path != nullptr && Lookup(path, &node) && nodes[node].directory;
+    return path != nullptr && Lookup(root, path, &node) && nodes[node].directory;
 }
 
-bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry)
+bool ReadDirectory(Root root, const char* path, uint32_t index, FAT16::DirectoryEntry* entry)
 {
     uint32_t directory;
-    if (path == nullptr || entry == nullptr || !Lookup(path, &directory) ||
+    if (path == nullptr || entry == nullptr || !Lookup(root, path, &directory) ||
         !nodes[directory].directory)
     {
         return false;
     }
     uint32_t seen = 0;
-    for (uint32_t node = 1; node < MaximumNodes; ++node)
+    for (uint32_t node = RootCount; node < MaximumNodes; ++node)
     {
         if (!nodes[node].used || nodes[node].parent != directory || seen++ != index)
         {
@@ -416,7 +417,7 @@ void Reset()
         {
             FreeData(node);
         }
-        ClearNode(node);
+        node = {};
     }
     used_bytes = 0;
 }

@@ -1,13 +1,18 @@
 set(CMAKE_CXX_FLAGS "")
 
 add_library(featheros_c STATIC
+    address_text.cpp
     ctype.cpp
     cxx_runtime.cpp
     dirent.cpp
+    dns_message.cpp
+    hosts_file.cpp
+    resolv_conf.cpp
     environment.cpp
     errno.cpp
     exit.cpp
     featheros.cpp
+    inet.cpp
     ioctl.cpp
     lock.cpp
     big_integer.cpp
@@ -25,8 +30,11 @@ add_library(featheros_c STATIC
     ../user/calendar.cpp
     termios.cpp
     malloc.cpp
+    netdb.cpp
+    poll.cpp
     pthread.cpp
     signal.cpp
+    socket.cpp
     math.cpp
     spawn.cpp
     stat.cpp

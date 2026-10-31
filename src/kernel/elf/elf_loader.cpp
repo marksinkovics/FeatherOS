@@ -237,23 +237,23 @@ bool Parse(const void* input, uint64_t size, uint16_t expected_machine, Image* i
         return false;
     }
 
-    // Assigned field by field: an aggregate initializer here compiles to a memset call.
-    Image parsed;
-    parsed.data = data;
-    parsed.size = size;
-    parsed.entry_point = ReadLittleEndian64(data + 24);
-    parsed.program_header_offset = program_header_offset;
-    parsed.program_header_count = program_header_count;
-    parsed.load_segment_count = 0;
-    parsed.machine = expected_machine;
-    parsed.position_independent = type == TypeSharedObject;
-    parsed.dynamic_offset = 0;
-    parsed.dynamic_size = 0;
-    parsed.has_tls = false;
-    parsed.tls_virtual_address = 0;
-    parsed.tls_file_size = 0;
-    parsed.tls_memory_size = 0;
-    parsed.tls_alignment = 1;
+    Image parsed = {
+        .data = data,
+        .size = size,
+        .entry_point = ReadLittleEndian64(data + 24),
+        .program_header_offset = program_header_offset,
+        .program_header_count = program_header_count,
+        .load_segment_count = 0,
+        .machine = expected_machine,
+        .position_independent = type == TypeSharedObject,
+        .dynamic_offset = 0,
+        .dynamic_size = 0,
+        .has_tls = false,
+        .tls_virtual_address = 0,
+        .tls_file_size = 0,
+        .tls_memory_size = 0,
+        .tls_alignment = 1,
+    };
     bool entry_is_executable = false;
     for (uint16_t index = 0; index < program_header_count; ++index)
     {

@@ -63,6 +63,44 @@ constexpr int ErrorNumber(uint64_t result)
         return ETIMEDOUT;
     case User::SyscallErrorCrossDevice:
         return EXDEV;
+    case User::SyscallErrorNotSocket:
+        return ENOTSOCK;
+    case User::SyscallErrorFamilyNotSupported:
+        return EAFNOSUPPORT;
+    case User::SyscallErrorProtocolNotSupported:
+        return EPROTONOSUPPORT;
+    case User::SyscallErrorMessageTooLong:
+        return EMSGSIZE;
+    case User::SyscallErrorAddressInUse:
+        return EADDRINUSE;
+    case User::SyscallErrorAddressNotAvailable:
+        return EADDRNOTAVAIL;
+    case User::SyscallErrorNetworkDown:
+        return ENETDOWN;
+    case User::SyscallErrorNetworkUnreachable:
+        return ENETUNREACH;
+    case User::SyscallErrorHostUnreachable:
+        return EHOSTUNREACH;
+    case User::SyscallErrorNoBuffers:
+        return ENOBUFS;
+    case User::SyscallErrorDestinationRequired:
+        return EDESTADDRREQ;
+    case User::SyscallErrorOptionNotSupported:
+        return ENOPROTOOPT;
+    case User::SyscallErrorConnectionRefused:
+        return ECONNREFUSED;
+    case User::SyscallErrorConnectionReset:
+        return ECONNRESET;
+    case User::SyscallErrorNotConnected:
+        return ENOTCONN;
+    case User::SyscallErrorAlreadyConnected:
+        return EISCONN;
+    case User::SyscallErrorOperationNotSupported:
+        return EOPNOTSUPP;
+    case User::SyscallErrorAlreadyInProgress:
+        return EALREADY;
+    case User::SyscallErrorInProgress:
+        return EINPROGRESS;
     default:
         return EIO;
     }

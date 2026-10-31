@@ -11,6 +11,10 @@
 #if defined(FEATHEROS_SCHEDULER_TEST) || defined(FEATHEROS_SMP_TEST)
 #include "kernel/scheduler.h"
 #endif
+#if defined(FEATHEROS_NETWORK_TEST)
+#include "kernel/network/interface.h"
+#include "kernel/network/neighbor_discovery.h"
+#endif
 #if defined(FEATHEROS_STORAGE_TEST)
 #include "kernel/filesystem/fat16.h"
 #include "kernel/filesystem/vfs.h"
@@ -21,7 +25,7 @@
 #endif
 #include "kernel/string/format.h"
 #if defined(FEATHEROS_TIMER_TEST) || defined(FEATHEROS_SCHEDULER_TEST) ||                          \
-    defined(FEATHEROS_SMP_TEST)
+    defined(FEATHEROS_SMP_TEST) || defined(FEATHEROS_NETWORK_TEST)
 #include "kernel/time/timer.h"
 #endif
 
@@ -1132,6 +1136,70 @@ void RunStorageTests()
                           boot_count))
     {
         Panic("Storage test message formatting failed");
+    }
+    Serial::Write(message);
+}
+#endif
+
+#if defined(FEATHEROS_NETWORK_TEST)
+void RunNetworkTests()
+{
+    if (!Network::IsUp())
+    {
+        Panic("Network test needs the virtio-net device");
+    }
+    // QEMU's user-mode gateway; this runs before init's DHCP client, so the request goes out from
+    // 0.0.0.0.
+    const Network::IpAddress gateway = Network::MakeIpAddress(Network::MakeIpv4(10, 0, 2, 2));
+    Network::MacAddress gateway_mac;
+    if (!Network::Resolve(gateway, &gateway_mac))
+    {
+        Panic("ARP got no answer from the gateway");
+    }
+    Network::MacAddress cached_mac;
+    const uint64_t before = Time::TickCount();
+    if (!Network::Resolve(gateway, &cached_mac) || !(cached_mac == gateway_mac) ||
+        Time::TickCount() - before > 1)
+    {
+        Panic("ARP did not cache the gateway");
+    }
+    char mac[Network::FormattedMacLength];
+    char address[Network::FormattedIpv4Length];
+    Network::FormatMac(gateway_mac, mac);
+    Network::FormatIpv4(Network::ToIpv4(gateway), address);
+    char message[128];
+    if (!String::FormatTo(message, sizeof(message), "KERN/NETWORK: ARP resolved gateway {} to {}\n",
+                          static_cast<const char*>(address), static_cast<const char*>(mac)))
+    {
+        Panic("Network test message formatting failed");
+    }
+    Serial::Write(message);
+
+    // QEMU's user-mode network advertises fec0::/64 and answers for fec0::2.
+    Network::Ipv6Configuration ipv6;
+    Network::ReadIpv6Configuration(&ipv6);
+    if (Network::IsUnspecified(ipv6.global) || Network::IsUnspecified(ipv6.router))
+    {
+        Panic("IPv6 autoconfiguration got no router advertisement");
+    }
+    Network::IpAddress host = ipv6.global;
+    for (size_t index = 8; index < sizeof(host.bytes); ++index)
+    {
+        host.bytes[index] = 0;
+    }
+    host.bytes[15] = 2;
+    Network::MacAddress host_mac;
+    if (!Network::Resolve(host, &host_mac))
+    {
+        Panic("Neighbor discovery got no answer from the host");
+    }
+    char ipv6_address[Network::FormattedIpv6Length];
+    Network::FormatMac(host_mac, mac);
+    Network::FormatIpv6(host, ipv6_address);
+    if (!String::FormatTo(message, sizeof(message), "KERN/NETWORK: NDP resolved {} to {}\n",
+                          static_cast<const char*>(ipv6_address), static_cast<const char*>(mac)))
+    {
+        Panic("Network test message formatting failed");
     }
     Serial::Write(message);
 }

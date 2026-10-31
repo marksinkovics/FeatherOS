@@ -20,7 +20,11 @@ void SetInterruptHandler(InterruptHandler handler);
 void SubmitBytes(const char* bytes, size_t length);
 void Poll();
 bool TryReadByte(char* byte);
+// Polls the serial port first, so its bytes count too.
+bool HasInput();
 void WaitForInput(uint64_t deadline_tick);
+// Wakes WaitForInput's callers early, which must then check what they wait for themselves.
+void WakeWaiters();
 
 } // namespace FeatherOS::Input
 

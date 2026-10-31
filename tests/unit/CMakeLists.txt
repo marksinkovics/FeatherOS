@@ -29,14 +29,34 @@ add_executable(featheros_unit_tests
     kernel/elf/elf_loader_tests.cpp
     kernel/framebuffer/framebuffer_tests.cpp
     kernel/input/input_tests.cpp
+    kernel/network/address_tests.cpp
+    kernel/network/arp_tests.cpp
+    kernel/network/checksum_tests.cpp
+    kernel/network/ethernet_tests.cpp
+    kernel/network/icmp_tests.cpp
+    kernel/network/icmpv6_tests.cpp
+    kernel/network/ipv4_tests.cpp
+    kernel/network/ipv6_tests.cpp
+    kernel/network/name_servers_tests.cpp
+    kernel/network/neighbor_cache_tests.cpp
+    kernel/network/socket_tests.cpp
+    kernel/network/tcp_connection_tests.cpp
+    kernel/network/tcp_socket_tests.cpp
+    kernel/network/tcp_tests.cpp
+    kernel/network/udp_tests.cpp
     kernel/process/futex_tests.cpp
+    support/network_stubs.cpp
     support/scheduler_stubs.cpp
     kernel/input/keyboard_tests.cpp
     kernel/klogger/klogger_tests.cpp
     kernel/memory/memory_map_tests.cpp
     kernel/process/calculator_tests.cpp
     kernel/process/command_line_tests.cpp
+    kernel/process/dhcp_lease_tests.cpp
+    kernel/process/dhcp_message_tests.cpp
+    kernel/process/http_message_tests.cpp
     kernel/process/line_editor_tests.cpp
+    kernel/process/ntp_message_tests.cpp
     kernel/process/text_tools_tests.cpp
     kernel/process/thread_local_storage_tests.cpp
     kernel/process/thread_stacks_tests.cpp
@@ -47,14 +67,19 @@ add_executable(featheros_unit_tests
     kernel/process/signals_tests.cpp
     kernel/syscall/syscall_tests.cpp
     kernel/time/calendar_tests.cpp
+    kernel/time/wall_clock_tests.cpp
     kernel/string/format_tests.cpp
+    libc/address_text_tests.cpp
+    libc/dns_message_tests.cpp
     libc/environment_table_tests.cpp
     libc/float_parse_tests.cpp
     libc/heap_allocator_tests.cpp
     libc/heap_sort_tests.cpp
+    libc/hosts_file_tests.cpp
     libc/integer_parse_tests.cpp
     libc/math_tests.cpp
     libc/printf_tests.cpp
+    libc/resolv_conf_tests.cpp
     libc/scanf_tests.cpp
     libc/spawn_request_tests.cpp
     libc/time_format_tests.cpp
@@ -73,7 +98,23 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/term.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/input.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/keyboard.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/address.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/arp.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/checksum.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/ethernet.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/icmp.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/icmpv6.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/ipv4.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/ipv6.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/name_servers.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/neighbor_cache.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/socket.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/tcp.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/tcp_connection.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/network/udp.cpp"
+    "${FEATHEROS_ROOT}/src/libc/address_text.cpp"
     "${FEATHEROS_ROOT}/src/libc/big_integer.cpp"
+    "${FEATHEROS_ROOT}/src/libc/dns_message.cpp"
     "${FEATHEROS_ROOT}/src/libc/environment_table.cpp"
     "${FEATHEROS_ROOT}/src/libc/float_bits.cpp"
     "${FEATHEROS_ROOT}/src/libc/float_format.cpp"
@@ -81,16 +122,22 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/libc/format.cpp"
     "${FEATHEROS_ROOT}/src/libc/heap_allocator.cpp"
     "${FEATHEROS_ROOT}/src/libc/heap_sort.cpp"
+    "${FEATHEROS_ROOT}/src/libc/hosts_file.cpp"
     "${FEATHEROS_ROOT}/src/libc/math_functions.cpp"
+    "${FEATHEROS_ROOT}/src/libc/resolv_conf.cpp"
     "${FEATHEROS_ROOT}/src/libc/scan.cpp"
     "${FEATHEROS_ROOT}/src/libc/spawn_request.cpp"
     "${FEATHEROS_ROOT}/src/libc/time_format.cpp"
     "${FEATHEROS_ROOT}/src/user/calculator.cpp"
     "${FEATHEROS_ROOT}/src/user/calendar.cpp"
     "${FEATHEROS_ROOT}/src/user/command_line.cpp"
+    "${FEATHEROS_ROOT}/src/user/dhcp_lease.cpp"
+    "${FEATHEROS_ROOT}/src/user/dhcp_message.cpp"
+    "${FEATHEROS_ROOT}/src/user/http_message.cpp"
     "${FEATHEROS_ROOT}/src/user/init_config.cpp"
     "${FEATHEROS_ROOT}/src/user/key_decoder.cpp"
     "${FEATHEROS_ROOT}/src/user/line_editor.cpp"
+    "${FEATHEROS_ROOT}/src/user/ntp_message.cpp"
     "${FEATHEROS_ROOT}/src/user/process_table.cpp"
     "${FEATHEROS_ROOT}/src/user/text_tools.cpp"
     "${FEATHEROS_ROOT}/src/user/vi_editor.cpp"
@@ -98,11 +145,13 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
     "${FEATHEROS_ROOT}/src/kernel/process_arguments.cpp"
     "${FEATHEROS_ROOT}/src/kernel/syscall.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/time/wall_clock.cpp"
     "${FEATHEROS_ROOT}/src/kernel/thread_local_storage.cpp"
     "${FEATHEROS_ROOT}/src/kernel/thread_stacks.cpp"
     "${FEATHEROS_ROOT}/src/kernel/files.cpp"
     "${FEATHEROS_ROOT}/src/kernel/futex.cpp"
     "${FEATHEROS_ROOT}/src/kernel/pipe.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/poll.cpp"
     "${FEATHEROS_ROOT}/src/kernel/signals.cpp"
     "${FEATHEROS_ROOT}/src/kernel/string/format.cpp"
 )

@@ -55,6 +55,9 @@ using FeatherOS::User::OpenRead;
 using FeatherOS::User::OpenTruncate;
 using FeatherOS::User::OpenWrite;
 
+constexpr FeatherOS::Tmpfs::Root Tmp = FeatherOS::Tmpfs::Root::Tmp;
+constexpr FeatherOS::Tmpfs::Root Etc = FeatherOS::Tmpfs::Root::Etc;
+
 std::vector<std::string> List(const char* path)
 {
     std::vector<std::string> names;
@@ -138,8 +141,8 @@ TEST_CASE("tmpfs files grow, shrink, and keep their contents")
 {
     FeatherOS::Tmpfs::Reset();
     uint32_t node = 0;
-    REQUIRE(FeatherOS::Tmpfs::Create("a.txt", &node));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Create("a.txt", &node));
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, "a.txt", &node));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "a.txt", &node));
     std::string text(5000, '\0');
     for (size_t index = 0; index < text.size(); ++index)
     {
@@ -159,33 +162,33 @@ TEST_CASE("tmpfs files grow, shrink, and keep their contents")
     REQUIRE_FALSE(FeatherOS::Tmpfs::Truncate(node, 20));
     REQUIRE(FeatherOS::Tmpfs::Truncate(node, 0));
     REQUIRE(FeatherOS::Tmpfs::UsedBytes() == 0);
-    REQUIRE(FeatherOS::Tmpfs::Remove("a.txt"));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Open("a.txt", &node));
+    REQUIRE(FeatherOS::Tmpfs::Remove(Tmp, "a.txt"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Open(Tmp, "a.txt", &node));
 }
 
 TEST_CASE("tmpfs directories nest, and names are case-sensitive")
 {
     FeatherOS::Tmpfs::Reset();
     uint32_t node = 0;
-    REQUIRE(FeatherOS::Tmpfs::MakeDirectory("docs"));
-    REQUIRE(FeatherOS::Tmpfs::MakeDirectory("docs/old"));
-    REQUIRE(FeatherOS::Tmpfs::Create("docs/Plan.txt", &node));
-    REQUIRE(FeatherOS::Tmpfs::Create("docs/plan.txt", &node));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Create("missing/plan.txt", &node));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Create("docs/Plan.txt/x", &node));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Create("docs/..", &node));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(std::string(64, 'n').c_str(), &node));
-    REQUIRE(FeatherOS::Tmpfs::IsDirectory(""));
-    REQUIRE(FeatherOS::Tmpfs::IsDirectory("docs/old"));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::IsDirectory("docs/plan.txt"));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Open("docs", &node));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::RemoveDirectory("docs"));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::RemoveDirectory(""));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Remove("docs/old"));
-    REQUIRE(FeatherOS::Tmpfs::RemoveDirectory("docs/old"));
-    REQUIRE(FeatherOS::Tmpfs::Remove("docs/Plan.txt"));
-    REQUIRE(FeatherOS::Tmpfs::Remove("docs/plan.txt"));
-    REQUIRE(FeatherOS::Tmpfs::RemoveDirectory("docs"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "docs"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "docs/old"));
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, "docs/Plan.txt", &node));
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, "docs/plan.txt", &node));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "missing/plan.txt", &node));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "docs/Plan.txt/x", &node));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "docs/..", &node));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, std::string(64, 'n').c_str(), &node));
+    REQUIRE(FeatherOS::Tmpfs::IsDirectory(Tmp, ""));
+    REQUIRE(FeatherOS::Tmpfs::IsDirectory(Tmp, "docs/old"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::IsDirectory(Tmp, "docs/plan.txt"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Open(Tmp, "docs", &node));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::RemoveDirectory(Tmp, "docs"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::RemoveDirectory(Tmp, ""));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Remove(Tmp, "docs/old"));
+    REQUIRE(FeatherOS::Tmpfs::RemoveDirectory(Tmp, "docs/old"));
+    REQUIRE(FeatherOS::Tmpfs::Remove(Tmp, "docs/Plan.txt"));
+    REQUIRE(FeatherOS::Tmpfs::Remove(Tmp, "docs/plan.txt"));
+    REQUIRE(FeatherOS::Tmpfs::RemoveDirectory(Tmp, "docs"));
 }
 
 TEST_CASE("tmpfs renames move nodes, but never into themselves")
@@ -193,44 +196,74 @@ TEST_CASE("tmpfs renames move nodes, but never into themselves")
     FeatherOS::Tmpfs::Reset();
     uint32_t node = 0;
     uint32_t moved = 0;
-    REQUIRE(FeatherOS::Tmpfs::MakeDirectory("docs"));
-    REQUIRE(FeatherOS::Tmpfs::MakeDirectory("docs/old"));
-    REQUIRE(FeatherOS::Tmpfs::Create("docs/old/a.txt", &node));
-    REQUIRE(FeatherOS::Tmpfs::Create("b.txt", &moved));
-    REQUIRE(FeatherOS::Tmpfs::Rename("docs/old", "archive"));
-    REQUIRE(FeatherOS::Tmpfs::Open("archive/a.txt", &moved));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "docs"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "docs/old"));
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, "docs/old/a.txt", &node));
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, "b.txt", &moved));
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "docs/old", "archive"));
+    REQUIRE(FeatherOS::Tmpfs::Open(Tmp, "archive/a.txt", &moved));
     REQUIRE(moved == node);
-    REQUIRE(FeatherOS::Tmpfs::Rename("archive", "docs/archive"));
-    REQUIRE(FeatherOS::Tmpfs::Rename("b.txt", "docs/B.txt"));
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "archive", "docs/archive"));
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "b.txt", "docs/B.txt"));
     std::vector<std::string> names = List("/tmp/docs");
     std::sort(names.begin(), names.end());
     REQUIRE(names == std::vector<std::string>{"B.txt", "archive/"});
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename("docs", "docs/archive/inner"));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename("docs/B.txt", "docs/archive"));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename("docs/B.txt", "missing/B.txt"));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename("", "root"));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename("gone", "here"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "docs", "docs/archive/inner"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "docs/B.txt", "docs/archive"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "docs/B.txt", "missing/B.txt"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "", "root"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "gone", "here"));
 }
 
 TEST_CASE("tmpfs stops at its node and byte limits")
 {
     FeatherOS::Tmpfs::Reset();
     uint32_t node = 0;
-    for (uint32_t index = 1; index < FeatherOS::Tmpfs::MaximumNodes; ++index)
+    for (uint32_t index = 0; index < FeatherOS::Tmpfs::MaximumEntries; ++index)
     {
-        REQUIRE(FeatherOS::Tmpfs::Create(("f" + std::to_string(index)).c_str(), &node));
+        REQUIRE(FeatherOS::Tmpfs::Create(Tmp, ("f" + std::to_string(index)).c_str(), &node));
     }
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Create("one-too-many", &node));
-    REQUIRE(FeatherOS::Tmpfs::Open("f1", &node));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "one-too-many", &node));
+    REQUIRE(FeatherOS::Tmpfs::Open(Tmp, "f1", &node));
     std::vector<char> large(FeatherOS::Tmpfs::MaximumBytes - 100, 'x');
     uint64_t count = 0;
     REQUIRE(FeatherOS::Tmpfs::Write(node, 0, large.data(), large.size(), &count));
-    REQUIRE(FeatherOS::Tmpfs::Open("f2", &node));
+    REQUIRE(FeatherOS::Tmpfs::Open(Tmp, "f2", &node));
     REQUIRE_FALSE(FeatherOS::Tmpfs::Write(node, 0, large.data(), 1000, &count));
     REQUIRE(count == 100);
     REQUIRE(FeatherOS::Tmpfs::UsedBytes() == FeatherOS::Tmpfs::MaximumBytes);
     FeatherOS::Tmpfs::Reset();
     REQUIRE(FeatherOS::Tmpfs::UsedBytes() == 0);
+}
+
+TEST_CASE("tmpfs roots keep separate trees but share the limits")
+{
+    FeatherOS::Tmpfs::Reset();
+    uint32_t tmp_node = 0;
+    uint32_t etc_node = 0;
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, "hosts", &tmp_node));
+    REQUIRE(FeatherOS::Tmpfs::Create(Etc, "hosts", &etc_node));
+    REQUIRE(tmp_node != etc_node);
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Etc, "conf"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::IsDirectory(Tmp, "conf"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::RemoveDirectory(Etc, ""));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Etc, "", "root"));
+    REQUIRE(FeatherOS::Tmpfs::Rename(Etc, "hosts", "conf/hosts"));
+    REQUIRE(List("/etc") == std::vector<std::string>{"conf/"});
+    REQUIRE(List("/etc/conf") == std::vector<std::string>{"hosts"});
+    REQUIRE(List("/tmp") == std::vector<std::string>{"hosts"});
+    REQUIRE_FALSE(FeatherOS::VFS::IsReadOnly("/etc/conf/hosts"));
+    REQUIRE(FeatherOS::Files::Rename("/etc/conf/hosts", "/tmp/moved") ==
+            FeatherOS::User::SyscallErrorCrossDevice);
+
+    uint32_t node = 0;
+    for (uint32_t index = 3; index < FeatherOS::Tmpfs::MaximumEntries; ++index)
+    {
+        REQUIRE(FeatherOS::Tmpfs::Create(Tmp, ("f" + std::to_string(index)).c_str(), &node));
+    }
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Etc, "full", &node));
+    REQUIRE(FeatherOS::Tmpfs::Remove(Tmp, "hosts"));
+    REQUIRE(FeatherOS::Tmpfs::Create(Etc, "full", &node));
 }
 
 TEST_CASE("/tmp works through file descriptors with the disk's sharing rules")

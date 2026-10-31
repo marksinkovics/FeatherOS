@@ -15,5 +15,6 @@ typedef unsigned int gid_t;
 typedef long blksize_t;
 typedef long blkcnt_t;
 typedef long time_t;
+typedef long suseconds_t;
 
 #endif

@@ -12,6 +12,10 @@ bool HelpRequested(int argc, char** argv);
 // and trailing text.
 bool ParseUnsigned(const char* text, unsigned long long* value);
 
+// Seconds with an optional fraction, such as "2", "0.25" or ".5", in nanoseconds; digits past
+// the ninth decimal place are dropped.
+bool ParseSeconds(const char* text, unsigned long long* nanoseconds);
+
 enum class SplitResult : unsigned char
 {
     Done,

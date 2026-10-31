@@ -9,10 +9,12 @@
 #define S_IFDIR 0040000
 #define S_IFCHR 0020000
 #define S_IFIFO 0010000
+#define S_IFSOCK 0140000
 #define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
 #define S_ISDIR(mode) (((mode) & S_IFMT) == S_IFDIR)
 #define S_ISCHR(mode) (((mode) & S_IFMT) == S_IFCHR)
 #define S_ISFIFO(mode) (((mode) & S_IFMT) == S_IFIFO)
+#define S_ISSOCK(mode) (((mode) & S_IFMT) == S_IFSOCK)
 
 // There are no users yet: every file is owned by user 0, and the permission bits only say
 // whether it can be written (0644 or 0444; 0755 or 0555 for directories). Times are 0 because

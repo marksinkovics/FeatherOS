@@ -1,7 +1,6 @@
 #include "process.h"
 
 #include "kernel/arch/cpu_features.h"
-#include "kernel/arch/rtc.h"
 #include "kernel/arch/thread_pointer.h"
 #include "kernel/console.h"
 #include "kernel/cpu.h"
@@ -10,9 +9,12 @@
 #include "kernel/filesystem/path.h"
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/tmpfs.h"
+#include "kernel/input/input.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
+#include "kernel/network/settings.h"
 #include "kernel/panic.h"
+#include "kernel/poll.h"
 #include "kernel/power.h"
 #include "kernel/process_arguments.h"
 #include "kernel/random.h"
@@ -23,6 +25,7 @@
 #include "kernel/thread_local_storage.h"
 #include "kernel/thread_stacks.h"
 #include "kernel/time/timer.h"
+#include "kernel/time/wall_clock.h"
 #if defined(ARCH_x86_64)
 #include "kernel/arch/x86_64/exceptions.h"
 #elif defined(ARCH_aarch64)
@@ -617,7 +620,7 @@ volatile uint8_t* UserByte(const ProcessRecord& process, uint64_t address, bool 
 
 bool UserRangeWritable(const ProcessRecord& process, uint64_t address, uint64_t size)
 {
-    if (size == 0 || address > UINT64_MAX - (size - 1))
+    if (size != 0 && address > UINT64_MAX - (size - 1))
     {
         return false;
     }
@@ -633,7 +636,7 @@ bool UserRangeWritable(const ProcessRecord& process, uint64_t address, uint64_t 
 
 bool UserRangeReadable(const ProcessRecord& process, uint64_t address, uint64_t size)
 {
-    if (size == 0 || address > UINT64_MAX - (size - 1))
+    if (size != 0 && address > UINT64_MAX - (size - 1))
     {
         return false;
     }
@@ -1036,8 +1039,18 @@ uint64_t SleepSyscall(void*, uint64_t milliseconds)
 
 uint64_t ReadClockSyscall(void*)
 {
-    uint64_t seconds;
-    return Arch::RealTimeClock::ReadUnixSeconds(&seconds) ? seconds : User::SyscallErrorFailed;
+    uint64_t nanoseconds;
+    return Time::ReadWallClock(&nanoseconds) ? nanoseconds : User::SyscallErrorFailed;
+}
+
+uint64_t SetClockSyscall(void*, uint64_t nanoseconds)
+{
+    if (!Time::SetWallClock(nanoseconds))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Console::NotifyStatusChanged();
+    return 0;
 }
 
 uint64_t ReadUptimeSyscall(void*)
@@ -1089,9 +1102,7 @@ uint64_t ReadConsole(ProcessRecord* process, uint64_t buffer, uint64_t length)
         {
             return User::SyscallErrorInterrupted;
         }
-        return count == 0 || CopyToUser(*process, buffer, bytes, count)
-                   ? count
-                   : User::SyscallErrorBadAddress;
+        return CopyToUser(*process, buffer, bytes, count) ? count : User::SyscallErrorBadAddress;
     }
     if (process->console_input_offset == process->console_input_length)
     {
@@ -1120,6 +1131,79 @@ uint64_t ReadConsole(ProcessRecord* process, uint64_t buffer, uint64_t length)
     return count;
 }
 
+// A datagram goes out whole; a stream is sent piece by piece.
+uint64_t SendSocketData(ProcessRecord* process, Network::Sockets::Socket* socket, uint64_t buffer,
+                        uint64_t length, const Network::Sockets::Endpoint* destination,
+                        bool raise_pipe_signal, bool nonblocking)
+{
+    if (!Network::Sockets::IsStream(socket) && length > Network::Sockets::MaximumDatagramSize)
+    {
+        return User::SyscallErrorMessageTooLong;
+    }
+    if (!UserRangeReadable(*process, buffer, length))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    uint8_t data[Network::Sockets::MaximumDatagramSize];
+    uint64_t total = 0;
+    // Runs once for an empty message, which a datagram socket still sends.
+    do
+    {
+        const uint64_t wanted = length - total < sizeof(data) ? length - total : sizeof(data);
+        if (!CopyFromUser(*process, buffer + total, data, wanted))
+        {
+            return User::SyscallErrorBadAddress;
+        }
+        const uint64_t sent = Network::Sockets::SendTo(socket, data, wanted, destination,
+                                                       CallerInterrupted, nonblocking);
+        // As with pipes, a connection that can no longer send raises SIGPIPE.
+        if (sent == User::SyscallErrorBrokenPipe && raise_pipe_signal)
+        {
+            Signals::Send(&CallerContext()->signals, User::SignalPipe);
+        }
+        if (User::IsSyscallError(sent))
+        {
+            return total > 0 ? total : sent;
+        }
+        total += sent;
+        if (sent < wanted)
+        {
+            break;
+        }
+    } while (total < length);
+    return total;
+}
+
+// address, if not 0, receives the sender as a User::SocketAddress.
+uint64_t ReceiveSocketData(ProcessRecord* process, Network::Sockets::Socket* socket,
+                           uint64_t buffer, uint64_t length, uint64_t address, bool nonblocking)
+{
+    // Checking both ranges first keeps a bad buffer from consuming a datagram.
+    const uint64_t capacity = length < Network::Sockets::MaximumDatagramSize
+                                  ? length
+                                  : Network::Sockets::MaximumDatagramSize;
+    if (!UserRangeWritable(*process, buffer, capacity) ||
+        (address != 0 && !UserRangeWritable(*process, address, sizeof(User::SocketAddress))))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    uint8_t data[Network::Sockets::MaximumDatagramSize];
+    Network::Sockets::Endpoint source = {};
+    const uint64_t count = Network::Sockets::ReceiveFrom(socket, data, capacity, &source,
+                                                         CallerInterrupted, nonblocking);
+    if (User::IsSyscallError(count))
+    {
+        return count;
+    }
+    const User::SocketAddress sender = Network::Sockets::ToUserAddress(source);
+    if (!CopyToUser(*process, buffer, data, count) ||
+        (address != 0 && !CopyToUser(*process, address, &sender, sizeof(sender))))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    return count;
+}
+
 uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64_t length)
 {
     auto* process = static_cast<ProcessRecord*>(context);
@@ -1133,6 +1217,16 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
     {
         return length == 0 ? 0 : ReadConsole(process, buffer, length);
     }
+    if (kind == Files::Kind::Socket)
+    {
+        Network::Sockets::Socket* socket;
+        bool nonblocking = false;
+        const uint64_t found =
+            Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
+        return User::IsSyscallError(found)
+                   ? found
+                   : ReceiveSocketData(process, socket, buffer, length, 0, nonblocking);
+    }
     // One chunk at most, since a pipe read returns as soon as any data is there.
     if (kind == Files::Kind::Pipe)
     {
@@ -1143,7 +1237,7 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
         const uint64_t wanted = length < FileChunkSize ? length : FileChunkSize;
         const uint64_t count =
             Files::Read(&process->files, descriptor, chunk, wanted, CallerInterrupted);
-        if (User::IsSyscallError(count) || count == 0)
+        if (User::IsSyscallError(count))
         {
             return count;
         }
@@ -1167,7 +1261,7 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
         {
             return total > 0 ? total : count;
         }
-        if (count > 0 && !CopyToUser(*process, buffer + total, chunk, count))
+        if (!CopyToUser(*process, buffer + total, chunk, count))
         {
             return User::SyscallErrorBadAddress;
         }
@@ -1188,6 +1282,16 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
     if (kind == Files::Kind::None)
     {
         return User::SyscallErrorBadDescriptor;
+    }
+    if (kind == Files::Kind::Socket)
+    {
+        Network::Sockets::Socket* socket;
+        bool nonblocking = false;
+        const uint64_t found =
+            Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
+        return User::IsSyscallError(found)
+                   ? found
+                   : SendSocketData(process, socket, buffer, length, nullptr, true, nonblocking);
     }
     const bool console = kind == Files::Kind::Console;
     if (length == 0)
@@ -1484,35 +1588,25 @@ uint64_t ThreadCreateSyscall(void* context, uint64_t entry, uint64_t first, uint
 #else
     thread->stack_pointer = block;
 #endif
-    // Field by field: the AArch64 kernel has no memcpy for a structure copy.
-    UserExecutionContext& thread_context = thread->context;
     const UserExecutionContext& main_context = program.execution_context;
-    thread_context.address_space_root_physical_address =
-        main_context.address_space_root_physical_address;
-    thread_context.kernel_stack_pointer = 0;
-    thread_context.previous_kernel_stack_pointer = 0;
-    thread_context.exit_status = User::ExitStatusFault;
-    thread_context.active = false;
-    thread_context.exit_requested = false;
-    thread_context.preemption_enabled = true;
-    thread_context.syscall_handlers = main_context.syscall_handlers;
-    thread_context.syscall_context = main_context.syscall_context;
-    thread_context.program = main_context.program;
-    thread_context.thread_id = thread->id;
-    thread_context.thread_exit_only = false;
-    thread_context.thread_pointer = thread_pointer;
+    thread->context = {
+        .address_space_root_physical_address = main_context.address_space_root_physical_address,
+        .kernel_stack_pointer = 0,
+        .previous_kernel_stack_pointer = 0,
+        .exit_status = User::ExitStatusFault,
+        .active = false,
+        .exit_requested = false,
+        .preemption_enabled = true,
+        .syscall_handlers = main_context.syscall_handlers,
+        .syscall_context = main_context.syscall_context,
+        .program = main_context.program,
+        .signals = caller->signals,
+        .thread_id = thread->id,
+        .thread_exit_only = false,
+        .thread_pointer = thread_pointer,
+    };
     // A new thread keeps the caller's mask and the process's actions, with nothing pending.
-    thread_context.signals.pending = 0;
-    thread_context.signals.blocked = caller->signals.blocked;
-    for (uint32_t signal = 0; signal < User::SignalCount; ++signal)
-    {
-        User::SignalAction& action = thread_context.signals.actions[signal];
-        const User::SignalAction& source = caller->signals.actions[signal];
-        action.handler = source.handler;
-        action.mask = source.mask;
-        action.flags = source.flags;
-        action.restorer = source.restorer;
-    }
+    thread->context.signals.pending = 0;
     Scheduler::TaskId task = 0;
     if (!Scheduler::CreateTask(RunThread, thread, &task))
     {
@@ -1705,7 +1799,7 @@ uint64_t TerminalModeSyscall(void* context, uint64_t new_settings, uint64_t old_
         return User::SyscallErrorBadAddress;
     }
     if (new_settings != 0 &&
-        ((requested.flags & ~User::TerminalDefaultFlags) != 0 || requested.reserved != 0))
+        ((requested.flags & ~User::TerminalFlags) != 0 || requested.reserved != 0))
     {
         return User::SyscallErrorInvalidArgument;
     }
@@ -1757,10 +1851,356 @@ uint64_t PipeSyscall(void* context, uint64_t descriptors, uint64_t flags)
     return 0;
 }
 
+uint64_t SocketSyscall(void* context, uint64_t family, uint64_t type, uint64_t protocol)
+{
+    return Files::CreateSocket(&static_cast<ProcessRecord*>(context)->files, family, type,
+                               protocol);
+}
+
+uint64_t CopySocketAddressFromUser(const ProcessRecord& process, uint64_t address,
+                                   Network::Sockets::Endpoint* endpoint)
+{
+    User::SocketAddress user_address;
+    if (!CopyFromUser(process, address, &user_address, sizeof(user_address)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    *endpoint = Network::Sockets::FromUserAddress(user_address);
+    return 0;
+}
+
+uint64_t BindSyscall(void* context, uint64_t descriptor, uint64_t address)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Network::Sockets::Socket* socket;
+    uint64_t result = Files::FindSocket(&process->files, descriptor, &socket);
+    Network::Sockets::Endpoint local;
+    if (!User::IsSyscallError(result))
+    {
+        result = CopySocketAddressFromUser(*process, address, &local);
+    }
+    return User::IsSyscallError(result) ? result : Network::Sockets::Bind(socket, local);
+}
+
+uint64_t SendToSyscall(void* context, uint64_t descriptor, uint64_t message, uint64_t flags)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Network::Sockets::Socket* socket;
+    bool nonblocking = false;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
+    if (User::IsSyscallError(found))
+    {
+        return found;
+    }
+    User::SocketMessage request;
+    if (!CopyFromUser(*process, message, &request, sizeof(request)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    if ((flags & ~(User::SocketMessageNoSignal | User::SocketMessageDontWait)) != 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Network::Sockets::Endpoint destination;
+    if (request.address != 0)
+    {
+        const uint64_t copied = CopySocketAddressFromUser(*process, request.address, &destination);
+        if (User::IsSyscallError(copied))
+        {
+            return copied;
+        }
+    }
+    return SendSocketData(process, socket, request.buffer, request.length,
+                          request.address != 0 ? &destination : nullptr,
+                          (flags & User::SocketMessageNoSignal) == 0,
+                          nonblocking || (flags & User::SocketMessageDontWait) != 0);
+}
+
+uint64_t ReceiveFromSyscall(void* context, uint64_t descriptor, uint64_t message, uint64_t flags)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Network::Sockets::Socket* socket;
+    bool nonblocking = false;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
+    if (User::IsSyscallError(found))
+    {
+        return found;
+    }
+    User::SocketMessage request;
+    if (!CopyFromUser(*process, message, &request, sizeof(request)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    if ((flags & ~User::SocketMessageDontWait) != 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    return ReceiveSocketData(process, socket, request.buffer, request.length, request.address,
+                             nonblocking || (flags & User::SocketMessageDontWait) != 0);
+}
+
+uint64_t ConnectSyscall(void* context, uint64_t descriptor, uint64_t address)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Network::Sockets::Socket* socket;
+    bool nonblocking = false;
+    uint64_t result = Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
+    Network::Sockets::Endpoint remote;
+    if (!User::IsSyscallError(result))
+    {
+        result = CopySocketAddressFromUser(*process, address, &remote);
+    }
+    return User::IsSyscallError(result)
+               ? result
+               : Network::Sockets::Connect(socket, remote, CallerInterrupted, nonblocking);
+}
+
+uint64_t ListenSyscall(void* context, uint64_t descriptor, uint64_t backlog)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Network::Sockets::Socket* socket;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket);
+    return User::IsSyscallError(found) ? found : Network::Sockets::Listen(socket, backlog);
+}
+
+uint64_t AcceptSyscall(void* context, uint64_t descriptor, uint64_t address, uint64_t flags)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Network::Sockets::Socket* socket;
+    bool nonblocking = false;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
+    if (User::IsSyscallError(found))
+    {
+        return found;
+    }
+    if ((flags & ~(User::SocketCloseOnExec | User::SocketNonBlocking)) != 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    if (address != 0 && !UserRangeWritable(*process, address, sizeof(User::SocketAddress)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    Network::Sockets::Socket* connection;
+    Network::Sockets::Endpoint peer;
+    const uint64_t accepted =
+        Network::Sockets::Accept(socket, &connection, &peer, CallerInterrupted, nonblocking);
+    if (User::IsSyscallError(accepted))
+    {
+        return accepted;
+    }
+    const uint64_t added = Files::AddSocket(&process->files, connection, flags);
+    if (User::IsSyscallError(added) || address == 0)
+    {
+        return added;
+    }
+    const User::SocketAddress user_address = Network::Sockets::ToUserAddress(peer);
+    if (!CopyToUser(*process, address, &user_address, sizeof(user_address)))
+    {
+        Files::Close(&process->files, added);
+        return User::SyscallErrorBadAddress;
+    }
+    return added;
+}
+
+uint64_t ShutdownSocketSyscall(void* context, uint64_t descriptor, uint64_t how)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Network::Sockets::Socket* socket;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket);
+    return User::IsSyscallError(found) ? found : Network::Sockets::Shutdown(socket, how);
+}
+
+uint64_t SocketNameSyscall(void* context, uint64_t descriptor, uint64_t address, uint64_t peer)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Network::Sockets::Socket* socket;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket);
+    if (User::IsSyscallError(found))
+    {
+        return found;
+    }
+    if (peer > 1)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Network::Sockets::Endpoint endpoint;
+    const uint64_t named = Network::Sockets::Name(socket, peer == 1, &endpoint);
+    if (User::IsSyscallError(named))
+    {
+        return named;
+    }
+    const User::SocketAddress user_address = Network::Sockets::ToUserAddress(endpoint);
+    return CopyToUser(*process, address, &user_address, sizeof(user_address))
+               ? 0
+               : User::SyscallErrorBadAddress;
+}
+
+int16_t ConsolePollEvents(const ProcessRecord& process)
+{
+    const bool buffered = process.console_input_offset < process.console_input_length;
+    return static_cast<int16_t>(
+        User::PollWritable |
+        (InForegroundGroup(process) && (buffered || Input::HasInput()) ? User::PollReadable : 0));
+}
+
+uint64_t PollSyscall(void* context, uint64_t descriptors, uint64_t count, uint64_t milliseconds)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    if (count > User::MaximumPollDescriptors)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    User::PollDescriptor entries[User::MaximumPollDescriptors];
+    const uint64_t size = count * sizeof(User::PollDescriptor);
+    if (!UserRangeWritable(*process, descriptors, size) ||
+        !CopyFromUser(*process, descriptors, entries, size))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    uint64_t deadline = 0;
+    if (milliseconds != User::PollForever && milliseconds != 0)
+    {
+        deadline = Time::TickCount() + (milliseconds * Time::TicksPerSecond() + 999) / 1000;
+    }
+    for (;;)
+    {
+        const uint64_t generation = Poll::Generation();
+        uint64_t ready = 0;
+        bool console_polled = false;
+        for (uint64_t index = 0; index < count; ++index)
+        {
+            User::PollDescriptor& entry = entries[index];
+            entry.returned_events = 0;
+            if (entry.descriptor < 0)
+            {
+                continue;
+            }
+            const auto descriptor = static_cast<uint64_t>(entry.descriptor);
+            int16_t events;
+            if (Files::KindOf(&process->files, descriptor) == Files::Kind::Console)
+            {
+                events = ConsolePollEvents(*process);
+                console_polled = true;
+            }
+            else
+            {
+                events = Files::PollEvents(&process->files, descriptor);
+            }
+            entry.returned_events = static_cast<int16_t>(
+                events & (entry.events | User::PollError | User::PollHangUp | User::PollInvalid));
+            if (entry.returned_events != 0)
+            {
+                ++ready;
+            }
+        }
+        if (ready != 0 || milliseconds == 0 || (deadline != 0 && Time::TickCount() >= deadline))
+        {
+            return CopyToUser(*process, descriptors, entries, size) ? ready
+                                                                    : User::SyscallErrorBadAddress;
+        }
+        if (CallerInterrupted())
+        {
+            return User::SyscallErrorInterrupted;
+        }
+        // Console input arrives without a notification, so a poll on the console looks again
+        // every tick.
+        uint64_t wake = deadline;
+        if (console_polled && (wake == 0 || Time::TickCount() + 1 < wake))
+        {
+            wake = Time::TickCount() + 1;
+        }
+        Poll::WaitForChange(generation, wake);
+    }
+}
+
+uint64_t SetSocketOptionSyscall(void* context, uint64_t descriptor, uint64_t option, uint64_t value)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Network::Sockets::Socket* socket;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket);
+    if (User::IsSyscallError(found))
+    {
+        return found;
+    }
+    if (option != User::SocketOptionReceiveTimeout)
+    {
+        return User::SyscallErrorOptionNotSupported;
+    }
+    return Network::Sockets::SetReceiveTimeout(socket, value);
+}
+
+uint64_t GetSocketOptionSyscall(void* context, uint64_t descriptor, uint64_t option, uint64_t value)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Network::Sockets::Socket* socket;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket);
+    if (User::IsSyscallError(found))
+    {
+        return found;
+    }
+    if (option != User::SocketOptionReceiveTimeout && option != User::SocketOptionError)
+    {
+        return User::SyscallErrorOptionNotSupported;
+    }
+    // Checked first, so a bad pointer does not take the error away.
+    if (!UserRangeWritable(*process, value, sizeof(uint64_t)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    const uint64_t result = option == User::SocketOptionError
+                                ? Network::Sockets::TakeError(socket)
+                                : Network::Sockets::ReceiveTimeout(socket);
+    return CopyToUser(*process, value, &result, sizeof(result)) ? 0 : User::SyscallErrorBadAddress;
+}
+
+// Settings are shared by every process; with no users, any process may change them.
+uint64_t NetworkSettingsSyscall(void* context, uint64_t new_settings, uint64_t old_settings,
+                                uint64_t changes)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    User::NetworkSettings settings;
+    if (old_settings != 0)
+    {
+        if (!UserRangeWritable(*process, old_settings, sizeof(settings)))
+        {
+            return User::SyscallErrorBadAddress;
+        }
+        const uint64_t result = Network::ReadSettings(&settings);
+        if (User::IsSyscallError(result))
+        {
+            return result;
+        }
+        if (!CopyToUser(*process, old_settings, &settings, sizeof(settings)))
+        {
+            return User::SyscallErrorBadAddress;
+        }
+    }
+    if (changes == 0)
+    {
+        return 0;
+    }
+    if (new_settings == 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    if (!CopyFromUser(*process, new_settings, &settings, sizeof(settings)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    return Network::ApplySettings(settings, changes);
+}
+
 uint64_t DescriptorFlagsSyscall(void* context, uint64_t descriptor, uint64_t set, uint64_t flags)
 {
     return Files::DescriptorFlags(&static_cast<ProcessRecord*>(context)->files, descriptor,
                                   set != 0, flags);
+}
+
+uint64_t FileStatusFlagsSyscall(void* context, uint64_t descriptor, uint64_t set, uint64_t flags)
+{
+    return Files::StatusFlags(&static_cast<ProcessRecord*>(context)->files, descriptor, set != 0,
+                              flags);
 }
 
 // Copies the path argument and passes it to one of the path-only Files calls.
@@ -1971,6 +2411,21 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     .futex_wake = FutexWakeSyscall,
     .thread_detach = ThreadDetachSyscall,
     .rename = RenameSyscall,
+    .socket = SocketSyscall,
+    .bind = BindSyscall,
+    .send_to = SendToSyscall,
+    .receive_from = ReceiveFromSyscall,
+    .set_socket_option = SetSocketOptionSyscall,
+    .network_settings = NetworkSettingsSyscall,
+    .connect = ConnectSyscall,
+    .listen = ListenSyscall,
+    .accept = AcceptSyscall,
+    .shutdown_socket = ShutdownSocketSyscall,
+    .socket_name = SocketNameSyscall,
+    .poll = PollSyscall,
+    .set_clock = SetClockSyscall,
+    .file_status_flags = FileStatusFlagsSyscall,
+    .get_socket_option = GetSocketOptionSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.

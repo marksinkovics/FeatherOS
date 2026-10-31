@@ -1,11 +1,11 @@
 #include "console.h"
 
 #include "kernel/arch/interrupts.h"
-#include "kernel/arch/rtc.h"
 #include "kernel/arch/serial.h"
 #include "kernel/cpu.h"
 #include "kernel/framebuffer/term.h"
 #include "kernel/input/input.h"
+#include "kernel/network/interface.h"
 #include "kernel/panic.h"
 #include "kernel/process.h"
 #include "kernel/scheduler.h"
@@ -13,6 +13,7 @@
 #include "kernel/string/format.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/time/timer.h"
+#include "kernel/time/wall_clock.h"
 #include "kernel/user_context.h"
 #include "user/calendar.h"
 
@@ -35,10 +36,8 @@ constinit Sync::SpinLock status_lock;
 constinit Scheduler::WaitQueue status_waiters;
 bool status_changed = false;
 bool status_running = false;
-// The bar's clock advances from one RTC read by timer ticks, so it never touches the RTC again.
-bool clock_available = false;
-uint64_t clock_base_seconds = 0;
-uint64_t clock_base_tick = 0;
+// Readers waiting with TerminalWakeOnOutput.
+uint32_t output_watchers = 0;
 
 struct CpuSample
 {
@@ -78,20 +77,22 @@ void DrawStatus(uint32_t busy_cpus)
     char program[33];
     Process::ForegroundProgramName(program, sizeof(program));
     char status[48];
+    const char network[] = {Network::HasRoute() ? Term::StatusGreenDot : Term::StatusRedDot, '\0'};
     bool formatted;
-    if (clock_available)
+    uint64_t nanoseconds;
+    if (Time::ReadWallClock(&nanoseconds))
     {
-        const uint64_t seconds =
-            clock_base_seconds + (Time::TickCount() - clock_base_tick) / Time::TicksPerSecond();
+        const uint64_t seconds = nanoseconds / 1000000000;
         char clock_text[User::ShortCalendarTimeLength];
         User::FormatShortCalendarTime(seconds, clock_text);
-        formatted = String::FormatTo(status, sizeof(status), "{}/{}  {}", busy_cpus,
-                                     Smp::OnlineCpuCount(), static_cast<const char*>(clock_text));
+        formatted = String::FormatTo(status, sizeof(status), "{}/{}  {}  {}", busy_cpus,
+                                     Smp::OnlineCpuCount(), static_cast<const char*>(network),
+                                     static_cast<const char*>(clock_text));
     }
     else
     {
-        formatted =
-            String::FormatTo(status, sizeof(status), "{}/{}", busy_cpus, Smp::OnlineCpuCount());
+        formatted = String::FormatTo(status, sizeof(status), "{}/{}  {}", busy_cpus,
+                                     Smp::OnlineCpuCount(), static_cast<const char*>(network));
     }
     if (!formatted)
     {
@@ -187,6 +188,31 @@ bool SkipSequence(SequenceState* state, char byte)
     return false;
 }
 
+uint64_t OutputCount()
+{
+    return console_term == nullptr ? 0 : console_term->OutputCount();
+}
+
+// The kernel log does not wake readers, since it may run under any lock; they look again each
+// second instead.
+void WakeOutputWatchers()
+{
+    if (__atomic_load_n(&output_watchers, __ATOMIC_ACQUIRE) != 0)
+    {
+        Input::WakeWaiters();
+    }
+}
+
+void StartFreshRow()
+{
+    Sync::SpinLockGuard guard(display_lock);
+    if (console_term != nullptr && console_term->CursorColumn() != 0)
+    {
+        Serial::Write("\n");
+        console_term->Print("\n");
+    }
+}
+
 void SetCursorVisible(bool visible)
 {
     Sync::SpinLockGuard guard(display_lock);
@@ -227,8 +253,6 @@ void Initialize(Term* term)
     {
         return;
     }
-    clock_base_tick = Time::TickCount();
-    clock_available = Arch::RealTimeClock::ReadUnixSeconds(&clock_base_seconds);
     Scheduler::TaskId status_task;
     if (!Scheduler::CreateTask(StatusTaskMain, nullptr, &status_task) ||
         !Scheduler::SetPriority(status_task, Scheduler::TaskPriority::High))
@@ -253,60 +277,69 @@ void NotifyStatusChanged()
 void WriteCharacter(char character)
 {
     const char text[] = {character, '\0'};
-    Sync::SpinLockGuard guard(display_lock);
-    Serial::Write(text);
-    if (console_term != nullptr)
     {
-        console_term->Print(text);
+        Sync::SpinLockGuard guard(display_lock);
+        Serial::Write(text);
+        if (console_term != nullptr)
+        {
+            console_term->Print(text);
+        }
     }
+    WakeOutputWatchers();
 }
 
 void WriteLine(const char* text)
 {
-    Sync::SpinLockGuard guard(display_lock);
-    Serial::Write(text);
-    Serial::Write("\n");
-    if (console_term != nullptr)
     {
-        console_term->PrintLn(text);
+        Sync::SpinLockGuard guard(display_lock);
+        Serial::Write(text);
+        Serial::Write("\n");
+        if (console_term != nullptr)
+        {
+            console_term->PrintLn(text);
+        }
     }
+    WakeOutputWatchers();
 }
 
 void Write(const char* text, size_t length)
 {
-    Sync::SpinLockGuard guard(display_lock);
-    char chunk[65];
-    size_t used = 0;
-    auto flush = [&]()
     {
-        chunk[used] = '\0';
-        Serial::Write(chunk);
-        if (console_term != nullptr)
+        Sync::SpinLockGuard guard(display_lock);
+        char chunk[65];
+        size_t used = 0;
+        auto flush = [&]()
         {
-            console_term->Print(chunk);
-        }
-        used = 0;
-    };
-    for (size_t index = 0; index < length; ++index)
-    {
-        const auto byte = static_cast<unsigned char>(text[index]);
-        // Escape, carriage return and backspace drive the terminal (see Term); other control
-        // bytes are dropped.
-        if (byte < 0x20 && byte != '\n' && byte != '\t' && byte != '\x1b' && byte != '\r' &&
-            byte != '\b')
+            chunk[used] = '\0';
+            Serial::Write(chunk);
+            if (console_term != nullptr)
+            {
+                console_term->Print(chunk);
+            }
+            used = 0;
+        };
+        for (size_t index = 0; index < length; ++index)
         {
-            continue;
+            const auto byte = static_cast<unsigned char>(text[index]);
+            // Escape, carriage return and backspace drive the terminal (see Term); other control
+            // bytes are dropped.
+            if (byte < 0x20 && byte != '\n' && byte != '\t' && byte != '\x1b' && byte != '\r' &&
+                byte != '\b')
+            {
+                continue;
+            }
+            chunk[used++] = byte == '\t' ? ' ' : byte > 0x7E ? '?' : static_cast<char>(byte);
+            if (used == sizeof(chunk) - 1)
+            {
+                flush();
+            }
         }
-        chunk[used++] = byte == '\t' ? ' ' : byte > 0x7E ? '?' : static_cast<char>(byte);
-        if (used == sizeof(chunk) - 1)
+        if (used > 0)
         {
             flush();
         }
     }
-    if (used > 0)
-    {
-        flush();
-    }
+    WakeOutputWatchers();
 }
 
 void Size(uint32_t* rows, uint32_t* columns)
@@ -442,6 +475,18 @@ bool ReadBytes(char* buffer, size_t capacity, size_t* length)
         static_cast<uint64_t>(current.timeout) * Time::TicksPerSecond() / 10;
     // Without a minimum the timeout runs from the start of the read; otherwise from the last byte.
     uint64_t deadline = Time::TickCount() + timeout_ticks;
+    const bool watch_output =
+        (current.flags & User::TerminalWakeOnOutput) != 0 && current.minimum > 0;
+    // Output that comes in bursts, like a log line and a program's message, ends one redraw.
+    const uint64_t quiet_ticks = Time::TicksPerSecond() / 10;
+    const uint64_t output_before = OutputCount();
+    uint64_t output_seen = output_before;
+    uint64_t output_settles_at = 0;
+    bool output_arrived = false;
+    if (watch_output)
+    {
+        __atomic_add_fetch(&output_watchers, 1, __ATOMIC_ACQ_REL);
+    }
     SetCursorVisible(true);
     const uint64_t interrupt_state = Arch::Interrupts::SaveAndDisable();
     Arch::Interrupts::Enable();
@@ -480,10 +525,37 @@ bool ReadBytes(char* buffer, size_t capacity, size_t* length)
             break;
         }
         const bool timer_running = current.timeout != 0 && (current.minimum == 0 || count > 0);
-        Input::WaitForInput(timer_running ? deadline : 0);
+        uint64_t wake_at = timer_running ? deadline : 0;
+        if (watch_output && count == 0)
+        {
+            const uint64_t now = Time::TickCount();
+            const uint64_t output = OutputCount();
+            if (output != output_seen)
+            {
+                output_seen = output;
+                output_settles_at = now + quiet_ticks;
+            }
+            output_arrived = output_seen != output_before && now >= output_settles_at;
+            if (output_arrived)
+            {
+                break;
+            }
+            const uint64_t look_at =
+                output_seen != output_before ? output_settles_at : now + Time::TicksPerSecond();
+            wake_at = wake_at == 0 || look_at < wake_at ? look_at : wake_at;
+        }
+        Input::WaitForInput(wake_at);
     }
     Arch::Interrupts::SaveAndDisable();
     Arch::Interrupts::Restore(interrupt_state);
+    if (watch_output)
+    {
+        __atomic_sub_fetch(&output_watchers, 1, __ATOMIC_ACQ_REL);
+    }
+    if (output_arrived)
+    {
+        StartFreshRow();
+    }
     SetCursorVisible(false);
     *length = count;
     return count > 0 || !interrupted;

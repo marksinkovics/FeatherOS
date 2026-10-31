@@ -24,9 +24,12 @@ int tcgetattr(int descriptor, struct termios* settings)
         (current.flags & FeatherOS::User::TerminalCarriageReturnToNewline) != 0 ? ICRNL : 0;
     settings->c_oflag = OPOST;
     settings->c_cflag = CS8;
-    settings->c_lflag = ((current.flags & FeatherOS::User::TerminalCanonical) != 0 ? ICANON : 0) |
-                        ((current.flags & FeatherOS::User::TerminalEcho) != 0 ? ECHO : 0) |
-                        ((current.flags & FeatherOS::User::TerminalSignals) != 0 ? ISIG : 0);
+    settings->c_lflag =
+        ((current.flags & FeatherOS::User::TerminalCanonical) != 0 ? ICANON : 0) |
+        ((current.flags & FeatherOS::User::TerminalEcho) != 0 ? ECHO : 0) |
+        ((current.flags & FeatherOS::User::TerminalSignals) != 0 ? ISIG : 0) |
+        ((current.flags & FeatherOS::User::TerminalWakeOnOutput) != 0 ? FEATHEROS_WAKE_ON_OUTPUT
+                                                                      : 0);
     for (cc_t& character : settings->c_cc)
     {
         character = 0;
@@ -55,7 +58,9 @@ int tcsetattr(int descriptor, int when, const struct termios* settings)
         ((settings->c_iflag & ICRNL) != 0 ? FeatherOS::User::TerminalCarriageReturnToNewline : 0) |
         ((settings->c_lflag & ICANON) != 0 ? FeatherOS::User::TerminalCanonical : 0) |
         ((settings->c_lflag & ECHO) != 0 ? FeatherOS::User::TerminalEcho : 0) |
-        ((settings->c_lflag & ISIG) != 0 ? FeatherOS::User::TerminalSignals : 0);
+        ((settings->c_lflag & ISIG) != 0 ? FeatherOS::User::TerminalSignals : 0) |
+        ((settings->c_lflag & FEATHEROS_WAKE_ON_OUTPUT) != 0 ? FeatherOS::User::TerminalWakeOnOutput
+                                                             : 0);
     // Canonical reads ignore the minimum and timeout, so they keep the defaults there.
     const bool canonical = (settings->c_lflag & ICANON) != 0;
     requested.minimum = canonical ? 1 : settings->c_cc[VMIN];

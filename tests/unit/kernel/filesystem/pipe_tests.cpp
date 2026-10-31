@@ -141,7 +141,85 @@ TEST_CASE("pipe descriptors can be close-on-exec")
     FeatherOS::Files::Table child{};
     FeatherOS::Files::Inherit(&child, &table);
     REQUIRE(FeatherOS::Files::CountOpen(&child) == 0);
-    REQUIRE(FeatherOS::Files::CreatePipe(&table, 2, &reader, &writer) ==
+    REQUIRE(FeatherOS::Files::CreatePipe(&table, 4, &reader, &writer) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
     FeatherOS::Files::CloseAll(&table);
+}
+
+TEST_CASE("a non-blocking pipe fails where it would wait")
+{
+    FeatherOS::Files::Table table{};
+    uint64_t reader = 0;
+    uint64_t writer = 0;
+    REQUIRE(FeatherOS::Files::CreatePipe(&table, FeatherOS::User::PipeNonBlocking, &reader,
+                                         &writer) == 0);
+    REQUIRE(FeatherOS::Files::StatusFlags(&table, reader, false, 0) ==
+            (FeatherOS::User::OpenRead | FeatherOS::User::OpenNonBlocking));
+    REQUIRE(FeatherOS::Files::StatusFlags(&table, writer, false, 0) ==
+            (FeatherOS::User::OpenWrite | FeatherOS::User::OpenNonBlocking));
+    char text[8];
+    // A wait would end in SyscallErrorInterrupted instead.
+    REQUIRE(FeatherOS::Files::Read(&table, reader, text, sizeof(text), AlwaysInterrupted) ==
+            FeatherOS::User::SyscallErrorWouldBlock);
+
+    const std::vector<char> filler(FeatherOS::Pipes::Capacity - 600, 'f');
+    REQUIRE(FeatherOS::Files::Write(&table, writer, filler.data(), filler.size(),
+                                    AlwaysInterrupted) == filler.size());
+    const std::vector<char> rest(1000, 'r');
+    REQUIRE(FeatherOS::Files::Write(&table, writer, rest.data(), rest.size(), AlwaysInterrupted) ==
+            FeatherOS::Pipes::AtomicSize);
+    // 88 bytes are left, too few for a piece of AtomicSize, but enough for a smaller write.
+    REQUIRE(FeatherOS::Files::Write(&table, writer, rest.data(), rest.size(), AlwaysInterrupted) ==
+            FeatherOS::User::SyscallErrorWouldBlock);
+    REQUIRE(FeatherOS::Files::Write(&table, writer, "x", 1, AlwaysInterrupted) == 1);
+
+    std::vector<char> drained(FeatherOS::Pipes::Capacity);
+    REQUIRE(FeatherOS::Files::Read(&table, reader, drained.data(), drained.size(),
+                                   AlwaysInterrupted) == FeatherOS::Pipes::Capacity - 87);
+    REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
+    REQUIRE(FeatherOS::Files::Read(&table, reader, text, sizeof(text), AlwaysInterrupted) == 0);
+    FeatherOS::Files::CloseAll(&table);
+}
+
+TEST_CASE("status flags belong to the open file, which dup and inheritance share")
+{
+    PipeTable pipe;
+    const uint64_t copy = FeatherOS::Files::Duplicate(&pipe.table, pipe.reader, 0, 0);
+    REQUIRE_FALSE(FeatherOS::User::IsSyscallError(copy));
+    FeatherOS::Files::Table child{};
+    FeatherOS::Files::Inherit(&child, &pipe.table);
+
+    // Access flags in the value are ignored; others are refused.
+    REQUIRE(FeatherOS::Files::StatusFlags(&pipe.table, copy, true,
+                                          FeatherOS::User::OpenRead |
+                                              FeatherOS::User::OpenNonBlocking) ==
+            (FeatherOS::User::OpenRead | FeatherOS::User::OpenNonBlocking));
+    REQUIRE(FeatherOS::Files::StatusFlags(&pipe.table, copy, true, FeatherOS::User::OpenCreate) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::StatusFlags(&child, pipe.reader, false, 0) ==
+            (FeatherOS::User::OpenRead | FeatherOS::User::OpenNonBlocking));
+    char text[4];
+    REQUIRE(FeatherOS::Files::Read(&pipe.table, pipe.reader, text, sizeof(text),
+                                   AlwaysInterrupted) == FeatherOS::User::SyscallErrorWouldBlock);
+
+    REQUIRE(FeatherOS::Files::StatusFlags(&child, pipe.reader, true, 0) ==
+            FeatherOS::User::OpenRead);
+    REQUIRE(FeatherOS::Files::Read(&pipe.table, copy, text, sizeof(text), AlwaysInterrupted) ==
+            FeatherOS::User::SyscallErrorInterrupted);
+    REQUIRE(FeatherOS::Files::StatusFlags(&pipe.table, 30, false, 0) ==
+            FeatherOS::User::SyscallErrorBadDescriptor);
+    FeatherOS::Files::CloseAll(&child);
+}
+
+TEST_CASE("the console's status flags cannot change")
+{
+    PipeTable pipe;
+    const uint64_t console = FeatherOS::User::OpenRead | FeatherOS::User::OpenWrite;
+    REQUIRE(FeatherOS::Files::StatusFlags(&pipe.table, FeatherOS::User::StandardInput, false, 0) ==
+            console);
+    REQUIRE(FeatherOS::Files::StatusFlags(&pipe.table, FeatherOS::User::StandardInput, true,
+                                          FeatherOS::User::OpenNonBlocking) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::StatusFlags(&pipe.table, FeatherOS::User::StandardOutput, true,
+                                          console) == console);
 }

@@ -20,6 +20,7 @@ class BootMatrixTests(unittest.TestCase):
         user_preemption_test=False,
         smp_test=False,
         storage_test=False,
+        network_test=False,
         disk_layout="mbr",
         power_test="",
         calc_test=False,
@@ -39,6 +40,7 @@ class BootMatrixTests(unittest.TestCase):
         )
         environment["SMP_TEST"] = "ON" if smp_test else "OFF"
         environment["STORAGE_TEST"] = "ON" if storage_test else "OFF"
+        environment["NETWORK_TEST"] = "ON" if network_test else "OFF"
         environment["DISK_LAYOUT"] = disk_layout
         environment["POWER_TEST"] = power_test
         environment["CALC_TEST"] = "ON" if calc_test else "OFF"
@@ -171,6 +173,12 @@ class BootMatrixTests(unittest.TestCase):
 
     def test_34_aarch64_reboot(self):
         self.run_boot_case("aarch64", power_test="reboot")
+
+    def test_35_x86_64_network(self):
+        self.run_boot_case("x86_64", network_test=True)
+
+    def test_36_aarch64_network(self):
+        self.run_boot_case("aarch64", network_test=True)
 
 
 if __name__ == "__main__":

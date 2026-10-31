@@ -128,7 +128,8 @@ build() {
         -DFEATHEROS_SCHEDULER_TEST="${SCHEDULER_TEST:-OFF}" \
         -DFEATHEROS_USER_PREEMPTION_TEST="${USER_PREEMPTION_TEST:-OFF}" \
         -DFEATHEROS_SMP_TEST="${SMP_TEST:-OFF}" \
-        -DFEATHEROS_STORAGE_TEST="${STORAGE_TEST:-OFF}"
+        -DFEATHEROS_STORAGE_TEST="${STORAGE_TEST:-OFF}" \
+        -DFEATHEROS_NETWORK_TEST="${NETWORK_TEST:-OFF}"
 
     time cmake --build . --parallel
 }
@@ -178,11 +179,13 @@ iso() {
         _err "No user programs in $programs_dir, run './build.sh build' first."
         exit 1
     fi
-    # The initramfs is /system, where each program is a file named after it, as "ls".
-    local system_dir="$build_dir/system"
-    rm -rf "$system_dir"
+    # The initramfs holds /system, where each program is a file named after it, as "ls", and /etc.
+    local root_dir="$build_dir/initramfs"
+    local system_dir="$root_dir/system"
+    rm -rf "$root_dir" "$build_dir/system"
     mkdir -p "$system_dir"
     cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" "$system_dir/"
+    cp -R "$SCRIPT_DIR/initramfs/etc" "$root_dir/"
     local program
     for program in "${programs[@]}"; do
         local name="${program##*/}"
@@ -191,7 +194,7 @@ iso() {
     python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$system_dir/badelf"
     # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
     export COPYFILE_DISABLE=1
-    (cd "$system_dir" && tar -cf "$initramfs_path" -- *)
+    (cd "$root_dir" && tar -cf "$initramfs_path" -- system etc)
     python3 "$SCRIPT_DIR/tools/create_test_disk.py" "$block_image" \
         "$SCRIPT_DIR/initramfs/block.txt" --layout "${DISK_LAYOUT:-mbr}"
 
@@ -210,7 +213,9 @@ iso() {
             -global virtio-mmio.force-legacy=false \
             -device virtio-keyboard-device \
             -drive "if=none,id=featheros_disk,file=$block_image,format=raw" \
-            -device virtio-blk-device,drive=featheros_disk
+            -device virtio-blk-device,drive=featheros_disk \
+            -netdev user,id=featheros_net \
+            -device virtio-net-device,netdev=featheros_net
         if [ ! -s "$dtb_path" ]; then
             _err "QEMU did not generate the AArch64 device tree."
             exit 1
@@ -341,6 +346,9 @@ smoke_test() {
     fi
     if [[ "${SMP_TEST:-OFF}" == ON || "${SMP_TEST:-OFF}" == 1 ]]; then
         smoke_args+=(--expect-smp)
+    fi
+    if [[ "${NETWORK_TEST:-OFF}" == ON || "${NETWORK_TEST:-OFF}" == 1 ]]; then
+        smoke_args+=(--expect-network)
     fi
     if [[ "${USER_PREEMPTION_TEST:-OFF}" == ON || "${USER_PREEMPTION_TEST:-OFF}" == 1 ]]; then
         smoke_args+=(--expect-user-preemption)

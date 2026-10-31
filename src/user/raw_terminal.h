@@ -14,13 +14,16 @@ namespace FeatherOS::User
 class RawTerminal
 {
 public:
-    // False when standard input is not the console, or another group has it.
-    bool Enter();
+    // False when standard input is not the console, or another group has it. With
+    // wake_on_output, ReadKeyWithin(0) also returns without a key after other output (see
+    // FEATHEROS_WAKE_ON_OUTPUT).
+    bool Enter(bool wake_on_output = false);
 
     void Leave();
     // False when a read fails, as after a signal (EINTR); errno says why.
     bool ReadKey(KeyPress* press);
-    // Waits at most tenths of a second, up to 255; *pressed says whether a key came in time.
+    // Waits at most tenths of a second, up to 255 (0 waits for a key); *pressed says whether a key
+    // came in time.
     bool ReadKeyWithin(unsigned tenths, KeyPress* press, bool* pressed);
 
 private:

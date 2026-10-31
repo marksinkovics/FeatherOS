@@ -16,13 +16,16 @@ struct OpenFile
     bool readable;
     bool writable;
     bool append;
+    bool nonblocking;
+    Network::Sockets::Socket* socket;
 };
 
 namespace
 {
 
 constexpr uint64_t KnownFlags = User::OpenRead | User::OpenWrite | User::OpenCreate |
-                                User::OpenTruncate | User::OpenAppend | User::OpenCloseOnExec;
+                                User::OpenTruncate | User::OpenAppend | User::OpenCloseOnExec |
+                                User::OpenNonBlocking;
 constexpr uint32_t MaximumOpenDiskFiles = 64;
 // FAT16 directory clusters fit in 16 bits, so disk keys never set the top bit.
 constexpr uint64_t MemoryKeyBit = 1ULL << 63;
@@ -43,7 +46,7 @@ constinit Sync::Mutex file_system_lock;
 DiskFileUse disk_files[MaximumOpenDiskFiles];
 uint32_t disk_file_count = 0;
 // Every process's console descriptors share this one, which is never freed.
-OpenFile console = {{}, nullptr, 1, Kind::Console, true, true, false};
+OpenFile console = {{}, nullptr, 1, Kind::Console, true, true, false, false, nullptr};
 
 uint64_t UseKey(const VFS::FileHandle& handle)
 {
@@ -138,6 +141,12 @@ void ReleaseLocked(OpenFile* file)
     if (file->kind == Kind::Pipe)
     {
         Pipes::CloseEnd(file->pipe, file->writable);
+        Memory::Deallocate(file);
+        return;
+    }
+    if (file->kind == Kind::Socket)
+    {
+        Network::Sockets::Close(file->socket);
         Memory::Deallocate(file);
         return;
     }
@@ -350,6 +359,8 @@ uint64_t Open(Table* table, const char* path, uint64_t flags)
     file->readable = (flags & User::OpenRead) != 0;
     file->writable = writable;
     file->append = (flags & User::OpenAppend) != 0;
+    file->nonblocking = (flags & User::OpenNonBlocking) != 0;
+    file->socket = nullptr;
     Slot& slot = table->slots[descriptor];
     slot = {file, (flags & User::OpenCloseOnExec) != 0};
     if ((flags & User::OpenTruncate) != 0 && !VFS::Truncate(&file->handle, 0))
@@ -362,7 +373,7 @@ uint64_t Open(Table* table, const char* path, uint64_t flags)
 
 // The pipe stays allocated while the caller waits on it: the caller's own descriptor holds a
 // reference, and only the caller can close that.
-Pipes::Pipe* FindPipe(Table* table, uint64_t descriptor, bool write_end)
+Pipes::Pipe* FindPipe(Table* table, uint64_t descriptor, bool write_end, bool* nonblocking)
 {
     Sync::MutexGuard guard(file_system_lock);
     Slot* slot = FindSlot(table, descriptor);
@@ -370,6 +381,7 @@ Pipes::Pipe* FindPipe(Table* table, uint64_t descriptor, bool write_end)
     {
         return nullptr;
     }
+    *nonblocking = slot->file->nonblocking;
     return slot->file->pipe;
 }
 
@@ -378,9 +390,10 @@ uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
 {
     if (KindOf(table, descriptor) == Kind::Pipe)
     {
-        Pipes::Pipe* pipe = FindPipe(table, descriptor, false);
+        bool nonblocking = false;
+        Pipes::Pipe* pipe = FindPipe(table, descriptor, false, &nonblocking);
         return pipe == nullptr ? User::SyscallErrorBadDescriptor
-                               : Pipes::Read(pipe, buffer, length, interrupted);
+                               : Pipes::Read(pipe, buffer, length, interrupted, nonblocking);
     }
     Sync::MutexGuard guard(file_system_lock);
     OpenFile* file = FindFile(table, descriptor);
@@ -398,9 +411,10 @@ uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t l
 {
     if (KindOf(table, descriptor) == Kind::Pipe)
     {
-        Pipes::Pipe* pipe = FindPipe(table, descriptor, true);
+        bool nonblocking = false;
+        Pipes::Pipe* pipe = FindPipe(table, descriptor, true, &nonblocking);
         return pipe == nullptr ? User::SyscallErrorBadDescriptor
-                               : Pipes::Write(pipe, buffer, length, interrupted);
+                               : Pipes::Write(pipe, buffer, length, interrupted, nonblocking);
     }
     Sync::MutexGuard guard(file_system_lock);
     OpenFile* file = FindFile(table, descriptor);
@@ -419,22 +433,24 @@ uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t l
     return complete || bytes_written > 0 ? bytes_written : User::SyscallErrorFailed;
 }
 
-// Field by field: assigning the whole open file at once would need memset, which the kernel
-// lacks.
-void SetPipeEnd(OpenFile* file, Pipes::Pipe* pipe, bool write_end)
+void SetPipeEnd(OpenFile* file, Pipes::Pipe* pipe, bool write_end, bool nonblocking)
 {
-    file->handle = {};
-    file->pipe = pipe;
-    file->references = 1;
-    file->kind = Kind::Pipe;
-    file->readable = !write_end;
-    file->writable = write_end;
-    file->append = false;
+    *file = {
+        .handle = {},
+        .pipe = pipe,
+        .references = 1,
+        .kind = Kind::Pipe,
+        .readable = !write_end,
+        .writable = write_end,
+        .append = false,
+        .nonblocking = nonblocking,
+        .socket = nullptr,
+    };
 }
 
 uint64_t CreatePipe(Table* table, uint64_t flags, uint64_t* read_end, uint64_t* write_end)
 {
-    if ((flags & ~User::PipeCloseOnExec) != 0)
+    if ((flags & ~(User::PipeCloseOnExec | User::PipeNonBlocking)) != 0)
     {
         return User::SyscallErrorInvalidArgument;
     }
@@ -461,13 +477,93 @@ uint64_t CreatePipe(Table* table, uint64_t flags, uint64_t* read_end, uint64_t* 
         }
         return User::SyscallErrorNoMemory;
     }
-    SetPipeEnd(reading, pipe, false);
-    SetPipeEnd(writing, pipe, true);
+    const bool nonblocking = (flags & User::PipeNonBlocking) != 0;
+    SetPipeEnd(reading, pipe, false, nonblocking);
+    SetPipeEnd(writing, pipe, true, nonblocking);
     const bool close_on_exec = (flags & User::PipeCloseOnExec) != 0;
     table->slots[reader] = {reading, close_on_exec};
     table->slots[writer] = {writing, close_on_exec};
     *read_end = reader;
     *write_end = writer;
+    return 0;
+}
+
+uint64_t CreateSocket(Table* table, uint64_t family, uint64_t type, uint64_t protocol)
+{
+    Network::Sockets::Socket* socket = nullptr;
+    const uint64_t result = Network::Sockets::Create(family, type, protocol, &socket);
+    if (User::IsSyscallError(result))
+    {
+        return result;
+    }
+    return AddSocket(table, socket, type & (User::SocketCloseOnExec | User::SocketNonBlocking));
+}
+
+uint64_t AddSocket(Table* table, Network::Sockets::Socket* socket, uint64_t flags)
+{
+    Sync::MutexGuard guard(file_system_lock);
+    const uint64_t descriptor = FreeSlotLocked(table, 0);
+    auto* file = User::IsSyscallError(descriptor)
+                     ? nullptr
+                     : static_cast<OpenFile*>(Memory::Allocate(sizeof(OpenFile)));
+    if (file == nullptr)
+    {
+        Network::Sockets::Close(socket);
+        return User::IsSyscallError(descriptor) ? descriptor : User::SyscallErrorNoMemory;
+    }
+    file->handle = {};
+    file->pipe = nullptr;
+    file->references = 1;
+    file->kind = Kind::Socket;
+    file->readable = true;
+    file->writable = true;
+    file->append = false;
+    file->nonblocking = (flags & User::SocketNonBlocking) != 0;
+    file->socket = socket;
+    table->slots[descriptor] = {file, (flags & User::SocketCloseOnExec) != 0};
+    return descriptor;
+}
+
+int16_t PollEvents(Table* table, uint64_t descriptor)
+{
+    Sync::MutexGuard guard(file_system_lock);
+    const Slot* slot = FindSlot(table, descriptor);
+    if (slot == nullptr)
+    {
+        return User::PollInvalid;
+    }
+    const OpenFile* file = slot->file;
+    switch (file->kind)
+    {
+    case Kind::Pipe:
+        return Pipes::PollEvents(file->pipe, file->writable);
+    case Kind::Socket:
+        return Network::Sockets::PollEvents(file->socket);
+    default:
+        // Files never make a reader or writer wait.
+        return static_cast<int16_t>((file->readable ? User::PollReadable : 0) |
+                                    (file->writable ? User::PollWritable : 0));
+    }
+}
+
+uint64_t FindSocket(Table* table, uint64_t descriptor, Network::Sockets::Socket** socket,
+                    bool* nonblocking)
+{
+    Sync::MutexGuard guard(file_system_lock);
+    const Slot* slot = FindSlot(table, descriptor);
+    if (slot == nullptr)
+    {
+        return User::SyscallErrorBadDescriptor;
+    }
+    if (slot->file->kind != Kind::Socket)
+    {
+        return User::SyscallErrorNotSocket;
+    }
+    *socket = slot->file->socket;
+    if (nonblocking != nullptr)
+    {
+        *nonblocking = slot->file->nonblocking;
+    }
     return 0;
 }
 
@@ -576,6 +672,41 @@ uint64_t DescriptorFlags(Table* table, uint64_t descriptor, bool set, uint64_t v
         slot->close_on_exec = (value & User::DescriptorCloseOnExec) != 0;
     }
     return slot->close_on_exec ? User::DescriptorCloseOnExec : 0;
+}
+
+uint64_t StatusFlags(Table* table, uint64_t descriptor, bool set, uint64_t value)
+{
+    constexpr uint64_t Changeable = User::OpenAppend | User::OpenNonBlocking;
+    if (set && (value & ~(Changeable | User::OpenRead | User::OpenWrite)) != 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    Slot* slot = FindSlot(table, descriptor);
+    if (slot == nullptr)
+    {
+        return User::SyscallErrorBadDescriptor;
+    }
+    OpenFile* file = slot->file;
+    if (set)
+    {
+        // Every process shares the console's open file, so one program's flags would change
+        // everyone's.
+        if (file == &console)
+        {
+            if ((value & Changeable) != 0)
+            {
+                return User::SyscallErrorInvalidArgument;
+            }
+        }
+        else
+        {
+            file->append = (value & User::OpenAppend) != 0;
+            file->nonblocking = (value & User::OpenNonBlocking) != 0;
+        }
+    }
+    return (file->readable ? User::OpenRead : 0) | (file->writable ? User::OpenWrite : 0) |
+           (file->append ? User::OpenAppend : 0) | (file->nonblocking ? User::OpenNonBlocking : 0);
 }
 
 uint64_t CountOpen(const Table* table)
@@ -805,6 +936,11 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
     if (file->kind == Kind::Pipe)
     {
         *status = {Pipes::Buffered(file->pipe), User::FileType::Pipe, !file->writable};
+        return 0;
+    }
+    if (file->kind == Kind::Socket)
+    {
+        *status = {0, User::FileType::Socket, false};
         return 0;
     }
     status->type = file->handle.kind == VFS::FileKind::Device ? User::FileType::Device

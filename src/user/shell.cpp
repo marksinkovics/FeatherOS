@@ -116,7 +116,7 @@ bool ReadCommandLine(const char* prompt, char* line, size_t size, LineHistory* h
 {
     fflush(stdout);
     RawTerminal terminal;
-    if (!terminal.Enter())
+    if (!terminal.Enter(true))
     {
         return featheros_read_line(prompt, line, size) >= 0;
     }
@@ -129,12 +129,18 @@ bool ReadCommandLine(const char* prompt, char* line, size_t size, LineHistory* h
         write(STDOUT_FILENO, editor.Output(), editor.OutputLength());
         editor.ClearOutput();
         KeyPress press;
-        if (!terminal.ReadKey(&press))
+        bool pressed = false;
+        if (!terminal.ReadKeyWithin(0, &press, &pressed))
         {
             const int error = errno;
             terminal.Leave();
             errno = error;
             return false;
+        }
+        if (!pressed)
+        {
+            editor.Redraw();
+            continue;
         }
         const LineEditor::Status status = editor.Press(press);
         if (status == LineEditor::Status::Accepted)
@@ -665,13 +671,13 @@ int main(int argc, char** argv)
         {
             puts("Commands: calc [expression], date, echo <words...>, fanout <n>, "
                  "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
-                 "sleep <ms>, threads <threads> [limit], upper, uptime, filetest, fptest, "
+                 "sleep <seconds>, threads <threads> [limit], upper, uptime, filetest, fptest, "
                  "libctest, ls, cat <file>, write [-a] "
                  "<file> <text>, "
                  "rm <file>, cp <source> <target>, mv <source> <target>, touch <file>, head, tail, "
                  "wc, grep <text>, sort, "
                  "mkdir <dir>, rmdir <dir>, env, kill [-signal] <pid>, ps, keys, clear, "
-                 "vi [file], "
+                 "vi [file], ping [-6] [-c count] <host>, host [-4|-6] <name>, net, dhcp, "
                  "top [-n "
                  "count], cd [dir], pwd, "
                  "jobs, "

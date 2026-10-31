@@ -144,6 +144,41 @@ TEST_CASE("terminal rendering keeps padding around the status bar and text")
     REQUIRE(lit_pixels > 0);
 }
 
+TEST_CASE("status text draws green and red dots in place of their marker bytes")
+{
+    constexpr uint64_t width = 320;
+    constexpr uint64_t height = 80;
+    constexpr uint64_t pitch = width * 4;
+    std::array<uint8_t, width * height * 4> pixels{};
+    limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, pitch, 32);
+    Framebuffer framebuffer;
+    REQUIRE(framebuffer.init(&descriptor));
+    FeatherOS::Term terminal;
+    terminal.Init(&framebuffer);
+
+    const auto count_pixels = [&](uint32_t color)
+    {
+        size_t count = 0;
+        for (uint64_t offset = 0; offset < pixels.size(); offset += 4)
+        {
+            const uint32_t pixel = pixels[offset] | (pixels[offset + 1] << 8) |
+                                   (pixels[offset + 2] << 16);
+            count += pixel == color;
+        }
+        return count;
+    };
+    const std::string green = {'1', '/', '4', ' ', ' ', FeatherOS::Term::StatusGreenDot};
+    terminal.SetStatus("shell", green.c_str());
+    REQUIRE(terminal.CharacterAt(0, terminal.Columns() - 2) == FeatherOS::Term::StatusGreenDot);
+    REQUIRE(count_pixels(0x00A000) > 20);
+    REQUIRE(count_pixels(0xD00000) == 0);
+
+    const std::string red = {'1', '/', '4', ' ', ' ', FeatherOS::Term::StatusRedDot};
+    terminal.SetStatus("shell", red.c_str());
+    REQUIRE(count_pixels(0x00A000) == 0);
+    REQUIRE(count_pixels(0xD00000) > 20);
+}
+
 TEST_CASE("terminal places status text at the bar's edges and input inline")
 {
     constexpr uint64_t width = 320;

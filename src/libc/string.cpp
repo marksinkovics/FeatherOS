@@ -436,6 +436,63 @@ char* strerror(int error)
     case ETIMEDOUT:
         message = "Connection timed out";
         break;
+    case ENOTSOCK:
+        message = "Socket operation on non-socket";
+        break;
+    case EDESTADDRREQ:
+        message = "Destination address required";
+        break;
+    case EMSGSIZE:
+        message = "Message too long";
+        break;
+    case ENOPROTOOPT:
+        message = "Protocol not available";
+        break;
+    case EPROTONOSUPPORT:
+        message = "Protocol not supported";
+        break;
+    case EOPNOTSUPP:
+        message = "Operation not supported";
+        break;
+    case EAFNOSUPPORT:
+        message = "Address family not supported by protocol";
+        break;
+    case EADDRINUSE:
+        message = "Address already in use";
+        break;
+    case EADDRNOTAVAIL:
+        message = "Cannot assign requested address";
+        break;
+    case ENETDOWN:
+        message = "Network is down";
+        break;
+    case ENETUNREACH:
+        message = "Network is unreachable";
+        break;
+    case ECONNRESET:
+        message = "Connection reset by peer";
+        break;
+    case ENOBUFS:
+        message = "No buffer space available";
+        break;
+    case EISCONN:
+        message = "Transport endpoint is already connected";
+        break;
+    case ENOTCONN:
+        message = "Transport endpoint is not connected";
+        break;
+    case ECONNREFUSED:
+        message = "Connection refused";
+        break;
+    case EHOSTUNREACH:
+        message = "No route to host";
+        break;
+    case EALREADY:
+        message = "Operation already in progress";
+        break;
+    case EINPROGRESS:
+        message = "Operation now in progress";
+        break;
     case EDEADLK:
         message = "Resource deadlock avoided";
         break;

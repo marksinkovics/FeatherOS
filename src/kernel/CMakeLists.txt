@@ -15,6 +15,9 @@ if (ARCH STREQUAL "x86_64")
         ${SRCROOT}/arch/x86_64/thread_pointer.cpp
         ${SRCROOT}/arch/x86_64/keyboard.cpp
         ${SRCROOT}/arch/x86_64/block_device.cpp
+        ${SRCROOT}/arch/x86_64/pci.cpp
+        ${SRCROOT}/arch/x86_64/port_io.cpp
+        ${SRCROOT}/arch/x86_64/virtio_net.cpp
         ${SRCROOT}/arch/x86_64/rtc.cpp
         ${SRCROOT}/arch/x86_64/power.cpp
     )
@@ -32,6 +35,8 @@ elseif (ARCH STREQUAL "aarch64")
         ${SRCROOT}/arch/aarch64/thread_pointer.cpp
         ${SRCROOT}/arch/aarch64/keyboard.cpp
         ${SRCROOT}/arch/aarch64/block_device.cpp
+        ${SRCROOT}/arch/aarch64/virtio_mmio.cpp
+        ${SRCROOT}/arch/aarch64/virtio_net.cpp
         ${SRCROOT}/arch/aarch64/rtc.cpp
         ${SRCROOT}/arch/aarch64/power.cpp
     )
@@ -55,6 +60,7 @@ set(SRC
     ${SRCROOT}/files.cpp
     ${SRCROOT}/futex.cpp
     ${SRCROOT}/pipe.cpp
+    ${SRCROOT}/poll.cpp
     ${SRCROOT}/signals.cpp
     ${SRCROOT}/power.cpp
     ${SRCROOT}/process.cpp
@@ -65,10 +71,12 @@ set(SRC
     ${SRCROOT}/cpu.cpp
     ${SRCROOT}/syscall.cpp
     ${SRCROOT}/string/format.cpp
+    ${SRCROOT}/string/memory_functions.cpp
     ${SRCROOT}/thread_local_storage.cpp
     ${SRCROOT}/thread_stacks.cpp
     ${SRCROOT}/../user/calendar.cpp
     ${SRCROOT}/time/timer.cpp
+    ${SRCROOT}/time/wall_clock.cpp
     ${SERIAL_SRC}
     ${TIMER_SRC}
     ${VIRTUAL_MEMORY_SRC}
@@ -82,6 +90,26 @@ set(SRC
     ${SRCROOT}/filesystem/fat_names.cpp
     ${SRCROOT}/filesystem/path.cpp
     ${SRCROOT}/storage/partition.cpp
+    ${SRCROOT}/network/address.cpp
+    ${SRCROOT}/network/arp.cpp
+    ${SRCROOT}/network/checksum.cpp
+    ${SRCROOT}/network/device.cpp
+    ${SRCROOT}/network/ethernet.cpp
+    ${SRCROOT}/network/icmp.cpp
+    ${SRCROOT}/network/icmpv6.cpp
+    ${SRCROOT}/network/interface.cpp
+    ${SRCROOT}/network/ip.cpp
+    ${SRCROOT}/network/ipv4.cpp
+    ${SRCROOT}/network/ipv6.cpp
+    ${SRCROOT}/network/name_servers.cpp
+    ${SRCROOT}/network/neighbor_cache.cpp
+    ${SRCROOT}/network/neighbor_discovery.cpp
+    ${SRCROOT}/network/settings.cpp
+    ${SRCROOT}/network/socket.cpp
+    ${SRCROOT}/network/tcp.cpp
+    ${SRCROOT}/network/tcp_connection.cpp
+    ${SRCROOT}/network/udp.cpp
+    ${SRCROOT}/virtio/virtqueue.cpp
     ${SRCROOT}/filesystem/devices.cpp
     ${SRCROOT}/filesystem/procfs.cpp
     ${SRCROOT}/filesystem/tmpfs.cpp

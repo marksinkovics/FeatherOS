@@ -42,12 +42,18 @@ public:
     // Back to the main screen and normal video with the cursor enabled, as after a full-screen
     // program that did not restore them.
     void ResetModes();
+    // In status text, a cell that shows a green or red dot instead of a character.
+    static const char StatusGreenDot = '\x01';
+    static const char StatusRedDot = '\x02';
+
     // The top row: left text from its start, right text against its end.
     void SetStatus(const char* left, const char* right);
     uint8_t CharacterAt(uint32_t row, uint32_t column) const;
     bool ReversedAt(uint32_t row, uint32_t column) const;
     uint32_t CursorRow() const;
     uint32_t CursorColumn() const;
+    // Grows with every Print and PrintLn, so a reader can tell that output arrived meanwhile.
+    uint64_t OutputCount() const;
     // The text area below the status bar.
     uint32_t ContentRows() const;
     uint32_t Columns() const;
@@ -61,6 +67,9 @@ private:
     static const uint32_t FirstContentRow = 1;
     static const uint32_t MaximumParameters = 4;
     static const uint8_t Reverse = 1;
+    // Darker than pure green and red, so both stand out on the white bar.
+    static const uint32_t DotGreen = 0x00A000;
+    static const uint32_t DotRed = 0xD00000;
 
     enum class EscapeState : uint8_t
     {
@@ -100,6 +109,7 @@ private:
     uint32_t m_fg_color = FeatherOS::Color::FGColor;
     uint32_t m_rows = 0;
     uint32_t m_columns = 0;
+    uint64_t m_output_count = 0;
     uint32_t m_row_offset = 0;
     uint32_t m_column_offset = 0;
 
@@ -122,6 +132,7 @@ private:
     void Scroll();
     void ApplyPendingScroll();
     void DrawCell(uint32_t row, uint32_t column);
+    void DrawDot(uint32_t x, uint32_t y, uint32_t color);
     void MarkDirty(uint32_t row, uint32_t* dirty_top, uint32_t* dirty_bottom) const;
     bool CursorAt(uint32_t row, uint32_t column) const;
 };

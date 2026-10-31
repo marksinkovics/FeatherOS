@@ -95,6 +95,30 @@ struct Handlers
     uint64_t (*futex_wake)(void* context, uint64_t address, uint64_t count) = nullptr;
     uint64_t (*thread_detach)(void* context, uint64_t thread) = nullptr;
     uint64_t (*rename)(void* context, uint64_t from, uint64_t to) = nullptr;
+    uint64_t (*socket)(void* context, uint64_t family, uint64_t type, uint64_t protocol) = nullptr;
+    uint64_t (*bind)(void* context, uint64_t descriptor, uint64_t address) = nullptr;
+    uint64_t (*send_to)(void* context, uint64_t descriptor, uint64_t message,
+                        uint64_t flags) = nullptr;
+    uint64_t (*receive_from)(void* context, uint64_t descriptor, uint64_t message,
+                             uint64_t flags) = nullptr;
+    uint64_t (*set_socket_option)(void* context, uint64_t descriptor, uint64_t option,
+                                  uint64_t value) = nullptr;
+    uint64_t (*network_settings)(void* context, uint64_t new_settings, uint64_t old_settings,
+                                 uint64_t changes) = nullptr;
+    uint64_t (*connect)(void* context, uint64_t descriptor, uint64_t address) = nullptr;
+    uint64_t (*listen)(void* context, uint64_t descriptor, uint64_t backlog) = nullptr;
+    uint64_t (*accept)(void* context, uint64_t descriptor, uint64_t address,
+                       uint64_t flags) = nullptr;
+    uint64_t (*shutdown_socket)(void* context, uint64_t descriptor, uint64_t how) = nullptr;
+    uint64_t (*socket_name)(void* context, uint64_t descriptor, uint64_t address,
+                            uint64_t peer) = nullptr;
+    uint64_t (*poll)(void* context, uint64_t descriptors, uint64_t count,
+                     uint64_t milliseconds) = nullptr;
+    uint64_t (*set_clock)(void* context, uint64_t nanoseconds) = nullptr;
+    uint64_t (*file_status_flags)(void* context, uint64_t descriptor, uint64_t set,
+                                  uint64_t flags) = nullptr;
+    uint64_t (*get_socket_option)(void* context, uint64_t descriptor, uint64_t option,
+                                  uint64_t value) = nullptr;
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

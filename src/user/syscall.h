@@ -62,7 +62,7 @@ inline uint64_t Wait(uint64_t process_id, uint64_t* status, uint64_t flags = 0)
     return Syscall(SyscallNumber::Wait, process_id, reinterpret_cast<uint64_t>(status), flags);
 }
 
-// Returns the current UTC time in seconds since 1970-01-01, or a syscall error.
+// Returns the current UTC time in nanoseconds since 1970-01-01, or a syscall error.
 inline uint64_t ReadClock()
 {
     return Syscall(SyscallNumber::ReadClock);
@@ -176,6 +176,11 @@ inline uint64_t DescriptorFlags(uint64_t descriptor, bool set, uint64_t flags)
     return Syscall(SyscallNumber::DescriptorFlags, descriptor, set ? 1 : 0, flags);
 }
 
+inline uint64_t FileStatusFlags(uint64_t descriptor, bool set, uint64_t flags)
+{
+    return Syscall(SyscallNumber::FileStatusFlags, descriptor, set ? 1 : 0, flags);
+}
+
 inline uint64_t CreatePipe(uint64_t (&descriptors)[2], uint64_t flags)
 {
     return Syscall(SyscallNumber::Pipe, reinterpret_cast<uint64_t>(descriptors), flags);
@@ -199,6 +204,82 @@ inline uint64_t ProcessId()
 inline uint64_t ParentProcessId()
 {
     return Syscall(SyscallNumber::ParentProcessId);
+}
+
+inline uint64_t CreateSocket(uint64_t family, uint64_t type, uint64_t protocol)
+{
+    return Syscall(SyscallNumber::Socket, family, type, protocol);
+}
+
+inline uint64_t Bind(uint64_t descriptor, const SocketAddress* address)
+{
+    return Syscall(SyscallNumber::Bind, descriptor, reinterpret_cast<uint64_t>(address));
+}
+
+inline uint64_t SendTo(uint64_t descriptor, const SocketMessage* message, uint64_t flags)
+{
+    return Syscall(SyscallNumber::SendTo, descriptor, reinterpret_cast<uint64_t>(message), flags);
+}
+
+inline uint64_t ReceiveFrom(uint64_t descriptor, const SocketMessage* message, uint64_t flags)
+{
+    return Syscall(SyscallNumber::ReceiveFrom, descriptor, reinterpret_cast<uint64_t>(message),
+                   flags);
+}
+
+inline uint64_t SetSocketOption(uint64_t descriptor, uint64_t option, uint64_t value)
+{
+    return Syscall(SyscallNumber::SetSocketOption, descriptor, option, value);
+}
+
+inline uint64_t GetSocketOption(uint64_t descriptor, uint64_t option, uint64_t* value)
+{
+    return Syscall(SyscallNumber::GetSocketOption, descriptor, option,
+                   reinterpret_cast<uint64_t>(value));
+}
+
+inline uint64_t ExchangeNetworkSettings(const NetworkSettings* new_settings,
+                                        NetworkSettings* old_settings, uint64_t changes)
+{
+    return Syscall(SyscallNumber::NetworkSettings, reinterpret_cast<uint64_t>(new_settings),
+                   reinterpret_cast<uint64_t>(old_settings), changes);
+}
+
+inline uint64_t Connect(uint64_t descriptor, const SocketAddress* address)
+{
+    return Syscall(SyscallNumber::Connect, descriptor, reinterpret_cast<uint64_t>(address));
+}
+
+inline uint64_t Listen(uint64_t descriptor, uint64_t backlog)
+{
+    return Syscall(SyscallNumber::Listen, descriptor, backlog);
+}
+
+inline uint64_t Accept(uint64_t descriptor, SocketAddress* address, uint64_t flags)
+{
+    return Syscall(SyscallNumber::Accept, descriptor, reinterpret_cast<uint64_t>(address), flags);
+}
+
+inline uint64_t ShutdownSocket(uint64_t descriptor, uint64_t how)
+{
+    return Syscall(SyscallNumber::ShutdownSocket, descriptor, how);
+}
+
+inline uint64_t SocketName(uint64_t descriptor, SocketAddress* address, bool peer)
+{
+    return Syscall(SyscallNumber::SocketName, descriptor, reinterpret_cast<uint64_t>(address),
+                   peer ? 1 : 0);
+}
+
+inline uint64_t PollDescriptors(PollDescriptor* descriptors, uint64_t count, uint64_t milliseconds)
+{
+    return Syscall(SyscallNumber::Poll, reinterpret_cast<uint64_t>(descriptors), count,
+                   milliseconds);
+}
+
+inline uint64_t SetClock(uint64_t nanoseconds)
+{
+    return Syscall(SyscallNumber::SetClock, nanoseconds);
 }
 
 } // namespace FeatherOS::User

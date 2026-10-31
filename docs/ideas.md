@@ -17,6 +17,7 @@ These are directions that are not scheduled yet. The planned milestones are in [
 Moved out of M11 to keep it focused; each can come back as a milestone of its own.
 - **A `cron` service.** A `crond` program that init runs as a `respawn` service. It reads a `/system/crontab`, or `cron` lines in `init.conf`, in the five-field form `minute hour day month weekday command`, with `*`, lists, ranges and steps (`*/5`) and `@hourly`-style shortcuts, all in UTC. It sleeps until the next due minute, starts each job in the background with `posix_spawn` and logs its exit status as init does; missed runs are not caught up. The parser and the next-run calculation are host-testable, and a QEMU test needs a seconds field or a test clock, since it cannot wait whole minutes.
 - **Packaging programs.** A package format on the USTAR reader the initramfs already uses, a host tool that builds packages, and `pkg install`, `remove` and `list`, which unpack into `/bin` and record what each package installed. Needs programs on the disk (M11 Part 10).
+- **Setting the clock at boot.** init runs `ntp -q` (M10 Part 8) after `dhcp` through a new `background` policy: it starts once after the `once` services, does not hold the console and is not restarted. A plain `once ntp` would hold up the shell when nothing answers, for about 16 s while `getaddrinfo` asks both name servers twice for A and AAAA, or 6 s per address when DNS works but NTP does not. A new `-q` makes `ntp` silent so its lines never land on the prompt, leaving only its exit status; `ntp -n` and `date` show the result later. QEMU test builds leave the line out of `init.conf`, so the tests never reach the real `pool.ntp.org` and offline boots do not wait. Saving the time to the RTC (CMOS on x86-64, the PL031's load register on AArch64), so it survives a reboot, fits here too.
 - **A more capable `calc`.**
   - **Operators:** `^`, `%`, factorial and bitwise integer operations.
   - **Functions and constants:** `sqrt`, `sin`, `cos`, `tan`, `log`, `exp` and `abs`, from `math.h`, with `pi` and `e`. These switch to floating point, while plain arithmetic stays exact.
@@ -29,6 +30,7 @@ Moved out of M11 to keep it focused; each can come back as a milestone of its ow
 
 - **TLS 1.3:** our own SHA-256, HMAC/HKDF, ChaCha20-Poly1305 and AES-GCM, X25519, and certificate-chain checks with a built-in root-certificate list. Fine for a hobby OS, but not trusted with real secrets.
 - **HTTP/1.1 client and JSON parser,** shared by `fetch`, the Claude client and the browser.
+- **Remote shell** (was M10 Part 9; needs M23's pseudo-terminals): `telnetd -p port` accepts a TCP connection, opens a pty, starts a shell on its slave side in a new session, and relays between the socket and the master with `poll`, a thread per connection. It speaks enough Telnet for the host's `telnet` to work: ECHO and SUPPRESS-GO-AHEAD for character-at-a-time input, and NAWS, which turns the client's window size into `TIOCSWINSZ` on the master. The test reaches it from the harness through `hostfwd`, runs commands, interrupts a `sleep` with Ctrl+C and resizes the window. There is no encryption or authentication, which is fine while the only way in is `hostfwd` to the host's loopback; a password file would be a cheap guard, and SSH needs the TLS-era cryptography first.
 - **Browser, in stages:**
   1. a text browser like lynx (HTML to text, links, forms)
   2. a graphical browser with an HTML subset, CSS block and inline layout, and images
@@ -78,12 +80,19 @@ Moved out of M11 to keep it focused; each can come back as a milestone of its ow
 ## Storage
 
 - **File timestamps** set from the RTC, and shown by `ls`.
+- **A persistent `/etc`.** Since M10 Part 10, `/etc` is a RAM copy of the initramfs's `etc/` (`VFS::LoadEtc` into tmpfs's second root). That is a stopgap with real limits. Edits to `hosts` or `resolv.conf` are lost at every reboot. Every boot copies the files into the heap, and they share `/tmp`'s 128 entries and 4 MiB. Only files directly in `etc/` are copied, not subdirectories. The only way to change the defaults is to rebuild the initramfs. Better options, roughly in order of effort:
+  - `/etc` on the disk, filled from the initramfs only on a first boot or when a file is missing.
+  - An overlay mount, where reads fall through to the initramfs and the first write copies the file up to the disk, so deleting the disk copy restores the default.
+  - A separate configuration partition.
+
+  Each one needs a fallback for boots without a disk, which the QEMU tests do today.
 - **FeatherFS:** a filesystem of our own design with journaling, so files survive a crash in the middle of a write.
 - **Page cache:** keep recently read disk blocks in memory so repeated reads don't go to the disk.
 
 ## Graphics And Sound
 
 - **Graphical desktop:** windowing and user-facing graphics on top of the framebuffer and input systems.
+  - **Terminal windows,** as on macOS: a user-space terminal program per window holds a pty master (M23), parses VT100 with the code moved out of the kernel's `term.cpp`, and draws into its window, so several shells run side by side. The kernel keeps only a minimal console for boot messages and panics.
 - **Framebuffer API for user programs,** with double buffering and a mouse cursor, once a USB or PS/2 mouse is supported.
 - **Image viewer:** BMP first, then PNG with our own DEFLATE decompressor.
 - **Games:** snake, tetris, and a Wolfenstein-style raycaster.

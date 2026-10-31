@@ -1,5 +1,6 @@
 #include "syscall.h"
 
+#include <arpa/inet.h>
 #include <assert.h>
 #include <ctype.h>
 #include <dirent.h>
@@ -8,6 +9,9 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
 #include <sched.h>
@@ -20,7 +24,9 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/reboot.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
@@ -34,9 +40,10 @@ constexpr char Help[] =
     "Checks the C library: startup and arguments, constructors, string.h, ctype.h,\n"
     "stdlib.h, errno, setjmp, exit handlers, the console descriptors, stat, process\n"
     "IDs, the environment, the heap, stdio, files and directories, /dev, /tmp,\n"
-    "/proc, time, posix_spawn with file actions, dup, fcntl, pipes, the FeatherOS\n"
-    "extensions, and floating point. It asks for three lines of input at \"> \"\n"
-    "prompts.";
+    "/proc, getnameinfo, time, posix_spawn with file actions, dup, fcntl, pipes,\n"
+    "non-blocking pipes and loopback sockets, the FeatherOS extensions, and floating\n"
+    "point. It asks for three lines of input\n"
+    "at \"> \" prompts.";
 
 #if defined(__x86_64__)
 constexpr uintptr_t KernelAddress = 0xFFFF800000000000;
@@ -780,6 +787,47 @@ bool FileContains(const char* path, const char* text)
     return strstr(contents, text) != nullptr;
 }
 
+// Only numeric output and names /etc/hosts lists, so no name server is asked.
+void CheckAddressNames()
+{
+    sockaddr_in ipv4 = {};
+    ipv4.sin_family = AF_INET;
+    ipv4.sin_port = htons(8080);
+    inet_pton(AF_INET, "10.0.2.15", &ipv4.sin_addr);
+    const auto* address = reinterpret_cast<const sockaddr*>(&ipv4);
+    char host[NI_MAXHOST];
+    char service[NI_MAXSERV];
+    Check(getnameinfo(address, sizeof(ipv4), host, sizeof(host), service, sizeof(service),
+                      NI_NUMERICHOST | NI_NUMERICSERV) == 0 &&
+              strcmp(host, "10.0.2.15") == 0 && strcmp(service, "8080") == 0,
+          "getnameinfo numeric IPv4");
+    Check(getnameinfo(address, sizeof(ipv4), host, 9, nullptr, 0, NI_NUMERICHOST) == EAI_OVERFLOW &&
+              getnameinfo(address, sizeof(ipv4), nullptr, 0, service, 4, 0) == EAI_OVERFLOW,
+          "getnameinfo overflow");
+    Check(getnameinfo(address, sizeof(ipv4) - 1, host, sizeof(host), nullptr, 0, 0) == EAI_FAMILY &&
+              getnameinfo(address, sizeof(ipv4), host, sizeof(host), nullptr, 0, 0x100) ==
+                  EAI_BADFLAGS &&
+              getnameinfo(address, sizeof(ipv4), nullptr, 0, nullptr, 0, 0) == EAI_NONAME,
+          "getnameinfo errors");
+    ipv4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    Check(getnameinfo(address, sizeof(ipv4), host, sizeof(host), nullptr, 0, NI_NAMEREQD) == 0 &&
+              strcmp(host, "localhost") == 0,
+          "getnameinfo from /etc/hosts");
+
+    sockaddr_in6 ipv6 = {};
+    ipv6.sin6_family = AF_INET6;
+    inet_pton(AF_INET6, "fe80::1", &ipv6.sin6_addr);
+    address = reinterpret_cast<const sockaddr*>(&ipv6);
+    Check(getnameinfo(address, sizeof(ipv6), host, sizeof(host), service, sizeof(service),
+                      NI_NUMERICHOST) == 0 &&
+              strcmp(host, "fe80::1") == 0 && strcmp(service, "0") == 0,
+          "getnameinfo numeric IPv6");
+    ipv6.sin6_addr = in6addr_loopback;
+    Check(getnameinfo(address, sizeof(ipv6), host, sizeof(host), nullptr, 0, 0) == 0 &&
+              strcmp(host, "localhost") == 0,
+          "getnameinfo IPv6 from /etc/hosts");
+}
+
 void CheckVirtualFiles()
 {
     FILE* null_file = fopen("/dev/null", "w");
@@ -871,6 +919,28 @@ void CheckTime()
     const time_t before_epoch = -1;
     errno = 0;
     Check(gmtime(&before_epoch) == nullptr && errno == EOVERFLOW, "gmtime before 1970");
+
+    struct timespec real;
+    Check(clock_gettime(CLOCK_REALTIME, &real) == 0 && real.tv_sec - time(nullptr) <= 0 &&
+              real.tv_sec - time(nullptr) >= -1,
+          "CLOCK_REALTIME agrees with time");
+    constexpr time_t Hour = 3600;
+    struct timespec ahead = {real.tv_sec + Hour, real.tv_nsec};
+    struct timespec moved;
+    Check(clock_settime(CLOCK_REALTIME, &ahead) == 0 &&
+              clock_gettime(CLOCK_REALTIME, &moved) == 0 && moved.tv_sec >= ahead.tv_sec &&
+              moved.tv_sec <= ahead.tv_sec + 1,
+          "clock_settime moves the clock");
+    clock_gettime(CLOCK_REALTIME, &moved);
+    moved.tv_sec -= Hour;
+    clock_settime(CLOCK_REALTIME, &moved);
+    errno = 0;
+    Check(clock_settime(CLOCK_MONOTONIC, &real) == -1 && errno == EINVAL,
+          "clock_settime sets only CLOCK_REALTIME");
+    errno = 0;
+    const struct timespec bad_time = {real.tv_sec, 1000000000};
+    Check(clock_settime(CLOCK_REALTIME, &bad_time) == -1 && errno == EINVAL,
+          "clock_settime rejects bad input");
 }
 
 void CheckSpawn()
@@ -901,7 +971,7 @@ void CheckSpawn()
               waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == 11,
           "a CPU exception reports SIGSEGV");
 
-    char* sleep_arguments[] = {const_cast<char*>("sleep"), const_cast<char*>("300"), nullptr};
+    char* sleep_arguments[] = {const_cast<char*>("sleep"), const_cast<char*>("0.3"), nullptr};
     Check(posix_spawn(&child, "sleep", nullptr, nullptr, sleep_arguments, environ) == 0 &&
               waitpid(child, &status, WNOHANG) == 0 && waitpid(child, &status, 0) == child,
           "WNOHANG while the child runs");
@@ -1015,7 +1085,7 @@ pid_t SpawnSleeper(short flags, pid_t group)
     posix_spawnattr_init(&attributes);
     posix_spawnattr_setflags(&attributes, flags);
     posix_spawnattr_setpgroup(&attributes, group);
-    char* arguments[] = {const_cast<char*>("sleep"), const_cast<char*>("300"), nullptr};
+    char* arguments[] = {const_cast<char*>("sleep"), const_cast<char*>("0.3"), nullptr};
     pid_t child = 0;
     return posix_spawn(&child, "sleep", nullptr, &attributes, arguments, environ) == 0 ? child : -1;
 }
@@ -2284,6 +2354,125 @@ void CheckPipes()
           "writing a child's input through a pipe");
 }
 
+bool WaitFor(int descriptor, short events, short* returned)
+{
+    pollfd entry = {descriptor, events, 0};
+    const bool ready = poll(&entry, 1, 5000) == 1;
+    *returned = entry.revents;
+    return ready;
+}
+
+void CheckNonBlockingPipes()
+{
+    int ends[2] = {-1, -1};
+    char text[8];
+    errno = 0;
+    Check(pipe2(ends, O_NONBLOCK | O_CLOEXEC) == 0 &&
+              fcntl(ends[0], F_GETFL) == (O_RDONLY | O_NONBLOCK) &&
+              fcntl(ends[1], F_GETFL) == (O_WRONLY | O_NONBLOCK),
+          "pipe2 with O_NONBLOCK and F_GETFL");
+    Check(read(ends[0], text, sizeof(text)) == -1 && errno == EAGAIN, "EAGAIN from an empty pipe");
+    char block[512];
+    memset(block, 'b', sizeof(block));
+    size_t total = 0;
+    ssize_t written = 0;
+    while ((written = write(ends[1], block, sizeof(block))) > 0)
+    {
+        total += static_cast<size_t>(written);
+    }
+    pollfd full = {ends[1], POLLOUT, 0};
+    Check(written == -1 && errno == EAGAIN && total == 4096 && poll(&full, 1, 0) == 0,
+          "EAGAIN from a full pipe");
+    const int copy = dup(ends[0]);
+    Check(copy >= 0 && fcntl(copy, F_SETFL, O_RDONLY) == 0 &&
+              (fcntl(ends[0], F_GETFL) & O_NONBLOCK) == 0 && close(copy) == 0,
+          "F_SETFL changes the open file dup shares");
+    short events = 0;
+    Check(fcntl(ends[0], F_SETFL, O_NONBLOCK) == 0 && read(ends[0], block, sizeof(block)) == 512 &&
+              WaitFor(ends[1], POLLOUT, &events) && events == POLLOUT,
+          "reading makes room");
+    close(ends[0]);
+    close(ends[1]);
+    errno = 0;
+    Check(fcntl(STDIN_FILENO, F_SETFL, O_NONBLOCK) == -1 && errno == EINVAL &&
+              (fcntl(STDIN_FILENO, F_GETFL) & O_NONBLOCK) == 0,
+          "the console stays blocking");
+}
+
+sockaddr_in LoopbackAddress(uint16_t port)
+{
+    sockaddr_in address = {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    return address;
+}
+
+void CheckNonBlockingSockets()
+{
+    const int listener = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    sockaddr_in address = LoopbackAddress(0);
+    socklen_t length = sizeof(address);
+    Check(listener >= 0 && fcntl(listener, F_GETFD) == FD_CLOEXEC &&
+              bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0 &&
+              listen(listener, 2) == 0 &&
+              getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length) == 0,
+          "a non-blocking listener");
+    errno = 0;
+    Check(accept(listener, nullptr, nullptr) == -1 && errno == EAGAIN,
+          "EAGAIN from accept with nothing waiting");
+
+    const int client = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    errno = 0;
+    Check(connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == -1 &&
+              errno == EINPROGRESS,
+          "EINPROGRESS from connect");
+    short events = 0;
+    int error = -1;
+    socklen_t error_length = sizeof(error);
+    Check(WaitFor(client, POLLOUT, &events) && events == POLLOUT &&
+              getsockopt(client, SOL_SOCKET, SO_ERROR, &error, &error_length) == 0 && error == 0 &&
+              error_length == sizeof(int),
+          "the connection opens in the background");
+    int accepted = -1;
+    Check(WaitFor(listener, POLLIN, &events) &&
+              (accepted = accept4(listener, nullptr, nullptr, SOCK_NONBLOCK)) >= 0 &&
+              (fcntl(accepted, F_GETFL) & O_NONBLOCK) != 0,
+          "accept4 with SOCK_NONBLOCK");
+    char text[8];
+    errno = 0;
+    Check(recv(accepted, text, sizeof(text), 0) == -1 && errno == EAGAIN,
+          "EAGAIN from recv with nothing arrived");
+    Check(send(client, "ping", 4, 0) == 4 && WaitFor(accepted, POLLIN, &events) &&
+              recv(accepted, text, sizeof(text), 0) == 4 && memcmp(text, "ping", 4) == 0,
+          "data through non-blocking sockets");
+    errno = 0;
+    Check(fcntl(client, F_SETFL, 0) == 0 && recv(client, text, sizeof(text), MSG_DONTWAIT) == -1 &&
+              errno == EAGAIN,
+          "MSG_DONTWAIT on a blocking socket");
+    timeval timeout = {.tv_sec = 1, .tv_usec = 500000};
+    timeval read_back = {};
+    socklen_t timeout_length = sizeof(read_back);
+    Check(setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0 &&
+              getsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &read_back, &timeout_length) == 0 &&
+              read_back.tv_sec == 1 && read_back.tv_usec == 500000,
+          "getsockopt SO_RCVTIMEO");
+    close(accepted);
+    close(client);
+    close(listener);
+
+    // Nothing listens on the port the listener had, so the connection is refused.
+    const int refused = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    errno = 0;
+    Check(connect(refused, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == -1 &&
+              errno == EINPROGRESS && WaitFor(refused, POLLOUT, &events) &&
+              (events & POLLERR) != 0 &&
+              getsockopt(refused, SOL_SOCKET, SO_ERROR, &error, &error_length) == 0 &&
+              error == ECONNREFUSED,
+          "SO_ERROR reports a refused connection");
+    close(refused);
+}
+
 void CheckScanning()
 {
     int count = 0;
@@ -2467,6 +2656,7 @@ int main(int argc, char** argv)
     CheckDescriptorFiles();
     CheckDirectories();
     CheckVirtualFiles();
+    CheckAddressNames();
     CheckTime();
     CheckSpawn();
     CheckDiskPrograms();
@@ -2478,6 +2668,8 @@ int main(int argc, char** argv)
     CheckProcessAccounting();
     CheckDescriptors();
     CheckPipes();
+    CheckNonBlockingPipes();
+    CheckNonBlockingSockets();
     CheckSystemCalls();
     CheckTerminalSettings();
     CheckThreads();

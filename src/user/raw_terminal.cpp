@@ -5,7 +5,7 @@
 namespace FeatherOS::User
 {
 
-bool RawTerminal::Enter()
+bool RawTerminal::Enter(bool wake_on_output)
 {
     if (tcgetattr(STDIN_FILENO, &m_original) != 0)
     {
@@ -13,6 +13,10 @@ bool RawTerminal::Enter()
     }
     m_raw = m_original;
     cfmakeraw(&m_raw);
+    if (wake_on_output)
+    {
+        m_raw.c_lflag |= FEATHEROS_WAKE_ON_OUTPUT;
+    }
     m_minimum = m_raw.c_cc[VMIN];
     m_timeout = m_raw.c_cc[VTIME];
     m_active = tcsetattr(STDIN_FILENO, TCSANOW, &m_raw) == 0;

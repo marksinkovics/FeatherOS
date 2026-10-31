@@ -1,6 +1,7 @@
 #include "pipe.h"
 
 #include "kernel/memory/heap.h"
+#include "kernel/poll.h"
 #include "kernel/scheduler.h"
 #include "kernel/sync/spinlock.h"
 #include "user/syscall_abi.h"
@@ -61,13 +62,15 @@ void CloseEnd(Pipe* pipe, bool write_end)
     // Readers then see the end of the data, and writers a broken pipe.
     Scheduler::WakeAll(pipe->readable);
     Scheduler::WakeAll(pipe->writable);
+    Poll::Notify();
     if (unused)
     {
         Memory::Deallocate(pipe);
     }
 }
 
-uint64_t Read(Pipe* pipe, void* buffer, uint64_t length, InterruptCheck interrupted)
+uint64_t Read(Pipe* pipe, void* buffer, uint64_t length, InterruptCheck interrupted,
+              bool nonblocking)
 {
     if (length == 0)
     {
@@ -76,10 +79,10 @@ uint64_t Read(Pipe* pipe, void* buffer, uint64_t length, InterruptCheck interrup
     const uint64_t flags = pipe->lock.LockIrqSave();
     while (pipe->length == 0 && pipe->writers > 0)
     {
-        if (Interrupted(interrupted))
+        if (nonblocking || Interrupted(interrupted))
         {
             pipe->lock.UnlockIrqRestore(flags);
-            return User::SyscallErrorInterrupted;
+            return nonblocking ? User::SyscallErrorWouldBlock : User::SyscallErrorInterrupted;
         }
         Scheduler::WaitOn(pipe->readable, pipe->lock);
     }
@@ -95,11 +98,13 @@ uint64_t Read(Pipe* pipe, void* buffer, uint64_t length, InterruptCheck interrup
     if (count > 0)
     {
         Scheduler::WakeAll(pipe->writable);
+        Poll::Notify();
     }
     return count;
 }
 
-uint64_t Write(Pipe* pipe, const void* buffer, uint64_t length, InterruptCheck interrupted)
+uint64_t Write(Pipe* pipe, const void* buffer, uint64_t length, InterruptCheck interrupted,
+               bool nonblocking)
 {
     const auto* source = static_cast<const uint8_t*>(buffer);
     uint64_t total = 0;
@@ -109,10 +114,14 @@ uint64_t Write(Pipe* pipe, const void* buffer, uint64_t length, InterruptCheck i
         const uint64_t flags = pipe->lock.LockIrqSave();
         while (pipe->readers > 0 && Capacity - pipe->length < piece)
         {
-            if (Interrupted(interrupted))
+            if (nonblocking || Interrupted(interrupted))
             {
                 pipe->lock.UnlockIrqRestore(flags);
-                return total > 0 ? total : User::SyscallErrorInterrupted;
+                if (total > 0)
+                {
+                    return total;
+                }
+                return nonblocking ? User::SyscallErrorWouldBlock : User::SyscallErrorInterrupted;
             }
             Scheduler::WaitOn(pipe->writable, pipe->lock);
         }
@@ -129,6 +138,7 @@ uint64_t Write(Pipe* pipe, const void* buffer, uint64_t length, InterruptCheck i
         total += piece;
         pipe->lock.UnlockIrqRestore(flags);
         Scheduler::WakeAll(pipe->readable);
+        Poll::Notify();
     }
     return total;
 }
@@ -137,6 +147,25 @@ uint64_t Buffered(Pipe* pipe)
 {
     Sync::SpinLockGuard guard(pipe->lock);
     return pipe->length;
+}
+
+int16_t PollEvents(Pipe* pipe, bool write_end)
+{
+    Sync::SpinLockGuard guard(pipe->lock);
+    if (write_end)
+    {
+        if (pipe->readers == 0)
+        {
+            return User::PollError;
+        }
+        return Capacity - pipe->length >= AtomicSize ? User::PollWritable : 0;
+    }
+    int16_t events = pipe->length != 0 ? User::PollReadable : 0;
+    if (pipe->writers == 0)
+    {
+        events = static_cast<int16_t>(events | User::PollHangUp);
+    }
+    return events;
 }
 
 } // namespace FeatherOS::Pipes

@@ -296,6 +296,46 @@ bool AllocatePageFrame(uint64_t* physical_address)
     return false;
 }
 
+bool AllocateContiguousPageFrames(uint64_t count, uint64_t* physical_address)
+{
+    Sync::SpinLockGuard guard(allocator_lock);
+    if (!initialized || physical_address == nullptr || count == 0 || count > free_frame_count)
+    {
+        return false;
+    }
+
+    uint64_t run_start = 0;
+    uint64_t run_length = 0;
+    uint64_t run_address = 0;
+    for (uint64_t index = 0; index < frame_count; ++index)
+    {
+        uint64_t address;
+        if (IsAllocated(index) || !GetPhysicalAddress(index, &address))
+        {
+            run_length = 0;
+            continue;
+        }
+        // Neighbouring bitmap indices can lie in different memory-map regions.
+        if (run_length == 0 || address != run_address + run_length * PageSize)
+        {
+            run_start = index;
+            run_address = address;
+            run_length = 0;
+        }
+        if (++run_length == count)
+        {
+            for (uint64_t frame = run_start; frame <= index; ++frame)
+            {
+                SetAllocated(frame, true);
+            }
+            free_frame_count -= count;
+            *physical_address = run_address;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool FreePageFrame(uint64_t physical_address)
 {
     Sync::SpinLockGuard guard(allocator_lock);

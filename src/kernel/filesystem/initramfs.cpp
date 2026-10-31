@@ -8,6 +8,7 @@ namespace
 {
 
 constexpr uint64_t TarBlockSize = 512;
+constexpr size_t FullPathCapacity = 155 + 1 + 100 + 1;
 
 struct __attribute__((packed)) TarHeader
 {
@@ -97,44 +98,45 @@ bool HasValidChecksum(const TarHeader& header)
     return checksum == expected_checksum;
 }
 
-bool FieldEquals(const char* field, size_t field_size, const char* value)
+// The prefix field holds the leading directories of a path too long for the name field.
+bool FullPath(const TarHeader& header, char (&path)[FullPathCapacity])
 {
-    size_t index = 0;
-    while (index < field_size && field[index] != '\0')
+    size_t length = 0;
+    for (size_t index = 0; index < sizeof(header.prefix) && header.prefix[index] != '\0'; ++index)
     {
-        if (value[index] == '\0' || field[index] != value[index])
-        {
-            return false;
-        }
-        ++index;
+        path[length++] = header.prefix[index];
     }
-    return value[index] == '\0';
+    if (length > 0)
+    {
+        path[length++] = '/';
+    }
+    for (size_t index = 0; index < sizeof(header.name) && header.name[index] != '\0'; ++index)
+    {
+        path[length++] = header.name[index];
+    }
+    path[length] = '\0';
+    return length > 0;
 }
 
-bool HeaderMatchesPath(const TarHeader& header, const char* path)
+// The part of path inside directory, or nullptr when path is not in it.
+const char* InDirectory(const char* path, const char* directory)
 {
-    size_t prefix_length = 0;
-    while (prefix_length < sizeof(header.prefix) && header.prefix[prefix_length] != '\0')
+    for (; *directory != '\0'; ++directory, ++path)
     {
-        ++prefix_length;
-    }
-    if (prefix_length == 0)
-    {
-        return FieldEquals(header.name, sizeof(header.name), path);
-    }
-
-    for (size_t index = 0; index < prefix_length; ++index)
-    {
-        if (path[index] == '\0' || path[index] != header.prefix[index])
+        if (*path != *directory)
         {
-            return false;
+            return nullptr;
         }
     }
-    if (path[prefix_length] != '/')
+    return *path == '/' ? path + 1 : nullptr;
+}
+
+bool Equal(const char* left, const char* right)
+{
+    for (; *left != '\0' && *left == *right; ++left, ++right)
     {
-        return false;
     }
-    return FieldEquals(header.name, sizeof(header.name), path + prefix_length + 1);
+    return *left == *right;
 }
 
 // Calls visit(header, data, size) for each regular file until it returns true; false if none
@@ -195,16 +197,18 @@ bool Mount(const void* archive, uint64_t size)
     return true;
 }
 
-bool Open(const char* path, File* file)
+bool Open(const char* directory, const char* name, File* file)
 {
-    if (path == nullptr || path[0] == '\0' || file == nullptr)
+    if (directory == nullptr || name == nullptr || name[0] == '\0' || file == nullptr)
     {
         return false;
     }
     return ForEachFile(
         [&](const TarHeader& header, const uint8_t* data, uint64_t size)
         {
-            if (!HeaderMatchesPath(header, path))
+            char path[FullPathCapacity];
+            const char* inner = FullPath(header, path) ? InDirectory(path, directory) : nullptr;
+            if (inner == nullptr || !Equal(inner, name))
             {
                 return false;
             }
@@ -214,9 +218,9 @@ bool Open(const char* path, File* file)
         });
 }
 
-bool ReadDirectory(uint32_t index, char (&name)[64], uint64_t* size)
+bool ReadDirectory(const char* directory, uint32_t index, char (&name)[64], uint64_t* size)
 {
-    if (size == nullptr)
+    if (directory == nullptr || size == nullptr)
     {
         return false;
     }
@@ -224,16 +228,24 @@ bool ReadDirectory(uint32_t index, char (&name)[64], uint64_t* size)
     return ForEachFile(
         [&](const TarHeader& header, const uint8_t*, uint64_t file_size)
         {
-            if (header.prefix[0] != '\0' || listed++ != index)
+            char path[FullPathCapacity];
+            const char* inner = FullPath(header, path) ? InDirectory(path, directory) : nullptr;
+            if (inner == nullptr)
             {
                 return false;
             }
             size_t length = 0;
-            for (; length < sizeof(header.name) && length < sizeof(name) - 1 &&
-                   header.name[length] != '\0';
-                 ++length)
+            while (inner[length] != '\0' && inner[length] != '/')
             {
-                name[length] = header.name[length];
+                ++length;
+            }
+            if (length == 0 || inner[length] == '/' || length >= sizeof(name) || listed++ != index)
+            {
+                return false;
+            }
+            for (size_t character = 0; character < length; ++character)
+            {
+                name[character] = inner[character];
             }
             name[length] = '\0';
             *size = file_size;

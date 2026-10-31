@@ -18,7 +18,8 @@ using FeatherOS::LibC::Check;
 namespace
 {
 
-constexpr int KnownOpenFlags = O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_CLOEXEC;
+constexpr int KnownOpenFlags =
+    O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_CLOEXEC | O_NONBLOCK;
 
 } // namespace
 
@@ -54,6 +55,10 @@ int open(const char* path, int flags, ...)
     if ((flags & O_CLOEXEC) != 0)
     {
         open_flags |= FeatherOS::User::OpenCloseOnExec;
+    }
+    if ((flags & O_NONBLOCK) != 0)
+    {
+        open_flags |= FeatherOS::User::OpenNonBlocking;
     }
     // Only one program can write a file at a time, so checking first leaves no race that
     // matters.
@@ -95,14 +100,22 @@ int pipe(int descriptors[2])
 
 int pipe2(int descriptors[2], int flags)
 {
-    if ((flags & ~O_CLOEXEC) != 0)
+    if ((flags & ~(O_CLOEXEC | O_NONBLOCK)) != 0)
     {
         errno = EINVAL;
         return -1;
     }
+    uint64_t pipe_flags = 0;
+    if ((flags & O_CLOEXEC) != 0)
+    {
+        pipe_flags |= FeatherOS::User::PipeCloseOnExec;
+    }
+    if ((flags & O_NONBLOCK) != 0)
+    {
+        pipe_flags |= FeatherOS::User::PipeNonBlocking;
+    }
     uint64_t ends[2];
-    if (Check<int>(FeatherOS::User::CreatePipe(
-            ends, (flags & O_CLOEXEC) != 0 ? FeatherOS::User::PipeCloseOnExec : 0)) < 0)
+    if (Check<int>(FeatherOS::User::CreatePipe(ends, pipe_flags)) < 0)
     {
         return -1;
     }
@@ -132,7 +145,7 @@ int fcntl(int descriptor, int command, ...)
 {
     va_list arguments;
     va_start(arguments, command);
-    const int argument = command == F_GETFD ? 0 : va_arg(arguments, int);
+    const int argument = command == F_GETFD || command == F_GETFL ? 0 : va_arg(arguments, int);
     va_end(arguments);
     const auto target = static_cast<uint64_t>(descriptor);
     switch (command)
@@ -161,6 +174,41 @@ int fcntl(int descriptor, int command, ...)
         return (static_cast<uint64_t>(flags) & FeatherOS::User::DescriptorCloseOnExec) != 0
                    ? FD_CLOEXEC
                    : 0;
+    }
+    case F_GETFL:
+    case F_SETFL:
+    {
+        uint64_t requested = 0;
+        if ((argument & O_APPEND) != 0)
+        {
+            requested |= FeatherOS::User::OpenAppend;
+        }
+        if ((argument & O_NONBLOCK) != 0)
+        {
+            requested |= FeatherOS::User::OpenNonBlocking;
+        }
+        const uint64_t result =
+            FeatherOS::User::FileStatusFlags(target, command == F_SETFL, requested);
+        if (Check<int>(result) < 0)
+        {
+            return -1;
+        }
+        if (command == F_SETFL)
+        {
+            return 0;
+        }
+        const bool readable = (result & FeatherOS::User::OpenRead) != 0;
+        const bool writable = (result & FeatherOS::User::OpenWrite) != 0;
+        int flags = readable && writable ? O_RDWR : (writable ? O_WRONLY : O_RDONLY);
+        if ((result & FeatherOS::User::OpenAppend) != 0)
+        {
+            flags |= O_APPEND;
+        }
+        if ((result & FeatherOS::User::OpenNonBlocking) != 0)
+        {
+            flags |= O_NONBLOCK;
+        }
+        return flags;
     }
     default:
         errno = EINVAL;

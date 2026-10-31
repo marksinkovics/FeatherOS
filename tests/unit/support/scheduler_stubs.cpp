@@ -60,6 +60,18 @@ TaskId CurrentTaskId()
     return TestScheduler::current_task;
 }
 
+// Tests run the work of kernel tasks by hand, so a task is never started.
+bool CreateTask(TaskEntry, void*, TaskId* task_id)
+{
+    *task_id = 0;
+    return true;
+}
+
+bool SetPriority(TaskId, TaskPriority)
+{
+    return true;
+}
+
 } // namespace FeatherOS::Scheduler
 
 namespace FeatherOS::Time
@@ -68,6 +80,11 @@ namespace FeatherOS::Time
 uint64_t TickCount()
 {
     return TestScheduler::ticks;
+}
+
+uint32_t TicksPerSecond()
+{
+    return 100;
 }
 
 } // namespace FeatherOS::Time

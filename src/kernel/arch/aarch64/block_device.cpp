@@ -1,6 +1,7 @@
 #include "kernel/storage/block_device.h"
 
-#include "kernel/memory/device_memory.h"
+#include "virtio_mmio.h"
+
 #include "kernel/memory/page_allocator.h"
 #include "kernel/sync/spinlock.h"
 
@@ -12,19 +13,6 @@ namespace FeatherOS::BlockDevice
 namespace
 {
 
-constexpr uint64_t VirtioMmioRegisterSize = 0x200;
-constexpr uint32_t FdtMagic = 0xD00DFEED;
-constexpr uint32_t FdtBeginNode = 1;
-constexpr uint32_t FdtEndNode = 2;
-constexpr uint32_t FdtProperty = 3;
-constexpr uint32_t FdtNoOp = 4;
-constexpr uint32_t FdtEnd = 9;
-constexpr size_t MaxFdtDepth = 24;
-
-constexpr uint32_t VirtioMagic = 0x74726976;
-constexpr uint32_t VirtioBlockDeviceId = 2;
-constexpr uint32_t VirtioVersion = 0x004;
-constexpr uint32_t VirtioDeviceId = 0x008;
 constexpr uint32_t VirtioDeviceFeatures = 0x010;
 constexpr uint32_t VirtioDeviceFeaturesSelect = 0x014;
 constexpr uint32_t VirtioDriverFeatures = 0x020;
@@ -62,18 +50,6 @@ constexpr uint32_t FeatureReadOnly = 1U << 5;
 constexpr uint32_t FeatureFlush = 1U << 9;
 constexpr uint8_t RequestStatusPending = 0xFF;
 
-struct FdtNode
-{
-    uint32_t address_cells;
-    uint32_t size_cells;
-    uint32_t child_address_cells;
-    uint32_t child_size_cells;
-    const uint8_t* compatible;
-    uint32_t compatible_length;
-    const uint8_t* reg;
-    uint32_t reg_length;
-};
-
 struct __attribute__((packed)) Descriptor
 {
     uint64_t address;
@@ -106,215 +82,6 @@ bool flush_supported = false;
 bool initialized = false;
 // One request buffer serves every caller, so requests from different CPUs take turns.
 constinit Sync::SpinLock device_lock;
-
-uint32_t ReadBigEndian32(const uint8_t* data)
-{
-    return (static_cast<uint32_t>(data[0]) << 24) | (static_cast<uint32_t>(data[1]) << 16) |
-           (static_cast<uint32_t>(data[2]) << 8) | data[3];
-}
-
-bool StringEquals(const uint8_t* data, uint32_t length, const char* value)
-{
-    uint32_t index = 0;
-    while (value[index] != '\0')
-    {
-        if (index >= length || data[index] != static_cast<uint8_t>(value[index]))
-        {
-            return false;
-        }
-        ++index;
-    }
-    return index < length && data[index] == '\0';
-}
-
-bool HasCompatible(const FdtNode& node, const char* compatible)
-{
-    uint32_t offset = 0;
-    while (offset < node.compatible_length)
-    {
-        const uint8_t* value = node.compatible + offset;
-        uint32_t length = 0;
-        while (offset + length < node.compatible_length && value[length] != '\0')
-        {
-            ++length;
-        }
-        if (offset + length == node.compatible_length)
-        {
-            return false;
-        }
-        if (StringEquals(value, length + 1, compatible))
-        {
-            return true;
-        }
-        offset += length + 1;
-    }
-    return false;
-}
-
-bool ReadCells(const uint8_t* data, uint32_t count, uint64_t* value)
-{
-    if (count == 0 || count > 2)
-    {
-        return false;
-    }
-    uint64_t result = 0;
-    for (uint32_t index = 0; index < count; ++index)
-    {
-        result = (result << 32) | ReadBigEndian32(data + index * 4);
-    }
-    *value = result;
-    return true;
-}
-
-bool FindDevice(const void* device_tree, uintptr_t* base)
-{
-    const auto* bytes = static_cast<const uint8_t*>(device_tree);
-    if (bytes == nullptr || ReadBigEndian32(bytes) != FdtMagic)
-    {
-        return false;
-    }
-
-    const uint32_t total_size = ReadBigEndian32(bytes + 4);
-    const uint32_t structure_offset = ReadBigEndian32(bytes + 8);
-    const uint32_t strings_offset = ReadBigEndian32(bytes + 12);
-    const uint32_t strings_size = ReadBigEndian32(bytes + 32);
-    const uint32_t structure_size = ReadBigEndian32(bytes + 36);
-    if (total_size < 40 || structure_offset > total_size ||
-        structure_size > total_size - structure_offset || strings_offset > total_size ||
-        strings_size > total_size - strings_offset)
-    {
-        return false;
-    }
-
-    const uint8_t* cursor = bytes + structure_offset;
-    const uint8_t* structure_end = cursor + structure_size;
-    const uint8_t* strings = bytes + strings_offset;
-    static FdtNode nodes[MaxFdtDepth];
-    size_t depth = 0;
-
-    while (cursor + 4 <= structure_end)
-    {
-        const uint32_t token = ReadBigEndian32(cursor);
-        cursor += 4;
-        if (token == FdtBeginNode)
-        {
-            if (depth == MaxFdtDepth)
-            {
-                return false;
-            }
-            FdtNode& node = nodes[depth];
-            node.address_cells = depth == 0 ? 2 : nodes[depth - 1].child_address_cells;
-            node.size_cells = depth == 0 ? 2 : nodes[depth - 1].child_size_cells;
-            node.child_address_cells = node.address_cells;
-            node.child_size_cells = node.size_cells;
-            node.compatible = nullptr;
-            node.compatible_length = 0;
-            node.reg = nullptr;
-            node.reg_length = 0;
-            ++depth;
-
-            while (cursor < structure_end && *cursor != '\0')
-            {
-                ++cursor;
-            }
-            if (cursor == structure_end)
-            {
-                return false;
-            }
-            ++cursor;
-            cursor += (4 - (reinterpret_cast<uintptr_t>(cursor) & 3)) & 3;
-        }
-        else if (token == FdtEndNode)
-        {
-            if (depth == 0)
-            {
-                return false;
-            }
-            const FdtNode& node = nodes[depth - 1];
-            if (node.reg != nullptr && HasCompatible(node, "virtio,mmio"))
-            {
-                const uint32_t tuple_cells = node.address_cells + node.size_cells;
-                uint64_t address;
-                if (tuple_cells != 0 && node.reg_length >= tuple_cells * 4 &&
-                    ReadCells(node.reg, node.address_cells, &address) && address <= UINTPTR_MAX)
-                {
-                    const uintptr_t mapped = Memory::MapDevice(address, VirtioMmioRegisterSize);
-                    auto* registers = reinterpret_cast<volatile uint32_t*>(mapped);
-                    if (mapped != 0 && registers[0] == VirtioMagic && registers[1] >= 2 &&
-                        registers[2] == VirtioBlockDeviceId)
-                    {
-                        *base = mapped;
-                        return true;
-                    }
-                }
-            }
-            --depth;
-        }
-        else if (token == FdtProperty)
-        {
-            if (depth == 0 || cursor + 8 > structure_end)
-            {
-                return false;
-            }
-            const uint32_t length = ReadBigEndian32(cursor);
-            const uint32_t name_offset = ReadBigEndian32(cursor + 4);
-            cursor += 8;
-            if (length > static_cast<uint32_t>(structure_end - cursor) ||
-                name_offset >= strings_size)
-            {
-                return false;
-            }
-
-            FdtNode& node = nodes[depth - 1];
-            const uint8_t* value = cursor;
-            const char* name = reinterpret_cast<const char*>(strings + name_offset);
-            if (StringEquals(reinterpret_cast<const uint8_t*>(name), strings_size - name_offset,
-                             "compatible"))
-            {
-                node.compatible = value;
-                node.compatible_length = length;
-            }
-            else if (StringEquals(reinterpret_cast<const uint8_t*>(name),
-                                  strings_size - name_offset, "reg"))
-            {
-                node.reg = value;
-                node.reg_length = length;
-            }
-            else if (StringEquals(reinterpret_cast<const uint8_t*>(name),
-                                  strings_size - name_offset, "#address-cells") &&
-                     length == 4)
-            {
-                node.child_address_cells = ReadBigEndian32(value);
-            }
-            else if (StringEquals(reinterpret_cast<const uint8_t*>(name),
-                                  strings_size - name_offset, "#size-cells") &&
-                     length == 4)
-            {
-                node.child_size_cells = ReadBigEndian32(value);
-            }
-
-            const uint32_t padded_length = (length + 3) & ~3U;
-            if (padded_length > static_cast<uint32_t>(structure_end - cursor))
-            {
-                return false;
-            }
-            cursor += padded_length;
-        }
-        else if (token == FdtNoOp)
-        {
-            continue;
-        }
-        else if (token == FdtEnd)
-        {
-            return false;
-        }
-        else
-        {
-            return false;
-        }
-    }
-    return false;
-}
 
 volatile uint32_t* Registers()
 {
@@ -453,12 +220,13 @@ bool Transfer(uint64_t sector, const uint8_t* source, uint8_t* destination)
 
 bool Initialize(const void* platform_data, uint64_t hhdm_offset)
 {
-    uintptr_t base;
-    if (!FindDevice(platform_data, &base))
+    Arch::AArch64::VirtioMmio::Device device;
+    if (!Arch::AArch64::VirtioMmio::Find(platform_data, Arch::AArch64::VirtioMmio::BlockDeviceId,
+                                         &device))
     {
         return false;
     }
-    device_base = base;
+    device_base = device.base;
     device_hhdm_offset = hhdm_offset;
 
     volatile uint32_t* registers = Registers();

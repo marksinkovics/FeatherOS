@@ -161,8 +161,7 @@ bool Generate(const char* path, char* buffer, size_t* length)
         {
             return false;
         }
-        // The source fills every field it reports; zeroing the whole struct would need memset.
-        SystemStatus system;
+        SystemStatus system = {};
         source.system_status(&system);
         formatted = String::FormatTo(buffer, MaximumFileSize, "UptimeMs:\t{}\nCpus:\t{}\n",
                                      system.uptime_milliseconds, system.cpu_count);

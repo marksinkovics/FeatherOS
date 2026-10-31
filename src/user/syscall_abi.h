@@ -15,7 +15,7 @@ enum class SyscallNumber : uint64_t
     ReadLine = 2,          // (buffer, capacity, prompt) -> line length; foreground process only
     Spawn = 3,             // (command_line, flags, environment) -> process ID of the child
     Wait = 4,              // (process_id, status_pointer, flags) -> 0 once the child has exited
-    ReadClock = 5,         // () -> current UTC time in seconds since 1970-01-01
+    ReadClock = 5,         // () -> current UTC time in nanoseconds since 1970-01-01
     ExtendHeap = 6,        // (signed increment) -> previous program break; 0 queries it
     Sleep = 7,             // (milliseconds) -> 0 after at least that long
     ReadUptime = 8,        // () -> milliseconds since the kernel's timer started
@@ -56,6 +56,21 @@ enum class SyscallNumber : uint64_t
     FutexWake = 43,        // (address, count) -> how many waiters it woke
     ThreadDetach = 44,     // (thread) -> 0; its slot is freed once it ends, without a join
     Rename = 45,           // (from, to) -> 0; replaces a file at to, within one filesystem
+    Socket = 46,           // (family, type, protocol) -> a socket descriptor
+    Bind = 47,             // (descriptor, address) -> 0
+    SendTo = 48,           // (descriptor, message, flags) -> bytes sent; flags must be 0
+    ReceiveFrom = 49,      // (descriptor, message, flags) -> bytes received; flags must be 0
+    SetSocketOption = 50,  // (descriptor, option, value) -> 0
+    NetworkSettings = 51,  // (new_settings, old_settings, changes) -> 0; either pointer may be 0
+    Connect = 52,          // (descriptor, address) -> 0, for TCP once the connection is open
+    Listen = 53,           // (descriptor, backlog) -> 0
+    Accept = 54,           // (descriptor, address, flags) -> the next connection's descriptor
+    ShutdownSocket = 55,   // (descriptor, how) -> 0
+    SocketName = 56,       // (descriptor, address, peer) -> 0; the peer's address if peer is 1
+    Poll = 57,             // (descriptors, count, milliseconds) -> how many have events
+    SetClock = 58,         // (nanoseconds since 1970-01-01, UTC) -> 0
+    FileStatusFlags = 59,  // (descriptor, set, flags) -> the open file's Open* flags, after any set
+    GetSocketOption = 60,  // (descriptor, option, value) -> 0; stores the option's value at value
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec and joins its
@@ -104,6 +119,10 @@ constexpr uint64_t OpenTruncate = 1U << 3;
 constexpr uint64_t OpenAppend = 1U << 4;
 // The descriptor is not passed to children.
 constexpr uint64_t OpenCloseOnExec = 1U << 5;
+// Calls that would wait fail with SyscallErrorWouldBlock instead. The flag belongs to the open
+// file, so descriptors that share it through Duplicate or Spawn share the flag too. FileStatusFlags
+// changes it and OpenAppend, except on the console, which always waits.
+constexpr uint64_t OpenNonBlocking = 1U << 6;
 constexpr uint64_t MaximumPathLength = 64;
 // Descriptors 0-2 start as the console, unless the parent passed other files there. The console
 // is readable and writable, like a terminal: reading returns one line, ending in '\n', and only
@@ -116,10 +135,110 @@ constexpr uint64_t MaximumDescriptors = 32;
 // lowest free one at or above it; and mark the new descriptor close-on-exec.
 constexpr uint64_t DuplicateExact = 1U << 0;
 constexpr uint64_t DuplicateCloseOnExec = 1U << 1;
-// Pipe flag: both new descriptors are close-on-exec.
+// Pipe flags: both new descriptors are close-on-exec, and both ends are OpenNonBlocking.
 constexpr uint64_t PipeCloseOnExec = 1U << 0;
+constexpr uint64_t PipeNonBlocking = 1U << 1;
 // DescriptorFlags bits.
 constexpr uint64_t DescriptorCloseOnExec = 1U << 0;
+
+// Socket families, types and protocols, with Linux's numbers. Stream sockets are TCP. Datagram
+// sockets are UDP, the default protocol 0, or ICMP. ICMP datagram sockets send echo requests and
+// receive the replies, like Linux's unprivileged ping sockets: the kernel sets each request's
+// identifier to the socket's port and computes its checksum.
+constexpr uint64_t SocketFamilyIpv4 = 2;
+constexpr uint64_t SocketFamilyIpv6 = 10;
+constexpr uint64_t SocketStream = 1;
+constexpr uint64_t SocketDatagram = 2;
+// Socket type flags, which Accept's flags take too: the descriptor is close-on-exec, and its open
+// file OpenNonBlocking. A non-blocking TCP Connect fails with SyscallErrorInProgress once the
+// handshake has started; the socket polls writable when it ends, and SocketOptionError tells how.
+constexpr uint64_t SocketCloseOnExec = 1U << 19;
+constexpr uint64_t SocketNonBlocking = 1U << 11;
+constexpr uint64_t SocketProtocolIcmp = 1;
+constexpr uint64_t SocketProtocolTcp = 6;
+constexpr uint64_t SocketProtocolUdp = 17;
+constexpr uint64_t SocketProtocolIcmpv6 = 58;
+// Socket options. A receive timeout in milliseconds, after which ReceiveFrom fails with
+// SyscallErrorWouldBlock; 0 waits forever. The error, which GetSocketOption only reads: a failed
+// TCP connection's, or a UDP socket's from an ICMP message, which reading it clears; 0 for none.
+constexpr uint64_t SocketOptionReceiveTimeout = 1;
+constexpr uint64_t SocketOptionError = 2;
+// SendTo flag, Linux's MSG_NOSIGNAL: a broken connection fails without raising SIGPIPE.
+constexpr uint64_t SocketMessageNoSignal = 0x4000;
+// SendTo and ReceiveFrom flag, Linux's MSG_DONTWAIT: this call is non-blocking.
+constexpr uint64_t SocketMessageDontWait = 0x40;
+// Listen keeps at most this many connections waiting for Accept; a larger backlog is cut down.
+constexpr uint64_t MaximumListenBacklog = 16;
+// ShutdownSocket's how: stop receiving, stop sending (TCP sends FIN), or both.
+constexpr uint64_t SocketShutdownRead = 0;
+constexpr uint64_t SocketShutdownWrite = 1;
+constexpr uint64_t SocketShutdownBoth = 2;
+
+// Poll takes an array of these, laid out as struct pollfd, and fills in returned_events. A
+// negative descriptor is skipped; one that is not open reports PollInvalid. PollError, PollHangUp
+// and PollInvalid are reported whether asked for or not.
+struct PollDescriptor
+{
+    int32_t descriptor;
+    int16_t events;
+    int16_t returned_events;
+};
+
+constexpr int16_t PollReadable = 0x1;
+constexpr int16_t PollWritable = 0x4;
+constexpr int16_t PollError = 0x8;
+constexpr int16_t PollHangUp = 0x10;
+constexpr int16_t PollInvalid = 0x20;
+constexpr uint64_t MaximumPollDescriptors = 64;
+// Poll's milliseconds: wait until a descriptor has events.
+constexpr uint64_t PollForever = UINT64_MAX;
+
+// An address of either IP version, which fills the first 4 or all 16 bytes of address, in network
+// order. The port is in host order.
+struct SocketAddress
+{
+    uint16_t family;
+    uint16_t port;
+    uint32_t scope;
+    uint8_t address[16];
+};
+
+// The network interface's settings, which NetworkSettings stores in old_settings before applying
+// the parts of new_settings that changes names. IPv4 is set by DHCP or by hand, and is 0.0.0.0
+// until then; IPv6 comes from router advertisements and cannot be changed. The name servers set
+// with NetworkChangeNameServers come first, then one a router advertised; port 0 means 53.
+// NetworkChangeLink takes the link down, which resets the device and drops every address and
+// connection off the machine, or brings it back up; IPv4 cannot be set while it is down.
+constexpr uint64_t NetworkChangeIpv4 = 1U << 0;
+constexpr uint64_t NetworkChangeNameServers = 1U << 1;
+constexpr uint64_t NetworkChangeLink = 1U << 2;
+constexpr uint64_t MaximumNameServers = 3;
+
+struct NetworkSettings
+{
+    uint8_t mac[6];
+    uint8_t ipv4_prefix_length;
+    uint8_t ipv6_prefix_length;
+    uint8_t ipv4_address[4];
+    uint8_t ipv4_gateway[4];
+    // All zero when missing.
+    uint8_t ipv6_link_local[16];
+    uint8_t ipv6_global[16];
+    uint8_t ipv6_router[16];
+    // 1 while the link is up, else 0.
+    uint32_t link_up;
+    uint32_t name_server_count;
+    SocketAddress name_servers[MaximumNameServers];
+};
+
+// For SendTo and ReceiveFrom; address points to a SocketAddress. SendTo needs one, and ReceiveFrom
+// stores the sender there unless it is 0.
+struct SocketMessage
+{
+    uint64_t buffer;
+    uint64_t length;
+    uint64_t address;
+};
 
 struct DirectoryEntry
 {
@@ -137,6 +256,7 @@ enum class FileType : uint32_t
     // Under /dev.
     Device = 4,
     Pipe = 5,
+    Socket = 6,
 };
 
 struct FileStatus
@@ -184,6 +304,33 @@ constexpr uint64_t SyscallErrorBrokenPipe = UINT64_MAX - 22;
 constexpr uint64_t SyscallErrorTimedOut = UINT64_MAX - 23;
 // A rename between two filesystems, such as the disk and /tmp.
 constexpr uint64_t SyscallErrorCrossDevice = UINT64_MAX - 24;
+// Socket calls on another kind of descriptor.
+constexpr uint64_t SyscallErrorNotSocket = UINT64_MAX - 25;
+constexpr uint64_t SyscallErrorFamilyNotSupported = UINT64_MAX - 26;
+// A socket type and protocol the kernel does not provide.
+constexpr uint64_t SyscallErrorProtocolNotSupported = UINT64_MAX - 27;
+constexpr uint64_t SyscallErrorMessageTooLong = UINT64_MAX - 28;
+constexpr uint64_t SyscallErrorAddressInUse = UINT64_MAX - 29;
+// Binding to an address that is not the machine's own.
+constexpr uint64_t SyscallErrorAddressNotAvailable = UINT64_MAX - 30;
+constexpr uint64_t SyscallErrorNetworkUnreachable = UINT64_MAX - 31;
+// The destination, or the gateway toward it, did not answer address resolution.
+constexpr uint64_t SyscallErrorHostUnreachable = UINT64_MAX - 32;
+constexpr uint64_t SyscallErrorNoBuffers = UINT64_MAX - 33;
+constexpr uint64_t SyscallErrorDestinationRequired = UINT64_MAX - 34;
+constexpr uint64_t SyscallErrorOptionNotSupported = UINT64_MAX - 35;
+constexpr uint64_t SyscallErrorConnectionRefused = UINT64_MAX - 36;
+constexpr uint64_t SyscallErrorConnectionReset = UINT64_MAX - 37;
+constexpr uint64_t SyscallErrorNotConnected = UINT64_MAX - 38;
+constexpr uint64_t SyscallErrorAlreadyConnected = UINT64_MAX - 39;
+// Such as Listen on a datagram socket.
+constexpr uint64_t SyscallErrorOperationNotSupported = UINT64_MAX - 40;
+// A second Connect while the first is still opening the connection.
+constexpr uint64_t SyscallErrorAlreadyInProgress = UINT64_MAX - 41;
+// A non-blocking Connect that goes on in the background.
+constexpr uint64_t SyscallErrorInProgress = UINT64_MAX - 42;
+// The network link is down, so only loopback addresses can be reached.
+constexpr uint64_t SyscallErrorNetworkDown = UINT64_MAX - 43;
 
 constexpr bool IsSyscallError(uint64_t value)
 {
@@ -247,8 +394,12 @@ constexpr uint32_t TerminalEcho = 1U << 1;
 constexpr uint32_t TerminalSignals = 1U << 2;
 // Reads deliver Enter's '\r' as '\n'.
 constexpr uint32_t TerminalCarriageReturnToNewline = 1U << 3;
+// A read waiting for its first byte returns none once other output reached the screen and paused,
+// with the cursor at the start of a row, so a line editor can draw its line again below it.
+constexpr uint32_t TerminalWakeOnOutput = 1U << 4;
 constexpr uint32_t TerminalDefaultFlags =
     TerminalCanonical | TerminalEcho | TerminalSignals | TerminalCarriageReturnToNewline;
+constexpr uint32_t TerminalFlags = TerminalDefaultFlags | TerminalWakeOnOutput;
 
 // Exit statuses the kernel reports for programs it terminated: after a CPU exception, or because
 // of signal n, as ExitStatusSignalBase + n.

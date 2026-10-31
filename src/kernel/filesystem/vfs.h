@@ -5,9 +5,10 @@
 
 #include <stdint.h>
 
-// One tree over several filesystems: the FAT16 disk at "/", the read-only initramfs at
-// "/system", devices at "/dev", generated process files at "/proc", and a RAM filesystem at
-// "/tmp". Disk entries with those names in the root are hidden by the mounts.
+// One tree over several filesystems: the FAT16 disk at "/", the read-only initramfs's "system"
+// directory at "/system", devices at "/dev", generated process files at "/proc", and the RAM
+// filesystem's two roots at "/tmp" and "/etc". Disk entries with those names in the root are
+// hidden by the mounts.
 namespace FeatherOS::VFS
 {
 
@@ -42,14 +43,16 @@ struct FileInfo
 };
 
 bool MountBlockDevice();
+// Copies the initramfs's "etc" files into /etc, so they can be changed until the next boot.
+bool LoadEtc();
 bool Open(const char* path, FileHandle* file);
 bool Read(FileHandle* file, void* buffer, uint64_t length, uint64_t* bytes_read);
 // Devices accept any offset; other files at most their size.
 bool Seek(FileHandle* file, uint64_t offset);
 bool Stat(const char* path, FileInfo* info);
 void Close(FileHandle* file);
-// Disk and /tmp files can be created and changed, and devices take writes. A handle caches the
-// file's size, so other handles to the same file do not see its changes.
+// Disk, /tmp and /etc files can be created and changed, and devices take writes. A handle caches
+// the file's size, so other handles to the same file do not see its changes.
 bool Create(const char* path, FileHandle* file);
 // Writes at the handle's offset and advances it; *bytes_written may be short if space runs out.
 bool Write(FileHandle* file, const void* buffer, uint64_t length, uint64_t* bytes_written);
@@ -62,11 +65,13 @@ bool IsDirectory(const char* path);
 bool IsReadOnly(const char* path);
 // "/" and the mount points, which can never be removed.
 bool IsMountPoint(const char* path);
-// Disk and /tmp files are tracked while open, so they are not removed or written twice at once.
+// Disk, /tmp and /etc files are tracked while open, so they are not removed or written twice at
+// once.
 bool IsTracked(const FileHandle& file);
 bool RemoveDirectory(const char* path);
 bool SameFilesystem(const char* left, const char* right);
-// Within one disk or /tmp; to must not exist, unless it names from in another case on the disk.
+// Within the disk, /tmp or /etc; to must not exist, unless it names from in another case on the
+// disk.
 bool Rename(const char* from, const char* to);
 // Lists a directory, such as "/", "/home/docs", or "/system"; "/" starts with the mount points.
 // False past the last entry.

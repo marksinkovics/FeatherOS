@@ -18,6 +18,8 @@ struct PageAllocatorStats
 
 bool InitializePageAllocator(uint64_t hhdm_offset);
 bool AllocatePageFrame(uint64_t* physical_address);
+// For devices that need physically contiguous memory, such as a legacy virtqueue.
+bool AllocateContiguousPageFrames(uint64_t count, uint64_t* physical_address);
 bool FreePageFrame(uint64_t physical_address);
 bool GetPageAllocatorStats(PageAllocatorStats* stats);
 

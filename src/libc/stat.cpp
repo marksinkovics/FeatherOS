@@ -28,6 +28,9 @@ int Convert(uint64_t result, const FeatherOS::User::FileStatus& file_status, str
     case FeatherOS::User::FileType::Pipe:
         status->st_mode = S_IFIFO | (writable ? 0200 : 0400);
         break;
+    case FeatherOS::User::FileType::Socket:
+        status->st_mode = S_IFSOCK | 0666;
+        break;
     default:
         status->st_mode = S_IFREG | (writable ? 0644 : 0444);
         break;

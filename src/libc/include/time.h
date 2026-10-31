@@ -5,7 +5,7 @@
 #include <sys/cdefs.h>
 #include <sys/types.h>
 
-// The wall clock has one-second resolution; CLOCK_MONOTONIC counts milliseconds since the
+// The wall clock advances by timer ticks, 10 ms each; CLOCK_MONOTONIC counts milliseconds since the
 // kernel's timer started. Every time is UTC: there are no time zones.
 #define CLOCK_REALTIME 0
 #define CLOCK_MONOTONIC 1
@@ -46,6 +46,8 @@ size_t strftime(char* buffer, size_t size, const char* format, const struct tm* 
 char* asctime(const struct tm* time);
 char* ctime(const time_t* seconds);
 int clock_gettime(clockid_t clock, struct timespec* result);
+// Only CLOCK_REALTIME can be set, and the timer must be running.
+int clock_settime(clockid_t clock, const struct timespec* time);
 // A signal cuts it short with EINTR and the time left in remaining.
 int nanosleep(const struct timespec* duration, struct timespec* remaining);
 

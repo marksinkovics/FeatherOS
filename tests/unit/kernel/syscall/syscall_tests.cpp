@@ -52,7 +52,7 @@ uint64_t RecordWait(void* context, uint64_t process_id, uint64_t status_pointer,
 
 uint64_t ReadFixedClock(void*)
 {
-    return 1792364283;
+    return 1792364283250000000;
 }
 
 uint64_t RecordExtendHeap(void* context, uint64_t increment)
@@ -178,6 +178,9 @@ constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     .futex_wake = RecordSeek,
     .thread_detach = RecordDescriptor,
     .rename = RecordSeek,
+    .set_clock = RecordDescriptor,
+    .file_status_flags = RecordSeekFrom,
+    .get_socket_option = RecordSeekFrom,
 };
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
@@ -242,6 +245,8 @@ TEST_CASE("syscall dispatcher rejects process syscalls without handlers")
             Action::Invalid);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadClock), WriteOnly, &output)
                 .action == Action::Invalid);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::SetClock), WriteOnly, &output)
+                .action == Action::Invalid);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadUptime), WriteOnly, &output)
                 .action == Action::Invalid);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::CurrentCpu), WriteOnly, &output)
@@ -286,7 +291,13 @@ TEST_CASE("syscall dispatcher routes process syscalls and returns handler result
 
     result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadClock), AllHandlers, &output);
     REQUIRE(result.action == Action::Return);
-    REQUIRE(result.value == 1792364283);
+    REQUIRE(result.value == 1792364283250000000);
+
+    result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::SetClock, 1924992000000000000),
+                                          AllHandlers, &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(result.value == 0);
+    REQUIRE(output.last_arguments[0] == 1924992000000000000);
 
     result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::ExtendHeap, 8192), AllHandlers,
                                           &output);
@@ -372,7 +383,7 @@ TEST_CASE("syscall dispatcher routes file syscalls with their arguments")
     }
 }
 
-TEST_CASE("syscall duplicate and descriptor-flags pass three arguments")
+TEST_CASE("syscall duplicate, descriptor-flags and file-status-flags pass three arguments")
 {
     OutputTarget output;
     FeatherOS::Syscall::Result result = FeatherOS::Syscall::Dispatch(
@@ -388,6 +399,20 @@ TEST_CASE("syscall duplicate and descriptor-flags pass three arguments")
     REQUIRE(result.action == Action::Return);
     REQUIRE(output.last_arguments[0] == 5);
     REQUIRE(output.last_arguments[2] == FeatherOS::User::DescriptorCloseOnExec);
+    result = FeatherOS::Syscall::Dispatch(
+        MakeRequest(Number::FileStatusFlags, 6, 1, FeatherOS::User::OpenNonBlocking), AllHandlers,
+        &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 6);
+    REQUIRE(output.last_arguments[2] == FeatherOS::User::OpenNonBlocking);
+    result = FeatherOS::Syscall::Dispatch(
+        MakeRequest(Number::GetSocketOption, 7, FeatherOS::User::SocketOptionError, 0x1000),
+        AllHandlers, &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(output.last_arguments[1] == FeatherOS::User::SocketOptionError);
+    REQUIRE(output.last_arguments[2] == 0x1000);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::GetSocketOption), WriteOnly, &output)
+                .action == Action::Invalid);
 }
 
 TEST_CASE("syscall signal-return is left to the architecture code")

@@ -90,8 +90,8 @@ int pthread_mutexattr_gettype(const pthread_mutexattr_t* attributes, int* type);
 int pthread_cond_init(pthread_cond_t* condition, const pthread_condattr_t* attributes);
 int pthread_cond_destroy(pthread_cond_t* condition);
 int pthread_cond_wait(pthread_cond_t* condition, pthread_mutex_t* mutex);
-// deadline is on the condition's clock: CLOCK_REALTIME, which counts whole seconds, unless
-// pthread_condattr_setclock chose CLOCK_MONOTONIC.
+// deadline is on the condition's clock: CLOCK_REALTIME unless pthread_condattr_setclock chose
+// CLOCK_MONOTONIC.
 int pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex,
                            const struct timespec* deadline);
 int pthread_cond_signal(pthread_cond_t* condition);

@@ -87,6 +87,15 @@ def main():
             "virtio-blk-device,drive=featheros_disk"
             if args.arch == "aarch64"
             else "virtio-blk-pci,drive=featheros_disk,disable-legacy=off",
+            # QEMU's user-mode network: the guest is 10.0.2.15 behind 10.0.2.2.
+            "-netdev",
+            "user,id=featheros_net",
+            "-device",
+            "virtio-net-device,netdev=featheros_net"
+            if args.arch == "aarch64"
+            # An empty romfile skips the network boot ROM.
+            else "virtio-net-pci,netdev=featheros_net,disable-legacy=off,"
+            "romfile=",
         ]
     )
     if args.zoom:

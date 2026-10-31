@@ -159,11 +159,47 @@ void* ReadSharedPage(void*)
     exit(0);
 }
 
+// Zero-length ranges are valid wherever they are, even at address 0.
+void CheckZeroLengthRanges()
+{
+    Check(FeatherOS::User::WriteFile(1, nullptr, 0) == 0, "an empty console write");
+    Check(PollDescriptors(nullptr, 0, 0) == 0, "a poll with no entries");
+    uint64_t ends[2];
+    Check(CreatePipe(ends, 0) == 0 && FeatherOS::User::WriteFile(ends[1], nullptr, 0) == 0 &&
+              ReadFile(ends[0], nullptr, 0) == 0,
+          "empty pipe reads and writes");
+    CloseFile(ends[1]);
+    char unused;
+    Check(ReadFile(ends[0], &unused, 1) == 0 && ReadFile(ends[0], nullptr, 0) == 0,
+          "reading a closed pipe's end");
+    CloseFile(ends[0]);
+    const uint64_t file = OpenFile("/tmp/zero", OpenCreate | OpenTruncate | OpenRead | OpenWrite);
+    Check(!IsSyscallError(file) && FeatherOS::User::WriteFile(file, nullptr, 0) == 0 &&
+              ReadFile(file, nullptr, 0) == 0,
+          "empty file reads and writes");
+    CloseFile(file);
+    RemoveFile("/tmp/zero");
+
+    // An empty datagram to itself over loopback, received into no buffer.
+    SocketAddress self = {.family = static_cast<uint16_t>(SocketFamilyIpv4),
+                          .port = 7009,
+                          .scope = 0,
+                          .address = {127, 0, 0, 1}};
+    const uint64_t socket = CreateSocket(SocketFamilyIpv4, SocketDatagram, 0);
+    const SocketMessage empty = {.buffer = 0, .length = 0, .address = 0};
+    const SocketMessage to_self = {
+        .buffer = 0, .length = 0, .address = reinterpret_cast<uint64_t>(&self)};
+    Check(!IsSyscallError(socket) && Bind(socket, &self) == 0 && SendTo(socket, &to_self, 0) == 0 &&
+              ReceiveFrom(socket, &empty, 0) == 0,
+          "an empty datagram");
+    CloseFile(socket);
+}
+
 } // namespace
 
 constexpr char Help[] =
     "usage: hardening\n"
-    "Runs 61 checks that the kernel rejects bad syscalls, pointers, program files,\n"
+    "Runs 67 checks that the kernel rejects bad syscalls, pointers, program files,\n"
     "and memory violations from user programs.";
 
 int main(int argc, char** argv)
@@ -200,6 +236,7 @@ int main(int argc, char** argv)
     const uint64_t bad_elf = Spawn("badelf");
     Check(IsSyscallError(bad_elf) && bad_elf != SyscallErrorNotFound, "kernel-half ELF");
     CheckProgramFiles();
+    CheckZeroLengthRanges();
 
     Check(ChildTerminated("hardening exec-heap"), "executing the heap");
     Check(ChildTerminated("hardening freed-heap"), "using a page the heap returned");
@@ -213,10 +250,10 @@ int main(int argc, char** argv)
     uint64_t children[ChildLimit];
     for (uint64_t& child : children)
     {
-        child = Spawn("sleep 300");
+        child = Spawn("sleep 0.3");
         Check(!IsSyscallError(child), "spawning up to the child limit");
     }
-    Check(IsSyscallError(Spawn("sleep 300")), "spawning past the child limit");
+    Check(IsSyscallError(Spawn("sleep 0.3")), "spawning past the child limit");
     Check(Shutdown(ShutdownPowerOff) == SyscallErrorNotPermitted, "shutdown from a program");
     for (const uint64_t child : children)
     {

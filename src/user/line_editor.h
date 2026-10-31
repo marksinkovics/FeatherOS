@@ -45,6 +45,9 @@ public:
 
     void Begin(const char* prompt, size_t columns, LineHistory* history);
     Status Press(const KeyPress& press);
+    // Draws the prompt and line again from the start of the cursor's row, after other output
+    // left the cursor there.
+    void Redraw();
     const char* Line() const;
     size_t Cursor() const;
     const char* Output() const;

@@ -15,11 +15,14 @@
 #include "kernel/arch/power.h"
 #include "kernel/klogger.h"
 #include "kernel/memory/page_allocator.h"
+#include "kernel/network/interface.h"
+#include "kernel/network/neighbor_discovery.h"
 #include "kernel/panic.h"
 #include "kernel/process.h"
 #include "kernel/process_arguments.h"
 #include "kernel/scheduler.h"
-#if defined(FEATHEROS_SMP_TEST) || defined(FEATHEROS_STORAGE_TEST)
+#if defined(FEATHEROS_SMP_TEST) || defined(FEATHEROS_STORAGE_TEST) ||                              \
+    defined(FEATHEROS_NETWORK_TEST)
 #include "kernel/kernel_test.h"
 #endif
 #include "kernel/smp.h"
@@ -66,6 +69,10 @@ void MountInitramfs(KLogger& logger, const BootInfo& boot_info)
     {
         Panic("Initramfs archive is missing or invalid");
     }
+    if (!VFS::LoadEtc())
+    {
+        Panic("Initramfs etc files do not fit in /etc");
+    }
 
     VFS::FileInfo file_info;
     VFS::FileHandle file;
@@ -109,7 +116,7 @@ void LoadTestExecutable(KLogger& logger, const BootInfo& boot_info)
 
     Initramfs::File file;
     ELF::Image image;
-    if (!Initramfs::Open(test_path, &file) ||
+    if (!Initramfs::Open("system", test_path, &file) ||
         !ELF::Parse(file.data, file.size, user_machine, &image))
     {
         Panic("Initramfs ELF test executable is invalid");
@@ -334,6 +341,53 @@ void StartSecondaryCpus(KLogger& logger, limine_smp_response* smp)
 #endif
 }
 
+void StartNetwork(KLogger& logger, const BootInfo& boot_info)
+{
+    if (!Network::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
+    {
+        logger.Warning("Network device unavailable");
+        return;
+    }
+    char mac[Network::FormattedMacLength];
+    Network::FormatMac(Network::LocalMac(), mac);
+    char message[64];
+    if (!String::FormatTo(message, sizeof(message), "Network: virtio-net {}",
+                          static_cast<const char*>(mac)))
+    {
+        Panic("Network summary formatting failed");
+    }
+    logger.Info(message);
+
+    Network::StartIpv6();
+    Network::WaitForRouter();
+    Network::Ipv6Configuration ipv6;
+    Network::ReadIpv6Configuration(&ipv6);
+    char link_local[Network::FormattedIpv6Length];
+    char global[Network::FormattedIpv6Length];
+    char router[Network::FormattedIpv6Length];
+    Network::FormatIpv6(ipv6.link_local, link_local);
+    Network::FormatIpv6(ipv6.global, global);
+    Network::FormatIpv6(ipv6.router, router);
+    char ipv6_message[192];
+    const bool formatted =
+        Network::IsUnspecified(ipv6.global)
+            ? String::FormatTo(ipv6_message, sizeof(ipv6_message),
+                               "Network: IPv6 {}, no router advertisement",
+                               static_cast<const char*>(link_local))
+            : String::FormatTo(
+                  ipv6_message, sizeof(ipv6_message), "Network: IPv6 {} and {}/{} via {}",
+                  static_cast<const char*>(link_local), static_cast<const char*>(global),
+                  ipv6.prefix_length, static_cast<const char*>(router));
+    if (!formatted)
+    {
+        Panic("Network IPv6 summary formatting failed");
+    }
+    logger.Info(ipv6_message);
+#if defined(FEATHEROS_NETWORK_TEST)
+    KernelTest::RunNetworkTests();
+#endif
+}
+
 [[noreturn]] void RunConsole(KLogger& logger, const BootInfo& boot_info)
 {
     if (!Time::InitializeTimer(100, boot_info.platform_data))
@@ -344,6 +398,7 @@ void StartSecondaryCpus(KLogger& logger, limine_smp_response* smp)
     logger.Info("Timer started at 100 Hz");
     // Secondary CPUs start their timers at the boot CPU's rate.
     StartSecondaryCpus(logger, boot_info.smp);
+    StartNetwork(logger, boot_info);
     logger.Info("Kernel initialization complete");
     if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
     {

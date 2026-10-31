@@ -47,6 +47,7 @@ void Term::Print(const char* str)
 {
     Write(str);
     Refresh();
+    __atomic_add_fetch(&m_output_count, 1, __ATOMIC_RELEASE);
 }
 
 void Term::PrintLn(const char* str)
@@ -54,6 +55,7 @@ void Term::PrintLn(const char* str)
     Write(str);
     Write("\n");
     Refresh();
+    __atomic_add_fetch(&m_output_count, 1, __ATOMIC_RELEASE);
 }
 
 void Term::Write(const char* str)
@@ -406,6 +408,11 @@ uint32_t Term::CursorColumn() const
     return m_column_index;
 }
 
+uint64_t Term::OutputCount() const
+{
+    return __atomic_load_n(&m_output_count, __ATOMIC_ACQUIRE);
+}
+
 uint32_t Term::ContentRows() const
 {
     return m_rows > FirstContentRow ? m_rows - FirstContentRow : 0;
@@ -559,14 +566,36 @@ void Term::DrawCell(uint32_t row, uint32_t column)
     const bool inverted = CursorAt(row, column) ? !reversed : reversed;
     const uint32_t background = inverted ? m_fg_color : m_bg_color;
     const uint32_t foreground = inverted ? m_bg_color : m_fg_color;
+    const char character = static_cast<char>(m_buffer[row][column]);
     uint8_t font_index = 0;
-    if (indexForCharacter(static_cast<char>(m_buffer[row][column]), &font_index) == 0)
+    if (indexForCharacter(character, &font_index) == 0)
     {
         m_framebuffer->drawCharacter(font_index, x, y, background, foreground);
+        return;
     }
-    else
+    m_framebuffer->drawRectangle(x, y, FONT_WIDTH, FONT_HEIGHT, background);
+    if (row == StatusRow && (character == StatusGreenDot || character == StatusRedDot))
     {
-        m_framebuffer->drawRectangle(x, y, FONT_WIDTH, FONT_HEIGHT, background);
+        DrawDot(x, y, character == StatusGreenDot ? DotGreen : DotRed);
+    }
+}
+
+void Term::DrawDot(uint32_t x, uint32_t y, uint32_t color)
+{
+    const int32_t radius = FONT_WIDTH / 2 - 1;
+    const int32_t center_x = FONT_WIDTH / 2;
+    const int32_t center_y = FONT_HEIGHT / 2;
+    for (int32_t dy = -radius; dy <= radius; ++dy)
+    {
+        for (int32_t dx = -radius; dx <= radius; ++dx)
+        {
+            // The extra radius rounds off the corners less, so the dot looks round at this size.
+            if (dx * dx + dy * dy <= radius * radius + radius)
+            {
+                m_framebuffer->drawPixel(x + static_cast<uint32_t>(center_x + dx),
+                                         y + static_cast<uint32_t>(center_y + dy), color);
+            }
+        }
     }
 }
 

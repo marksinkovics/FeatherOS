@@ -1,5 +1,8 @@
 #include "kernel/storage/block_device.h"
 
+#include "pci.h"
+#include "port_io.h"
+
 #include "kernel/memory/page_allocator.h"
 #include "kernel/sync/spinlock.h"
 
@@ -10,10 +13,8 @@ namespace FeatherOS::BlockDevice
 namespace
 {
 
-constexpr uint16_t PciConfigAddress = 0x0CF8;
-constexpr uint16_t PciConfigData = 0x0CFC;
-constexpr uint16_t VirtioVendorId = 0x1AF4;
-constexpr uint16_t VirtioBlockLegacyDeviceId = 0x1001;
+namespace PortIo = Arch::X86_64::PortIo;
+
 constexpr uint16_t VirtioHostFeatures = 0x00;
 constexpr uint16_t VirtioGuestFeatures = 0x04;
 constexpr uint16_t VirtioQueuePfn = 0x08;
@@ -22,10 +23,6 @@ constexpr uint16_t VirtioQueueSelect = 0x0E;
 constexpr uint16_t VirtioQueueNotify = 0x10;
 constexpr uint16_t VirtioDeviceStatus = 0x12;
 constexpr uint16_t VirtioDeviceConfig = 0x14;
-constexpr uint16_t PciCommandRegister = 0x04;
-constexpr uint16_t PciBar0 = 0x10;
-constexpr uint16_t PciCommandIoSpace = 1U;
-constexpr uint16_t PciCommandBusMaster = 1U << 2;
 constexpr uint16_t StatusAcknowledge = 1U;
 constexpr uint16_t StatusDriver = 2U;
 constexpr uint16_t StatusDriverOk = 4U;
@@ -42,6 +39,7 @@ constexpr uint32_t DataOffset = RequestOffset + 16;
 constexpr uint32_t StatusOffset = DataOffset + SectorSize;
 constexpr uint16_t DescriptorNext = 1;
 constexpr uint16_t DescriptorDeviceWrite = 2;
+constexpr uint16_t AvailableNoInterrupt = 1;
 constexpr uint32_t RequestRead = 0;
 constexpr uint32_t RequestWrite = 1;
 constexpr uint32_t RequestFlush = 4;
@@ -81,155 +79,29 @@ bool initialized = false;
 // One request buffer serves every caller, so requests from different CPUs take turns.
 constinit Sync::SpinLock device_lock;
 
-void WritePort8(uint16_t port, uint8_t value)
-{
-    asm volatile("outb %0, %1" : : "a"(value), "Nd"(port));
-}
-
-void WritePort16(uint16_t port, uint16_t value)
-{
-    asm volatile("outw %0, %1" : : "a"(value), "Nd"(port));
-}
-
-void WritePort32(uint16_t port, uint32_t value)
-{
-    asm volatile("outl %0, %1" : : "a"(value), "Nd"(port));
-}
-
-uint8_t ReadPort8(uint16_t port)
-{
-    uint8_t value;
-    asm volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
-    return value;
-}
-
-uint16_t ReadPort16(uint16_t port)
-{
-    uint16_t value;
-    asm volatile("inw %1, %0" : "=a"(value) : "Nd"(port));
-    return value;
-}
-
-uint32_t ReadPort32(uint16_t port)
-{
-    uint32_t value;
-    asm volatile("inl %1, %0" : "=a"(value) : "Nd"(port));
-    return value;
-}
-
-uint32_t ReadPciConfig(uint8_t bus, uint8_t slot, uint8_t function, uint8_t offset)
-{
-    const uint32_t address = 0x80000000U | (static_cast<uint32_t>(bus) << 16) |
-                             (static_cast<uint32_t>(slot) << 11) |
-                             (static_cast<uint32_t>(function) << 8) | (offset & 0xFCU);
-    WritePort32(PciConfigAddress, address);
-    return ReadPort32(PciConfigData);
-}
-
-void WritePciConfig(uint8_t bus, uint8_t slot, uint8_t function, uint8_t offset, uint32_t value)
-{
-    const uint32_t address = 0x80000000U | (static_cast<uint32_t>(bus) << 16) |
-                             (static_cast<uint32_t>(slot) << 11) |
-                             (static_cast<uint32_t>(function) << 8) | (offset & 0xFCU);
-    WritePort32(PciConfigAddress, address);
-    WritePort32(PciConfigData, value);
-}
-
-bool FindVirtioBlockDevice()
-{
-    for (uint32_t bus = 0; bus < 256; ++bus)
-    {
-        for (uint32_t slot = 0; slot < 32; ++slot)
-        {
-            for (uint32_t function = 0; function < 8; ++function)
-            {
-                const uint32_t identity =
-                    ReadPciConfig(static_cast<uint8_t>(bus), static_cast<uint8_t>(slot),
-                                  static_cast<uint8_t>(function), 0);
-                const uint16_t vendor = static_cast<uint16_t>(identity);
-                const uint16_t device = static_cast<uint16_t>(identity >> 16);
-                if (vendor == 0xFFFF)
-                {
-                    break;
-                }
-                if (vendor != VirtioVendorId || device != VirtioBlockLegacyDeviceId)
-                {
-                    continue;
-                }
-
-                const uint32_t bar0 =
-                    ReadPciConfig(static_cast<uint8_t>(bus), static_cast<uint8_t>(slot),
-                                  static_cast<uint8_t>(function), PciBar0);
-                if ((bar0 & 1U) == 0 || (bar0 & 0xFFFCU) == 0)
-                {
-                    return false;
-                }
-
-                uint32_t command =
-                    ReadPciConfig(static_cast<uint8_t>(bus), static_cast<uint8_t>(slot),
-                                  static_cast<uint8_t>(function), PciCommandRegister);
-                command = (command & 0xFFFF0000U) |
-                          ((command & 0xFFFFU) | PciCommandIoSpace | PciCommandBusMaster);
-                WritePciConfig(static_cast<uint8_t>(bus), static_cast<uint8_t>(slot),
-                               static_cast<uint8_t>(function), PciCommandRegister, command);
-                device_io_base = static_cast<uint16_t>(bar0 & 0xFFFCU);
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 bool AllocateQueue(uint64_t hhdm_offset)
 {
-    for (uint32_t attempt = 0; attempt < 16; ++attempt)
+    uint64_t physical;
+    if (!Memory::AllocateContiguousPageFrames(QueuePageCount, &physical))
     {
-        uint64_t frames[QueuePageCount] = {};
-        uint32_t allocated_count = 0;
-        for (; allocated_count < QueuePageCount; ++allocated_count)
-        {
-            if (!Memory::AllocatePageFrame(&frames[allocated_count]))
-            {
-                break;
-            }
-        }
-        if (allocated_count != QueuePageCount)
-        {
-            for (uint32_t index = 0; index < allocated_count; ++index)
-            {
-                Memory::FreePageFrame(frames[index]);
-            }
-            return false;
-        }
-
-        bool contiguous = true;
-        for (uint32_t index = 1; index < QueuePageCount; ++index)
-        {
-            if (frames[index - 1] > UINT64_MAX - QueuePageSize ||
-                frames[index] != frames[index - 1] + QueuePageSize)
-            {
-                contiguous = false;
-                break;
-            }
-        }
-        if (contiguous && frames[0] <= UINT64_MAX - hhdm_offset &&
-            hhdm_offset + frames[0] <= UINTPTR_MAX)
-        {
-            queue_physical_address = frames[0];
-            queue_virtual_address = reinterpret_cast<volatile uint8_t*>(
-                static_cast<uintptr_t>(hhdm_offset + frames[0]));
-            for (uint32_t offset = 0; offset < QueuePageCount * QueuePageSize; ++offset)
-            {
-                queue_virtual_address[offset] = 0;
-            }
-            return true;
-        }
+        return false;
+    }
+    if (physical > UINT64_MAX - hhdm_offset || hhdm_offset + physical > UINTPTR_MAX)
+    {
         for (uint32_t index = 0; index < QueuePageCount; ++index)
         {
-            Memory::FreePageFrame(frames[index]);
+            Memory::FreePageFrame(physical + index * QueuePageSize);
         }
+        return false;
     }
-    return false;
+    queue_physical_address = physical;
+    queue_virtual_address =
+        reinterpret_cast<volatile uint8_t*>(static_cast<uintptr_t>(hhdm_offset + physical));
+    for (uint32_t offset = 0; offset < QueuePageCount * QueuePageSize; ++offset)
+    {
+        queue_virtual_address[offset] = 0;
+    }
+    return true;
 }
 
 void ConfigureDescriptor(uint16_t index, uint64_t address, uint32_t length, uint16_t flags,
@@ -259,7 +131,7 @@ bool SubmitLocked()
     ++available_index_value;
     asm volatile("mfence" ::: "memory");
     *available_index = available_index_value;
-    WritePort16(device_io_base + VirtioQueueNotify, QueueIndex);
+    PortIo::Write16(device_io_base + VirtioQueueNotify, QueueIndex);
 
     uint64_t attempts = 0;
     while (*used_index != expected_used_index && attempts < 10000000)
@@ -315,22 +187,26 @@ bool Transfer(uint64_t sector, const uint8_t* source, uint8_t* destination)
 
 bool Initialize(const void*, uint64_t hhdm_offset)
 {
-    if (initialized || !FindVirtioBlockDevice())
+    Arch::X86_64::Pci::Device device;
+    if (initialized ||
+        !Arch::X86_64::Pci::FindIoDevice(Arch::X86_64::Pci::VirtioVendorId,
+                                         Arch::X86_64::Pci::VirtioBlockLegacyDeviceId, &device))
     {
         return false;
     }
+    device_io_base = device.io_base;
 
-    WritePort8(device_io_base + VirtioDeviceStatus, 0);
-    WritePort8(device_io_base + VirtioDeviceStatus, StatusAcknowledge);
-    WritePort8(device_io_base + VirtioDeviceStatus, StatusAcknowledge | StatusDriver);
-    const uint32_t host_features = ReadPort32(device_io_base + VirtioHostFeatures);
+    PortIo::Write8(device_io_base + VirtioDeviceStatus, 0);
+    PortIo::Write8(device_io_base + VirtioDeviceStatus, StatusAcknowledge);
+    PortIo::Write8(device_io_base + VirtioDeviceStatus, StatusAcknowledge | StatusDriver);
+    const uint32_t host_features = PortIo::Read32(device_io_base + VirtioHostFeatures);
     read_only = (host_features & FeatureReadOnly) != 0;
     flush_supported = (host_features & FeatureFlush) != 0;
-    WritePort32(device_io_base + VirtioGuestFeatures, host_features & FeatureFlush);
-    WritePort16(device_io_base + VirtioQueueSelect, QueueIndex);
-    if (ReadPort16(device_io_base + VirtioQueueSize) < QueueSize || !AllocateQueue(hhdm_offset))
+    PortIo::Write32(device_io_base + VirtioGuestFeatures, host_features & FeatureFlush);
+    PortIo::Write16(device_io_base + VirtioQueueSelect, QueueIndex);
+    if (PortIo::Read16(device_io_base + VirtioQueueSize) < QueueSize || !AllocateQueue(hhdm_offset))
     {
-        WritePort8(device_io_base + VirtioDeviceStatus, StatusAcknowledge | StatusDriver | 128);
+        PortIo::Write8(device_io_base + VirtioDeviceStatus, StatusAcknowledge | StatusDriver | 128);
         return false;
     }
 
@@ -348,21 +224,25 @@ bool Initialize(const void*, uint64_t hhdm_offset)
         reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 2);
     auto* available_ring =
         reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 4);
+    // Requests are polled. Without this the device would keep raising its PCI interrupt, a line
+    // that virtio-net may share.
+    *reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset) =
+        AvailableNoInterrupt;
     available_ring[0] = 0;
     *available_index = 0;
     asm volatile("mfence" ::: "memory");
-    WritePort32(device_io_base + VirtioQueuePfn,
-                static_cast<uint32_t>(queue_physical_address / QueuePageSize));
+    PortIo::Write32(device_io_base + VirtioQueuePfn,
+                    static_cast<uint32_t>(queue_physical_address / QueuePageSize));
 
-    capacity_sectors = ReadPort32(device_io_base + VirtioDeviceConfig);
-    capacity_sectors |= static_cast<uint64_t>(ReadPort32(device_io_base + VirtioDeviceConfig + 4))
-                        << 32;
+    capacity_sectors = PortIo::Read32(device_io_base + VirtioDeviceConfig);
+    capacity_sectors |=
+        static_cast<uint64_t>(PortIo::Read32(device_io_base + VirtioDeviceConfig + 4)) << 32;
     if (capacity_sectors == 0)
     {
         return false;
     }
-    WritePort8(device_io_base + VirtioDeviceStatus,
-               StatusAcknowledge | StatusDriver | StatusDriverOk);
+    PortIo::Write8(device_io_base + VirtioDeviceStatus,
+                   StatusAcknowledge | StatusDriver | StatusDriverOk);
     initialized = true;
     return true;
 }
