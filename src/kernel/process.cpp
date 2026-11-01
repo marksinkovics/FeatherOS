@@ -9,7 +9,6 @@
 #include "kernel/filesystem/path.h"
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/tmpfs.h"
-#include "kernel/input/input.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/network/settings.h"
@@ -22,6 +21,8 @@
 #include "kernel/smp.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/syscall.h"
+#include "kernel/terminal/pseudo_terminal.h"
+#include "kernel/terminal/terminal.h"
 #include "kernel/thread_local_storage.h"
 #include "kernel/thread_stacks.h"
 #include "kernel/time/timer.h"
@@ -59,6 +60,14 @@ constexpr uint16_t UserMachine = ELF::MachineAArch64;
 
 struct ProcessRecord;
 
+// A change the parent's Wait has not reported yet.
+enum class Report : uint8_t
+{
+    None,
+    Stopped,
+    Continued,
+};
+
 // A thread other than the main one, whose context is in the process's program. A slot is free
 // while id is 0; its stack slot is the slot's index plus one.
 struct ThreadRecord
@@ -82,36 +91,37 @@ struct ProcessRecord
     ProcessRecord* next;
     ProcessId id;
     ProcessId parent;
-    // Ctrl+C and console input go to every process in the foreground group.
+    // Ctrl+C and terminal input go to every process in the foreground group.
     ProcessId group;
+    // The leader's process ID. A session leader's descendants form Ctrl+C jobs.
+    ProcessId session;
+    // The session's controlling terminal, or null; it changes under the process lock.
+    Terminals::Terminal* terminal;
     // The tick the process was spawned at, for ps.
     uint64_t start_tick;
     uint32_t live_children;
     Scheduler::TaskId task;
     char name[MaximumCommandNameLength + 1];
-    // Set for the console service: its descendants form Ctrl+C jobs.
-    bool session_leader;
     Files::Table files;
     // Relative paths in file syscalls start here; children inherit it.
     char working_directory[User::MaximumPathLength];
-    // The rest of a console line that a read did not take, with its '\n'.
-    char console_input[User::MaximumCommandLineLength];
-    uint8_t console_input_length;
-    uint8_t console_input_offset;
     UserProgram program;
     ThreadRecord threads[User::MaximumThreads - 1];
     uint64_t next_thread_id;
     // Set when exit, a fault or a terminating signal ends the process while threads may run.
     bool exiting;
     uint64_t exit_status;
+    // From a stop signal until SIGCONT; its threads wait on resumed meanwhile.
+    bool stopped;
+    int stop_signal;
+    volatile Report report;
+    Scheduler::WaitQueue resumed;
 };
 
 uint64_t hhdm_offset = 0;
 constinit Sync::SpinLock process_lock;
 ProcessRecord* process_list = nullptr;
 ProcessId next_process_id = 1;
-// Only processes in this group may read console input; zero means the kernel itself.
-ProcessId foreground_group = 0;
 
 volatile uint8_t* PhysicalBytes(uint64_t physical_address)
 {
@@ -499,6 +509,61 @@ bool DescendsFromLocked(const ProcessRecord* process, ProcessId ancestor)
     return false;
 }
 
+void SendSignalLocked(ProcessRecord* process, int signal);
+
+// Every thread wakes, so whichever one waits in Wait sees a child's report.
+void WakeThreadsLocked(const ProcessRecord& process)
+{
+    Scheduler::WakeTask(process.task);
+    for (const ThreadRecord& thread : process.threads)
+    {
+        if (thread.task != 0)
+        {
+            Scheduler::WakeTask(thread.task);
+        }
+    }
+}
+
+void SetStoppedLocked(ProcessRecord* process, bool stopped)
+{
+    process->stopped = stopped;
+    process->program.execution_context.stopped = stopped;
+    for (ThreadRecord& thread : process->threads)
+    {
+        if (thread.id != 0)
+        {
+            thread.context.stopped = stopped;
+        }
+    }
+}
+
+void ReportToParentLocked(ProcessRecord* process, Report report)
+{
+    process->report = report;
+    ProcessRecord* parent = FindProcessLocked(process->parent);
+    if (parent != nullptr)
+    {
+        SendSignalLocked(parent, User::SignalChild);
+        WakeThreadsLocked(*parent);
+    }
+}
+
+// No member has a parent in another group of the same session, so nobody there could continue
+// the group, and the terminal's stop signals leave it running.
+bool GroupOrphanedLocked(ProcessId group, ProcessId session)
+{
+    for (const ProcessRecord* member = process_list; member != nullptr; member = member->next)
+    {
+        const ProcessRecord* parent =
+            member->group == group ? FindProcessLocked(member->parent) : nullptr;
+        if (parent != nullptr && parent->group != group && parent->session == session)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Wakes the process if it sleeps or waits, so blocking calls can give up for the signal.
 void SendSignalLocked(ProcessRecord* process, int signal)
 {
@@ -506,6 +571,14 @@ void SendSignalLocked(ProcessRecord* process, int signal)
     if (process->task == 0)
     {
         return;
+    }
+    // SIGCONT continues the process whatever its action, which only decides whether a handler
+    // runs as well.
+    if (signal == User::SignalContinue && process->stopped)
+    {
+        SetStoppedLocked(process, false);
+        Scheduler::WakeAll(process->resumed);
+        ReportToParentLocked(process, Report::Continued);
     }
     // SIGKILL reaches every thread; other signals go to the main thread, or the first live one.
     const bool main_running = Scheduler::GetState(process->task) != Scheduler::TaskState::Complete;
@@ -549,13 +622,68 @@ bool CallerInterrupted()
     return context != nullptr && Signals::Deliverable(context->signals) != 0;
 }
 
-bool InForegroundGroup(const ProcessRecord& process)
+bool CallerInterruptedWhileWaiting(const void*)
 {
-    Sync::SpinLockGuard guard(process_lock);
-    return process.group == foreground_group;
+    return CallerInterrupted();
 }
 
-// A process may use its own group, or one that holds one of its children.
+Terminals::Terminal* ConsoleTerminal()
+{
+    return Console::Terminal();
+}
+
+bool IsSessionLeader(const ProcessRecord& process)
+{
+    return process.session == process.id;
+}
+
+// A process changes its own session and group, so it reads them without the process lock.
+Terminals::Caller CallerOf(const ProcessRecord& process)
+{
+    return {process.session, process.group};
+}
+
+Terminals::Terminal* ControllingTerminal(const ProcessRecord& process)
+{
+    Sync::SpinLockGuard guard(process_lock);
+    return process.terminal;
+}
+
+// A read (SIGTTIN) or a change (SIGTTOU) of terminal by the calling thread: 0 to go ahead,
+// SyscallErrorInterrupted once signal went to a background caller's group, or
+// SyscallErrorInputOutput.
+uint64_t CheckBackgroundAccess(const ProcessRecord& process, Terminals::Terminal* terminal,
+                               int signal)
+{
+    if (terminal->InForeground(terminal->AccessGroup(CallerOf(process))))
+    {
+        return 0;
+    }
+    const Signals::State& signals = CallerContext()->signals;
+    const bool declined = signals.actions[signal].handler == User::SignalIgnore ||
+                          (signals.blocked & Signals::Bit(signal)) != 0;
+    Sync::SpinLockGuard guard(process_lock);
+    switch (Terminals::DecideBackgroundAccess(signal, declined,
+                                              GroupOrphanedLocked(process.group, process.session)))
+    {
+    case Terminals::BackgroundAccess::Allowed:
+        return 0;
+    case Terminals::BackgroundAccess::Fail:
+        return User::SyscallErrorInputOutput;
+    case Terminals::BackgroundAccess::Signal:
+        break;
+    }
+    for (ProcessRecord* member = process_list; member != nullptr; member = member->next)
+    {
+        if (member->group == process.group)
+        {
+            SendSignalLocked(member, signal);
+        }
+    }
+    return User::SyscallErrorInterrupted;
+}
+
+// A process may use its own group, or one that holds one of its children in its session.
 bool GroupJoinableLocked(const ProcessRecord& caller, ProcessId group)
 {
     if (group == caller.group)
@@ -564,12 +692,67 @@ bool GroupJoinableLocked(const ProcessRecord& caller, ProcessId group)
     }
     for (const ProcessRecord* other = process_list; other != nullptr; other = other->next)
     {
-        if (other->group == group && other->parent == caller.id)
+        if (other->group == group && other->parent == caller.id && other->session == caller.session)
         {
             return true;
         }
     }
     return false;
+}
+
+bool GroupInSessionLocked(ProcessId session, ProcessId group)
+{
+    for (const ProcessRecord* other = process_list; other != nullptr; other = other->next)
+    {
+        if (other->group == group && other->session == session)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A session leader without a controlling terminal takes the first one it opens, or the one its
+// Spawn gave it at descriptor 0.
+void AcquireTerminal(ProcessRecord* process, uint64_t descriptor)
+{
+    Terminals::Terminal* terminal;
+    if (Files::FindTerminal(&process->files, descriptor, &terminal) != 0)
+    {
+        return;
+    }
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        if (!IsSessionLeader(*process) || process->terminal != nullptr ||
+            !terminal->Acquire(process->session, process->group))
+        {
+            return;
+        }
+        process->terminal = terminal;
+    }
+    Console::NotifyStatusChanged();
+}
+
+// When a session leader exits, its terminal is no longer anyone's controlling terminal.
+// Does nothing for a process that does not lead a session.
+void ReleaseSession(const ProcessRecord& process)
+{
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        if (!IsSessionLeader(process) || process.terminal == nullptr)
+        {
+            return;
+        }
+        process.terminal->Release(process.session);
+        for (ProcessRecord* other = process_list; other != nullptr; other = other->next)
+        {
+            if (other->session == process.session)
+            {
+                other->terminal = nullptr;
+            }
+        }
+    }
+    Console::NotifyStatusChanged();
 }
 
 bool BuildProgramPath(const char* program, const char* working_directory,
@@ -771,14 +954,20 @@ uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint
     {
         return User::SyscallErrorBadAddress;
     }
-    if (!InForegroundGroup(*process))
+    Terminals::Terminal* terminal = ControllingTerminal(*process);
+    if (terminal == nullptr)
     {
-        return User::SyscallErrorNotForeground;
+        return User::SyscallErrorNotTerminal;
     }
-    size_t length;
-    if (!Console::ReadLine(prompt_text, line, line_capacity, &length))
+    const uint64_t access = CheckBackgroundAccess(*process, terminal, User::SignalTerminalInput);
+    if (access != 0)
     {
-        return User::SyscallErrorInterrupted;
+        return access;
+    }
+    const uint64_t length = terminal->ReadLine(process->group, prompt_text, line, line_capacity);
+    if (User::IsSyscallError(length))
+    {
+        return length;
     }
     if (!CopyToUser(*process, buffer, line, length + 1))
     {
@@ -836,14 +1025,46 @@ uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags, uint
     }
 }
 
+struct ReportWatch
+{
+    const ProcessRecord* child;
+    uint64_t flags;
+};
+
+bool ReportReady(const ReportWatch& watch)
+{
+    const Report report = watch.child->report;
+    return (report == Report::Stopped && (watch.flags & User::WaitStopped) != 0) ||
+           (report == Report::Continued && (watch.flags & User::WaitContinued) != 0);
+}
+
+bool ReportReadyOrInterrupted(const void* watch)
+{
+    return ReportReady(*static_cast<const ReportWatch*>(watch)) || CallerInterrupted();
+}
+
+// The WaitResult for a report the watch asks for, or WaitResultExited for none.
+uint64_t TakeReport(ProcessRecord* child, const ReportWatch& watch, uint64_t* status)
+{
+    Sync::SpinLockGuard guard(process_lock);
+    if (!ReportReady(watch))
+    {
+        return User::WaitResultExited;
+    }
+    const bool stopped = child->report == Report::Stopped;
+    child->report = Report::None;
+    *status = stopped ? static_cast<uint64_t>(child->stop_signal) : 0;
+    return stopped ? User::WaitResultStopped : User::WaitResultContinued;
+}
+
 uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer, uint64_t flags)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    if ((flags & ~User::WaitNoHang) != 0)
+    if ((flags & ~(User::WaitNoHang | User::WaitStopped | User::WaitContinued)) != 0)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    const ProcessRecord* child = FindProcess(process_id);
+    ProcessRecord* child = FindProcess(process_id);
     if (child == nullptr || child->parent != process->id)
     {
         return User::SyscallErrorNotChild;
@@ -852,15 +1073,31 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
     {
         return User::SyscallErrorBadAddress;
     }
-    if ((flags & User::WaitNoHang) != 0 &&
-        Scheduler::GetState(child->task) != Scheduler::TaskState::Complete)
+    const ReportWatch watch = {child, flags};
+    for (;;)
     {
-        return User::SyscallErrorWouldBlock;
-    }
-    // A signal ends the wait early; the child stays to be waited for again.
-    if (!Scheduler::Wait(child->task, nullptr, CallerInterrupted))
-    {
-        return User::SyscallErrorInterrupted;
+        uint64_t status = 0;
+        const uint64_t report = TakeReport(child, watch, &status);
+        if (report != User::WaitResultExited)
+        {
+            return CopyToUser(*process, status_pointer, &status, sizeof(status))
+                       ? report
+                       : User::SyscallErrorBadAddress;
+        }
+        if ((flags & User::WaitNoHang) != 0 &&
+            Scheduler::GetState(child->task) != Scheduler::TaskState::Complete)
+        {
+            return User::SyscallErrorWouldBlock;
+        }
+        if (Scheduler::Wait(child->task, nullptr, ReportReadyOrInterrupted, &watch))
+        {
+            break;
+        }
+        // A signal ends the wait early; the child stays to be waited for again.
+        if (!ReportReady(watch))
+        {
+            return User::SyscallErrorInterrupted;
+        }
     }
     uint64_t exit_status;
     if (!Wait(process_id, &exit_status))
@@ -871,7 +1108,7 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
     {
         return User::SyscallErrorBadAddress;
     }
-    return 0;
+    return User::WaitResultExited;
 }
 
 // Frees frames unmapped from program once no CPU can still reach them through its TLB.
@@ -1030,6 +1267,10 @@ uint64_t SleepSyscall(void*, uint64_t milliseconds)
     {
         if (CallerInterrupted())
         {
+            // After a stop, the call starts again with the time that was left.
+            const uint64_t left = deadline - Time::TickCount();
+            CallerContext()->restart_argument =
+                (left * 1000 + ticks_per_second - 1) / ticks_per_second;
             return User::SyscallErrorInterrupted;
         }
         Scheduler::SleepUntil(deadline);
@@ -1078,57 +1319,35 @@ uint64_t OpenSyscall(void* context, uint64_t path, uint64_t flags)
     {
         return copied;
     }
-    return Files::Open(&process->files, path_text, flags);
+    const uint64_t descriptor =
+        Files::Open(&process->files, path_text, flags, ControllingTerminal(*process));
+    if (!User::IsSyscallError(descriptor) && (flags & User::OpenNoControllingTerminal) == 0)
+    {
+        AcquireTerminal(process, descriptor);
+    }
+    return descriptor;
 }
 
-// Canonical console reads return one line at a time, ending in '\n'; what does not fit the
-// caller's buffer is kept for its next read, even if the settings change in between.
-uint64_t ReadConsole(ProcessRecord* process, uint64_t buffer, uint64_t length)
+uint64_t ReadTerminal(ProcessRecord* process, Terminals::Terminal* terminal, uint64_t buffer,
+                      uint64_t length)
 {
     if (!UserRangeWritable(*process, buffer, length))
     {
         return User::SyscallErrorBadAddress;
     }
-    if (process->console_input_offset == process->console_input_length &&
-        (Console::Settings().flags & User::TerminalCanonical) == 0)
+    const uint64_t access = CheckBackgroundAccess(*process, terminal, User::SignalTerminalInput);
+    if (access != 0)
     {
-        if (!InForegroundGroup(*process))
-        {
-            return User::SyscallErrorNotForeground;
-        }
-        char bytes[FileChunkSize];
-        size_t count = 0;
-        if (!Console::ReadBytes(bytes, length < sizeof(bytes) ? length : sizeof(bytes), &count))
-        {
-            return User::SyscallErrorInterrupted;
-        }
-        return CopyToUser(*process, buffer, bytes, count) ? count : User::SyscallErrorBadAddress;
+        return access;
     }
-    if (process->console_input_offset == process->console_input_length)
+    char bytes[FileChunkSize];
+    const uint64_t count = terminal->Read(terminal->AccessGroup(CallerOf(*process)), bytes,
+                                          length < sizeof(bytes) ? length : sizeof(bytes));
+    if (User::IsSyscallError(count))
     {
-        if (!InForegroundGroup(*process))
-        {
-            return User::SyscallErrorNotForeground;
-        }
-        size_t line_length;
-        if (!Console::ReadLine("", process->console_input, sizeof(process->console_input),
-                               &line_length))
-        {
-            return User::SyscallErrorInterrupted;
-        }
-        process->console_input[line_length] = '\n';
-        process->console_input_length = static_cast<uint8_t>(line_length + 1);
-        process->console_input_offset = 0;
+        return count;
     }
-    const uint64_t available = process->console_input_length - process->console_input_offset;
-    const uint64_t count = length < available ? length : available;
-    if (!CopyToUser(*process, buffer, process->console_input + process->console_input_offset,
-                    count))
-    {
-        return User::SyscallErrorBadAddress;
-    }
-    process->console_input_offset = static_cast<uint8_t>(process->console_input_offset + count);
-    return count;
+    return CopyToUser(*process, buffer, bytes, count) ? count : User::SyscallErrorBadAddress;
 }
 
 // A datagram goes out whole; a stream is sent piece by piece.
@@ -1213,9 +1432,15 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
     {
         return User::SyscallErrorBadDescriptor;
     }
-    if (kind == Files::Kind::Console)
+    if (kind == Files::Kind::Terminal)
     {
-        return length == 0 ? 0 : ReadConsole(process, buffer, length);
+        Terminals::Terminal* terminal;
+        const uint64_t found = Files::FindTerminal(&process->files, descriptor, &terminal);
+        if (found != 0)
+        {
+            return found;
+        }
+        return length == 0 ? 0 : ReadTerminal(process, terminal, buffer, length);
     }
     if (kind == Files::Kind::Socket)
     {
@@ -1228,7 +1453,7 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
                    : ReceiveSocketData(process, socket, buffer, length, 0, nonblocking);
     }
     // One chunk at most, since a pipe read returns as soon as any data is there.
-    if (kind == Files::Kind::Pipe)
+    if (kind == Files::Kind::Pipe || kind == Files::Kind::PseudoTerminalMaster)
     {
         if (!UserRangeWritable(*process, buffer, length))
         {
@@ -1293,10 +1518,18 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
                    ? found
                    : SendSocketData(process, socket, buffer, length, nullptr, true, nonblocking);
     }
-    const bool console = kind == Files::Kind::Console;
+    Terminals::Terminal* terminal = nullptr;
+    if (kind == Files::Kind::Terminal)
+    {
+        const uint64_t found = Files::FindTerminal(&process->files, descriptor, &terminal);
+        if (found != 0)
+        {
+            return found;
+        }
+    }
     if (length == 0)
     {
-        return console ? 0 : Files::Write(&process->files, descriptor, nullptr, 0);
+        return terminal != nullptr ? 0 : Files::Write(&process->files, descriptor, nullptr, 0);
     }
     if (!UserRangeReadable(*process, buffer, length))
     {
@@ -1310,10 +1543,18 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
         {
             return User::SyscallErrorBadAddress;
         }
-        if (console)
+        if (terminal != nullptr)
         {
-            Console::Write(reinterpret_cast<const char*>(chunk), wanted);
-            total += wanted;
+            const uint64_t written = terminal->Write(reinterpret_cast<const char*>(chunk), wanted);
+            if (User::IsSyscallError(written))
+            {
+                return total > 0 ? total : written;
+            }
+            total += written;
+            if (written < wanted)
+            {
+                break;
+            }
             continue;
         }
         const uint64_t count =
@@ -1361,28 +1602,62 @@ uint64_t ProcessGroupSyscall(void* context, uint64_t process_id)
     return target == nullptr ? User::SyscallErrorNotFound : target->group;
 }
 
-// As with Shutdown, only init and session leaders such as the shell may move the console.
-uint64_t ForegroundGroupSyscall(void* context, uint64_t set, uint64_t group)
+uint64_t ForegroundGroupSyscall(void* context, uint64_t descriptor, uint64_t set, uint64_t group)
 {
-    const auto* caller = static_cast<const ProcessRecord*>(context);
+    auto* caller = static_cast<ProcessRecord*>(context);
+    Terminals::Terminal* terminal;
+    const uint64_t found = Files::FindTerminal(&caller->files, descriptor, &terminal);
+    if (found != 0)
+    {
+        return found;
+    }
+    if (set != 0)
+    {
+        const uint64_t access =
+            CheckBackgroundAccess(*caller, terminal, User::SignalTerminalOutput);
+        if (access != 0)
+        {
+            return access;
+        }
+    }
     {
         Sync::SpinLockGuard guard(process_lock);
         if (set == 0)
         {
-            return foreground_group;
+            return terminal->ForegroundGroupFor(CallerOf(*caller));
         }
-        if (caller->parent != 0 && !caller->session_leader)
+        const uint64_t changed = terminal->ChangeForegroundGroup(
+            CallerOf(*caller), group, GroupInSessionLocked(caller->session, group));
+        if (changed != 0)
         {
-            return User::SyscallErrorNotPermitted;
+            return changed;
         }
-        if (!GroupJoinableLocked(*caller, group))
-        {
-            return User::SyscallErrorInvalidArgument;
-        }
-        foreground_group = group;
     }
     Console::NotifyStatusChanged();
     return group;
+}
+
+// As setsid(2): fails for a group leader, whose group would then span two sessions.
+uint64_t CreateSessionSyscall(void* context)
+{
+    auto* caller = static_cast<ProcessRecord*>(context);
+    Sync::SpinLockGuard guard(process_lock);
+    if (caller->group == caller->id)
+    {
+        return User::SyscallErrorNotPermitted;
+    }
+    caller->session = caller->id;
+    caller->group = caller->id;
+    caller->terminal = nullptr;
+    return caller->id;
+}
+
+uint64_t SessionIdSyscall(void* context, uint64_t process_id)
+{
+    const auto* caller = static_cast<const ProcessRecord*>(context);
+    Sync::SpinLockGuard guard(process_lock);
+    const ProcessRecord* target = process_id == 0 ? caller : FindProcessLocked(process_id);
+    return target == nullptr ? User::SyscallErrorNotFound : target->session;
 }
 
 // target as kill(2): a process ID, 0 for the caller's group, -1 for every process but init and
@@ -1604,6 +1879,8 @@ uint64_t ThreadCreateSyscall(void* context, uint64_t entry, uint64_t first, uint
         .thread_id = thread->id,
         .thread_exit_only = false,
         .thread_pointer = thread_pointer,
+        .stopped = false,
+        .restart_argument = 0,
     };
     // A new thread keeps the caller's mask and the process's actions, with nothing pending.
     thread->context.signals.pending = 0;
@@ -1616,6 +1893,7 @@ uint64_t ThreadCreateSyscall(void* context, uint64_t entry, uint64_t first, uint
     }
     Sync::SpinLockGuard guard(process_lock);
     thread->task = task;
+    thread->context.stopped = process->stopped;
     // The process may have begun exiting while the task was created.
     if (process->exiting)
     {
@@ -1657,7 +1935,7 @@ uint64_t ThreadJoinSyscall(void* context, uint64_t thread_id, uint64_t value)
         thread->joining = true;
     }
     uint64_t result = 0;
-    if (!Scheduler::Wait(thread->task, &result, CallerInterrupted))
+    if (!Scheduler::Wait(thread->task, &result, CallerInterruptedWhileWaiting))
     {
         Sync::SpinLockGuard guard(process_lock);
         thread->joining = false;
@@ -1778,17 +2056,78 @@ void WaitForThreads(ProcessRecord* process)
     }
 }
 
-uint64_t TerminalSizeSyscall(void*)
+void SignalGroup(uint64_t group, int signal)
 {
+    Sync::SpinLockGuard guard(process_lock);
+    for (ProcessRecord* candidate = process_list; candidate != nullptr; candidate = candidate->next)
+    {
+        if (candidate->group == group)
+        {
+            SendSignalLocked(candidate, signal);
+        }
+    }
+}
+
+void HangUpSession(Terminals::Terminal* terminal, uint64_t session)
+{
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        for (ProcessRecord* candidate = process_list; candidate != nullptr;
+             candidate = candidate->next)
+        {
+            if (candidate->session == session && candidate->terminal == terminal)
+            {
+                candidate->terminal = nullptr;
+                SendSignalLocked(candidate, User::SignalHangUp);
+            }
+        }
+    }
+    Console::NotifyStatusChanged();
+}
+
+// A terminal, or a pty master standing for its slave's.
+uint64_t FindTerminalOrMaster(ProcessRecord* process, uint64_t descriptor,
+                              Terminals::Terminal** terminal)
+{
+    const uint64_t found = Files::FindTerminal(&process->files, descriptor, terminal);
+    if (found != User::SyscallErrorNotTerminal)
+    {
+        return found;
+    }
+    PseudoTerminals::Pair* pair;
+    if (Files::FindPseudoTerminal(&process->files, descriptor, &pair) != 0)
+    {
+        return found;
+    }
+    *terminal = PseudoTerminals::TerminalOf(pair);
+    return 0;
+}
+
+uint64_t TerminalSizeSyscall(void* context, uint64_t descriptor)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    Terminals::Terminal* terminal;
+    const uint64_t found = FindTerminalOrMaster(process, descriptor, &terminal);
+    if (found != 0)
+    {
+        return found;
+    }
     uint32_t rows = 0;
     uint32_t columns = 0;
-    Console::Size(&rows, &columns);
+    terminal->Size(&rows, &columns);
     return (static_cast<uint64_t>(rows) << 32) | columns;
 }
 
-uint64_t TerminalModeSyscall(void* context, uint64_t new_settings, uint64_t old_settings)
+uint64_t TerminalModeSyscall(void* context, uint64_t descriptor, uint64_t new_settings,
+                             uint64_t old_settings)
 {
-    const auto* process = static_cast<const ProcessRecord*>(context);
+    auto* process = static_cast<ProcessRecord*>(context);
+    Terminals::Terminal* terminal;
+    const uint64_t found = Files::FindTerminal(&process->files, descriptor, &terminal);
+    if (found != 0)
+    {
+        return found;
+    }
     User::TerminalSettings requested;
     if (new_settings != 0 && !CopyFromUser(*process, new_settings, &requested, sizeof(requested)))
     {
@@ -1803,20 +2142,68 @@ uint64_t TerminalModeSyscall(void* context, uint64_t new_settings, uint64_t old_
     {
         return User::SyscallErrorInvalidArgument;
     }
-    if (new_settings != 0 && !InForegroundGroup(*process))
-    {
-        return User::SyscallErrorNotForeground;
-    }
-    const User::TerminalSettings previous = Console::Settings();
     if (new_settings != 0)
     {
-        Console::SetSettings(requested, process->id);
+        const uint64_t access =
+            CheckBackgroundAccess(*process, terminal, User::SignalTerminalOutput);
+        if (access != 0)
+        {
+            return access;
+        }
+    }
+    const User::TerminalSettings previous = terminal->Settings();
+    if (new_settings != 0)
+    {
+        terminal->SetSettings(requested, process->id);
     }
     if (old_settings != 0 && !CopyToUser(*process, old_settings, &previous, sizeof(previous)))
     {
         return User::SyscallErrorBadAddress;
     }
     return 0;
+}
+
+uint64_t TerminalControlSyscall(void* context, uint64_t descriptor, uint64_t request,
+                                uint64_t argument)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    if (request == User::TerminalControlSetSize)
+    {
+        Terminals::Terminal* terminal;
+        const uint64_t found = FindTerminalOrMaster(process, descriptor, &terminal);
+        if (found != 0)
+        {
+            return found;
+        }
+        const auto rows = static_cast<uint32_t>(argument >> 32);
+        const auto columns = static_cast<uint32_t>(argument);
+        if (rows > User::MaximumTerminalDimension || columns > User::MaximumTerminalDimension)
+        {
+            return User::SyscallErrorInvalidArgument;
+        }
+        terminal->SetSize(rows, columns);
+        return 0;
+    }
+    PseudoTerminals::Pair* pair;
+    const uint64_t found = Files::FindPseudoTerminal(&process->files, descriptor, &pair);
+    if (found != 0)
+    {
+        return found;
+    }
+    switch (request)
+    {
+    case User::TerminalControlNumber:
+        return PseudoTerminals::Number(pair);
+    case User::TerminalControlLock:
+        if (argument > 1)
+        {
+            return User::SyscallErrorInvalidArgument;
+        }
+        PseudoTerminals::SetLocked(pair, argument == 1);
+        return 0;
+    default:
+        return User::SyscallErrorInvalidArgument;
+    }
 }
 
 // Waits until a signal arrives; the program then takes it on the way back to user mode.
@@ -2036,12 +2423,20 @@ uint64_t SocketNameSyscall(void* context, uint64_t descriptor, uint64_t address,
                : User::SyscallErrorBadAddress;
 }
 
-int16_t ConsolePollEvents(const ProcessRecord& process)
+int16_t TerminalPollEvents(ProcessRecord* process, uint64_t descriptor)
 {
-    const bool buffered = process.console_input_offset < process.console_input_length;
-    return static_cast<int16_t>(
-        User::PollWritable |
-        (InForegroundGroup(process) && (buffered || Input::HasInput()) ? User::PollReadable : 0));
+    Terminals::Terminal* terminal;
+    if (Files::FindTerminal(&process->files, descriptor, &terminal) != 0)
+    {
+        return User::PollInvalid;
+    }
+    // Reads return end of file at once, and writes fail.
+    if (terminal->HungUp())
+    {
+        return static_cast<int16_t>(User::PollReadable | User::PollWritable | User::PollHangUp);
+    }
+    const bool readable = terminal->HasInput(terminal->AccessGroup(CallerOf(*process)));
+    return static_cast<int16_t>(User::PollWritable | (readable ? User::PollReadable : 0));
 }
 
 uint64_t PollSyscall(void* context, uint64_t descriptors, uint64_t count, uint64_t milliseconds)
@@ -2067,7 +2462,7 @@ uint64_t PollSyscall(void* context, uint64_t descriptors, uint64_t count, uint64
     {
         const uint64_t generation = Poll::Generation();
         uint64_t ready = 0;
-        bool console_polled = false;
+        bool terminal_polled = false;
         for (uint64_t index = 0; index < count; ++index)
         {
             User::PollDescriptor& entry = entries[index];
@@ -2078,14 +2473,17 @@ uint64_t PollSyscall(void* context, uint64_t descriptors, uint64_t count, uint64
             }
             const auto descriptor = static_cast<uint64_t>(entry.descriptor);
             int16_t events;
-            if (Files::KindOf(&process->files, descriptor) == Files::Kind::Console)
+            const Files::Kind kind = Files::KindOf(&process->files, descriptor);
+            if (kind == Files::Kind::Terminal)
             {
-                events = ConsolePollEvents(*process);
-                console_polled = true;
+                events = TerminalPollEvents(process, descriptor);
+                terminal_polled = true;
             }
             else
             {
                 events = Files::PollEvents(&process->files, descriptor);
+                // A pty master becomes writable as the slave reads, which notifies nobody.
+                terminal_polled = terminal_polled || kind == Files::Kind::PseudoTerminalMaster;
             }
             entry.returned_events = static_cast<int16_t>(
                 events & (entry.events | User::PollError | User::PollHangUp | User::PollInvalid));
@@ -2103,10 +2501,10 @@ uint64_t PollSyscall(void* context, uint64_t descriptors, uint64_t count, uint64
         {
             return User::SyscallErrorInterrupted;
         }
-        // Console input arrives without a notification, so a poll on the console looks again
+        // Terminal input arrives without a notification, so a poll on a terminal looks again
         // every tick.
         uint64_t wake = deadline;
-        if (console_polled && (wake == 0 || Time::TickCount() + 1 < wake))
+        if (terminal_polled && (wake == 0 || Time::TickCount() + 1 < wake))
         {
             wake = Time::TickCount() + 1;
         }
@@ -2272,8 +2670,8 @@ uint64_t ChangeDirectorySyscall(void* context, uint64_t path)
 uint64_t ShutdownSyscall(void* context, uint64_t action)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    // Only init (started by the kernel) and session leaders such as the shell may stop the system.
-    if (process->parent != 0 && !process->session_leader)
+    // Only session leaders, such as init and the shell, may stop the system.
+    if (!IsSessionLeader(*process))
     {
         return User::SyscallErrorNotPermitted;
     }
@@ -2426,6 +2824,9 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     .set_clock = SetClockSyscall,
     .file_status_flags = FileStatusFlagsSyscall,
     .get_socket_option = GetSocketOptionSyscall,
+    .create_session = CreateSessionSyscall,
+    .session_id = SessionIdSyscall,
+    .terminal_control = TerminalControlSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -2442,7 +2843,11 @@ uint64_t RunProcess(void* context)
     const uint64_t exit_status = process->exiting ? process->exit_status : 0;
     process->exit_status = exit_status;
     Files::CloseAll(&process->files);
-    Console::ReleaseSettings(process->id);
+    for (uint32_t console = 0; console < Console::Count; ++console)
+    {
+        Console::Terminal(console)->ReleaseSettings(process->id);
+    }
+    PseudoTerminals::ReleaseSettings(process->id);
     for (;;)
     {
         ProcessId child = 0;
@@ -2468,6 +2873,7 @@ uint64_t RunProcess(void* context)
             break;
         }
     }
+    ReleaseSession(*process);
     {
         Sync::SpinLockGuard guard(process_lock);
         ProcessRecord* parent = FindProcessLocked(process->parent);
@@ -2560,7 +2966,8 @@ bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
             }
         }
     }
-    status->state = StateLetter(state);
+    status->state =
+        process->stopped && state != Scheduler::TaskState::Complete ? 'T' : StateLetter(state);
     status->process_id = process->id;
     status->parent_id = process->parent;
     status->group = process->group;
@@ -2624,11 +3031,15 @@ UserLayout RandomUserLayout()
 void Initialize(uint64_t offset)
 {
     Procfs::SetSource({ProcessAt, DescribeProcess, DescribeMemory, DescribeSystem});
+    Terminals::SetProcessHooks({InterruptGroup, CallerInterrupted, SignalGroup, HangUpSession});
     hhdm_offset = offset;
     Sync::SpinLockGuard guard(process_lock);
     process_list = nullptr;
     next_process_id = 1;
-    foreground_group = 0;
+    for (uint32_t console = 0; console < Console::Count; ++console)
+    {
+        Console::Terminal(console)->SetForegroundGroup(0);
+    }
 }
 
 void InitializeUserProgram(UserProgram* program)
@@ -2660,6 +3071,8 @@ void InitializeUserProgram(UserProgram* program)
     program->execution_context.thread_id = 1;
     program->execution_context.thread_exit_only = false;
     program->execution_context.thread_pointer = 0;
+    program->execution_context.stopped = false;
+    program->execution_context.restart_argument = 0;
     Signals::Reset(&program->execution_context.signals);
 }
 
@@ -2849,20 +3262,20 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         process->id = id;
         process->next_thread_id = 2;
         process->parent = parent;
-        process->session_leader = (flags & User::SpawnSessionLeader) != 0;
         process->start_tick = Time::TickCount();
-        if (requested_group != 0)
+        // The kernel starts init in a session of its own, without a controlling terminal.
+        if ((flags & User::SpawnSessionLeader) != 0 || parent_record == nullptr)
         {
-            process->group = requested_group;
-        }
-        else if (process->session_leader || (flags & User::SpawnSetGroup) != 0 ||
-                 parent_record == nullptr)
-        {
+            process->session = id;
             process->group = id;
         }
         else
         {
-            process->group = parent_record->group;
+            process->session = parent_record->session;
+            process->terminal = parent_record->terminal;
+            process->group = requested_group != 0                 ? requested_group
+                             : (flags & User::SpawnSetGroup) != 0 ? id
+                                                                  : parent_record->group;
         }
         process->next = process_list;
         process_list = process;
@@ -2875,7 +3288,11 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
     }
     else
     {
-        Files::OpenConsole(&process->files);
+        Files::OpenConsole(&process->files, ConsoleTerminal());
+    }
+    if (inherited_from != nullptr && IsSessionLeader(*process))
+    {
+        AcquireTerminal(process, User::StandardInput);
     }
 
     SetProcessName(process, program);
@@ -2895,20 +3312,22 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
     process->program.execution_context.preemption_enabled = true;
     if (!loaded || !Scheduler::CreateTask(RunProcess, process, &process->task))
     {
+        ReleaseSession(*process);
         Files::CloseAll(&process->files);
         ReleaseUserProgram(&process->program);
         RemoveProcess(process);
         return SpawnStatus::NoResources;
     }
-    // A child takes the console only from a parent that has it, so a background job cannot take
+    // A child takes the terminal only from a parent that has it, so a background job cannot take
     // it from the shell by starting a program of its own.
-    if ((flags & User::SpawnBackground) == 0)
+    if ((flags & User::SpawnBackground) == 0 && !IsSessionLeader(*process))
     {
         Sync::SpinLockGuard guard(process_lock);
         const ProcessRecord* parent_record = FindProcessLocked(parent);
-        if (parent_record == nullptr || parent_record->group == foreground_group)
+        if (process->terminal != nullptr && parent_record != nullptr &&
+            parent_record->group == process->terminal->ForegroundGroup())
         {
-            foreground_group = process->group;
+            process->terminal->SetForegroundGroup(process->group);
         }
     }
     Console::NotifyStatusChanged();
@@ -2930,7 +3349,8 @@ bool Wait(ProcessId process_id, uint64_t* exit_status)
     }
     ReleaseUserProgram(&process->program);
     {
-        // Once the foreground group's last process is reaped, the console returns to the waiter.
+        // Once the foreground group's last process is reaped, the terminal returns to the
+        // waiter, if it is in the same session.
         Sync::SpinLockGuard guard(process_lock);
         bool group_remains = false;
         for (const ProcessRecord* other = process_list; other != nullptr; other = other->next)
@@ -2938,13 +3358,53 @@ bool Wait(ProcessId process_id, uint64_t* exit_status)
             group_remains = group_remains || (other != process && other->group == process->group);
         }
         const ProcessRecord* waiter = FindProcessLocked(process->parent);
-        if (foreground_group == process->group && !group_remains)
+        Terminals::Terminal* terminal = process->terminal;
+        if (terminal != nullptr && terminal->ForegroundGroup() == process->group && !group_remains)
         {
-            foreground_group = waiter != nullptr ? waiter->group : 0;
+            terminal->SetForegroundGroup(
+                waiter != nullptr && waiter->terminal == terminal ? waiter->group : 0);
         }
     }
     RemoveProcess(process);
     Console::NotifyStatusChanged();
+    return true;
+}
+
+Signals::Decision TakeSignal(UserExecutionContext* context)
+{
+    auto* process = static_cast<ProcessRecord*>(context->syscall_context);
+    if (process == nullptr || Signals::Deliverable(context->signals) == 0)
+    {
+        return Signals::TakeNext(&context->signals);
+    }
+    const uint64_t flags = process_lock.LockIrqSave();
+    const Signals::Decision decision = Signals::TakeNext(&context->signals);
+    if (decision.kind == Signals::DecisionKind::Stop && !process->exiting && !process->stopped &&
+        (decision.signal == User::SignalStop ||
+         !GroupOrphanedLocked(process->group, process->session)))
+    {
+        SetStoppedLocked(process, true);
+        process->stop_signal = decision.signal;
+        ReportToParentLocked(process, Report::Stopped);
+    }
+    process_lock.UnlockIrqRestore(flags);
+    return decision;
+}
+
+bool HoldWhileStopped(UserExecutionContext* context)
+{
+    if (!context->stopped)
+    {
+        return false;
+    }
+    auto* process = static_cast<ProcessRecord*>(context->syscall_context);
+    const uint64_t flags = process_lock.LockIrqSave();
+    while (context->stopped &&
+           (Signals::Deliverable(context->signals) & Signals::Bit(User::SignalKill)) == 0)
+    {
+        Scheduler::WaitOn(process->resumed, process_lock);
+    }
+    process_lock.UnlockIrqRestore(flags);
     return true;
 }
 
@@ -2984,26 +3444,25 @@ bool StopOtherProcesses(ProcessId caller)
     return !others_running(false);
 }
 
-// Session leaders (the shell) and init are never interrupted, so Ctrl+C at the shell's own prompt
-// only discards the line.
-bool InterruptForegroundJob()
+// Session leaders (the shell) and init are never interrupted or stopped, so Ctrl+C at the shell's
+// own prompt only discards the line.
+bool InterruptGroup(uint64_t group, int signal)
 {
     Sync::SpinLockGuard guard(process_lock);
     bool interrupted = false;
     for (ProcessRecord* candidate = process_list; candidate != nullptr; candidate = candidate->next)
     {
-        if (candidate->group == foreground_group && !candidate->session_leader &&
-            candidate->parent != 0)
+        if (candidate->group == group && !IsSessionLeader(*candidate))
         {
-            SendSignalLocked(candidate, User::SignalInterrupt);
+            SendSignalLocked(candidate, signal);
             interrupted = true;
         }
     }
     return interrupted;
 }
 
-// The group's leader, or another member if the leader has gone.
-void ForegroundProgramName(char* buffer, size_t capacity)
+// Another member if the leader has gone.
+void ForegroundProgramName(uint64_t group, char* buffer, size_t capacity)
 {
     if (buffer == nullptr || capacity == 0)
     {
@@ -3014,8 +3473,7 @@ void ForegroundProgramName(char* buffer, size_t capacity)
     for (const ProcessRecord* candidate = process_list; candidate != nullptr;
          candidate = candidate->next)
     {
-        if (candidate->group == foreground_group &&
-            (foreground == nullptr || candidate->id == foreground_group))
+        if (candidate->group == group && (foreground == nullptr || candidate->id == group))
         {
             foreground = candidate;
         }

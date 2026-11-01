@@ -32,6 +32,11 @@ struct UserExecutionContext
     bool thread_exit_only;
     // Loaded into the thread pointer register before the thread first enters user mode.
     uint64_t thread_pointer;
+    // Set while the process is stopped; the thread waits on its way back to user mode.
+    volatile bool stopped;
+    // The first argument of the syscall in progress, written back when a stop interrupted the
+    // call and it starts again; a call may change it, as Sleep does to the time left.
+    uint64_t restart_argument;
 };
 
 } // namespace FeatherOS

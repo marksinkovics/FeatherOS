@@ -534,7 +534,7 @@ TEST_CASE("file descriptors start at 3 and are limited per process")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     std::vector<uint64_t> descriptors;
     for (uint64_t index = 0; index < FeatherOS::User::MaximumDescriptors - 3; ++index)
     {
@@ -559,10 +559,10 @@ TEST_CASE("file descriptors validate flags and access modes")
     const std::vector<uint8_t> archive = MakeTarArchive("system/hello.txt", "archive");
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", 0) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead | 128) ==
+    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead | 256) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
     REQUIRE(FeatherOS::Files::Open(&table, "/NEW.TXT", OpenRead | OpenCreate) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
@@ -588,7 +588,7 @@ TEST_CASE("file descriptors read, write, seek, and truncate disk files")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     const uint64_t writer =
         FeatherOS::Files::Open(&table, "/DATA.TXT", OpenWrite | OpenCreate | OpenTruncate);
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(writer));
@@ -630,9 +630,9 @@ TEST_CASE("disk files allow one writer or many readers, and open files cannot be
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table first{};
-    FeatherOS::Files::OpenConsole(&first);
+    FeatherOS::Files::OpenConsole(&first, nullptr);
     FeatherOS::Files::Table second{};
-    FeatherOS::Files::OpenConsole(&second);
+    FeatherOS::Files::OpenConsole(&second, nullptr);
     const uint64_t reader = FeatherOS::Files::Open(&first, "/BLOCK.TXT", OpenRead);
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(
         FeatherOS::Files::Open(&second, "/BLOCK.TXT", OpenRead)));
@@ -662,7 +662,7 @@ TEST_CASE("directory listing skips deleted entries and names files as NAME.EXT")
     REQUIRE(FeatherOS::VFS::Remove("/GONE.TXT"));
 
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     const uint64_t writer =
         FeatherOS::Files::Open(&table, "/README", OpenWrite | OpenAppend);
     REQUIRE(FeatherOS::Files::Write(&table, writer, "abc", 3) == 3);
@@ -692,7 +692,7 @@ TEST_CASE("appending opens at the end of the file")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead | OpenAppend) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
     const uint64_t appender =
@@ -951,7 +951,7 @@ TEST_CASE("rename replaces files and refuses directories, open files, and other 
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     WriteWhole("/new.txt", "new");
     REQUIRE(FeatherOS::Files::MakeDirectory("/docs") == 0);
     REQUIRE(FeatherOS::Files::MakeDirectory("/other") == 0);
@@ -996,7 +996,7 @@ TEST_CASE("open-file sharing rules tell apart files with the same slot in differ
     WriteWhole("/a/same.txt", "a");
     WriteWhole("/b/same.txt", "b");
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     const uint64_t first = FeatherOS::Files::Open(&table, "/a/same.txt", OpenWrite);
     const uint64_t second = FeatherOS::Files::Open(&table, "/b/same.txt", OpenWrite);
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(first));
@@ -1093,7 +1093,7 @@ TEST_CASE("the VFS root is the disk, with the initramfs and virtual filesystems 
     REQUIRE(ListDirectory("/system") == std::vector<std::string>{"hello.txt"});
     REQUIRE(ReadWhole("/system/hello.txt") == "archive");
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     REQUIRE(FeatherOS::Files::CheckDirectory("/") == 0);
     REQUIRE(FeatherOS::Files::CheckDirectory("/system") == 0);
     REQUIRE(FeatherOS::Files::CheckDirectory("/system/hello.txt") ==
@@ -1111,7 +1111,7 @@ TEST_CASE("file syscalls report why a change failed")
     const std::vector<uint8_t> archive = MakeTarArchive("system/hello.txt", "archive");
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     REQUIRE(FeatherOS::Files::MakeDirectory("/docs") == 0);
     REQUIRE(FeatherOS::Files::MakeDirectory("/docs") == FeatherOS::User::SyscallErrorExists);
     REQUIRE(FeatherOS::Files::MakeDirectory("/BLOCK.TXT") == FeatherOS::User::SyscallErrorExists);
@@ -1160,7 +1160,7 @@ TEST_CASE("stat reports type, size, and whether a file is read-only")
     REQUIRE(FeatherOS::Files::Stat("/missing", &status) == FeatherOS::User::SyscallErrorNotFound);
 
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     const uint64_t writer = FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenWrite | OpenAppend);
     REQUIRE(FeatherOS::Files::Write(&table, writer, "++", 2) == 2);
     REQUIRE(FeatherOS::Files::StatDescriptor(&table, writer, &status) == 0);
@@ -1176,7 +1176,7 @@ TEST_CASE("dup shares the open file and its offset until the last descriptor clo
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     const uint64_t original = FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead | OpenWrite);
     const uint64_t copy = FeatherOS::Files::Duplicate(&table, original, 0, 0);
     REQUIRE(copy == original + 1);
@@ -1189,7 +1189,7 @@ TEST_CASE("dup shares the open file and its offset until the last descriptor clo
     REQUIRE(FeatherOS::Files::Seek(&table, copy, 0, FeatherOS::User::SeekFromStart) == 0);
     REQUIRE(FeatherOS::Files::Close(&table, copy) == 0);
     FeatherOS::Files::Table other{};
-    FeatherOS::Files::OpenConsole(&other);
+    FeatherOS::Files::OpenConsole(&other, nullptr);
     const uint64_t writer = FeatherOS::Files::Open(&other, "/BLOCK.TXT", OpenWrite);
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(writer));
     FeatherOS::Files::CloseAll(&other);
@@ -1201,9 +1201,9 @@ TEST_CASE("dup2 replaces its target, and duplicates can be close-on-exec")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     const uint64_t file = FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead);
-    REQUIRE(FeatherOS::Files::KindOf(&table, 1) == FeatherOS::Files::Kind::Console);
+    REQUIRE(FeatherOS::Files::KindOf(&table, 1) == FeatherOS::Files::Kind::Terminal);
     REQUIRE(FeatherOS::Files::Duplicate(&table, file, 1, FeatherOS::User::DuplicateExact) == 1);
     REQUIRE(FeatherOS::Files::KindOf(&table, 1) == FeatherOS::Files::Kind::File);
     REQUIRE(FeatherOS::Files::Duplicate(&table, 1, 1, FeatherOS::User::DuplicateExact) == 1);
@@ -1234,7 +1234,7 @@ TEST_CASE("children inherit descriptors that are not close-on-exec, sharing thei
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table parent{};
-    FeatherOS::Files::OpenConsole(&parent);
+    FeatherOS::Files::OpenConsole(&parent, nullptr);
     const uint64_t shared = FeatherOS::Files::Open(&parent, "/BLOCK.TXT", OpenRead);
     const uint64_t private_file =
         FeatherOS::Files::Open(&parent, "/BLOCK.TXT", OpenRead | FeatherOS::User::OpenCloseOnExec);
@@ -1243,7 +1243,7 @@ TEST_CASE("children inherit descriptors that are not close-on-exec, sharing thei
     FeatherOS::Files::Table child{};
     FeatherOS::Files::Inherit(&child, &parent);
     REQUIRE(FeatherOS::Files::KindOf(&child, 0) == FeatherOS::Files::Kind::File);
-    REQUIRE(FeatherOS::Files::KindOf(&child, 1) == FeatherOS::Files::Kind::Console);
+    REQUIRE(FeatherOS::Files::KindOf(&child, 1) == FeatherOS::Files::Kind::Terminal);
     REQUIRE(FeatherOS::Files::KindOf(&child, shared) == FeatherOS::Files::Kind::File);
     REQUIRE(FeatherOS::Files::KindOf(&child, private_file) == FeatherOS::Files::Kind::None);
     char text[4] = {};
@@ -1261,7 +1261,7 @@ TEST_CASE("append writes land at the end through every descriptor")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     const uint64_t appender = FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenWrite | OpenAppend);
     const uint64_t copy = FeatherOS::Files::Duplicate(&table, appender, 0, 0);
     REQUIRE(FeatherOS::Files::Seek(&table, appender, 0, FeatherOS::User::SeekFromStart) == 0);

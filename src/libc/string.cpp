@@ -339,6 +339,16 @@ char* strsignal(int signal)
         "Stack fault",
         "Child exited",
         "Continued",
+        "Stopped (signal)",
+        "Stopped",
+        "Stopped (tty input)",
+        "Stopped (tty output)",
+        "Urgent I/O condition",
+        "CPU time limit exceeded",
+        "File size limit exceeded",
+        "Virtual timer expired",
+        "Profiling timer expired",
+        "Window changed",
     };
     const bool known = signal > 0 && signal < static_cast<int>(sizeof(names) / sizeof(names[0]));
     return const_cast<char*>(names[known ? signal : 0]);
@@ -408,6 +418,9 @@ char* strerror(int error)
         break;
     case ENOTTY:
         message = "Not a terminal";
+        break;
+    case ENXIO:
+        message = "No such device or address";
         break;
     case ENOSPC:
         message = "No space left on device";

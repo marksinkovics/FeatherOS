@@ -22,7 +22,7 @@
 #include "kernel/process_arguments.h"
 #include "kernel/scheduler.h"
 #if defined(FEATHEROS_SMP_TEST) || defined(FEATHEROS_STORAGE_TEST) ||                              \
-    defined(FEATHEROS_NETWORK_TEST)
+    defined(FEATHEROS_NETWORK_TEST) || defined(FEATHEROS_INPUT_TEST)
 #include "kernel/kernel_test.h"
 #endif
 #include "kernel/smp.h"
@@ -44,7 +44,7 @@ namespace
 {
 
 Framebuffer framebuffer;
-Term term;
+Term terms[Console::Count];
 
 bool display_ready = false;
 
@@ -52,8 +52,12 @@ void InitializeDisplay(KLogger& logger, limine_framebuffer* framebuffer_response
 {
     if (framebuffer_response != nullptr && framebuffer.init(framebuffer_response))
     {
-        term.Init(&framebuffer);
-        logger.AttachTerminal(&term);
+        for (uint32_t console = 0; console < Console::Count; ++console)
+        {
+            terms[console].Init(&framebuffer);
+            terms[console].SetShown(console == 0);
+        }
+        logger.AttachTerminal(&terms[0]);
         display_ready = true;
         logger.Info("Framebuffer console initialized");
     }
@@ -390,6 +394,7 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
 
 [[noreturn]] void RunConsole(KLogger& logger, const BootInfo& boot_info)
 {
+    Input::SetTerminal(Console::Terminal());
     if (!Time::InitializeTimer(100, boot_info.platform_data))
     {
         Panic("Periodic timer initialization failed");
@@ -404,7 +409,10 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     {
         logger.Warning("Keyboard device unavailable; use serial input");
     }
-    Console::Initialize(display_ready ? &term : nullptr);
+    Console::Initialize(display_ready ? terms : nullptr);
+#if defined(FEATHEROS_INPUT_TEST)
+    KernelTest::StartConsoleReports();
+#endif
 
     // init starts and supervises the services in /init.conf; restart it if it ever exits.
     for (;;)

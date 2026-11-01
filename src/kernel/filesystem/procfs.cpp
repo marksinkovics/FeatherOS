@@ -96,6 +96,8 @@ const char* StateName(char state)
         return "running";
     case 'S':
         return "sleeping";
+    case 'T':
+        return "stopped";
     default:
         return "zombie";
     }

@@ -1,10 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "kernel/arch/interrupts.h"
 #include "kernel/arch/serial.h"
 #include "kernel/input/input.h"
-#include "kernel/scheduler.h"
+#include "kernel/input/keyboard.h"
+#include "kernel/terminal/terminal.h"
 #include "support/scheduler_stubs.h"
+#include "support/terminal_device.h"
 
 #include <deque>
 #include <string>
@@ -14,41 +15,25 @@ namespace
 
 std::deque<char> serial_input;
 
-void DrainInput()
+// Raw and without echo, so a read returns exactly the queued bytes.
+std::string ReadAll(FeatherOS::Terminals::Terminal& terminal)
 {
-    char byte;
-    while (FeatherOS::Input::TryReadByte(&byte))
-    {
-    }
-}
-
-std::string ReadAll()
-{
+    terminal.SetSettings({0, 0, 0, 0}, 1);
     std::string text;
-    char byte;
-    while (FeatherOS::Input::TryReadByte(&byte))
+    char buffer[64];
+    for (;;)
     {
-        text += byte;
+        const uint64_t count = terminal.Read(0, buffer, sizeof(buffer));
+        REQUIRE_FALSE(FeatherOS::User::IsSyscallError(count));
+        if (count == 0)
+        {
+            return text;
+        }
+        text.append(buffer, count);
     }
-    return text;
 }
 
 } // namespace
-
-namespace FeatherOS::Arch::Interrupts
-{
-
-uint64_t SaveAndDisable()
-{
-    return 0;
-}
-
-void Restore(uint64_t)
-{
-}
-
-} // namespace FeatherOS::Arch::Interrupts
-
 
 namespace FeatherOS::Serial
 {
@@ -66,95 +51,96 @@ bool ReadCharacter(char* character)
 
 } // namespace FeatherOS::Serial
 
-TEST_CASE("serial input arrives as typed, with CR LF counted once")
+TEST_CASE("serial input reaches the terminal as typed, with CR LF counted once")
 {
-    DrainInput();
+    TestScheduler::Reset();
+    TestTerminalDevice device;
+    FeatherOS::Terminals::Terminal terminal(device.Device());
+    FeatherOS::Input::SetTerminal(&terminal);
     serial_input = {'a', '\r', '\n', 'b', '\x7f', '\x1b', '[', 'A', '\n', '\n'};
     FeatherOS::Input::Poll();
-    REQUIRE(ReadAll() == "a\rb\x7f\x1b[A\n\n");
-    char byte;
-    REQUIRE_FALSE(FeatherOS::Input::TryReadByte(&byte));
-    REQUIRE_FALSE(FeatherOS::Input::TryReadByte(nullptr));
+    REQUIRE(ReadAll(terminal) == "a\rb\x7f\x1b[A\n\n");
+
+    FeatherOS::Input::SubmitBytes("\x1b[B", 3);
+    REQUIRE(ReadAll(terminal) == "\x1b[B");
+    FeatherOS::Input::SetTerminal(nullptr);
 }
 
-TEST_CASE("input queue is bounded and keeps a key's bytes together")
+TEST_CASE("a serial Ctrl+C reaches the terminal alone, after the bytes before it")
 {
-    DrainInput();
-    std::string expected;
-    for (uint32_t index = 0; index < 254; ++index)
-    {
-        const char byte = static_cast<char>('a' + index % 26);
-        FeatherOS::Input::SubmitBytes(&byte, 1);
-        expected += byte;
-    }
-    // Three bytes do not fit in the two left, so none of them is queued.
-    FeatherOS::Input::SubmitBytes("\x1b[A", 3);
-    FeatherOS::Input::SubmitBytes("xy", 2);
-    expected += "xy";
-    FeatherOS::Input::SubmitBytes("z", 1);
-    REQUIRE(ReadAll() == expected);
-}
-
-TEST_CASE("input arrival wakes waiting readers")
-{
-    DrainInput();
-    TestScheduler::wake_count = 0;
-    FeatherOS::Input::SubmitBytes("\r", 1);
-    REQUIRE(TestScheduler::wake_count == 1);
-
-    serial_input.clear();
-    FeatherOS::Input::Poll();
-    REQUIRE(TestScheduler::wake_count == 1);
-
-    serial_input = {'x'};
-    FeatherOS::Input::Poll();
-    REQUIRE(TestScheduler::wake_count == 2);
-    DrainInput();
-}
-
-TEST_CASE("waiting for input blocks only while the queue is empty")
-{
-    DrainInput();
-    TestScheduler::wait_count = 0;
-    FeatherOS::Input::WaitForInput(250);
-    REQUIRE(TestScheduler::wait_count == 1);
-    REQUIRE(TestScheduler::last_wait_deadline == 250);
-    REQUIRE(TestScheduler::lock_held_during_wait);
-
-    FeatherOS::Input::SubmitBytes("q", 1);
-    FeatherOS::Input::WaitForInput(0);
-    REQUIRE(TestScheduler::wait_count == 1);
-    DrainInput();
-}
-
-TEST_CASE("Ctrl+C goes to the interrupt handler, or is queued in order when it declines")
-{
-    DrainInput();
-    static int handler_calls = 0;
-    static bool consume = true;
-    FeatherOS::Input::SetInterruptHandler(
-        []
-        {
-            ++handler_calls;
-            return consume;
-        });
+    TestScheduler::Reset();
+    TestTerminalDevice device;
+    FeatherOS::Terminals::Terminal terminal(device.Device());
+    FeatherOS::Input::SetTerminal(&terminal);
+    static int interrupts = 0;
+    FeatherOS::Terminals::SetProcessHooks({[](uint64_t, int)
+                                           {
+                                               ++interrupts;
+                                               return true;
+                                           },
+                                           nullptr});
 
     serial_input = {'a', '\x03', 'b'};
     FeatherOS::Input::Poll();
-    REQUIRE(handler_calls == 1);
-    REQUIRE(ReadAll() == "ab");
+    REQUIRE(interrupts == 1);
+    REQUIRE(ReadAll(terminal) == "ab");
 
-    consume = false;
-    FeatherOS::Input::SubmitBytes("\x03", 1);
-    REQUIRE(handler_calls == 2);
-    serial_input = {'x', '\x03', 'q'};
-    FeatherOS::Input::Poll();
-    REQUIRE(handler_calls == 3);
-    REQUIRE(ReadAll() == "\x03x\x03q");
+    FeatherOS::Terminals::SetProcessHooks({nullptr, nullptr});
+    FeatherOS::Input::SetTerminal(nullptr);
+}
 
-    FeatherOS::Input::SetInterruptHandler(nullptr);
-    serial_input = {'\x03'};
+TEST_CASE("keys go to the shown console's terminal, serial to the first, Alt+Fn switches")
+{
+    TestScheduler::Reset();
+    TestTerminalDevice device;
+    FeatherOS::Terminals::Terminal first(device.Device());
+    FeatherOS::Terminals::Terminal second(device.Device());
+    FeatherOS::Input::SetTerminal(&first);
+    static FeatherOS::Terminals::Terminal* shown = nullptr;
+    static FeatherOS::Terminals::Terminal* consoles[2] = {&first, &second};
+    shown = &first;
+    FeatherOS::Input::SetConsoleSwitch(
+        [](uint32_t console)
+        {
+            if (console < 2)
+            {
+                shown = consoles[console];
+                FeatherOS::Input::SetKeyboardTerminal(shown);
+            }
+        });
+
+    namespace KeyCode = FeatherOS::Input::KeyCode;
+    FeatherOS::Input::Keyboard keyboard;
+    const auto tap = [&](uint16_t code)
+    {
+        FeatherOS::Input::SubmitKey(keyboard, code, true);
+        FeatherOS::Input::SubmitKey(keyboard, code, false);
+    };
+    FeatherOS::Input::SubmitKey(keyboard, KeyCode::LeftAlt, true);
+    tap(KeyCode::F1 + 1);
+    FeatherOS::Input::SubmitKey(keyboard, KeyCode::LeftAlt, false);
+    REQUIRE(shown == &second);
+    tap(30);
+    serial_input = {'s'};
     FeatherOS::Input::Poll();
-    REQUIRE(handler_calls == 3);
-    REQUIRE(ReadAll() == "\x03");
+    REQUIRE(ReadAll(second) == "a");
+    REQUIRE(ReadAll(first) == "s");
+
+    // A console that does not exist leaves the keys where they were.
+    FeatherOS::Input::SubmitKey(keyboard, KeyCode::RightAlt, true);
+    tap(KeyCode::F4);
+    FeatherOS::Input::SubmitKey(keyboard, KeyCode::RightAlt, false);
+    tap(48);
+    REQUIRE(ReadAll(second) == "b");
+
+    FeatherOS::Input::SetConsoleSwitch(nullptr);
+    FeatherOS::Input::SetTerminal(nullptr);
+}
+
+TEST_CASE("input without a terminal is dropped")
+{
+    serial_input = {'x'};
+    FeatherOS::Input::Poll();
+    FeatherOS::Input::SubmitBytes("y", 1);
+    REQUIRE(serial_input.empty());
 }

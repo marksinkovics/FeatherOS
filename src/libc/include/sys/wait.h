@@ -4,14 +4,21 @@
 #include <sys/cdefs.h>
 #include <sys/types.h>
 
+// Linux's values. WUNTRACED also reports a child that stopped, and WCONTINUED one that a
+// SIGCONT continued, each once.
 #define WNOHANG 1
+#define WUNTRACED 2
+#define WCONTINUED 8
 
-// The Linux encoding. With no signals yet, a program the kernel ended after a CPU exception
-// reports signal 11 (SIGSEGV), and one Ctrl+C interrupted reports signal 2 (SIGINT).
+// The Linux encoding. A program the kernel ended after a CPU exception reports signal 11
+// (SIGSEGV).
 #define WIFEXITED(status) (((status) & 0x7F) == 0)
 #define WEXITSTATUS(status) (((status) >> 8) & 0xFF)
-#define WIFSIGNALED(status) (((status) & 0x7F) != 0)
+#define WIFSIGNALED(status) (((status) & 0x7F) != 0 && ((status) & 0x7F) != 0x7F)
 #define WTERMSIG(status) ((status) & 0x7F)
+#define WIFSTOPPED(status) (((status) & 0xFF) == 0x7F)
+#define WSTOPSIG(status) WEXITSTATUS(status)
+#define WIFCONTINUED(status) ((status) == 0xFFFF)
 
 __BEGIN_DECLS
 

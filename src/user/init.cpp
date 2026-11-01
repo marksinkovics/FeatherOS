@@ -16,7 +16,7 @@ namespace
 {
 
 constexpr char ConfigPath[] = "/system/init.conf";
-constexpr char FallbackConfig[] = "console shell\n";
+constexpr char FallbackConfig[] = "console /dev/tty1 shell\n";
 constexpr uint64_t MaximumConfigSize = 2048;
 constexpr uint64_t PollMilliseconds = 200;
 
@@ -75,9 +75,21 @@ void ListEnvironment()
     environment_entries[count] = nullptr;
 }
 
+bool HasConsoleOn(const char* terminal)
+{
+    for (uint32_t index = 0; index < service_count; ++index)
+    {
+        if (services[index].policy == Policy::Console &&
+            strcmp(services[index].terminal, terminal) == 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 void ParseConfig(const char* text, uint64_t length)
 {
-    bool has_console = false;
     uint64_t line_number = 1;
     for (uint64_t start = 0; start < length; ++line_number)
     {
@@ -88,8 +100,9 @@ void ParseConfig(const char* text, uint64_t length)
         }
         Service service;
         const LineKind kind = ParseLine(text + start, end - start, &service);
-        const bool second_console =
-            kind == LineKind::Service && service.policy == Policy::Console && has_console;
+        const bool second_console = kind == LineKind::Service &&
+                                    service.policy == Policy::Console &&
+                                    HasConsoleOn(service.terminal);
         if (kind == LineKind::Variable)
         {
             if (!AppendVariable(environment, sizeof(environment), &environment_used,
@@ -105,15 +118,14 @@ void ParseConfig(const char* text, uint64_t length)
         }
         else if (kind == LineKind::Service)
         {
-            has_console = has_console || service.policy == Policy::Console;
             services[service_count++] = service;
         }
         start = end + 1;
     }
 }
 
-// The console service leads its own session, so Ctrl+C stops at it; respawned services run in
-// the background, without the console.
+// A console service leads its own session on its terminal, so Ctrl+C stops at it; respawned
+// services run in the background, without a terminal.
 void Start(Service* service)
 {
     char command[MaximumCommandLineLength];
@@ -126,10 +138,23 @@ void Start(Service* service)
                                           : service->policy == Policy::Respawn
                                               ? POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_BACKGROUND
                                               : 0);
+    posix_spawn_file_actions_t file_actions;
+    posix_spawn_file_actions_init(&file_actions);
+    if (service->policy == Policy::Console)
+    {
+        posix_spawn_file_actions_addopen(&file_actions, STDIN_FILENO, service->terminal, O_RDWR, 0);
+        posix_spawn_file_actions_adddup2(&file_actions, STDIN_FILENO, STDOUT_FILENO);
+        posix_spawn_file_actions_adddup2(&file_actions, STDIN_FILENO, STDERR_FILENO);
+    }
     pid_t process_id = 0;
-    if (SplitCommandLine(command, words, MaximumArgumentCount + 1, &count) != SplitResult::Done ||
-        count == 0 ||
-        posix_spawnp(&process_id, words[0], nullptr, &attributes, words, environment_entries) != 0)
+    const bool started =
+        SplitCommandLine(command, words, MaximumArgumentCount + 1, &count) == SplitResult::Done &&
+        count != 0 &&
+        posix_spawnp(&process_id, words[0], &file_actions, &attributes, words,
+                     environment_entries) == 0;
+    posix_spawn_file_actions_destroy(&file_actions);
+    posix_spawnattr_destroy(&attributes);
+    if (!started)
     {
         Report("cannot start ", *service);
         service->disabled = true;

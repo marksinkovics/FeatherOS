@@ -124,6 +124,8 @@ constexpr uint64_t ControlMask = 0x07FF9F00;
 constexpr uint64_t StatusMask = 0xF800009F;
 // AAPCS64 has no red zone, but leaving one costs little and protects code that assumes one.
 constexpr uint64_t RedZone = 128;
+// svc #0; ELR points past it.
+constexpr uint64_t SyscallInstructionSize = 4;
 
 // What a signal handler's frame keeps on the user stack, below the interrupted stack pointer.
 struct SignalFrame
@@ -209,17 +211,35 @@ bool EnterHandler(FeatherOS::UserExecutionContext* user_context, uint64_t* regis
     return true;
 }
 
-// Every return to EL0 passes here: the program takes its next signal, which may end it.
+// Every return to EL0 passes here: the program takes its next signal, which may end it. A
+// stopped program waits here until it continues. syscall_interrupted means the syscall failed
+// with SyscallErrorInterrupted; if only a stop interrupted it, it starts again.
 void DeliverSignals(FeatherOS::UserExecutionContext* user_context, uint64_t* registers,
-                    uint64_t* elr, uint64_t* spsr)
+                    uint64_t* elr, uint64_t* spsr, bool syscall_interrupted = false)
 {
     if ((*spsr & 0xF) != 0 || user_context == nullptr || !user_context->active ||
         user_context->exit_requested)
     {
         return;
     }
-    const FeatherOS::Signals::Decision decision =
-        FeatherOS::Signals::TakeNext(&user_context->signals);
+    bool took_stop = false;
+    FeatherOS::Signals::Decision decision;
+    for (;;)
+    {
+        FeatherOS::Process::HoldWhileStopped(user_context);
+        decision = FeatherOS::Process::TakeSignal(user_context);
+        if (decision.kind != FeatherOS::Signals::DecisionKind::Stop)
+        {
+            break;
+        }
+        took_stop = true;
+    }
+    // x8 still holds the syscall number.
+    if (decision.kind == FeatherOS::Signals::DecisionKind::None && took_stop && syscall_interrupted)
+    {
+        registers[0] = user_context->restart_argument;
+        *elr -= SyscallInstructionSize;
+    }
     if (decision.kind == FeatherOS::Signals::DecisionKind::Terminate)
     {
         TerminateForSignal(user_context, decision.signal, registers, elr, spsr);
@@ -282,6 +302,7 @@ extern "C" void FeatherOS_AArch64_ExceptionDispatch(ExceptionContext* context)
         const FeatherOS::Syscall::Handlers& handlers = user_context->syscall_handlers != nullptr
                                                            ? *user_context->syscall_handlers
                                                            : SerialSyscallHandlers;
+        user_context->restart_argument = context->registers[0];
         const FeatherOS::Syscall::Result result = FeatherOS::Syscall::Dispatch(
             {context->registers[8],
              {context->registers[0], context->registers[1], context->registers[2]}},
@@ -289,7 +310,8 @@ extern "C" void FeatherOS_AArch64_ExceptionDispatch(ExceptionContext* context)
         if (result.action == FeatherOS::Syscall::Action::Return)
         {
             context->registers[0] = result.value;
-            DeliverSignals(user_context, context->registers, &context->elr, &context->spsr);
+            DeliverSignals(user_context, context->registers, &context->elr, &context->spsr,
+                           result.value == FeatherOS::User::SyscallErrorInterrupted);
             return;
         }
         if (result.action == FeatherOS::Syscall::Action::SignalReturn)

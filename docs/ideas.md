@@ -25,6 +25,7 @@ Moved out of M11 to keep it focused; each can come back as a milestone of its ow
   - **Number formats:** hexadecimal and binary input and output.
 
   The work is almost all in the host-tested `calculator.cpp`.
+- **`ppoll` and `pselect`.** The shell, `vi` and `top` check the `SIGWINCH` flag from `src/user/window_size.h` and then read a key. A signal that lands between the check and the read only sets the flag, and the read blocks until the next key, so the redraw comes late. `ppoll(fds, count, timeout, mask)` closes that gap: the program keeps `SIGWINCH` blocked and checks the flag, and the kernel swaps in `mask` for the wait alone, so a pending signal ends the wait with `EINTR` as soon as it is unblocked. The kernel side is a mask argument for the poll syscall (`src/kernel/poll.cpp`), set before the check for pending signals and restored on return. libc adds `ppoll` to `poll.h` (and, if wanted, a new `sys/select.h` with `select` and `pselect` over the same syscall), and `RawTerminal` waits with `ppoll` before each read. A `libctest` check sends the signal while it is blocked and sees the wait return at once. `sigsuspend` fits here too, for waits on no descriptor.
 
 ## Networking Applications
 

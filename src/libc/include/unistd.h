@@ -68,10 +68,15 @@ pid_t getppid(void);
 pid_t getpgrp(void);
 // Fails with ESRCH for a process that does not exist; groups of other sessions are visible too.
 pid_t getpgid(pid_t pid);
-// The group that may read the console. Only init and session leaders (the shell) may change it,
-// to their own group or one holding one of their children; others get EPERM.
+// The group that may read the caller's controlling terminal; ENOTTY on any other terminal. Its
+// session leader or a member of the foreground group may change it, others get EIO, and only to a
+// group of the session, otherwise EPERM.
 pid_t tcgetpgrp(int descriptor);
 int tcsetpgrp(int descriptor, pid_t group);
+// Starts a session without a controlling terminal, led by the caller; EPERM for a group leader.
+pid_t setsid(void);
+// Fails with ESRCH for a process that does not exist.
+pid_t getsid(pid_t pid);
 __attribute__((__noreturn__)) void _exit(int status);
 // Waits for a signal; returns -1 with EINTR once its handler has run.
 int pause(void);

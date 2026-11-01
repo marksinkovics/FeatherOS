@@ -1,8 +1,8 @@
 #include "console.h"
 
-#include "kernel/arch/interrupts.h"
 #include "kernel/arch/serial.h"
 #include "kernel/cpu.h"
+#include "kernel/filesystem/devices.h"
 #include "kernel/framebuffer/term.h"
 #include "kernel/input/input.h"
 #include "kernel/network/interface.h"
@@ -12,9 +12,9 @@
 #include "kernel/smp.h"
 #include "kernel/string/format.h"
 #include "kernel/sync/spinlock.h"
+#include "kernel/terminal/terminal.h"
 #include "kernel/time/timer.h"
 #include "kernel/time/wall_clock.h"
-#include "kernel/user_context.h"
 #include "user/calendar.h"
 
 namespace FeatherOS::Console
@@ -22,22 +22,149 @@ namespace FeatherOS::Console
 namespace
 {
 
-constexpr User::TerminalSettings DefaultSettings = {User::TerminalDefaultFlags, 1, 0, 0};
+// A console's screen. Only the first console also writes to serial.
+struct Screen
+{
+    uint32_t index;
+    Term* term;
+};
 
-Term* console_term = nullptr;
-// Programs on different CPUs share one terminal.
+Screen screens[Count] = {{0, nullptr}, {1, nullptr}, {2, nullptr}, {3, nullptr}};
+// The consoles share one framebuffer, and programs on different CPUs one screen.
 constinit Sync::SpinLock display_lock;
-
-constinit Sync::SpinLock settings_lock;
-User::TerminalSettings settings = DefaultSettings;
-uint64_t settings_owner = 0;
+// Changes under display_lock.
+uint32_t shown_console = 0;
 
 constinit Sync::SpinLock status_lock;
 constinit Scheduler::WaitQueue status_waiters;
 bool status_changed = false;
 bool status_running = false;
-// Readers waiting with TerminalWakeOnOutput.
-uint32_t output_watchers = 0;
+
+Screen& ScreenOf(void* context)
+{
+    return *static_cast<Screen*>(context);
+}
+
+void WriteToDisplayLocked(const Screen& screen, const char* text, size_t length)
+{
+    char chunk[65];
+    while (length > 0)
+    {
+        const size_t used = length < sizeof(chunk) - 1 ? length : sizeof(chunk) - 1;
+        for (size_t index = 0; index < used; ++index)
+        {
+            chunk[index] = text[index];
+        }
+        chunk[used] = '\0';
+        if (screen.index == 0)
+        {
+            Serial::Write(chunk);
+        }
+        if (screen.term != nullptr)
+        {
+            screen.term->Print(chunk);
+        }
+        text += used;
+        length -= used;
+    }
+}
+
+void DeviceWrite(void* context, const char* text, size_t length)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    WriteToDisplayLocked(ScreenOf(context), text, length);
+}
+
+void DeviceEraseCharacter(void* context)
+{
+    const Screen& screen = ScreenOf(context);
+    Sync::SpinLockGuard guard(display_lock);
+    if (screen.index == 0)
+    {
+        Serial::Write("\b \b");
+    }
+    if (screen.term != nullptr)
+    {
+        screen.term->EraseCharacter();
+    }
+}
+
+void DeviceSetCursorVisible(void* context, bool visible)
+{
+    const Screen& screen = ScreenOf(context);
+    Sync::SpinLockGuard guard(display_lock);
+    if (screen.term != nullptr)
+    {
+        screen.term->SetCursorVisible(visible);
+    }
+}
+
+void DeviceResetModes(void* context)
+{
+    const Screen& screen = ScreenOf(context);
+    Sync::SpinLockGuard guard(display_lock);
+    if (screen.term != nullptr)
+    {
+        screen.term->ResetModes();
+    }
+}
+
+uint64_t DeviceOutputCount(void* context)
+{
+    const Screen& screen = ScreenOf(context);
+    return screen.term == nullptr ? 0 : screen.term->OutputCount();
+}
+
+void DeviceStartFreshRow(void* context)
+{
+    const Screen& screen = ScreenOf(context);
+    Sync::SpinLockGuard guard(display_lock);
+    if (screen.term != nullptr && screen.term->CursorColumn() != 0)
+    {
+        WriteToDisplayLocked(screen, "\n", 1);
+    }
+}
+
+void DevicePoll(void*)
+{
+    Input::Poll();
+}
+
+constexpr Terminals::Device MakeDevice(Screen* screen)
+{
+    return {
+        .context = screen,
+        .write = DeviceWrite,
+        .write_output = nullptr,
+        .erase_character = DeviceEraseCharacter,
+        .set_cursor_visible = DeviceSetCursorVisible,
+        .reset_modes = DeviceResetModes,
+        .output_count = DeviceOutputCount,
+        .start_fresh_row = DeviceStartFreshRow,
+        .poll = DevicePoll,
+    };
+}
+
+constexpr Terminals::Device ConsoleDevices[Count] = {
+    MakeDevice(&screens[0]),
+    MakeDevice(&screens[1]),
+    MakeDevice(&screens[2]),
+    MakeDevice(&screens[3]),
+};
+
+// Usable from the start: input may arrive, and be echoed, before Initialize.
+constinit Terminals::Terminal console_terminals[Count] = {
+    Terminals::Terminal(&ConsoleDevices[0]),
+    Terminals::Terminal(&ConsoleDevices[1]),
+    Terminals::Terminal(&ConsoleDevices[2]),
+    Terminals::Terminal(&ConsoleDevices[3]),
+};
+constinit Terminals::Terminal* const terminal_pointers[Count] = {
+    &console_terminals[0],
+    &console_terminals[1],
+    &console_terminals[2],
+    &console_terminals[3],
+};
 
 struct CpuSample
 {
@@ -74,8 +201,11 @@ uint32_t CountBusyCpus(const CpuSample& before, const CpuSample& after)
 
 void DrawStatus(uint32_t busy_cpus)
 {
+    const uint32_t console = __atomic_load_n(&shown_console, __ATOMIC_ACQUIRE);
     char program[33];
-    Process::ForegroundProgramName(program, sizeof(program));
+    Process::ForegroundProgramName(console_terminals[console].ForegroundGroup(), program,
+                                   sizeof(program));
+    char left[40];
     char status[48];
     const char network[] = {Network::HasRoute() ? Term::StatusGreenDot : Term::StatusRedDot, '\0'};
     bool formatted;
@@ -94,12 +224,14 @@ void DrawStatus(uint32_t busy_cpus)
         formatted = String::FormatTo(status, sizeof(status), "{}/{}  {}", busy_cpus,
                                      Smp::OnlineCpuCount(), static_cast<const char*>(network));
     }
-    if (!formatted)
+    if (!formatted || !String::FormatTo(left, sizeof(left), "tty{}  {}", console + 1,
+                                        static_cast<const char*>(program)))
     {
         Panic("Status bar formatting failed");
     }
+    // Shown again later, the console was drawn with its old bar, and this task notified.
     Sync::SpinLockGuard guard(display_lock);
-    console_term->SetStatus(program, status);
+    screens[console].term->SetStatus(left, status);
 }
 
 uint64_t StatusTaskMain(void*)
@@ -128,128 +260,37 @@ uint64_t StatusTaskMain(void*)
     }
 }
 
-bool InterruptForegroundJob()
-{
-    if ((Settings().flags & User::TerminalSignals) == 0 || !Process::InterruptForegroundJob())
-    {
-        return false;
-    }
-    Sync::SpinLockGuard guard(display_lock);
-    Serial::Write("^C\n");
-    if (console_term != nullptr)
-    {
-        console_term->SetCursorVisible(false);
-        console_term->Print("^C\n");
-    }
-    return true;
-}
-
-bool CallerInterrupted()
-{
-    const auto* context = static_cast<const UserExecutionContext*>(Scheduler::CurrentUserContext());
-    return context != nullptr && Signals::Deliverable(context->signals) != 0;
-}
-
-// Line editing has no use for the cursor and function keys, so their escape sequences are skipped.
-enum class SequenceState : uint8_t
-{
-    None,
-    Escape,
-    Control,
-};
-
-// Returns true when byte belongs to an escape sequence. After a lone Escape key, the next byte
-// counts as typed unless it starts a sequence.
-bool SkipSequence(SequenceState* state, char byte)
-{
-    switch (*state)
-    {
-    case SequenceState::None:
-        break;
-    case SequenceState::Escape:
-        *state = byte == '[' || byte == 'O' ? SequenceState::Control : SequenceState::None;
-        if (*state == SequenceState::Control)
-        {
-            return true;
-        }
-        break;
-    case SequenceState::Control:
-        if (byte >= 0x40 && byte <= 0x7E)
-        {
-            *state = SequenceState::None;
-        }
-        return true;
-    }
-    if (byte == '\x1b')
-    {
-        *state = SequenceState::Escape;
-        return true;
-    }
-    return false;
-}
-
-uint64_t OutputCount()
-{
-    return console_term == nullptr ? 0 : console_term->OutputCount();
-}
-
-// The kernel log does not wake readers, since it may run under any lock; they look again each
-// second instead.
-void WakeOutputWatchers()
-{
-    if (__atomic_load_n(&output_watchers, __ATOMIC_ACQUIRE) != 0)
-    {
-        Input::WakeWaiters();
-    }
-}
-
-void StartFreshRow()
-{
-    Sync::SpinLockGuard guard(display_lock);
-    if (console_term != nullptr && console_term->CursorColumn() != 0)
-    {
-        Serial::Write("\n");
-        console_term->Print("\n");
-    }
-}
-
-void SetCursorVisible(bool visible)
-{
-    Sync::SpinLockGuard guard(display_lock);
-    if (console_term != nullptr)
-    {
-        console_term->SetCursorVisible(visible);
-    }
-}
-
-void Echo(const char* text)
-{
-    Sync::SpinLockGuard guard(display_lock);
-    Serial::Write(text);
-    if (console_term != nullptr)
-    {
-        console_term->Print(text);
-    }
-}
-
-void ShowPrompt(const char* prompt)
-{
-    Sync::SpinLockGuard guard(display_lock);
-    Serial::Write(prompt);
-    if (console_term != nullptr)
-    {
-        console_term->Print(prompt);
-        console_term->SetCursorVisible(true);
-    }
-}
-
 } // namespace
 
-void Initialize(Term* term)
+Terminals::Terminal* Terminal()
 {
-    console_term = term;
-    Input::SetInterruptHandler(InterruptForegroundJob);
-    if (console_term == nullptr || Time::TicksPerSecond() == 0)
+    return &console_terminals[0];
+}
+
+Terminals::Terminal* Terminal(uint32_t console)
+{
+    return console < Count ? &console_terminals[console] : nullptr;
+}
+
+void Initialize(Term* terms)
+{
+    Devices::SetConsoles(terminal_pointers, Count);
+    Input::SetConsoleSwitch(Show);
+    if (terms == nullptr)
+    {
+        return;
+    }
+    for (uint32_t console = 0; console < Count; ++console)
+    {
+        Sync::SpinLockGuard guard(display_lock);
+        screens[console].term = &terms[console];
+        if (terms[console].ContentRows() != 0)
+        {
+            console_terminals[console].SetSize(terms[console].ContentRows(),
+                                               terms[console].Columns());
+        }
+    }
+    if (Time::TicksPerSecond() == 0)
     {
         return;
     }
@@ -260,6 +301,37 @@ void Initialize(Term* term)
         Panic("Could not start the status bar task");
     }
     status_running = true;
+}
+
+void Show(uint32_t console)
+{
+    if (console >= Count)
+    {
+        return;
+    }
+    {
+        Sync::SpinLockGuard guard(display_lock);
+        if (console == shown_console)
+        {
+            return;
+        }
+        if (screens[shown_console].term != nullptr)
+        {
+            screens[shown_console].term->SetShown(false);
+        }
+        __atomic_store_n(&shown_console, console, __ATOMIC_RELEASE);
+        if (screens[console].term != nullptr)
+        {
+            screens[console].term->SetShown(true);
+        }
+        Input::SetKeyboardTerminal(&console_terminals[console]);
+    }
+    NotifyStatusChanged();
+}
+
+uint32_t Shown()
+{
+    return __atomic_load_n(&shown_console, __ATOMIC_ACQUIRE);
 }
 
 void NotifyStatusChanged()
@@ -276,327 +348,32 @@ void NotifyStatusChanged()
 
 void WriteCharacter(char character)
 {
-    const char text[] = {character, '\0'};
-    {
-        Sync::SpinLockGuard guard(display_lock);
-        Serial::Write(text);
-        if (console_term != nullptr)
-        {
-            console_term->Print(text);
-        }
-    }
-    WakeOutputWatchers();
+    DeviceWrite(&screens[0], &character, 1);
+    console_terminals[0].NotifyOutput();
 }
 
 void WriteLine(const char* text)
 {
     {
         Sync::SpinLockGuard guard(display_lock);
-        Serial::Write(text);
-        Serial::Write("\n");
-        if (console_term != nullptr)
+        size_t length = 0;
+        while (text[length] != '\0')
         {
-            console_term->PrintLn(text);
+            ++length;
         }
+        WriteToDisplayLocked(screens[0], text, length);
+        WriteToDisplayLocked(screens[0], "\n", 1);
     }
-    WakeOutputWatchers();
+    console_terminals[0].NotifyOutput();
 }
 
-void Write(const char* text, size_t length)
+#if defined(FEATHEROS_INPUT_TEST)
+void WriteSerialLine(const char* text)
 {
-    {
-        Sync::SpinLockGuard guard(display_lock);
-        char chunk[65];
-        size_t used = 0;
-        auto flush = [&]()
-        {
-            chunk[used] = '\0';
-            Serial::Write(chunk);
-            if (console_term != nullptr)
-            {
-                console_term->Print(chunk);
-            }
-            used = 0;
-        };
-        for (size_t index = 0; index < length; ++index)
-        {
-            const auto byte = static_cast<unsigned char>(text[index]);
-            // Escape, carriage return and backspace drive the terminal (see Term); other control
-            // bytes are dropped.
-            if (byte < 0x20 && byte != '\n' && byte != '\t' && byte != '\x1b' && byte != '\r' &&
-                byte != '\b')
-            {
-                continue;
-            }
-            chunk[used++] = byte == '\t' ? ' ' : byte > 0x7E ? '?' : static_cast<char>(byte);
-            if (used == sizeof(chunk) - 1)
-            {
-                flush();
-            }
-        }
-        if (used > 0)
-        {
-            flush();
-        }
-    }
-    WakeOutputWatchers();
-}
-
-void Size(uint32_t* rows, uint32_t* columns)
-{
-    if (console_term == nullptr || console_term->ContentRows() == 0)
-    {
-        *rows = 24;
-        *columns = 80;
-        return;
-    }
-    *rows = console_term->ContentRows();
-    *columns = console_term->Columns();
-}
-
-bool ReadLine(const char* prompt, char* buffer, size_t capacity, size_t* line_length)
-{
-    if (buffer == nullptr || capacity == 0 || line_length == nullptr)
-    {
-        return false;
-    }
-    if (prompt == nullptr)
-    {
-        prompt = "";
-    }
-    ShowPrompt(prompt);
-
-    const bool echo = (Settings().flags & User::TerminalEcho) != 0;
-    size_t length = 0;
-    buffer[0] = '\0';
-    // Syscalls arrive with interrupts masked; timer ticks and keyboard IRQs must run here.
-    const uint64_t interrupt_state = Arch::Interrupts::SaveAndDisable();
-    Arch::Interrupts::Enable();
-    SequenceState sequence = SequenceState::None;
-    bool line_complete = false;
-    bool interrupted = false;
-    while (!line_complete && !interrupted)
-    {
-        Input::Poll();
-        interrupted = CallerInterrupted();
-        char byte;
-        // Stop at Enter so input typed ahead stays queued for the next reader.
-        while (!line_complete && !interrupted && Input::TryReadByte(&byte))
-        {
-            if (SkipSequence(&sequence, byte))
-            {
-                continue;
-            }
-            if (byte == Input::InterruptByte)
-            {
-                // Nothing to terminate, so Ctrl+C only discards the line.
-                {
-                    Sync::SpinLockGuard guard(display_lock);
-                    Serial::Write("^C\n");
-                    if (console_term != nullptr)
-                    {
-                        console_term->SetCursorVisible(false);
-                        console_term->Print("^C\n");
-                    }
-                }
-                length = 0;
-                buffer[0] = '\0';
-                ShowPrompt(prompt);
-                continue;
-            }
-            if (byte >= 0x20 && byte <= 0x7E)
-            {
-                if (length < capacity - 1)
-                {
-                    buffer[length++] = byte;
-                    buffer[length] = '\0';
-                    const char text[] = {byte, '\0'};
-                    if (echo)
-                    {
-                        Echo(text);
-                    }
-                }
-            }
-            else if (byte == '\x7f' || byte == '\b')
-            {
-                if (length > 0)
-                {
-                    buffer[--length] = '\0';
-                    Sync::SpinLockGuard guard(display_lock);
-                    if (echo)
-                    {
-                        Serial::Write("\b \b");
-                        if (console_term != nullptr)
-                        {
-                            console_term->EraseCharacter();
-                        }
-                    }
-                }
-            }
-            else if (byte == '\r' || byte == '\n')
-            {
-                Sync::SpinLockGuard guard(display_lock);
-                if (echo)
-                {
-                    Serial::Write("\n");
-                }
-                if (console_term != nullptr)
-                {
-                    console_term->SetCursorVisible(false);
-                    if (echo)
-                    {
-                        console_term->Print("\n");
-                    }
-                }
-                line_complete = true;
-            }
-        }
-        if (!line_complete && !interrupted)
-        {
-            Input::WaitForInput(0);
-            interrupted = CallerInterrupted();
-        }
-    }
-    if (line_complete)
-    {
-        Serial::Write("KERN/I: Input line accepted\n");
-    }
-    Arch::Interrupts::SaveAndDisable();
-    Arch::Interrupts::Restore(interrupt_state);
-    *line_length = length;
-    return line_complete;
-}
-
-bool ReadBytes(char* buffer, size_t capacity, size_t* length)
-{
-    const User::TerminalSettings current = Settings();
-    const size_t wanted = current.minimum < capacity ? current.minimum : capacity;
-    const uint64_t timeout_ticks =
-        static_cast<uint64_t>(current.timeout) * Time::TicksPerSecond() / 10;
-    // Without a minimum the timeout runs from the start of the read; otherwise from the last byte.
-    uint64_t deadline = Time::TickCount() + timeout_ticks;
-    const bool watch_output =
-        (current.flags & User::TerminalWakeOnOutput) != 0 && current.minimum > 0;
-    // Output that comes in bursts, like a log line and a program's message, ends one redraw.
-    const uint64_t quiet_ticks = Time::TicksPerSecond() / 10;
-    const uint64_t output_before = OutputCount();
-    uint64_t output_seen = output_before;
-    uint64_t output_settles_at = 0;
-    bool output_arrived = false;
-    if (watch_output)
-    {
-        __atomic_add_fetch(&output_watchers, 1, __ATOMIC_ACQ_REL);
-    }
-    SetCursorVisible(true);
-    const uint64_t interrupt_state = Arch::Interrupts::SaveAndDisable();
-    Arch::Interrupts::Enable();
-    size_t count = 0;
-    bool interrupted = false;
-    for (;;)
-    {
-        Input::Poll();
-        const size_t before = count;
-        char byte;
-        while (count < capacity && Input::TryReadByte(&byte))
-        {
-            if (byte == '\r' && (current.flags & User::TerminalCarriageReturnToNewline) != 0)
-            {
-                byte = '\n';
-            }
-            buffer[count++] = byte;
-        }
-        if (count > before)
-        {
-            if ((current.flags & User::TerminalEcho) != 0)
-            {
-                Write(buffer + before, count - before);
-            }
-            deadline = Time::TickCount() + timeout_ticks;
-        }
-        const bool timed_out = current.timeout != 0 && Time::TickCount() >= deadline;
-        if (current.minimum == 0 ? count > 0 || current.timeout == 0 || timed_out
-                                 : count >= wanted || (count > 0 && timed_out))
-        {
-            break;
-        }
-        interrupted = CallerInterrupted();
-        if (interrupted)
-        {
-            break;
-        }
-        const bool timer_running = current.timeout != 0 && (current.minimum == 0 || count > 0);
-        uint64_t wake_at = timer_running ? deadline : 0;
-        if (watch_output && count == 0)
-        {
-            const uint64_t now = Time::TickCount();
-            const uint64_t output = OutputCount();
-            if (output != output_seen)
-            {
-                output_seen = output;
-                output_settles_at = now + quiet_ticks;
-            }
-            output_arrived = output_seen != output_before && now >= output_settles_at;
-            if (output_arrived)
-            {
-                break;
-            }
-            const uint64_t look_at =
-                output_seen != output_before ? output_settles_at : now + Time::TicksPerSecond();
-            wake_at = wake_at == 0 || look_at < wake_at ? look_at : wake_at;
-        }
-        Input::WaitForInput(wake_at);
-    }
-    Arch::Interrupts::SaveAndDisable();
-    Arch::Interrupts::Restore(interrupt_state);
-    if (watch_output)
-    {
-        __atomic_sub_fetch(&output_watchers, 1, __ATOMIC_ACQ_REL);
-    }
-    if (output_arrived)
-    {
-        StartFreshRow();
-    }
-    SetCursorVisible(false);
-    *length = count;
-    return count > 0 || !interrupted;
-}
-
-User::TerminalSettings Settings()
-{
-    Sync::SpinLockGuard guard(settings_lock);
-    return settings;
-}
-
-bool IsDefault(const User::TerminalSettings& candidate)
-{
-    return candidate.flags == DefaultSettings.flags &&
-           candidate.minimum == DefaultSettings.minimum &&
-           candidate.timeout == DefaultSettings.timeout;
-}
-
-void SetSettings(const User::TerminalSettings& requested, uint64_t owner)
-{
-    Sync::SpinLockGuard guard(settings_lock);
-    settings = requested;
-    settings_owner = IsDefault(requested) ? 0 : owner;
-}
-
-void ReleaseSettings(uint64_t owner)
-{
-    {
-        Sync::SpinLockGuard guard(settings_lock);
-        if (owner == 0 || settings_owner != owner)
-        {
-            return;
-        }
-        settings = DefaultSettings;
-        settings_owner = 0;
-    }
     Sync::SpinLockGuard guard(display_lock);
-    if (console_term != nullptr)
-    {
-        console_term->ResetModes();
-    }
+    Serial::Write(text);
+    Serial::Write("\n");
 }
+#endif
 
 } // namespace FeatherOS::Console

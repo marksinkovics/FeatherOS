@@ -23,6 +23,8 @@ enum class DecisionKind : uint8_t
 {
     None,
     Terminate,
+    // Stop the whole process until SIGCONT.
+    Stop,
     // Run actions[signal].handler; saved_mask goes back in place when it returns.
     Handle,
 };
@@ -40,15 +42,19 @@ constexpr uint64_t Bit(int signal)
     return 1ULL << signal;
 }
 
+constexpr uint64_t StopSignals = Bit(User::SignalStop) | Bit(User::SignalTerminalStop) |
+                                 Bit(User::SignalTerminalInput) | Bit(User::SignalTerminalOutput);
+
 bool IsValid(int signal);
 // A new program's state: every signal at its default action, none blocked or pending.
 void Reset(State* state);
 // What a child starts with, as for exec: handlers fall back to the default action, ignored
 // signals stay ignored, and the blocked mask carries over.
 void Inherit(State* child, const State& parent);
-// Makes signal pending unless the process ignores it. Safe from any CPU.
+// Makes signal pending unless the process ignores it. A stop signal drops a pending SIGCONT, and
+// SIGCONT drops pending stop signals, even when ignored. Safe from any CPU.
 void Send(State* state, int signal);
-// Pending signals the process does not block; SIGKILL can never be blocked.
+// Pending signals the process does not block; SIGKILL and SIGSTOP can never be blocked.
 uint64_t Deliverable(const State& state);
 // Takes the lowest deliverable signal, dropping ignored ones on the way. For a handler, blocks
 // the signal (unless SignalNoDefer) and the action's mask until the handler returns.

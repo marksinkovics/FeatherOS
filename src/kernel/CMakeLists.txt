@@ -57,6 +57,8 @@ set(SRC
     ${SRCROOT}/memory/virtual_memory.cpp
     ${SRCROOT}/panic.cpp
     ${SRCROOT}/console.cpp
+    ${SRCROOT}/terminal/pseudo_terminal.cpp
+    ${SRCROOT}/terminal/terminal.cpp
     ${SRCROOT}/files.cpp
     ${SRCROOT}/futex.cpp
     ${SRCROOT}/pipe.cpp

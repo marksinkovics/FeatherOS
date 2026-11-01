@@ -37,9 +37,10 @@ bool Initialize();
 [[noreturn]] void RunSecondaryCpu();
 bool CreateTask(TaskEntry entry, void* context, TaskId* task_id);
 bool Yield();
-// Fails early, without the task having exited, once interrupted returns true; it is checked
-// before waiting and after each wakeup, under the scheduler lock, so it must take no locks.
-bool Wait(TaskId task_id, uint64_t* exit_status, bool (*interrupted)() = nullptr);
+// Fails early, without the task having exited, once interrupted(context) returns true; it is
+// checked before waiting and after each wakeup, under the scheduler lock, so it must take no locks.
+bool Wait(TaskId task_id, uint64_t* exit_status, bool (*interrupted)(const void*) = nullptr,
+          const void* context = nullptr);
 bool ReapTask(TaskId task_id);
 bool SetPriority(TaskId task_id, TaskPriority priority);
 void EnablePreemption();

@@ -191,9 +191,24 @@ inline uint64_t ProcessGroup(uint64_t process_id)
     return Syscall(SyscallNumber::ProcessGroup, process_id);
 }
 
-inline uint64_t ForegroundGroup(bool set, uint64_t group)
+inline uint64_t ForegroundGroup(uint64_t descriptor, bool set, uint64_t group)
 {
-    return Syscall(SyscallNumber::ForegroundGroup, set ? 1 : 0, group);
+    return Syscall(SyscallNumber::ForegroundGroup, descriptor, set ? 1 : 0, group);
+}
+
+inline uint64_t CreateSession()
+{
+    return Syscall(SyscallNumber::CreateSession);
+}
+
+inline uint64_t SessionId(uint64_t process_id)
+{
+    return Syscall(SyscallNumber::SessionId, process_id);
+}
+
+inline uint64_t TerminalControl(uint64_t descriptor, uint64_t request, uint64_t argument)
+{
+    return Syscall(SyscallNumber::TerminalControl, descriptor, request, argument);
 }
 
 inline uint64_t ProcessId()

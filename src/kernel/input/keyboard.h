@@ -18,9 +18,13 @@ constexpr uint16_t Enter = 28;
 constexpr uint16_t LeftControl = 29;
 constexpr uint16_t LeftShift = 42;
 constexpr uint16_t RightShift = 54;
+constexpr uint16_t LeftAlt = 56;
 constexpr uint16_t CapsLock = 58;
+constexpr uint16_t F1 = 59;
+constexpr uint16_t F4 = 62;
 constexpr uint16_t KeypadEnter = 96;
 constexpr uint16_t RightControl = 97;
+constexpr uint16_t RightAlt = 100;
 constexpr uint16_t Home = 102;
 constexpr uint16_t Up = 103;
 constexpr uint16_t PageUp = 104;
@@ -35,7 +39,7 @@ constexpr uint16_t Delete = 111;
 
 // Turns key presses into the bytes a VT100 terminal sends: ASCII for characters, 1-26 for
 // Ctrl+A to Ctrl+Z, '\r' for Enter, 0x7F for Backspace, and escape sequences such as ESC [ A for
-// the cursor keys.
+// the cursor keys. Alt+F1 to Alt+F4 send nothing; they ask for a virtual console instead.
 class Keyboard
 {
 public:
@@ -44,15 +48,22 @@ public:
     // Returns how many bytes the key produced: none for releases, modifiers and unmapped keys.
     // A held key may report repeated presses.
     size_t Press(uint16_t code, bool pressed, char (&bytes)[MaximumKeyBytes]);
+    // After a Press of Alt+F1 to Alt+F4: true once, with console 0 to 3.
+    bool TakeConsoleSwitch(uint32_t* console);
 
 private:
+    static constexpr uint32_t NoConsole = UINT32_MAX;
+
     bool m_left_shift = false;
     bool m_right_shift = false;
     bool m_left_control = false;
     bool m_right_control = false;
+    bool m_left_alt = false;
+    bool m_right_alt = false;
     bool m_caps_lock = false;
     // Held keys repeat their presses, and Caps Lock toggles only on the first.
     bool m_caps_lock_held = false;
+    uint32_t m_console_switch = NoConsole;
 
     char Character(uint16_t code) const;
 };

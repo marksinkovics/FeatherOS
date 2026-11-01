@@ -1,6 +1,7 @@
 #include "command_line.h"
 #include "line_editor.h"
 #include "raw_terminal.h"
+#include "window_size.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -10,9 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <sys/reboot.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 using namespace FeatherOS::User;
@@ -111,7 +112,8 @@ void ReportReadFailure(int error)
 }
 
 // Edits the line in raw mode, with history, when standard input is the console; otherwise the
-// kernel edits it. Ctrl+C discards the line and asks again.
+// kernel edits it. Ctrl+C discards the line and asks again; Ctrl+Z stops a shell that another
+// one started, which keeps the line.
 bool ReadCommandLine(const char* prompt, char* line, size_t size, LineHistory* history)
 {
     fflush(stdout);
@@ -120,18 +122,27 @@ bool ReadCommandLine(const char* prompt, char* line, size_t size, LineHistory* h
     {
         return featheros_read_line(prompt, line, size) >= 0;
     }
-    winsize window = {};
-    const size_t columns = ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0 ? window.ws_col : 80;
+    WindowSizeChanged();
+    size_t columns = ReadWindowSize().columns;
     LineEditor editor;
     editor.Begin(prompt, columns, history);
     for (;;)
     {
+        if (WindowSizeChanged())
+        {
+            columns = ReadWindowSize().columns;
+            editor.Resize(columns);
+        }
         write(STDOUT_FILENO, editor.Output(), editor.OutputLength());
         editor.ClearOutput();
         KeyPress press;
         bool pressed = false;
         if (!terminal.ReadKeyWithin(0, &press, &pressed))
         {
+            if (errno == EINTR)
+            {
+                continue;
+            }
             const int error = errno;
             terminal.Leave();
             errno = error;
@@ -140,6 +151,11 @@ bool ReadCommandLine(const char* prompt, char* line, size_t size, LineHistory* h
         if (!pressed)
         {
             editor.Redraw();
+            continue;
+        }
+        // A session leader's group is orphaned, so nothing could stop it or continue it.
+        if (press.key == Key::Control && press.character == 'z' && getsid(0) == getpid())
+        {
             continue;
         }
         const LineEditor::Status status = editor.Press(press);
@@ -155,8 +171,19 @@ bool ReadCommandLine(const char* prompt, char* line, size_t size, LineHistory* h
             write(STDOUT_FILENO, editor.Output(), editor.OutputLength());
             editor.Begin(prompt, columns, history);
         }
+        if (status == LineEditor::Status::Suspended)
+        {
+            write(STDOUT_FILENO, editor.Output(), editor.OutputLength());
+            editor.ClearOutput();
+            terminal.Suspend();
+            editor.Redraw();
+        }
     }
 }
+
+// The settings the shell runs programs with, put back when a job stops.
+termios shell_settings;
+bool has_shell_settings = false;
 
 // Silent for Ctrl+C and for a pipeline's writer whose reader left, as in other shells.
 void ReportStatus(int status)
@@ -237,7 +264,7 @@ pid_t StartStage(const Stage& stage, int input, int output, pid_t group, bool ba
     return error == 0 ? child : 0;
 }
 
-// A command or pipeline running in the background, until all its processes are reaped.
+// A command or pipeline in the background or stopped, until all its processes are reaped.
 struct Job
 {
     int number;
@@ -246,10 +273,17 @@ struct Job
     size_t member_count;
     // The last member's status, which is the job's.
     int status;
+    bool stopped;
+    // The terminal settings it had when it stopped, given back by fg.
+    bool has_settings;
+    termios settings;
+    // fg and bg without a number take the job used last, as other shells do.
+    unsigned last_used;
     char command[MaximumCommandLineLength];
 };
 
 Job jobs[MaximumJobs];
+unsigned job_clock = 0;
 
 Job* FreeJob()
 {
@@ -280,26 +314,49 @@ int NextJobNumber()
     }
 }
 
-// Reaps what has finished, or waits for all of it with block. True once the job is over.
+// Reaps what has finished and notes stops and continues; with block, waits until every member
+// has finished or one has stopped. True once the job is over.
 bool ReapJob(Job& job, bool block)
 {
     for (size_t index = 0; index < job.member_count; ++index)
     {
-        if (job.members[index] == 0)
+        while (job.members[index] != 0)
         {
-            continue;
+            int status = 0;
+            const pid_t reaped = waitpid(job.members[index], &status,
+                                         (block ? 0 : WNOHANG) | WUNTRACED | WCONTINUED);
+            if (reaped < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            if (reaped == 0)
+            {
+                break;
+            }
+            if (reaped == job.members[index] && WIFSTOPPED(status))
+            {
+                job.stopped = true;
+                if (block)
+                {
+                    return false;
+                }
+                continue;
+            }
+            if (reaped == job.members[index] && WIFCONTINUED(status))
+            {
+                job.stopped = false;
+                continue;
+            }
+            if (reaped < 0)
+            {
+                puts("shell: could not wait for program");
+            }
+            else if (index + 1 == job.member_count)
+            {
+                job.status = status;
+            }
+            job.members[index] = 0;
         }
-        int status = 0;
-        const pid_t reaped = waitpid(job.members[index], &status, block ? 0 : WNOHANG);
-        if (reaped == 0)
-        {
-            continue;
-        }
-        if (reaped == job.members[index] && index + 1 == job.member_count)
-        {
-            job.status = status;
-        }
-        job.members[index] = 0;
     }
     for (size_t index = 0; index < job.member_count; ++index)
     {
@@ -328,14 +385,24 @@ void ReportFinishedJob(Job& job)
     job.number = 0;
 }
 
+void ReportStoppedJob(const Job& job)
+{
+    printf("[%d] Stopped  %s\n", job.number, job.command);
+}
+
 // Before each prompt, as other shells report finished background jobs.
 void ReapJobs()
 {
     for (Job& job : jobs)
     {
+        const bool was_stopped = job.stopped;
         if (job.number != 0 && ReapJob(job, false))
         {
             ReportFinishedJob(job);
+        }
+        else if (job.number != 0 && job.stopped && !was_stopped)
+        {
+            ReportStoppedJob(job);
         }
     }
 }
@@ -347,60 +414,178 @@ void ListJobs()
     {
         if (job.number != 0)
         {
-            printf("[%d] Running  %s\n", job.number, job.command);
+            printf("[%d] %s  %s\n", job.number, job.stopped ? "Stopped" : "Running", job.command);
         }
     }
 }
 
-// fg [n]: gives the console to job n, or the newest job, and waits for it.
-void ForegroundCommand(const char* argument)
+// The terminal comes back to the shell when the group's last process is reaped, but a stopped
+// job keeps it, so the shell takes it and its own settings back. From the background that
+// change would send SIGTTOU, or fail in the shell's orphaned group, unless SIGTTOU is blocked.
+void TakeTerminalFrom(Job& job)
+{
+    sigset_t output_signal;
+    sigset_t previous;
+    sigemptyset(&output_signal);
+    sigaddset(&output_signal, SIGTTOU);
+    sigprocmask(SIG_BLOCK, &output_signal, &previous);
+    tcsetpgrp(STDIN_FILENO, getpgrp());
+    sigprocmask(SIG_SETMASK, &previous, nullptr);
+    job.has_settings = has_shell_settings && tcgetattr(STDIN_FILENO, &job.settings) == 0;
+    if (has_shell_settings)
+    {
+        tcsetattr(STDIN_FILENO, TCSANOW, &shell_settings);
+    }
+}
+
+// Waits for a job in the foreground, which has the terminal, until it is over or stops. A job
+// over leaves its slot; a stopped one keeps or takes one, or continues when none is free.
+// Returns the job's last wait status.
+int WaitInForeground(Job& job)
+{
+    for (;;)
+    {
+        if (ReapJob(job, true))
+        {
+            // The shell gave a stopped job settings of its own, which no exit puts back.
+            if (job.has_settings && has_shell_settings)
+            {
+                tcsetattr(STDIN_FILENO, TCSANOW, &shell_settings);
+            }
+            ReportStatus(job.status);
+            job.number = 0;
+            return job.status;
+        }
+        TakeTerminalFrom(job);
+        Job* slot = job.number != 0 ? &job : FreeJob();
+        if (slot != nullptr)
+        {
+            if (slot != &job)
+            {
+                *slot = job;
+                slot->number = NextJobNumber();
+            }
+            slot->last_used = ++job_clock;
+            ReportStoppedJob(*slot);
+            return (SIGTSTP << 8) | 0x7F;
+        }
+        puts("shell: too many jobs to stop another; continuing it");
+        if (job.has_settings)
+        {
+            tcsetattr(STDIN_FILENO, TCSANOW, &job.settings);
+        }
+        tcsetpgrp(STDIN_FILENO, job.group);
+        job.stopped = false;
+        kill(-job.group, SIGCONT);
+    }
+}
+
+// fg and bg take %n or n, or no number for the job used last; bg only looks at stopped jobs.
+Job* ChooseJob(const char* name, const char* argument, bool stopped_only)
 {
     while (*argument == ' ' || *argument == '%')
     {
         ++argument;
     }
     unsigned long long wanted = 0;
-    Job* chosen = nullptr;
     const bool numbered = *argument != '\0';
     if (numbered && !ParseUnsigned(argument, &wanted))
     {
-        puts("usage: fg [job number]");
-        return;
+        printf("usage: %s [job number]\n", name);
+        return nullptr;
     }
+    Job* chosen = nullptr;
     for (Job& job : jobs)
     {
-        const bool matches = numbered ? job.number == static_cast<int>(wanted) : job.number != 0;
-        if (matches && (chosen == nullptr || job.number > chosen->number))
+        const bool matches = numbered ? job.number == static_cast<int>(wanted)
+                                      : job.number != 0 && (job.stopped || !stopped_only);
+        if (matches && (chosen == nullptr || job.last_used > chosen->last_used))
         {
             chosen = &job;
         }
     }
     if (chosen == nullptr)
     {
-        puts("fg: no such job");
+        printf("%s: no such job\n", name);
+    }
+    return chosen;
+}
+
+// fg [n]: gives the terminal, and the settings the job stopped with, to job n and continues it.
+void ForegroundCommand(const char* argument)
+{
+    Job* chosen = ChooseJob("fg", argument, false);
+    if (chosen == nullptr)
+    {
         return;
     }
     puts(chosen->command);
+    if (chosen->stopped && chosen->has_settings)
+    {
+        tcsetattr(STDIN_FILENO, TCSANOW, &chosen->settings);
+    }
     if (tcsetpgrp(STDIN_FILENO, chosen->group) != 0 && errno != EINVAL)
     {
         printf("fg: %s\n", strerror(errno));
         return;
     }
-    // Reaping the group's last process gives the console back to the shell.
-    ReapJob(*chosen, true);
-    ReportStatus(chosen->status);
-    chosen->number = 0;
+    if (chosen->stopped)
+    {
+        chosen->stopped = false;
+        kill(-chosen->group, SIGCONT);
+    }
+    WaitInForeground(*chosen);
 }
 
-// wait: waits for every background job.
+// bg [n]: continues stopped job n in the background.
+void BackgroundCommand(const char* argument)
+{
+    Job* chosen = ChooseJob("bg", argument, true);
+    if (chosen == nullptr)
+    {
+        return;
+    }
+    if (!chosen->stopped)
+    {
+        printf("bg: job %d is already running\n", chosen->number);
+        return;
+    }
+    chosen->stopped = false;
+    chosen->last_used = ++job_clock;
+    printf("[%d] %s &\n", chosen->number, chosen->command);
+    kill(-chosen->group, SIGCONT);
+}
+
+// wait: waits for every running background job; stopped ones would never finish.
 void WaitForJobs()
 {
     for (Job& job : jobs)
     {
-        if (job.number != 0)
+        if (job.number == 0 || job.stopped)
         {
-            ReapJob(job, true);
+            continue;
+        }
+        if (ReapJob(job, true))
+        {
             ReportFinishedJob(job);
+        }
+        else
+        {
+            ReportStoppedJob(job);
+        }
+    }
+}
+
+// Stopped jobs would wait for ever once the shell is gone, so they hang up and continue, as the
+// kernel does elsewhere for a group orphaned with stopped members.
+void HangUpStoppedJobs()
+{
+    for (const Job& job : jobs)
+    {
+        if (job.number != 0 && job.stopped)
+        {
+            kill(-job.group, SIGHUP);
+            kill(-job.group, SIGCONT);
         }
     }
 }
@@ -436,12 +621,14 @@ bool ExpandJobReferences(char** words, const bool* quoted, size_t count, char (*
     return true;
 }
 
-// Runs one command, or a pipeline of up to MaximumStages, as one process group, so Ctrl+C stops
-// all of it. The shell waits for it unless it ends in &. The shell's pipe descriptors are
-// close-on-exec, so each child gets only the ends file actions give it, and the reader sees the
-// end of its input once every writer is gone.
-void RunCommand(const char* line)
+// Runs one command, or a pipeline of up to MaximumStages, as one process group, so Ctrl+C or
+// Ctrl+Z reaches all of it. The shell waits for it unless it ends in &, or until it stops. The
+// shell's pipe descriptors are close-on-exec, so each child gets only the ends file actions give
+// it, and the reader sees the end of its input once every writer is gone. Returns the last
+// command's wait status, or one that says exit status 1 when the command could not start.
+int RunCommand(const char* line)
 {
+    constexpr int NotStarted = 1 << 8;
     char separated[2 * MaximumCommandLineLength];
     char* words[MaximumPipelineWords + 1];
     bool quoted[MaximumPipelineWords];
@@ -449,7 +636,7 @@ void RunCommand(const char* line)
     if (!SeparatePipes(line, separated, sizeof(separated)))
     {
         puts("shell: command too long");
-        return;
+        return NotStarted;
     }
     const SplitResult split =
         SplitCommandLine(separated, words, MaximumPipelineWords + 1, &count, quoted);
@@ -457,19 +644,19 @@ void RunCommand(const char* line)
     {
         puts(split == SplitResult::UnclosedQuote ? "shell: unclosed quote"
                                                  : "shell: too many arguments");
-        return;
+        return NotStarted;
     }
     static char job_references[MaximumPipelineWords][24];
     if (!ExpandJobReferences(words, quoted, count, job_references))
     {
-        return;
+        return NotStarted;
     }
     const bool background = TakeBackgroundMarker(words, quoted, &count);
     Job* job = background ? FreeJob() : nullptr;
     if (background && job == nullptr)
     {
         puts("shell: too many background jobs");
-        return;
+        return NotStarted;
     }
     Stage stages[MaximumStages];
     size_t stage_count = 0;
@@ -479,7 +666,7 @@ void RunCommand(const char* line)
     {
         puts(pipeline == PipelineResult::EmptyStage ? "shell: a pipeline has an empty command"
                                                     : "shell: at most 4 commands in a pipeline");
-        return;
+        return NotStarted;
     }
     int pipes[MaximumStages - 1][2];
     for (size_t index = 0; index + 1 < stage_count; ++index)
@@ -492,7 +679,7 @@ void RunCommand(const char* line)
                 close(pipes[created][0]);
                 close(pipes[created][1]);
             }
-            return;
+            return NotStarted;
         }
     }
     // The first command leads the group, and the rest join it.
@@ -513,33 +700,30 @@ void RunCommand(const char* line)
         close(pipes[index][0]);
         close(pipes[index][1]);
     }
-    if (background && started > 0)
+    if (started == 0)
     {
-        job->number = NextJobNumber();
-        job->group = children[0];
-        job->member_count = started;
-        job->status = 0;
-        for (size_t index = 0; index < started; ++index)
-        {
-            job->members[index] = children[index];
-        }
-        snprintf(job->command, sizeof(job->command), "%s", line);
-        printf("[%d] %d\n", job->number, children[0]);
-        return;
+        return NotStarted;
     }
-    // As in other shells, the last command's status is the pipeline's.
+    Job foreground = {};
+    Job* started_job = background ? job : &foreground;
+    *started_job = {};
+    started_job->group = children[0];
+    started_job->member_count = started;
     for (size_t index = 0; index < started; ++index)
     {
-        int status = 0;
-        if (waitpid(children[index], &status, 0) != children[index])
-        {
-            puts("shell: could not wait for program");
-        }
-        else if (index + 1 == stage_count)
-        {
-            ReportStatus(status);
-        }
+        started_job->members[index] = children[index];
     }
+    snprintf(started_job->command, sizeof(started_job->command), "%s", line);
+    if (background)
+    {
+        job->number = NextJobNumber();
+        job->last_used = ++job_clock;
+        printf("[%d] %d\n", job->number, children[0]);
+        return 0;
+    }
+    // As in other shells, the last command's status is the pipeline's.
+    const int status = WaitInForeground(foreground);
+    return started == stage_count ? status : NotStarted;
 }
 
 // A built-in, because only the shell's own working directory should change. One pair of double
@@ -575,17 +759,19 @@ void ChangeDirectoryCommand(const char* argument)
 } // namespace
 
 constexpr char Help[] =
-    "usage: shell\n"
+    "usage: shell [-c command]\n"
     "Runs programs and waits for each one: a name is looked up in the directories\n"
     "of PATH, and a name with a / is a file. Type help for the commands;\n"
     "Ctrl+C stops the running command. The prompt shows the working directory,\n"
     "which cd changes (cd alone returns to /home) and programs inherit. A command's\n"
     "input and output can be redirected: < file, > file, >> file, 2> file, 2>&1;\n"
     "a | b connects one command's output to the next one's input, and a trailing &\n"
-    "runs a command in the background: jobs lists those, fg [n] brings one back,\n"
-    "and wait waits for all of them. kill %n signals job n. The arrow keys, Home,\n"
+    "runs a command in the background. Ctrl+Z stops the running command: jobs\n"
+    "lists background and stopped jobs, fg [n] brings one back, bg [n] continues\n"
+    "one in the background, and wait waits for all running ones. kill %n signals\n"
+    "job n. The arrow keys, Home,\n"
     "End and Delete edit the line, Up and Down recall earlier lines, and history\n"
-    "lists them.";
+    "lists them. With -c, the shell runs one command and exits with its status.";
 
 int main(int argc, char** argv)
 {
@@ -594,7 +780,22 @@ int main(int argc, char** argv)
         puts(Help);
         return 0;
     }
+    has_shell_settings = tcgetattr(STDIN_FILENO, &shell_settings) == 0;
+    if (argc > 1)
+    {
+        if (argc != 3 || strcmp(argv[1], "-c") != 0)
+        {
+            puts("usage: shell [-c command]");
+            return 1;
+        }
+        const int status = RunCommand(argv[2]);
+        HangUpStoppedJobs();
+        return WIFSIGNALED(status)  ? 128 + WTERMSIG(status)
+               : WIFSTOPPED(status) ? 128 + WSTOPSIG(status)
+                                    : WEXITSTATUS(status);
+    }
     puts("FeatherOS shell. Type 'help' for commands.");
+    WatchWindowSize();
     char line[MaximumCommandLineLength];
     LineHistory history;
     // "<working directory>> ", such as "/home/docs> ".
@@ -610,6 +811,7 @@ int main(int argc, char** argv)
         if (!ReadCommandLine(prompt, line, sizeof(line), &history))
         {
             ReportReadFailure(errno);
+            HangUpStoppedJobs();
             return 1;
         }
         char* command = line;
@@ -635,6 +837,7 @@ int main(int argc, char** argv)
         }
         if (strcmp(command, "exit") == 0)
         {
+            HangUpStoppedJobs();
             // init restarts the console service.
             return 0;
         }
@@ -662,6 +865,11 @@ int main(int argc, char** argv)
             ForegroundCommand(command + 2);
             continue;
         }
+        if (strcmp(command, "bg") == 0 || strncmp(command, "bg ", 3) == 0)
+        {
+            BackgroundCommand(command + 2);
+            continue;
+        }
         if (strcmp(command, "wait") == 0)
         {
             WaitForJobs();
@@ -677,16 +885,17 @@ int main(int argc, char** argv)
                  "rm <file>, cp <source> <target>, mv <source> <target>, touch <file>, head, tail, "
                  "wc, grep <text>, sort, "
                  "mkdir <dir>, rmdir <dir>, env, kill [-signal] <pid>, ps, keys, clear, "
-                 "vi [file], ping [-6] [-c count] <host>, host [-4|-6] <name>, net, dhcp, "
+                 "vi [file], script [-c command] [file], stty, ping [-6] [-c count] <host>, "
+                 "host [-4|-6] <name>, net, dhcp, "
                  "top [-n "
                  "count], cd [dir], pwd, "
                  "jobs, "
-                 "fg [n], wait, history, "
+                 "fg [n], bg [n], wait, history, "
                  "exit, "
                  "shutdown, reboot, help");
             puts("Editing: Left, Right, Home, End, Delete; Up and Down recall lines; Ctrl+A and "
                  "Ctrl+E go to the start and end, Ctrl+U, Ctrl+K and Ctrl+W erase, Ctrl+L "
-                 "clears the screen, Ctrl+C discards the line.");
+                 "clears the screen, Ctrl+C discards the line. Ctrl+Z stops a running command.");
             puts("Programs are found in PATH (/system:/bin); run another file by its path, "
                  "such as ./tool or /tmp/tool.");
             puts("Run <command> --help to see what a command does.");

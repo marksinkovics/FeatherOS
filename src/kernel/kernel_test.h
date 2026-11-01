@@ -14,6 +14,10 @@ void RunStorageTests();
 #if defined(FEATHEROS_NETWORK_TEST)
 void RunNetworkTests();
 #endif
+#if defined(FEATHEROS_INPUT_TEST)
+// Reports the shown console and each console's foreground program on serial when they change.
+void StartConsoleReports();
+#endif
 
 } // namespace FeatherOS::KernelTest
 

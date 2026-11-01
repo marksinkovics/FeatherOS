@@ -61,6 +61,10 @@ public:
     // Draws cells that changed since the last refresh; Redraw repaints the whole screen.
     void Refresh();
     void Redraw();
+    // Several terminals may share a framebuffer, of which only the shown one draws. A hidden one
+    // keeps its text, and is repainted whole once shown again.
+    void SetShown(bool shown);
+    bool Shown() const;
 
 private:
     static const uint32_t StatusRow = 0;
@@ -81,6 +85,7 @@ private:
     };
 
     Framebuffer* m_framebuffer;
+    bool m_shown = true;
     uint8_t m_buffer[FeatherOS::TermConfig::Row][FeatherOS::TermConfig::Column];
     uint8_t m_attributes[FeatherOS::TermConfig::Row][FeatherOS::TermConfig::Column];
     // Characters and attributes currently rendered in the framebuffer's back buffer.

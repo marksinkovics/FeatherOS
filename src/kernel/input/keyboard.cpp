@@ -91,6 +91,12 @@ size_t Keyboard::Press(uint16_t code, bool pressed, char (&bytes)[MaximumKeyByte
     case KeyCode::RightControl:
         m_right_control = pressed;
         return 0;
+    case KeyCode::LeftAlt:
+        m_left_alt = pressed;
+        return 0;
+    case KeyCode::RightAlt:
+        m_right_alt = pressed;
+        return 0;
     case KeyCode::CapsLock:
         m_caps_lock = m_caps_lock != (pressed && !m_caps_lock_held);
         m_caps_lock_held = pressed;
@@ -100,6 +106,14 @@ size_t Keyboard::Press(uint16_t code, bool pressed, char (&bytes)[MaximumKeyByte
     }
     if (!pressed)
     {
+        return 0;
+    }
+    if (code >= KeyCode::F1 && code <= KeyCode::F4)
+    {
+        if (m_left_alt || m_right_alt)
+        {
+            m_console_switch = code - KeyCode::F1;
+        }
         return 0;
     }
     switch (code)
@@ -147,6 +161,17 @@ size_t Keyboard::Press(uint16_t code, bool pressed, char (&bytes)[MaximumKeyByte
     }
     bytes[0] = character;
     return 1;
+}
+
+bool Keyboard::TakeConsoleSwitch(uint32_t* console)
+{
+    if (m_console_switch == NoConsole)
+    {
+        return false;
+    }
+    *console = m_console_switch;
+    m_console_switch = NoConsole;
+    return true;
 }
 
 } // namespace FeatherOS::Input

@@ -191,13 +191,13 @@ bool Open(const char* path, FileHandle* file)
     }
     case Mount::Devices:
     {
-        Devices::Device device;
-        if (!Devices::Find(inner, &device))
+        uint32_t node;
+        if (!Devices::Find(inner, &node))
         {
             return false;
         }
         ResetHandle(file, FileKind::Device, 0);
-        file->node = static_cast<uint32_t>(device);
+        file->node = node;
         return true;
     }
     case Mount::Proc:
@@ -258,7 +258,7 @@ bool Read(FileHandle* file, void* buffer, uint64_t length, uint64_t* bytes_read)
         return true;
     }
     case FileKind::Device:
-        Devices::Read(static_cast<Devices::Device>(file->node), buffer, length, bytes_read);
+        Devices::Read(Devices::DeviceOf(file->node), buffer, length, bytes_read);
         return true;
     case FileKind::Memory:
         if (!Tmpfs::Read(file->node, file->offset, buffer, length, bytes_read))
@@ -318,10 +318,10 @@ bool Stat(const char* path, FileInfo* info)
     }
     case Mount::Devices:
     {
-        Devices::Device device;
+        uint32_t node;
         info->size = 0;
         info->device = true;
-        return Devices::Find(inner, &device);
+        return Devices::Find(inner, &node);
     }
     case Mount::Proc:
     {
@@ -500,7 +500,7 @@ bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entr
         return true;
     }
     case Mount::Devices:
-        return *inner == '\0' && Devices::ReadDirectory(index, entry);
+        return Devices::ReadDirectory(inner, index, entry);
     case Mount::Proc:
         return Procfs::ReadDirectory(inner, index, entry);
     case Mount::Tmp:
@@ -524,8 +524,9 @@ bool IsDirectory(const char* path)
         // The root exists even without a disk, since it holds the mount points.
         return *inner == '\0' || FAT16::IsDirectory(inner);
     case Mount::System:
-    case Mount::Devices:
         return path[0] == '/' && *inner == '\0';
+    case Mount::Devices:
+        return path[0] == '/' && Devices::IsDirectory(inner);
     case Mount::Proc:
         return Procfs::IsDirectory(inner);
     case Mount::Tmp:
@@ -542,14 +543,14 @@ bool IsReadOnly(const char* path)
         return false;
     }
     const char* inner;
-    Devices::Device device;
+    uint32_t node;
     switch (Locate(path, &inner))
     {
     case Mount::System:
     case Mount::Proc:
         return true;
     case Mount::Devices:
-        return !Devices::Find(inner, &device);
+        return !Devices::Find(inner, &node);
     case Mount::Disk:
     case Mount::Tmp:
     case Mount::Etc:

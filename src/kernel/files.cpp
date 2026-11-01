@@ -1,7 +1,9 @@
 #include "files.h"
 
+#include "kernel/filesystem/devices.h"
 #include "kernel/memory/heap.h"
 #include "kernel/sync/mutex.h"
+#include "kernel/terminal/pseudo_terminal.h"
 
 namespace FeatherOS::Files
 {
@@ -18,6 +20,9 @@ struct OpenFile
     bool append;
     bool nonblocking;
     Network::Sockets::Socket* socket;
+    Terminals::Terminal* terminal;
+    // A master's pair, or a slave's, which the descriptor holds open.
+    PseudoTerminals::Pair* pair;
 };
 
 namespace
@@ -25,7 +30,7 @@ namespace
 
 constexpr uint64_t KnownFlags = User::OpenRead | User::OpenWrite | User::OpenCreate |
                                 User::OpenTruncate | User::OpenAppend | User::OpenCloseOnExec |
-                                User::OpenNonBlocking;
+                                User::OpenNonBlocking | User::OpenNoControllingTerminal;
 constexpr uint32_t MaximumOpenDiskFiles = 64;
 // FAT16 directory clusters fit in 16 bits, so disk keys never set the top bit.
 constexpr uint64_t MemoryKeyBit = 1ULL << 63;
@@ -46,7 +51,8 @@ constinit Sync::Mutex file_system_lock;
 DiskFileUse disk_files[MaximumOpenDiskFiles];
 uint32_t disk_file_count = 0;
 // Every process's console descriptors share this one, which is never freed.
-OpenFile console = {{}, nullptr, 1, Kind::Console, true, true, false, false, nullptr};
+OpenFile console = {{},    nullptr, 1,       Kind::Terminal, true,   true,
+                    false, false,   nullptr, nullptr,        nullptr};
 
 uint64_t UseKey(const VFS::FileHandle& handle)
 {
@@ -147,6 +153,19 @@ void ReleaseLocked(OpenFile* file)
     if (file->kind == Kind::Socket)
     {
         Network::Sockets::Close(file->socket);
+        Memory::Deallocate(file);
+        return;
+    }
+    if (file->kind == Kind::Terminal || file->kind == Kind::PseudoTerminalMaster)
+    {
+        if (file->kind == Kind::PseudoTerminalMaster)
+        {
+            PseudoTerminals::CloseMaster(file->pair);
+        }
+        else if (file->pair != nullptr)
+        {
+            PseudoTerminals::CloseSlave(file->pair);
+        }
         Memory::Deallocate(file);
         return;
     }
@@ -255,11 +274,107 @@ bool IsWithin(const char* path, const char* base)
     return base[length] == '\0' && (path[length] == '\0' || path[length] == '/');
 }
 
+// A slave's pair stays in use until the descriptor is closed, so terminal stays valid.
+uint64_t AddTerminalLocked(Table* table, uint64_t descriptor, uint64_t flags, Kind kind,
+                           Terminals::Terminal* terminal, PseudoTerminals::Pair* pair)
+{
+    auto* file = static_cast<OpenFile*>(Memory::Allocate(sizeof(OpenFile)));
+    if (file == nullptr)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    *file = {
+        .handle = {},
+        .pipe = nullptr,
+        .references = 1,
+        .kind = kind,
+        .readable = (flags & User::OpenRead) != 0,
+        .writable = (flags & User::OpenWrite) != 0,
+        .append = false,
+        .nonblocking = kind == Kind::PseudoTerminalMaster && (flags & User::OpenNonBlocking) != 0,
+        .socket = nullptr,
+        .terminal = terminal,
+        .pair = pair,
+    };
+    table->slots[descriptor] = {file, (flags & User::OpenCloseOnExec) != 0};
+    return descriptor;
+}
+
+uint64_t OpenDeviceLocked(Table* table, uint64_t descriptor, uint64_t flags, uint32_t node,
+                          Terminals::Terminal* controlling_terminal)
+{
+    PseudoTerminals::Pair* pair = nullptr;
+    Terminals::Terminal* terminal = controlling_terminal;
+    Kind kind = Kind::Terminal;
+    switch (Devices::DeviceOf(node))
+    {
+    case Devices::Device::ControllingTerminal:
+        if (terminal == nullptr)
+        {
+            return User::SyscallErrorNoDevice;
+        }
+        pair = PseudoTerminals::AddSlave(terminal);
+        break;
+    case Devices::Device::PseudoTerminalMaster:
+    {
+        const uint64_t created = PseudoTerminals::Create(&pair);
+        if (created != 0)
+        {
+            return created;
+        }
+        terminal = nullptr;
+        kind = Kind::PseudoTerminalMaster;
+        break;
+    }
+    case Devices::Device::PseudoTerminalSlave:
+    {
+        const uint64_t opened = PseudoTerminals::OpenSlave(Devices::PairOf(node), &pair);
+        if (opened != 0)
+        {
+            return opened;
+        }
+        terminal = PseudoTerminals::TerminalOf(pair);
+        break;
+    }
+    case Devices::Device::Console:
+        terminal = Devices::ConsoleOf(node);
+        break;
+    default:
+        return User::SyscallErrorNotFound;
+    }
+    const uint64_t added = AddTerminalLocked(table, descriptor, flags, kind, terminal, pair);
+    if (User::IsSyscallError(added) && pair != nullptr)
+    {
+        if (kind == Kind::PseudoTerminalMaster)
+        {
+            PseudoTerminals::CloseMaster(pair);
+        }
+        else
+        {
+            PseudoTerminals::CloseSlave(pair);
+        }
+    }
+    return added;
+}
+
+bool IsTerminalDevice(const VFS::FileHandle& handle)
+{
+    if (handle.kind != VFS::FileKind::Device)
+    {
+        return false;
+    }
+    const Devices::Device device = Devices::DeviceOf(handle.node);
+    return device == Devices::Device::ControllingTerminal ||
+           device == Devices::Device::PseudoTerminalMaster ||
+           device == Devices::Device::PseudoTerminalSlave || device == Devices::Device::Console;
+}
+
 } // namespace
 
-void OpenConsole(Table* table)
+void OpenConsole(Table* table, Terminals::Terminal* terminal)
 {
     Sync::MutexGuard guard(file_system_lock);
+    console.terminal = terminal;
     for (uint64_t descriptor = User::StandardInput; descriptor <= User::StandardError; ++descriptor)
     {
         if (table->slots[descriptor].file != nullptr)
@@ -297,7 +412,8 @@ Kind KindOf(const Table* table, uint64_t descriptor)
     return table->slots[descriptor].file->kind;
 }
 
-uint64_t Open(Table* table, const char* path, uint64_t flags)
+uint64_t Open(Table* table, const char* path, uint64_t flags,
+              Terminals::Terminal* controlling_terminal)
 {
     const bool writable = (flags & User::OpenWrite) != 0;
     if (table == nullptr || path == nullptr || (flags & ~KnownFlags) != 0 ||
@@ -335,6 +451,12 @@ uint64_t Open(Table* table, const char* path, uint64_t flags)
         VFS::Close(&handle);
         return User::SyscallErrorReadOnly;
     }
+    if (IsTerminalDevice(handle))
+    {
+        const uint32_t node = handle.node;
+        VFS::Close(&handle);
+        return OpenDeviceLocked(table, descriptor, flags, node, controlling_terminal);
+    }
     auto* file = static_cast<OpenFile*>(Memory::Allocate(sizeof(OpenFile)));
     if (file == nullptr)
     {
@@ -361,6 +483,8 @@ uint64_t Open(Table* table, const char* path, uint64_t flags)
     file->append = (flags & User::OpenAppend) != 0;
     file->nonblocking = (flags & User::OpenNonBlocking) != 0;
     file->socket = nullptr;
+    file->terminal = nullptr;
+    file->pair = nullptr;
     Slot& slot = table->slots[descriptor];
     slot = {file, (flags & User::OpenCloseOnExec) != 0};
     if ((flags & User::OpenTruncate) != 0 && !VFS::Truncate(&file->handle, 0))
@@ -385,10 +509,32 @@ Pipes::Pipe* FindPipe(Table* table, uint64_t descriptor, bool write_end, bool* n
     return slot->file->pipe;
 }
 
+PseudoTerminals::Pair* FindMaster(Table* table, uint64_t descriptor, bool write, bool* nonblocking)
+{
+    Sync::MutexGuard guard(file_system_lock);
+    Slot* slot = FindSlot(table, descriptor);
+    if (slot == nullptr || slot->file->kind != Kind::PseudoTerminalMaster ||
+        !(write ? slot->file->writable : slot->file->readable))
+    {
+        return nullptr;
+    }
+    *nonblocking = slot->file->nonblocking;
+    return slot->file->pair;
+}
+
 uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
               Pipes::InterruptCheck interrupted)
 {
-    if (KindOf(table, descriptor) == Kind::Pipe)
+    const Kind kind = KindOf(table, descriptor);
+    if (kind == Kind::PseudoTerminalMaster)
+    {
+        bool nonblocking = false;
+        PseudoTerminals::Pair* pair = FindMaster(table, descriptor, false, &nonblocking);
+        return pair == nullptr
+                   ? User::SyscallErrorBadDescriptor
+                   : PseudoTerminals::ReadMaster(pair, buffer, length, interrupted, nonblocking);
+    }
+    if (kind == Kind::Pipe)
     {
         bool nonblocking = false;
         Pipes::Pipe* pipe = FindPipe(table, descriptor, false, &nonblocking);
@@ -409,7 +555,16 @@ uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
 uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t length,
                Pipes::InterruptCheck interrupted)
 {
-    if (KindOf(table, descriptor) == Kind::Pipe)
+    const Kind kind = KindOf(table, descriptor);
+    if (kind == Kind::PseudoTerminalMaster)
+    {
+        bool nonblocking = false;
+        PseudoTerminals::Pair* pair = FindMaster(table, descriptor, true, &nonblocking);
+        return pair == nullptr
+                   ? User::SyscallErrorBadDescriptor
+                   : PseudoTerminals::WriteMaster(pair, buffer, length, interrupted, nonblocking);
+    }
+    if (kind == Kind::Pipe)
     {
         bool nonblocking = false;
         Pipes::Pipe* pipe = FindPipe(table, descriptor, true, &nonblocking);
@@ -445,6 +600,8 @@ void SetPipeEnd(OpenFile* file, Pipes::Pipe* pipe, bool write_end, bool nonblock
         .append = false,
         .nonblocking = nonblocking,
         .socket = nullptr,
+        .terminal = nullptr,
+        .pair = nullptr,
     };
 }
 
@@ -520,6 +677,8 @@ uint64_t AddSocket(Table* table, Network::Sockets::Socket* socket, uint64_t flag
     file->append = false;
     file->nonblocking = (flags & User::SocketNonBlocking) != 0;
     file->socket = socket;
+    file->terminal = nullptr;
+    file->pair = nullptr;
     table->slots[descriptor] = {file, (flags & User::SocketCloseOnExec) != 0};
     return descriptor;
 }
@@ -539,11 +698,45 @@ int16_t PollEvents(Table* table, uint64_t descriptor)
         return Pipes::PollEvents(file->pipe, file->writable);
     case Kind::Socket:
         return Network::Sockets::PollEvents(file->socket);
+    case Kind::PseudoTerminalMaster:
+        return PseudoTerminals::PollMaster(file->pair);
     default:
         // Files never make a reader or writer wait.
         return static_cast<int16_t>((file->readable ? User::PollReadable : 0) |
                                     (file->writable ? User::PollWritable : 0));
     }
+}
+
+uint64_t FindTerminal(Table* table, uint64_t descriptor, Terminals::Terminal** terminal)
+{
+    Sync::MutexGuard guard(file_system_lock);
+    const Slot* slot = FindSlot(table, descriptor);
+    if (slot == nullptr)
+    {
+        return User::SyscallErrorBadDescriptor;
+    }
+    if (slot->file->kind != Kind::Terminal || slot->file->terminal == nullptr)
+    {
+        return User::SyscallErrorNotTerminal;
+    }
+    *terminal = slot->file->terminal;
+    return 0;
+}
+
+uint64_t FindPseudoTerminal(Table* table, uint64_t descriptor, PseudoTerminals::Pair** pair)
+{
+    Sync::MutexGuard guard(file_system_lock);
+    const Slot* slot = FindSlot(table, descriptor);
+    if (slot == nullptr)
+    {
+        return User::SyscallErrorBadDescriptor;
+    }
+    if (slot->file->kind != Kind::PseudoTerminalMaster)
+    {
+        return User::SyscallErrorNotTerminal;
+    }
+    *pair = slot->file->pair;
+    return 0;
 }
 
 uint64_t FindSocket(Table* table, uint64_t descriptor, Network::Sockets::Socket** socket,
@@ -691,8 +884,8 @@ uint64_t StatusFlags(Table* table, uint64_t descriptor, bool set, uint64_t value
     if (set)
     {
         // Every process shares the console's open file, so one program's flags would change
-        // everyone's.
-        if (file == &console)
+        // everyone's; and terminal reads always wait.
+        if (file->kind == Kind::Terminal)
         {
             if ((value & Changeable) != 0)
             {
@@ -928,9 +1121,9 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
         return User::SyscallErrorBadDescriptor;
     }
     const OpenFile* file = slot->file;
-    if (file->kind == Kind::Console)
+    if (file->kind == Kind::Terminal)
     {
-        *status = {0, User::FileType::Console, false};
+        *status = {0, User::FileType::Terminal, false};
         return 0;
     }
     if (file->kind == Kind::Pipe)
@@ -941,6 +1134,11 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
     if (file->kind == Kind::Socket)
     {
         *status = {0, User::FileType::Socket, false};
+        return 0;
+    }
+    if (file->kind == Kind::PseudoTerminalMaster)
+    {
+        *status = {0, User::FileType::Device, false};
         return 0;
     }
     status->type = file->handle.kind == VFS::FileKind::Device ? User::FileType::Device

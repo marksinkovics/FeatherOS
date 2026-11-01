@@ -46,7 +46,7 @@ At the shell prompt:
 | Ctrl+C | Discard the line |
 | Enter | Run the line |
 
-While a command runs, Ctrl+C stops it, along with the rest of its pipeline. `top` redraws in place until `q`. Programs that read a line of their own, such as `calc` and `upper`, support Backspace only. `keys` shows what any key sends.
+While a command runs, Ctrl+C ends it, along with the rest of its pipeline, and Ctrl+Z stops it: `jobs` lists it as stopped, `fg` continues it in the foreground and `bg` in the background. `vi` and `top` stop on Ctrl+Z too and come back as they were with `fg`, and a background job that reads the console stops until `fg`. `top` redraws in place until `q`. Programs that read a line of their own, such as `calc` and `upper`, support Backspace only. `keys` shows what any key sends.
 
 ### vi
 

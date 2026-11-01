@@ -101,7 +101,7 @@ SHELL_INPUT = (
     # A pipeline is one foreground group, so its first command can read the
     # console.
     b"upper | upper\ntwo uppers\n"
-    b"upper &\nsleep 1 &\njobs\nwait\nsleep 0.8 &\nfg\n"
+    b"upper &\nsleep 1 &\njobs\nwait\nkill %1\nwait\nsleep 0.8 &\nfg\n"
     # A background job that starts a program of its own must not take the
     # console from the shell.
     b"primes 1 1000000 > /dev/null &\njobs\n"
@@ -241,6 +241,73 @@ EXPECTED_KEYS = [
 ]
 # Ctrl+C for a command that shows no prompt of its own, sent while it runs.
 INTERRUPT_RUNNING = object()
+# Ctrl+Z, sent the same way.
+SUSPEND_RUNNING = object()
+
+# script runs a shell on a pty, where line editing, jobs, Ctrl+C, Ctrl+Z, vi,
+# top and size changes work as on the console, while the console shell keeps
+# its own job.
+# A nested script starts at the outer pty's size and follows its changes,
+# which stty -F makes from inside; the outer pty is the only other pair, 0.
+SHELL_SCRIPT_INPUT = (
+    b"sleep 61 &\n",
+    b"script /tmp/session.txt\n",
+    WholeWrite(b"eco edited in script | upper\x1b[H\x1b[C\x1b[Ch\n"),
+    b"sleep 2 &\n",
+    b"jobs\n",
+    b"fg\n",
+    b"sleep 100\n",
+    INTERRUPT_RUNNING,
+    b"sleep 99\n",
+    SUSPEND_RUNNING,
+    b"jobs\n",
+    b"fg\n",
+    INTERRUPT_RUNNING,
+    b"vi /tmp/sv.txt\n",
+    TypeWhen('"/tmp/sv.txt" [New]', b"ivi in script\x1b\x1a"),
+    b"fg\n",
+    TypeWhen('"/tmp/sv.txt" [New]', b":wq\n"),
+    b"top\n",
+    SUSPEND_RUNNING,
+    b"fg\n",
+    TypeWhen("; q quits", b"q"),
+    b"upper < /tmp/sv.txt\n",
+    b"stty rows 20 cols 50\n",
+    b"stty size\n",
+    b'script -q -c "stty size" /tmp/inner.txt\n',
+    b"script -q /tmp/inner.txt\n",
+    b"stty -F /dev/pts/0 rows 22 cols 60\n",
+    b"stty size\n",
+    b"exit\n",
+    b"exit\n",
+    b"jobs\n",
+    b"kill %1\n",
+    b"wait\n",
+    b"grep -n EDITED /tmp/session.txt\n",
+    b"grep Script /tmp/session.txt | upper\n",
+)
+EXPECTED_SCRIPT_OUTPUT = (
+    "Script started, output file is /tmp/session.txt",
+    "[1] Running  sleep 2 &",
+    "[1] Stopped  sleep 99",
+    "Stopped  vi /tmp/sv.txt",
+    "Stopped  top",
+    "\nVI IN SCRIPT",
+    "Script done, output file is /tmp/session.txt",
+    "[1] Running  sleep 61 &",
+    "[1] Terminated  sleep 61 &",
+    "\nSCRIPT STARTED ON 20",
+    "\nSCRIPT DONE ON 20",
+)
+# Each pattern and how often it must match: stty size inside script and in the
+# nested script, then after the outer pty's size changed; the line edited
+# inside script, on screen and in its file.
+EXPECTED_SCRIPT_LINES = {
+    r"^20 50\r?$": 2,
+    r"^22 60\r?$": 1,
+    r"^EDITED IN SCRIPT\r?$": 1,
+    r"^\d+:EDITED IN SCRIPT\r*$": 1,
+}
 
 
 class WaitFor:
@@ -261,6 +328,61 @@ class WaitUntil:
 
 INTERRUPT_DELAY_SECONDS = 1.5
 CONTROL_C = b"\x03"
+CONTROL_Z = b"\x1a"
+# Ctrl+Z stops a sleep, which bg continues for the time it had left and fg
+# waits for, then stops a pipeline, which fg continues and Ctrl+C ends. A
+# background upper stops with SIGTTIN when it reads, and reads once fg gives it
+# the console. vi, top and a shell started by the shell stop themselves on
+# Ctrl+Z and come back as they were with fg.
+SHELL_STOP_INPUT = (
+    b"sleep 4\n",
+    SUSPEND_RUNNING,
+    b"jobs\n",
+    b"bg\n",
+    b"jobs\n",
+    b"fg\n",
+    b"sleep 100 | sleep 100\n",
+    SUSPEND_RUNNING,
+    b"jobs\n",
+    b"fg 1\n",
+    INTERRUPT_RUNNING,
+    b"upper &\n",
+    b"sleep 0.5\n",
+    b"jobs\n",
+    b"fg\n",
+    b"read after fg\n",
+    b"vi /tmp/stop.txt\n",
+    TypeWhen('"/tmp/stop.txt" [New]', b"istopped vi\x1b\x1a"),
+    b"jobs\n",
+    b"fg\n",
+    TypeWhen('"/tmp/stop.txt" [New]', b":wq\n"),
+    b"upper < /tmp/stop.txt\n",
+    b"top\n",
+    SUSPEND_RUNNING,
+    b"fg\n",
+    TypeWhen("; q quits", b"q"),
+    # The shell redraws its prompt from the row's start, which does not count
+    # as a prompt here, so exit waits in the input for it.
+    b"shell\n",
+    CONTROL_Z,
+    b"fg\nexit\n",
+)
+EXPECTED_STOP_OUTPUT = (
+    "[1] Stopped  sleep 4",
+    "[1] sleep 4 &",
+    "[1] Running  sleep 4",
+    "sleep: slept 4 s",
+    "[1] Stopped  sleep 100 | sleep 100",
+    "[1] Stopped  upper &",
+    "\nREAD AFTER FG",
+    "[1] Stopped  vi /tmp/stop.txt",
+    "\nSTOPPED VI",
+    "[1] Stopped  top",
+    "[1] Stopped  shell",
+)
+# The console's sleep and pipeline, the sleep inside script, and the shell's
+# line editor; vi and top echo nothing.
+EXPECTED_SUSPENDS = 4
 # Interrupts a CPU-bound job, a sleep, programs blocked reading input, and the
 # shell's own prompt (which only discards the line). The shell test's last
 # command must stay last because its output ends the run.
@@ -282,7 +404,8 @@ SHELL_INTERRUPT_INPUT = (
     CONTROL_C,
     b"calc 1 +\n",
 )
-EXPECTED_INTERRUPTS = 7
+# Two more interrupt sleeps inside script, and one the stopped pipeline.
+EXPECTED_INTERRUPTS = 10
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE
@@ -328,7 +451,8 @@ EXPECTED_SHELL_OUTPUT = (
     "spawned by posix_spawn",
     "spawned from the disk",
     "SPAWNED=yes",
-    "libctest: 433 checks passed",
+    "libctest: /dev/tty works",
+    "libctest: 471 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
@@ -344,6 +468,7 @@ EXPECTED_SHELL_OUTPUT = (
     "cd: nowhere: no such directory",
     # /dev, /tmp, and /proc; the console shows tabs as spaces.
     "random                  0",
+    "tty4                    0",
     "kept in tmp",
     "Name: cat",
     "MemTotal: ",
@@ -370,10 +495,12 @@ EXPECTED_SHELL_OUTPUT = (
     "\nTWO STAGES",
     "shell: a pipeline has an empty command",
     "TWO UPPERS",
-    # Background jobs: upper cannot read the console there and fails.
+    # Background jobs: upper stops when it reads the console, and kill %1 ends
+    # it although it is stopped.
     "Running  sleep 1 &",
     "Done  sleep 1 &",
-    "Exit 1  upper &",
+    "Stopped  upper &",
+    "Terminated  upper &",
     "\nsleep 0.8 &",
     "\nthe shell kept the console",
     "Done  primes 1 1000000 > /dev/null &",
@@ -477,7 +604,8 @@ STORAGE_SHELL_OUTPUT = {
 }
 USER_PREEMPTION_OUTPUTS = {"x86_64": b"UIu", "aarch64": b"AIa"}
 # Ctrl+C at the shell prompt only discards the line; "ab" is then an unknown
-# command, and keys takes raw input from the same keyboard.
+# command, and keys takes raw input from the same keyboard. What is typed
+# while the second console is shown stays out of the first one's lines.
 INPUT_LINE_KEYS = (
     "ctrl-c",
     "a",
@@ -485,6 +613,10 @@ INPUT_LINE_KEYS = (
     "x",
     "backspace",
     "ret",
+    "alt-f2",
+    "q",
+    "w",
+    "alt-f1",
     # Left then z gives "echo azb"; Up recalls it.
     "e",
     "c",
@@ -505,6 +637,47 @@ INPUT_LINE_KEYS = (
     "ret",
 )
 INPUT_RAW_KEYS = ("up", "home", "delete", "esc", "ctrl-a", "shift-tab", "q")
+
+
+def SendkeyNames(text):
+    names = {" ": "spc", "|": "shift-backslash", "\n": "ret"}
+    return tuple(names.get(character, character) for character in text)
+
+
+# A kernel built for the keyboard test reports, on serial only, which console
+# is shown and each console's foreground program whenever they change.
+CONSOLE_REPORT_PREFIX = b"KERN/I: Consoles: "
+CONSOLE_REPORT = re.compile(rb"KERN/I: Consoles: [^\r\n]*\r?\n")
+CONSOLE_REPORT_TEXT = re.compile(r"KERN/I: Consoles: [^\r\n]*\r?\n")
+# Once keys has run, every console runs a job of its own: each step waits for
+# a report, then sends its keys. Ctrl+C first drops the "qw" typed on the
+# second console earlier; later Ctrl+Z stops only that console's sleep, fg
+# continues it and Ctrl+C ends it. Nothing typed on the other consoles may
+# reach serial.
+CONSOLE_STEPS = (
+    ("tty1 shown; keys, shell, shell, shell", ()),
+    (
+        "tty1 shown; shell, shell, shell, shell",
+        ("alt-f2", "ctrl-c", *SendkeyNames("sleep 60\n")),
+    ),
+    (
+        "tty2 shown; shell, sleep, shell, shell",
+        ("alt-f3", *SendkeyNames("top\n")),
+    ),
+    (
+        "tty3 shown; shell, sleep, top, shell",
+        ("alt-f4", *SendkeyNames("vi\n")),
+    ),
+    ("tty4 shown; shell, sleep, top, vi", ("alt-f2", "ctrl-z")),
+    ("tty2 shown; shell, shell, top, vi", SendkeyNames("fg\n")),
+    ("tty2 shown; shell, sleep, top, vi", ("ctrl-c",)),
+    ("tty2 shown; shell, shell, top, vi", ("alt-f1",)),
+    (
+        "tty1 shown; shell, shell, top, vi",
+        SendkeyNames("echo consoles done | upper\n"),
+    ),
+)
+CONSOLES_DONE = "CONSOLES DONE"
 EXPECTED_INPUT_KEYS = [
     KEYS_READY,
     "keys: up",
@@ -528,6 +701,8 @@ QEMU_TIMEOUT_SECONDS = 10
 # The scripted shell session runs many programs; AArch64 emulation is slower,
 # and takes about 90 s for the whole session.
 SHELL_TIMEOUT_SECONDS = 180
+# The keyboard test switches through every console after its own keys.
+INPUT_TIMEOUT_SECONDS = 60
 QEMU_CPU_COUNT = 4
 SMP_MESSAGE = f"KERN/I: SMP: {QEMU_CPU_COUNT} CPUs online with IPIs and timers"
 # QEMU gives the first NIC 52:54:00:12:34:56, and slirp answers ARP for
@@ -1945,6 +2120,7 @@ def main():
         or args.expect_power
         or (args.expect_input and not use_qmp_keyboard)
     )
+    session_started = datetime.datetime.now(datetime.timezone.utc)
     process = subprocess.Popen(
         command,
         stdin=subprocess.PIPE if uses_serial_input else None,
@@ -1964,11 +2140,16 @@ def main():
         or args.expect_network
         or args.expect_storage_boot
         or args.expect_power
+        else INPUT_TIMEOUT_SECONDS
+        if args.expect_input
         else QEMU_TIMEOUT_SECONDS
     )
     deadline = time.monotonic() + timeout
     input_sent = False
     raw_keys_sent = False
+    # Where in the output the next console report is looked for.
+    console_position = 0
+    console_step = 0
     prompt_redrawn = False
     qmp_command_id = 2
     pending_lines = []
@@ -1981,6 +2162,8 @@ def main():
             + list(SHELL_VI_INPUT)
             + list(SHELL_TOP_INPUT)
             + list(SHELL_KEYS_INPUT)
+            + list(SHELL_SCRIPT_INPUT)
+            + list(SHELL_STOP_INPUT)
             + list(SHELL_INTERRUPT_INPUT)
         )
     elif args.expect_network:
@@ -2084,7 +2267,7 @@ def main():
         elif args.expect_user_preemption:
             markers = (EXPECTED_USER_PREEMPTION.encode(),)
         elif args.expect_input:
-            markers = (EXPECTED_INPUT_KEYS[-1].encode(), PANIC_MARKER.encode())
+            markers = (CONSOLES_DONE.encode(), PANIC_MARKER.encode())
         elif args.expect_calc:
             markers = (EXPECTED_CALC.encode(), PANIC_MARKER.encode())
         elif args.expect_shell:
@@ -2127,7 +2310,10 @@ def main():
                 break
             captured.extend(chunk)
         clean_output = ANSI_ESCAPE_BYTES.sub(
-            b"", captured.replace(LEAVE_ALTERNATE_SCREEN, b"\n")
+            b"",
+            CONSOLE_REPORT.sub(b"", captured).replace(
+                LEAVE_ALTERNATE_SCREEN, b"\n"
+            ),
         )
         prompt_count = len(LINE_PROMPT.findall(clean_output))
         if (
@@ -2168,10 +2354,17 @@ def main():
                 markers_before_end = {
                     marker: clean_output.count(marker) for marker in markers
                 }
-                while pending_lines and pending_lines[0] is INTERRUPT_RUNNING:
-                    pending_lines.pop(0)
+                while pending_lines and (
+                    pending_lines[0] is INTERRUPT_RUNNING
+                    or pending_lines[0] is SUSPEND_RUNNING
+                ):
+                    key = (
+                        CONTROL_C
+                        if pending_lines.pop(0) is INTERRUPT_RUNNING
+                        else CONTROL_Z
+                    )
                     time.sleep(INTERRUPT_DELAY_SECONDS)
-                    process.stdin.write(CONTROL_C)
+                    process.stdin.write(key)
                     process.stdin.flush()
         except OSError as error:
             input_error = str(error)
@@ -2202,12 +2395,26 @@ def main():
                 and not raw_keys_sent
                 and KEYS_READY.encode() in clean_output
             ):
-                SendQmpKeys(qmp_channel, qmp_command_id, INPUT_RAW_KEYS)
+                qmp_command_id = SendQmpKeys(
+                    qmp_channel, qmp_command_id, INPUT_RAW_KEYS
+                )
                 raw_keys_sent = True
+            while args.expect_input and console_step < len(CONSOLE_STEPS):
+                report, keys = CONSOLE_STEPS[console_step]
+                found = captured.find(
+                    CONSOLE_REPORT_PREFIX + report.encode() + b"\r\n",
+                    console_position,
+                )
+                if found < 0:
+                    break
+                console_position = found + 1
+                qmp_command_id = SendQmpKeys(qmp_channel, qmp_command_id, keys)
+                console_step += 1
         except (OSError, RuntimeError, json.JSONDecodeError) as error:
             input_error = str(error)
             input_sent = True
             raw_keys_sent = True
+            console_step = len(CONSOLE_STEPS)
         # The end marker may also appear earlier in a scripted session, so
         # only a new one after the last typed line ends it. Counting copies
         # holds even when stripping escape codes shifts earlier output.
@@ -2593,7 +2800,11 @@ def main():
             print(f"FAIL: {read_failure.group(0).strip()}", file=sys.stderr)
             return 1
         missing = [
-            text for text in EXPECTED_SHELL_OUTPUT if text not in output
+            text
+            for text in EXPECTED_SHELL_OUTPUT
+            + EXPECTED_SCRIPT_OUTPUT
+            + EXPECTED_STOP_OUTPUT
+            if text not in output
         ]
         if missing:
             print(
@@ -2616,6 +2827,13 @@ def main():
         }
         if vi_lines != EXPECTED_VI_LINES:
             print(f"FAIL: vi wrote {vi_lines}", file=sys.stderr)
+            return 1
+        script_lines = {
+            pattern: len(re.findall(pattern, output, re.MULTILINE))
+            for pattern in EXPECTED_SCRIPT_LINES
+        }
+        if script_lines != EXPECTED_SCRIPT_LINES:
+            print(f"FAIL: script printed {script_lines}", file=sys.stderr)
             return 1
         missing_tools = [
             pattern
@@ -2695,6 +2913,14 @@ def main():
                 file=sys.stderr,
             )
             return 1
+        suspends = len(re.findall(r"\^Z\r?$", output, re.MULTILINE))
+        if suspends != EXPECTED_SUSPENDS:
+            print(
+                f"FAIL: Ctrl+Z was echoed {suspends} times, expected "
+                f"{EXPECTED_SUSPENDS}",
+                file=sys.stderr,
+            )
+            return 1
         if WORKING_DIRECTORY_OUTPUT.findall(output) != ["/home/work", "/home"]:
             print(
                 "FAIL: pwd did not follow cd: "
@@ -2718,19 +2944,23 @@ def main():
         guest_time = datetime.datetime.strptime(
             date_match.group(1), "%Y-%m-%d %H:%M:%S"
         ).replace(tzinfo=datetime.timezone.utc)
-        skew = abs(
-            datetime.datetime.now(datetime.timezone.utc) - guest_time
-        ).total_seconds()
+        # date ran at some point of the session, which takes minutes.
+        session_ended = datetime.datetime.now(datetime.timezone.utc)
+        skew = max(
+            (session_started - guest_time).total_seconds(),
+            (guest_time - session_ended).total_seconds(),
+            0,
+        )
         if skew > MAXIMUM_CLOCK_SKEW_SECONDS:
             print(
                 f"FAIL: date printed {date_match.group(1)} UTC, "
-                f"{skew:.0f} seconds from the host clock",
+                f"{skew:.0f} seconds outside the session's host clock",
                 file=sys.stderr,
             )
             return 1
         print(
             "PASS: shell ran programs with arguments, foreground input, "
-            f"uptime, Ctrl+C, and date ({date_match.group(1)} UTC)"
+            f"uptime, Ctrl+C, Ctrl+Z, and date ({date_match.group(1)} UTC)"
         )
         return 0
     if args.expect_user_preemption:
@@ -2755,37 +2985,57 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        if "Unknown command: ab" not in output:
+        # The console reports are whole lines, which may split others.
+        shell_output = CONSOLE_REPORT_TEXT.sub("", output)
+        shell_captured = CONSOLE_REPORT.sub(b"", captured)
+        if "Unknown command: ab" not in shell_output:
             print(
                 "FAIL: the shell did not run the typed line", file=sys.stderr
             )
             return 1
-        if len(re.findall(r"^azb\r?$", output, re.MULTILINE)) != 2:
+        if len(re.findall(r"^azb\r?$", shell_output, re.MULTILINE)) != 2:
             print(
                 "FAIL: the cursor keys and history did not edit the line",
                 file=sys.stderr,
             )
             return 1
-        if INPUT_ECHO_SEQUENCE not in captured:
+        if INPUT_ECHO_SEQUENCE not in shell_captured:
             print(
                 "FAIL: terminal input echo/backspace sequence was incorrect",
                 file=sys.stderr,
             )
             return 1
-        if b"> ^C" not in captured:
+        if b"> ^C" not in shell_captured:
             print("FAIL: Ctrl+C was not echoed at the prompt", file=sys.stderr)
             return 1
         keys = [
             line.strip()
-            for line in output.splitlines()
+            for line in shell_output.splitlines()
             if line.startswith("keys: ")
         ]
         if keys != EXPECTED_INPUT_KEYS:
             print(f"FAIL: keys reported {keys}", file=sys.stderr)
             return 1
+        if console_step < len(CONSOLE_STEPS) or CONSOLES_DONE not in output:
+            waited = (
+                CONSOLE_STEPS[console_step][0]
+                if console_step < len(CONSOLE_STEPS)
+                else CONSOLES_DONE
+            )
+            print(
+                f"FAIL: the consoles never reported '{waited}'{limit_note}",
+                file=sys.stderr,
+            )
+            return 1
+        if "sleep 60" in output:
+            print(
+                "FAIL: keys typed on another console reached serial",
+                file=sys.stderr,
+            )
+            return 1
         print(
-            "PASS: keyboard input, Ctrl+C, backspace, Enter, and raw special "
-            "keys were handled"
+            "PASS: keyboard input, Ctrl+C, backspace, Enter, raw special "
+            "keys, and a job on each of four consoles were handled"
         )
         return 0
     if PANIC_MARKER in output:

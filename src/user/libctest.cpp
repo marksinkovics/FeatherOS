@@ -1060,14 +1060,16 @@ void CheckSpawnAttributes()
               posix_spawnattr_setpgroup(&attributes, -1) == EINVAL,
           "unsupported spawn attributes");
 
-    // A background child has no console, so upper cannot read its line and fails at once.
+    // A background child does not have the console, so upper's read stops it with SIGTTIN.
     char* upper_arguments[] = {const_cast<char*>("upper"), nullptr};
     pid_t child = 0;
     int status = -1;
     Check(posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_BACKGROUND) ==
                   0 &&
               posix_spawn(&child, "upper", nullptr, &attributes, upper_arguments, environ) == 0 &&
-              waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 1,
+              waitpid(child, &status, WUNTRACED) == child && WIFSTOPPED(status) &&
+              WSTOPSIG(status) == SIGTTIN && kill(child, SIGKILL) == 0 &&
+              waitpid(child, &status, 0) == child && WIFSIGNALED(status),
           "a new group with POSIX_SPAWN_BACKGROUND is a background job");
 
     char* echo_arguments[] = {const_cast<char*>("echo"), const_cast<char*>("session leader"),
@@ -1090,6 +1092,60 @@ pid_t SpawnSleeper(short flags, pid_t group)
     return posix_spawn(&child, "sleep", nullptr, &attributes, arguments, environ) == 0 ? child : -1;
 }
 
+// The child CheckSessions starts: in a session of its own, by setsid or by POSIX_SPAWN_SETSID,
+// it has no controlling terminal but can still use the console.
+int RunSessionChild(bool call_setsid)
+{
+    if (call_setsid && setsid() != getpid())
+    {
+        return 1;
+    }
+    errno = 0;
+    const bool no_terminal = getsid(0) == getpid() && getpgrp() == getpid() &&
+                             tcgetpgrp(STDIN_FILENO) == -1 && errno == ENOTTY;
+    errno = 0;
+    const bool no_tty = open("/dev/tty", O_RDWR) == -1 && errno == ENXIO;
+    termios settings;
+    const bool usable = isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &settings) == 0 &&
+                        tcsetattr(STDIN_FILENO, TCSANOW, &settings) == 0;
+    return no_terminal && no_tty && usable ? 0 : 1;
+}
+
+bool SessionChildPasses(const char* mode, short flags)
+{
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    posix_spawnattr_setflags(&attributes, flags);
+    char* arguments[] = {const_cast<char*>("libctest"), const_cast<char*>(mode), nullptr};
+    pid_t child = 0;
+    int status = -1;
+    return posix_spawn(&child, "libctest", nullptr, &attributes, arguments, environ) == 0 &&
+           waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+// The shell leads the session, whose controlling terminal is the console.
+void CheckSessions()
+{
+    const pid_t session = getsid(0);
+    Check(session > 0 && session != getpid() && getsid(getppid()) == session && getsid(1) == 1,
+          "commands run in the shell's session");
+    errno = 0;
+    Check(getsid(99999) == -1 && errno == ESRCH, "getsid of a missing process");
+    errno = 0;
+    Check(setsid() == -1 && errno == EPERM, "setsid fails for a group leader");
+    const int terminal = open("/dev/tty", O_RDWR);
+    const char message[] = "libctest: /dev/tty works\n";
+    Check(terminal >= 3 && isatty(terminal) && tcgetpgrp(terminal) == getpgrp() &&
+              write(terminal, message, sizeof(message) - 1) ==
+                  static_cast<ssize_t>(sizeof(message) - 1) &&
+              close(terminal) == 0,
+          "/dev/tty opens the controlling terminal");
+    Check(SessionChildPasses("session-call", 0), "setsid leaves the controlling terminal behind");
+    Check(SessionChildPasses("session-spawned", POSIX_SPAWN_SETSID),
+          "POSIX_SPAWN_SETSID cannot take a terminal another session has");
+    Check(tcgetpgrp(STDIN_FILENO) == getpgrp(), "new sessions leave the console alone");
+}
+
 // The shell starts each command as a group of its own and gives it the console.
 void CheckProcessGroups()
 {
@@ -1099,13 +1155,14 @@ void CheckProcessGroups()
           "the shell runs a command as its own foreground group");
     errno = 0;
     Check(getpgid(99999) == -1 && errno == ESRCH, "getpgid of a missing process");
+    Check(tcsetpgrp(STDIN_FILENO, own) == 0, "the foreground group may move the console");
     errno = 0;
-    Check(tcsetpgrp(STDIN_FILENO, own) == -1 && errno == EPERM,
-          "only session leaders move the console");
+    Check(tcsetpgrp(STDIN_FILENO, 1) == -1 && errno == EPERM,
+          "tcsetpgrp to a group of another session");
     const int null_device = open("/dev/null", O_RDONLY);
     errno = 0;
     Check(tcgetpgrp(null_device) == -1 && errno == ENOTTY && close(null_device) == 0,
-          "tcgetpgrp needs the console");
+          "tcgetpgrp needs a terminal");
     char expected[32];
     snprintf(expected, sizeof(expected), "Pgid:\t%d\n", own);
     Check(FileContains("/proc/self/status", expected), "/proc/self/status shows the group");
@@ -1212,8 +1269,8 @@ void CheckSignalHandlers()
     signal(SIGUSR2, SIG_DFL);
     errno = 0;
     Check(sigaction(SIGKILL, &action, nullptr) == -1 && errno == EINVAL &&
-              signal(19, RecordSignal) == SIG_ERR,
-          "SIGKILL and the stop signals cannot be handled");
+              signal(SIGSTOP, RecordSignal) == SIG_ERR && signal(SIGSTOP, SIG_IGN) == SIG_ERR,
+          "SIGKILL and SIGSTOP cannot be handled");
 }
 
 void CheckKill()
@@ -1261,6 +1318,112 @@ void CheckKill()
               remaining.tv_sec >= 3 && waitpid(second, &status, 0) == second,
           "a signal cuts nanosleep short");
     signal(SIGCHLD, SIG_DFL);
+}
+
+// Each sleeper is a child in this program's group, whose parent, the shell, is in another group of
+// the session, so the terminal's stop signals stop it.
+void CheckStopAndContinue()
+{
+    const pid_t child = SpawnSleeper(0, 0);
+    char path[32];
+    snprintf(path, sizeof(path), "/proc/%d/status", child);
+    int status = -1;
+    Check(child > 0 && kill(child, SIGTSTP) == 0 && waitpid(child, &status, WUNTRACED) == child &&
+              WIFSTOPPED(status) && !WIFSIGNALED(status) && WSTOPSIG(status) == SIGTSTP &&
+              FileContains(path, "State:\tT (stopped)"),
+          "SIGTSTP stops a child, and waitpid reports it");
+    const struct timespec pause_time = {0, 400000000};
+    nanosleep(&pause_time, nullptr);
+    Check(waitpid(child, &status, WNOHANG | WUNTRACED) == 0 &&
+              waitpid(child, &status, WNOHANG) == 0,
+          "a stopped child stays stopped, reported once");
+    Check(kill(child, SIGCONT) == 0 && waitpid(child, &status, WCONTINUED) == child &&
+              WIFCONTINUED(status) && !WIFEXITED(status) && !WIFSIGNALED(status),
+          "SIGCONT continues it, and waitpid reports that");
+    // The stop interrupted its sleep, which starts again for the time that was left.
+    Check(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "a stop does not cut a sleep short");
+
+    const pid_t second = SpawnSleeper(0, 0);
+    Check(second > 0 && kill(second, SIGSTOP) == 0 && waitpid(-1, &status, WUNTRACED) == second &&
+              WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP && kill(second, SIGTERM) == 0 &&
+              nanosleep(&pause_time, nullptr) == 0 && waitpid(second, &status, WNOHANG) == 0 &&
+              kill(second, SIGCONT) == 0 && waitpid(second, &status, 0) == second &&
+              WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM,
+          "a signal sent while stopped waits for SIGCONT");
+    const pid_t third = SpawnSleeper(0, 0);
+    Check(third > 0 && kill(third, SIGTTOU) == 0 && waitpid(third, &status, WUNTRACED) == third &&
+              WSTOPSIG(status) == SIGTTOU && kill(third, SIGKILL) == 0 &&
+              waitpid(third, &status, 0) == third && WIFSIGNALED(status) &&
+              WTERMSIG(status) == SIGKILL,
+          "SIGKILL ends a stopped child");
+
+    // A session leader's group is orphaned: nobody in its session could continue it.
+    const pid_t leader = SpawnSleeper(POSIX_SPAWN_SETSID, 0);
+    Check(leader > 0 && kill(leader, SIGTSTP) == 0 && kill(leader, SIGTTIN) == 0 &&
+              waitpid(leader, &status, WUNTRACED) == leader && WIFEXITED(status) &&
+              WEXITSTATUS(status) == 0,
+          "the terminal's stop signals leave an orphaned group running");
+}
+
+pid_t SpawnBackgroundChild(const char* mode)
+{
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_BACKGROUND);
+    char* arguments[] = {const_cast<char*>("libctest"), const_cast<char*>(mode), nullptr};
+    pid_t child = 0;
+    return posix_spawn(&child, "libctest", nullptr, &attributes, arguments, environ) == 0 ? child
+                                                                                          : -1;
+}
+
+// The children CheckBackgroundTerminal starts in a background group.
+int RunBackgroundChild(const char* mode)
+{
+    if (strcmp(mode, "background-read") == 0)
+    {
+        char byte = 0;
+        errno = 0;
+        return read(STDIN_FILENO, &byte, 1) == -1 && errno == EIO ? 0 : 1;
+    }
+    termios settings;
+    return tcgetattr(STDIN_FILENO, &settings) == 0 &&
+                   tcsetattr(STDIN_FILENO, TCSANOW, &settings) == 0
+               ? 0
+               : 1;
+}
+
+// A background group that reads the console or changes its mode stops, unless it ignores or
+// blocks the signal; a change it continues in the foreground goes ahead.
+void CheckBackgroundTerminal()
+{
+    const pid_t own = getpgrp();
+    int status = -1;
+    signal(SIGTTIN, SIG_IGN);
+    const pid_t ignoring = SpawnBackgroundChild("background-read");
+    signal(SIGTTIN, SIG_DFL);
+    Check(ignoring > 0 && waitpid(ignoring, &status, WUNTRACED) == ignoring && WIFEXITED(status) &&
+              WEXITSTATUS(status) == 0,
+          "a background read that ignores SIGTTIN fails with EIO");
+
+    const pid_t changer = SpawnBackgroundChild("background-change");
+    Check(changer > 0 && waitpid(changer, &status, WUNTRACED) == changer && WIFSTOPPED(status) &&
+              WSTOPSIG(status) == SIGTTOU && tcgetpgrp(STDIN_FILENO) == own,
+          "SIGTTOU stops a background tcsetattr");
+    Check(tcsetpgrp(STDIN_FILENO, changer) == 0 && kill(changer, SIGCONT) == 0 &&
+              waitpid(changer, &status, 0) == changer && WIFEXITED(status) &&
+              WEXITSTATUS(status) == 0 && tcgetpgrp(STDIN_FILENO) == own,
+          "the stopped tcsetattr goes ahead once its job has the terminal");
+
+    sigset_t output_signal;
+    sigemptyset(&output_signal);
+    sigaddset(&output_signal, SIGTTOU);
+    sigprocmask(SIG_BLOCK, &output_signal, nullptr);
+    const pid_t blocking = SpawnBackgroundChild("background-change");
+    sigprocmask(SIG_UNBLOCK, &output_signal, nullptr);
+    Check(blocking > 0 && waitpid(blocking, &status, WUNTRACED) == blocking && WIFEXITED(status) &&
+              WEXITSTATUS(status) == 0 && tcgetpgrp(STDIN_FILENO) == own,
+          "a background tcsetattr that blocks SIGTTOU goes ahead");
 }
 
 unsigned long long OwnCpuMilliseconds()
@@ -2186,6 +2349,197 @@ void CheckTerminalSettings()
           "terminal settings reset when their owner exits");
 }
 
+volatile sig_atomic_t window_changed = 0;
+
+// The child CheckWindowSize starts with a pty slave as standard input, leading a session whose
+// controlling terminal the slave becomes, so its group is the foreground one there.
+int RunWindowSizeChild()
+{
+    signal(SIGWINCH, [](int) { window_changed = 1; });
+    if (write(STDIN_FILENO, "ready", 5) != 5)
+    {
+        return 1;
+    }
+    for (int tries = 0; window_changed == 0 && tries < 500; ++tries)
+    {
+        usleep(10000);
+    }
+    winsize size{};
+    return window_changed != 0 && tcgetpgrp(STDIN_FILENO) == getpgrp() &&
+                   ioctl(STDIN_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_row == 30 &&
+                   size.ws_col == 100
+               ? 0
+               : 1;
+}
+
+// Either end sets the size; a change reaches the slave's foreground group as SIGWINCH.
+void CheckWindowSize(int master, int slave)
+{
+    winsize size{.ws_row = 40, .ws_col = 120, .ws_xpixel = 0, .ws_ypixel = 0};
+    winsize check{};
+    Check(ioctl(slave, TIOCSWINSZ, &size) == 0 && ioctl(master, TIOCGWINSZ, &check) == 0 &&
+              check.ws_row == 40 && check.ws_col == 120,
+          "TIOCSWINSZ on the slave, TIOCGWINSZ on the master");
+    errno = 0;
+    Check(ioctl(slave, 99) == -1 && errno == EINVAL, "ioctl with an unknown request");
+    const int file = open("/system/hello.txt", O_RDONLY);
+    errno = 0;
+    Check(file >= 0 && ioctl(file, TIOCSWINSZ, &size) == -1 && errno == ENOTTY && close(file) == 0,
+          "TIOCSWINSZ on a file");
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    char* arguments[] = {const_cast<char*>("libctest"), const_cast<char*>("window-size"), nullptr};
+    pid_t child = 0;
+    const bool spawned =
+        posix_spawn_file_actions_init(&actions) == 0 &&
+        posix_spawn_file_actions_adddup2(&actions, slave, STDIN_FILENO) == 0 &&
+        posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSID) == 0 &&
+        posix_spawn(&child, "libctest", &actions, &attributes, arguments, environ) == 0;
+    posix_spawn_file_actions_destroy(&actions);
+    pollfd entry = {.fd = master, .events = POLLIN, .revents = 0};
+    char ready[8] = {};
+    const bool child_ready = spawned && poll(&entry, 1, 5000) == 1 &&
+                             read(master, ready, sizeof(ready)) == 5 &&
+                             memcmp(ready, "ready", 5) == 0;
+    size.ws_row = 30;
+    size.ws_col = 100;
+    int status = -1;
+    Check(child_ready && ioctl(master, TIOCSWINSZ, &size) == 0 &&
+              waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "TIOCSWINSZ on the master sends SIGWINCH to the slave's foreground group");
+}
+
+volatile sig_atomic_t hung_up = 0;
+
+// The child CheckHangUp starts as RunWindowSizeChild's, then waits for its master to close.
+int RunHangUpChild()
+{
+    signal(SIGHUP, [](int) { hung_up = 1; });
+    if (write(STDIN_FILENO, "ready", 5) != 5)
+    {
+        return 1;
+    }
+    for (int tries = 0; hung_up == 0 && tries < 500; ++tries)
+    {
+        usleep(10000);
+    }
+    char byte;
+    pollfd entry = {.fd = STDIN_FILENO, .events = POLLIN, .revents = 0};
+    if (hung_up == 0 || read(STDIN_FILENO, &byte, 1) != 0 || poll(&entry, 1, 0) != 1 ||
+        (entry.revents & POLLHUP) == 0)
+    {
+        return 2;
+    }
+    errno = 0;
+    if (write(STDOUT_FILENO, "late", 4) != -1 || errno != EIO)
+    {
+        return 3;
+    }
+    errno = 0;
+    return open("/dev/tty", O_RDWR) == -1 && errno == ENXIO ? 0 : 4;
+}
+
+// Closing the master hangs up the slave and sends SIGHUP to the session there; closing every
+// slave descriptor ends the master's reads.
+void CheckHangUp()
+{
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    int slave =
+        master >= 0 && unlockpt(master) == 0 ? open(ptsname(master), O_RDWR | O_NOCTTY) : -1;
+    char bytes[8] = {};
+    pollfd entry = {.fd = master, .events = POLLIN, .revents = 0};
+    Check(slave >= 0 && write(slave, "bye\n", 4) == 4 && close(slave) == 0 &&
+              poll(&entry, 1, 0) == 1 &&
+              (entry.revents & (POLLIN | POLLHUP)) == (POLLIN | POLLHUP) &&
+              read(master, bytes, sizeof(bytes)) == 4 && read(master, bytes, sizeof(bytes)) == 0,
+          "a master reads end of file once its slaves are closed");
+    Check(close(master) == 0, "closing the master");
+
+    master = posix_openpt(O_RDWR | O_NOCTTY);
+    slave = master >= 0 && unlockpt(master) == 0 ? open(ptsname(master), O_RDWR | O_NOCTTY) : -1;
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    char* arguments[] = {const_cast<char*>("libctest"), const_cast<char*>("hang-up"), nullptr};
+    pid_t child = 0;
+    const bool spawned =
+        slave >= 0 && posix_spawn_file_actions_init(&actions) == 0 &&
+        posix_spawn_file_actions_adddup2(&actions, slave, STDIN_FILENO) == 0 &&
+        posix_spawn_file_actions_adddup2(&actions, slave, STDOUT_FILENO) == 0 &&
+        posix_spawn_file_actions_addclose(&actions, master) == 0 &&
+        posix_spawn_file_actions_addclose(&actions, slave) == 0 &&
+        posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSID) == 0 &&
+        posix_spawn(&child, "libctest", &actions, &attributes, arguments, environ) == 0;
+    posix_spawn_file_actions_destroy(&actions);
+    entry = {.fd = master, .events = POLLIN, .revents = 0};
+    const bool child_ready = spawned && close(slave) == 0 && poll(&entry, 1, 5000) == 1 &&
+                             read(master, bytes, sizeof(bytes)) == 5 &&
+                             memcmp(bytes, "ready", 5) == 0;
+    int status = -1;
+    Check(child_ready && close(master) == 0 && waitpid(child, &status, 0) == child &&
+              WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "closing the master sends SIGHUP and ends the slave's reads and writes");
+}
+
+// A pair from both ends: the master's writes go through the slave's line discipline, and what
+// the slave writes is the master's to read. Echo is written before the slave's read returns, so
+// non-blocking master reads find it.
+void CheckPseudoTerminals()
+{
+    const int master = posix_openpt(O_RDWR | O_NOCTTY);
+    char name[16] = {};
+    Check(master >= 3 && grantpt(master) == 0 && ptsname_r(master, name, sizeof(name)) == 0 &&
+              strncmp(name, "/dev/pts/", 9) == 0 && strcmp(ptsname(master), name) == 0,
+          "posix_openpt creates a pair");
+    errno = 0;
+    Check(open(name, O_RDWR | O_NOCTTY) == -1 && errno == EIO, "a pty slave is locked at first");
+    const int slave = unlockpt(master) == 0 ? open(name, O_RDWR | O_NOCTTY) : -1;
+    winsize size{};
+    Check(slave > master && isatty(slave) && !isatty(master) &&
+              ioctl(slave, TIOCGWINSZ, &size) == 0 && size.ws_row == 24 && size.ws_col == 80,
+          "the unlocked slave is a terminal");
+    Check(fcntl(master, F_SETFL, O_NONBLOCK) == 0, "a pty master can be non-blocking");
+    char bytes[32];
+    errno = 0;
+    Check(read(master, bytes, sizeof(bytes)) == -1 && errno == EAGAIN,
+          "an idle master has nothing");
+    Check(write(master,
+                "hi\x7f"
+                "ey\r",
+                6) == 6 &&
+              read(slave, bytes, sizeof(bytes)) == 4 && memcmp(bytes, "hey\n", 4) == 0,
+          "the master's writes are an edited line on the slave");
+    Check(read(master, bytes, sizeof(bytes)) == 8 && memcmp(bytes, "hi\b \bey\n", 8) == 0,
+          "the slave's echo reaches the master");
+    Check(write(slave, "out\n", 4) == 4 && read(master, bytes, sizeof(bytes)) == 4 &&
+              memcmp(bytes, "out\n", 4) == 0,
+          "the slave's output reaches the master");
+    termios raw{};
+    const bool raw_read = tcgetattr(slave, &raw) == 0;
+    cfmakeraw(&raw);
+    raw.c_cc[VMIN] = 3;
+    Check(raw_read && tcsetattr(slave, TCSANOW, &raw) == 0 &&
+              write(master,
+                    "a\x03"
+                    "b",
+                    3) == 3 &&
+              read(slave, bytes, sizeof(bytes)) == 3 &&
+              memcmp(bytes,
+                     "a\x03"
+                     "b",
+                     3) == 0,
+          "a raw slave reads the master's bytes as they are");
+    CheckWindowSize(master, slave);
+    CheckHangUp();
+    errno = 0;
+    Check(ptsname(STDIN_FILENO) == nullptr && errno == ENOTTY && unlockpt(STDIN_FILENO) == -1,
+          "the console is no pty master");
+    Check(close(slave) == 0 && close(master) == 0, "closing a pair");
+    errno = 0;
+    Check(open(name, O_RDWR) == -1 && errno == ENOENT, "a closed pair's slave is gone");
+}
+
 void CheckSystemCalls()
 {
     void* const failed = reinterpret_cast<void*>(-1);
@@ -2617,6 +2971,22 @@ int main(int argc, char** argv)
     {
         return RunThreadChild(argv[1]);
     }
+    if (argc == 2 && strncmp(argv[1], "session-", 8) == 0)
+    {
+        return RunSessionChild(strcmp(argv[1], "session-call") == 0);
+    }
+    if (argc == 2 && strncmp(argv[1], "background-", 11) == 0)
+    {
+        return RunBackgroundChild(argv[1]);
+    }
+    if (argc == 2 && strcmp(argv[1], "window-size") == 0)
+    {
+        return RunWindowSizeChild();
+    }
+    if (argc == 2 && strcmp(argv[1], "hang-up") == 0)
+    {
+        return RunHangUpChild();
+    }
     if (argc == 2 && strcmp(argv[1], "raw-exit") == 0)
     {
         termios raw;
@@ -2662,9 +3032,12 @@ int main(int argc, char** argv)
     CheckDiskPrograms();
     CheckSpawnAttributes();
     CheckProcessGroups();
+    CheckSessions();
     CheckSignalSets();
     CheckSignalHandlers();
     CheckKill();
+    CheckStopAndContinue();
+    CheckBackgroundTerminal();
     CheckProcessAccounting();
     CheckDescriptors();
     CheckPipes();
@@ -2672,6 +3045,7 @@ int main(int argc, char** argv)
     CheckNonBlockingSockets();
     CheckSystemCalls();
     CheckTerminalSettings();
+    CheckPseudoTerminals();
     CheckThreads();
     CheckThreadLocalStorage();
     CheckSynchronization();

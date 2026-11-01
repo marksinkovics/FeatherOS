@@ -20,6 +20,7 @@ constexpr int ErrorNumber(uint64_t result)
     // Linux also fails a background program's terminal read with EIO when it has no signals to
     // stop it.
     case User::SyscallErrorNotForeground:
+    case User::SyscallErrorInputOutput:
         return EIO;
     case User::SyscallErrorInterrupted:
         return EINTR;
@@ -77,6 +78,10 @@ constexpr int ErrorNumber(uint64_t result)
         return EADDRNOTAVAIL;
     case User::SyscallErrorNetworkDown:
         return ENETDOWN;
+    case User::SyscallErrorNotTerminal:
+        return ENOTTY;
+    case User::SyscallErrorNoDevice:
+        return ENXIO;
     case User::SyscallErrorNetworkUnreachable:
         return ENETUNREACH;
     case User::SyscallErrorHostUnreachable:

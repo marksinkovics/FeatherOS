@@ -14,7 +14,7 @@ enum class SyscallNumber : uint64_t
     WriteCharacter = 1,    // (character) -> 0; printable ASCII or '\n'
     ReadLine = 2,          // (buffer, capacity, prompt) -> line length; foreground process only
     Spawn = 3,             // (command_line, flags, environment) -> process ID of the child
-    Wait = 4,              // (process_id, status_pointer, flags) -> 0 once the child has exited
+    Wait = 4,              // (process_id, status_pointer, flags) -> a WaitResult value
     ReadClock = 5,         // () -> current UTC time in nanoseconds since 1970-01-01
     ExtendHeap = 6,        // (signed increment) -> previous program break; 0 queries it
     Sleep = 7,             // (milliseconds) -> 0 after at least that long
@@ -40,14 +40,14 @@ enum class SyscallNumber : uint64_t
     DescriptorFlags = 27,  // (descriptor, set, flags) -> the flags, after setting them if set
     Pipe = 28,             // (descriptors, flags) -> 0; stores the read end, then the write end
     ProcessGroup = 29,     // (process_id, or 0 for the caller) -> its process group
-    ForegroundGroup = 30,  // (set, group) -> the group that has the console, after setting it
+    ForegroundGroup = 30,  // (descriptor, set, group) -> the foreground group, after any set
     Kill = 31,             // (target, signal) -> 0; target as kill(2): a process, or a group
     SignalAction = 32,     // (signal, new_action, old_action) -> 0; either pointer may be null
     SignalMask = 33,       // (how, set) -> the previous blocked mask
     SignalReturn = 34,     // () -> resumes what a signal handler interrupted
     Pause = 35,            // () -> SyscallErrorInterrupted once a signal arrives
-    TerminalSize = 36,     // () -> rows in bits 32-63, columns in bits 0-31
-    TerminalMode = 37,     // (new_settings, old_settings) -> 0; either pointer may be null
+    TerminalSize = 36,     // (descriptor) -> rows in bits 32-63, columns in bits 0-31
+    TerminalMode = 37,     // (descriptor, new_settings, old_settings) -> 0; either may be null
     ThreadCreate = 38,     // (entry, first, second) -> the new thread's ID
     ThreadExit = 39,       // (value) -> does not return; ends only the calling thread
     ThreadJoin = 40,       // (thread, value) -> 0 once the thread ended; stores its value
@@ -71,14 +71,20 @@ enum class SyscallNumber : uint64_t
     SetClock = 58,         // (nanoseconds since 1970-01-01, UTC) -> 0
     FileStatusFlags = 59,  // (descriptor, set, flags) -> the open file's Open* flags, after any set
     GetSocketOption = 60,  // (descriptor, option, value) -> 0; stores the option's value at value
+    CreateSession = 61,    // () -> the new session's ID, the caller's process ID
+    SessionId = 62,        // (process_id, or 0 for the caller) -> its session
+    TerminalControl = 63,  // (descriptor, request, argument) -> the request's result
 };
 
-// Spawn flags. A child inherits every descriptor that is not close-on-exec and joins its
-// parent's process group, and its group takes the console if the parent's group has it; a
-// background child's never does. SpawnSetGroup puts the child in the group in bits 32-63 instead,
-// or in a new group of its own when those are 0; the group must be the caller's or hold one of the
-// caller's children. A session leader always leads a new group. A session leader's descendants form
-// Ctrl+C jobs, and the leader itself is never interrupted.
+// Spawn flags. A child inherits every descriptor that is not close-on-exec, and joins its
+// parent's session and process group; its group takes the controlling terminal if the parent's
+// group has it, but a background child's never does. SpawnSetGroup puts the child in the group in
+// bits 32-63 instead, or in a new group of its own when those are 0; the group must be the
+// caller's or hold one of the caller's children. SpawnSessionLeader starts a new session and
+// group led by the child, and since no program runs between fork and exec here, the child takes
+// the terminal at its descriptor 0 as its controlling terminal if no session has it, as if it had
+// opened it. A session leader's descendants form Ctrl+C jobs, and the leader itself is never
+// interrupted.
 constexpr uint64_t SpawnBackground = 1U << 0;
 constexpr uint64_t SpawnSessionLeader = 1U << 1;
 constexpr uint64_t SpawnSetGroup = 1U << 2;
@@ -91,8 +97,16 @@ constexpr uint64_t MaximumProgramSize = 1024 * 1024;
 // Shutdown actions.
 constexpr uint64_t ShutdownPowerOff = 0;
 constexpr uint64_t ShutdownRestart = 1;
-// Wait flag: return SyscallErrorWouldBlock instead of blocking while the child runs.
+// Wait flags: return SyscallErrorWouldBlock instead of blocking while the child runs, and also
+// report a child that stopped or continued since the last report.
 constexpr uint64_t WaitNoHang = 1U << 0;
+constexpr uint64_t WaitStopped = 1U << 1;
+constexpr uint64_t WaitContinued = 1U << 2;
+// What Wait reports. Exited reaps the child and stores its exit status; Stopped stores the
+// signal that stopped it, and Continued stores 0.
+constexpr uint64_t WaitResultExited = 0;
+constexpr uint64_t WaitResultStopped = 1;
+constexpr uint64_t WaitResultContinued = 2;
 // Seek origins; the offset is signed and added to the origin.
 constexpr uint64_t SeekFromStart = 0;
 constexpr uint64_t SeekFromCurrent = 1;
@@ -121,12 +135,20 @@ constexpr uint64_t OpenAppend = 1U << 4;
 constexpr uint64_t OpenCloseOnExec = 1U << 5;
 // Calls that would wait fail with SyscallErrorWouldBlock instead. The flag belongs to the open
 // file, so descriptors that share it through Duplicate or Spawn share the flag too. FileStatusFlags
-// changes it and OpenAppend, except on the console, which always waits.
+// changes it and OpenAppend, except on terminals, which always wait.
 constexpr uint64_t OpenNonBlocking = 1U << 6;
+// A session leader without a controlling terminal takes the first terminal it opens, unless it
+// passes this flag.
+constexpr uint64_t OpenNoControllingTerminal = 1U << 7;
 constexpr uint64_t MaximumPathLength = 64;
 // Descriptors 0-2 start as the console, unless the parent passed other files there. The console
-// is readable and writable, like a terminal: reading returns one line, ending in '\n', and only
-// the foreground process may read. A new descriptor gets the lowest free number.
+// is a terminal: in its default mode a read returns one line, ending in '\n'. On a process's
+// controlling terminal only the foreground group may read or change the mode: another group's
+// read sends it SIGTTIN, and its change SIGTTOU, failing with SyscallErrorInterrupted (restarted
+// once the group continues), or SyscallErrorInputOutput when the caller ignores or blocks
+// SIGTTIN or its group is orphaned; a change that ignores or blocks SIGTTOU goes ahead. "/dev/tty"
+// opens the caller's controlling terminal. A new descriptor
+// gets the lowest free number.
 constexpr uint64_t StandardInput = 0;
 constexpr uint64_t StandardOutput = 1;
 constexpr uint64_t StandardError = 2;
@@ -252,7 +274,7 @@ enum class FileType : uint32_t
 {
     Regular = 1,
     Directory = 2,
-    Console = 3,
+    Terminal = 3,
     // Under /dev.
     Device = 4,
     Pipe = 5,
@@ -288,7 +310,7 @@ constexpr uint64_t SyscallErrorReadOnly = UINT64_MAX - 11;
 constexpr uint64_t SyscallErrorExists = UINT64_MAX - 12;
 constexpr uint64_t SyscallErrorNotDirectory = UINT64_MAX - 13;
 constexpr uint64_t SyscallErrorNotEmpty = UINT64_MAX - 14;
-// The console and pipes cannot seek.
+// Terminals and pipes cannot seek.
 constexpr uint64_t SyscallErrorNotSeekable = UINT64_MAX - 15;
 constexpr uint64_t SyscallErrorNameTooLong = UINT64_MAX - 16;
 constexpr uint64_t SyscallErrorIsDirectory = UINT64_MAX - 17;
@@ -331,14 +353,20 @@ constexpr uint64_t SyscallErrorAlreadyInProgress = UINT64_MAX - 41;
 constexpr uint64_t SyscallErrorInProgress = UINT64_MAX - 42;
 // The network link is down, so only loopback addresses can be reached.
 constexpr uint64_t SyscallErrorNetworkDown = UINT64_MAX - 43;
+// Terminal calls on another kind of descriptor, or tcsetpgrp on a terminal that is not the
+// caller's controlling terminal.
+constexpr uint64_t SyscallErrorNotTerminal = UINT64_MAX - 44;
+// Opening "/dev/tty" without a controlling terminal.
+constexpr uint64_t SyscallErrorNoDevice = UINT64_MAX - 45;
+// Opening a pseudo-terminal's slave while it is locked or its master is closed.
+constexpr uint64_t SyscallErrorInputOutput = UINT64_MAX - 46;
 
 constexpr bool IsSyscallError(uint64_t value)
 {
     return value >= SyscallErrorBase;
 }
 
-// Signals, with Linux's numbers. The stop signals (19-22) are not supported, since processes
-// cannot be stopped.
+// Signals, with Linux's numbers.
 constexpr int SignalCount = 32;
 constexpr int SignalHangUp = 1;
 constexpr int SignalInterrupt = 2;
@@ -353,6 +381,13 @@ constexpr int SignalAlarm = 14;
 constexpr int SignalTerminate = 15;
 constexpr int SignalChild = 17;
 constexpr int SignalContinue = 18;
+// SignalStop cannot be handled, blocked or ignored. Every stop signal's default action stops the
+// process until SignalContinue; a stopped process still ends on SignalKill.
+constexpr int SignalStop = 19;
+constexpr int SignalTerminalStop = 20;
+constexpr int SignalTerminalInput = 21;
+constexpr int SignalTerminalOutput = 22;
+constexpr int SignalWindowChange = 28;
 
 // handler is SignalDefault, SignalIgnore, or the address of a function taking the signal number.
 // It returns to restorer, which must make the SignalReturn syscall; the C library supplies one.
@@ -376,11 +411,12 @@ constexpr uint64_t SignalMaskBlock = 0;
 constexpr uint64_t SignalMaskUnblock = 1;
 constexpr uint64_t SignalMaskSet = 2;
 
-// The console's input settings. Canonical reads return one edited line at a time; otherwise a
+// A terminal's input settings. Canonical reads return one edited line at a time; otherwise a
 // read returns once `minimum` bytes arrived, and `timeout`, in tenths of a second, limits the wait
 // for the first byte (minimum 0) or between bytes. With TerminalSignals, Ctrl+C sends SIGINT
-// instead of arriving as byte 3. Only the foreground group may change them, and the process that
-// did keeps them until it changes them back or exits, which restores the defaults.
+// instead of arriving as byte 3. On a controlling terminal only the foreground group may change
+// them, and the process that did keeps them until it changes them back or exits, which restores
+// the defaults.
 struct TerminalSettings
 {
     uint32_t flags;
@@ -400,6 +436,21 @@ constexpr uint32_t TerminalWakeOnOutput = 1U << 4;
 constexpr uint32_t TerminalDefaultFlags =
     TerminalCanonical | TerminalEcho | TerminalSignals | TerminalCarriageReturnToNewline;
 constexpr uint32_t TerminalFlags = TerminalDefaultFlags | TerminalWakeOnOutput;
+
+// Pseudo-terminals: opening "/dev/ptmx" creates a pair and returns its master, whose slave is
+// "/dev/pts/N", at most MaximumPseudoTerminals pairs. Bytes written to the master are the slave's
+// input, as if typed; what programs write to the slave is read from the master. The slave starts
+// locked, and opening it fails with SyscallErrorInputOutput until TerminalControlUnlock, or once
+// the master is closed. TerminalControl requests on a master, SyscallErrorNotTerminal on anything
+// else: the pair's number, and locking the slave (argument 1) or unlocking it (argument 0).
+// TerminalControlSetSize also works on any terminal: its argument holds the rows in bits 32-63 and
+// the columns in bits 0-31, each at most MaximumTerminalDimension, and a change sends
+// SignalWindowChange to the foreground group.
+constexpr uint32_t MaximumPseudoTerminals = 16;
+constexpr uint64_t TerminalControlNumber = 0;
+constexpr uint64_t TerminalControlLock = 1;
+constexpr uint64_t TerminalControlSetSize = 2;
+constexpr uint32_t MaximumTerminalDimension = 0xFFFF;
 
 // Exit statuses the kernel reports for programs it terminated: after a CPU exception, or because
 // of signal n, as ExitStatusSignalBase + n.

@@ -3,6 +3,7 @@
 
 #include "kernel/elf/elf_loader.h"
 #include "kernel/memory/virtual_memory.h"
+#include "kernel/signals.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/user_context.h"
 #include "user/process.h"
@@ -103,6 +104,13 @@ bool CopyToCurrentUser(UserExecutionContext* context, uint64_t address, const vo
                        size_t size);
 bool CopyFromCurrentUser(UserExecutionContext* context, uint64_t address, void* destination,
                          size_t size);
+// The calling thread's next signal, on its way to user mode. For a Stop decision the process has
+// stopped, unless a terminal stop signal reached an orphaned group; taking the signal and
+// stopping happen under the lock SIGCONT takes, so a SIGCONT sent meanwhile is not lost.
+Signals::Decision TakeSignal(UserExecutionContext* context);
+// Before a thread returns to user mode: waits while its process is stopped, until SIGCONT or
+// SIGKILL. True if the thread waited, which may have run other tasks on this CPU.
+bool HoldWhileStopped(UserExecutionContext* context);
 // Scheduler task entry: runs a loaded program in user mode and returns its exit status.
 uint64_t RunUserProgram(void* program);
 
@@ -119,11 +127,11 @@ bool Wait(ProcessId process_id, uint64_t* exit_status);
 // For shutdown: marks every process except caller and its ancestors for termination and waits up
 // to two seconds for them to exit. False if some are still running.
 bool StopOtherProcesses(ProcessId caller);
-// Ctrl+C: marks the foreground job and its descendants for termination. Returns false when only
-// the session leader holds the console.
-bool InterruptForegroundJob();
-// "kernel" when no process holds the console.
-void ForegroundProgramName(char* buffer, size_t capacity);
+// Ctrl+C or Ctrl+Z: sends signal to the group's job. Returns false when only the session leader
+// is in it.
+bool InterruptGroup(uint64_t group, int signal);
+// The group's leader, or "kernel" for group 0.
+void ForegroundProgramName(uint64_t group, char* buffer, size_t capacity);
 
 } // namespace FeatherOS::Process
 

@@ -71,6 +71,12 @@ LineEditor::Status LineEditor::Press(const KeyPress& press)
         Append("^C\n");
         return Status::Cancelled;
     }
+    if (control == 'z')
+    {
+        MoveToEnd();
+        Append("^Z\n");
+        return Status::Suspended;
+    }
     if (press.key == Key::Backspace || control == 'h')
     {
         EraseBefore();
@@ -174,6 +180,12 @@ bool LineEditor::AtRowStart(size_t position) const
 void LineEditor::Redraw()
 {
     m_cursor_row = 0;
+    Refresh();
+}
+
+void LineEditor::Resize(size_t columns)
+{
+    m_columns = columns == 0 ? 80 : columns;
     Refresh();
 }
 

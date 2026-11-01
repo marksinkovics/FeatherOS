@@ -21,6 +21,8 @@ using InterruptCheck = bool (*)();
 Pipe* Create();
 // The pipe is freed once both ends are closed.
 void CloseEnd(Pipe* pipe, bool write_end);
+// One more writer, whose write end CloseEnd closes; readers wait for data again.
+void AddWriter(Pipe* pipe);
 // Waits until there is data, then returns what is there, up to length. Returns 0 once the
 // buffer is empty and no writer is left, and SyscallErrorInterrupted when interrupted says so.
 // Non-blocking, it fails with SyscallErrorWouldBlock instead of waiting.

@@ -5,18 +5,16 @@ namespace FeatherOS::Signals
 namespace
 {
 
-// Signals 19-22 stop a process on other systems; FeatherOS cannot stop one, so they are refused.
-constexpr uint64_t StopSignals = Bit(19) | Bit(20) | Bit(21) | Bit(22);
 // What other systems also ignore by default: a child's exit, continue, urgent data, and a
 // window size change.
 constexpr uint64_t IgnoredByDefault =
     Bit(User::SignalChild) | Bit(User::SignalContinue) | Bit(23) | Bit(28);
-constexpr uint64_t Unblockable = Bit(User::SignalKill);
+constexpr uint64_t Unblockable = Bit(User::SignalKill) | Bit(User::SignalStop);
 
 bool Ignores(const State& state, int signal)
 {
     const uint64_t handler = state.actions[signal].handler;
-    return signal != User::SignalKill &&
+    return (Unblockable & Bit(signal)) == 0 &&
            (handler == User::SignalIgnore ||
             (handler == User::SignalDefault && (IgnoredByDefault & Bit(signal)) != 0));
 }
@@ -25,7 +23,7 @@ bool Ignores(const State& state, int signal)
 
 bool IsValid(int signal)
 {
-    return signal > 0 && signal < User::SignalCount && (StopSignals & Bit(signal)) == 0;
+    return signal > 0 && signal < User::SignalCount;
 }
 
 void Reset(State* state)
@@ -53,7 +51,19 @@ void Inherit(State* child, const State& parent)
 
 void Send(State* state, int signal)
 {
-    if (!IsValid(signal) || Ignores(*state, signal))
+    if (!IsValid(signal))
+    {
+        return;
+    }
+    if ((StopSignals & Bit(signal)) != 0)
+    {
+        __atomic_fetch_and(&state->pending, ~Bit(User::SignalContinue), __ATOMIC_SEQ_CST);
+    }
+    else if (signal == User::SignalContinue)
+    {
+        __atomic_fetch_and(&state->pending, ~StopSignals, __ATOMIC_SEQ_CST);
+    }
+    if (Ignores(*state, signal))
     {
         return;
     }
@@ -83,6 +93,11 @@ Decision TakeNext(State* state)
             continue;
         }
         const User::SignalAction action = state->actions[signal];
+        if (signal == User::SignalStop ||
+            ((StopSignals & Bit(signal)) != 0 && action.handler == User::SignalDefault))
+        {
+            return {DecisionKind::Stop, signal, action, 0};
+        }
         if (signal == User::SignalKill || action.handler == User::SignalDefault)
         {
             return {DecisionKind::Terminate, signal, action, 0};
@@ -110,7 +125,7 @@ uint64_t SetAction(State* state, int signal, const User::SignalAction* new_actio
     }
     constexpr uint64_t KnownFlags = User::SignalResetHandler | User::SignalNoDefer;
     if (new_action != nullptr &&
-        (signal == User::SignalKill || (new_action->flags & ~KnownFlags) != 0 ||
+        ((Unblockable & Bit(signal)) != 0 || (new_action->flags & ~KnownFlags) != 0 ||
          (new_action->handler > User::SignalIgnore && new_action->restorer == 0)))
     {
         return User::SyscallErrorInvalidArgument;

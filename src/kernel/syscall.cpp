@@ -163,7 +163,8 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     if (request.number == static_cast<uint64_t>(Number::ForegroundGroup) &&
         handlers.foreground_group != nullptr)
     {
-        return {Action::Return, handlers.foreground_group(context, arguments[0], arguments[1])};
+        return {Action::Return,
+                handlers.foreground_group(context, arguments[0], arguments[1], arguments[2])};
     }
     if (request.number == static_cast<uint64_t>(Number::Kill) && handlers.kill != nullptr)
     {
@@ -187,12 +188,13 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     if (request.number == static_cast<uint64_t>(Number::TerminalSize) &&
         handlers.terminal_size != nullptr)
     {
-        return {Action::Return, handlers.terminal_size(context)};
+        return {Action::Return, handlers.terminal_size(context, arguments[0])};
     }
     if (request.number == static_cast<uint64_t>(Number::TerminalMode) &&
         handlers.terminal_mode != nullptr)
     {
-        return {Action::Return, handlers.terminal_mode(context, arguments[0], arguments[1])};
+        return {Action::Return,
+                handlers.terminal_mode(context, arguments[0], arguments[1], arguments[2])};
     }
     if (request.number == static_cast<uint64_t>(Number::ThreadCreate) &&
         handlers.thread_create != nullptr)
@@ -302,6 +304,22 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return,
                 handlers.get_socket_option(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::CreateSession) &&
+        handlers.create_session != nullptr)
+    {
+        return {Action::Return, handlers.create_session(context)};
+    }
+    if (request.number == static_cast<uint64_t>(Number::SessionId) &&
+        handlers.session_id != nullptr)
+    {
+        return {Action::Return, handlers.session_id(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::TerminalControl) &&
+        handlers.terminal_control != nullptr)
+    {
+        return {Action::Return,
+                handlers.terminal_control(context, arguments[0], arguments[1], arguments[2])};
     }
     return {Action::Invalid, UINT64_MAX};
 }

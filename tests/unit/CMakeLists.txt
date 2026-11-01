@@ -47,6 +47,7 @@ add_executable(featheros_unit_tests
     kernel/process/futex_tests.cpp
     support/network_stubs.cpp
     support/scheduler_stubs.cpp
+    support/terminal_device.cpp
     kernel/input/keyboard_tests.cpp
     kernel/klogger/klogger_tests.cpp
     kernel/memory/memory_map_tests.cpp
@@ -66,6 +67,8 @@ add_executable(featheros_unit_tests
     kernel/process/process_table_tests.cpp
     kernel/process/signals_tests.cpp
     kernel/syscall/syscall_tests.cpp
+    kernel/terminal/pseudo_terminal_tests.cpp
+    kernel/terminal/terminal_tests.cpp
     kernel/time/calendar_tests.cpp
     kernel/time/wall_clock_tests.cpp
     kernel/string/format_tests.cpp
@@ -153,6 +156,8 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/pipe.cpp"
     "${FEATHEROS_ROOT}/src/kernel/poll.cpp"
     "${FEATHEROS_ROOT}/src/kernel/signals.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/terminal/pseudo_terminal.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/terminal/terminal.cpp"
     "${FEATHEROS_ROOT}/src/kernel/string/format.cpp"
 )
 target_compile_features(featheros_unit_tests PRIVATE cxx_std_23)

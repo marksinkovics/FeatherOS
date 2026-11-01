@@ -10,12 +10,14 @@ using FeatherOS::LibC::Check;
 
 int tcgetattr(int descriptor, struct termios* settings)
 {
-    if (!isatty(descriptor))
+    if (descriptor < 0)
     {
+        errno = EBADF;
         return -1;
     }
     FeatherOS::User::TerminalSettings current;
-    if (Check<int>(FeatherOS::User::Syscall(FeatherOS::User::SyscallNumber::TerminalMode, 0,
+    if (Check<int>(FeatherOS::User::Syscall(FeatherOS::User::SyscallNumber::TerminalMode,
+                                            static_cast<uint64_t>(descriptor), 0,
                                             reinterpret_cast<uint64_t>(&current))) < 0)
     {
         return -1;
@@ -37,6 +39,7 @@ int tcgetattr(int descriptor, struct termios* settings)
     settings->c_cc[VINTR] = 3;
     settings->c_cc[VERASE] = 0x7F;
     settings->c_cc[VEOF] = 4;
+    settings->c_cc[VSUSP] = 0x1A;
     settings->c_cc[VMIN] = current.minimum;
     settings->c_cc[VTIME] = current.timeout;
     return 0;
@@ -44,8 +47,9 @@ int tcgetattr(int descriptor, struct termios* settings)
 
 int tcsetattr(int descriptor, int when, const struct termios* settings)
 {
-    if (!isatty(descriptor))
+    if (descriptor < 0)
     {
+        errno = EBADF;
         return -1;
     }
     if (when != TCSANOW && when != TCSADRAIN && when != TCSAFLUSH)
@@ -67,6 +71,7 @@ int tcsetattr(int descriptor, int when, const struct termios* settings)
     requested.timeout = canonical ? 0 : settings->c_cc[VTIME];
     requested.reserved = 0;
     return Check<int>(FeatherOS::User::Syscall(FeatherOS::User::SyscallNumber::TerminalMode,
+                                               static_cast<uint64_t>(descriptor),
                                                reinterpret_cast<uint64_t>(&requested), 0)) < 0
                ? -1
                : 0;

@@ -77,14 +77,15 @@ struct Handlers
                                  uint64_t flags) = nullptr;
     uint64_t (*pipe)(void* context, uint64_t descriptors, uint64_t flags) = nullptr;
     uint64_t (*process_group)(void* context, uint64_t process_id) = nullptr;
-    uint64_t (*foreground_group)(void* context, uint64_t set, uint64_t group) = nullptr;
+    uint64_t (*foreground_group)(void* context, uint64_t descriptor, uint64_t set,
+                                 uint64_t group) = nullptr;
     uint64_t (*kill)(void* context, uint64_t target, uint64_t signal) = nullptr;
     uint64_t (*signal_action)(void* context, uint64_t signal, uint64_t new_action,
                               uint64_t old_action) = nullptr;
     uint64_t (*signal_mask)(void* context, uint64_t how, uint64_t set) = nullptr;
     uint64_t (*pause)(void* context) = nullptr;
-    uint64_t (*terminal_size)(void* context) = nullptr;
-    uint64_t (*terminal_mode)(void* context, uint64_t new_settings,
+    uint64_t (*terminal_size)(void* context, uint64_t descriptor) = nullptr;
+    uint64_t (*terminal_mode)(void* context, uint64_t descriptor, uint64_t new_settings,
                               uint64_t old_settings) = nullptr;
     uint64_t (*thread_create)(void* context, uint64_t entry, uint64_t first,
                               uint64_t second) = nullptr;
@@ -119,6 +120,10 @@ struct Handlers
                                   uint64_t flags) = nullptr;
     uint64_t (*get_socket_option)(void* context, uint64_t descriptor, uint64_t option,
                                   uint64_t value) = nullptr;
+    uint64_t (*create_session)(void* context) = nullptr;
+    uint64_t (*session_id)(void* context, uint64_t process_id) = nullptr;
+    uint64_t (*terminal_control)(void* context, uint64_t descriptor, uint64_t request,
+                                 uint64_t argument) = nullptr;
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

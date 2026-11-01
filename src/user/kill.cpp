@@ -10,8 +10,9 @@
 constexpr char Help[] =
     "usage: kill [-signal] <pid>...\n"
     "Sends a signal, SIGTERM by default, to each process, or to a whole process group\n"
-    "for -group (kill -TERM -20). The signal is a number or a name such as INT, KILL\n"
-    "or SIGUSR1. kill -l lists the signals.";
+    "for -group (kill -TERM -20), which SIGTERM and SIGHUP also continue if stopped.\n"
+    "The signal is a number or a name such as INT, KILL or SIGUSR1. kill -l lists the\n"
+    "signals.";
 
 namespace
 {
@@ -25,7 +26,8 @@ struct SignalName
 constexpr SignalName Names[] = {
     {"HUP", SIGHUP},   {"INT", SIGINT},   {"QUIT", SIGQUIT}, {"ABRT", SIGABRT}, {"KILL", SIGKILL},
     {"USR1", SIGUSR1}, {"SEGV", SIGSEGV}, {"USR2", SIGUSR2}, {"PIPE", SIGPIPE}, {"ALRM", SIGALRM},
-    {"TERM", SIGTERM}, {"CHLD", SIGCHLD}, {"CONT", SIGCONT},
+    {"TERM", SIGTERM}, {"CHLD", SIGCHLD}, {"CONT", SIGCONT}, {"STOP", SIGSTOP}, {"TSTP", SIGTSTP},
+    {"TTIN", SIGTTIN}, {"TTOU", SIGTTOU},
 };
 
 // A number, or a name with or without its SIG prefix, in any case.
@@ -97,6 +99,11 @@ int main(int argc, char** argv)
             printf("kill: %s: %s\n", argv[index],
                    errno == ESRCH ? "no such process" : strerror(errno));
             ++failures;
+        }
+        // As shells do for kill %n: a stopped job would only end once continued.
+        else if (group && (signal_number == SIGTERM || signal_number == SIGHUP))
+        {
+            kill(-pid, SIGCONT);
         }
     }
     return failures == 0 ? 0 : 1;

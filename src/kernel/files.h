@@ -12,6 +12,16 @@
 // between descriptors and processes; it keeps the offset and closes when its last descriptor
 // does. Functions return the value a syscall hands back: a result, or a User::SyscallError code.
 // Buffers are kernel memory.
+namespace FeatherOS::Terminals
+{
+class Terminal;
+} // namespace FeatherOS::Terminals
+
+namespace FeatherOS::PseudoTerminals
+{
+struct Pair;
+} // namespace FeatherOS::PseudoTerminals
+
 namespace FeatherOS::Files
 {
 
@@ -20,10 +30,12 @@ struct OpenFile;
 enum class Kind : uint8_t
 {
     None,
-    Console,
+    Terminal,
     File,
     Pipe,
     Socket,
+    // A pseudo-terminal's master; its slave is a Terminal.
+    PseudoTerminalMaster,
 };
 
 struct Slot
@@ -38,15 +50,24 @@ struct Table
     Slot slots[User::MaximumDescriptors];
 };
 
-// Puts the console at descriptors 0, 1, and 2.
-void OpenConsole(Table* table);
+// Puts the console, whose terminal is console, at descriptors 0, 1, and 2.
+void OpenConsole(Table* table, Terminals::Terminal* console);
 // Gives child every descriptor of parent that is not close-on-exec.
 void Inherit(Table* child, const Table* parent);
-// Reads and writes on the console go through the process instead of this table.
+// Reads and writes on terminals go through the process instead of this table.
 Kind KindOf(const Table* table, uint64_t descriptor);
-uint64_t Open(Table* table, const char* path, uint64_t flags);
-// A pipe read waits for data and a pipe write for space, without holding the filesystem lock,
-// until interrupted says to stop, unless the open file is User::OpenNonBlocking.
+// "/dev/tty" opens controlling_terminal, or fails with SyscallErrorNoDevice if it is null.
+// "/dev/ptmx" creates a pseudo-terminal pair and opens its master, and "/dev/pts/N" opens a slave.
+uint64_t Open(Table* table, const char* path, uint64_t flags,
+              Terminals::Terminal* controlling_terminal = nullptr);
+// The terminal behind a descriptor, or SyscallErrorNotTerminal for another kind. Terminals live
+// as long as the kernel.
+uint64_t FindTerminal(Table* table, uint64_t descriptor, Terminals::Terminal** terminal);
+// The pair behind a master descriptor, or SyscallErrorNotTerminal for another kind. It stays in
+// use while the caller's descriptor holds it.
+uint64_t FindPseudoTerminal(Table* table, uint64_t descriptor, PseudoTerminals::Pair** pair);
+// A pipe or pty master read waits for data and a write for space, without holding the filesystem
+// lock, until interrupted says to stop, unless the open file is User::OpenNonBlocking.
 uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
               Pipes::InterruptCheck interrupted = nullptr);
 uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t length,
@@ -58,7 +79,7 @@ uint64_t CreateSocket(Table* table, uint64_t family, uint64_t type, uint64_t pro
 // Puts an open socket, such as a connection Accept returned, at the lowest free descriptor; on
 // failure the socket is closed. flags are User::SocketCloseOnExec and User::SocketNonBlocking.
 uint64_t AddSocket(Table* table, Network::Sockets::Socket* socket, uint64_t flags);
-// User::Poll* events for a descriptor other than the console, or PollInvalid if it is not open.
+// User::Poll* events for a descriptor other than a terminal, or PollInvalid if it is not open.
 int16_t PollEvents(Table* table, uint64_t descriptor);
 // The socket stays open while the caller uses it, since the caller's descriptor holds it.
 // SyscallErrorNotSocket for another kind of descriptor. nonblocking, if not null, receives whether

@@ -1,12 +1,12 @@
 #include "command_line.h"
 #include "raw_terminal.h"
 #include "vi_editor.h"
+#include "window_size.h"
 
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <unistd.h>
 
 constexpr char Help[] =
@@ -15,7 +15,7 @@ constexpr char Help[] =
     "Ctrl+B to page, x X D dd J r, yy p P, u and Ctrl+R to undo and redo, n N to search\n"
     "again; a number first repeats, as in 3dd. i a I A o O start inserting, and\n"
     "Escape returns. :w [file], :q, :q!, :wq, :x and :N run commands; /text and ?text\n"
-    "search forward and back.";
+    "search forward and back. Ctrl+Z stops vi until fg.";
 
 namespace
 {
@@ -106,26 +106,42 @@ int main(int argc, char** argv)
         delete editor;
         return 1;
     }
-    winsize window = {};
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) != 0)
-    {
-        window.ws_row = 24;
-        window.ws_col = 80;
-    }
-    editor->Resize(window.ws_row, window.ws_col);
+    FeatherOS::User::WatchWindowSize();
+    const FeatherOS::User::WindowSize window = FeatherOS::User::ReadWindowSize();
+    editor->Resize(window.rows, window.columns);
     // The alternate screen keeps the shell's screen to come back to, as vim does.
     fputs("\x1b[?1049h", stdout);
     fflush(stdout);
     int status = 0;
     for (;;)
     {
+        if (FeatherOS::User::WindowSizeChanged())
+        {
+            const FeatherOS::User::WindowSize resized = FeatherOS::User::ReadWindowSize();
+            editor->Resize(resized.rows, resized.columns);
+        }
         editor->Render();
         Flush(*editor);
         FeatherOS::User::KeyPress press;
         if (!terminal.ReadKey(&press))
         {
+            if (errno == EINTR)
+            {
+                continue;
+            }
             status = 1;
             break;
+        }
+        if (press.key == FeatherOS::User::Key::Control && press.character == 'z')
+        {
+            fputs("\x1b[?1049l", stdout);
+            fflush(stdout);
+            terminal.Suspend();
+            fputs("\x1b[?1049h", stdout);
+            fflush(stdout);
+            const FeatherOS::User::WindowSize resumed = FeatherOS::User::ReadWindowSize();
+            editor->Resize(resumed.rows, resumed.columns);
+            continue;
         }
         if (editor->Press(press) == ViEditor::Status::Quit)
         {

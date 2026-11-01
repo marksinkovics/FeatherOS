@@ -106,7 +106,8 @@ int ApplyFileActions(const posix_spawn_file_actions_t& file_actions, SavedDescri
         {
             continue;
         }
-        const int opened = open(action.path, action.flags & ~O_CLOEXEC);
+        // The open stands in for the child's, so it must not give this process a terminal.
+        const int opened = open(action.path, (action.flags & ~O_CLOEXEC) | O_NOCTTY);
         if (opened < 0)
         {
             return errno;
@@ -181,24 +182,45 @@ int EncodeStatus(uint64_t status)
     return static_cast<int>((status & 0xFF) << 8);
 }
 
-// 0 once the child is reaped, 1 if it still runs and no_hang was set, or -1 with errno.
-int WaitFor(pid_t child, int* status, bool no_hang)
+uint64_t WaitFlags(int options)
 {
-    uint64_t exit_status = 0;
-    const uint64_t result = FeatherOS::User::Wait(static_cast<uint64_t>(child), &exit_status,
-                                                  no_hang ? FeatherOS::User::WaitNoHang : 0);
+    return ((options & WNOHANG) != 0 ? FeatherOS::User::WaitNoHang : 0) |
+           ((options & WUNTRACED) != 0 ? FeatherOS::User::WaitStopped : 0) |
+           ((options & WCONTINUED) != 0 ? FeatherOS::User::WaitContinued : 0);
+}
+
+// 0 once the child is reaped, stopped or continued, 1 if it still runs and WNOHANG was set, or -1
+// with errno.
+int WaitFor(pid_t child, int* status, int options)
+{
+    uint64_t value = 0;
+    const uint64_t result =
+        FeatherOS::User::Wait(static_cast<uint64_t>(child), &value, WaitFlags(options));
     if (result == FeatherOS::User::SyscallErrorWouldBlock)
     {
         return 1;
     }
-    if (FeatherOS::LibC::Check<int>(result) != 0)
+    if (FeatherOS::LibC::Check<int>(result) == -1)
     {
         return -1;
     }
-    Forget(child);
+    int encoded = 0;
+    if (result == FeatherOS::User::WaitResultStopped)
+    {
+        encoded = static_cast<int>(((value & 0xFF) << 8) | 0x7F);
+    }
+    else if (result == FeatherOS::User::WaitResultContinued)
+    {
+        encoded = 0xFFFF;
+    }
+    else
+    {
+        Forget(child);
+        encoded = EncodeStatus(value);
+    }
     if (status != nullptr)
     {
-        *status = EncodeStatus(exit_status);
+        *status = encoded;
     }
     return 0;
 }
@@ -369,7 +391,7 @@ int posix_spawnattr_setpgroup(posix_spawnattr_t* attributes, pid_t process_group
 
 pid_t waitpid(pid_t pid, int* status, int options)
 {
-    if ((options & ~WNOHANG) != 0)
+    if ((options & ~(WNOHANG | WUNTRACED | WCONTINUED)) != 0)
     {
         errno = EINVAL;
         return -1;
@@ -377,7 +399,7 @@ pid_t waitpid(pid_t pid, int* status, int options)
     const bool no_hang = (options & WNOHANG) != 0;
     if (pid > 0)
     {
-        const int result = WaitFor(pid, status, no_hang);
+        const int result = WaitFor(pid, status, options);
         return result == 0 ? pid : result == 1 ? 0 : -1;
     }
     // 0 means the caller's own group, and -n group n; -1 means any child.
@@ -394,7 +416,7 @@ pid_t waitpid(pid_t pid, int* status, int options)
                 continue;
             }
             any_child = true;
-            const int result = WaitFor(child, status, true);
+            const int result = WaitFor(child, status, options | WNOHANG);
             if (result == 0)
             {
                 return child;

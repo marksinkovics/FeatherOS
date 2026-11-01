@@ -177,3 +177,31 @@ TEST_CASE("the key decoder resolves Escape, split sequences and unknown ones")
     REQUIRE(decoder.Flush(presses) == 1);
     REQUIRE(presses[0].key == Key::Unknown);
 }
+
+TEST_CASE("Alt+F1 to Alt+F4 ask for a console instead of sending bytes")
+{
+    Keyboard keyboard;
+    uint32_t console = 9;
+    REQUIRE(Press(keyboard, KeyCode::F1 + 1).empty());
+    REQUIRE_FALSE(keyboard.TakeConsoleSwitch(&console));
+
+    Hold(keyboard, KeyCode::LeftAlt, true);
+    REQUIRE(Press(keyboard, KeyCode::F1 + 1).empty());
+    REQUIRE(keyboard.TakeConsoleSwitch(&console));
+    REQUIRE(console == 1);
+    REQUIRE_FALSE(keyboard.TakeConsoleSwitch(&console));
+    Hold(keyboard, KeyCode::LeftAlt, false);
+
+    Hold(keyboard, KeyCode::RightAlt, true);
+    Hold(keyboard, KeyCode::LeftControl, true);
+    REQUIRE(Press(keyboard, KeyCode::F4).empty());
+    REQUIRE(keyboard.TakeConsoleSwitch(&console));
+    REQUIRE(console == 3);
+    Hold(keyboard, KeyCode::LeftControl, false);
+    REQUIRE(Press(keyboard, 30) == "a");
+    REQUIRE_FALSE(keyboard.TakeConsoleSwitch(&console));
+    Hold(keyboard, KeyCode::RightAlt, false);
+
+    REQUIRE(Press(keyboard, KeyCode::F1).empty());
+    REQUIRE_FALSE(keyboard.TakeConsoleSwitch(&console));
+}

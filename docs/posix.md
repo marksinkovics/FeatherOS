@@ -57,7 +57,7 @@ These come from the kernel and apply everywhere below.
 | Path | Contents |
 | --- | --- |
 | `/system` | The read-only initramfs, which holds every bundled program as `/system/<name>` |
-| `/dev` | `null`, `zero` and `random`, as on Linux; all take writes |
+| `/dev` | `null`, `zero` and `random`, as on Linux; all take writes. `tty` opens the caller's controlling terminal, or fails with `ENXIO` without one |
 | `/tmp` | A RAM filesystem, emptied on restart: at most 128 entries and 4 MiB, with case-sensitive names |
 | `/proc` | Read-only: `meminfo`, `stat` (uptime and CPU use), and `<pid>/status` for each process; `/proc/self` is the caller |
 
@@ -83,9 +83,9 @@ The `is*` classifiers, `tolower` and `toupper`, for ASCII only, since `"C"` is t
 
 `errno`, with these error numbers, at Linux's values:
 
-`EPERM ENOENT ESRCH EINTR EIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST EXDEV ENOTDIR EISDIR EINVAL EMFILE ENOTTY ENOSPC ESPIPE EROFS EPIPE EDOM ERANGE EDEADLK ENAMETOOLONG ENOSYS ENOTEMPTY EOVERFLOW EILSEQ ENOTSOCK EDESTADDRREQ EMSGSIZE ENOPROTOOPT EPROTONOSUPPORT EOPNOTSUPP/ENOTSUP EAFNOSUPPORT EADDRINUSE EADDRNOTAVAIL ENETDOWN ENETUNREACH ECONNRESET ENOBUFS EISCONN ENOTCONN ETIMEDOUT ECONNREFUSED EHOSTUNREACH EALREADY EINPROGRESS`
+`EPERM ENOENT ESRCH EINTR EIO ENXIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST EXDEV ENOTDIR EISDIR EINVAL EMFILE ENOTTY ENOSPC ESPIPE EROFS EPIPE EDOM ERANGE EDEADLK ENAMETOOLONG ENOSYS ENOTEMPTY EOVERFLOW EILSEQ ENOTSOCK EDESTADDRREQ EMSGSIZE ENOPROTOOPT EPROTONOSUPPORT EOPNOTSUPP/ENOTSUP EAFNOSUPPORT EADDRINUSE EADDRNOTAVAIL ENETDOWN ENETUNREACH ECONNRESET ENOBUFS EISCONN ENOTCONN ETIMEDOUT ECONNREFUSED EHOSTUNREACH EALREADY EINPROGRESS`
 
-Each kernel error maps to one of them. A read by a program that is not in the foreground fails with `EIO`, as a background read does on Linux when there are no signals to stop the program.
+Each kernel error maps to one of them. A background read of the controlling terminal that ignores or blocks `SIGTTIN`, or comes from an orphaned group, fails with `EIO`, as on Linux.
 
 ### `stdlib.h`
 
@@ -101,6 +101,7 @@ Each kernel error maps to one of them. A read by a program that is not in the fo
 - **Sorting:** `qsort`, a heapsort, so it never needs extra memory but is not stable. `bsearch`.
 - **Environment:** `getenv`, `setenv` and `unsetenv`. `putenv` is left out, because the table keeps its own copies of the strings.
 - **Random numbers:** `rand` and `srand`, a 64-bit linear congruential generator.
+- **Pseudo-terminals:** `posix_openpt`, `grantpt`, `unlockpt`, `ptsname` and `ptsname_r`. `posix_openpt` takes `O_RDWR`, optionally with `O_NOCTTY` and `O_CLOEXEC`, and opens `/dev/ptmx`; there are 16 pairs, after which it fails with `ENXIO`. The slave is `/dev/pts/N`, and opening it fails with `EIO` until `unlockpt`. There are no owners or permissions, so `grantpt` only checks that the descriptor is a master. `isatty` is false for a master and true for a slave. `ptsname` returns a static buffer. Closing the master hangs up the slave: the session it was the controlling terminal of loses it and every process there gets `SIGHUP`, reads on the slave return 0, writes fail with `EIO`, and `poll` reports `POLLHUP`. Once every slave descriptor is closed, reads on the master return the rest of the output and then 0 (end of file, as on macOS and the BSDs, where Linux returns `EIO`), with `POLLHUP`. A process's `tcsetattr` settings are restored on every terminal when it exits.
 
 Not provided:
 - `system`, because there is no `/bin/sh -c`
@@ -187,9 +188,9 @@ Differences:
 
 - **Descriptors:**
   - `read`, `write`, `close` and `lseek`.
-  - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC O_NONBLOCK`. The lowest free descriptor is used, out of 32.
+  - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC O_NONBLOCK O_NOCTTY`. The lowest free descriptor is used, out of 32. A session leader without a controlling terminal takes the first terminal it opens unless it passes `O_NOCTTY`.
   - `dup` and `dup2` share the open file, its offset and its `O_APPEND` and `O_NONBLOCK` flags. `fcntl` supports `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD` and `F_SETFD` (`FD_CLOEXEC`), and `F_GETFL` and `F_SETFL`, which reports the access mode and changes `O_APPEND` and `O_NONBLOCK`, ignoring other flags as Linux does. Locks are not provided.
-  - `O_NONBLOCK` makes a pipe or socket call that would wait fail with `EAGAIN` instead; on files it changes nothing. The console's flags cannot change (`EINVAL`), since every process shares its open file; raw mode with `VMIN` 0 reads it without waiting.
+  - `O_NONBLOCK` makes a pipe or socket call that would wait fail with `EAGAIN` instead; on files it changes nothing. A terminal's flags cannot change (`EINVAL`), since every process shares the console's open file; raw mode with `VMIN` 0 reads it without waiting.
   - Programs started with `posix_spawn` inherit every descriptor not marked close-on-exec.
   - `pipe` and `pipe2` (with `O_CLOEXEC` and `O_NONBLOCK`) make a 4 KiB pipe. `PIPE_BUF` is 512: writes up to that size are never split. Reading returns 0 once every write end is closed; writing with no read end left raises `SIGPIPE` and fails with `EPIPE`. A non-blocking write writes the 512-byte pieces that fit, and fails with `EAGAIN` when not even the first does. `fstat` reports `S_IFIFO`, and seeking fails with `ESPIPE`.
   - With `O_APPEND`, every write goes to the end, as POSIX requires.
@@ -200,9 +201,9 @@ Differences:
   - `stat` reports owner 0, and mode bits that only show whether a file is writable: `0644` or `0444`, and `0755` or `0555` for directories.
   - Every time in `stat` is 0, because FAT16 timestamps are not read.
   - `access` fails `W_OK` for the read-only initramfs and `/proc`.
-  - `isatty` is true only for the console, not for the devices in `/dev`, which are also `S_IFCHR`.
+  - `isatty` is true for terminals (the console, `/dev/tty` and pseudo-terminal slaves), not for the other devices in `/dev`, which are also `S_IFCHR`.
   - `mkdir` ignores its mode.
-- **Processes:** `getpid`, `getppid`, `getpgrp`, `getpgid` and `_exit`. `tcgetpgrp` and `tcsetpgrp` work on the console, the only terminal; only init and session leaders (the shell) may move it, to their own group or one holding one of their children, and others get `EPERM`. `setpgid`, `setsid` and `getsid` are not provided: groups and sessions are chosen when `posix_spawn` starts the child.
+- **Processes:** `getpid`, `getppid`, `getpgrp`, `getpgid`, `setsid`, `getsid` and `_exit`. The kernel starts init in a session of its own without a controlling terminal; a child joins its parent's session and controlling terminal unless it is started with `POSIX_SPAWN_SETSID`. `setsid` starts a session without a controlling terminal and fails with `EPERM` for a group leader, which every command the shell starts is. `tcgetpgrp` works only on the caller's controlling terminal (`ENOTTY` on others). `tcsetpgrp` only names a group of the caller's session there, otherwise `EPERM`. On the controlling terminal a background group's read gets `SIGTTIN`, and its `tcsetattr` or `tcsetpgrp` gets `SIGTTOU`, both of which stop the group by default; the call runs again once the group continues. A read that ignores or blocks `SIGTTIN` fails with `EIO`; a change that ignores or blocks `SIGTTOU` goes ahead, which is how a shell takes the terminal back. An orphaned group gets `EIO` instead of the signal. Writes from the background are allowed, as with `stty -tostop`. On another terminal there is no such check. Besides the console, pseudo-terminal slaves are terminals (see `stdlib.h`). `setpgid` is not provided: groups are chosen when `posix_spawn` starts the child.
 - **Sleeping:** `sleep` and `usleep`.
 - **`environ`.**
 - **`sysconf`:** `_SC_NPROCESSORS_ONLN` and `_SC_NPROCESSORS_CONF` (the same, from `/proc/stat`), `_SC_PAGESIZE` and `_SC_OPEN_MAX`; other names fail with `EINVAL`.
@@ -236,30 +237,28 @@ Not provided:
 
 | Flag | Effect on FeatherOS |
 | --- | --- |
-| `POSIX_SPAWN_SETSID` | The child leads a new session: Ctrl+C stops at it, and it may call `reboot`. init starts the shell this way. |
+| `POSIX_SPAWN_SETSID` | The child leads a new session: Ctrl+C stops at it, and it may call `reboot`. Since the file actions run in the parent, the child takes the terminal at its descriptor 0 as its controlling terminal if no session has it, as if it had opened it. init starts the shell this way. |
 | `POSIX_SPAWN_SETPGROUP` | The child joins the attributes' process group: 0 for a new one it leads, or an existing group that is the caller's or holds one of the caller's children. Others fail with `EINVAL`. |
-| `POSIX_SPAWN_BACKGROUND` | FeatherOS: the child's group does not take the console. With a new group, that makes a background job, whose console reads fail with `EIO`. Without this flag, the child's group becomes the foreground group, as if the caller had called `tcsetpgrp`. |
+| `POSIX_SPAWN_BACKGROUND` | FeatherOS: the child's group does not take the console. With a new group, that makes a background job, which a console read stops with `SIGTTIN`. Without this flag, the child's group becomes the foreground group, as if the caller had called `tcsetpgrp`. |
 
 Other flags fail with `EINVAL`.
 
-**File actions.** `posix_spawn_file_actions_adddup2`, `addopen` and `addclose` run in order, at most 8 per spawn. The C library applies them to the caller's own descriptors around the `Spawn` syscall and puts those back afterwards. Another thread using those descriptors meanwhile would see the child's, so spawn with file actions from one thread at a time. A failing action makes `posix_spawn` return its error without starting the child. `addopen` paths are at most 63 characters.
+**File actions.** `posix_spawn_file_actions_adddup2`, `addopen` and `addclose` run in order, at most 8 per spawn. The C library applies them to the caller's own descriptors around the `Spawn` syscall and puts those back afterwards. Another thread using those descriptors meanwhile would see the child's, so spawn with file actions from one thread at a time. A failing action makes `posix_spawn` return its error without starting the child. `addopen` paths are at most 63 characters, and opens with `O_NOCTTY`, so the caller never takes the terminal meant for the child.
 
-**`waitpid` and `wait`.** They use the Linux status encoding with `WIFEXITED`, `WEXITSTATUS`, `WIFSIGNALED` and `WTERMSIG`, plus `WNOHANG`. There are no signals yet, but two outcomes are reported as if signals ended the child:
-- a CPU exception reports signal 11 (`SIGSEGV`)
-- Ctrl+C reports signal 2 (`SIGINT`)
+**`waitpid` and `wait`.** They use the Linux status encoding with `WIFEXITED`, `WEXITSTATUS`, `WIFSIGNALED`, `WTERMSIG`, `WIFSTOPPED`, `WSTOPSIG` and `WIFCONTINUED`, and the options `WNOHANG`, `WUNTRACED` (also report a child that stopped) and `WCONTINUED` (also report one that `SIGCONT` continued). Each stop or continue is reported once, and a newer one replaces one not yet reported. A CPU exception reports signal 11 (`SIGSEGV`).
 
 A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller's process group, and -n for one in group n, by polling every 10 ms.
 
 ### `signal.h`
 
-`sigaction`, `signal`, `kill`, `raise`, `sigprocmask`, `sigemptyset`, `sigfillset`, `sigaddset`, `sigdelset` and `sigismember`, with `pause` in `unistd.h` and `strsignal` in `string.h`. Signals have Linux's numbers: `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGILL`, `SIGTRAP`, `SIGABRT`, `SIGBUS`, `SIGFPE`, `SIGKILL`, `SIGUSR1`, `SIGSEGV`, `SIGUSR2`, `SIGPIPE`, `SIGALRM`, `SIGTERM`, `SIGCHLD` and `SIGCONT`.
+`sigaction`, `signal`, `kill`, `raise`, `sigprocmask`, `sigemptyset`, `sigfillset`, `sigaddset`, `sigdelset` and `sigismember`, with `pause` in `unistd.h` and `strsignal` in `string.h`. Signals have Linux's numbers: `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGILL`, `SIGTRAP`, `SIGABRT`, `SIGBUS`, `SIGFPE`, `SIGKILL`, `SIGUSR1`, `SIGSEGV`, `SIGUSR2`, `SIGPIPE`, `SIGALRM`, `SIGTERM`, `SIGCHLD`, `SIGCONT`, `SIGSTOP`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU` and `SIGWINCH`.
 
 - **Delivery:** a handler runs when the program next returns from the kernel, after a syscall or when a timer tick preempts it, so `raise` returns after its handler has run. The handler gets only the signal number. While it runs, the signal and `sa_mask` are blocked, unless `SA_NODEFER`; `SA_RESETHAND` puts the default action back first. `signal` installs a handler that stays, as glibc's does.
-- **Interrupted calls:** `read` and `write` on the console or a pipe, `waitpid`, `sleep`, `nanosleep` and `pause` fail with `EINTR` once a signal arrives (`sleep` returns the seconds left, and `nanosleep` the time left). `SA_RESTART` is accepted, but calls are not restarted.
-- **Defaults:** most signals end the program; `SIGCHLD` and `SIGCONT` are ignored. `SIGKILL` cannot be caught, ignored or blocked. A write to a pipe without a reader, or to a TCP connection that can no longer send, raises `SIGPIPE`, so a program sees `EPIPE` only if it ignores or handles it.
+- **Interrupted calls:** `read` and `write` on the console or a pipe, `waitpid`, `sleep`, `nanosleep` and `pause` fail with `EINTR` once a signal arrives (`sleep` returns the seconds left, and `nanosleep` the time left). `SA_RESTART` is accepted, but calls are not restarted. A call that only a stop interrupted starts again once the program continues, and a sleep only for the time that was left.
+- **Defaults:** most signals end the program; `SIGCHLD`, `SIGCONT` and `SIGWINCH` are ignored. `SIGSTOP`, `SIGTSTP`, `SIGTTIN` and `SIGTTOU` stop every thread of the program until `SIGCONT`, which continues it whatever its action; a signal sent meanwhile waits, except `SIGKILL`. `SIGTSTP`, `SIGTTIN` and `SIGTTOU` do not stop a process whose group is orphaned, one in which no process has a parent in another group of the same session. Sending a stop signal drops a pending `SIGCONT`, and the reverse. `SIGKILL` and `SIGSTOP` cannot be caught, ignored or blocked. A write to a pipe without a reader, or to a TCP connection that can no longer send, raises `SIGPIPE`, so a program sees `EPIPE` only if it ignores or handles it.
 - **Faults:** a CPU exception ends the program with `SIGSEGV` and runs no handler.
 - **Processes:** a child starts with handlers back at their defaults, while ignored signals and the blocked mask carry over. `kill(1, ...)` fails with `EPERM`, since init cannot be signaled.
-- **Not provided:** `SA_SIGINFO` and `siginfo_t`, `sigsuspend`, `sigpending`, `sigaltstack`, `alarm`, and the stop signals (`SIGSTOP`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU`), since processes cannot be stopped.
+- **Not provided:** `SA_SIGINFO` and `siginfo_t`, `SA_NOCLDSTOP`, `sigsuspend`, `sigpending`, `sigaltstack` and `alarm`.
 
 ### `strings.h`
 
@@ -284,16 +283,16 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
 
 ### `sys/ioctl.h`
 
-Only `ioctl(fd, TIOCGWINSZ, &size)` on the console, which fills `ws_row` and `ws_col` with the text area below the status bar (80×24 without a framebuffer) and leaves the pixel sizes 0. Other descriptors fail with `ENOTTY`, and other requests with `EINVAL`. The console understands the VT100 sequences listed in `docs/development.md`.
+Only `ioctl(fd, TIOCGWINSZ, &size)` and `ioctl(fd, TIOCSWINSZ, &size)` on a terminal or a pseudo-terminal master, which stands for its slave. `TIOCGWINSZ` fills `ws_row` and `ws_col` and leaves the pixel sizes 0; the console's size is the text area below the status bar (80×24 without a framebuffer), and a new pty's is 80×24. `TIOCSWINSZ` sets them, ignoring the pixel sizes, from either end of a pty and from any process, as on Linux, and a change sends `SIGWINCH` to the terminal's foreground group. Other descriptors fail with `ENOTTY`, and other requests with `EINVAL`. The console understands the VT100 sequences listed in `docs/development.md`.
 
 ### `termios.h`
 
-`tcgetattr`, `tcsetattr` and `cfmakeraw` on the console; other descriptors fail with `ENOTTY`. The constants have FeatherOS's own values.
+`tcgetattr`, `tcsetattr` and `cfmakeraw` on any terminal; other descriptors fail with `ENOTTY`. The constants have FeatherOS's own values.
 - **What has an effect:** `ICANON`, `ECHO` and `ISIG` in `c_lflag`, `ICRNL` in `c_iflag`, and `c_cc[VMIN]` and `c_cc[VTIME]` for non-canonical reads, with the POSIX meanings. The console's settings start with all four flags on, `VMIN` 1 and `VTIME` 0.
-- **Accepted without effect:** the other flags that `cfmakeraw` clears (`BRKINT`, `IXON`, `OPOST`, `IEXTEN`, …). The console never changes output, and `tcgetattr` always reports `OPOST` and `CS8`. `VINTR`, `VERASE` and `VEOF` report Ctrl+C, Backspace and Ctrl+D but cannot be changed, and there is no end-of-file key yet.
+- **Accepted without effect:** the other flags that `cfmakeraw` clears (`BRKINT`, `IXON`, `OPOST`, `IEXTEN`, …). The console never changes output, and `tcgetattr` always reports `OPOST` and `CS8`. `VINTR`, `VSUSP`, `VERASE` and `VEOF` report Ctrl+C, Ctrl+Z, Backspace and Ctrl+D but cannot be changed, and there is no end-of-file key yet.
 - **FeatherOS's own flag:** with `FEATHEROS_WAKE_ON_OUTPUT` in `c_lflag`, a non-canonical read with `VMIN` above 0 that has no byte yet returns 0 once output from other programs or the kernel reached the console and paused for a tenth of a second, with the cursor moved to the start of a row. The shell's line editor uses it to draw its prompt again below a service's message.
 - **Actions:** `TCSANOW`, `TCSADRAIN` and `TCSAFLUSH` all apply at once; `TCSAFLUSH` keeps input already typed.
-- **Who may change them:** only the foreground group (`EIO` otherwise, as for a background read). When the program that changed them exits, the console returns to the defaults, so a program that crashes in raw mode does not leave the shell there.
+- **Who may change them:** on the controlling terminal, the foreground group; a background group gets `SIGTTOU` (see Processes). When the program that changed them exits, the console returns to the defaults, so a program that crashes in raw mode does not leave the shell there.
 - **Missing:** `cfgetispeed` and the other speed functions, `tcflush`, `tcdrain` and `tcsendbreak`.
 
 ### `sys/reboot.h`
@@ -345,7 +344,6 @@ These need kernel features that do not exist yet. Each one is planned in [roadma
 | Missing | Why | Planned |
 | --- | --- | --- |
 | `SA_SIGINFO`, `sigsuspend`, `alarm`, real-time signals | Handlers get only the signal number; no timers send signals | Not scheduled |
-| Stopping and continuing processes (`SIGSTOP`, `SIGTSTP`, job control stops) | Processes cannot be stopped | Not scheduled |
 | `fork`, `exec*` | Processes start with `Spawn`; `fork` needs copy-on-write | M11, if adopted |
 | C11 `threads.h`, read-write locks, barriers, thread-specific keys | Not needed by any program yet | Not scheduled |
 | `mmap`, `munmap` | The heap is the only growable mapping, so free space below used blocks cannot be returned | [ideas.md](ideas.md) |

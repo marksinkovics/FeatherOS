@@ -1,11 +1,14 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "kernel/files.h"
+#include "kernel/filesystem/devices.h"
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/tmpfs.h"
 #include "kernel/filesystem/vfs.h"
 #include "kernel/memory/heap.h"
 #include "kernel/random.h"
+#include "kernel/terminal/terminal.h"
+#include "support/terminal_device.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -270,7 +273,7 @@ TEST_CASE("/tmp works through file descriptors with the disk's sharing rules")
 {
     FeatherOS::Tmpfs::Reset();
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     REQUIRE(FeatherOS::Files::CheckDirectory("/tmp") == 0);
     REQUIRE(FeatherOS::Files::MakeDirectory("/tmp/work") == 0);
     const uint64_t writer =
@@ -348,8 +351,9 @@ TEST_CASE("Spawn reads program files whole, up to a size limit")
 TEST_CASE("/dev devices read, take writes, and cannot be created or removed")
 {
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
-    REQUIRE(List("/dev") == std::vector<std::string>{"null", "zero", "random"});
+    FeatherOS::Files::OpenConsole(&table, nullptr);
+    REQUIRE(List("/dev") ==
+            std::vector<std::string>{"null", "zero", "random", "tty", "ptmx", "pts/"});
     const uint64_t null_device =
         FeatherOS::Files::Open(&table, "/dev/null", OpenRead | OpenWrite | OpenTruncate);
     REQUIRE_FALSE(FeatherOS::User::IsSyscallError(null_device));
@@ -388,6 +392,77 @@ TEST_CASE("/dev devices read, take writes, and cannot be created or removed")
     FeatherOS::Files::CloseAll(&table);
 }
 
+TEST_CASE("/dev/tty opens the controlling terminal, and terminal descriptors name their terminal")
+{
+    TestTerminalDevice device;
+    FeatherOS::Terminals::Terminal console(device.Device());
+    FeatherOS::Terminals::Terminal controlling(device.Device());
+    FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table, &console);
+    FeatherOS::Terminals::Terminal* found = nullptr;
+    REQUIRE(FeatherOS::Files::FindTerminal(&table, 2, &found) == 0);
+    REQUIRE(found == &console);
+
+    REQUIRE(FeatherOS::Files::Open(&table, "/dev/tty", OpenRead | OpenWrite) ==
+            FeatherOS::User::SyscallErrorNoDevice);
+    const uint64_t tty =
+        FeatherOS::Files::Open(&table, "/dev/tty", OpenRead | OpenWrite, &controlling);
+    REQUIRE(tty == 3);
+    REQUIRE(FeatherOS::Files::KindOf(&table, tty) == FeatherOS::Files::Kind::Terminal);
+    REQUIRE(FeatherOS::Files::FindTerminal(&table, tty, &found) == 0);
+    REQUIRE(found == &controlling);
+    FeatherOS::User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::StatDescriptor(&table, tty, &status) == 0);
+    REQUIRE(status.type == FeatherOS::User::FileType::Terminal);
+    REQUIRE(FeatherOS::Files::Seek(&table, tty, 0, FeatherOS::User::SeekFromStart) ==
+            FeatherOS::User::SyscallErrorNotSeekable);
+    REQUIRE(FeatherOS::Files::StatusFlags(&table, tty, true, FeatherOS::User::OpenNonBlocking) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+
+    FeatherOS::Files::Table child{};
+    FeatherOS::Files::Inherit(&child, &table);
+    REQUIRE(FeatherOS::Files::Close(&table, tty) == 0);
+    REQUIRE(FeatherOS::Files::FindTerminal(&child, tty, &found) == 0);
+    REQUIRE(found == &controlling);
+
+    const uint64_t null_device = FeatherOS::Files::Open(&table, "/dev/null", OpenRead);
+    REQUIRE(FeatherOS::Files::FindTerminal(&table, null_device, &found) ==
+            FeatherOS::User::SyscallErrorNotTerminal);
+    REQUIRE(FeatherOS::Files::FindTerminal(&table, 20, &found) ==
+            FeatherOS::User::SyscallErrorBadDescriptor);
+    FeatherOS::Files::CloseAll(&child);
+    FeatherOS::Files::CloseAll(&table);
+}
+
+TEST_CASE("/dev/ttyN opens a virtual console's terminal")
+{
+    TestTerminalDevice device;
+    FeatherOS::Terminals::Terminal first(device.Device());
+    FeatherOS::Terminals::Terminal second(device.Device());
+    FeatherOS::Terminals::Terminal* const consoles[] = {&first, &second};
+    FeatherOS::Devices::SetConsoles(consoles, 2);
+    REQUIRE(List("/dev") == std::vector<std::string>{"null", "zero", "random", "tty", "ptmx",
+                                                     "tty1", "tty2", "pts/"});
+    FeatherOS::Files::Table table{};
+    const uint64_t opened = FeatherOS::Files::Open(&table, "/dev/tty2", OpenRead | OpenWrite);
+    REQUIRE(opened == 0);
+    REQUIRE(FeatherOS::Files::KindOf(&table, opened) == FeatherOS::Files::Kind::Terminal);
+    FeatherOS::Terminals::Terminal* found = nullptr;
+    REQUIRE(FeatherOS::Files::FindTerminal(&table, opened, &found) == 0);
+    REQUIRE(found == &second);
+    FeatherOS::User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat("/dev/tty1", &status) == 0);
+    for (const char* missing : {"/dev/tty0", "/dev/tty3", "/dev/tty12", "/dev/ttyx"})
+    {
+        REQUIRE(FeatherOS::Files::Open(&table, missing, OpenRead) ==
+                FeatherOS::User::SyscallErrorNotFound);
+    }
+    FeatherOS::Files::CloseAll(&table);
+    FeatherOS::Devices::SetConsoles(nullptr, 0);
+    REQUIRE(List("/dev") ==
+            std::vector<std::string>{"null", "zero", "random", "tty", "ptmx", "pts/"});
+}
+
 TEST_CASE("/proc lists processes and generates their status and meminfo")
 {
     UseFakeProcesses();
@@ -406,7 +481,7 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
     REQUIRE_FALSE(FeatherOS::VFS::IsDirectory("/proc/01"));
 
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     FeatherOS::User::FileStatus status{};
     REQUIRE(FeatherOS::Files::Stat("/proc/1/status", &status) == 0);
     REQUIRE(status.type == FeatherOS::User::FileType::Regular);

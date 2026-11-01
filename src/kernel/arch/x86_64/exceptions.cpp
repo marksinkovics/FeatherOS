@@ -330,6 +330,8 @@ constexpr uint64_t DirectionFlag = 1U << 10;
 // The ABI lets a function use 128 bytes below the stack pointer without moving it.
 constexpr uint64_t RedZone = 128;
 constexpr uint32_t MxcsrOffset = 24;
+// int $0x80.
+constexpr uint64_t SyscallInstructionSize = 2;
 // The MXCSR bits FXRSTOR accepts on every x86-64 CPU; a reserved bit would fault in the kernel.
 constexpr uint32_t MxcsrMask = 0xFFBF;
 
@@ -398,8 +400,10 @@ bool EnterHandler(ExceptionContext* context, FeatherOS::UserExecutionContext* us
     return true;
 }
 
-// Every return to ring 3 passes here: the program takes its next signal, which may end it.
-void DeliverSignals(ExceptionContext* context)
+// Every return to ring 3 passes here: the program takes its next signal, which may end it. A
+// stopped program waits here until it continues. interrupted_syscall is the number of a syscall
+// that failed with SyscallErrorInterrupted; if only a stop interrupted it, it starts again.
+void DeliverSignals(ExceptionContext* context, const uint64_t* interrupted_syscall = nullptr)
 {
     auto* user_context =
         static_cast<FeatherOS::UserExecutionContext*>(FeatherOS::Scheduler::CurrentUserContext());
@@ -408,8 +412,28 @@ void DeliverSignals(ExceptionContext* context)
     {
         return;
     }
-    const FeatherOS::Signals::Decision decision =
-        FeatherOS::Signals::TakeNext(&user_context->signals);
+    bool took_stop = false;
+    FeatherOS::Signals::Decision decision;
+    for (;;)
+    {
+        if (FeatherOS::Process::HoldWhileStopped(user_context))
+        {
+            RestoreCurrentUserKernelStack();
+        }
+        decision = FeatherOS::Process::TakeSignal(user_context);
+        if (decision.kind != FeatherOS::Signals::DecisionKind::Stop)
+        {
+            break;
+        }
+        took_stop = true;
+    }
+    if (decision.kind == FeatherOS::Signals::DecisionKind::None && took_stop &&
+        interrupted_syscall != nullptr)
+    {
+        context->rax = *interrupted_syscall;
+        context->rdi = user_context->restart_argument;
+        context->instruction_pointer -= SyscallInstructionSize;
+    }
     if (decision.kind == FeatherOS::Signals::DecisionKind::Terminate)
     {
         TerminateForSignal(user_context, decision.signal);
@@ -483,15 +507,19 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
         const FeatherOS::Syscall::Handlers& handlers = user_context->syscall_handlers != nullptr
                                                            ? *user_context->syscall_handlers
                                                            : SerialSyscallHandlers;
+        const uint64_t number = context->rax;
+        user_context->restart_argument = context->rdi;
         const FeatherOS::Syscall::Result result =
-            FeatherOS::Syscall::Dispatch({context->rax, {context->rdi, context->rsi, context->rdx}},
+            FeatherOS::Syscall::Dispatch({number, {context->rdi, context->rsi, context->rdx}},
                                          handlers, user_context->syscall_context);
         // A blocking syscall may have run other tasks, which repoint the TSS at their stacks.
         RestoreCurrentUserKernelStack();
         if (result.action == FeatherOS::Syscall::Action::Return)
         {
             context->rax = result.value;
-            DeliverSignals(context);
+            DeliverSignals(context, result.value == FeatherOS::User::SyscallErrorInterrupted
+                                        ? &number
+                                        : nullptr);
             return;
         }
         if (result.action == FeatherOS::Syscall::Action::SignalReturn)

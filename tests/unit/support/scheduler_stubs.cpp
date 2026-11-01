@@ -1,5 +1,6 @@
 #include "support/scheduler_stubs.h"
 
+#include "kernel/arch/interrupts.h"
 #include "kernel/scheduler.h"
 #include "kernel/time/timer.h"
 
@@ -88,3 +89,22 @@ uint32_t TicksPerSecond()
 }
 
 } // namespace FeatherOS::Time
+
+// Tests run on one thread with nothing to mask.
+namespace FeatherOS::Arch::Interrupts
+{
+
+uint64_t SaveAndDisable()
+{
+    return 0;
+}
+
+void Restore(uint64_t)
+{
+}
+
+void Enable()
+{
+}
+
+} // namespace FeatherOS::Arch::Interrupts

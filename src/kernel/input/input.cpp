@@ -1,162 +1,89 @@
 #include "input.h"
 
 #include "kernel/arch/serial.h"
-#include "kernel/scheduler.h"
+#include "kernel/input/keyboard.h"
 #include "kernel/sync/spinlock.h"
+#include "kernel/terminal/terminal.h"
 
 namespace FeatherOS::Input
 {
 namespace
 {
 
-constexpr uint32_t QueueCapacity = 256;
-
-constinit Sync::SpinLock queue_lock;
 // One caller reads the serial port at a time and keeps it while delivering a Ctrl+C, so bytes
-// typed after the Ctrl+C cannot be queued before it from another CPU. A timer tick that finds it
+// typed after the Ctrl+C cannot be passed on before it from another CPU. A timer tick that finds it
 // taken, perhaps by the code it interrupted, skips its poll.
 constinit Sync::SpinLock poll_lock;
-constinit Scheduler::WaitQueue input_waiters;
-char queue[QueueCapacity];
-uint32_t queue_head = 0;
-uint32_t queue_tail = 0;
-uint32_t queue_size = 0;
+Terminals::Terminal* serial_target = nullptr;
+// Changes when another console is shown, perhaps on another CPU than a key's interrupt.
+Terminals::Terminal* keyboard_target = nullptr;
+void (*console_switch)(uint32_t console) = nullptr;
 bool previous_was_carriage_return = false;
-InterruptHandler interrupt_handler = nullptr;
-
-void QueueByteLocked(char byte)
-{
-    queue[queue_tail] = byte;
-    queue_tail = (queue_tail + 1) % QueueCapacity;
-    ++queue_size;
-}
-
-// Returns true for Ctrl+C, which the caller delivers before reading further bytes.
-bool ProcessSerialByteLocked(char byte)
-{
-    const bool after_carriage_return = previous_was_carriage_return;
-    previous_was_carriage_return = byte == '\r';
-    if (byte == InterruptByte)
-    {
-        return true;
-    }
-    if ((byte != '\n' || !after_carriage_return) && queue_size < QueueCapacity)
-    {
-        QueueByteLocked(byte);
-    }
-    return false;
-}
-
-void DeliverInterrupt()
-{
-    if (interrupt_handler != nullptr && interrupt_handler())
-    {
-        return;
-    }
-    Sync::SpinLockGuard guard(queue_lock);
-    if (queue_size < QueueCapacity)
-    {
-        QueueByteLocked(InterruptByte);
-    }
-    Scheduler::WakeAll(input_waiters);
-}
 
 } // namespace
 
-void SetInterruptHandler(InterruptHandler handler)
+void SetTerminal(Terminals::Terminal* terminal)
 {
-    interrupt_handler = handler;
+    serial_target = terminal;
+    SetKeyboardTerminal(terminal);
+}
+
+void SetKeyboardTerminal(Terminals::Terminal* terminal)
+{
+    __atomic_store_n(&keyboard_target, terminal, __ATOMIC_RELEASE);
+}
+
+void SetConsoleSwitch(void (*switch_console)(uint32_t console))
+{
+    console_switch = switch_console;
+}
+
+void SubmitKey(Keyboard& keyboard, uint16_t code, bool pressed)
+{
+    char bytes[Keyboard::MaximumKeyBytes];
+    const size_t length = keyboard.Press(code, pressed, bytes);
+    uint32_t console;
+    if (keyboard.TakeConsoleSwitch(&console))
+    {
+        if (console_switch != nullptr)
+        {
+            console_switch(console);
+        }
+        return;
+    }
+    if (length > 0)
+    {
+        SubmitBytes(bytes, length);
+    }
 }
 
 void SubmitBytes(const char* bytes, size_t length)
 {
-    if (length == 1 && bytes[0] == InterruptByte)
+    Terminals::Terminal* target = __atomic_load_n(&keyboard_target, __ATOMIC_ACQUIRE);
+    if (target != nullptr)
     {
-        DeliverInterrupt();
-        return;
+        target->Receive(bytes, length);
     }
-    Sync::SpinLockGuard guard(queue_lock);
-    if (length > QueueCapacity - queue_size)
-    {
-        return;
-    }
-    for (size_t index = 0; index < length; ++index)
-    {
-        QueueByteLocked(bytes[index]);
-    }
-    Scheduler::WakeAll(input_waiters);
 }
 
+// Each byte goes on alone, so a Ctrl+C reaches the terminal as one.
 void Poll()
 {
     if (!poll_lock.TryLock())
     {
         return;
     }
-    for (;;)
+    char byte;
+    while (Serial::ReadCharacter(&byte))
     {
-        bool interrupt = false;
+        const bool after_carriage_return = previous_was_carriage_return;
+        previous_was_carriage_return = byte == '\r';
+        if ((byte != '\n' || !after_carriage_return) && serial_target != nullptr)
         {
-            Sync::SpinLockGuard guard(queue_lock);
-            const uint32_t previous_size = queue_size;
-            char byte;
-            while (!interrupt && Serial::ReadCharacter(&byte))
-            {
-                interrupt = ProcessSerialByteLocked(byte);
-            }
-            if (queue_size != previous_size)
-            {
-                Scheduler::WakeAll(input_waiters);
-            }
+            serial_target->Receive(&byte, 1);
         }
-        if (!interrupt)
-        {
-            break;
-        }
-        // The handler takes other subsystems' locks, so it runs after the queue lock is released.
-        DeliverInterrupt();
     }
     poll_lock.Unlock();
-}
-
-bool TryReadByte(char* byte)
-{
-    if (byte == nullptr)
-    {
-        return false;
-    }
-    Sync::SpinLockGuard guard(queue_lock);
-    if (queue_size == 0)
-    {
-        return false;
-    }
-    *byte = queue[queue_head];
-    queue_head = (queue_head + 1) % QueueCapacity;
-    --queue_size;
-    return true;
-}
-
-bool HasInput()
-{
-    Poll();
-    Sync::SpinLockGuard guard(queue_lock);
-    return queue_size != 0;
-}
-
-void WaitForInput(uint64_t deadline_tick)
-{
-    const uint64_t flags = queue_lock.LockIrqSave();
-    if (queue_size == 0)
-    {
-        Scheduler::WaitOn(input_waiters, queue_lock, deadline_tick);
-    }
-    queue_lock.UnlockIrqRestore(flags);
-}
-
-void WakeWaiters()
-{
-    Sync::SpinLockGuard guard(queue_lock);
-    Scheduler::WakeAll(input_waiters);
 }
 
 } // namespace FeatherOS::Input

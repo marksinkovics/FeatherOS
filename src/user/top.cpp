@@ -1,11 +1,12 @@
 #include "command_line.h"
 #include "process_table.h"
 #include "raw_terminal.h"
+#include "window_size.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -15,8 +16,9 @@ using FeatherOS::User::SystemInfo;
 constexpr char Help[] =
     "usage: top [-n count] [-d milliseconds]\n"
     "Shows how much CPU each process used, busiest first, every second (or -d). %CPU is\n"
-    "of one CPU. On the console it redraws the table in place until q or Ctrl+C; with\n"
-    "-n, or when the output is not the console, it prints count tables one after another.";
+    "of one CPU. On the console it redraws the table in place until q or Ctrl+C, and\n"
+    "Ctrl+Z stops it until fg; with -n, or when the output is not the console, it prints\n"
+    "count tables one after another.";
 
 namespace
 {
@@ -121,19 +123,36 @@ unsigned long long NowMilliseconds()
            static_cast<unsigned long long>(now.tv_nsec) / 1000000;
 }
 
-// Waits out the interval while answering keys; false once q, Ctrl+C or Escape asks to quit.
-bool WaitForKeys(FeatherOS::User::RawTerminal* terminal, unsigned long long milliseconds)
+enum class Wait : unsigned char
 {
-    const unsigned long long deadline = NowMilliseconds() + milliseconds;
+    Elapsed,
+    Resized,
+    // Ctrl+Z or SIGTSTP.
+    Suspend,
+    // q, Ctrl+C or Escape, or input failed.
+    Quit,
+};
+
+// Answers keys until the deadline, or until the window size changes.
+Wait WaitForKeys(FeatherOS::User::RawTerminal* terminal, unsigned long long deadline)
+{
     for (unsigned long long now = NowMilliseconds(); now < deadline; now = NowMilliseconds())
     {
+        if (FeatherOS::User::WindowSizeChanged())
+        {
+            return Wait::Resized;
+        }
         const unsigned long long tenths = (deadline - now + 99) / 100;
         FeatherOS::User::KeyPress press = {};
         bool pressed = false;
         if (!terminal->ReadKeyWithin(tenths > 255 ? 255 : static_cast<unsigned>(tenths), &press,
                                      &pressed))
         {
-            return false;
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            return Wait::Quit;
         }
         const bool quit = press.key == FeatherOS::User::Key::Escape ||
                           (press.key == FeatherOS::User::Key::Character &&
@@ -141,10 +160,14 @@ bool WaitForKeys(FeatherOS::User::RawTerminal* terminal, unsigned long long mill
                           (press.key == FeatherOS::User::Key::Control && press.character == 'c');
         if (pressed && quit)
         {
-            return false;
+            return Wait::Quit;
+        }
+        if (pressed && press.key == FeatherOS::User::Key::Control && press.character == 'z')
+        {
+            return Wait::Suspend;
         }
     }
-    return true;
+    return Wait::Elapsed;
 }
 
 bool ParseOptions(int argc, char** argv, unsigned long long* count, unsigned long long* delay)
@@ -202,29 +225,58 @@ int main(int argc, char** argv)
     // raw input lets q and Ctrl+C end it at once and the kernel restore the screen if it dies.
     FeatherOS::User::RawTerminal terminal;
     const bool interactive = count == 0 && isatty(STDOUT_FILENO) != 0 && terminal.Enter();
-    winsize window = {};
-    if (interactive && ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) != 0)
-    {
-        window.ws_row = 24;
-    }
+    size_t rows = 24;
     if (interactive)
     {
+        FeatherOS::User::WatchWindowSize();
+        rows = FeatherOS::User::ReadWindowSize().rows;
         fputs("\x1b[?1049h\x1b[?25l", stdout);
         fflush(stdout);
     }
+    // The last row stays empty, so the screen never scrolls.
+    const auto draw_in_place = [&](size_t then, size_t now)
+    {
+        fputs("\x1b[H", stdout);
+        PrintTable(tables[then], counts[then], systems[then], tables[now], counts[now],
+                   systems[now], "\x1b[K\n", rows - 1, true);
+        fputs("\x1b[J", stdout);
+        fflush(stdout);
+    };
     int status = 0;
     for (unsigned long long refresh = 0; count == 0 || refresh < count; ++refresh)
     {
+        const size_t now = (refresh + 1) % 2;
+        const size_t then = refresh % 2;
         if (!interactive)
         {
             SleepMilliseconds(delay);
         }
-        else if (!WaitForKeys(&terminal, delay))
+        else
         {
-            break;
+            const unsigned long long deadline = NowMilliseconds() + delay;
+            Wait waited = Wait::Elapsed;
+            while ((waited = WaitForKeys(&terminal, deadline)) == Wait::Resized ||
+                   waited == Wait::Suspend)
+            {
+                if (waited == Wait::Suspend)
+                {
+                    fputs("\x1b[?25h\x1b[?1049l", stdout);
+                    fflush(stdout);
+                    terminal.Suspend();
+                    fputs("\x1b[?1049h\x1b[?25l", stdout);
+                }
+                rows = FeatherOS::User::ReadWindowSize().rows;
+                // The table on screen compared the tables now in `now` and `then`, in that order.
+                if (refresh > 0)
+                {
+                    draw_in_place(now, then);
+                }
+            }
+            if (waited == Wait::Quit)
+            {
+                break;
+            }
         }
-        const size_t now = (refresh + 1) % 2;
-        const size_t then = refresh % 2;
         counts[now] =
             FeatherOS::User::ReadProcessTable(tables[now], FeatherOS::User::MaximumListedProcesses);
         if (!FeatherOS::User::ReadSystemInfo(&systems[now]))
@@ -234,12 +286,7 @@ int main(int argc, char** argv)
         }
         if (interactive)
         {
-            // The last row stays empty, so the screen never scrolls.
-            fputs("\x1b[H", stdout);
-            PrintTable(tables[then], counts[then], systems[then], tables[now], counts[now],
-                       systems[now], "\x1b[K\n", window.ws_row - 1U, true);
-            fputs("\x1b[J", stdout);
-            fflush(stdout);
+            draw_in_place(then, now);
             continue;
         }
         if (refresh > 0)

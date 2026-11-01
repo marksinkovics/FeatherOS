@@ -19,7 +19,7 @@ namespace
 {
 
 constexpr int KnownOpenFlags =
-    O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_CLOEXEC | O_NONBLOCK;
+    O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_CLOEXEC | O_NONBLOCK | O_NOCTTY;
 
 } // namespace
 
@@ -59,6 +59,10 @@ int open(const char* path, int flags, ...)
     if ((flags & O_NONBLOCK) != 0)
     {
         open_flags |= FeatherOS::User::OpenNonBlocking;
+    }
+    if ((flags & O_NOCTTY) != 0)
+    {
+        open_flags |= FeatherOS::User::OpenNoControllingTerminal;
     }
     // Only one program can write a file at a time, so checking first leaves no race that
     // matters.
@@ -274,7 +278,7 @@ int access(const char* path, int mode)
     return 0;
 }
 
-// Devices under /dev are character devices too, so the kernel's file type tells the console
+// Devices under /dev are character devices too, so the kernel's file type tells terminals
 // apart.
 int isatty(int descriptor)
 {
@@ -284,7 +288,7 @@ int isatty(int descriptor)
     {
         return 0;
     }
-    if (status.type != FeatherOS::User::FileType::Console)
+    if (status.type != FeatherOS::User::FileType::Terminal)
     {
         errno = ENOTTY;
         return 0;
@@ -405,20 +409,22 @@ pid_t getpgid(pid_t pid)
     return static_cast<pid_t>(group);
 }
 
-// The console is the only terminal.
 pid_t tcgetpgrp(int descriptor)
 {
-    if (!isatty(descriptor))
+    if (descriptor < 0)
     {
+        errno = EBADF;
         return -1;
     }
-    return static_cast<pid_t>(FeatherOS::User::ForegroundGroup(false, 0));
+    return Check<pid_t>(
+        FeatherOS::User::ForegroundGroup(static_cast<uint64_t>(descriptor), false, 0));
 }
 
 int tcsetpgrp(int descriptor, pid_t group)
 {
-    if (!isatty(descriptor))
+    if (descriptor < 0)
     {
+        errno = EBADF;
         return -1;
     }
     if (group <= 0)
@@ -426,8 +432,31 @@ int tcsetpgrp(int descriptor, pid_t group)
         errno = EINVAL;
         return -1;
     }
-    return Check<int>(FeatherOS::User::ForegroundGroup(true, static_cast<uint64_t>(group))) < 0 ? -1
-                                                                                                : 0;
+    return Check<int>(FeatherOS::User::ForegroundGroup(static_cast<uint64_t>(descriptor), true,
+                                                       static_cast<uint64_t>(group))) < 0
+               ? -1
+               : 0;
+}
+
+pid_t setsid()
+{
+    return Check<pid_t>(FeatherOS::User::CreateSession());
+}
+
+pid_t getsid(pid_t pid)
+{
+    if (pid < 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    const uint64_t session = FeatherOS::User::SessionId(static_cast<uint64_t>(pid));
+    if (session == FeatherOS::User::SyscallErrorNotFound)
+    {
+        errno = ESRCH;
+        return -1;
+    }
+    return static_cast<pid_t>(session);
 }
 
 pid_t getppid()

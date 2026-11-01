@@ -3,8 +3,9 @@
 
 #include <sys/cdefs.h>
 
-// The pixel sizes are reported as 0.
+// The pixel sizes are reported as 0 and ignored when set.
 #define TIOCGWINSZ 1
+#define TIOCSWINSZ 2
 
 struct winsize
 {
@@ -16,8 +17,9 @@ struct winsize
 
 __BEGIN_DECLS
 
-// Only TIOCGWINSZ on the console, the text area below the status bar; other descriptors fail
-// with ENOTTY, and other requests with EINVAL.
+// Only TIOCGWINSZ and TIOCSWINSZ, on a terminal or a pty master, which stands for its slave; other
+// descriptors fail with ENOTTY, and other requests with EINVAL. The console's size is the text
+// area below the status bar.
 int ioctl(int descriptor, unsigned long request, ...);
 
 __END_DECLS

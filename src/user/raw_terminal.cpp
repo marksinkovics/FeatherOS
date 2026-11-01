@@ -1,9 +1,31 @@
 #include "raw_terminal.h"
 
+#include <errno.h>
 #include <unistd.h>
 
 namespace FeatherOS::User
 {
+namespace
+{
+
+volatile sig_atomic_t stop_requested = 0;
+
+void NoteStopRequest(int)
+{
+    stop_requested = 1;
+}
+
+bool TakeStopRequest()
+{
+    if (stop_requested == 0)
+    {
+        return false;
+    }
+    stop_requested = 0;
+    return true;
+}
+
+} // namespace
 
 bool RawTerminal::Enter(bool wake_on_output)
 {
@@ -20,6 +42,12 @@ bool RawTerminal::Enter(bool wake_on_output)
     m_minimum = m_raw.c_cc[VMIN];
     m_timeout = m_raw.c_cc[VTIME];
     m_active = tcsetattr(STDIN_FILENO, TCSANOW, &m_raw) == 0;
+    if (m_active)
+    {
+        struct sigaction caught = {};
+        caught.sa_handler = NoteStopRequest;
+        sigaction(SIGTSTP, &caught, &m_previous_stop_action);
+    }
     return m_active;
 }
 
@@ -27,9 +55,29 @@ void RawTerminal::Leave()
 {
     if (m_active)
     {
+        sigaction(SIGTSTP, &m_previous_stop_action, nullptr);
         tcsetattr(STDIN_FILENO, TCSANOW, &m_original);
         m_active = false;
     }
+}
+
+void RawTerminal::Suspend()
+{
+    if (!m_active)
+    {
+        return;
+    }
+    tcsetattr(STDIN_FILENO, TCSANOW, &m_original);
+    struct sigaction caught = {};
+    const struct sigaction default_action = {};
+    sigaction(SIGTSTP, &default_action, &caught);
+    // Returns once the group continues; an orphaned group does not stop at all.
+    kill(0, SIGTSTP);
+    sigaction(SIGTSTP, &caught, nullptr);
+    termios settings = m_raw;
+    settings.c_cc[VMIN] = m_minimum;
+    settings.c_cc[VTIME] = m_timeout;
+    tcsetattr(STDIN_FILENO, TCSANOW, &settings);
 }
 
 bool RawTerminal::ReadKey(KeyPress* press)
@@ -52,11 +100,23 @@ bool RawTerminal::ReadKeyWithin(unsigned tenths, KeyPress* press, bool* pressed)
     {
         m_next_press = 0;
         m_press_count = 0;
+        if (TakeStopRequest())
+        {
+            *press = {Key::Control, 'z'};
+            *pressed = true;
+            return true;
+        }
         if (m_next_byte == m_byte_count)
         {
             const bool sequence_pending = m_decoder.Pending();
             if (!Fill(tenths))
             {
+                if (errno == EINTR && TakeStopRequest())
+                {
+                    *press = {Key::Control, 'z'};
+                    *pressed = true;
+                    return true;
+                }
                 return false;
             }
             if (m_byte_count == 0 && !sequence_pending)
@@ -94,6 +154,8 @@ bool RawTerminal::Fill(unsigned tenths)
         m_minimum = minimum;
         m_timeout = timeout;
     }
+    // One byte at a time, as readline reads, so what was typed after a line's Enter stays queued
+    // for whoever reads next instead of being lost with this object.
     const ssize_t count = read(STDIN_FILENO, m_bytes, sizeof(m_bytes));
     if (count < 0)
     {

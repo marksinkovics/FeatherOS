@@ -104,7 +104,7 @@ TEST_CASE("the line editor holds at most its maximum and ignores other keys")
     editor.Press(Special(Key::Escape));
     editor.Press(Special(Key::PageUp));
     editor.Press(Special(Key::Unknown));
-    editor.Press(Control('z'));
+    editor.Press(Control('q'));
     REQUIRE(editor.Cursor() == FeatherOS::User::MaximumEditedLineLength);
     REQUIRE(editor.Press(Control('c')) == LineEditor::Status::Cancelled);
 }
@@ -137,6 +137,23 @@ TEST_CASE("typing at the end of a line echoes only what changed")
     REQUIRE(TakeOutput(editor) == "> ");
 }
 
+TEST_CASE("Ctrl+Z finishes the line on screen and keeps it for after the stop")
+{
+    LineEditor editor;
+    editor.Begin("> ", 80, nullptr);
+    Type(editor, "ab");
+    editor.Press(Special(Key::Left));
+    TakeOutput(editor);
+    REQUIRE(editor.Press(Control('z')) == LineEditor::Status::Suspended);
+    const std::string output = TakeOutput(editor);
+    REQUIRE(output.substr(output.size() - 3) == "^Z\n");
+    editor.Redraw();
+    REQUIRE(TakeOutput(editor).find("> ab") != std::string::npos);
+    REQUIRE(editor.Cursor() == 2);
+    REQUIRE(editor.Press(Special(Key::Enter)) == LineEditor::Status::Accepted);
+    REQUIRE(std::string(editor.Line()) == "ab");
+}
+
 TEST_CASE("a redraw starts from the cursor's row, even when the line wraps")
 {
     LineEditor editor;
@@ -152,6 +169,21 @@ TEST_CASE("a redraw starts from the cursor's row, even when the line wraps")
     TakeOutput(editor);
     editor.Redraw();
     REQUIRE(TakeOutput(editor) == "\r> abcdefghijkl\x1b[J\x1b[5G");
+}
+
+TEST_CASE("a resize redraws the line from the prompt's row for the new width")
+{
+    LineEditor editor;
+    editor.Begin("> ", 10, nullptr);
+    Type(editor, "abcdefghijkl");
+    TakeOutput(editor);
+    editor.Resize(20);
+    REQUIRE(TakeOutput(editor) == "\x1b[1A\r> abcdefghijkl\x1b[J\x1b[15G");
+
+    editor.Resize(5);
+    REQUIRE(TakeOutput(editor) == "\r> abcdefghijkl\x1b[J\x1b[5G");
+    Type(editor, "m");
+    REQUIRE(TakeOutput(editor) == "m \b");
 }
 
 TEST_CASE("history recalls earlier lines and keeps the line being typed")

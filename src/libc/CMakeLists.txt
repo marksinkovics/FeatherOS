@@ -28,6 +28,7 @@ add_library(featheros_c STATIC
     spawn_request.cpp
     time_format.cpp
     ../user/calendar.cpp
+    pseudo_terminal.cpp
     termios.cpp
     malloc.cpp
     netdb.cpp

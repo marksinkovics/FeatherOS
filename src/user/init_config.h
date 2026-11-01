@@ -5,8 +5,9 @@
 
 #include <stdint.h>
 
-// /system/init.conf: one service per line as "<policy> <command line>", or "env NAME=value" for a
-// variable in every service's environment. '#' starts a comment line.
+// /system/init.conf: one service per line as "<policy> <command line>", "console <terminal>
+// <command line>", or "env NAME=value" for a variable in every service's environment. '#' starts
+// a comment line.
 namespace FeatherOS::User::Init
 {
 
@@ -16,11 +17,12 @@ enum class Policy : uint8_t
     Once,
     // Runs in the background and restarts when it exits.
     Respawn,
-    // Holds the console as a session leader and restarts when it exits; at most one.
+    // Holds its terminal as a session leader and restarts when it exits; one per terminal.
     Console,
 };
 
 constexpr uint32_t MaximumServices = 8;
+constexpr uint64_t MaximumTerminalPathLength = 32;
 // A service that exits this often within the window is disabled instead of restarted.
 constexpr uint32_t MaximumRestarts = 5;
 constexpr uint64_t RestartWindowMilliseconds = 10000;
@@ -29,6 +31,8 @@ struct Service
 {
     Policy policy;
     char command[MaximumCommandLineLength];
+    // A console service's terminal, such as /dev/tty1; empty for the others.
+    char terminal[MaximumTerminalPathLength];
     uint64_t process_id;
     uint64_t window_start;
     uint32_t restarts;

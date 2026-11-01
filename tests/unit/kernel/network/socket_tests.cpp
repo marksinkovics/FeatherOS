@@ -479,7 +479,7 @@ TEST_CASE("addresses convert between the syscall ABI and the stack")
 TEST_CASE("a socket is a descriptor")
 {
     FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table);
+    FeatherOS::Files::OpenConsole(&table, nullptr);
     const uint64_t descriptor = FeatherOS::Files::CreateSocket(
         &table, User::SocketFamilyIpv4, User::SocketDatagram | User::SocketCloseOnExec,
         User::SocketProtocolIcmp);

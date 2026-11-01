@@ -4,27 +4,33 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// One queue of input bytes from the keyboards and the serial port, as a terminal sends them (see
-// Keyboard). A serial "\r\n" counts as one '\r'.
+namespace FeatherOS::Terminals
+{
+class Terminal;
+} // namespace FeatherOS::Terminals
+
+namespace FeatherOS::Input
+{
+class Keyboard;
+} // namespace FeatherOS::Input
+
+// The consoles' input: bytes from the serial port go to the first console's terminal, and keys to
+// the terminal of the console that is shown, as a terminal sends them (see Keyboard). A serial
+// "\r\n" counts as one '\r'.
 namespace FeatherOS::Input
 {
 
-constexpr char InterruptByte = '\x03';
-
-// Returns true when it consumed the Ctrl+C; otherwise the byte is queued for the reader.
-// It may run in interrupt context, outside the queue lock.
-using InterruptHandler = bool (*)();
-
-void SetInterruptHandler(InterruptHandler handler);
-// A key's bytes are queued whole or, when the queue is full, not at all.
+// Both the serial and the keyboard terminal.
+void SetTerminal(Terminals::Terminal* terminal);
+void SetKeyboardTerminal(Terminals::Terminal* terminal);
+// Called for Alt+F1 to Alt+F4 with console 0 to 3, perhaps in interrupt context.
+void SetConsoleSwitch(void (*switch_console)(uint32_t console));
+// A key event from a keyboard driver.
+void SubmitKey(Keyboard& keyboard, uint16_t code, bool pressed);
+// A key's bytes, passed on together.
 void SubmitBytes(const char* bytes, size_t length);
+// Reads what the serial port received.
 void Poll();
-bool TryReadByte(char* byte);
-// Polls the serial port first, so its bytes count too.
-bool HasInput();
-void WaitForInput(uint64_t deadline_tick);
-// Wakes WaitForInput's callers early, which must then check what they wait for themselves.
-void WakeWaiters();
 
 } // namespace FeatherOS::Input
 

@@ -57,9 +57,8 @@ TEST_CASE("ignored signals never become pending")
     REQUIRE(FeatherOS::Signals::SetAction(&state, FeatherOS::User::SignalUser2, &ignore,
                                           nullptr) == 0);
     REQUIRE(state.pending == 0);
-    // SIGKILL cannot be ignored, and signals 0 and 19-22 do not exist here.
+    // Signals 0 and 32 do not exist.
     FeatherOS::Signals::Send(&state, 0);
-    FeatherOS::Signals::Send(&state, 19);
     FeatherOS::Signals::Send(&state, FeatherOS::User::SignalCount);
     REQUIRE(state.pending == 0);
 }
@@ -81,7 +80,8 @@ TEST_CASE("blocked signals wait, but SIGKILL cannot be blocked")
             Bit(FeatherOS::User::SignalTerminate));
     REQUIRE(FeatherOS::Signals::TakeNext(&state).signal == FeatherOS::User::SignalTerminate);
     REQUIRE(FeatherOS::Signals::ChangeMask(&state, FeatherOS::User::SignalMaskSet, ~0ULL) == 0);
-    REQUIRE(state.blocked == (~0ULL & ~Bit(FeatherOS::User::SignalKill) & ~1ULL));
+    REQUIRE(state.blocked == (~0ULL & ~Bit(FeatherOS::User::SignalKill) &
+                              ~Bit(FeatherOS::User::SignalStop) & ~1ULL));
     REQUIRE(FeatherOS::Signals::ChangeMask(&state, 7, 0) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
 }
@@ -135,8 +135,11 @@ TEST_CASE("actions that cannot work are refused")
                                           nullptr) == FeatherOS::User::SyscallErrorInvalidArgument);
     REQUIRE(FeatherOS::Signals::SetAction(&state, FeatherOS::User::SignalUser1, &unknown_flag,
                                           nullptr) == FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Signals::SetAction(&state, 20, &handler, nullptr) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
+    const SignalAction ignore = {FeatherOS::User::SignalIgnore, 0, 0, 0};
+    REQUIRE(FeatherOS::Signals::SetAction(&state, FeatherOS::User::SignalStop, &handler,
+                                          nullptr) == FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Signals::SetAction(&state, FeatherOS::User::SignalStop, &ignore,
+                                          nullptr) == FeatherOS::User::SyscallErrorInvalidArgument);
     REQUIRE(FeatherOS::Signals::SetAction(&state, 0, nullptr, nullptr) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
     SignalAction old = {};
@@ -160,4 +163,54 @@ TEST_CASE("a child keeps ignored signals and the mask, but not handlers or pendi
     REQUIRE(child.actions[FeatherOS::User::SignalUser1].handler ==
             FeatherOS::User::SignalDefault);
     REQUIRE(child.actions[FeatherOS::User::SignalPipe].handler == FeatherOS::User::SignalIgnore);
+}
+
+TEST_CASE("stop signals stop the program unless it handles or ignores them")
+{
+    FeatherOS::Signals::State state = Fresh();
+    for (int signal = FeatherOS::User::SignalStop; signal <= FeatherOS::User::SignalTerminalOutput;
+         ++signal)
+    {
+        FeatherOS::Signals::Send(&state, signal);
+        const FeatherOS::Signals::Decision decision = FeatherOS::Signals::TakeNext(&state);
+        REQUIRE(decision.kind == DecisionKind::Stop);
+        REQUIRE(decision.signal == signal);
+    }
+    Handle(&state, FeatherOS::User::SignalTerminalStop);
+    FeatherOS::Signals::Send(&state, FeatherOS::User::SignalTerminalStop);
+    REQUIRE(FeatherOS::Signals::TakeNext(&state).kind == DecisionKind::Handle);
+    const SignalAction ignore = {FeatherOS::User::SignalIgnore, 0, 0, 0};
+    REQUIRE(FeatherOS::Signals::SetAction(&state, FeatherOS::User::SignalTerminalInput, &ignore,
+                                          nullptr) == 0);
+    FeatherOS::Signals::Send(&state, FeatherOS::User::SignalTerminalInput);
+    REQUIRE(state.pending == 0);
+}
+
+TEST_CASE("SIGSTOP cannot be blocked")
+{
+    FeatherOS::Signals::State state = Fresh();
+    FeatherOS::Signals::ChangeMask(&state, FeatherOS::User::SignalMaskSet, ~0ULL);
+    FeatherOS::Signals::Send(&state, FeatherOS::User::SignalTerminalStop);
+    FeatherOS::Signals::Send(&state, FeatherOS::User::SignalStop);
+    REQUIRE(FeatherOS::Signals::Deliverable(state) == Bit(FeatherOS::User::SignalStop));
+    REQUIRE(FeatherOS::Signals::TakeNext(&state).kind == DecisionKind::Stop);
+    REQUIRE(FeatherOS::Signals::TakeNext(&state).kind == DecisionKind::None);
+}
+
+TEST_CASE("a stop signal drops a pending SIGCONT, and SIGCONT drops pending stop signals")
+{
+    FeatherOS::Signals::State state = Fresh();
+    Handle(&state, FeatherOS::User::SignalContinue);
+    FeatherOS::Signals::Send(&state, FeatherOS::User::SignalContinue);
+    FeatherOS::Signals::Send(&state, FeatherOS::User::SignalTerminalStop);
+    REQUIRE(state.pending == Bit(FeatherOS::User::SignalTerminalStop));
+    FeatherOS::Signals::Send(&state, FeatherOS::User::SignalStop);
+    FeatherOS::Signals::Send(&state, FeatherOS::User::SignalContinue);
+    REQUIRE(state.pending == Bit(FeatherOS::User::SignalContinue));
+
+    // Even an ignored SIGCONT drops them.
+    FeatherOS::Signals::State ignoring = Fresh();
+    FeatherOS::Signals::Send(&ignoring, FeatherOS::User::SignalTerminalStop);
+    FeatherOS::Signals::Send(&ignoring, FeatherOS::User::SignalContinue);
+    REQUIRE(ignoring.pending == 0);
 }

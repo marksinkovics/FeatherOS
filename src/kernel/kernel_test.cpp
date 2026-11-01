@@ -23,6 +23,14 @@
 #if defined(FEATHEROS_SMP_TEST)
 #include "kernel/cpu.h"
 #endif
+#if defined(FEATHEROS_INPUT_TEST)
+#include "kernel/console.h"
+#include "kernel/process.h"
+#include "kernel/scheduler.h"
+#include "kernel/string/memory_functions.h"
+#include "kernel/terminal/terminal.h"
+#include "kernel/time/timer.h"
+#endif
 #include "kernel/string/format.h"
 #if defined(FEATHEROS_TIMER_TEST) || defined(FEATHEROS_SCHEDULER_TEST) ||                          \
     defined(FEATHEROS_SMP_TEST) || defined(FEATHEROS_NETWORK_TEST)
@@ -1202,6 +1210,60 @@ void RunNetworkTests()
         Panic("Network test message formatting failed");
     }
     Serial::Write(message);
+}
+#endif
+
+#if defined(FEATHEROS_INPUT_TEST)
+namespace
+{
+
+constexpr uint32_t ConsoleReportsPerSecond = 20;
+constexpr size_t ConsoleReportLength = 192;
+static_assert(Console::Count == 4);
+
+void FormatConsoleReport(char* report)
+{
+    char names[Console::Count][33];
+    for (uint32_t console = 0; console < Console::Count; ++console)
+    {
+        Process::ForegroundProgramName(Console::Terminal(console)->ForegroundGroup(),
+                                       names[console], sizeof(names[console]));
+    }
+    if (!String::FormatTo(report, ConsoleReportLength,
+                          "KERN/I: Consoles: tty{} shown; {}, {}, {}, {}", Console::Shown() + 1,
+                          static_cast<const char*>(names[0]), static_cast<const char*>(names[1]),
+                          static_cast<const char*>(names[2]), static_cast<const char*>(names[3])))
+    {
+        Panic("Console report formatting failed");
+    }
+}
+
+uint64_t ConsoleReportTask(void*)
+{
+    char previous[ConsoleReportLength] = {};
+    const uint64_t interval = Time::TicksPerSecond() / ConsoleReportsPerSecond;
+    for (;;)
+    {
+        char report[ConsoleReportLength] = {};
+        FormatConsoleReport(report);
+        if (memcmp(report, previous, sizeof(report)) != 0)
+        {
+            Console::WriteSerialLine(report);
+            memcpy(previous, report, sizeof(previous));
+        }
+        Scheduler::SleepUntil(Time::TickCount() + (interval == 0 ? 1 : interval));
+    }
+}
+
+} // namespace
+
+void StartConsoleReports()
+{
+    Scheduler::TaskId task;
+    if (!Scheduler::CreateTask(ConsoleReportTask, nullptr, &task))
+    {
+        Panic("Could not start the console report task");
+    }
 }
 #endif
 

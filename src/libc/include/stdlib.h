@@ -71,6 +71,15 @@ int unsetenv(const char* name);
 int rand(void);
 void srand(unsigned int seed);
 
+// Pseudo-terminals. posix_openpt takes O_RDWR, optionally with O_NOCTTY and O_CLOEXEC, and opens
+// "/dev/ptmx". There are no owners or permissions, so grantpt only checks that the descriptor is a
+// master. ptsname returns a static buffer that the next call overwrites.
+int posix_openpt(int flags);
+int grantpt(int descriptor);
+int unlockpt(int descriptor);
+char* ptsname(int descriptor);
+int ptsname_r(int descriptor, char* buffer, size_t capacity);
+
 __END_DECLS
 
 #endif

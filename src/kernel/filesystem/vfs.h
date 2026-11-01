@@ -30,7 +30,7 @@ struct FileHandle
     uint32_t first_cluster;
     uint32_t directory_cluster;
     uint32_t entry_index;
-    // A tmpfs node, or a Devices::Device.
+    // A tmpfs node, or a device as Devices::Find gives it.
     uint32_t node;
     FileKind kind;
     bool open;

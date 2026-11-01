@@ -19,7 +19,7 @@ struct PipeTable
 {
     PipeTable()
     {
-        FeatherOS::Files::OpenConsole(&table);
+        FeatherOS::Files::OpenConsole(&table, nullptr);
         REQUIRE(FeatherOS::Files::CreatePipe(&table, 0, &reader, &writer) == 0);
     }
 

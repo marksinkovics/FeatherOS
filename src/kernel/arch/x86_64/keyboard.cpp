@@ -40,6 +40,8 @@ uint16_t ExtendedKeyCode(uint8_t scan_code)
         return Input::KeyCode::KeypadEnter;
     case 0x1D:
         return Input::KeyCode::RightControl;
+    case 0x38:
+        return Input::KeyCode::RightAlt;
     case 0x47:
         return Input::KeyCode::Home;
     case 0x48:
@@ -86,11 +88,9 @@ void OnKeyboardScanCode(uint8_t scan_code)
     const auto base = static_cast<uint8_t>(scan_code & 0x7FU);
     const uint16_t code = extended_scan_code ? ExtendedKeyCode(base) : base < 0x59 ? base : 0;
     extended_scan_code = false;
-    char bytes[Input::Keyboard::MaximumKeyBytes];
-    const size_t length = code == 0 ? 0 : keyboard.Press(code, pressed, bytes);
-    if (length > 0)
+    if (code != 0)
     {
-        Input::SubmitBytes(bytes, length);
+        Input::SubmitKey(keyboard, code, pressed);
     }
 }
 

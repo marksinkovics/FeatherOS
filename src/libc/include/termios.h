@@ -15,6 +15,7 @@ typedef unsigned int speed_t;
 #define VEOF 2
 #define VMIN 3
 #define VTIME 4
+#define VSUSP 5
 
 struct termios
 {

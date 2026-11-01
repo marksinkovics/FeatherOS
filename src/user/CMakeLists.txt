@@ -9,7 +9,7 @@ set(FEATHEROS_PROGRAMS
     filetest:filetest ls:ls cat:cat write:write rm:rm mkdir:mkdir rmdir:rmdir env:env
     fptest:fptest libctest:libctest kill:kill ps:ps top:top keys:keys clear:clear vi:vi threads:threads cp:cp mv:mv touch:touch head:head tail:tail wc:wc
     grep:grep sort:sort ping:ping dhcp:dhcp net:net host:host nc:nc fetch:fetch httpd:httpd
-    ntp:ntp echod:echod
+    ntp:ntp echod:echod script:script stty:stty
 )
 # Programs that define _start themselves instead of linking the C library's, which calls main.
 # The kernel's own tests run test_program and read the raw arguments block.
@@ -37,6 +37,7 @@ add_library(featheros_user_support STATIC
     tcp_client.cpp
     text_tools.cpp
     vi_editor.cpp
+    window_size.cpp
 )
 target_compile_options(featheros_user_support PRIVATE ${FEATHEROS_USER_FLAGS})
 target_link_libraries(featheros_user_support PRIVATE featheros_c)

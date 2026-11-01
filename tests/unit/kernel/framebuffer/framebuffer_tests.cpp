@@ -179,6 +179,53 @@ TEST_CASE("status text draws green and red dots in place of their marker bytes")
     REQUIRE(count_pixels(0xD00000) > 20);
 }
 
+TEST_CASE("terminals sharing a framebuffer draw only while shown")
+{
+    constexpr uint64_t width = 320;
+    constexpr uint64_t height = 80;
+    std::array<uint8_t, width * height * 4> pixels{};
+    limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, width * 4, 32);
+    Framebuffer framebuffer;
+    REQUIRE(framebuffer.init(&descriptor));
+
+    FeatherOS::Term first;
+    FeatherOS::Term second;
+    first.Init(&framebuffer);
+    second.Init(&framebuffer);
+    second.SetShown(false);
+    first.SetStatus("first", "");
+    first.Print("first console");
+    const auto first_pixels = pixels;
+
+    second.SetStatus("second", "");
+    second.Print("second console\nmore");
+    REQUIRE(pixels == first_pixels);
+    REQUIRE(second.CharacterAt(1, 0) == 's');
+    REQUIRE(second.CursorRow() == 2);
+
+    first.SetShown(false);
+    second.SetShown(true);
+    REQUIRE(second.Shown());
+    REQUIRE(pixels != first_pixels);
+    const auto second_pixels = pixels;
+    first.Print(" and more");
+    REQUIRE(pixels == second_pixels);
+
+    // Showing it again repaints all of it, including what it printed while hidden.
+    second.SetShown(false);
+    first.SetShown(true);
+    FeatherOS::Term reference;
+    std::array<uint8_t, width * height * 4> reference_pixels{};
+    limine_framebuffer reference_descriptor =
+        MakeFramebuffer(reference_pixels.data(), width, height, width * 4, 32);
+    Framebuffer reference_framebuffer;
+    REQUIRE(reference_framebuffer.init(&reference_descriptor));
+    reference.Init(&reference_framebuffer);
+    reference.SetStatus("first", "");
+    reference.Print("first console and more");
+    REQUIRE(pixels == reference_pixels);
+}
+
 TEST_CASE("terminal places status text at the bar's edges and input inline")
 {
     constexpr uint64_t width = 320;

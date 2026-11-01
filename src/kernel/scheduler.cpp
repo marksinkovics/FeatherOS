@@ -450,7 +450,8 @@ uint64_t BusyTickCount(uint32_t cpu_index)
     return cpu_index < Cpu::MaximumCpus ? busy_ticks[cpu_index] : 0;
 }
 
-bool Wait(TaskId task_id, uint64_t* exit_status, bool (*interrupted)())
+bool Wait(TaskId task_id, uint64_t* exit_status, bool (*interrupted)(const void*),
+          const void* context)
 {
     if (!initialized)
     {
@@ -461,7 +462,7 @@ bool Wait(TaskId task_id, uint64_t* exit_status, bool (*interrupted)())
     Task* task = FindTask(task_id);
     while (task != nullptr && task != CurrentTask() && task->state != TaskState::Complete)
     {
-        if (interrupted != nullptr && interrupted())
+        if (interrupted != nullptr && interrupted(context))
         {
             scheduler_lock.UnlockIrqRestore(flags);
             return false;

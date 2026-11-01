@@ -41,6 +41,8 @@ public:
         Accepted,
         // Ctrl+C: the line is discarded and the caller starts a new one.
         Cancelled,
+        // Ctrl+Z: the caller stops, then redraws the line, which is kept.
+        Suspended,
     };
 
     void Begin(const char* prompt, size_t columns, LineHistory* history);
@@ -48,6 +50,9 @@ public:
     // Draws the prompt and line again from the start of the cursor's row, after other output
     // left the cursor there.
     void Redraw();
+    // Draws the prompt and line again for a terminal now `columns` wide, assuming the rows already
+    // drawn kept their places.
+    void Resize(size_t columns);
     const char* Line() const;
     size_t Cursor() const;
     const char* Output() const;

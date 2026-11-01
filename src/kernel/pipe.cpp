@@ -69,6 +69,12 @@ void CloseEnd(Pipe* pipe, bool write_end)
     }
 }
 
+void AddWriter(Pipe* pipe)
+{
+    Sync::SpinLockGuard guard(pipe->lock);
+    ++pipe->writers;
+}
+
 uint64_t Read(Pipe* pipe, void* buffer, uint64_t length, InterruptCheck interrupted,
               bool nonblocking)
 {

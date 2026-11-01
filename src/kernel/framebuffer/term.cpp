@@ -443,7 +443,7 @@ void Term::MarkDirty(uint32_t row, uint32_t* dirty_top, uint32_t* dirty_bottom) 
 
 void Term::Refresh()
 {
-    if (m_framebuffer == nullptr)
+    if (m_framebuffer == nullptr || !m_shown)
     {
         return;
     }
@@ -526,6 +526,20 @@ void Term::Redraw()
 {
     m_redraw_all = true;
     Refresh();
+}
+
+void Term::SetShown(bool shown)
+{
+    m_shown = shown;
+    if (shown)
+    {
+        Redraw();
+    }
+}
+
+bool Term::Shown() const
+{
+    return m_shown;
 }
 
 void Term::ApplyPendingScroll()

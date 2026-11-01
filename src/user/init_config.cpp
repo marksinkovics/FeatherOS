@@ -4,6 +4,19 @@
 
 namespace FeatherOS::User::Init
 {
+namespace
+{
+
+uint64_t SkipBlanks(const char* line, uint64_t start, uint64_t length)
+{
+    while (start < length && (line[start] == ' ' || line[start] == '\t'))
+    {
+        ++start;
+    }
+    return start;
+}
+
+} // namespace
 
 bool Matches(const char* text, uint64_t length, const char* word)
 {
@@ -62,10 +75,27 @@ LineKind ParseLine(const char* line, uint64_t length, Service* service)
     {
         return LineKind::Invalid;
     }
-    uint64_t command_start = word_end;
-    while (command_start < length && (line[command_start] == ' ' || line[command_start] == '\t'))
+    uint64_t command_start = SkipBlanks(line, word_end, length);
+    service->terminal[0] = '\0';
+    if (service->policy == Policy::Console)
     {
-        ++command_start;
+        uint64_t terminal_end = command_start;
+        while (terminal_end < length && line[terminal_end] != ' ' && line[terminal_end] != '\t')
+        {
+            ++terminal_end;
+        }
+        const uint64_t terminal_length = terminal_end - command_start;
+        if (terminal_length == 0 || line[command_start] != '/' ||
+            terminal_length >= MaximumTerminalPathLength)
+        {
+            return LineKind::Invalid;
+        }
+        for (uint64_t index = 0; index < terminal_length; ++index)
+        {
+            service->terminal[index] = line[command_start + index];
+        }
+        service->terminal[terminal_length] = '\0';
+        command_start = SkipBlanks(line, terminal_end, length);
     }
     const uint64_t command_length = length - command_start;
     if (command_length == 0 || command_length >= MaximumCommandLineLength)

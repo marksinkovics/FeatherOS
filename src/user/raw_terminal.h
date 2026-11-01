@@ -3,14 +3,15 @@
 
 #include "key_decoder.h"
 
+#include <signal.h>
 #include <stddef.h>
 #include <termios.h>
 
 namespace FeatherOS::User
 {
 
-// Switches the console to raw input, with Ctrl+C as a key instead of a signal, and reads one
-// key at a time.
+// Switches the console to raw input, with Ctrl+C and Ctrl+Z as keys instead of signals, and reads
+// one key at a time. SIGTSTP from elsewhere also comes as Ctrl+Z.
 class RawTerminal
 {
 public:
@@ -20,6 +21,10 @@ public:
     bool Enter(bool wake_on_output = false);
 
     void Leave();
+    // What Ctrl+Z does elsewhere: puts the terminal back as Enter found it and stops the process
+    // group, then once continued switches to raw input again. The caller leaves its screen
+    // before and draws it again after.
+    void Suspend();
     // False when a read fails, as after a signal (EINTR); errno says why.
     bool ReadKey(KeyPress* press);
     // Waits at most tenths of a second, up to 255 (0 waits for a key); *pressed says whether a key
@@ -30,6 +35,7 @@ private:
     termios m_original = {};
     termios m_raw = {};
     bool m_active = false;
+    struct sigaction m_previous_stop_action = {};
     // The minimum and timeout last set, so a read changes them only when it needs others.
     cc_t m_minimum = 1;
     cc_t m_timeout = 0;
@@ -37,7 +43,7 @@ private:
     KeyPress m_presses[KeyDecoder::MaximumPresses] = {};
     size_t m_press_count = 0;
     size_t m_next_press = 0;
-    char m_bytes[16] = {};
+    char m_bytes[1] = {};
     size_t m_byte_count = 0;
     size_t m_next_byte = 0;
 

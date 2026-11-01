@@ -164,13 +164,13 @@ constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     .descriptor_flags = RecordSeekFrom,
     .pipe = RecordSeek,
     .process_group = RecordDescriptor,
-    .foreground_group = RecordSeek,
+    .foreground_group = RecordSeekFrom,
     .kill = RecordSeek,
     .signal_action = RecordSeekFrom,
     .signal_mask = RecordSeek,
     .pause = ReadFixedProcessId,
-    .terminal_size = ReadFixedProcessId,
-    .terminal_mode = RecordSeek,
+    .terminal_size = RecordDescriptor,
+    .terminal_mode = RecordSeekFrom,
     .thread_create = RecordSeekFrom,
     .thread_join = RecordSeek,
     .thread_id = ReadFixedProcessId,
@@ -181,6 +181,9 @@ constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     .set_clock = RecordDescriptor,
     .file_status_flags = RecordSeekFrom,
     .get_socket_option = RecordSeekFrom,
+    .create_session = ReadFixedProcessId,
+    .session_id = RecordDescriptor,
+    .terminal_control = RecordSeekFrom,
 };
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
@@ -428,11 +431,31 @@ TEST_CASE("syscall signal-return is left to the architecture code")
     REQUIRE(output.last_arguments[1] == FeatherOS::User::SignalTerminate);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Pause), WriteOnly, &output).action ==
             Action::Invalid);
-    const auto mode = FeatherOS::Syscall::Dispatch(MakeRequest(Number::TerminalMode, 0x7000, 0x7100),
-                                                   AllHandlers, &output);
+    const auto mode = FeatherOS::Syscall::Dispatch(
+        MakeRequest(Number::TerminalMode, 2, 0x7000, 0x7100), AllHandlers, &output);
     REQUIRE(mode.action == Action::Return);
-    REQUIRE(output.last_arguments[0] == 0x7000);
-    REQUIRE(output.last_arguments[1] == 0x7100);
+    REQUIRE(output.last_arguments[0] == 2);
+    REQUIRE(output.last_arguments[1] == 0x7000);
+    REQUIRE(output.last_arguments[2] == 0x7100);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::TerminalSize, 1), AllHandlers, &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 1);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ForegroundGroup, 0, 1, 12),
+                                         AllHandlers, &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[2] == 12);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::SessionId, 4), AllHandlers, &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 4);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::CreateSession), AllHandlers, &output)
+                .action == Action::Return);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::CreateSession), WriteOnly, &output)
+                .action == Action::Invalid);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::TerminalControl, 3, 1, 0),
+                                         AllHandlers, &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 3);
+    REQUIRE(output.last_arguments[1] == 1);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::TerminalMode), WriteOnly, &output)
                 .action == Action::Invalid);
     const auto create = FeatherOS::Syscall::Dispatch(

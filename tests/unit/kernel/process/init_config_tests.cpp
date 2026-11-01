@@ -21,11 +21,13 @@ LineKind Parse(const std::string& line, Service* service)
 TEST_CASE("init reads a policy and a command from each service line")
 {
     Service service{};
-    REQUIRE(Parse("console shell", &service) == LineKind::Service);
+    REQUIRE(Parse("console /dev/tty2 shell", &service) == LineKind::Service);
     REQUIRE(service.policy == Policy::Console);
+    REQUIRE(std::string(service.terminal) == "/dev/tty2");
     REQUIRE(std::string(service.command) == "shell");
     REQUIRE(Parse("  once\techo hello   world \r", &service) == LineKind::Service);
     REQUIRE(service.policy == Policy::Once);
+    REQUIRE(std::string(service.terminal).empty());
     REQUIRE(std::string(service.command) == "echo hello   world");
     REQUIRE(Parse("respawn sleep 100", &service) == LineKind::Service);
     REQUIRE(service.policy == Policy::Respawn);
@@ -43,6 +45,23 @@ TEST_CASE("init skips blank and comment lines and rejects malformed ones")
     REQUIRE(Parse("onceshell", &service) == LineKind::Invalid);
     REQUIRE(Parse("once " + std::string(FeatherOS::User::MaximumCommandLineLength, 'x'),
                   &service) == LineKind::Invalid);
+}
+
+TEST_CASE("init requires a console service to name its terminal")
+{
+    Service service{};
+    REQUIRE(Parse("console\t/dev/tty1   shell -c ls", &service) == LineKind::Service);
+    REQUIRE(std::string(service.terminal) == "/dev/tty1");
+    REQUIRE(std::string(service.command) == "shell -c ls");
+    REQUIRE(Parse("console shell", &service) == LineKind::Invalid);
+    REQUIRE(Parse("console /dev/tty1", &service) == LineKind::Invalid);
+    REQUIRE(Parse("console /dev/tty1   ", &service) == LineKind::Invalid);
+    const std::string long_path =
+        "/" + std::string(FeatherOS::User::Init::MaximumTerminalPathLength - 1, 't');
+    REQUIRE(Parse("console " + long_path + " shell", &service) == LineKind::Invalid);
+    REQUIRE(Parse("console " + long_path.substr(0, long_path.size() - 1) + " shell", &service) ==
+            LineKind::Service);
+    REQUIRE(Parse("console tty1 shell", &service) == LineKind::Invalid);
 }
 
 TEST_CASE("init disables a service that restarts too often")

@@ -86,12 +86,7 @@ void WriteQueueAddress(uint32_t offset, uint64_t address)
 // A key event's value is 0 for a release, 1 for a press and 2 for a held key's repeat.
 void HandleKeyEvent(uint16_t code, uint32_t value)
 {
-    char bytes[Input::Keyboard::MaximumKeyBytes];
-    const size_t length = keyboard.Press(code, value != 0, bytes);
-    if (length > 0)
-    {
-        Input::SubmitBytes(bytes, length);
-    }
+    Input::SubmitKey(keyboard, code, value != 0);
 }
 
 void OnKeyboardInterrupt()

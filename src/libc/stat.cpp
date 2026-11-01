@@ -21,7 +21,7 @@ int Convert(uint64_t result, const FeatherOS::User::FileStatus& file_status, str
     case FeatherOS::User::FileType::Directory:
         status->st_mode = S_IFDIR | (writable ? 0755 : 0555);
         break;
-    case FeatherOS::User::FileType::Console:
+    case FeatherOS::User::FileType::Terminal:
     case FeatherOS::User::FileType::Device:
         status->st_mode = S_IFCHR | 0666;
         break;

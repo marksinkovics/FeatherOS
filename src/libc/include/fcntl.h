@@ -13,6 +13,9 @@
 #define O_EXCL 0200
 #define O_TRUNC 01000
 #define O_APPEND 02000
+// A session leader without a controlling terminal takes the first terminal it opens, unless it
+// passes this.
+#define O_NOCTTY 0400
 // Calls that would wait fail with EAGAIN instead, or a socket's connect with EINPROGRESS. Every
 // descriptor that shares the open file, through dup or posix_spawn, shares this flag.
 #define O_NONBLOCK 04000
@@ -20,7 +23,7 @@
 // The descriptor is not passed to programs this one starts.
 #define O_CLOEXEC 02000000
 
-// fcntl commands, as on Linux. F_SETFL changes O_APPEND and O_NONBLOCK, except on the console,
+// fcntl commands, as on Linux. F_SETFL changes O_APPEND and O_NONBLOCK, except on terminals,
 // and ignores other flags. Record locks are not supported.
 #define F_DUPFD 0
 #define F_GETFD 1
