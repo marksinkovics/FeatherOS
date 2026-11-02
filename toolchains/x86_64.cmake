@@ -22,9 +22,10 @@ SET(CMAKE_MODULE_LINKER_FLAGS   "--sysroot=${CMAKE_FIND_ROOT_PATH}")
 
 # -mgeneral-regs-only: the kernel leaves the FPU and SSE registers to user programs, so only a
 # context switch saves them (src/kernel/arch/floating_point.h).
-set(COMMON_FLAGS               "-g -ffreestanding -falign-functions -fomit-frame-pointer -finline-functions -Wno-unused-function -fno-builtin -Werror -Wno-unused-label -Wno-cpp -Wno-unused-parameter -nostdlib -nodefaultlibs -Wall -Wextra -O0 -Iinc -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only")
-set(COMMON_FLAGS_DEBUG         "-Os -g")
-set(COMMON_FLAGS_RELEASE       "-Os -DNDEBUG")
+set(COMMON_FLAGS               "-ffreestanding -falign-functions -fomit-frame-pointer -finline-functions -Wno-unused-function -fno-builtin -Werror -Wno-unused-label -Wno-cpp -Wno-unused-parameter -nostdlib -nodefaultlibs -Wall -Wextra -Iinc -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only")
+# BUILD_TYPE in build.sh picks one. Release keeps assert, which the tests rely on.
+set(COMMON_FLAGS_DEBUG         "-O0 -g")
+set(COMMON_FLAGS_RELEASE       "-O2")
 
 set(CMAKE_C_FLAGS               "${COMMON_FLAGS} -std=gnu11" CACHE INTERNAL "")
 set(CMAKE_C_STANDARD 11)

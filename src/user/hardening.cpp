@@ -110,7 +110,9 @@ void* ReadSharedPage(void*)
     }
 }
 
-[[noreturn]] void RunViolation(const char* name)
+// write-code writes to this function's own code. GCC 14 at -O2 inlines it into main and drops the
+// copy whose address that takes, so the link fails unless it stays out of line.
+[[noreturn, gnu::noinline]] void RunViolation(const char* name)
 {
     if (strcmp(name, "exec-heap") == 0)
     {

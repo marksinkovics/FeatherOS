@@ -5,6 +5,12 @@
 #include <string.h>
 #include <strings.h>
 
+// With optimization, GCC turns the loops in memset and memcpy back into calls to themselves unless
+// loop distribution into library calls is off.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC optimize("no-tree-loop-distribute-patterns")
+#endif
+
 namespace
 {
 

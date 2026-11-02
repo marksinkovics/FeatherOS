@@ -125,7 +125,7 @@ SHELL_INPUT = (
     b"primes 4 100000\nprimes 16 20000\n"
     b"threads 4 100000\nthreads 15 20000\n"
     b"fptest 8\n"
-    b"cppbench -n 1\ncppbench-O0 -n 3 life json\ncppbench nothing\n"
+    b"cppbench -n 1\ncppbench -n 3 life json\ncppbench nothing\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
 )
 

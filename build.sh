@@ -6,6 +6,7 @@ set -e
 SCRIPT_PATH=$(realpath "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 ARCH="${ARCH:-}"
+BUILD_TYPE="${BUILD_TYPE:-Debug}"
 LIMINE_TAG="v8.7.0-binary"
 PATH="$HOME/.local/bin:$PATH"
 export PATH
@@ -21,6 +22,7 @@ _err() {
 _usage() {
     printf 'Usage: %s [--arch <x86_64|aarch64>] <action> [actions...]\n' "$0"
     printf '   or: ARCH=<x86_64|aarch64> %s <action> [actions...]\n' "$0"
+    printf 'BUILD_TYPE=Release builds at -O2 (Swift -O); the default, Debug, at -O0 -g (Swift -Onone).\n'
     printf 'Actions: build, iso, run, test, test-all, unit-test, benchmark, debug, all, clean, fullclean\n'
 }
 
@@ -110,6 +112,13 @@ _swift_compiler() {
 build() {
     _require_arch
     _require_tools git make cmake ninja
+    case "$BUILD_TYPE" in
+        Debug | Release) ;;
+        *)
+            _err "Unsupported BUILD_TYPE='$BUILD_TYPE'. Choose Debug or Release."
+            exit 1
+            ;;
+    esac
     case "$ARCH" in
         x86_64)
             _require_tools x86_64-elf-gcc x86_64-elf-g++ x86_64-elf-ld x86_64-elf-ar nasm
@@ -139,7 +148,8 @@ build() {
     mkdir -p "$build_dir"
     cd "$build_dir"
 
-    cmake --fresh "$SCRIPT_DIR" -G Ninja -DARCH="$ARCH" \
+    _print "Build $ARCH ($BUILD_TYPE)"
+    cmake --fresh "$SCRIPT_DIR" -G Ninja -DARCH="$ARCH" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
         -DFEATHEROS_PANIC_TEST="${PANIC_TEST:-OFF}" \
         -DFEATHEROS_EXCEPTION_TEST="${EXCEPTION_TEST:-OFF}" \
         -DFEATHEROS_INTERRUPT_TEST="${INTERRUPT_TEST:-OFF}" \
@@ -209,10 +219,13 @@ iso() {
     cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" \
         "$SCRIPT_DIR/initramfs/sample.json" "$system_dir/"
     cp -R "$SCRIPT_DIR/initramfs/etc" "$root_dir/"
+    # Debug builds keep their debug information in build/<arch>/programs for gdb; the copies the
+    # system runs leave it out, so they stay small and within the 1 MiB program limit.
+    _require_tools "$ARCH-elf-strip"
     local program
     for program in "${programs[@]}"; do
         local name="${program##*/}"
-        cp "$program" "$system_dir/${name%-"$ARCH".elf}"
+        "$ARCH-elf-strip" --strip-debug -o "$system_dir/${name%-"$ARCH".elf}" "$program"
     done
     python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$system_dir/badelf"
     # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
@@ -550,6 +563,7 @@ for action in "${ACTIONS[@]}"; do
             unit_test
             ;;
         benchmark)
+            BUILD_TYPE=Release
             build
             iso
             benchmark

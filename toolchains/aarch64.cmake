@@ -18,9 +18,18 @@ set(CMAKE_EXE_LINKER_FLAGS "${COMMON_LDFLAGS} --sysroot=${CMAKE_FIND_ROOT_PATH}"
 set(CMAKE_SHARED_LINKER_FLAGS "--sysroot=${CMAKE_FIND_ROOT_PATH}")
 set(CMAKE_MODULE_LINKER_FLAGS "--sysroot=${CMAKE_FIND_ROOT_PATH}")
 
-set(COMMON_FLAGS "-g -ffreestanding -mcpu=generic -march=armv8-a+nofp+nosimd -mno-outline-atomics -mcmodel=small -fno-builtin -Wall -Wextra -Werror -O0 -nostdlib -nodefaultlibs -fno-stack-protector -fno-pic -fno-pie")
+set(COMMON_FLAGS "-ffreestanding -mcpu=generic -march=armv8-a+nofp+nosimd -mno-outline-atomics -mcmodel=small -fno-builtin -Wall -Wextra -Werror -nostdlib -nodefaultlibs -fno-stack-protector -fno-pic -fno-pie")
 set(CMAKE_C_FLAGS "${COMMON_FLAGS} -std=gnu11" CACHE INTERNAL "")
 set(CMAKE_CXX_FLAGS "${COMMON_FLAGS} -fno-exceptions -fno-rtti" CACHE INTERNAL "")
+# BUILD_TYPE in build.sh picks one. Release keeps assert, which the tests rely on.
+set(COMMON_FLAGS_DEBUG "-O0 -g")
+set(COMMON_FLAGS_RELEASE "-O2")
+set(CMAKE_C_FLAGS_DEBUG "${COMMON_FLAGS_DEBUG}" CACHE INTERNAL "")
+set(CMAKE_C_FLAGS_RELEASE "${COMMON_FLAGS_RELEASE}" CACHE INTERNAL "")
+set(CMAKE_CXX_FLAGS_DEBUG "${COMMON_FLAGS_DEBUG}" CACHE INTERNAL "")
+set(CMAKE_CXX_FLAGS_RELEASE "${COMMON_FLAGS_RELEASE}" CACHE INTERNAL "")
+set(CMAKE_ASM_FLAGS_DEBUG "-g" CACHE INTERNAL "")
+set(CMAKE_ASM_FLAGS_RELEASE "" CACHE INTERNAL "")
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 23)
 

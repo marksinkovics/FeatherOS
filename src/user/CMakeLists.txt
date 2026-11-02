@@ -115,8 +115,8 @@ function(featheros_add_swift_program entry)
     set(object ${CMAKE_CURRENT_BINARY_DIR}/swift/${name}.o)
     add_custom_command(
         OUTPUT ${object}
-        COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FLAGS} -I ${FEATHEROS_SWIFT_SUPPORT_DIRECTORY}
-            -module-name ${name} -c ${sources} -o ${object}
+        COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FLAGS} ${FEATHEROS_SWIFT_PROGRAM_DEBUG}
+            -I ${FEATHEROS_SWIFT_SUPPORT_DIRECTORY} -module-name ${name} -c ${sources} -o ${object}
         DEPENDS ${sources} ${FEATHEROS_SWIFT_LIBC_FILES} ${FEATHEROS_SWIFT_SUPPORT_MODULE}
         COMMENT "Building Swift object swift/${name}.o"
         VERBATIM
@@ -132,10 +132,6 @@ endforeach ()
 foreach (entry ${FEATHEROS_START_PROGRAMS})
     featheros_add_program(${entry})
 endforeach ()
-# The benchmark against swiftbench, at -Os like Swift's -Osize, and again unoptimized like the
-# other programs and the C library.
-target_compile_options(user_cppbench PRIVATE -Os)
-featheros_link_program(cppbench-O0 cppbench.cpp featheros_crt0)
 
 set(FEATHEROS_SWIFTC "" CACHE FILEPATH "swiftc from a swift.org toolchain, for Swift programs")
 if (ARCH STREQUAL "x86_64")
@@ -147,8 +143,18 @@ endif ()
 # use it, unlike the C++ programs built with -mno-red-zone.
 # Programs import the C library as the FeatherLibC module, described by src/libc/swift.
 set(libc_source ${PROJECT_SOURCE_DIR}/src/libc)
+# The optimization follows the C++ code's: -Onone -g for Debug, -O for Release. Programs compile
+# in the FeatherSupport code they use, so only they need -g, which swiftc also cannot combine with
+# -emit-module for ELF (it wraps the module into the same object).
+if (CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(FEATHEROS_SWIFT_OPTIMIZATION -O)
+else ()
+    set(FEATHEROS_SWIFT_OPTIMIZATION -Onone)
+    set(FEATHEROS_SWIFT_PROGRAM_DEBUG -g)
+endif ()
 set(FEATHEROS_SWIFT_FLAGS
-    -target ${FEATHEROS_SWIFT_TARGET} -enable-experimental-feature Embedded -wmo -Osize
+    -target ${FEATHEROS_SWIFT_TARGET} -enable-experimental-feature Embedded -wmo
+    ${FEATHEROS_SWIFT_OPTIMIZATION}
     -Xfrontend -disable-stack-protector
     -I ${libc_source}/swift -Xcc -I${libc_source}/include -Xcc -ffreestanding
     -module-cache-path ${CMAKE_CURRENT_BINARY_DIR}/swift/module-cache

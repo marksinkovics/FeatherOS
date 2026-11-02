@@ -2,8 +2,12 @@
 
 #include <stdint.h>
 
-// Built at -O0; with optimization, GCC could turn these loops back into calls to themselves
-// unless the file is built with -fno-tree-loop-distribute-patterns.
+// With optimization, GCC turns these loops back into calls to themselves unless loop
+// distribution into library calls is off.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC optimize("no-tree-loop-distribute-patterns")
+#endif
+
 extern "C"
 {
 

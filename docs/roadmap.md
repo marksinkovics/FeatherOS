@@ -589,13 +589,22 @@ User programs written in Embedded Swift, built on the host with the swift.org to
   - `sort`: the same numbers, by Swift's `sort()` against `qsort`.
   - `json`: an 87 KB document, parsed by `json`'s parser and by a line-by-line C++ port with its own `Vector`, as the toolchain has no C++ standard library.
 
-  Both programs draw numbers from SplitMix64 with the same seeds, and each workload prints a check value that must match between them. `-t` times a workload for some seconds with `CLOCK_MONOTONIC`, and `-n` runs it a set number of times. `cppbench` is built at `-Os` to match `-Osize`. `cppbench-O0` is the same source unoptimized, the way every other program and the C library are built, since they get no `-O` flag. `./build.sh --arch <arch> benchmark` (`tools/benchmark.py`) boots QEMU, runs three interleaved rounds, prints each workload's fastest time with its ratio to `cppbench`, and the loaded code and data bytes, and fails on a check mismatch. The shell smoke test checks the check values of all three programs.
+  Both programs draw numbers from SplitMix64 with the same seeds, and each workload prints a check value that must match between them. `-t` times a workload for some seconds with `CLOCK_MONOTONIC`, and `-n` runs it a set number of times. The shell smoke test checks the check values of both programs.
+
+  The benchmark showed that every C++ program and the C library were built at `-O0`, because `CMAKE_BUILD_TYPE` was never set. So `build.sh` gained `BUILD_TYPE`:
+  - Debug, the default: `-O0 -g`, and Swift `-Onone`.
+  - Release: `-O2`, and Swift `-O`, for the kernel, the C library and the programs, keeping `assert`.
+
+  The initramfs gets copies of the programs with the debug information stripped. Release needed `#pragma GCC optimize("no-tree-loop-distribute-patterns")` in the `memset`/`memcpy` files, libgcc's `__lshrti3` in `src/libc/compiler_runtime.cpp` for AArch64, and `hardening`'s `RunViolation` kept out of line. The matrix runs the shell session in Release on both targets as well (38 cases).
+
+  `./build.sh --arch <arch> benchmark` (`tools/benchmark.py`) builds in Release and boots QEMU. It runs three interleaved rounds, prints each workload's fastest time with Swift's ratio to C++, and the loaded code and data bytes, and fails on a check mismatch.
 
   Results:
-  - Swift at `-Osize` takes 1.0 to 1.8 times as long as C++ at `-Os` on `sieve`, `quicksort` and `json`.
-  - It takes 3.9 to 4.9 times as long on `life`, mostly because of the overflow and bounds checks: an `-Ounchecked` trial brought `life` to 2.2 times.
-  - It takes 0.34 to 0.41 times as long on `sort` (a specialized generic sort against an unoptimized `qsort`).
-  - Its code is 1.6 to 1.9 times as large.
+  - Swift at `-O` takes 1.6 to 2.0 times as long as C++ at `-O2` on `sieve`, `quicksort` and `json`.
+  - It takes about 4 times as long on `life`, mostly because of the bounds and overflow checks: at `-Ounchecked`, `life`, `sieve` and `quicksort` fell to 1.9, 1.2 and 1.05 times.
+  - `json` stays at 1.8 times without the checks.
+  - Swift's library sort takes 0.6 to 0.8 times as long as `qsort`.
+  - Swift's code is 1.7 to 1.9 times as large.
 
   The table is in `docs/development.md`, "Swift against C++".
 - Document what Embedded Swift leaves out (reflection, `Codable`, Foundation, some existential types) and the benchmark results in `docs/development.md`.

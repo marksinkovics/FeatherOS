@@ -12,12 +12,8 @@ import time
 
 from smoke_test import ANSI_ESCAPE_BYTES, QEMU_CPU_COUNT, SHELL_PROMPT
 
-# The baseline first; each later program's times are given as a ratio to it.
-PROGRAMS = (
-    ("cppbench", "C++ -Os"),
-    ("swiftbench", "Swift -Osize"),
-    ("cppbench-O0", "C++ -O0"),
-)
+# C++ first; Swift's times are given as a ratio to it.
+PROGRAMS = (("cppbench", "C++ -O2"), ("swiftbench", "Swift -O"))
 RESULT = re.compile(
     rb"^(\w+): check (\d+), (\d+) runs? in (\d+) ms, (\d+) us each\r?$",
     re.MULTILINE,

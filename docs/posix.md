@@ -167,7 +167,7 @@ Errors set `errno` (`math_errhandling` is `MATH_ERRNO`):
 Differences:
 - `sin`, `cos` and `tan` reduce their argument with a three-part π/2, so they lose precision above about 10^6.
 - There are no `long double` functions.
-- AArch64 programs cannot do `long double` arithmetic, because the compiler runtime routines for 128-bit floats are missing. They can still print, parse and copy `long double` values.
+- AArch64 programs cannot do `long double` arithmetic, because the compiler runtime routines for 128-bit floats are missing. They can still print, parse and copy `long double` values. Of libgcc's integer routines, the C library has only `__lshrti3` (`src/libc/compiler_runtime.cpp`), which AArch64 code at `-O2` calls to shift `unsigned __int128` values.
 - `fenv.h`, `lround`, `nextafter`, `erf`, `lgamma` and other less common functions are not provided.
 
 ### `time.h`
