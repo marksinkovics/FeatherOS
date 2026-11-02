@@ -21,6 +21,12 @@ set(FEATHEROS_START_PROGRAMS
 set(FEATHEROS_SWIFT_PROGRAMS
     hello:hello rev:rev json:json life:life swiftbench:swiftbench
 )
+# Swift programs that use concurrency, built only where the toolchain has the _Concurrency runtime
+# (x86-64 so far). They start from an @main type's async main, since top-level await crashes
+# swiftc 6.4.2.
+set(FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS
+    tasks:tasks
+)
 # Sources a Swift program compiles in from other programs' directories, by program name.
 set(FEATHEROS_SWIFT_SHARED_SOURCES_swiftbench life/grid.swift json/parser.swift json/value.swift)
 
@@ -99,6 +105,7 @@ endfunction()
 # Each Swift program is one module compiled whole (-wmo, which Embedded Swift requires) into one
 # object, with the parts of the standard library and FeatherSupport it uses.
 function(featheros_add_swift_program entry)
+    cmake_parse_arguments(PARSE_ARGV 1 program "CONCURRENCY" "" "")
     string(REPLACE ":" ";" parts ${entry})
     list(GET parts 0 name)
     list(GET parts 1 source)
@@ -113,9 +120,15 @@ function(featheros_add_swift_program entry)
         OUTPUT_VARIABLE shared_sources)
     list(APPEND sources ${shared_sources})
     set(object ${CMAKE_CURRENT_BINARY_DIR}/swift/${name}.o)
+    if (program_CONCURRENCY)
+        set(mode -parse-as-library)
+        # The two archives call each other.
+        set(libraries -Wl,--start-group ${FEATHEROS_SWIFT_CONCURRENCY_ARCHIVES} -Wl,--end-group
+            featheros_swift_concurrency_platform)
+    endif ()
     add_custom_command(
         OUTPUT ${object}
-        COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FLAGS} ${FEATHEROS_SWIFT_PROGRAM_DEBUG}
+        COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FLAGS} ${FEATHEROS_SWIFT_PROGRAM_DEBUG} ${mode}
             -I ${FEATHEROS_SWIFT_SUPPORT_DIRECTORY} -module-name ${name} -c ${sources} -o ${object}
         DEPENDS ${sources} ${FEATHEROS_SWIFT_LIBC_FILES} ${FEATHEROS_SWIFT_SUPPORT_MODULE}
         COMMENT "Building Swift object swift/${name}.o"
@@ -123,7 +136,7 @@ function(featheros_add_swift_program entry)
     )
     set_source_files_properties(${object} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
     featheros_link_program(${name} ${object} featheros_crt0 featheros_swift_support
-        ${FEATHEROS_SWIFT_UNICODE_TABLES})
+        ${FEATHEROS_SWIFT_UNICODE_TABLES} ${libraries})
 endfunction()
 
 foreach (entry ${FEATHEROS_PROGRAMS})
@@ -175,8 +188,10 @@ if (FEATHEROS_SWIFTC)
     # String hashing and Characters need the toolchain's Unicode tables; the linker takes only the
     # parts a program uses.
     get_filename_component(swift_bin ${FEATHEROS_SWIFTC} DIRECTORY)
-    set(FEATHEROS_SWIFT_UNICODE_TABLES
-        ${swift_bin}/../lib/swift/embedded/${FEATHEROS_SWIFT_TARGET}/libswiftUnicodeDataTables.a)
+    set(swift_libraries ${swift_bin}/../lib/swift/embedded/${FEATHEROS_SWIFT_TARGET})
+    set(FEATHEROS_SWIFT_UNICODE_TABLES ${swift_libraries}/libswiftUnicodeDataTables.a)
+    set(FEATHEROS_SWIFT_CONCURRENCY_ARCHIVES ${swift_libraries}/libswift_Concurrency.a
+        ${swift_libraries}/libswift_ConcurrencyDefaultExecutor.a)
     if (NOT EXISTS ${FEATHEROS_SWIFT_UNICODE_TABLES})
         set(probe_result "no ${FEATHEROS_SWIFT_UNICODE_TABLES}")
     endif ()
@@ -195,4 +210,17 @@ if (swift_usable)
     foreach (entry ${FEATHEROS_SWIFT_PROGRAMS})
         featheros_add_swift_program(${entry})
     endforeach ()
+    list(GET FEATHEROS_SWIFT_CONCURRENCY_ARCHIVES 0 concurrency_runtime)
+    if (EXISTS ${concurrency_runtime})
+        # What the toolchain's runtime needs from the platform; Part 10 of M21 replaces it.
+        add_library(featheros_swift_concurrency_platform STATIC swift_concurrency_platform.cpp)
+        target_compile_options(featheros_swift_concurrency_platform PRIVATE ${FEATHEROS_USER_FLAGS})
+        target_link_libraries(featheros_swift_concurrency_platform PRIVATE featheros_c)
+        foreach (entry ${FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS})
+            featheros_add_swift_program(${entry} CONCURRENCY)
+        endforeach ()
+    else ()
+        message(STATUS "The Swift toolchain has no concurrency runtime for "
+            "${FEATHEROS_SWIFT_TARGET}, so the Swift concurrency programs are skipped")
+    endif ()
 endif ()

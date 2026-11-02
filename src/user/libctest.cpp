@@ -934,6 +934,12 @@ void CheckTime()
     errno = 0;
     const struct timespec invalid = {0, 1000000000};
     Check(nanosleep(&invalid, nullptr) == -1 && errno == EINVAL, "nanosleep rejects bad input");
+    struct timespec resolution = {1, 0};
+    Check(clock_getres(CLOCK_MONOTONIC, &resolution) == 0 && resolution.tv_sec == 0 &&
+              resolution.tv_nsec == 10000000 && clock_getres(CLOCK_REALTIME, nullptr) == 0,
+          "clock_getres");
+    errno = 0;
+    Check(clock_getres(7, &resolution) == -1 && errno == EINVAL, "clock_getres rejects a clock");
     const time_t before_epoch = -1;
     errno = 0;
     Check(gmtime(&before_epoch) == nullptr && errno == EOVERFLOW, "gmtime before 1970");

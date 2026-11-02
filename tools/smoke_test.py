@@ -204,14 +204,34 @@ EXPECTED_SWIFT_OUTPUT = (
 )
 
 
-def SwiftProgramsBuilt(arch):
+# Swift concurrency, built only where the toolchain has its runtime (x86-64).
+SWIFT_CONCURRENCY_INPUT = b"tasks\n"
+EXPECTED_SWIFT_CONCURRENCY_OUTPUT = (
+    "tasks: a task returned 42",
+    "tasks: turns ping 1, pong 1, ping 2, pong 2, ping 3, pong 3",
+    "tasks: 100 increments counted 100",
+    "tasks: squares of 1 to 10 sum to 385",
+    "tasks: async let gave 25",
+    "tasks: a continuation resumed with 7",
+    "tasks: a stream of 1 to 5 sums to 15",
+    "tasks: cancelled after ",
+    "tasks: the error came through true",
+    "tasks: task-local outer, task outer, detached none",
+)
+
+
+def ProgramBuilt(arch, name):
     programs = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "build",
         arch,
         "programs",
     )
-    return os.path.exists(os.path.join(programs, f"hello-{arch}.elf"))
+    return os.path.exists(os.path.join(programs, f"{name}-{arch}.elf"))
+
+
+def SwiftProgramsBuilt(arch):
+    return ProgramBuilt(arch, "hello")
 
 
 class WholeWrite(bytes):
@@ -539,7 +559,7 @@ EXPECTED_SHELL_OUTPUT = (
     "spawned from the disk",
     "SPAWNED=yes",
     "libctest: /dev/tty works",
-    "libctest: 480 checks passed",
+    "libctest: 482 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
@@ -2273,6 +2293,9 @@ def main():
         swift_built = SwiftProgramsBuilt(args.arch)
         if not swift_built:
             print("NOTE: Swift programs were not built; skipping their checks")
+        concurrency_built = ProgramBuilt(args.arch, "tasks")
+        if swift_built and not concurrency_built:
+            print("NOTE: Swift concurrency was not built; skipping its checks")
         pending_lines = (
             (
                 SWIFT_SHELL_INPUT.splitlines(keepends=True)
@@ -2280,6 +2303,7 @@ def main():
                 if swift_built
                 else []
             )
+            + ([SWIFT_CONCURRENCY_INPUT] if concurrency_built else [])
             + SHELL_INPUT.splitlines(keepends=True)
             + list(SHELL_EDIT_INPUT)
             + list(SHELL_VI_INPUT)
@@ -2935,6 +2959,7 @@ def main():
             + EXPECTED_SCRIPT_OUTPUT
             + EXPECTED_STOP_OUTPUT
             + (EXPECTED_SWIFT_OUTPUT if swift_built else ())
+            + (EXPECTED_SWIFT_CONCURRENCY_OUTPUT if concurrency_built else ())
             if text not in output
         ]
         if missing:

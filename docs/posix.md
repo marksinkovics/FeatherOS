@@ -177,13 +177,13 @@ Differences:
 
 There are no time zones: every time is UTC.
 
-- **Clocks:** `time`, `clock_gettime` with `CLOCK_REALTIME` (10 ms timer ticks, in nanoseconds) and `CLOCK_MONOTONIC` (milliseconds since boot), and `clock_settime` for `CLOCK_REALTIME`, which any process may call.
+- **Clocks:** `time`, `clock_gettime` with `CLOCK_REALTIME` (10 ms timer ticks, in nanoseconds) and `CLOCK_MONOTONIC` (milliseconds since boot), `clock_getres`, which gives 10 ms for both, and `clock_settime` for `CLOCK_REALTIME`, which any process may call.
 - **Conversions:**
   - `gmtime` and `gmtime_r`; `localtime` and `localtime_r` return the same as gmtime.
   - `mktime` and `timegm`, which normalize out-of-range fields.
   - `asctime` and `ctime`.
   - `strftime` with every C99 conversion, in the C locale.
-- **Sleeping:** `nanosleep`, which is never cut short, so `remaining` is always zero.
+- **Sleeping:** `nanosleep`, in whole milliseconds; a signal cuts it short with `EINTR` and the time left in `remaining`.
 
 Differences:
 - Dates before 1970 fail with `EOVERFLOW`.

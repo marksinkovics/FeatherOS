@@ -46,6 +46,7 @@ size_t strftime(char* buffer, size_t size, const char* format, const struct tm* 
 char* asctime(const struct tm* time);
 char* ctime(const time_t* seconds);
 int clock_gettime(clockid_t clock, struct timespec* result);
+int clock_getres(clockid_t clock, struct timespec* resolution);
 // Only CLOCK_REALTIME can be set, and the timer must be running.
 int clock_settime(clockid_t clock, const struct timespec* time);
 // A signal cuts it short with EINTR and the time left in remaining.
