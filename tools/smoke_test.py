@@ -128,6 +128,21 @@ SHELL_INPUT = (
     b"calc\n1 / 3\n7 / 0\nexit\n"
 )
 
+# Programs written in Embedded Swift, which the build skips without a Swift
+# toolchain.
+SWIFT_SHELL_INPUT = b"hello\n"
+EXPECTED_SWIFT_OUTPUT = ("Hello from Embedded Swift",)
+
+
+def SwiftProgramsBuilt(arch):
+    programs = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "build",
+        arch,
+        "programs",
+    )
+    return os.path.exists(os.path.join(programs, f"hello-{arch}.elf"))
+
 
 class WholeWrite(bytes):
     """Input written in one piece, so escape sequences arrive together."""
@@ -2156,8 +2171,14 @@ def main():
     if args.expect_calc:
         pending_lines = CALC_INPUT.splitlines(keepends=True)
     elif args.expect_shell:
+        swift_built = SwiftProgramsBuilt(args.arch)
+        if not swift_built:
+            print("NOTE: Swift programs were not built; skipping their checks")
         pending_lines = (
-            SHELL_INPUT.splitlines(keepends=True)
+            (SWIFT_SHELL_INPUT if swift_built else b"").splitlines(
+                keepends=True
+            )
+            + SHELL_INPUT.splitlines(keepends=True)
             + list(SHELL_EDIT_INPUT)
             + list(SHELL_VI_INPUT)
             + list(SHELL_TOP_INPUT)
@@ -2804,6 +2825,7 @@ def main():
             for text in EXPECTED_SHELL_OUTPUT
             + EXPECTED_SCRIPT_OUTPUT
             + EXPECTED_STOP_OUTPUT
+            + (EXPECTED_SWIFT_OUTPUT if swift_built else ())
             if text not in output
         ]
         if missing:

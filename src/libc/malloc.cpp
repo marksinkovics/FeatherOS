@@ -86,6 +86,25 @@ void* malloc(size_t size)
     return pointer;
 }
 
+int posix_memalign(void** result, size_t alignment, size_t size)
+{
+    if (alignment < sizeof(void*) || (alignment & (alignment - 1)) != 0)
+    {
+        return EINVAL;
+    }
+    void* pointer = nullptr;
+    {
+        const FeatherOS::LibC::Guard<FeatherOS::LibC::Lock> guard(heap_lock);
+        pointer = Heap().AllocateAligned(size, alignment);
+    }
+    if (pointer == nullptr)
+    {
+        return ENOMEM;
+    }
+    *result = pointer;
+    return 0;
+}
+
 void free(void* pointer)
 {
     if (pointer == nullptr)

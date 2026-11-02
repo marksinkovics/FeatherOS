@@ -93,6 +93,20 @@ _aarch64_firmware() {
     return 1
 }
 
+# swiftc from a swift.org toolchain: SWIFTC if set, otherwise the toolchain swiftly selects for
+# this checkout (.swift-version). Xcode's swiftc does not reliably target ELF, so it is not used.
+_swift_compiler() {
+    if [ -n "${SWIFTC:-}" ]; then
+        printf '%s\n' "$SWIFTC"
+        return
+    fi
+    command -v swiftly >/dev/null 2>&1 || return 1
+    local toolchain
+    toolchain=$(cd "$SCRIPT_DIR" && swiftly use --print-location 2>/dev/null) || return 1
+    [ -x "$toolchain/usr/bin/swiftc" ] || return 1
+    printf '%s\n' "$toolchain/usr/bin/swiftc"
+}
+
 build() {
     _require_arch
     _require_tools git make cmake ninja
@@ -114,6 +128,12 @@ build() {
         make -C deps/limine
     fi
 
+    local swiftc
+    if ! swiftc=$(_swift_compiler); then
+        swiftc=""
+        _print "No Swift toolchain (swiftly or SWIFTC), so the Swift programs are skipped"
+    fi
+
     local build_dir
     build_dir=$(_build_dir)
     mkdir -p "$build_dir"
@@ -130,7 +150,8 @@ build() {
         -DFEATHEROS_SMP_TEST="${SMP_TEST:-OFF}" \
         -DFEATHEROS_STORAGE_TEST="${STORAGE_TEST:-OFF}" \
         -DFEATHEROS_NETWORK_TEST="${NETWORK_TEST:-OFF}" \
-        -DFEATHEROS_INPUT_TEST="${INPUT_TEST:-OFF}"
+        -DFEATHEROS_INPUT_TEST="${INPUT_TEST:-OFF}" \
+        -DFEATHEROS_SWIFTC="$swiftc"
 
     time cmake --build . --parallel
 }

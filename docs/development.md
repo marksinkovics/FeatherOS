@@ -42,6 +42,8 @@ Install Ninja and CMake 3.20 or newer as well; kernel and unit-test CMake builds
 - sudo apt-get install -y mtools
 - sudo apt-get install -y python3
 
+Swift programs (optional) need a swift.org toolchain, installed with [swiftly](https://www.swift.org/install/). `swiftly install` in the checkout installs the version `.swift-version` pins, and `build.sh` asks swiftly for its location, or uses `SWIFTC=/path/to/swiftc` when set. Xcode's `swiftc` is not used, since it does not reliably target ELF. Without a usable toolchain the build says so and skips the Swift programs, and the shell smoke test skips their checks.
+
 ## Architecture Builds
 
 An architecture must be specified for `build`, `iso`, `run`, `test`, `debug`, and `all`; there is no implicit architecture default. Select it with `--arch <x86_64|aarch64>` or the `ARCH` environment variable. The command-line option takes precedence if both are supplied.
@@ -401,6 +403,10 @@ The shell shows a prompt with its working directory, such as `/home> `, and edit
 - `top [-n count] [-d milliseconds]` samples `/proc` every second (or `-d`, at least 100 ms) and prints the processes busiest first, with `%CPU` of one CPU and the whole system's use, On the console, without `-n`, it takes the alternate screen and redraws the table in place, cut to the screen's height, until `q`, Escape or Ctrl+C (raw input, waiting for keys between refreshes), and Ctrl+Z stops it until `fg`; with `-n`, or when its output is not the console, it prints `count` tables one after another.
 
 Every program except the boot self-test prints its usage and purpose for `<name> -h` or `<name> --help` (`HelpRequested` in `src/user/command_line.h`), and the shell's `help` points to this. To add a program, create `src/user/<name>.cpp` with a `main(argc, argv)` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. `FEATHEROS_START_PROGRAMS` is for programs that define `_start(const ProgramArguments*)` themselves and skip the C library's startup, which only `test_program` does. `filetest` and `hardening` still call `src/user/syscall.h` directly where they test the kernel's exact errors.
+
+### Swift programs
+
+Programs written in Embedded Swift are listed in `FEATHEROS_SWIFT_PROGRAMS` as `<name>:<source>`, with the source in `src/user/<source>.swift`. Each one is a single module whose top-level code becomes `main`, compiled whole (`-wmo`, which Embedded Swift requires) with `-Osize` for `x86_64-unknown-none-elf` or `aarch64-none-none-elf` into one object. That object holds the parts of the Swift standard library and runtime the program uses, and links with the C library's startup into the same static-PIE program as a C++ one. The runtime needs only `posix_memalign` and `free` (for objects and boxes), `memset` and `putchar` (for `print`) from the C library. Swift code may use the x86-64 red zone, which the kernel leaves free when it builds a signal frame. `hello` is the only Swift program so far and takes no arguments.
 
 Interactive runs accept keys from the QEMU window on both architectures. x86-64 uses PS/2; AArch64 uses virtio-input on QEMU `virt`. The launching terminal's serial console also remains available. Program output appears on both serial and the framebuffer console.
 

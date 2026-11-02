@@ -90,8 +90,9 @@ Each kernel error maps to one of them. A background read of the controlling term
 ### `stdlib.h`
 
 - **Process:** `exit`, `_Exit`, `abort` and `atexit`. `atexit` and `__cxa_atexit` share one list of 32 handlers.
-- **Memory:** `malloc`, `calloc`, `realloc` and `free`.
+- **Memory:** `malloc`, `calloc`, `realloc`, `free` and `posix_memalign`.
   - Blocks are 16-byte aligned and come from a first-fit allocator with address-ordered free lists.
+  - `posix_memalign` takes any power-of-two alignment: a larger one over-allocates and frees the bytes before the aligned block. `realloc` keeps only 16-byte alignment when it moves a block.
   - The heap grows in 64 KiB steps. Freed memory is reused, and once more than 256 KiB is free at the end of the heap, all but 64 KiB of it goes back to the kernel. Free space below blocks still in use stays, since only the end of the heap can move.
   - Freeing a pointer that `malloc` did not return, or freeing one twice, aborts.
 - **Numbers:**

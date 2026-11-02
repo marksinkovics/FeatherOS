@@ -34,6 +34,8 @@ public:
     void Initialize(Grow grow_function, void* grow_context, Shrink shrink_function = nullptr);
     // nullptr if size does not fit, or if Grow could not provide the memory.
     void* Allocate(size_t size);
+    // alignment must be a power of two. The block is freed and resized like any other.
+    void* AllocateAligned(size_t size, size_t alignment);
     // False, and nothing changes, for a pointer this allocator did not hand out or that was
     // already freed.
     bool Free(void* pointer);

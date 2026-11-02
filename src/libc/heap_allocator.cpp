@@ -41,6 +41,45 @@ void* HeapAllocator::Allocate(size_t size)
     return block == nullptr ? nullptr : Payload(block);
 }
 
+// Over-allocates, then gives the bytes before the aligned payload back as a free block. That
+// block needs room for its header and list pointer, so a gap smaller than MinimumBlockSize moves
+// the payload up by one more alignment step.
+void* HeapAllocator::AllocateAligned(size_t size, size_t alignment)
+{
+    if (alignment <= Alignment)
+    {
+        return Allocate(size);
+    }
+    if (size > SIZE_MAX / 2 || alignment > SIZE_MAX / 4)
+    {
+        return nullptr;
+    }
+    auto* payload = static_cast<uint8_t*>(Allocate(size + alignment + MinimumBlockSize));
+    if (payload == nullptr)
+    {
+        return nullptr;
+    }
+    const uintptr_t address = reinterpret_cast<uintptr_t>(payload);
+    uintptr_t aligned = (address + alignment - 1) & ~(alignment - 1);
+    if (aligned != address && aligned - address < MinimumBlockSize)
+    {
+        aligned += alignment;
+    }
+    Block* block = BlockOf(payload);
+    const size_t gap = aligned - address;
+    if (gap != 0)
+    {
+        auto* moved = reinterpret_cast<Block*>(aligned - HeaderSize);
+        moved->size = block->size - gap;
+        moved->magic = UsedMagic;
+        block->size = gap;
+        Insert(block);
+        block = moved;
+    }
+    Split(block, BlockSize(size));
+    return Payload(block);
+}
+
 bool HeapAllocator::Free(void* pointer)
 {
     Block* block = BlockOf(pointer);
