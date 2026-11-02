@@ -1,4 +1,5 @@
 import FeatherLibC
+import FeatherSupport
 
 protocol Shape {
     var name: String { get }
@@ -46,14 +47,9 @@ func shareTracker() -> Bool {
     return shared
 }
 
-func arguments() -> [String] {
-    let values = featheros_argument_values()!
-    return (1..<Int(featheros_argument_count())).map { String(cString: values[$0]!) }
-}
-
 print("Hello from Embedded Swift")
 var line = "hello: arguments"
-for (index, argument) in arguments().enumerated() {
+for (index, argument) in Arguments.operands.enumerated() {
     line += index == 0 ? " " : ", "
     line += argument
 }
@@ -68,5 +64,23 @@ let characters = "cafe\u{301}".count
 let rolled = (1...6).contains(Int.random(in: 1...6))
 print("hello: \(distinct) distinct words, \(characters) characters, roll in range \(rolled)")
 print("hello: running as process \(getpid())")
+
+func readsAlike(_ path: String) throws(SystemError) -> Bool {
+    let whole = try InputFile(path: path).readAll()
+    let file = try InputFile(path: path)
+    var joined: [UInt8] = []
+    while let line = try file.readLine() {
+        joined += line + [UInt8(ascii: "\n")]
+    }
+    return !whole.isEmpty && joined == whole
+}
+
+for path in ["/etc/hosts", "/none"] {
+    do throws(SystemError) {
+        print("hello: \(path) read whole and by line alike \(try readsAlike(path))")
+    } catch {
+        print("hello: \(path): \(error)")
+    }
+}
 let message: StaticString = "hello: written with write\n"
 _ = write(STDOUT_FILENO, message.utf8Start, message.utf8CodeUnitCount)

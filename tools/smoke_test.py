@@ -130,7 +130,13 @@ SHELL_INPUT = (
 
 # Programs written in Embedded Swift, which the build skips without a Swift
 # toolchain.
-SWIFT_SHELL_INPUT = b'hello one "two words"\n'
+SWIFT_SHELL_INPUT = (
+    b'hello one "two words"\n'
+    b'echo "Embedded Swift" | rev\n'
+    b"write /tmp/rev.txt abc def\n"
+    b"rev /tmp/rev.txt /tmp/none\n"
+    b"rev -h\n"
+)
 EXPECTED_SWIFT_OUTPUT = (
     "Hello from Embedded Swift",
     "hello: arguments one, two words",
@@ -140,6 +146,12 @@ EXPECTED_SWIFT_OUTPUT = (
     "hello: 2 distinct words, 4 characters, roll in range true",
     "hello: running as process ",
     "hello: written with write",
+    "hello: /etc/hosts read whole and by line alike true",
+    "hello: /none: No such file or directory",
+    "tfiwS deddebmE",
+    "fed cba",
+    "rev: /tmp/none: No such file or directory",
+    "usage: rev [file...]",
 )
 
 

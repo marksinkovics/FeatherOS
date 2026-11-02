@@ -19,7 +19,7 @@ set(FEATHEROS_START_PROGRAMS
 # Programs written in Embedded Swift, <program name>:<source file> with a .swift source. They
 # link against the C library like the others, and are skipped when no usable swiftc was found.
 set(FEATHEROS_SWIFT_PROGRAMS
-    hello:hello
+    hello:hello rev:rev
 )
 
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker_${ARCH}.ld)
@@ -71,8 +71,31 @@ function(featheros_add_program entry)
     featheros_link_program(${name} ${source}.cpp ${ARGN})
 endfunction()
 
+# The Swift programs' shared code, the FeatherSupport module. Embedded Swift serializes every
+# function body into the .swiftmodule, so programs compile in the parts they use; the archive is
+# only a fallback for symbols they do not.
+set(FEATHEROS_SWIFT_SUPPORT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/swift/support)
+function(featheros_add_swift_support)
+    file(GLOB sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/swift_support/*.swift)
+    set(object ${FEATHEROS_SWIFT_SUPPORT_DIRECTORY}/FeatherSupport.o)
+    set(module ${FEATHEROS_SWIFT_SUPPORT_DIRECTORY}/FeatherSupport.swiftmodule)
+    add_custom_command(
+        OUTPUT ${object} ${module}
+        COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FLAGS} -parse-as-library
+            -module-name FeatherSupport -emit-module -emit-module-path ${module}
+            -c ${sources} -o ${object}
+        DEPENDS ${sources} ${FEATHEROS_SWIFT_LIBC_FILES}
+        COMMENT "Building Swift module FeatherSupport"
+        VERBATIM
+    )
+    set_source_files_properties(${object} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+    add_library(featheros_swift_support STATIC ${object})
+    set_target_properties(featheros_swift_support PROPERTIES LINKER_LANGUAGE CXX)
+    set(FEATHEROS_SWIFT_SUPPORT_MODULE ${module} PARENT_SCOPE)
+endfunction()
+
 # Each Swift program is one module compiled whole (-wmo, which Embedded Swift requires) into one
-# object, with the parts of the standard library it uses.
+# object, with the parts of the standard library and FeatherSupport it uses.
 function(featheros_add_swift_program entry)
     string(REPLACE ":" ";" parts ${entry})
     list(GET parts 0 name)
@@ -80,14 +103,16 @@ function(featheros_add_swift_program entry)
     set(object ${CMAKE_CURRENT_BINARY_DIR}/swift/${name}.o)
     add_custom_command(
         OUTPUT ${object}
-        COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FLAGS} -module-name ${name}
-            -c ${CMAKE_CURRENT_SOURCE_DIR}/${source}.swift -o ${object}
+        COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FLAGS} -I ${FEATHEROS_SWIFT_SUPPORT_DIRECTORY}
+            -module-name ${name} -c ${CMAKE_CURRENT_SOURCE_DIR}/${source}.swift -o ${object}
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source}.swift ${FEATHEROS_SWIFT_LIBC_FILES}
+            ${FEATHEROS_SWIFT_SUPPORT_MODULE}
         COMMENT "Building Swift object swift/${name}.o"
         VERBATIM
     )
     set_source_files_properties(${object} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
-    featheros_link_program(${name} ${object} featheros_crt0 ${FEATHEROS_SWIFT_UNICODE_TABLES})
+    featheros_link_program(${name} ${object} featheros_crt0 featheros_swift_support
+        ${FEATHEROS_SWIFT_UNICODE_TABLES})
 endfunction()
 
 foreach (entry ${FEATHEROS_PROGRAMS})
@@ -145,6 +170,7 @@ else ()
     message(STATUS "No Swift toolchain found, so the Swift programs are skipped")
 endif ()
 if (swift_usable)
+    featheros_add_swift_support()
     foreach (entry ${FEATHEROS_SWIFT_PROGRAMS})
         featheros_add_swift_program(${entry})
     endforeach ()
