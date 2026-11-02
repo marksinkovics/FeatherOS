@@ -206,7 +206,8 @@ iso() {
     local system_dir="$root_dir/system"
     rm -rf "$root_dir" "$build_dir/system"
     mkdir -p "$system_dir"
-    cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" "$system_dir/"
+    cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" \
+        "$SCRIPT_DIR/initramfs/sample.json" "$system_dir/"
     cp -R "$SCRIPT_DIR/initramfs/etc" "$root_dir/"
     local program
     for program in "${programs[@]}"; do
@@ -446,6 +447,12 @@ unit_test() {
             exit 1
         fi
         cmake_args+=(-DCMAKE_C_COMPILER="$llvm_bin/clang" -DCMAKE_CXX_COMPILER="$llvm_bin/clang++")
+    fi
+    local swiftc
+    if swiftc=$(_swift_compiler); then
+        cmake_args+=(-DFEATHEROS_SWIFTC="$swiftc")
+    else
+        _print "No Swift toolchain (swiftly or SWIFTC), so the Swift tests are skipped"
     fi
     cmake --fresh -S "$SCRIPT_DIR/tests/unit" -B "$unit_build_dir" -G Ninja "${cmake_args[@]}"
     cmake --build "$unit_build_dir" --parallel

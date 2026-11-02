@@ -1,0 +1,10 @@
+{
+  "name": "FeatherOS",
+  "architectures": ["x86_64", "aarch64"],
+  "milestones": {"done": 17, "next": "json"},
+  "motto": "light\tas a \"feather\"",
+  "cpus": 4,
+  "ratio": -1.5e3,
+  "swift": true,
+  "missing": null
+}

@@ -136,6 +136,16 @@ SWIFT_SHELL_INPUT = (
     b"write /tmp/rev.txt abc def\n"
     b"rev /tmp/rev.txt /tmp/none\n"
     b"rev -h\n"
+    b"json .name /system/sample.json\n"
+    b"json -r .motto /system/sample.json\n"
+    b"json -c .milestones /system/sample.json\n"
+    b"json .motto /system/sample.json\n"
+    b"json -c .architectures[] /system/sample.json\n"
+    b"echo [10,[20,30]] | json .[-1]\n"
+    b"echo [1,,2] | json\n"
+    b"json .a..b /system/sample.json\n"
+    b"json .name[0] /system/sample.json /none\n"
+    b"json -h\n"
 )
 EXPECTED_SWIFT_OUTPUT = (
     "Hello from Embedded Swift",
@@ -152,6 +162,18 @@ EXPECTED_SWIFT_OUTPUT = (
     "fed cba",
     "rev: /tmp/none: No such file or directory",
     "usage: rev [file...]",
+    '"FeatherOS"',
+    # The serial console shows the tab as a space.
+    'light as a "feather"',
+    '{"done":17,"next":"json"}',
+    '"light\\tas a \\"feather\\""',
+    '"x86_64"\r\n"aarch64"',
+    "[\r\n  20,\r\n  30\r\n]",
+    "json: standard input: line 1, column 4: expected a value, found ','",
+    "json: invalid path .a..b: column 4: expected a name after '.'",
+    "json: /system/sample.json: cannot index a string with a number",
+    "json: /none: No such file or directory",
+    "usage: json [-c] [-r] [path [file...]]",
 )
 
 
@@ -862,6 +884,7 @@ NETWORK_SHELL_INPUT = (
     "fetch -o /tmp/lines http://10.0.2.2:{http_port}/lines\n"
     "wc -l /tmp/lines\ntail -n 1 /tmp/lines\n"
     "fetch https://featheros.test/\n"
+    "{fetch_json}"
     # httpd serves a directory in /tmp to fetch over both versions and,
     # through port forwarding, to the harness's HttpdClient. The files hold
     # upper-case text, so their contents differ from the typed commands.
@@ -910,6 +933,16 @@ NETWORK_SHELL_INPUT = (
     "echo six back | nc -6 fec0::2 {echo_port}\n"
     "net\n"
 )
+# json, written in Swift, reads what fetch prints; skipped like the other Swift
+# programs.
+NETWORK_SWIFT_INPUT = (
+    "fetch 10.0.2.2:{http_port}/status.json | json -r .message\n"
+    "fetch http://[fec0::2]:{http_port}/status.json | json -c .checks[1]\n"
+)
+EXPECTED_NETWORK_SWIFT_OUTPUT = [
+    "parsed from the host",
+    '{"name":"tcp","passed":true}',
+]
 LINK_DOWN_MESSAGE = "KERN/I: Network: link down"
 LINK_UP_MESSAGE = "KERN/I: Network: link up"
 # Between the two messages, with the same placeholders as the input.
@@ -1442,6 +1475,14 @@ class HttpServer:
         if path == "/landing":
             via = query.partition("=")[2]
             return Complete("200 OK", "", f"landed via {via}\n".encode())
+        if path == "/status.json":
+            return Complete(
+                "200 OK",
+                "Content-Type: application/json\r\n",
+                b'{"message": "parsed from the host", "checks": '
+                b'[{"name": "udp", "passed": true}, '
+                b'{"name": "tcp", "passed": true}]}\n',
+            )
         if path == "/lines":
             # No length: the body ends when the connection closes.
             return b"HTTP/1.1 200 OK\r\n\r\n" + HTTP_LINES.encode()
@@ -2209,8 +2250,14 @@ def main():
             + list(SHELL_INTERRUPT_INPUT)
         )
     elif args.expect_network:
+        swift_built = SwiftProgramsBuilt(args.arch)
+        if not swift_built:
+            print("NOTE: Swift programs were not built; skipping their checks")
         pending_lines = (
-            NETWORK_SHELL_INPUT.replace("{port}", str(dns_server.port))
+            NETWORK_SHELL_INPUT.replace(
+                "{fetch_json}", NETWORK_SWIFT_INPUT if swift_built else ""
+            )
+            .replace("{port}", str(dns_server.port))
             .replace("{echo_port}", str(echo_server.port))
             .replace("{lossy_echo_port}", str(lossy_echo_server.port))
             .replace("{udp_echo_port}", str(echo_server.udp_port))
@@ -2651,6 +2698,7 @@ def main():
         missing = [
             line
             for line in EXPECTED_NETWORK_SHELL_OUTPUT
+            + (EXPECTED_NETWORK_SWIFT_OUTPUT if swift_built else [])
             if line not in output
         ]
         if missing:

@@ -19,7 +19,7 @@ set(FEATHEROS_START_PROGRAMS
 # Programs written in Embedded Swift, <program name>:<source file> with a .swift source. They
 # link against the C library like the others, and are skipped when no usable swiftc was found.
 set(FEATHEROS_SWIFT_PROGRAMS
-    hello:hello rev:rev
+    hello:hello rev:rev json:json
 )
 
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker_${ARCH}.ld)
@@ -100,13 +100,19 @@ function(featheros_add_swift_program entry)
     string(REPLACE ":" ";" parts ${entry})
     list(GET parts 0 name)
     list(GET parts 1 source)
+    set(source ${CMAKE_CURRENT_SOURCE_DIR}/${source})
+    # A program of several files is a directory, with its top-level code in main.swift.
+    if (IS_DIRECTORY ${source})
+        file(GLOB sources CONFIGURE_DEPENDS ${source}/*.swift)
+    else ()
+        set(sources ${source}.swift)
+    endif ()
     set(object ${CMAKE_CURRENT_BINARY_DIR}/swift/${name}.o)
     add_custom_command(
         OUTPUT ${object}
         COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FLAGS} -I ${FEATHEROS_SWIFT_SUPPORT_DIRECTORY}
-            -module-name ${name} -c ${CMAKE_CURRENT_SOURCE_DIR}/${source}.swift -o ${object}
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source}.swift ${FEATHEROS_SWIFT_LIBC_FILES}
-            ${FEATHEROS_SWIFT_SUPPORT_MODULE}
+            -module-name ${name} -c ${sources} -o ${object}
+        DEPENDS ${sources} ${FEATHEROS_SWIFT_LIBC_FILES} ${FEATHEROS_SWIFT_SUPPORT_MODULE}
         COMMENT "Building Swift object swift/${name}.o"
         VERBATIM
     )

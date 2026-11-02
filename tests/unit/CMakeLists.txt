@@ -170,3 +170,30 @@ target_include_directories(featheros_unit_tests PRIVATE
 target_link_libraries(featheros_unit_tests PRIVATE Catch2::Catch2WithMain)
 
 catch_discover_tests(featheros_unit_tests)
+# The Swift programs' host-testable parts, as one host executable per program built with the
+# toolchain's own standard library rather than Embedded Swift. Skipped without a Swift toolchain.
+set(FEATHEROS_SWIFTC "" CACHE FILEPATH "swiftc from a swift.org toolchain, for the Swift tests")
+if (FEATHEROS_SWIFTC)
+    set(swift_flags -O -parse-as-library)
+    if (APPLE)
+        execute_process(COMMAND xcrun --show-sdk-path OUTPUT_VARIABLE sdk
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        list(APPEND swift_flags -sdk ${sdk})
+    endif ()
+    file(GLOB json_sources CONFIGURE_DEPENDS "${FEATHEROS_ROOT}/src/user/json/*.swift")
+    list(REMOVE_ITEM json_sources "${FEATHEROS_ROOT}/src/user/json/main.swift")
+    list(APPEND json_sources "${CMAKE_CURRENT_SOURCE_DIR}/swift/json_tests.swift")
+    set(json_tests ${CMAKE_CURRENT_BINARY_DIR}/swift/json_tests)
+    add_custom_command(
+        OUTPUT ${json_tests}
+        COMMAND ${FEATHEROS_SWIFTC} ${swift_flags} -module-name JSONTests ${json_sources}
+            -module-cache-path ${CMAKE_CURRENT_BINARY_DIR}/swift/module-cache -o ${json_tests}
+        DEPENDS ${json_sources}
+        COMMENT "Building Swift test swift/json_tests"
+        VERBATIM
+    )
+    add_custom_target(swift_json_tests ALL DEPENDS ${json_tests})
+    add_test(NAME swift.json COMMAND ${json_tests})
+else ()
+    message(STATUS "No Swift toolchain found, so the Swift tests are skipped")
+endif ()
