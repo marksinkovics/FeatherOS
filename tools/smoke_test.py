@@ -146,6 +146,13 @@ SWIFT_SHELL_INPUT = (
     b"json .a..b /system/sample.json\n"
     b"json .name[0] /system/sample.json /none\n"
     b"json -h\n"
+    b"life -p glider -s 6x6 -n 4\n"
+    b"life -p blinker -s 5x5 -n 1\n"
+    b"life -n 2 | wc -c\n"
+    b"life -p nothing\n"
+    b"life -s 2x2 -n 1\n"
+    b"life < /system/hello.txt\n"
+    b"life -h\n"
 )
 EXPECTED_SWIFT_OUTPUT = (
     "Hello from Embedded Swift",
@@ -174,6 +181,15 @@ EXPECTED_SWIFT_OUTPUT = (
     "json: /system/sample.json: cannot index a string with a number",
     "json: /none: No such file or directory",
     "usage: json [-c] [-r] [path [file...]]",
+    "......\r\n......\r\n...#..\r\n....#.\r\n..###.\r\n......\r\n",
+    ".....\r\n..#..\r\n..#..\r\n..#..\r\n.....\r\n",
+    # 23 rows of 80 cells, the size without a terminal.
+    "\n1863\r\n",
+    "life: unknown pattern nothing; see life -h",
+    "life: invalid size 2x2; see life -h",
+    "life: standard input is not a terminal; use -n to print the grid",
+    "usage: life [-p glider|blinker|random] [-n generations]",
+    "life: generation 0, 5 alive; q quits",
 )
 
 
@@ -244,6 +260,8 @@ SHELL_VI_INPUT = (
 )
 # Without -n, top redraws in place on the alternate screen until q.
 SHELL_TOP_INPUT = (b"top -d 200\n", TypeWhen("; q quits", b"q"))
+# life animates on the alternate screen until q; only a glider has 5 alive.
+SWIFT_LIFE_INPUT = (b"life -p glider\n", TypeWhen("5 alive; q quits", b"q"))
 # Each pattern spans the lines one text-tool command printed, in order.
 EXPECTED_TEXT_TOOLS = (
     r"^alpha\r?\nmu\r?\nzeta\r?$",
@@ -510,7 +528,7 @@ EXPECTED_SHELL_OUTPUT = (
     "spawned from the disk",
     "SPAWNED=yes",
     "libctest: /dev/tty works",
-    "libctest: 475 checks passed",
+    "libctest: 477 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
@@ -2237,8 +2255,11 @@ def main():
         if not swift_built:
             print("NOTE: Swift programs were not built; skipping their checks")
         pending_lines = (
-            (SWIFT_SHELL_INPUT if swift_built else b"").splitlines(
-                keepends=True
+            (
+                SWIFT_SHELL_INPUT.splitlines(keepends=True)
+                + list(SWIFT_LIFE_INPUT)
+                if swift_built
+                else []
             )
             + SHELL_INPUT.splitlines(keepends=True)
             + list(SHELL_EDIT_INPUT)

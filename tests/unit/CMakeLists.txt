@@ -180,20 +180,23 @@ if (FEATHEROS_SWIFTC)
             OUTPUT_STRIP_TRAILING_WHITESPACE)
         list(APPEND swift_flags -sdk ${sdk})
     endif ()
-    file(GLOB json_sources CONFIGURE_DEPENDS "${FEATHEROS_ROOT}/src/user/json/*.swift")
-    list(REMOVE_ITEM json_sources "${FEATHEROS_ROOT}/src/user/json/main.swift")
-    list(APPEND json_sources "${CMAKE_CURRENT_SOURCE_DIR}/swift/json_tests.swift")
-    set(json_tests ${CMAKE_CURRENT_BINARY_DIR}/swift/json_tests)
-    add_custom_command(
-        OUTPUT ${json_tests}
-        COMMAND ${FEATHEROS_SWIFTC} ${swift_flags} -module-name JSONTests ${json_sources}
-            -module-cache-path ${CMAKE_CURRENT_BINARY_DIR}/swift/module-cache -o ${json_tests}
-        DEPENDS ${json_sources}
-        COMMENT "Building Swift test swift/json_tests"
-        VERBATIM
-    )
-    add_custom_target(swift_json_tests ALL DEPENDS ${json_tests})
-    add_test(NAME swift.json COMMAND ${json_tests})
+    # Each program directory's sources but main.swift, with tests/unit/swift/<name>_tests.swift.
+    foreach (program json life)
+        file(GLOB sources CONFIGURE_DEPENDS "${FEATHEROS_ROOT}/src/user/${program}/*.swift")
+        list(REMOVE_ITEM sources "${FEATHEROS_ROOT}/src/user/${program}/main.swift")
+        list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/swift/${program}_tests.swift")
+        set(tests ${CMAKE_CURRENT_BINARY_DIR}/swift/${program}_tests)
+        add_custom_command(
+            OUTPUT ${tests}
+            COMMAND ${FEATHEROS_SWIFTC} ${swift_flags} -module-name ${program}_tests ${sources}
+                -module-cache-path ${CMAKE_CURRENT_BINARY_DIR}/swift/module-cache -o ${tests}
+            DEPENDS ${sources}
+            COMMENT "Building Swift test swift/${program}_tests"
+            VERBATIM
+        )
+        add_custom_target(swift_${program}_tests ALL DEPENDS ${tests})
+        add_test(NAME swift.${program} COMMAND ${tests})
+    endforeach ()
 else ()
     message(STATUS "No Swift toolchain found, so the Swift tests are skipped")
 endif ()

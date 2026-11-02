@@ -26,6 +26,15 @@ struct termios
     cc_t c_cc[NCCS];
 };
 
+// The pixel sizes are reported as 0 and ignored when set.
+struct winsize
+{
+    unsigned short ws_row;
+    unsigned short ws_col;
+    unsigned short ws_xpixel;
+    unsigned short ws_ypixel;
+};
+
 // Only ICRNL, ICANON, ECHO, ISIG and FEATHEROS_WAKE_ON_OUTPUT have an effect. The other flags exist
 // for programs that clear them, as cfmakeraw does; the console never changes output, so OPOST is
 // always reported.
@@ -72,6 +81,11 @@ __BEGIN_DECLS
 int tcgetattr(int descriptor, struct termios* settings);
 int tcsetattr(int descriptor, int when, const struct termios* settings);
 void cfmakeraw(struct termios* settings);
+// POSIX 2024's ioctl-free TIOCGWINSZ and TIOCSWINSZ, which Swift can call, unlike the variadic
+// ioctl. On a terminal or a pty master, which stands for its slave; other descriptors fail with
+// ENOTTY. The console's size is the text area below the status bar.
+int tcgetwinsize(int descriptor, struct winsize* size);
+int tcsetwinsize(int descriptor, const struct winsize* size);
 
 __END_DECLS
 

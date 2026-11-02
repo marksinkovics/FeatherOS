@@ -19,7 +19,7 @@ set(FEATHEROS_START_PROGRAMS
 # Programs written in Embedded Swift, <program name>:<source file> with a .swift source. They
 # link against the C library like the others, and are skipped when no usable swiftc was found.
 set(FEATHEROS_SWIFT_PROGRAMS
-    hello:hello rev:rev json:json
+    hello:hello rev:rev json:json life:life
 )
 
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker_${ARCH}.ld)

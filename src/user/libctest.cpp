@@ -722,6 +722,10 @@ void CheckDescriptorFiles()
     Check(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0 && window.ws_row >= 1 &&
               window.ws_col >= 1,
           "ioctl reads the console size");
+    struct winsize same = {};
+    Check(tcgetwinsize(STDOUT_FILENO, &same) == 0 && same.ws_row == window.ws_row &&
+              same.ws_col == window.ws_col,
+          "tcgetwinsize reads the console size");
     errno = 0;
     Check(ioctl(STDOUT_FILENO, 0x1234, &window) == -1 && errno == EINVAL,
           "ioctl with an unknown request");
@@ -730,6 +734,8 @@ void CheckDescriptorFiles()
     Check(text >= 3 && ioctl(text, TIOCGWINSZ, &window) == -1 && errno == ENOTTY &&
               close(text) == 0,
           "ioctl on a file");
+    errno = 0;
+    Check(tcgetwinsize(-1, &same) == -1 && errno == EBADF, "tcgetwinsize on a bad descriptor");
     Check(access("/system/hello.txt", R_OK) == 0, "access to read");
     errno = 0;
     Check(access("/system/hello.txt", W_OK) == -1 && errno == EROFS, "access to write");

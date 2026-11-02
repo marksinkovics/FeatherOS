@@ -87,3 +87,35 @@ void cfmakeraw(struct termios* settings)
     settings->c_cc[VMIN] = 1;
     settings->c_cc[VTIME] = 0;
 }
+
+int tcgetwinsize(int descriptor, struct winsize* size)
+{
+    if (descriptor < 0)
+    {
+        errno = EBADF;
+        return -1;
+    }
+    const uint64_t packed = FeatherOS::User::Syscall(FeatherOS::User::SyscallNumber::TerminalSize,
+                                                     static_cast<uint64_t>(descriptor));
+    if (Check<int>(packed) < 0)
+    {
+        return -1;
+    }
+    size->ws_row = static_cast<unsigned short>(packed >> 32);
+    size->ws_col = static_cast<unsigned short>(packed);
+    size->ws_xpixel = 0;
+    size->ws_ypixel = 0;
+    return 0;
+}
+
+int tcsetwinsize(int descriptor, const struct winsize* size)
+{
+    if (descriptor < 0)
+    {
+        errno = EBADF;
+        return -1;
+    }
+    const uint64_t packed = (static_cast<uint64_t>(size->ws_row) << 32) | size->ws_col;
+    return Check<int>(FeatherOS::User::TerminalControl(
+        static_cast<uint64_t>(descriptor), FeatherOS::User::TerminalControlSetSize, packed));
+}
