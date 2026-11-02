@@ -17,6 +17,7 @@ using InitFunction = void (*)();
 char argument_storage[FeatherOS::User::MaximumCommandLineLength];
 char* argument_values[FeatherOS::User::MaximumArgumentCount + 1];
 const FeatherOS::User::ProgramArguments* arguments_page = nullptr;
+int argument_count = 0;
 
 int CopyArguments(const FeatherOS::User::ProgramArguments& arguments)
 {
@@ -48,10 +49,20 @@ const void* featheros_arguments_page()
     return arguments_page;
 }
 
+int featheros_argument_count()
+{
+    return argument_count;
+}
+
+char** featheros_argument_values()
+{
+    return argument_values;
+}
+
 extern "C" [[noreturn]] void _start(const FeatherOS::User::ProgramArguments* arguments)
 {
     arguments_page = arguments;
-    const int count = CopyArguments(*arguments);
+    argument_count = CopyArguments(*arguments);
     FeatherOS::LibC::LoadEnvironment(arguments->environment);
     // Global constructors, including C++ static objects, run before main.
     for (const InitFunction* function = __preinit_array_start; function != __preinit_array_end;
@@ -64,5 +75,5 @@ extern "C" [[noreturn]] void _start(const FeatherOS::User::ProgramArguments* arg
     {
         (*function)();
     }
-    exit(main(count, argument_values));
+    exit(main(argument_count, argument_values));
 }

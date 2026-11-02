@@ -45,6 +45,10 @@ ssize_t featheros_read_line(const char* prompt, char* buffer, size_t size);
 // library copies both out before main, so only its address is of interest, for example to see
 // address-space layout randomization.
 const void* featheros_arguments_page(void);
+// The argc and argv main receives, for code that does not see main's parameters, such as a Swift
+// program's top-level code.
+int featheros_argument_count(void);
+char** featheros_argument_values(void);
 // Stores the current settings in old_settings, unless it is null, then applies the parts of
 // new_settings that changes names (FEATHEROS_NETWORK_IPV4, FEATHEROS_NETWORK_NAME_SERVERS,
 // FEATHEROS_NETWORK_LINK). Taking the link down resets the device, drops the addresses, the

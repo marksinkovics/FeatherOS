@@ -130,8 +130,17 @@ SHELL_INPUT = (
 
 # Programs written in Embedded Swift, which the build skips without a Swift
 # toolchain.
-SWIFT_SHELL_INPUT = b"hello\n"
-EXPECTED_SWIFT_OUTPUT = ("Hello from Embedded Swift",)
+SWIFT_SHELL_INPUT = b'hello one "two words"\n'
+EXPECTED_SWIFT_OUTPUT = (
+    "Hello from Embedded Swift",
+    "hello: arguments one, two words",
+    "hello: largest square of 25, rectangle of 12",
+    "hello: tracker released",
+    "hello: tracker was shared true",
+    "hello: 2 distinct words, 4 characters, roll in range true",
+    "hello: running as process ",
+    "hello: written with write",
+)
 
 
 def SwiftProgramsBuilt(arch):
@@ -467,7 +476,7 @@ EXPECTED_SHELL_OUTPUT = (
     "spawned from the disk",
     "SPAWNED=yes",
     "libctest: /dev/tty works",
-    "libctest: 471 checks passed",
+    "libctest: 475 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",

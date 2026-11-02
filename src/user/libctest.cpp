@@ -123,6 +123,8 @@ void CheckArguments(int argc, char** argv)
     Check(strcmp(argv[1], "one") == 0, "argv[1]");
     Check(strcmp(argv[2], "two words") == 0, "quoted argv[2]");
     Check(argv[argc] == nullptr, "argv terminator");
+    Check(featheros_argument_count() == argc && featheros_argument_values() == argv,
+          "featheros_argument_count and featheros_argument_values");
     // The strings are writable copies, so strtok may split them in place.
     Check(strcmp(strtok(argv[2], " "), "two") == 0, "strtok on argv");
 }
@@ -515,6 +517,16 @@ void CheckAllocation()
     auto* zeroed = static_cast<unsigned char*>(calloc(50, 100));
     Check(zeroed != nullptr && Filled(zeroed, 5000, 0), "calloc zeroes reused memory");
     free(zeroed);
+    void* aligned = nullptr;
+    Check(posix_memalign(&aligned, 4096, 100) == 0 &&
+              reinterpret_cast<uintptr_t>(aligned) % 4096 == 0,
+          "posix_memalign aligns");
+    free(aligned);
+    Check(posix_memalign(&aligned, 24, 100) == EINVAL && posix_memalign(&aligned, 4, 100) == EINVAL,
+          "posix_memalign rejects bad alignments");
+    unsigned char random_bytes[600] = {};
+    arc4random_buf(random_bytes, sizeof(random_bytes));
+    Check(!Filled(random_bytes, sizeof(random_bytes), 0), "arc4random_buf fills the buffer");
     Check(realloc(malloc(10), 0) == nullptr, "realloc to 0 frees");
     void* from_null = realloc(nullptr, 32);
     Check(from_null != nullptr, "realloc of nullptr allocates");

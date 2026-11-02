@@ -82,12 +82,12 @@ function(featheros_add_swift_program entry)
         OUTPUT ${object}
         COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FLAGS} -module-name ${name}
             -c ${CMAKE_CURRENT_SOURCE_DIR}/${source}.swift -o ${object}
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source}.swift
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${source}.swift ${FEATHEROS_SWIFT_LIBC_FILES}
         COMMENT "Building Swift object swift/${name}.o"
         VERBATIM
     )
     set_source_files_properties(${object} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
-    featheros_link_program(${name} ${object} featheros_crt0)
+    featheros_link_program(${name} ${object} featheros_crt0 ${FEATHEROS_SWIFT_UNICODE_TABLES})
 endfunction()
 
 foreach (entry ${FEATHEROS_PROGRAMS})
@@ -105,10 +105,17 @@ else ()
 endif ()
 # The kernel leaves a red zone below the user stack pointer for signal frames, so Swift code may
 # use it, unlike the C++ programs built with -mno-red-zone.
+# Programs import the C library as the FeatherLibC module, described by src/libc/swift.
+set(libc_source ${PROJECT_SOURCE_DIR}/src/libc)
 set(FEATHEROS_SWIFT_FLAGS
     -target ${FEATHEROS_SWIFT_TARGET} -enable-experimental-feature Embedded -wmo -Osize
     -Xfrontend -disable-stack-protector
+    -I ${libc_source}/swift -Xcc -I${libc_source}/include -Xcc -ffreestanding
+    -module-cache-path ${CMAKE_CURRENT_BINARY_DIR}/swift/module-cache
 )
+# swiftc's dependency files name the module map but not the headers behind it.
+file(GLOB_RECURSE FEATHEROS_SWIFT_LIBC_FILES CONFIGURE_DEPENDS ${libc_source}/include/*.h)
+list(APPEND FEATHEROS_SWIFT_LIBC_FILES ${libc_source}/swift/module.modulemap)
 set(swift_usable FALSE)
 if (FEATHEROS_SWIFTC)
     set(probe ${CMAKE_CURRENT_BINARY_DIR}/swift/probe.swift)
@@ -119,6 +126,14 @@ if (FEATHEROS_SWIFTC)
         RESULT_VARIABLE probe_result
         OUTPUT_QUIET ERROR_VARIABLE probe_error
     )
+    # String hashing and Characters need the toolchain's Unicode tables; the linker takes only the
+    # parts a program uses.
+    get_filename_component(swift_bin ${FEATHEROS_SWIFTC} DIRECTORY)
+    set(FEATHEROS_SWIFT_UNICODE_TABLES
+        ${swift_bin}/../lib/swift/embedded/${FEATHEROS_SWIFT_TARGET}/libswiftUnicodeDataTables.a)
+    if (NOT EXISTS ${FEATHEROS_SWIFT_UNICODE_TABLES})
+        set(probe_result "no ${FEATHEROS_SWIFT_UNICODE_TABLES}")
+    endif ()
     if (probe_result EQUAL 0)
         set(swift_usable TRUE)
     else ()

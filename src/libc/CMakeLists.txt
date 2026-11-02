@@ -2,6 +2,7 @@ set(CMAKE_CXX_FLAGS "")
 
 add_library(featheros_c STATIC
     address_text.cpp
+    arc4random.cpp
     ctype.cpp
     cxx_runtime.cpp
     dirent.cpp
