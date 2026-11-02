@@ -2928,6 +2928,14 @@ void CheckFloatingPoint()
               Near(log10(1000.0), 3.0, 1e-15),
           "exp and the logarithms");
     Check(pow(2.0, 10.0) == 1024.0 && Near(pow(2.0, 0.5), M_SQRT2, 1e-15), "pow");
+    // The product 1 - 2^-60 rounds to 1, so only a single rounding keeps the -2^-60.
+    Check(fma(1 + 0x1p-30, 1 - 0x1p-30, -1.0) == -0x1p-60 &&
+              fmaf(1 + 0x1p-12f, 1 - 0x1p-12f, -1.0f) == -0x1p-24f,
+          "fma and fmaf");
+    errno = 0;
+    Check(isnan(fma(INFINITY, 0.0, 1.0)) && errno == EDOM, "fma of infinity times zero");
+    errno = 0;
+    Check(isinf(fma(1e300, 1e300, 1.0)) && errno == ERANGE, "fma overflow");
     Check(Near(atan2(1.0, 1.0), M_PI_4, 1e-15) && Near(asin(1.0), M_PI_2, 1e-15) &&
               Near(acos(-1.0), M_PI, 1e-15),
           "the inverse functions");

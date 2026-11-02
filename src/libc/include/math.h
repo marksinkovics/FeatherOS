@@ -33,7 +33,8 @@
 
 __BEGIN_DECLS
 
-// Exact: fabs, copysign, floor, ceil, trunc, round, fmod, frexp, ldexp, modf, sqrt, fmin, fmax.
+// Exact: fabs, copysign, floor, ceil, trunc, round, fmod, frexp, ldexp, modf, sqrt, fmin, fmax,
+// fma.
 // The rest are within a few units in the last place; sin, cos and tan lose precision for
 // |x| above about 10^6. There are no long double functions yet.
 double fabs(double x);
@@ -50,6 +51,7 @@ double modf(double x, double* integer);
 double fmin(double x, double y);
 double fmax(double x, double y);
 double sqrt(double x);
+double fma(double x, double y, double z);
 double hypot(double x, double y);
 double exp(double x);
 double exp2(double x);
@@ -78,6 +80,7 @@ float fmodf(float x, float y);
 float fminf(float x, float y);
 float fmaxf(float x, float y);
 float sqrtf(float x);
+float fmaf(float x, float y, float z);
 float hypotf(float x, float y);
 float expf(float x);
 float exp2f(float x);

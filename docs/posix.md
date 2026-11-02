@@ -152,13 +152,15 @@ There are no signals, so `sigsetjmp` and `siglongjmp` are not provided.
 ### `math.h`
 
 Every function exists for `double` and, with an `f` suffix, `float`:
-- **Exact, bit for bit the same as glibc:** `fabs copysign floor ceil trunc round fmod frexp ldexp scalbn modf fmin fmax sqrt`
+- **Exact, bit for bit the same as glibc:** `fabs copysign floor ceil trunc round fmod frexp ldexp scalbn modf fmin fmax sqrt fma`
 - **Within 1–3 units in the last place of glibc:** `exp exp2 log log2 log10 pow sin cos tan asin acos atan atan2 sinh cosh tanh hypot`
 
 Also provided:
 - the classification macros: `fpclassify isnan isinf isfinite isnormal signbit`
 - `HUGE_VAL`, `INFINITY` and `NAN`
 - the common `M_*` constants
+
+`fma` and `fmaf` round `x * y + z` once. They work on the exact product in 128-bit integers, so they need no fused multiply-add instruction. `fmaf` rounds straight to `float`, since going through `double` would round twice.
 
 Errors set `errno` (`math_errhandling` is `MATH_ERRNO`):
 - `EDOM` outside a function's domain
@@ -167,6 +169,7 @@ Errors set `errno` (`math_errhandling` is `MATH_ERRNO`):
 Differences:
 - `sin`, `cos` and `tan` reduce their argument with a three-part π/2, so they lose precision above about 10^6.
 - There are no `long double` functions.
+- `fma` sets `ERANGE` only on overflow, not when the result underflows.
 - AArch64 programs cannot do `long double` arithmetic, because the compiler runtime routines for 128-bit floats are missing. They can still print, parse and copy `long double` values. Of libgcc's integer routines, the C library has only `__lshrti3` (`src/libc/compiler_runtime.cpp`), which AArch64 code at `-O2` calls to shift `unsigned __int128` values.
 - `fenv.h`, `lround`, `nextafter`, `erf`, `lgamma` and other less common functions are not provided.
 

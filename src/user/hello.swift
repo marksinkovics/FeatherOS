@@ -64,6 +64,8 @@ let characters = "cafe\u{301}".count
 let rolled = (1...6).contains(Int.random(in: 1...6))
 print("hello: \(distinct) distinct words, \(characters) characters, roll in range \(rolled)")
 print("hello: running as process \(getpid())")
+// Parsing a Double calls the C library's fma on x86-64.
+print("hello: parsed \(Double("2.5e-3") ?? -1) and \(Float("0.1") ?? -1)")
 
 func readsAlike(_ path: String) throws(SystemError) -> Bool {
     let whole = try InputFile(path: path).readAll()

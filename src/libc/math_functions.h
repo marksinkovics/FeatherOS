@@ -115,6 +115,10 @@ double Cosh(double value);
 double Tanh(double value);
 double Hypot(double x, double y);
 
+// x * y + z rounded once, from the exact product and sum in 128-bit integers.
+double FusedMultiplyAdd(double x, double y, double z);
+float FusedMultiplyAdd(float x, float y, float z);
+
 } // namespace FeatherOS::LibC::Math
 
 #endif

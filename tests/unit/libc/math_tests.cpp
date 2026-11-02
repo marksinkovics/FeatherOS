@@ -230,3 +230,119 @@ TEST_CASE("atan2 follows the special cases of the C standard")
         }
     }
 }
+
+namespace
+{
+
+// Finite values with a random sign, mantissa and an exponent in [low, high].
+class RandomValues
+{
+public:
+    RandomValues(int low_exponent, int high_exponent) : low(low_exponent), high(high_exponent) {}
+
+    uint64_t NextBits()
+    {
+        state += 0x9E3779B97F4A7C15ULL;
+        uint64_t mixed = state;
+        mixed = (mixed ^ (mixed >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        mixed = (mixed ^ (mixed >> 27)) * 0x94D049BB133111EBULL;
+        return mixed ^ (mixed >> 31);
+    }
+
+    template <typename Value> Value Next()
+    {
+        const uint64_t bits = NextBits();
+        const auto span = static_cast<uint64_t>(high - low + 1);
+        const int exponent = low + static_cast<int>(bits % span);
+        const Value fraction = 1 + static_cast<Value>(NextBits() >> 11) * static_cast<Value>(0x1p-53);
+        const Value value = std::ldexp(fraction, exponent);
+        return (bits >> 63) != 0 ? -value : value;
+    }
+
+private:
+    int low;
+    int high;
+    uint64_t state = 2026;
+};
+
+bool SameFloatBits(float ours, float host)
+{
+    return (std::isnan(ours) && std::isnan(host)) || std::memcmp(&ours, &host, sizeof(float)) == 0;
+}
+
+} // namespace
+
+TEST_CASE("fma matches the host bit for bit on special values")
+{
+    const double infinity = std::numeric_limits<double>::infinity();
+    const double values[] = {0.0,     -0.0,      1.0,     -1.0,     infinity, -infinity, std::nan(""),
+                             0x1p-1074, -0x1p-1074, 0x1p-1022, std::numeric_limits<double>::max(),
+                             -std::numeric_limits<double>::max(), 1e-300, 0.5, 3.0};
+    for (const double x : values)
+    {
+        for (const double y : values)
+        {
+            for (const double z : values)
+            {
+                INFO("fma(" << x << ", " << y << ", " << z << ")");
+                REQUIRE(SameBits(Math::FusedMultiplyAdd(x, y, z), std::fma(x, y, z)));
+                const auto narrow = [](double value) { return static_cast<float>(value); };
+                REQUIRE(SameFloatBits(Math::FusedMultiplyAdd(narrow(x), narrow(y), narrow(z)),
+                                      std::fmaf(narrow(x), narrow(y), narrow(z))));
+            }
+        }
+    }
+}
+
+TEST_CASE("fma rounds once, through cancellation, subnormals and overflow")
+{
+    const struct
+    {
+        int low;
+        int high;
+    } ranges[] = {{-4, 4}, {-600, 600}, {-1074, 1023}, {-560, -500}};
+    for (const auto& range : ranges)
+    {
+        RandomValues random(range.low, range.high);
+        for (int index = 0; index < 50000; ++index)
+        {
+            const double x = random.Next<double>();
+            const double y = random.Next<double>();
+            const double product = x * y;
+            const double addends[] = {random.Next<double>(), -product,
+                                      -product * (1 + 0x1p-52), -product * (1 - 0x1p-30),
+                                      std::ldexp(product, -60), std::ldexp(-product, -54)};
+            for (const double z : addends)
+            {
+                INFO("fma(" << x << ", " << y << ", " << z << ")");
+                REQUIRE(SameBits(Math::FusedMultiplyAdd(x, y, z), std::fma(x, y, z)));
+            }
+        }
+    }
+}
+
+TEST_CASE("fmaf rounds once, not through a double")
+{
+    const struct
+    {
+        int low;
+        int high;
+    } ranges[] = {{-4, 4}, {-149, 127}, {-75, -60}};
+    for (const auto& range : ranges)
+    {
+        RandomValues random(range.low, range.high);
+        for (int index = 0; index < 50000; ++index)
+        {
+            const float x = random.Next<float>();
+            const float y = random.Next<float>();
+            const float product = x * y;
+            const float addends[] = {random.Next<float>(), -product, -product * (1 + 0x1p-23f),
+                                     std::ldexp(product, -30), std::ldexp(-product, -25)};
+            for (const float z : addends)
+            {
+                INFO("fmaf(" << x << ", " << y << ", " << z << ")");
+                REQUIRE(SameFloatBits(Math::FusedMultiplyAdd(x, y, z), std::fmaf(x, y, z)));
+            }
+        }
+    }
+}

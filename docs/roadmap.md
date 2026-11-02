@@ -573,9 +573,9 @@ Scheduled right after M11, before the next feature milestone, so later work star
 
 **Complete when:** every target builds as `gnu++23` without warnings, the host tests pass under both sanitizers, and the syscall tables use designated initializers.
 
-### 21. Embedded Swift For User Programs (Complete)
+### 21. Embedded Swift For User Programs
 
-**Summary:** User programs can be written in Embedded Swift with the swift.org toolchain. They import the C library as `FeatherLibC` and the shared `FeatherSupport` module, and link into the same static-PIE programs as the C++ ones. `hello`, `rev`, `json` and `life` run on both targets, and the shell smoke test checks them. The parsers of `json` and `life` are host-tested in `unit-test`. `swiftbench` against `cppbench` puts optimized Swift at 1.6 to 2 times C++'s time, about 4 times on `life`, mostly from bounds and overflow checks, with code 1.7 to 1.9 times as large. Measuring it showed that every C++ program had been built at `-O0`, so `build.sh` gained `BUILD_TYPE=Debug|Release`. What Embedded Swift leaves out is listed in `docs/development.md`.
+**Summary of Parts 1–7:** User programs can be written in Embedded Swift with the swift.org toolchain. They import the C library as `FeatherLibC` and the shared `FeatherSupport` module, and link into the same static-PIE programs as the C++ ones. `hello`, `rev`, `json` and `life` run on both targets, and the shell smoke test checks them. The parsers of `json` and `life` are host-tested in `unit-test`. `swiftbench` against `cppbench` puts optimized Swift at 1.6 to 2 times C++'s time, about 4 times on `life`, mostly from bounds and overflow checks, with code 1.7 to 1.9 times as large. Measuring it showed that every C++ program had been built at `-O0`, so `build.sh` gained `BUILD_TYPE=Debug|Release`. What Embedded Swift leaves out is listed in `docs/development.md`.
 
 User programs written in Embedded Swift, built on the host with the swift.org toolchain (Swift 6 or newer; Xcode's toolchain does not reliably target ELF) and linked against the FeatherOS libc like the C++ programs. The kernel stays C++.
 
@@ -619,8 +619,17 @@ User programs written in Embedded Swift, built on the host with the swift.org to
   - key paths as values
 
   Existentials and untyped `throws` turned out to work, so the earlier note that Embedded Swift has no `any Error` was corrected. One gap is FeatherOS's own: on x86-64, `Double(String)` calls `fma`, which the C library lacks.
+- **Part 8: `fma` (done).** `fma` and `fmaf` in the C library (`Math::FusedMultiplyAdd` in `src/libc/math_functions.cpp`). They form the exact product of the mantissas in 128 bits and align the addend under a sticky bit, then round once to the target format, so `fmaf` never rounds through `double`. They set `EDOM` for an infinity times zero or opposite infinities, and `ERANGE` on overflow. Host tests compare them bit for bit with the host's over special values, random exponents, near-cancellations, subnormals and overflow, and libctest checks them on both targets. `hello` parses a `Double` and a `Float`, which failed to link on x86-64 before.
+- **Part 9: concurrency on x86-64, one thread.** A trial of `async`/`await`, `Task` and actors with the toolchain's `libswift_Concurrency.a` and its single-threaded default executor. Linking a test program left 15 symbols to provide:
+  - Darwin names the archive was built against: `__error`, `__stderrp`, `_fputs`, `_nanosleep`, `memset_s`
+  - `clock_getres`, and libc++'s `std::chrono::steady_clock::now()`
+  - runtime functions Embedded Swift leaves to the platform: `swift_getObjectType`, `swift_reportError`, `swift_getMainExecutor`, `swift::getResilientMetadataBounds`, and the `_task_serialExecutor_*`/`_task_taskExecutor_*` hooks
 
-**Complete when:** on both targets, Swift programs build from `src/user/`, run from the shell, and the matrix checks their output.
+  A test program then runs in QEMU, checked by the shell smoke test on x86-64.
+- **Part 10: the concurrency runtime from source.** The toolchain has no `_Concurrency` module or runtime for `aarch64-none-none-elf`, and its x86-64 runtime is built without threads, so its locks do nothing. Build both for both targets from the `swift-6.4.2-RELEASE` sources, with Swift's pthreads threading package over the C library. This replaces Part 9's Darwin names. It also adds whatever the runtime needs from the C library, probably `pthread_key_*` and a way to find a thread's stack bounds.
+- **Part 11: an executor on every CPU.** A global executor that runs jobs on a pool of pthreads, so tasks spread over all CPUs, and a Swift program that counts primes in tasks and reports the CPUs they ran on, checked on both targets.
+
+**Complete when:** on both targets, Swift programs build from `src/user/`, run from the shell, and the matrix checks their output, and Swift tasks run on every CPU.
 
 ### 22. Mount Table And ext2/ext4
 
