@@ -21,7 +21,7 @@ _err() {
 _usage() {
     printf 'Usage: %s [--arch <x86_64|aarch64>] <action> [actions...]\n' "$0"
     printf '   or: ARCH=<x86_64|aarch64> %s <action> [actions...]\n' "$0"
-    printf 'Actions: build, iso, run, test, test-all, unit-test, debug, all, clean, fullclean\n'
+    printf 'Actions: build, iso, run, test, test-all, unit-test, benchmark, debug, all, clean, fullclean\n'
 }
 
 _require_arch() {
@@ -431,6 +431,26 @@ smoke_test() {
     fi
 }
 
+benchmark() {
+    _require_arch
+    _require_tools python3 "qemu-system-$ARCH"
+
+    local iso_path build_dir
+    iso_path=$(_kernel_iso)
+    build_dir=$(_build_dir)
+    local -a benchmark_args=(--arch "$ARCH" --disk "$build_dir/virtio-disk.img"
+        --seconds "${BENCHMARK_SECONDS:-3}" --rounds "${BENCHMARK_ROUNDS:-3}")
+    if [ "$ARCH" = "aarch64" ]; then
+        local firmware
+        firmware=$(_aarch64_firmware) || {
+            _err "Set QEMU_EFI to an AArch64 UEFI firmware image."
+            exit 1
+        }
+        benchmark_args+=(--firmware "$firmware")
+    fi
+    python3 "$SCRIPT_DIR/tools/benchmark.py" "${benchmark_args[@]}" "$iso_path"
+}
+
 unit_test() {
     _require_tools cmake git ninja
 
@@ -528,6 +548,11 @@ for action in "${ACTIONS[@]}"; do
             ;;
         unit-test)
             unit_test
+            ;;
+        benchmark)
+            build
+            iso
+            benchmark
             ;;
         debug)
             build

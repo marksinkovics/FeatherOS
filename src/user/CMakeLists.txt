@@ -9,7 +9,7 @@ set(FEATHEROS_PROGRAMS
     filetest:filetest ls:ls cat:cat write:write rm:rm mkdir:mkdir rmdir:rmdir env:env
     fptest:fptest libctest:libctest kill:kill ps:ps top:top keys:keys clear:clear vi:vi threads:threads cp:cp mv:mv touch:touch head:head tail:tail wc:wc
     grep:grep sort:sort ping:ping dhcp:dhcp net:net host:host nc:nc fetch:fetch httpd:httpd
-    ntp:ntp echod:echod script:script stty:stty
+    ntp:ntp echod:echod script:script stty:stty cppbench:cppbench
 )
 # Programs that define _start themselves instead of linking the C library's, which calls main.
 # The kernel's own tests run test_program and read the raw arguments block.
@@ -19,8 +19,10 @@ set(FEATHEROS_START_PROGRAMS
 # Programs written in Embedded Swift, <program name>:<source file> with a .swift source. They
 # link against the C library like the others, and are skipped when no usable swiftc was found.
 set(FEATHEROS_SWIFT_PROGRAMS
-    hello:hello rev:rev json:json life:life
+    hello:hello rev:rev json:json life:life swiftbench:swiftbench
 )
+# Sources a Swift program compiles in from other programs' directories, by program name.
+set(FEATHEROS_SWIFT_SHARED_SOURCES_swiftbench life/grid.swift json/parser.swift json/value.swift)
 
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker_${ARCH}.ld)
 
@@ -107,6 +109,9 @@ function(featheros_add_swift_program entry)
     else ()
         set(sources ${source}.swift)
     endif ()
+    list(TRANSFORM FEATHEROS_SWIFT_SHARED_SOURCES_${name} PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/
+        OUTPUT_VARIABLE shared_sources)
+    list(APPEND sources ${shared_sources})
     set(object ${CMAKE_CURRENT_BINARY_DIR}/swift/${name}.o)
     add_custom_command(
         OUTPUT ${object}
@@ -127,6 +132,10 @@ endforeach ()
 foreach (entry ${FEATHEROS_START_PROGRAMS})
     featheros_add_program(${entry})
 endforeach ()
+# The benchmark against swiftbench, at -Os like Swift's -Osize, and again unoptimized like the
+# other programs and the C library.
+target_compile_options(user_cppbench PRIVATE -Os)
+featheros_link_program(cppbench-O0 cppbench.cpp featheros_crt0)
 
 set(FEATHEROS_SWIFTC "" CACHE FILEPATH "swiftc from a swift.org toolchain, for Swift programs")
 if (ARCH STREQUAL "x86_64")

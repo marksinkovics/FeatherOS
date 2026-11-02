@@ -414,6 +414,38 @@ Programs written in Embedded Swift are listed in `FEATHEROS_SWIFT_PROGRAMS` as `
 
 `life [-p glider|blinker|random] [-n generations] [-s columnsxrows]` (`src/user/life/`) plays Conway's Game of Life on a grid whose edges wrap, starting from a glider or blinker in the middle, or a quarter of the cells at random (the default). Without `-n` it takes the alternate screen and draws a generation every tenth of a second, with the generation and population on the last row, until `q` or Ctrl+C; standard input must be a terminal, and the grid must fit it. Raw mode with `VMIN` 0 and `VTIME` 1 makes each read wait at most a tenth of a second, which paces the generations, and only rows that changed are drawn again. With `-n` it prints the grid after that many generations, `#` for a live cell and `.` for a dead one, to any output. The grid is the terminal's size above its last row by default (from `tcgetwinsize`, since Swift does not import the variadic `ioctl`), or 80×23 without a terminal; `-s` sets it, from 3x3 to 1000x1000. `grid.swift` and `pattern.swift` import nothing, and `unit-test` builds them with `tests/unit/swift/life_tests.swift` as the CTest case `swift.life`, with a seeded generator for the random start. The shell smoke test checks a glider after four generations, a blinker, the size without a terminal and the errors, and animates a glider until `q`.
 
+### Swift against C++
+
+`swiftbench [-n runs | -t seconds] [workload...]` (`src/user/swiftbench/`) and `cppbench` (`src/user/cppbench.cpp`) run the same five workloads, written step for step alike in each language:
+- `life`: a 64x64 grid with a random quarter of its cells alive, for 20 generations. Swift uses `life`'s own `Grid`, and the C++ version is a port of it.
+- `sieve`: the primes below 1 000 000, by the sieve of Eratosthenes.
+- `quicksort`: 20 000 random 32-bit numbers, sorted by the same quicksort (median of three, Hoare partition) and a final insertion sort.
+- `sort`: the same numbers, sorted by each language's library: Swift's `sort()`, and the C library's `qsort`.
+- `json`: a generated document of 500 objects (87 373 bytes, with escapes, a `\u` escape and raw UTF-8), parsed and then walked. Swift uses `json`'s own parser, and the C++ version is a port of it.
+
+A Swift program compiles in files from another program's directory through `FEATHEROS_SWIFT_SHARED_SOURCES_<name>` in `src/user/CMakeLists.txt`, so `swiftbench` gets `life/grid.swift`, `json/parser.swift` and `json/value.swift`. Neither program has the other language's library: the C++ port brings its own `Vector` template, since the toolchain has no C++ standard library headers. Its `Vector` grows by default-constructing a larger array and moving the elements over, because there is no placement `new`. Both programs draw their numbers from SplitMix64 with the same seeds. Each workload prints a check value: the population, the prime count, a sum weighted by position of the sorted numbers, or the document's size plus its count of values and of string, key and number bytes. Equal check values show that both programs did the same work. Each workload runs for `-t` seconds (3 by default) or `-n` times, timed with `CLOCK_MONOTONIC`, whose 10 ms ticks are why the runs last seconds. It then prints `life: check 691, 2 runs in 10 ms, 5000 us each`.
+
+`cppbench` is built at `-Os`, which matches Swift's `-Osize`. `cppbench-O0` is the same source with no optimization flag, which is how every other program and the C library are built. Both languages call the same C library allocator, which is built unoptimized. The shell smoke test runs each program with `-n` and checks the check values and the option errors.
+
+`./build.sh --arch <arch> benchmark` builds, boots QEMU, and runs `cppbench`, `swiftbench` and `cppbench-O0` in turn, three rounds of 3 s a workload (`BENCHMARK_ROUNDS`, `BENCHMARK_SECONDS`). For each workload it prints the fastest time per run of any round and its ratio to `cppbench`, then each program's loaded bytes (its `PT_LOAD` segments). It fails if a check value differs, and saves the session to `build/<arch>/benchmark-output.txt`. QEMU emulates both CPUs, so only the ratios mean anything, and those still move by about 10 % between runs. The table below shows results on an Apple M3 Max with QEMU 11.1.2, Swift 6.4.2 and GCC 14.1. The C++ `-Os` columns give the time per run. The Swift and `-O0` columns give the time as a multiple of that, and the byte rows give sizes for every column:
+
+| Workload | x86-64 C++ `-Os` | Swift `-Osize` | C++ `-O0` | AArch64 C++ `-Os` | Swift `-Osize` | C++ `-O0` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `life` | 1041 µs | 4.92× | 4.37× | 586 µs | 3.91× | 5.01× |
+| `sieve` | 13 392 µs | 1.00× | 1.70× | 10 600 µs | 1.35× | 1.74× |
+| `quicksort` | 2196 µs | 1.27× | 1.95× | 1424 µs | 1.82× | 2.13× |
+| `sort` | 31 030 µs | 0.41× | 1.14× | 21 428 µs | 0.34× | 1.09× |
+| `json` | 17 298 µs | 1.37× | 1.69× | 12 605 µs | 1.47× | 1.82× |
+| Code bytes | 91 403 | 177 849 | 100 407 | 104 976 | 163 472 | 115 424 |
+| Data bytes | 35 552 | 40 672 | 35 808 | 36 240 | 40 488 | 36 496 |
+
+Here is what the numbers say:
+- Safe Swift costs about 1.0 to 1.8 times C++ on the array work: `sieve`, `quicksort` and `json`.
+- `life` is the outlier, at four to five times C++ and slower than unoptimized C++. Its inner loop adds eight `UInt8`s, each addition checked for overflow, and indexes the array eight times, each index checked against the bounds. A trial build of `swiftbench` at `-Ounchecked` (x86-64, 1 s runs) brought `life` down to 2.2 times C++ and `quicksort` to 0.7 times, while `-O` alone gave 4.4 times. So the checks, not the optimization level, make most of the gap.
+- `sort` favours Swift: its standard library's sort is generic code specialized for `UInt32` and compiled with the program, against the C library's `qsort`, an unoptimized heap sort that calls a comparison function for each step.
+- Swift's code is 1.6 to 1.9 times the size of C++'s. That difference is the parts of the standard library and runtime that the program compiles in: arrays, dictionaries, hashing, string interpolation and its sort.
+- The unoptimized C++ is 1.1 to 2.1 times slower than at `-Os`, and 4 to 5 times slower on `life`, which suggests the rest of the programs and the C library would gain from an optimization level too.
+
 Interactive runs accept keys from the QEMU window on both architectures. x86-64 uses PS/2; AArch64 uses virtio-input on QEMU `virt`. The launching terminal's serial console also remains available. Program output appears on both serial and the framebuffer console.
 
 Input reaches the console's terminal as one byte stream (`src/kernel/input/input.cpp`), in the form a VT100 terminal sends it. The terminal (`src/kernel/terminal/terminal.cpp`) holds the input queue, the mode, the size and the foreground group, and applies the line discipline: echo, canonical line editing and Ctrl+C. It draws through a device, which for the console is serial plus `term.cpp`. Serial bytes arrive as typed, with `\r\n` counted once. The keyboard drivers only turn scancodes into key codes (PS/2 set 1, including its `E0` keys, or virtio-input codes, which match for the main keys). `src/kernel/input/keyboard.cpp` then maps them for both architectures, with the US layout, Shift, Caps Lock and Ctrl:

@@ -125,6 +125,7 @@ SHELL_INPUT = (
     b"primes 4 100000\nprimes 16 20000\n"
     b"threads 4 100000\nthreads 15 20000\n"
     b"fptest 8\n"
+    b"cppbench -n 1\ncppbench-O0 -n 3 life json\ncppbench nothing\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
 )
 
@@ -153,6 +154,9 @@ SWIFT_SHELL_INPUT = (
     b"life -s 2x2 -n 1\n"
     b"life < /system/hello.txt\n"
     b"life -h\n"
+    # The check values are cppbench's, so both did the same work.
+    b"swiftbench -n 2\n"
+    b"swiftbench -t x\n"
 )
 EXPECTED_SWIFT_OUTPUT = (
     "Hello from Embedded Swift",
@@ -190,6 +194,12 @@ EXPECTED_SWIFT_OUTPUT = (
     "life: standard input is not a terminal; use -n to print the grid",
     "usage: life [-p glider|blinker|random] [-n generations]",
     "life: generation 0, 5 alive; q quits",
+    "life: check 691, 2 runs in ",
+    "sieve: check 78498, 2 runs in ",
+    "quicksort: check 2963021034, 2 runs in ",
+    "sort: check 2963021034, 2 runs in ",
+    "json: check 138999, 2 runs in ",
+    "swiftbench: -t needs a positive count; see swiftbench -h",
 )
 
 
@@ -610,6 +620,14 @@ EXPECTED_SHELL_OUTPUT = (
     # Threads of one process find the same counts as worker processes.
     "threads: 9592 primes below 100000 with 4 threads in ",
     "threads: 2262 primes below 20000 with 15 threads in ",
+    "life: check 691, 1 run in ",
+    "sieve: check 78498, 1 run in ",
+    "quicksort: check 2963021034, 1 run in ",
+    "sort: check 2963021034, 1 run in ",
+    "json: check 138999, 1 run in ",
+    "life: check 691, 3 runs in ",
+    "json: check 138999, 3 runs in ",
+    "cppbench: unknown workload nothing; see cppbench -h",
     "calc> ",
     "0.333333",
     "calc: division by zero",
