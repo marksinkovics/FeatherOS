@@ -218,6 +218,9 @@ EXPECTED_SWIFT_CONCURRENCY_OUTPUT = (
     "tasks: cancelled after ",
     "tasks: the error came through true",
     "tasks: task-local outer, task outer, detached none",
+    "tasks: slept 20, 30 and 50 ms for at least 100 ms",
+    "tasks: a sleep of 60 s ended early with CancellationError",
+    "tasks: checkCancellation threw CancellationError",
     "taskprimes: 9592 primes below 100000 with 16 tasks in ",
 )
 # The global executor runs jobs on every CPU; QEMU has 4, so the tasks spread.

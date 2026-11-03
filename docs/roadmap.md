@@ -747,11 +747,7 @@ M21 left a list of what Embedded Swift 6.4.2 does without ("What Embedded Swift 
 - Swift can already import a C++ header with `-cxx-interoperability-mode=default`.
 - `withVaList` and `CVarArg` are missing, as are `print(_:to:)`, `String(describing:)`, `AnyHashable` and `Codable`.
 
-- **Part 1: clocks and sleeping.**
-  - `swift.patch` makes `ContinuousClock`, `SuspendingClock`, `Clock.sleep`, `Task.sleep(nanoseconds:)`, `Task.sleep(for:)`, `Task.sleep(until:)` and `Task.checkCancellation()` available.
-  - The runtime's `Clock.cpp` reads them through `clock_gettime`, and they sleep through the global executor's delayed jobs.
-  - A cancelled sleep wakes early with `CancellationError`.
-  - `tasks` sleeps, times a sleep against `ContinuousClock`, and cancels a sleeping task; the shell smoke test checks this on both targets.
+- **Part 1: clocks and sleeping (done).** `swift.patch` drops `@_unavailableInEmbedded` from `ContinuousClock`, `SuspendingClock`, `Task.sleep(nanoseconds:)`, `Task.sleep(for:)`, `Task.sleep(until:)` and `Task.checkCancellation()`. The fallback that turned a generic clock's instant into a timestamp cast the clock to `ContinuousClock` or `SuspendingClock`, which Embedded Swift cannot compile even in a generic body. The patch gives those two clocks an internal `_TimestampingClock` protocol that converts their own instants, and `Task._sleep` takes only such clocks. `Clock.cpp` already read both through `clock_gettime(CLOCK_MONOTONIC)`. A sleep becomes a delayed job in `global_executor.cpp`, and a cancelled one resumes at once with `CancellationError`, leaving the wake-up job to find the sleep already over. `tasks` sleeps 20, 30 and 50 ms through all three `Task.sleep` forms and checks against `ContinuousClock` that at least 100 ms passed. It also cancels a 60 s sleep, which must end in under a second with `CancellationError`, and catches `CancellationError` from `Task.checkCancellation()`. The shell smoke test checks these lines on both targets.
 - **Part 2: `MainActor` and top-level `await`.**
   - `swift.patch` builds `MainActor` for FeatherOS. `global_executor.cpp` gives it a main-thread queue that only `swift_task_asyncMainDrainQueue` runs, and `isMainExecutor` and `checkIsolated` stop treating the generic executor as the main one.
   - `MainActor.run` and `MainActor.assumeIsolated` work as documented.

@@ -148,6 +148,58 @@ func thrown() async -> Bool {
     }
 }
 
+func milliseconds(_ duration: Duration) -> Int64 {
+    let (seconds, attoseconds) = duration.components
+    return seconds * 1000 + attoseconds / 1_000_000_000_000_000
+}
+
+func sleeps() async throws -> String {
+    let clock = ContinuousClock()
+    let start = clock.now
+    try await Task.sleep(nanoseconds: 20_000_000)
+    try await Task.sleep(for: .milliseconds(30))
+    try await Task.sleep(until: .now + .milliseconds(50), clock: .suspending)
+    let elapsed = start.duration(to: clock.now)
+    return elapsed >= .milliseconds(100) ? "at least 100 ms" : "only \(milliseconds(elapsed)) ms"
+}
+
+func cancelledSleep() async -> String {
+    let clock = ContinuousClock()
+    let start = clock.now
+    let sleeper = Task { () async -> String in
+        do {
+            try await Task.sleep(for: .seconds(60))
+            return "woke"
+        } catch is CancellationError {
+            return "CancellationError"
+        } catch {
+            return "another error"
+        }
+    }
+    try? await Task.sleep(for: .milliseconds(10))
+    sleeper.cancel()
+    let outcome = await sleeper.value
+    return "\(start.duration(to: clock.now) < .seconds(1) ? "early" : "late") with \(outcome)"
+}
+
+func checkedCancellation() async -> String {
+    let task = Task { () async -> String in
+        while !Task.isCancelled {
+            await Task.yield()
+        }
+        do {
+            try Task.checkCancellation()
+            return "nothing"
+        } catch is CancellationError {
+            return "CancellationError"
+        } catch {
+            return "another error"
+        }
+    }
+    task.cancel()
+    return await task.value
+}
+
 @main
 struct Tasks {
     static func main() async {
@@ -170,5 +222,12 @@ struct Tasks {
             return "\(Request.name), task \(inner), detached \(detached)"
         }
         print("tasks: task-local \(names)")
+        do {
+            print("tasks: slept 20, 30 and 50 ms for \(try await sleeps())")
+        } catch {
+            print("tasks: a sleep failed")
+        }
+        print("tasks: a sleep of 60 s ended \(await cancelledSleep())")
+        print("tasks: checkCancellation threw \(await checkedCancellation())")
     }
 }
