@@ -25,7 +25,7 @@ set(FEATHEROS_SWIFT_PROGRAMS
 # swift_concurrency/). They start from an @main type's async main, since top-level await crashes
 # swiftc 6.4.2.
 set(FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS
-    tasks:tasks
+    tasks:tasks taskprimes:taskprimes
 )
 # Sources a Swift program compiles in from other programs' directories, by program name.
 set(FEATHEROS_SWIFT_SHARED_SOURCES_swiftbench life/grid.swift json/parser.swift json/value.swift)

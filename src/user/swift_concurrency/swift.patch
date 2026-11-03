@@ -96,3 +96,38 @@ index 2d1e297..a233593 100644
    struct timespec ts;
    ts.tv_sec = seconds;
    ts.tv_nsec = nanoseconds;
+diff --git a/stdlib/public/Concurrency/Deque/Deque+Storage.swift b/stdlib/public/Concurrency/Deque/Deque+Storage.swift
+index 9ccd756..8cd7696 100644
+--- a/stdlib/public/Concurrency/Deque/Deque+Storage.swift
++++ b/stdlib/public/Concurrency/Deque/Deque+Storage.swift
+@@ -45,7 +45,7 @@ extension _Deque._Storage {
+     let object = _DequeBuffer<Element>.create(
+       minimumCapacity: minimumCapacity,
+       makingHeaderWith: {
+-        #if os(OpenBSD)
++        #if os(OpenBSD) || $Embedded
+         let capacity = minimumCapacity
+         #else
+         let capacity = $0.capacity
+diff --git a/stdlib/public/Concurrency/Deque/Deque+UnsafeHandle.swift b/stdlib/public/Concurrency/Deque/Deque+UnsafeHandle.swift
+index 1cf1b2f..c1fd926 100644
+--- a/stdlib/public/Concurrency/Deque/Deque+UnsafeHandle.swift
++++ b/stdlib/public/Concurrency/Deque/Deque+UnsafeHandle.swift
+@@ -258,7 +258,7 @@ extension _Deque._UnsafeHandle {
+     let object = _DequeBuffer<Element>.create(
+       minimumCapacity: minimumCapacity,
+       makingHeaderWith: {
+-        #if os(OpenBSD)
++        #if os(OpenBSD) || $Embedded
+         let capacity = minimumCapacity
+         #else
+         let capacity = $0.capacity
+@@ -291,7 +291,7 @@ extension _Deque._UnsafeHandle {
+     let object = _DequeBuffer<Element>.create(
+       minimumCapacity: minimumCapacity,
+       makingHeaderWith: {
+-        #if os(OpenBSD)
++        #if os(OpenBSD) || $Embedded
+         let capacity = minimumCapacity
+         #else
+         let capacity = $0.capacity

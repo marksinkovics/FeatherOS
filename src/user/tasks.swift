@@ -1,7 +1,7 @@
 import _Concurrency
 
-// Swift concurrency on one thread: the toolchain's cooperative executor runs every job in turn,
-// in the order they were queued, so the interleaving below is the same on every run.
+// Swift concurrency: the global executor runs jobs on a thread for each CPU, so tasks that are
+// not on the same actor run at once and their interleaving changes from run to run.
 
 actor Counter {
     private(set) var value = 0
@@ -61,11 +61,12 @@ func takeTurns(rounds: Int) async -> String {
     }
     await ping.value
     await pong.value
-    var text = ""
-    for entry in await log.entries {
-        text += text.isEmpty ? entry : ", " + entry
-    }
-    return text
+    let entries = await log.entries
+    let pings = entries.filter { $0.hasPrefix("ping") }
+    let pongs = entries.filter { $0.hasPrefix("pong") }
+    let inOrder = pings == (1...rounds).map { "ping \($0)" }
+        && pongs == (1...rounds).map { "pong \($0)" }
+    return "\(pings.count) pings and \(pongs.count) pongs, \(inOrder ? "each" : "not") in order"
 }
 
 func countConcurrently(times: Int) async -> Int {
@@ -96,6 +97,20 @@ func streamed(count: Int) async -> Int {
         }
         continuation.finish()
     }
+    var sum = 0
+    for await number in stream {
+        sum += number
+    }
+    return sum
+}
+
+// Every value waits in the stream's buffer before the first is read.
+func buffered(count: Int) async -> Int {
+    let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+    for number in 1...count {
+        continuation.yield(number)
+    }
+    continuation.finish()
     var sum = 0
     for await number in stream {
         sum += number
@@ -146,6 +161,7 @@ struct Tasks {
         print("tasks: async let gave \(await three + four)")
         print("tasks: a continuation resumed with \(await resumedLater())")
         print("tasks: a stream of 1 to 5 sums to \(await streamed(count: 5))")
+        print("tasks: a buffered stream of 1 to 100 sums to \(await buffered(count: 100))")
         print("tasks: cancelled after \(await spinUntilCancelled()) turns")
         print("tasks: the error came through \(await thrown())")
         let names = await Request.$name.withValue("outer") {

@@ -205,18 +205,26 @@ EXPECTED_SWIFT_OUTPUT = (
 
 
 # Swift concurrency, built where deps/ holds the runtime's sources.
-SWIFT_CONCURRENCY_INPUT = b"tasks\n"
+SWIFT_CONCURRENCY_INPUT = b"tasks\ntaskprimes 16 100000\n"
 EXPECTED_SWIFT_CONCURRENCY_OUTPUT = (
     "tasks: a task returned 42",
-    "tasks: turns ping 1, pong 1, ping 2, pong 2, ping 3, pong 3",
+    "tasks: turns 3 pings and 3 pongs, each in order",
     "tasks: 100 increments counted 100",
     "tasks: squares of 1 to 10 sum to 385",
     "tasks: async let gave 25",
     "tasks: a continuation resumed with 7",
     "tasks: a stream of 1 to 5 sums to 15",
+    "tasks: a buffered stream of 1 to 100 sums to 5050",
     "tasks: cancelled after ",
     "tasks: the error came through true",
     "tasks: task-local outer, task outer, detached none",
+    "taskprimes: 9592 primes below 100000 with 16 tasks in ",
+)
+# The global executor runs jobs on every CPU; QEMU has 4, so the tasks spread.
+TASK_PRIMES_SPREAD_OUTPUT = re.compile(
+    r"^taskprimes: the tasks ran on (\d+) threads "
+    r"and CPU (\d+(?:,\d+)*)\r?$",
+    re.MULTILINE,
 )
 
 
@@ -2303,7 +2311,11 @@ def main():
                 if swift_built
                 else []
             )
-            + ([SWIFT_CONCURRENCY_INPUT] if concurrency_built else [])
+            + (
+                SWIFT_CONCURRENCY_INPUT.splitlines(keepends=True)
+                if concurrency_built
+                else []
+            )
             + SHELL_INPUT.splitlines(keepends=True)
             + list(SHELL_EDIT_INPUT)
             + list(SHELL_VI_INPUT)
@@ -2968,6 +2980,19 @@ def main():
                 file=sys.stderr,
             )
             return 1
+        if concurrency_built:
+            spread = TASK_PRIMES_SPREAD_OUTPUT.search(output)
+            if (
+                not spread
+                or int(spread.group(1)) < 2
+                or len(spread.group(2).split(",")) < 2
+            ):
+                print(
+                    "FAIL: taskprimes did not run on several threads and "
+                    f"CPUs: {spread.group(0).strip() if spread else 'none'}",
+                    file=sys.stderr,
+                )
+                return 1
         edits = {
             text: len(re.findall(rf"^{text}\r?$", output, re.MULTILINE))
             for text in EXPECTED_SHELL_EDITS

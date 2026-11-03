@@ -1,6 +1,7 @@
 # Swift's concurrency runtime, built from the swift.org sources build.sh fetches into deps/swift
 # and patches with swift.patch, as upstream builds it for Embedded Swift but with the pthreads
-# threading package over the C library. Its C++ half needs Clang and a C++ standard library, so
+# threading package over the C library and global_executor.cpp's thread pool in place of the
+# single-threaded cooperative executor. Its C++ half needs Clang and a C++ standard library, so
 # it uses the toolchain's clang++ and libc++'s headers from deps/llvm-project, configured by
 # libcxx/__config_site; nothing calls into a compiled libc++. The Swift half is only the
 # _Concurrency module: Embedded Swift compiles the parts a program uses into the program.
@@ -60,17 +61,19 @@ set(runtime_sources
     ${swift_source}/lib/Threading/Errors.cpp
     ${swift_source}/lib/Threading/Pthreads.cpp
 )
-foreach (name Actor AsyncLet AsyncStream Clock ConcurrencyHooks CooperativeGlobalExecutor
-        EmbeddedSupport Error ExecutorBridge ExecutorChecks GlobalExecutor Task TaskAlloc
-        TaskGroup TaskLocal TaskStatus ThreadingError TracingSignpost)
+foreach (name Actor AsyncLet AsyncStream Clock ConcurrencyHooks EmbeddedSupport Error
+        ExecutorBridge ExecutorChecks GlobalExecutor Task TaskAlloc TaskGroup TaskLocal TaskStatus
+        ThreadingError TracingSignpost)
     list(APPEND runtime_sources ${concurrency_source}/${name}.cpp)
 endforeach ()
 
 set(objects)
-foreach (source ${runtime_sources} ${CMAKE_CURRENT_SOURCE_DIR}/platform.cpp)
+set(own_sources
+    ${CMAKE_CURRENT_SOURCE_DIR}/global_executor.cpp ${CMAKE_CURRENT_SOURCE_DIR}/platform.cpp)
+foreach (source ${runtime_sources} ${own_sources})
     get_filename_component(name ${source} NAME_WE)
     set(object ${output}/objects/${name}.o)
-    if (source MATCHES "/platform.cpp$")
+    if (source IN_LIST own_sources)
         set(warnings -Wall -Wextra -Werror)
     else ()
         set(warnings -w)

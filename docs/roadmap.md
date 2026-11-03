@@ -573,9 +573,9 @@ Scheduled right after M11, before the next feature milestone, so later work star
 
 **Complete when:** every target builds as `gnu++23` without warnings, the host tests pass under both sanitizers, and the syscall tables use designated initializers.
 
-### 21. Embedded Swift For User Programs
+### 21. Embedded Swift For User Programs (Complete)
 
-**Summary of Parts 1–10:** User programs can be written in Embedded Swift with the swift.org toolchain. They import the C library as `FeatherLibC` and the shared `FeatherSupport` module, and link into the same static-PIE programs as the C++ ones. `hello`, `rev`, `json` and `life` run on both targets, and the shell smoke test checks them. The parsers of `json` and `life` are host-tested in `unit-test`. `swiftbench` against `cppbench` puts optimized Swift at 1.6 to 2 times C++'s time, about 4 times on `life`, mostly from bounds and overflow checks, with code 1.7 to 1.9 times as large. Measuring it showed that every C++ program had been built at `-O0`, so `build.sh` gained `BUILD_TYPE=Debug|Release`. What Embedded Swift leaves out is listed in `docs/development.md`. The C library gained `fma` for `Double(String)`. `tasks` runs `async`/`await`, tasks and actors on both targets, on Swift's concurrency runtime built from the 6.4.2 sources with pthreads, over libc++'s headers.
+**Summary:** User programs can be written in Embedded Swift with the swift.org toolchain. They import the C library as `FeatherLibC` and the shared `FeatherSupport` module, and link into the same static-PIE programs as the C++ ones. `hello`, `rev`, `json` and `life` run on both targets, and the shell smoke test checks them. The parsers of `json` and `life` are host-tested in `unit-test`. `swiftbench` against `cppbench` puts optimized Swift at 1.6 to 2 times C++'s time, about 4 times on `life`, mostly from bounds and overflow checks, with code 1.7 to 1.9 times as large. Measuring it showed that every C++ program had been built at `-O0`, so `build.sh` gained `BUILD_TYPE=Debug|Release`. What Embedded Swift leaves out is listed in `docs/development.md`. The C library gained `fma` for `Double(String)`. `tasks` runs `async`/`await`, tasks and actors on both targets, on Swift's concurrency runtime built from the 6.4.2 sources with pthreads, over libc++'s headers. A global executor of FeatherOS's own runs the jobs on a thread for every CPU, and `taskprimes` shows a task group spread over all four of QEMU's CPUs.
 
 User programs written in Embedded Swift, built on the host with the swift.org toolchain (Swift 6 or newer; Xcode's toolchain does not reliably target ELF) and linked against the FeatherOS libc like the C++ programs. The kernel stays C++.
 
@@ -635,7 +635,19 @@ User programs written in Embedded Swift, built on the host with the swift.org to
   - **Platform file:** `platform.cpp` replaces Part 9's Darwin names. It keeps the stand-ins for runtime entry points Embedded Swift leaves out, and adds `steady_clock::now` and `this_thread::sleep_for` from libc++'s compiled library.
 
   The C library gained what libc++'s headers need: `pthread_key_*` (128 keys, destructors when a thread ends, linked only by programs that create a key), `uchar.h` (`mbstate_t` and UTF-8 conversions to UTF-16 and UTF-32, host-tested) and `inttypes.h`. Clang reads the C headers, too. `tasks` passes every check on AArch64 as on x86-64. The executor is still the cooperative one, on the program's main thread.
-- **Part 11: an executor on every CPU.** A global executor that runs jobs on a pool of pthreads, so tasks spread over all CPUs, and a Swift program that counts primes in tasks and reports the CPUs they ran on, checked on both targets.
+- **Part 11: an executor on every CPU (done).** `src/user/swift_concurrency/global_executor.cpp` replaces upstream's `CooperativeGlobalExecutor.cpp`:
+  - **Queue:** one queue of jobs, by priority and then arrival, behind a pthread mutex and a condition variable on `CLOCK_MONOTONIC`. Delayed jobs wait in a list sorted by deadline.
+  - **Threads:** the first job starts a worker for every online CPU but one. The main thread joins them in `swift_task_asyncMainDrainQueue`, so a program on QEMU's 4 CPUs has 4 threads running jobs.
+  - **Main executor:** Embedded Swift has no `MainActor` outside WASI, so the main executor stays the generic one.
+
+  `platform.cpp` lost `steady_clock::now` and `sleep_for`, which only the cooperative executor used.
+
+  Running tasks at the same time showed a bug that one thread had hidden. The runtime's `_Deque` takes its capacity from `ManagedBuffer.capacity`, which on a bare-metal target reads a `_swift_stdlib_malloc_size` shim that returns 0. So the capacity was negative, and an `AsyncStream` holding a second buffered value failed an assertion. `swift.patch` makes the deque use the capacity it asked for under Embedded Swift, as upstream does on OpenBSD.
+
+  Tests:
+  - `tasks` checks that each of two turn-taking tasks reaches the shared actor in order, instead of a fixed interleaving. It also checks a stream whose 100 values are all buffered before the first is read.
+  - `taskprimes [tasks] [limit]` (`src/user/taskprimes.swift`) counts primes in a task group and prints the threads and CPUs the tasks ran on.
+  - The shell smoke test runs `taskprimes 16 100000` and checks the count and at least two threads and CPUs, on both targets in Debug and Release.
 
 **Complete when:** on both targets, Swift programs build from `src/user/`, run from the shell, and the matrix checks their output, and Swift tasks run on every CPU.
 
@@ -715,6 +727,66 @@ M11 left out the stop signals because a process could not be stopped: Ctrl+C is 
   1. **(Complete)** Raw mode turns `ISIG` off, so Ctrl+Z reaches these programs as a key rather than as `SIGTSTP`; `RawTerminal` also catches `SIGTSTP` while active and hands it over as the same key. `RawTerminal::Suspend` restores the settings it found, sets `SIGTSTP` back to its default and sends it with `kill(0, SIGTSTP)`, which returns once the group continues (at once for an orphaned group), then puts raw mode back; a job continued with `bg` stops again with `SIGTTOU` there. `vi` leaves the alternate screen around it and redraws through `ViEditor::Resize`, `top` also shows the cursor and redraws its last table, and the shell's `LineEditor` gets a `Suspended` status that prints `^Z` and keeps the line for `Redraw`; a shell that leads its session ignores the key. The shell test stops `vi` (then saves with `:wq`), `top` and a nested shell on the console, and `vi` and `top` inside `script`; the keyboard test stops `sleep` on the second console with Ctrl+Z, continues it with `fg` and ends it with Ctrl+C.
 
 **Complete when:** on both targets, Ctrl+Z stops a foreground job on a console and on a pty, `jobs`, `fg` and `bg` manage it, `vi` and `top` come back as they were, a background reader stops instead of waiting, and the matrix covers all of it.
+
+### 25. Swift Beyond The Embedded Defaults
+
+M21 left a list of what Embedded Swift 6.4.2 does without ("What Embedded Swift leaves out" in `docs/development.md`). This milestone adds back everything on it that a library can provide. We already build `_Concurrency` from source, so a patch can add back what upstream only marks unavailable under Embedded Swift. The standard library is still the toolchain's prebuilt module, so the parts that live there depend on building it from source as well (Part 6).
+
+**Out of scope:** the compiler itself rejects these, or they need type metadata that Embedded Swift never emits (checked with swiftc 6.4.2 against both targets):
+- `weak`/`unowned` ("attribute 'weak' cannot be used in Embedded Swift").
+- Key paths passed as values ("cannot use key path in embedded Swift").
+- Casts to protocol types (the compiler warns and the cast never succeeds).
+- `Mirror` and other reflection.
+- Generic class methods that are not `final`.
+- Foundation and the `Distributed` module, which are built on reflection.
+- Compiling Swift on FeatherOS.
+
+**Probe results that shape the plan:**
+- Top-level `await` crashed swiftc only because top-level code runs on `MainActor`, which Embedded Swift leaves out outside WASI. With `MainActor.swift` built into our `_Concurrency`, the same file compiles.
+- `Duration` is already in the Embedded standard library.
+- Swift can already import a C++ header with `-cxx-interoperability-mode=default`.
+- `withVaList` and `CVarArg` are missing, as are `print(_:to:)`, `String(describing:)`, `AnyHashable` and `Codable`.
+
+- **Part 1: clocks and sleeping.**
+  - `swift.patch` makes `ContinuousClock`, `SuspendingClock`, `Clock.sleep`, `Task.sleep(nanoseconds:)`, `Task.sleep(for:)`, `Task.sleep(until:)` and `Task.checkCancellation()` available.
+  - The runtime's `Clock.cpp` reads them through `clock_gettime`, and they sleep through the global executor's delayed jobs.
+  - A cancelled sleep wakes early with `CancellationError`.
+  - `tasks` sleeps, times a sleep against `ContinuousClock`, and cancels a sleeping task; the shell smoke test checks this on both targets.
+- **Part 2: `MainActor` and top-level `await`.**
+  - `swift.patch` builds `MainActor` for FeatherOS. `global_executor.cpp` gives it a main-thread queue that only `swift_task_asyncMainDrainQueue` runs, and `isMainExecutor` and `checkIsolated` stop treating the generic executor as the main one.
+  - `MainActor.run` and `MainActor.assumeIsolated` work as documented.
+  - Concurrency programs no longer need `-parse-as-library` and an `@main` type, so `tasks` moves to top-level code.
+  - The smoke test checks that `@MainActor` code runs on the main thread while other tasks run on the workers.
+- **Part 3: custom executors.**
+  - The hooks that abort today are implemented: a `SerialExecutor` an actor names through `unownedExecutor`, and a `TaskExecutor` passed to `withTaskExecutorPreference` or `Task(executorPreference:)`.
+  - `swift.patch` makes the declarations available where upstream marks them unavailable in Embedded Swift.
+  - A test program runs an actor on its own thread and a task group on a dedicated executor, and checks where each job ran.
+- **Part 4: the C library from Swift.**
+  - `FeatherSupport` gains `CommandLine` (`arguments`, `argc`, `unsafeArgv`) and a settable `errno`.
+  - It gains `open`, `openat`, `fcntl` and `ioctl` overloads with fixed parameters, as Glibc's Swift overlay has, calling new non-variadic entry points in libc.
+  - It gains printf-style formatting through a libc entry point that takes an array of tagged arguments instead of `...` and shares `format.h` with `printf`.
+  - `hello` and `rev` use them, and `libctest` checks the new C functions.
+- **Part 5: C++ interoperability.**
+  - Swift programs can import C++ headers: a CMake option per program enables `-cxx-interoperability-mode=default`, with libc++'s headers from `deps/llvm-project`.
+  - A Swift program reuses existing C++ code, for example `http_message.cpp`'s URL and request parser, and is checked by the smoke test.
+  - `docs/development.md` records which C++ features work under Embedded Swift.
+- **Part 6: the standard library from source (spike).**
+  - Build the Embedded `Swift` module from `swift-6.4.2-RELEASE` the way `_Concurrency` is built: a sparse clone of `stdlib/public/core`, patched, and used in place of the toolchain's module.
+  - Find out which of `print(_:to:)`, `String(describing:)` (for `CustomStringConvertible` and `TextOutputStreamable` values), `AnyHashable`, `withVaList` and `Codable` can be made available.
+  - The result is a go/no-go note per item in `docs/development.md`. The go items land with a benchmark run to show that code size and speed are unchanged.
+- **Part 7: `Codable` (if Part 6 allows).**
+  - Synthesized `Encodable`/`Decodable` conformances.
+  - A `JSONEncoder` and `JSONDecoder` in `FeatherSupport` over `json`'s parser and printers.
+  - Host tests round-trip structs, enums, optionals and nested containers, and `json` gains an option that decodes into a typed value.
+- **Part 8: regular expressions.**
+  - First try Swift's `Regex` with its literals, by building `_StringProcessing` from source over Part 6's library.
+  - Should that need reflection or protocol casts, fall back: libc gains POSIX `regex.h` (`regcomp`/`regexec`/`regfree`/`regerror`, basic and extended syntax), `grep` gains `-E`, and `FeatherSupport` gains a Swift wrapper over it.
+  - Host tests cover the matcher, and the smoke test greps with patterns from both languages.
+
+**Complete when:**
+- Every item above is available on both targets, or documented as no-go with the reason.
+- "What Embedded Swift leaves out" lists only the out-of-scope items.
+- The matrix covers the new programs.
 
 ## Architecture Boundaries
 

@@ -4,17 +4,10 @@
 #include "swift/Runtime/HeapObject.h"
 #include "swift/Runtime/Metadata.h"
 
-#include <chrono>
-#include <thread>
-
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
-// What the concurrency runtime needs that neither the C library nor the Embedded Swift standard
-// library provides: two functions from libc++'s compiled library, which FeatherOS does not
-// have, and runtime entry points that Embedded Swift leaves out.
+// Runtime entry points that the concurrency runtime needs and Embedded Swift leaves out.
 
 using namespace swift;
 
@@ -28,28 +21,6 @@ namespace
 }
 
 } // namespace
-
-// The cooperative executor's deadlines and its wait for the next delayed job.
-std::chrono::steady_clock::time_point std::chrono::steady_clock::now() noexcept
-{
-    struct timespec now = {};
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return time_point(seconds(now.tv_sec) + nanoseconds(now.tv_nsec));
-}
-
-void std::this_thread::sleep_for(const std::chrono::nanoseconds& duration)
-{
-    if (duration <= std::chrono::nanoseconds::zero())
-    {
-        return;
-    }
-    const auto whole = std::chrono::duration_cast<std::chrono::seconds>(duration);
-    struct timespec remaining = {static_cast<time_t>(whole.count()),
-                                 static_cast<long>((duration - whole).count())};
-    while (nanosleep(&remaining, &remaining) == -1 && errno == EINTR)
-    {
-    }
-}
 
 // An Embedded Swift object starts with its class metadata.
 const Metadata* swift::swift_getObjectType(HeapObject* object)
@@ -66,9 +37,8 @@ void swift::swift_reportError(uint32_t, const char* message)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wreturn-type-c-linkage"
 
-// The cooperative executor runs the main actor's jobs with the rest, so the main executor is
-// the generic one, as its swift_task_getMainExecutorImpl says. The Swift version of this
-// function is built only for WASI or without Embedded Swift.
+// The main executor is the generic one, as global_executor.cpp's swift_task_getMainExecutorImpl
+// says. The Swift version of this function is built only for WASI or without Embedded Swift.
 extern "C" SWIFT_CC(swift) SerialExecutorRef swift_getMainExecutor()
 {
     return SerialExecutorRef::generic();
