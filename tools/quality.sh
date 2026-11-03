@@ -79,13 +79,16 @@ job_count() {
     fi
 }
 
-# The sources clang-tidy checks for one architecture: the shared ones and that arch's own.
+# The sources clang-tidy checks for one architecture: the shared ones and that arch's own. The
+# Swift concurrency runtime's file is compiled by a custom command, so it has no entry in
+# compile_commands.json.
 tidy_sources() {
     local arch="$1"
     find "$REPO_ROOT/src" -type f \
         \( -name '*.c' -o -name '*.cpp' \) \
         ! -path "$REPO_ROOT/src/kernel/arch/*" \
         ! -path "$REPO_ROOT/src/libc/arch/*" \
+        ! -path "$REPO_ROOT/src/user/swift_concurrency/*" \
         -print0
     find "$REPO_ROOT/src/kernel/arch/$arch" "$REPO_ROOT/src/libc/arch/$arch" -type f \
         \( -name '*.c' -o -name '*.cpp' \) \

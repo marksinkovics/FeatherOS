@@ -36,6 +36,7 @@ add_library(featheros_c STATIC
     netdb.cpp
     poll.cpp
     pthread.cpp
+    thread_keys.cpp
     signal.cpp
     socket.cpp
     math.cpp
@@ -45,6 +46,8 @@ add_library(featheros_c STATIC
     stdlib.cpp
     string.cpp
     time.cpp
+    uchar.cpp
+    unicode_conversion.cpp
     unistd.cpp
     arch/${ARCH}/setjmp.cpp
     arch/${ARCH}/signal_return.cpp

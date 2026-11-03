@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <featheros.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <math.h>
 #include <netdb.h>
@@ -30,6 +31,7 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
+#include <uchar.h>
 #include <unistd.h>
 
 namespace
@@ -41,9 +43,9 @@ constexpr char Help[] =
     "stdlib.h, errno, setjmp, exit handlers, the console descriptors, stat, process\n"
     "IDs, the environment, the heap, stdio, files and directories, /dev, /tmp,\n"
     "/proc, getnameinfo, time, posix_spawn with file actions, dup, fcntl, pipes,\n"
-    "non-blocking pipes and loopback sockets, the FeatherOS extensions, and floating\n"
-    "point. It asks for three lines of input\n"
-    "at \"> \" prompts.";
+    "non-blocking pipes and loopback sockets, the FeatherOS extensions, threads and\n"
+    "their keys, uchar.h, inttypes.h, and floating point. It asks for three lines\n"
+    "of input at \"> \" prompts.";
 
 #if defined(__x86_64__)
 constexpr uintptr_t KernelAddress = 0xFFFF800000000000;
@@ -240,6 +242,48 @@ void CheckIntegerParsing()
     Check(strtoll("-77", nullptr, 8) == -63, "strtoll octal");
     Check(atoi("123") == 123 && atoi(" -7") == -7 && atol("40") == 40 && atoll("-5") == -5,
           "atoi family");
+
+    char formatted[64];
+    snprintf(formatted, sizeof(formatted), "%" PRId64 " %" PRIx32 " %" PRIuMAX " %" PRIdFAST8,
+             INT64_MIN, UINT32_C(0xBEEF), UINTMAX_MAX, static_cast<int_fast8_t>(-5));
+    Check(strcmp(formatted, "-9223372036854775808 beef 18446744073709551615 -5") == 0,
+          "inttypes.h printf formats");
+    int16_t small = 0;
+    int_fast8_t fast = 0;
+    uint64_t wide = 0;
+    Check(sscanf("-300 7 ffffffffffffffff", "%" SCNd16 " %" SCNdFAST8 " %" SCNx64, &small, &fast,
+                 &wide) == 3 &&
+              small == -300 && fast == 7 && wide == UINT64_MAX,
+          "inttypes.h scanf formats");
+    Check(strtoimax("-0x10", &end, 0) == -16 && *end == '\0' &&
+              strtoumax("777", nullptr, 8) == 511 && imaxabs(-9) == 9 &&
+              imaxdiv(-7, 2).quot == -3 && imaxdiv(-7, 2).rem == -1,
+          "strtoimax, strtoumax, imaxabs and imaxdiv");
+}
+
+void CheckUnicodeConversion()
+{
+    mbstate_t state = {};
+    char32_t character = 0;
+    const char euro[] = "\xE2\x82\xAC";
+    Check(mbrtoc32(&character, euro, 2, &state) == static_cast<size_t>(-2) &&
+              mbrtoc32(&character, euro + 2, 1, &state) == 1 && character == 0x20AC,
+          "mbrtoc32 across calls");
+    char bytes[4];
+    Check(c32rtomb(bytes, 0x1F600, &state) == 4 && memcmp(bytes, "\xF0\x9F\x98\x80", 4) == 0,
+          "c32rtomb");
+    errno = 0;
+    Check(c32rtomb(bytes, 0xD800, &state) == static_cast<size_t>(-1) && errno == EILSEQ,
+          "c32rtomb refuses a surrogate");
+    state = {};
+    char16_t units[2] = {};
+    Check(mbrtoc16(&units[0], "\xF0\x9F\x98\x80", 4, &state) == 4 &&
+              mbrtoc16(&units[1], "", 1, &state) == static_cast<size_t>(-3) && units[0] == 0xD83D &&
+              units[1] == 0xDE00,
+          "mbrtoc16 returns a surrogate pair");
+    Check(c16rtomb(bytes, units[0], &state) == 0 && c16rtomb(bytes, units[1], &state) == 4 &&
+              memcmp(bytes, "\xF0\x9F\x98\x80", 4) == 0,
+          "c16rtomb joins a surrogate pair");
 }
 
 void CheckArithmetic()
@@ -1696,6 +1740,63 @@ void* WaitAtGate(void* argument)
     return nullptr;
 }
 
+pthread_key_t value_key;
+int destructor_calls = 0;
+int resets_left = 0;
+
+void CountDestructor(void* value)
+{
+    __atomic_add_fetch(&destructor_calls, 1, __ATOMIC_RELAXED);
+    // Setting the value again makes the thread's end run the destructor another round.
+    if (__atomic_sub_fetch(&resets_left, 1, __ATOMIC_RELAXED) >= 0)
+    {
+        pthread_setspecific(value_key, value);
+    }
+}
+
+void* SetKeyValue(void* value)
+{
+    const bool unset = pthread_getspecific(value_key) == nullptr;
+    pthread_setspecific(value_key, value);
+    const bool own = pthread_getspecific(value_key) == value;
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(unset && own));
+}
+
+void CheckThreadKeys()
+{
+    Check(pthread_key_create(&value_key, CountDestructor) == 0, "pthread_key_create");
+    int marker = 0;
+    pthread_setspecific(value_key, &marker);
+    pthread_t thread;
+    void* result = nullptr;
+    pthread_create(&thread, nullptr, SetKeyValue, &destructor_calls);
+    pthread_join(thread, &result);
+    Check(result != nullptr && pthread_getspecific(value_key) == &marker,
+          "each thread has its own key value");
+    Check(destructor_calls == 1, "a thread's end calls the key's destructor");
+    resets_left = 2;
+    pthread_create(&thread, nullptr, SetKeyValue, &destructor_calls);
+    pthread_join(thread, nullptr);
+    Check(destructor_calls == 4, "destructors run again while they set values");
+    Check(pthread_key_delete(value_key) == 0 && pthread_getspecific(value_key) == nullptr &&
+              pthread_setspecific(value_key, &marker) == EINVAL &&
+              pthread_key_delete(value_key) == EINVAL,
+          "pthread_key_delete");
+    pthread_key_t keys[PTHREAD_KEYS_MAX];
+    int created = 0;
+    while (created < PTHREAD_KEYS_MAX && pthread_key_create(&keys[created], nullptr) == 0)
+    {
+        ++created;
+    }
+    pthread_key_t extra;
+    Check(created == PTHREAD_KEYS_MAX && pthread_key_create(&extra, nullptr) == EAGAIN,
+          "PTHREAD_KEYS_MAX keys at most");
+    for (int index = 0; index < created; ++index)
+    {
+        pthread_key_delete(keys[index]);
+    }
+}
+
 pthread_once_t once_control = PTHREAD_ONCE_INIT;
 int once_runs = 0;
 
@@ -3044,6 +3145,7 @@ int main(int argc, char** argv)
     CheckStrings();
     CheckCharacterClasses();
     CheckIntegerParsing();
+    CheckUnicodeConversion();
     CheckArithmetic();
     CheckSorting();
     CheckJumps();
@@ -3081,6 +3183,7 @@ int main(int argc, char** argv)
     CheckThreads();
     CheckThreadLocalStorage();
     CheckSynchronization();
+    CheckThreadKeys();
     CheckThreadSafeLibrary();
     CheckMemoryReturns();
     CheckScanning();

@@ -42,7 +42,7 @@ Install Ninja and CMake 3.20 or newer as well; kernel and unit-test CMake builds
 - sudo apt-get install -y mtools
 - sudo apt-get install -y python3
 
-Swift programs (optional) need a swift.org toolchain, installed with [swiftly](https://www.swift.org/install/). `swiftly install` in the checkout installs the version `.swift-version` pins, and `build.sh` asks swiftly for its location, or uses `SWIFTC=/path/to/swiftc` when set. Xcode's `swiftc` is not used, since it does not reliably target ELF. Without a usable toolchain the build says so and skips the Swift programs, and the shell smoke test skips their checks.
+Swift programs (optional) need a swift.org toolchain, installed with [swiftly](https://www.swift.org/install/). `swiftly install` in the checkout installs the version `.swift-version` pins, and `build.sh` asks swiftly for its location, or uses `SWIFTC=/path/to/swiftc` when set. Xcode's `swiftc` is not used, since it does not reliably target ELF. Without a usable toolchain the build says so and skips the Swift programs, and the shell smoke test skips their checks. With one, `build.sh` also fetches the Swift and libc++ sources that the concurrency runtime is built from, and that build needs `python3` (see "Swift concurrency").
 
 ## Architecture Builds
 
@@ -430,22 +430,35 @@ Programs written in Embedded Swift are listed in `FEATHEROS_SWIFT_PROGRAMS` as `
 
 ### Swift concurrency
 
-Programs in `FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS` use `async`/`await`, tasks and actors. Only the toolchain's x86-64 target has the runtime, so CMake builds them only when `libswift_Concurrency.a` is there, and says so otherwise; the shell smoke test checks `tasks` only where it was built. They are compiled with `-parse-as-library` and start from an `@main` type with `static func main() async`, because top-level `await` crashes the compiler. They link the toolchain's `libswift_Concurrency.a` and `libswift_ConcurrencyDefaultExecutor.a` (in a link group, since each calls the other), whose cooperative executor runs every job on the program's one thread, in the order the jobs were queued. That runtime was built without threads, so its locks do nothing.
+Programs in `FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS` use `async`/`await`, tasks and actors. They are compiled with `-parse-as-library` and start from an `@main` type with `static func main() async`, because top-level `await` crashes the compiler. They link `featheros_swift_concurrency`, Swift's concurrency runtime built from source for both targets by `src/user/swift_concurrency/CMakeLists.txt`. The toolchain's own runtime exists only for x86-64, was compiled against Darwin's headers and has no threads.
 
-The archives were compiled against Darwin's headers, and Embedded Swift leaves a few runtime functions to the platform, so `src/user/swift_concurrency_platform.cpp` provides what they call:
-- Darwin's names for C library functions: `__error` (`errno`), `__stderrp`, `_fputs` and `_nanosleep`, plus `memset_s` from C11 Annex K.
-- libc++'s `std::chrono::steady_clock::now()`, as nanoseconds of `CLOCK_MONOTONIC`, for the executor's deadlines.
+`build.sh` fetches what the runtime build reads when it finds a Swift toolchain. These are shallow, sparse clones, about 70 MB together:
+- `deps/swift`: the `swift-<.swift-version>-RELEASE` tag, with the Concurrency, threading, runtime and shim sources and headers. `src/user/swift_concurrency/swift.patch` is applied to it, and applied again from a clean tree whenever the patch changes.
+- `deps/llvm-project`: `llvmorg-21.1.8`, only `libcxx/include` and its assertion handler. LLVM 21 is what the toolchain's clang is based on.
+
+`fullclean` removes them. Without them, CMake says so and skips the concurrency programs.
+
+The runtime build follows upstream's Embedded Swift build, with these differences:
+- **C++ half:** compiled with the toolchain's `clang++` at `-O2`. It uses libc++'s headers over the FeatherOS C headers, configured by `src/user/swift_concurrency/libcxx/__config_site`: threads through `pthread.h`, and no locales, wide characters, files or random device. Only the headers are used, since FeatherOS has no compiled libc++.
+- **Threading:** Swift's pthreads threading package instead of none, so the runtime's mutexes and once-flags are the C library's. Its per-thread values are C++ `thread_local`s in each thread's TLS block.
+- **The patch:** it adds `__featheros__` cases to the runtime's clocks (`CLOCK_MONOTONIC` for both the continuous and the suspending clock, as on WASI), to its sleep (`nanosleep`) and to the thread stack bounds (unknown). It also drops an unused `<sys/syscall.h>`.
+- **Swift half:** only the `_Concurrency` module, compiled with every availability macro set to `*`. Its three `.gyb` sources are expanded with Swift's `utils/gyb.py`, which needs `python3`. Embedded Swift compiles the parts a program uses into the program, and programs find this module first through `-I`.
+
+`src/user/swift_concurrency/platform.cpp`, compiled with the runtime, provides what neither the C library nor Embedded Swift's standard library has:
+- `std::chrono::steady_clock::now()` and `std::this_thread::sleep_for`, from libc++'s compiled library, for the cooperative executor's deadlines and its wait for a delayed job.
 - `swift_getObjectType` (an Embedded Swift object starts with its class metadata), `swift_reportError` (to standard error) and `swift_getMainExecutor`, which returns the generic executor, as the cooperative executor treats the main actor.
-- The `_task_serialExecutor_*` and `_task_taskExecutor_getTaskExecutorRef` hooks, generic Swift functions in `_Concurrency` that Embedded Swift never compiles into the archive, and `swift::getResilientMetadataBounds`, which only distributed actors reach. They print that custom executors (or distributed actors) are not supported, and abort. Upstream's tests link on macOS with `-dead_strip`, which drops the code that calls them.
+- The `_task_serialExecutor_*` and `_task_taskExecutor_getTaskExecutorRef` hooks, and `swift::getResilientMetadataBounds`. The hooks are generic Swift functions in `_Concurrency`, which Embedded Swift never compiles into a library. Only custom executors reach them, and only distributed actors reach `getResilientMetadataBounds`. They print that the feature is not supported, and abort. Upstream's tests link on macOS with `-dead_strip`, which drops the code that calls them.
 
-`clock_getres`, which the archive also calls, is in the C library. `tasks` (`src/user/tasks.swift`) prints a task's value, two tasks taking turns through `Task.yield` (`ping 1, pong 1, ...`), 100 child tasks of a task group incrementing an actor, a task group's sum, `async let`, a checked continuation resumed by another task, an `AsyncStream`, a cancelled task, an error thrown by a task and caught by its pattern, and a `@TaskLocal` value seen by a child task but not a detached one. The order is the same on every run, since the executor is first in, first out, and the shell smoke test checks every line on x86-64.
+The executor is still upstream's cooperative one, `CooperativeGlobalExecutor.cpp`. It runs every job on the thread that called `main`, in the order the jobs were queued.
+
+`tasks` (`src/user/tasks.swift`) prints a task's value, two tasks taking turns through `Task.yield` (`ping 1, pong 1, ...`), 100 child tasks of a task group incrementing an actor, and a task group's sum. It also prints `async let`, a checked continuation resumed by another task, an `AsyncStream`, a cancelled task, an error thrown by a task and caught by its pattern, and a `@TaskLocal` value seen by a child task but not a detached one. The order is the same on every run, since the executor is first in, first out. The shell smoke test checks every line on both targets.
 
 ### What Embedded Swift leaves out
 
 Embedded Swift specializes every generic for the types it is used with and keeps no type metadata at run time. So anything that inspects a type while the program runs is gone. The list below was checked against the pinned toolchain (6.4.2): small programs compiled for both FeatherOS targets at `-Onone` and `-O`, with their undefined symbols inspected, and the ones that compiled also ran under the toolchain's Embedded Swift for macOS.
 - **Reflection:** no `Mirror`, `dump`, `String(describing:)` or `_typeName`. `print` takes a single `String`, `StaticString`, integer, `Bool` or floating-point value, with no `separator`. Interpolating a value of a type that does not conform to `CustomStringConvertible` compiles, but prints `(cannot print value in embedded Swift)`.
 - **Libraries:** no Foundation, `Codable` (the compiler cannot synthesize the conformances), `Regex`, `AnyHashable` or Objective-C interop.
-- **Concurrency:** `async`/`await`, actors and `Task` need `import _Concurrency` and its runtime, which the toolchain has only for x86-64, without threads (see "Swift concurrency"). Even there, Embedded Swift has no clocks (`ContinuousClock`, `SuspendingClock`), so no `Task.sleep`, and no `Task.checkCancellation`; a task tests `Task.isCancelled`. Top-level `await` crashes the 6.4.2 compiler, so an async program starts from an `@main` type.
+- **Concurrency:** `async`/`await`, actors and `Task` need `import _Concurrency` and its runtime, which the toolchain has only for x86-64, without threads; FeatherOS builds it from source instead (see "Swift concurrency"). Embedded Swift has no clocks (`ContinuousClock`, `SuspendingClock`), so no `Task.sleep`, and no `Task.checkCancellation`; a task tests `Task.isCancelled`. Top-level `await` crashes the 6.4.2 compiler, so an async program starts from an `@main` type.
 - **References:** no `weak` or `unowned` references, so a cycle of strong references must be broken by hand. `unowned(unsafe)` and `Unmanaged` remain.
 - **Classes:** a generic method of a class must be `final`.
 - **Dynamic casts:** casting a value to a protocol type (`as? any P`, `is any P`) is a compile error. A cast to a class-bound protocol compiles, but it needs the runtime's `swift_conformsToProtocol`, which Embedded Swift does not have, so it does not link. Casts from `Any` to a concrete type (`as? Int`) and between classes work.

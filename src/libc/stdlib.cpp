@@ -3,6 +3,7 @@
 #include "libc/integer_parse.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -118,6 +119,16 @@ lldiv_t lldiv(long long numerator, long long denominator)
     return {numerator / denominator, numerator % denominator};
 }
 
+intmax_t imaxabs(intmax_t value)
+{
+    return value < 0 ? -value : value;
+}
+
+imaxdiv_t imaxdiv(intmax_t numerator, intmax_t denominator)
+{
+    return {numerator / denominator, numerator % denominator};
+}
+
 long strtol(const char* text, char** end, int base)
 {
     return ParseSigned<long>(text, end, base, LONG_MAX);
@@ -136,6 +147,16 @@ unsigned long strtoul(const char* text, char** end, int base)
 unsigned long long strtoull(const char* text, char** end, int base)
 {
     return ParseUnsigned<unsigned long long>(text, end, base, ULLONG_MAX);
+}
+
+intmax_t strtoimax(const char* text, char** end, int base)
+{
+    return ParseSigned<intmax_t>(text, end, base, INTMAX_MAX);
+}
+
+uintmax_t strtoumax(const char* text, char** end, int base)
+{
+    return ParseUnsigned<uintmax_t>(text, end, base, UINTMAX_MAX);
 }
 
 double strtod(const char* text, char** end)

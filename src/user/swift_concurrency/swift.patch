@@ -1,0 +1,98 @@
+diff --git a/lib/Threading/Pthreads.cpp b/lib/Threading/Pthreads.cpp
+index 1daa852..250d8e4 100644
+--- a/lib/Threading/Pthreads.cpp
++++ b/lib/Threading/Pthreads.cpp
+@@ -76,7 +76,12 @@ void swift::threading_impl::once_slow(once_t &predicate, void (*fn)(void *),
+   pthread_mutex_unlock(&onceMutex);
+ }
+
+-#if defined(__OpenBSD__)
++#if defined(__featheros__)
++std::optional<swift::threading_impl::stack_bounds>
++swift::threading_impl::thread_get_current_stack_bounds() {
++  return {};
++}
++#elif defined(__OpenBSD__)
+ std::optional<swift::threading_impl::stack_bounds>
+ swift::threading_impl::thread_get_current_stack_bounds() {
+   stack_t sinfo;
+diff --git a/stdlib/public/Concurrency/Actor.cpp b/stdlib/public/Concurrency/Actor.cpp
+index 1563307..5eb6dcf 100644
+--- a/stdlib/public/Concurrency/Actor.cpp
++++ b/stdlib/public/Concurrency/Actor.cpp
+@@ -72,7 +72,7 @@
+ #include <unwind.h>
+ #endif
+
+-#if defined(__ELF__)
++#if defined(__ELF__) && !defined(__featheros__)
+ #include <sys/syscall.h>
+ #endif
+
+diff --git a/stdlib/public/Concurrency/Clock.cpp b/stdlib/public/Concurrency/Clock.cpp
+index 2d1e297..a233593 100644
+--- a/stdlib/public/Concurrency/Clock.cpp
++++ b/stdlib/public/Concurrency/Clock.cpp
+@@ -52,7 +52,7 @@ void swift_get_time(
+       clock_gettime(CLOCK_BOOTTIME, &continuous);
+ #elif defined(__APPLE__)
+       clock_gettime(CLOCK_MONOTONIC_RAW, &continuous);
+-#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__))
++#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__) || defined(__featheros__))
+       clock_gettime(CLOCK_MONOTONIC, &continuous);
+ #elif defined(_WIN32)
+       // This needs to match what swift-corelibs-libdispatch does
+@@ -85,7 +85,7 @@ void swift_get_time(
+       clock_gettime(CLOCK_MONOTONIC, &suspending);
+ #elif defined(__APPLE__)
+       clock_gettime(CLOCK_UPTIME_RAW, &suspending);
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__featheros__)
+       clock_gettime(CLOCK_MONOTONIC, &suspending);
+ #elif (defined(__OpenBSD__) || defined(__FreeBSD__))
+       clock_gettime(CLOCK_UPTIME, &suspending);
+@@ -115,7 +115,7 @@ void swift_get_time(
+       return;
+     case swift_clock_id_wall:
+       struct timespec wall;
+-#if defined(__linux__) || defined(__APPLE__) || defined(__wasi__) || defined(__OpenBSD__) || defined(__FreeBSD__)
++#if defined(__linux__) || defined(__APPLE__) || defined(__wasi__) || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__featheros__)
+       clock_gettime(CLOCK_REALTIME, &wall);
+ #elif defined(_WIN32)
+       // This needs to match what swift-corelibs-libdispatch does
+@@ -155,7 +155,7 @@ switch (clock_id) {
+       clock_getres(CLOCK_BOOTTIME, &continuous);
+ #elif defined(__APPLE__)
+       clock_getres(CLOCK_MONOTONIC_RAW, &continuous);
+-#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__))
++#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__) || defined(__featheros__))
+       clock_getres(CLOCK_MONOTONIC, &continuous);
+ #elif defined(_WIN32)
+       continuous.tv_sec = 0;
+@@ -178,7 +178,7 @@ switch (clock_id) {
+       clock_getres(CLOCK_MONOTONIC_RAW, &suspending);
+ #elif defined(__APPLE__)
+       clock_getres(CLOCK_UPTIME_RAW, &suspending);
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__featheros__)
+       clock_getres(CLOCK_MONOTONIC, &suspending);
+ #elif (defined(__OpenBSD__) || defined(__FreeBSD__))
+       clock_getres(CLOCK_UPTIME, &suspending);
+@@ -199,7 +199,7 @@ switch (clock_id) {
+     }
+     case swift_clock_id_wall: {
+       struct timespec wall;
+-#if defined(__linux__) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__)
++#if defined(__linux__) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__) || defined(__featheros__)
+       clock_getres(CLOCK_REALTIME, &wall);
+ #elif defined(_WIN32)
+       wall.tv_sec = 0;
+@@ -240,7 +240,7 @@ void swift_sleep(
+     delay = deadline - now;
+   }
+ #elif defined(__linux__) || defined(__APPLE__) || defined(__wasi__) \
+-  || defined(__OpenBSD__) || defined(__FreeBSD__)
++  || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__featheros__)
+   struct timespec ts;
+   ts.tv_sec = seconds;
+   ts.tv_nsec = nanoseconds;

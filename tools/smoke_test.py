@@ -204,7 +204,7 @@ EXPECTED_SWIFT_OUTPUT = (
 )
 
 
-# Swift concurrency, built only where the toolchain has its runtime (x86-64).
+# Swift concurrency, built where deps/ holds the runtime's sources.
 SWIFT_CONCURRENCY_INPUT = b"tasks\n"
 EXPECTED_SWIFT_CONCURRENCY_OUTPUT = (
     "tasks: a task returned 42",
@@ -559,7 +559,7 @@ EXPECTED_SHELL_OUTPUT = (
     "spawned from the disk",
     "SPAWNED=yes",
     "libctest: /dev/tty works",
-    "libctest: 482 checks passed",
+    "libctest: 496 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",

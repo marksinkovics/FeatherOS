@@ -86,6 +86,7 @@ add_executable(featheros_unit_tests
     libc/scanf_tests.cpp
     libc/spawn_request_tests.cpp
     libc/time_format_tests.cpp
+    libc/unicode_conversion_tests.cpp
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat16.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat_names.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"
@@ -131,6 +132,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/libc/scan.cpp"
     "${FEATHEROS_ROOT}/src/libc/spawn_request.cpp"
     "${FEATHEROS_ROOT}/src/libc/time_format.cpp"
+    "${FEATHEROS_ROOT}/src/libc/unicode_conversion.cpp"
     "${FEATHEROS_ROOT}/src/user/calculator.cpp"
     "${FEATHEROS_ROOT}/src/user/calendar.cpp"
     "${FEATHEROS_ROOT}/src/user/command_line.cpp"

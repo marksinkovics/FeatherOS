@@ -107,7 +107,20 @@ Each kernel error maps to one of them. A background read of the controlling term
 
 Not provided:
 - `system`, because there is no `/bin/sh -c`
-- `mkstemp`, `realpath`, `mbtowc` and the other multibyte functions
+- `mkstemp`, `realpath`, `mbtowc` and the other multibyte functions but `uchar.h`'s
+
+### `inttypes.h`
+
+The `PRI*` and `SCN*` format macros for every width, `least`, `fast`, `max` and `ptr` type, and `imaxabs`, `imaxdiv`, `strtoimax` and `strtoumax`. The 64-bit types and `intptr_t` are `long` on both targets. GCC makes the fast 8- and 16-bit types `int`, while Clang makes them `char` and `short`, so their `SCN` macros follow the compiler.
+
+### `uchar.h`
+
+`mbstate_t`, `mbrtoc16`, `c16rtomb`, `mbrtoc32` and `c32rtomb`. Multibyte text is always UTF-8.
+- **Decoding:** a character may arrive over several calls, which return `(size_t)-2` until it is complete.
+- **Errors:** overlong forms, surrogates, values past U+10FFFF and stray continuation bytes fail with `EILSEQ`.
+- **Surrogate pairs:** `mbrtoc16` returns a character past U+FFFF as a pair, the low half from the next call as `(size_t)-3`. `c16rtomb` writes nothing for a high surrogate, and the whole character for the low one that follows.
+
+libc++'s headers take `mbstate_t` from here.
 
 ### `stdio.h`
 
@@ -281,10 +294,15 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
 - **Mutexes:** `pthread_mutex_init`, `lock`, `trylock`, `unlock` and `destroy`, with `PTHREAD_MUTEX_INITIALIZER` and the `NORMAL`, `ERRORCHECK` and `RECURSIVE` types through `pthread_mutexattr_settype`. A contended mutex sleeps in the kernel (`FutexWait`); an uncontended lock and unlock make no syscall. `ERRORCHECK` returns `EDEADLK` for a relock by its owner and `EPERM` for an unlock by another thread; `RECURSIVE` counts its owner's locks. There is no `pthread_mutex_timedlock`, robust or priority-inheritance mutexes.
 - **Condition variables:** `pthread_cond_wait`, `timedwait`, `signal` and `broadcast`, with `PTHREAD_COND_INITIALIZER` and `pthread_condattr_setclock`. Wakeups may be spurious, as POSIX allows, so wait in a loop. The deadline is on `CLOCK_REALTIME` unless the attributes chose `CLOCK_MONOTONIC`.
 - **`pthread_once`:** the first caller runs the routine while later ones sleep until it returns.
+- **Keys:** `pthread_key_create`, `pthread_key_delete`, `pthread_getspecific` and `pthread_setspecific`.
+  - There are at most `PTHREAD_KEYS_MAX` (128) keys at a time; past that, `pthread_key_create` fails with `EAGAIN`.
+  - A thread that ends through `pthread_exit` or by returning calls each key's destructor on its non-null values. It does so for up to `PTHREAD_DESTRUCTOR_ITERATIONS` (4) rounds while destructors set values again. `exit` calls none, as POSIX says.
+  - A deleted key's values read as null, even once the key is created again.
+  - The values take 2 KiB of each thread's thread-local storage, but only in programs that create a key.
 - **Ending:** `exit`, a fault or a terminating signal in any thread ends the whole process. `pthread_exit` ends one thread; in the last thread running it exits as `exit(0)` does.
 - **Signals:** actions are shared; masks are per thread, but there is no `pthread_sigmask` yet (`sigprocmask` sets the calling thread's). Signals sent to the process go to the main thread, or to the first live one after it has ended.
 - **Thread-local storage:** `__thread` and `thread_local` work for variables with constant initializers, at most 16 KiB per thread; each thread's copy starts from the program's initial values. `thread_local` objects with constructors and destructors work too.
-- **Missing:** read-write locks, barriers, spinlocks, `pthread_key_*`, `pthread_cancel`, `pthread_kill` and `pthread_sigmask`.
+- **Missing:** read-write locks, barriers, spinlocks, `pthread_cancel`, `pthread_kill` and `pthread_sigmask`.
 
 ### `sys/ioctl.h`
 
@@ -352,9 +370,9 @@ These need kernel features that do not exist yet. Each one is planned in [roadma
 | --- | --- | --- |
 | `SA_SIGINFO`, `sigsuspend`, `alarm`, real-time signals | Handlers get only the signal number; no timers send signals | Not scheduled |
 | `fork`, `exec*` | Processes start with `Spawn`; `fork` needs copy-on-write | M11, if adopted |
-| C11 `threads.h`, read-write locks, barriers, thread-specific keys | Not needed by any program yet | Not scheduled |
+| C11 `threads.h`, read-write locks, barriers | Not needed by any program yet | Not scheduled |
 | `mmap`, `munmap` | The heap is the only growable mapping, so free space below used blocks cannot be returned | [ideas.md](ideas.md) |
-| `locale.h`, `wchar.h`, multibyte | ASCII and the `"C"` locale only | Not scheduled |
+| `locale.h`, `wchar.h`, multibyte functions but `uchar.h`'s | ASCII and the `"C"` locale only; `uchar.h` converts UTF-8 | Not scheduled |
 | Time zones | Everything is UTC | Not scheduled |
 | Users, permissions, `getuid` | No user accounts | Not scheduled |
 | `select` | `poll` does the same job | Not scheduled |

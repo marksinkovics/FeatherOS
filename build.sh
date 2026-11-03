@@ -8,6 +8,11 @@ SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 ARCH="${ARCH:-}"
 BUILD_TYPE="${BUILD_TYPE:-Debug}"
 LIMINE_TAG="v8.7.0-binary"
+# The Swift concurrency runtime is built from these sources (src/user/swift_concurrency): the
+# Swift release the pinned toolchain came from, and libc++'s headers from the LLVM release its
+# clang is based on.
+SWIFT_SOURCE_TAG="swift-$(cat "$SCRIPT_DIR/.swift-version")-RELEASE"
+LIBCXX_TAG="llvmorg-21.1.8"
 PATH="$HOME/.local/bin:$PATH"
 export PATH
 
@@ -109,6 +114,40 @@ _swift_compiler() {
     printf '%s\n' "$toolchain/usr/bin/swiftc"
 }
 
+# Shallow, sparse clones of what the runtime build reads. The Swift sources get
+# src/user/swift_concurrency/swift.patch, applied again from a clean tree whenever it changes.
+_fetch_swift_runtime_sources() {
+    local swift="$SCRIPT_DIR/deps/swift"
+    local libcxx="$SCRIPT_DIR/deps/llvm-project"
+    local patch="$SCRIPT_DIR/src/user/swift_concurrency/swift.patch"
+    local applied="$SCRIPT_DIR/deps/swift.patch.applied"
+    if [ ! -d "$swift/.git" ]; then
+        _print "Fetching the Swift sources ($SWIFT_SOURCE_TAG)"
+        rm -f "$applied"
+        git clone --branch="$SWIFT_SOURCE_TAG" --depth=1 --filter=blob:none --no-checkout \
+            https://github.com/swiftlang/swift.git "$swift"
+    fi
+    # Set every time, so a clone made with an older list gets what is added to it.
+    git -C "$swift" sparse-checkout set --no-cone /include/swift/ /lib/Threading/ \
+        /stdlib/include/ /stdlib/public/Concurrency/ /stdlib/public/CompatibilityOverride/ \
+        /stdlib/public/SwiftShims/ /stdlib/public/runtime/ /utils/gyb.py \
+        /utils/availability-macros.def
+    git -C "$swift" checkout --quiet
+    if ! cmp -s "$patch" "$applied"; then
+        _print "Patching the Swift sources"
+        git -C "$swift" checkout --quiet -- .
+        git -C "$swift" apply "$patch"
+        cp "$patch" "$applied"
+    fi
+    if [ ! -d "$libcxx/.git" ]; then
+        _print "Fetching libc++'s headers ($LIBCXX_TAG)"
+        git clone --branch="$LIBCXX_TAG" --depth=1 --filter=blob:none --no-checkout \
+            https://github.com/llvm/llvm-project.git "$libcxx"
+        git -C "$libcxx" sparse-checkout set --no-cone /libcxx/include/ /libcxx/vendor/llvm/
+        git -C "$libcxx" checkout --quiet
+    fi
+}
+
 build() {
     _require_arch
     _require_tools git make cmake ninja
@@ -141,6 +180,8 @@ build() {
     if ! swiftc=$(_swift_compiler); then
         swiftc=""
         _print "No Swift toolchain (swiftly or SWIFTC), so the Swift programs are skipped"
+    else
+        _fetch_swift_runtime_sources
     fi
 
     local build_dir
@@ -189,6 +230,12 @@ clean_deps() {
     if [ -d "$SCRIPT_DIR/deps/limine" ]; then
         _print "Cleaning limine"
         rm -rf "$SCRIPT_DIR/deps/limine"
+    fi
+
+    if [ -d "$SCRIPT_DIR/deps/swift" ] || [ -d "$SCRIPT_DIR/deps/llvm-project" ]; then
+        _print "Cleaning the Swift and libc++ sources"
+        rm -rf "$SCRIPT_DIR/deps/swift" "$SCRIPT_DIR/deps/llvm-project"
+        rm -f "$SCRIPT_DIR/deps/swift.patch.applied"
     fi
 }
 

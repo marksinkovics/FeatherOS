@@ -70,6 +70,7 @@ uint64_t MillisecondsUntil(clockid_t clock, const struct timespec* deadline, boo
 [[noreturn]] void EndThread(void* value)
 {
     FeatherOS::LibC::RunThreadExitHandlers();
+    FeatherOS::LibC::RunKeyDestructors();
     if (__atomic_sub_fetch(&live_threads, 1, __ATOMIC_ACQ_REL) == 0)
     {
         exit(0);

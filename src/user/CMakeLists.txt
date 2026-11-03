@@ -21,8 +21,8 @@ set(FEATHEROS_START_PROGRAMS
 set(FEATHEROS_SWIFT_PROGRAMS
     hello:hello rev:rev json:json life:life swiftbench:swiftbench
 )
-# Swift programs that use concurrency, built only where the toolchain has the _Concurrency runtime
-# (x86-64 so far). They start from an @main type's async main, since top-level await crashes
+# Swift programs that use concurrency, built when deps/swift holds the runtime's sources (see
+# swift_concurrency/). They start from an @main type's async main, since top-level await crashes
 # swiftc 6.4.2.
 set(FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS
     tasks:tasks
@@ -121,16 +121,16 @@ function(featheros_add_swift_program entry)
     list(APPEND sources ${shared_sources})
     set(object ${CMAKE_CURRENT_BINARY_DIR}/swift/${name}.o)
     if (program_CONCURRENCY)
-        set(mode -parse-as-library)
-        # The two archives call each other.
-        set(libraries -Wl,--start-group ${FEATHEROS_SWIFT_CONCURRENCY_ARCHIVES} -Wl,--end-group
-            featheros_swift_concurrency_platform)
+        set(mode -parse-as-library -I ${FEATHEROS_SWIFT_CONCURRENCY_MODULE_DIRECTORY})
+        set(module_dependency ${FEATHEROS_SWIFT_CONCURRENCY_MODULE})
+        set(libraries featheros_swift_concurrency)
     endif ()
     add_custom_command(
         OUTPUT ${object}
         COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FLAGS} ${FEATHEROS_SWIFT_PROGRAM_DEBUG} ${mode}
             -I ${FEATHEROS_SWIFT_SUPPORT_DIRECTORY} -module-name ${name} -c ${sources} -o ${object}
         DEPENDS ${sources} ${FEATHEROS_SWIFT_LIBC_FILES} ${FEATHEROS_SWIFT_SUPPORT_MODULE}
+            ${module_dependency}
         COMMENT "Building Swift object swift/${name}.o"
         VERBATIM
     )
@@ -147,6 +147,10 @@ foreach (entry ${FEATHEROS_START_PROGRAMS})
 endforeach ()
 
 set(FEATHEROS_SWIFTC "" CACHE FILEPATH "swiftc from a swift.org toolchain, for Swift programs")
+set(FEATHEROS_SWIFT_SOURCE ${PROJECT_SOURCE_DIR}/deps/swift CACHE PATH
+    "The Swift sources, patched, for the concurrency runtime")
+set(FEATHEROS_LIBCXX_SOURCE ${PROJECT_SOURCE_DIR}/deps/llvm-project/libcxx CACHE PATH
+    "libc++'s sources, for the concurrency runtime's headers")
 if (ARCH STREQUAL "x86_64")
     set(FEATHEROS_SWIFT_TARGET x86_64-unknown-none-elf)
 else ()
@@ -190,8 +194,6 @@ if (FEATHEROS_SWIFTC)
     get_filename_component(swift_bin ${FEATHEROS_SWIFTC} DIRECTORY)
     set(swift_libraries ${swift_bin}/../lib/swift/embedded/${FEATHEROS_SWIFT_TARGET})
     set(FEATHEROS_SWIFT_UNICODE_TABLES ${swift_libraries}/libswiftUnicodeDataTables.a)
-    set(FEATHEROS_SWIFT_CONCURRENCY_ARCHIVES ${swift_libraries}/libswift_Concurrency.a
-        ${swift_libraries}/libswift_ConcurrencyDefaultExecutor.a)
     if (NOT EXISTS ${FEATHEROS_SWIFT_UNICODE_TABLES})
         set(probe_result "no ${FEATHEROS_SWIFT_UNICODE_TABLES}")
     endif ()
@@ -210,17 +212,14 @@ if (swift_usable)
     foreach (entry ${FEATHEROS_SWIFT_PROGRAMS})
         featheros_add_swift_program(${entry})
     endforeach ()
-    list(GET FEATHEROS_SWIFT_CONCURRENCY_ARCHIVES 0 concurrency_runtime)
-    if (EXISTS ${concurrency_runtime})
-        # What the toolchain's runtime needs from the platform; Part 10 of M21 replaces it.
-        add_library(featheros_swift_concurrency_platform STATIC swift_concurrency_platform.cpp)
-        target_compile_options(featheros_swift_concurrency_platform PRIVATE ${FEATHEROS_USER_FLAGS})
-        target_link_libraries(featheros_swift_concurrency_platform PRIVATE featheros_c)
+    if (EXISTS ${FEATHEROS_SWIFT_SOURCE}/stdlib/public/Concurrency AND
+            EXISTS ${FEATHEROS_LIBCXX_SOURCE}/include)
+        add_subdirectory(swift_concurrency)
         foreach (entry ${FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS})
             featheros_add_swift_program(${entry} CONCURRENCY)
         endforeach ()
     else ()
-        message(STATUS "The Swift toolchain has no concurrency runtime for "
-            "${FEATHEROS_SWIFT_TARGET}, so the Swift concurrency programs are skipped")
+        message(STATUS "No Swift or libc++ sources in ${FEATHEROS_SWIFT_SOURCE} and "
+            "${FEATHEROS_LIBCXX_SOURCE}, so the Swift concurrency programs are skipped")
     endif ()
 endif ()

@@ -28,6 +28,7 @@ ExitHandler handlers[MaximumExitHandlers];
 size_t handler_count = 0;
 constinit FeatherOS::LibC::Lock handlers_lock;
 void (*exit_flush)() = nullptr;
+void (*key_destructors)() = nullptr;
 
 // thread_local objects with destructors, newest first, for the thread that built them.
 struct ThreadExitHandler
@@ -66,6 +67,20 @@ bool AddExitHandler(void (*function)(void*), void* argument)
 void SetExitFlush(void (*flush)())
 {
     exit_flush = flush;
+}
+
+void SetKeyDestructors(void (*run)())
+{
+    __atomic_store_n(&key_destructors, run, __ATOMIC_RELEASE);
+}
+
+void RunKeyDestructors()
+{
+    void (*run)() = __atomic_load_n(&key_destructors, __ATOMIC_ACQUIRE);
+    if (run != nullptr)
+    {
+        run();
+    }
 }
 
 bool AddThreadExitHandler(void (*function)(void*), void* argument)
