@@ -71,36 +71,31 @@ func parseOptions() -> (tasks: Int, limit: Int) {
     return (tasks, limit)
 }
 
-@main
-struct TaskPrimes {
-    static func main() async {
-        if Arguments.helpRequested {
-            print(help)
-            exit(.success)
-        }
-        let (tasks, limit) = parseOptions()
-        let start = milliseconds()
-        let shares = await withTaskGroup(of: Share.self) { group in
-            for index in 0..<tasks {
-                group.addTask { countShare(index: index, count: tasks, limit: limit) }
-            }
-            var shares: [Share] = []
-            for await share in group {
-                shares.append(share)
-            }
-            return shares
-        }
-        let elapsed = milliseconds() - start
-        // 2 is the only even prime.
-        var total = limit > 2 ? 1 : 0
-        var cpus: UInt64 = 0
-        var threads: Set<pthread_t> = []
-        for share in shares {
-            total += share.primes
-            cpus |= share.cpus
-            threads.insert(share.thread)
-        }
-        print("taskprimes: \(total) primes below \(limit) with \(tasks) tasks in \(elapsed) ms")
-        print("taskprimes: the tasks ran on \(threads.count) threads and CPU \(cpuList(cpus))")
-    }
+if Arguments.helpRequested {
+    print(help)
+    exit(.success)
 }
+let (tasks, limit) = parseOptions()
+let start = milliseconds()
+let shares = await withTaskGroup(of: Share.self) { group in
+    for index in 0..<tasks {
+        group.addTask { countShare(index: index, count: tasks, limit: limit) }
+    }
+    var shares: [Share] = []
+    for await share in group {
+        shares.append(share)
+    }
+    return shares
+}
+let elapsed = milliseconds() - start
+// 2 is the only even prime.
+var total = limit > 2 ? 1 : 0
+var cpus: UInt64 = 0
+var threads: Set<pthread_t> = []
+for share in shares {
+    total += share.primes
+    cpus |= share.cpus
+    threads.insert(share.thread)
+}
+print("taskprimes: \(total) primes below \(limit) with \(tasks) tasks in \(elapsed) ms")
+print("taskprimes: the tasks ran on \(threads.count) threads and CPU \(cpuList(cpus))")

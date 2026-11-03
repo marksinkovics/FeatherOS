@@ -1,7 +1,11 @@
+import FeatherLibC
 import _Concurrency
 
 // Swift concurrency: the global executor runs jobs on a thread for each CPU, so tasks that are
-// not on the same actor run at once and their interleaving changes from run to run.
+// not on the same actor run at once and their interleaving changes from run to run. Top-level
+// code runs on MainActor, whose jobs only the main thread runs.
+
+let mainThread = pthread_self()
 
 actor Counter {
     private(set) var value = 0
@@ -200,34 +204,56 @@ func checkedCancellation() async -> String {
     return await task.value
 }
 
-@main
-struct Tasks {
-    static func main() async {
-        let answer = await Task { 6 * 7 }.value
-        print("tasks: a task returned \(answer)")
-        print("tasks: turns \(await takeTurns(rounds: 3))")
-        print("tasks: 100 increments counted \(await countConcurrently(times: 100))")
-        print("tasks: squares of 1 to 10 sum to \(await sumOfSquares(upTo: 10))")
-        async let three = square(3)
-        async let four = square(4)
-        print("tasks: async let gave \(await three + four)")
-        print("tasks: a continuation resumed with \(await resumedLater())")
-        print("tasks: a stream of 1 to 5 sums to \(await streamed(count: 5))")
-        print("tasks: a buffered stream of 1 to 100 sums to \(await buffered(count: 100))")
-        print("tasks: cancelled after \(await spinUntilCancelled()) turns")
-        print("tasks: the error came through \(await thrown())")
-        let names = await Request.$name.withValue("outer") {
-            let inner = await Task { Request.name }.value
-            let detached = await Task.detached { Request.name }.value
-            return "\(Request.name), task \(inner), detached \(detached)"
-        }
-        print("tasks: task-local \(names)")
-        do {
-            print("tasks: slept 20, 30 and 50 ms for \(try await sleeps())")
-        } catch {
-            print("tasks: a sleep failed")
-        }
-        print("tasks: a sleep of 60 s ended \(await cancelledSleep())")
-        print("tasks: checkCancellation threw \(await checkedCancellation())")
-    }
+func onMainThread() -> Bool {
+    pthread_equal(pthread_self(), mainThread) != 0
 }
+
+@MainActor
+func isolatedToMainActor() -> Bool {
+    onMainThread()
+}
+
+func assumedIsolated() -> Bool {
+    MainActor.assumeIsolated { onMainThread() }
+}
+
+func mainActorFromWorker() async -> String {
+    let worker = !onMainThread()
+    let isolated = await isolatedToMainActor()
+    let run = await MainActor.run { assumedIsolated() }
+    let task = await Task { @MainActor in onMainThread() }.value
+    let detached = await Task.detached { onMainThread() }.value
+    return "worker \(worker), @MainActor function \(isolated), MainActor.run \(run), "
+        + "@MainActor task \(task), detached task \(detached)"
+}
+
+print("tasks: top-level code on the main thread \(onMainThread()),", terminator: " ")
+print("assumeIsolated \(assumedIsolated())")
+let answer = await Task { 6 * 7 }.value
+print("tasks: a task returned \(answer)")
+print("tasks: turns \(await takeTurns(rounds: 3))")
+print("tasks: 100 increments counted \(await countConcurrently(times: 100))")
+print("tasks: squares of 1 to 10 sum to \(await sumOfSquares(upTo: 10))")
+async let three = square(3)
+async let four = square(4)
+print("tasks: async let gave \(await three + four)")
+print("tasks: a continuation resumed with \(await resumedLater())")
+print("tasks: a stream of 1 to 5 sums to \(await streamed(count: 5))")
+print("tasks: a buffered stream of 1 to 100 sums to \(await buffered(count: 100))")
+print("tasks: cancelled after \(await spinUntilCancelled()) turns")
+print("tasks: the error came through \(await thrown())")
+let names = await Request.$name.withValue("outer") {
+    let inner = await Task { Request.name }.value
+    let detached = await Task.detached { Request.name }.value
+    return "\(Request.name), task \(inner), detached \(detached)"
+}
+print("tasks: task-local \(names)")
+do {
+    print("tasks: slept 20, 30 and 50 ms for \(try await sleeps())")
+} catch {
+    print("tasks: a sleep failed")
+}
+print("tasks: a sleep of 60 s ended \(await cancelledSleep())")
+print("tasks: checkCancellation threw \(await checkedCancellation())")
+print("tasks: main actor from a worker: \(await mainActorFromWorker())")
+print("tasks: still on the main thread \(onMainThread())")

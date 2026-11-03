@@ -207,6 +207,7 @@ EXPECTED_SWIFT_OUTPUT = (
 # Swift concurrency, built where deps/ holds the runtime's sources.
 SWIFT_CONCURRENCY_INPUT = b"tasks\ntaskprimes 16 100000\n"
 EXPECTED_SWIFT_CONCURRENCY_OUTPUT = (
+    "tasks: top-level code on the main thread true, assumeIsolated true",
     "tasks: a task returned 42",
     "tasks: turns 3 pings and 3 pongs, each in order",
     "tasks: 100 increments counted 100",
@@ -221,6 +222,9 @@ EXPECTED_SWIFT_CONCURRENCY_OUTPUT = (
     "tasks: slept 20, 30 and 50 ms for at least 100 ms",
     "tasks: a sleep of 60 s ended early with CancellationError",
     "tasks: checkCancellation threw CancellationError",
+    "tasks: main actor from a worker: worker true, @MainActor function true, "
+    "MainActor.run true, @MainActor task true, detached task false",
+    "tasks: still on the main thread true",
     "taskprimes: 9592 primes below 100000 with 16 tasks in ",
 )
 # The global executor runs jobs on every CPU; QEMU has 4, so the tasks spread.

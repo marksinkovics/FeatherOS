@@ -1,5 +1,6 @@
 #include "swift/ABI/Executor.h"
 #include "swift/Runtime/Casting.h"
+#include "swift/Runtime/Concurrency.h"
 #include "swift/Runtime/Debug.h"
 #include "swift/Runtime/HeapObject.h"
 #include "swift/Runtime/Metadata.h"
@@ -37,11 +38,10 @@ void swift::swift_reportError(uint32_t, const char* message)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wreturn-type-c-linkage"
 
-// The main executor is the generic one, as global_executor.cpp's swift_task_getMainExecutorImpl
-// says. The Swift version of this function is built only for WASI or without Embedded Swift.
+// The Swift version of this function is built only for WASI or without Embedded Swift.
 extern "C" SWIFT_CC(swift) SerialExecutorRef swift_getMainExecutor()
 {
-    return SerialExecutorRef::generic();
+    return swift_task_getMainExecutor();
 }
 
 // Generic Swift functions in the _Concurrency module that call a custom executor. Embedded

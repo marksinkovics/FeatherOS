@@ -17,7 +17,7 @@ index 1daa852..250d8e4 100644
  swift::threading_impl::thread_get_current_stack_bounds() {
    stack_t sinfo;
 diff --git a/stdlib/public/Concurrency/Actor.cpp b/stdlib/public/Concurrency/Actor.cpp
-index 1563307..5eb6dcf 100644
+index 1563307..bb2a633 100644
 --- a/stdlib/public/Concurrency/Actor.cpp
 +++ b/stdlib/public/Concurrency/Actor.cpp
 @@ -72,7 +72,7 @@
@@ -29,6 +29,18 @@ index 1563307..5eb6dcf 100644
  #include <sys/syscall.h>
  #endif
 
+@@ -2759,6 +2759,11 @@ static void swift_task_enqueueImpl(Job *job, SerialExecutorRef serialExecutorRef
+   auto serialExecutorIdentity = serialExecutorRef.getIdentity();
+   auto serialExecutorWtable = serialExecutorRef.getSerialExecutorWitnessTable();
+   _swift_task_enqueueOnExecutor(job, serialExecutorIdentity, serialExecutorWtable);
++#elif SWIFT_CONCURRENCY_EMBEDDED && defined(__featheros__)
++  // The main executor is the only other kind FeatherOS has; its jobs go to the main thread.
++  if (serialExecutorRef.isMainExecutor())
++    return swift_task_enqueueMainExecutor(job);
++  swift_unreachable("custom executors not supported in embedded Swift");
+ #elif SWIFT_CONCURRENCY_EMBEDDED
+   swift_unreachable("custom executors not supported in embedded Swift");
+ #else
 diff --git a/stdlib/public/Concurrency/Clock.cpp b/stdlib/public/Concurrency/Clock.cpp
 index 2d1e297..a233593 100644
 --- a/stdlib/public/Concurrency/Clock.cpp
@@ -175,6 +187,25 @@ index 1cf1b2f..c1fd926 100644
          let capacity = minimumCapacity
          #else
          let capacity = $0.capacity
+diff --git a/stdlib/public/Concurrency/MainActor.swift b/stdlib/public/Concurrency/MainActor.swift
+index 6f5908e..9896879 100644
+--- a/stdlib/public/Concurrency/MainActor.swift
++++ b/stdlib/public/Concurrency/MainActor.swift
+@@ -12,7 +12,7 @@
+
+ import Swift
+
+-#if os(WASI) || !$Embedded
++#if os(WASI) || !$Embedded || FEATHEROS
+
+ #if SWIFT_STDLIB_TASK_TO_THREAD_MODEL_CONCURRENCY
+ @available(SwiftStdlib 5.1, *)
+@@ -197,4 +197,4 @@ public func _deinitOnExecutorMainActorBackDeploy(
+
+ #endif // !SWIFT_STDLIB_TASK_TO_THREAD_MODEL_CONCURRENCY
+
+-#endif // os(WASI) || !$Embedded
++#endif // os(WASI) || !$Embedded || FEATHEROS
 diff --git a/stdlib/public/Concurrency/SuspendingClock.swift b/stdlib/public/Concurrency/SuspendingClock.swift
 index d07a5b2..333633e 100644
 --- a/stdlib/public/Concurrency/SuspendingClock.swift

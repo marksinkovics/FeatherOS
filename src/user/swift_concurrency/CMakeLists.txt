@@ -93,7 +93,7 @@ add_library(featheros_swift_concurrency STATIC ${objects})
 set_target_properties(featheros_swift_concurrency PROPERTIES LINKER_LANGUAGE CXX)
 
 # The _Concurrency module, with every availability macro expanded to "*", as for Embedded Swift
-# upstream.
+# upstream. FEATHEROS selects what swift.patch adds, such as MainActor.
 set(swift_sources)
 file(STRINGS ${concurrency_source}/CMakeLists.txt concurrency_cmake)
 set(in_list FALSE)
@@ -143,7 +143,7 @@ add_custom_command(
     OUTPUT ${module}
     COMMAND ${FEATHEROS_SWIFTC} -target ${FEATHEROS_SWIFT_TARGET}
         -enable-experimental-feature Embedded -parse-stdlib -parse-as-library -wmo -O
-        -module-name _Concurrency -swift-version 5 -DSWIFT_CONCURRENCY_EMBEDDED
+        -module-name _Concurrency -swift-version 5 -DSWIFT_CONCURRENCY_EMBEDDED -DFEATHEROS
         -I ${concurrency_source}/InternalShims ${features} -strict-memory-safety
         -enable-upcoming-feature MemberImportVisibility
         -Xfrontend -enforce-exclusivity=unchecked -Xfrontend -empty-abi-descriptor

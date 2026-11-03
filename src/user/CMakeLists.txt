@@ -22,8 +22,7 @@ set(FEATHEROS_SWIFT_PROGRAMS
     hello:hello rev:rev json:json life:life swiftbench:swiftbench
 )
 # Swift programs that use concurrency, built when deps/swift holds the runtime's sources (see
-# swift_concurrency/). They start from an @main type's async main, since top-level await crashes
-# swiftc 6.4.2.
+# swift_concurrency/). Their top-level code runs on MainActor.
 set(FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS
     tasks:tasks taskprimes:taskprimes
 )
@@ -121,7 +120,7 @@ function(featheros_add_swift_program entry)
     list(APPEND sources ${shared_sources})
     set(object ${CMAKE_CURRENT_BINARY_DIR}/swift/${name}.o)
     if (program_CONCURRENCY)
-        set(mode -parse-as-library -I ${FEATHEROS_SWIFT_CONCURRENCY_MODULE_DIRECTORY})
+        set(mode -I ${FEATHEROS_SWIFT_CONCURRENCY_MODULE_DIRECTORY})
         set(module_dependency ${FEATHEROS_SWIFT_CONCURRENCY_MODULE})
         set(libraries featheros_swift_concurrency)
     endif ()
