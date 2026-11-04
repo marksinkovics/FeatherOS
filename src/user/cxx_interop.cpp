@@ -1,0 +1,132 @@
+#include "cxx_interop.h"
+
+namespace FeatherOS::User::Interop
+{
+
+namespace
+{
+
+int g_tracked_live;
+int g_nodes_live;
+
+} // namespace
+
+Color NextColor(Color color)
+{
+    switch (color)
+    {
+    case Color::Red:
+        return Color::Green;
+    case Color::Green:
+        return Color::Blue;
+    case Color::Blue:
+        break;
+    }
+    return Color::Red;
+}
+
+Point Point::operator+(const Point& other) const
+{
+    return {.x = x + other.x, .y = y + other.y};
+}
+
+bool Point::operator==(const Point& other) const
+{
+    return x == other.x && y == other.y;
+}
+
+Tracked::Tracked(int id) : m_id(id)
+{
+    ++g_tracked_live;
+}
+
+Tracked::Tracked(const Tracked& other) : m_id(other.m_id)
+{
+    ++g_tracked_live;
+}
+
+Tracked::~Tracked()
+{
+    --g_tracked_live;
+}
+
+int Tracked::Id() const
+{
+    return m_id;
+}
+
+int Tracked::Live()
+{
+    return g_tracked_live;
+}
+
+Counter::Counter() : m_count(0) {}
+
+Counter::Counter(Counter&& other) : m_count(other.m_count)
+{
+    other.m_count = 0;
+}
+
+void Counter::Bump()
+{
+    ++m_count;
+}
+
+int Counter::Count() const
+{
+    return m_count;
+}
+
+Shape::~Shape() = default;
+
+int Shape::Area() const
+{
+    return 0;
+}
+
+Square::Square(int side) : m_side(side) {}
+
+int Square::Area() const
+{
+    return m_side * m_side;
+}
+
+Node::Node(int value) : m_references(1), m_value(value)
+{
+    ++g_nodes_live;
+}
+
+Node::~Node()
+{
+    --g_nodes_live;
+}
+
+Node* Node::Create(int value)
+{
+    return new Node(value);
+}
+
+int Node::Live()
+{
+    return g_nodes_live;
+}
+
+int Node::Value() const
+{
+    return m_value;
+}
+
+} // namespace FeatherOS::User::Interop
+
+void RetainInteropNode(FeatherOS::User::Interop::Node* node)
+{
+    ++node->m_references;
+}
+
+void ReleaseInteropNode(FeatherOS::User::Interop::Node* node)
+{
+    if (--node->m_references == 0)
+    {
+        delete node;
+    }
+}

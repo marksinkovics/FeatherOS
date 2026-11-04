@@ -1,9 +1,10 @@
 #ifndef _LIBCPP___CONFIG_SITE
 #define _LIBCPP___CONFIG_SITE
 
-// libc++'s build settings for the Swift concurrency runtime over the FeatherOS C library: threads
-// through pthread.h, no locales, wide characters, files or random device, and no libc++ library
-// behind the headers, so nothing may call into libc++.dylib/.so code.
+// libc++'s build settings for the Swift concurrency runtime and Swift's C++ programs over the
+// FeatherOS C library: threads through pthread.h, no locales, wide characters, files or random
+// device, and no libc++ library behind the headers, so nothing may call into libc++.dylib/.so
+// code.
 #define _LIBCPP_ABI_VERSION 1
 #define _LIBCPP_ABI_NAMESPACE __1
 #define _LIBCPP_ABI_FORCE_ITANIUM 0

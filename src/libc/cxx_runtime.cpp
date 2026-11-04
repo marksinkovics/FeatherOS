@@ -1,7 +1,9 @@
 #include "libc/exit_handlers.h"
 #include "libc/lock.h"
 
+#include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -98,9 +100,11 @@ extern "C" void __cxa_pure_virtual()
 
 // With exceptions disabled, a failed allocation cannot throw std::bad_alloc, so it ends the
 // program instead of returning nullptr to code that does not check.
-void* operator new(size_t size)
+namespace
 {
-    void* pointer = malloc(size == 0 ? 1 : size);
+
+void* CheckAllocation(void* pointer)
+{
     if (pointer == nullptr)
     {
         constexpr char Message[] = "operator new: out of memory\n";
@@ -108,6 +112,21 @@ void* operator new(size_t size)
         abort();
     }
     return pointer;
+}
+
+} // namespace
+
+// <new> declares it; there is no C++ standard library, so the type is defined here.
+namespace std
+{
+enum class align_val_t : size_t
+{
+};
+} // namespace std
+
+void* operator new(size_t size)
+{
+    return CheckAllocation(malloc(size == 0 ? 1 : size));
 }
 
 void* operator new[](size_t size)
@@ -135,3 +154,50 @@ void operator delete[](void* pointer, size_t) noexcept
 {
     free(pointer);
 }
+
+// The forms for types aligned beyond what malloc guarantees, which libc++'s containers call.
+void* operator new(size_t size, std::align_val_t alignment)
+{
+    void* pointer = nullptr;
+    posix_memalign(&pointer, static_cast<size_t>(alignment), size == 0 ? 1 : size);
+    return CheckAllocation(pointer);
+}
+
+void* operator new[](size_t size, std::align_val_t alignment)
+{
+    return operator new(size, alignment);
+}
+
+void operator delete(void* pointer, std::align_val_t) noexcept
+{
+    free(pointer);
+}
+
+void operator delete[](void* pointer, std::align_val_t) noexcept
+{
+    free(pointer);
+}
+
+void operator delete(void* pointer, size_t, std::align_val_t) noexcept
+{
+    free(pointer);
+}
+
+void operator delete[](void* pointer, size_t, std::align_val_t) noexcept
+{
+    free(pointer);
+}
+
+// libc++'s headers call this where they would throw or a check fails. Its compiled library
+// would provide it, and Swift programs use only the headers.
+namespace std::inline __1
+{
+[[noreturn]] void __libcpp_verbose_abort(const char* format, ...) noexcept
+{
+    va_list arguments;
+    va_start(arguments, format);
+    vfprintf(stderr, format, arguments);
+    va_end(arguments);
+    abort();
+}
+} // namespace std::inline __1

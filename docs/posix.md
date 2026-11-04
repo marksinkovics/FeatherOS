@@ -363,7 +363,7 @@ FeatherOS calls with no POSIX equivalent:
 
 ### C++ support
 
-The runtime hooks `__cxa_atexit`, `__cxa_guard_acquire`/`release`/`abort`, `__cxa_pure_virtual` and `__dso_handle` are provided. So are `operator new` and `operator delete`, in their plain, array and sized forms. They are built on `malloc`, and a failed `new` aborts; the aligned and `nothrow` forms are not provided yet. Programs are built with `-fno-exceptions -fno-rtti`, and there is no C++ standard library.
+The runtime hooks `__cxa_atexit`, `__cxa_guard_acquire`/`release`/`abort`, `__cxa_pure_virtual` and `__dso_handle` are provided. So are `operator new` and `operator delete`, in their plain, array, sized and aligned forms (`std::align_val_t`, defined here since there is no `<new>`). They are built on `malloc` and `posix_memalign`, and a failed `new` aborts; the `nothrow` forms are not provided yet. Programs are built with `-fno-exceptions -fno-rtti`, and there is no C++ standard library. For Swift programs that use libc++'s header-only types, the library also defines `std::__libcpp_verbose_abort`, which libc++'s compiled library would otherwise provide: it prints its message to standard error and aborts.
 
 ## Left out on purpose
 

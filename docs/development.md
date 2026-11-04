@@ -433,10 +433,10 @@ Programs written in Embedded Swift are listed in `FEATHEROS_SWIFT_PROGRAMS` as `
 Programs in `FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS` use `async`/`await`, tasks and actors. Their top-level code may `await`, and runs on `MainActor`. They link `featheros_swift_concurrency`, Swift's concurrency runtime built from source for both targets by `src/user/swift_concurrency/CMakeLists.txt`. The toolchain's own runtime exists only for x86-64, was compiled against Darwin's headers and has no threads.
 
 `build.sh` fetches what the runtime build reads when it finds a Swift toolchain. These are shallow, sparse clones, about 70 MB together:
-- `deps/swift`: the `swift-<.swift-version>-RELEASE` tag, with the Concurrency, threading, runtime and shim sources and headers. `src/user/swift_concurrency/swift.patch` is applied to it, and applied again from a clean tree whenever the patch changes.
+- `deps/swift`: the `swift-<.swift-version>-RELEASE` tag, with the Concurrency, threading, runtime and shim sources and headers, and the `Cxx` overlay (see "Swift and C++"). `src/user/swift_concurrency/swift.patch` is applied to it, and applied again from a clean tree whenever the patch changes.
 - `deps/llvm-project`: `llvmorg-21.1.8`, only `libcxx/include` and its assertion handler. LLVM 21 is what the toolchain's clang is based on.
 
-`fullclean` removes them. Without them, CMake says so and skips the concurrency programs.
+`fullclean` removes them. Without them, CMake says so and skips the concurrency and C++ programs.
 
 The runtime build follows upstream's Embedded Swift build, with these differences:
 - **C++ half:** compiled with the toolchain's `clang++` at `-O2`. It uses libc++'s headers over the FeatherOS C headers, configured by `src/user/swift_concurrency/libcxx/__config_site`: threads through `pthread.h`, and no locales, wide characters, files or random device. Only the headers are used, since FeatherOS has no compiled libc++.
@@ -468,6 +468,26 @@ Jobs on different actors, and tasks that are not on an actor, now run at the sam
 - `Task(executorPreference:)` runs on the pool.
 
 The shell smoke test checks every line of `tasks` and `executors` on both targets, and runs `taskprimes 16 100000`. It checks the count, and that the tasks ran on at least two threads and two CPUs; on QEMU's 4 CPUs they run on all four.
+
+### Swift and C++
+
+Programs in `FEATHEROS_SWIFT_CXX_PROGRAMS` import C++ headers: they are compiled with `-cxx-interoperability-mode=default`, C++23, and neither exceptions nor RTTI, as the C++ programs are. The headers they may import are modules in `src/user/swift_cxx/module.modulemap`: `HttpMessage` (`http_message.h`) and `CxxInterop` (`cxx_interop.h` and `cxx_interop_std.h`). GCC builds the C++ they call like other user code, into `featheros_user_support` or, through `FEATHEROS_SWIFT_CXX_SOURCES_<name>`, into the program alone; Swift reaches it through the Itanium C++ ABI that both compilers follow. Clang inside swiftc reads libc++'s headers from `deps/llvm-project` with the concurrency runtime's `__config_site`, ahead of the C library's headers, which libc++ wraps. These programs also `import Cxx`, Swift's overlay that makes C++ types into Swift collections and optionals. Upstream builds it only outside Embedded Swift; `src/user/swift_cxx/CMakeLists.txt` builds it from `deps/swift/stdlib/public/Cxx` as a module only, with the runtime's availability macros, and `swift.patch` adds the `import Builtin` its inlinable code needs under Embedded Swift. Like the concurrency programs, they are skipped when `deps/` lacks the sources.
+
+What works, checked by `cxxinterop` (`src/user/cxxinterop.swift`) on both targets:
+- **Declarations:** namespaces (as nested Swift names, `FeatherOS.User.Interop`), free and static member functions, `constexpr` constants, `enum class` (a Swift enum), structs with public fields (with a memberwise initializer), member functions (non-`const` ones are `mutating`), operators such as `+` and `==`, and class templates through a type alias (`using IntBox = Box<int>`).
+- **Values:** C++ classes are Swift value types whose constructors, copy constructors and destructors run when Swift creates, copies and drops them. A class whose copy constructor is deleted is noncopyable (`~Copyable`), moved with `consuming` and its move constructor. A virtual method called on the object itself works.
+- **Pointers and text:** a Swift `String` passes as `const char*`, a returned `const char*` becomes a `String` through `String(cString:)`, `const T&` parameters take values, `T*` out parameters take `&value`, and a returned pointer is an optional. A `char` array field is a tuple, read through `withUnsafeBytes(of:)`.
+- **Shared references:** a class annotated as a shared reference (`import_reference` with `retain:` and `release:` functions, as `<swift/bridging>`'s `SWIFT_SHARED_REFERENCE` writes it; `cxx_interop.h` spells the attributes itself, since GCC has no such header) is a Swift class whose reference count is the C++ object's own. A factory marked `returns_retained` hands over its reference, and Swift releases it after the last use.
+- **libc++:** header-only types: `std::optional` (`.value` from `Cxx`), `std::vector` (iterated with `for`, copied with `Array(_:)`), `std::span` made from an `UnsafeBufferPointer`, and `std::string_view` from a string literal. Their allocations and failed checks call aligned `operator new`/`delete` and `std::__libcpp_verbose_abort`, which the C library provides.
+
+What does not:
+- `std::string`: libc++ declares its members as extern templates that only its compiled library defines, so a program that uses one does not link. The same holds for anything else in that library, such as streams. FeatherOS has no compiled libc++.
+- `CxxStdlib`, the overlay with `String(std.string)` and its relatives: it needs libc++'s Clang module map, which libc++ generates at its own build, and its conversions are for `std::string`.
+- A derived class where its base class is expected: Swift's value types have no inheritance, so `Square` does not pass as a `const Shape&`.
+- Retain and release functions in a namespace or as static members: Swift looks them up only at global scope (`RetainInteropNode`/`ReleaseInteropNode`).
+- C++ standard library types in headers shared with GCC-built code: the C++ programs have no C++ standard library, so only Swift-only headers such as `cxx_interop_std.h` use them, inline.
+
+`http url <url> [reference...]`, `http request [file]` and `http response [file]` (`src/user/http.swift`) parse HTTP with `http_message.cpp`, the C++ of `fetch` and `httpd`. `url` prints a URL's host, port and path, then each reference resolved against it (`../d resolves to http://example.com:8080/a/d`). `request` feeds its input to `RequestParser`, one head at a time, and prints each head's method and target, the file path the target names with its content type, the version and whether the connection stays open; it stops at a refused head (`refused with 505 HTTP Version Not Supported`) or one with a body. `response` feeds `ResponseParser` and prints the final status and any `Location`, then the body without its framing; it warns and exits 1 when the response is malformed or cut short. Both read the file, or their input without one, with `read` in chunks of `BUFSIZ`. The shell smoke test runs `cxxinterop`, resolves URLs, and parses `/system/http-request.txt` (two heads and an HTTP/2.0 one) and `/system/http-response.txt` (a `100 Continue`, then a chunked body), from `initramfs/`.
 
 ### What Embedded Swift leaves out
 

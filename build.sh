@@ -130,7 +130,7 @@ _fetch_swift_runtime_sources() {
     # Set every time, so a clone made with an older list gets what is added to it.
     git -C "$swift" sparse-checkout set --no-cone /include/swift/ /lib/Threading/ \
         /stdlib/include/ /stdlib/public/Concurrency/ /stdlib/public/CompatibilityOverride/ \
-        /stdlib/public/SwiftShims/ /stdlib/public/runtime/ /utils/gyb.py \
+        /stdlib/public/Cxx/ /stdlib/public/SwiftShims/ /stdlib/public/runtime/ /utils/gyb.py \
         /utils/availability-macros.def
     git -C "$swift" checkout --quiet
     if ! cmp -s "$patch" "$applied"; then
@@ -264,7 +264,8 @@ iso() {
     rm -rf "$root_dir" "$build_dir/system"
     mkdir -p "$system_dir"
     cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" \
-        "$SCRIPT_DIR/initramfs/sample.json" "$system_dir/"
+        "$SCRIPT_DIR/initramfs/sample.json" "$SCRIPT_DIR/initramfs/http-request.txt" \
+        "$SCRIPT_DIR/initramfs/http-response.txt" "$system_dir/"
     cp -R "$SCRIPT_DIR/initramfs/etc" "$root_dir/"
     # Debug builds keep their debug information in build/<arch>/programs for gdb; the copies the
     # system runs leave it out, so they stay small and within the 1 MiB program limit.

@@ -175,3 +175,5 @@ target_sources(featheros_swift_concurrency PRIVATE ${executors_object})
 
 set(FEATHEROS_SWIFT_CONCURRENCY_MODULE_DIRECTORY ${module_directory} PARENT_SCOPE)
 set(FEATHEROS_SWIFT_CONCURRENCY_MODULE ${module} PARENT_SCOPE)
+set(FEATHEROS_LIBCXX_CONFIG_DIRECTORY ${output}/libcxx PARENT_SCOPE)
+set(FEATHEROS_SWIFT_AVAILABILITY ${availability} PARENT_SCOPE)

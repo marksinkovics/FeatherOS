@@ -1,0 +1,13 @@
+// The C++ headers Swift programs in FEATHEROS_SWIFT_CXX_PROGRAMS can import.
+module HttpMessage {
+    header "../http_message.h"
+    requires cplusplus
+    export *
+}
+
+module CxxInterop {
+    header "../cxx_interop.h"
+    header "../cxx_interop_std.h"
+    requires cplusplus
+    export *
+}

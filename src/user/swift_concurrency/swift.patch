@@ -725,3 +725,17 @@ index c87073c..cd3c9fc 100644
  }
  #else
  @available(SwiftStdlib 5.7, *)
+diff --git a/stdlib/public/Cxx/CxxBorrowingSequence.swift b/stdlib/public/Cxx/CxxBorrowingSequence.swift
+index d4e7605..971bfa5 100644
+--- a/stdlib/public/Cxx/CxxBorrowingSequence.swift
++++ b/stdlib/public/Cxx/CxxBorrowingSequence.swift
+@@ -10,6 +10,9 @@
+ //
+ //===----------------------------------------------------------------------===//
+
++// Embedded Swift builds of this module (FeatherOS) read pointers' raw values in inlinable code.
++import Builtin
++
+ /// Use this protocol to conform custom C++ sequence types to Swift's `Iterable`
+ /// protocol like this:
+ ///
