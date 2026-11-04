@@ -205,7 +205,7 @@ EXPECTED_SWIFT_OUTPUT = (
 
 
 # Swift concurrency, built where deps/ holds the runtime's sources.
-SWIFT_CONCURRENCY_INPUT = b"tasks\ntaskprimes 16 100000\n"
+SWIFT_CONCURRENCY_INPUT = b"tasks\ntaskprimes 16 100000\nexecutors\n"
 EXPECTED_SWIFT_CONCURRENCY_OUTPUT = (
     "tasks: top-level code on the main thread true, assumeIsolated true",
     "tasks: a task returned 42",
@@ -226,6 +226,16 @@ EXPECTED_SWIFT_CONCURRENCY_OUTPUT = (
     "MainActor.run true, @MainActor task true, detached task false",
     "tasks: still on the main thread true",
     "taskprimes: 9592 primes below 100000 with 16 tasks in ",
+    "executors: an actor ran 100 calls on its own thread true, "
+    "resumed there after sleeping true, "
+    "top-level code on the main thread true",
+    "executors: assumeIsolated outside a job: "
+    "isIsolatingCurrentContext true, checkIsolated true",
+    "executors: 16 tasks preferring a pool ran there true",
+    "executors: preferring the pool: a function true, async let true, "
+    "a default actor true, the pinned actor on its thread true, "
+    "Task {} false, globalConcurrentExecutor false",
+    "executors: Task(executorPreference:) on the pool true",
 )
 # The global executor runs jobs on every CPU; QEMU has 4, so the tasks spread.
 TASK_PRIMES_SPREAD_OUTPUT = re.compile(

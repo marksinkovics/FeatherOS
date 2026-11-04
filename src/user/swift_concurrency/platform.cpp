@@ -44,37 +44,6 @@ extern "C" SWIFT_CC(swift) SerialExecutorRef swift_getMainExecutor()
     return swift_task_getMainExecutor();
 }
 
-// Generic Swift functions in the _Concurrency module that call a custom executor. Embedded
-// Swift emits generic code only into the programs that use it, so the runtime has no copy; they
-// are reached only through a custom executor.
-
-extern "C" SWIFT_CC(swift) void _task_serialExecutor_checkIsolated(
-    HeapObject*, const Metadata*, const SerialExecutorWitnessTable*)
-{
-    Unsupported("a custom serial executor");
-}
-
-extern "C" SWIFT_CC(swift) int8_t
-    _task_serialExecutor_isIsolatingCurrentContext(HeapObject*, const Metadata*,
-                                                   const SerialExecutorWitnessTable*)
-{
-    Unsupported("a custom serial executor");
-}
-
-extern "C" SWIFT_CC(swift) SerialExecutorRef
-    _task_serialExecutor_getExecutorRef(HeapObject*, const Metadata*,
-                                        const SerialExecutorWitnessTable*)
-{
-    Unsupported("a custom serial executor");
-}
-
-extern "C" SWIFT_CC(swift) TaskExecutorRef
-    _task_taskExecutor_getTaskExecutorRef(HeapObject*, const Metadata*,
-                                          const TaskExecutorWitnessTable*)
-{
-    Unsupported("a task executor");
-}
-
 #pragma clang diagnostic pop
 
 // Reached only by distributed actors, which Embedded Swift does not have.

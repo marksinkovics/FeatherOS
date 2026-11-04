@@ -24,7 +24,7 @@ set(FEATHEROS_SWIFT_PROGRAMS
 # Swift programs that use concurrency, built when deps/swift holds the runtime's sources (see
 # swift_concurrency/). Their top-level code runs on MainActor.
 set(FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS
-    tasks:tasks taskprimes:taskprimes
+    tasks:tasks taskprimes:taskprimes executors:executors
 )
 # Sources a Swift program compiles in from other programs' directories, by program name.
 set(FEATHEROS_SWIFT_SHARED_SOURCES_swiftbench life/grid.swift json/parser.swift json/value.swift)

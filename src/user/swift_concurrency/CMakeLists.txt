@@ -159,5 +159,19 @@ add_custom_command(
 add_custom_target(featheros_swift_concurrency_module DEPENDS ${module})
 add_dependencies(featheros_swift_concurrency featheros_swift_concurrency_module)
 
+# What the runtime calls in Swift to reach custom executors, compiled once into the archive.
+set(executors_object ${output}/objects/executors.o)
+add_custom_command(
+    OUTPUT ${executors_object}
+    COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FLAGS} -parse-as-library
+        -I ${module_directory} -module-name FeatherExecutors
+        -c ${CMAKE_CURRENT_SOURCE_DIR}/executors.swift -o ${executors_object}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/executors.swift ${module}
+    COMMENT "Building Swift concurrency runtime object executors.o"
+    VERBATIM
+)
+set_source_files_properties(${executors_object} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+target_sources(featheros_swift_concurrency PRIVATE ${executors_object})
+
 set(FEATHEROS_SWIFT_CONCURRENCY_MODULE_DIRECTORY ${module_directory} PARENT_SCOPE)
 set(FEATHEROS_SWIFT_CONCURRENCY_MODULE ${module} PARENT_SCOPE)

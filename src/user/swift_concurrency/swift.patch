@@ -17,7 +17,7 @@ index 1daa852..250d8e4 100644
  swift::threading_impl::thread_get_current_stack_bounds() {
    stack_t sinfo;
 diff --git a/stdlib/public/Concurrency/Actor.cpp b/stdlib/public/Concurrency/Actor.cpp
-index 1563307..bb2a633 100644
+index 1563307..5fe3027 100644
 --- a/stdlib/public/Concurrency/Actor.cpp
 +++ b/stdlib/public/Concurrency/Actor.cpp
 @@ -72,7 +72,7 @@
@@ -29,15 +29,87 @@ index 1563307..bb2a633 100644
  #include <sys/syscall.h>
  #endif
 
-@@ -2759,6 +2759,11 @@ static void swift_task_enqueueImpl(Job *job, SerialExecutorRef serialExecutorRef
+@@ -419,6 +419,9 @@ __swift_bincompat_useLegacyNonCrashingExecutorChecks() {
+     options = swift_task_is_current_executor_flag(
+         options | swift_task_is_current_executor_flag::Assert);
+   }
++#elif defined(__featheros__)
++  options = swift_task_is_current_executor_flag(
++      options | swift_task_is_current_executor_flag::Assert);
+ #endif
+   _swift_task_debug_dumpIsCurrentExecutorFlags("runtime linking determined default mode", options);
+   return options;
+@@ -514,7 +517,7 @@ static bool swift_task_isCurrentExecutorWithFlagsImpl(
+       return true;
+     }
+
+-#if !SWIFT_CONCURRENCY_EMBEDDED
++#if !SWIFT_CONCURRENCY_EMBEDDED || defined(__featheros__)
+     // We cannot use 'complexEquality' as it requires two executor instances,
+     // and we do not have a 'current' executor here.
+
+@@ -554,7 +557,7 @@ static bool swift_task_isCurrentExecutorWithFlagsImpl(
+     }
+
+     assert(!options.contains(swift_task_is_current_executor_flag::Assert));
+-#endif // !SWIFT_CONCURRENCY_EMBEDDED
++#endif // !SWIFT_CONCURRENCY_EMBEDDED || defined(__featheros__)
+     return false;
+   }
+
+@@ -607,6 +610,7 @@ static bool swift_task_isCurrentExecutorWithFlagsImpl(
+     }
+   }
+
++#if !SWIFT_CONCURRENCY_EMBEDDED || defined(__featheros__)
+ #if !SWIFT_CONCURRENCY_EMBEDDED
+   // Complex equality means that if two executors of the same type have some
+   // special logic to check if they are "actually the same".
+@@ -647,6 +651,7 @@ static bool swift_task_isCurrentExecutorWithFlagsImpl(
+       } // else, we must give 'checkIsolated' a last chance to verify isolation
+     }
+   }
++#endif // !SWIFT_CONCURRENCY_EMBEDDED
+
+   // Invoke the 'isIsolatingCurrentContext' function if we can; If so, we can
+   // avoid calling the `checkIsolated` because their result will be the same.
+@@ -704,7 +709,7 @@ static bool swift_task_isCurrentExecutorWithFlagsImpl(
+   // In the end, since 'checkIsolated' could not be used, so we must assume
+   // that the executors are not the same context.
+   assert(!options.contains(swift_task_is_current_executor_flag::Assert));
+-#endif // !SWIFT_CONCURRENCY_EMBEDDED
++#endif // !SWIFT_CONCURRENCY_EMBEDDED || defined(__featheros__)
+   return false;
+ }
+
+@@ -1537,7 +1542,7 @@ void DefaultActorImpl::scheduleActorProcessJob(
+       priority, taskExecutor.getIdentity());
+
+   if (taskExecutor.isDefined()) {
+-#if SWIFT_CONCURRENCY_EMBEDDED
++#if SWIFT_CONCURRENCY_EMBEDDED && !defined(__featheros__)
+     swift_unreachable("task executors not supported in embedded Swift");
+ #else
+     auto taskExecutorIdentity = taskExecutor.getIdentity();
+@@ -2735,7 +2740,7 @@ static void swift_task_enqueueImpl(Job *job, SerialExecutorRef serialExecutorRef
+     if (auto task = dyn_cast<AsyncTask>(job)) {
+       auto taskExecutorRef = task->getPreferredTaskExecutor();
+       if (taskExecutorRef.isDefined()) {
+-#if SWIFT_CONCURRENCY_EMBEDDED
++#if SWIFT_CONCURRENCY_EMBEDDED && !defined(__featheros__)
+         swift_unreachable("task executors not supported in embedded Swift");
+ #else
+         auto taskExecutorIdentity = taskExecutorRef.getIdentity();
+@@ -2759,6 +2764,12 @@ static void swift_task_enqueueImpl(Job *job, SerialExecutorRef serialExecutorRef
    auto serialExecutorIdentity = serialExecutorRef.getIdentity();
    auto serialExecutorWtable = serialExecutorRef.getSerialExecutorWitnessTable();
    _swift_task_enqueueOnExecutor(job, serialExecutorIdentity, serialExecutorWtable);
 +#elif SWIFT_CONCURRENCY_EMBEDDED && defined(__featheros__)
-+  // The main executor is the only other kind FeatherOS has; its jobs go to the main thread.
++  // The main executor's jobs go to the main thread, the others to their executor's enqueue.
 +  if (serialExecutorRef.isMainExecutor())
 +    return swift_task_enqueueMainExecutor(job);
-+  swift_unreachable("custom executors not supported in embedded Swift");
++  _swift_task_enqueueOnExecutor(job, serialExecutorRef.getIdentity(),
++                                serialExecutorRef.getSerialExecutorWitnessTable());
  #elif SWIFT_CONCURRENCY_EMBEDDED
    swift_unreachable("custom executors not supported in embedded Swift");
  #else
@@ -187,6 +259,174 @@ index 1cf1b2f..c1fd926 100644
          let capacity = minimumCapacity
          #else
          let capacity = $0.capacity
+diff --git a/stdlib/public/Concurrency/ExecutorAssertions.swift b/stdlib/public/Concurrency/ExecutorAssertions.swift
+index 90ef138..db4c7e8 100644
+--- a/stdlib/public/Concurrency/ExecutorAssertions.swift
++++ b/stdlib/public/Concurrency/ExecutorAssertions.swift
+@@ -46,7 +46,6 @@ extension SerialExecutor {
+   ///           the line where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public func preconditionIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -58,10 +57,15 @@ extension SerialExecutor {
+     let expectationCheck = unsafe _taskIsCurrentExecutor(self.asUnownedSerialExecutor().executor)
+
+     /// TODO: implement the logic in-place perhaps rather than delegating to precondition()?
++    #if !$Embedded
+     precondition(expectationCheck,
+         // TODO: offer information which executor we actually got
+         "Incorrect actor executor assumption; Expected '\(self)' executor. \(message())",
+         file: file, line: line) // short-cut so we get the exact same failure reporting semantics
++    #else
++    precondition(expectationCheck,
++        "Incorrect actor executor assumption. \(message())", file: file, line: line)
++    #endif
+   }
+ }
+
+@@ -93,7 +97,6 @@ extension Actor {
+   ///           where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public nonisolated func preconditionIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -107,9 +110,14 @@ extension Actor {
+     // It will call through to SerialExecutor.checkIsolated` as a last resort.
+     let expectationCheck = unsafe _taskIsCurrentExecutor(self.unownedExecutor.executor)
+
++    #if !$Embedded
+     precondition(expectationCheck,
+         unsafe "Incorrect actor executor assumption; Expected '\(self.unownedExecutor)' executor. \(message())",
+         file: file, line: line)
++    #else
++    precondition(expectationCheck,
++        "Incorrect actor executor assumption. \(message())", file: file, line: line)
++    #endif
+   }
+ }
+
+@@ -141,7 +149,6 @@ extension GlobalActor {
+   ///           where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public static func preconditionIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -181,7 +188,6 @@ extension SerialExecutor {
+   ///           where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public func assertIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -192,7 +198,11 @@ extension SerialExecutor {
+
+     guard unsafe _taskIsCurrentExecutor(self.asUnownedSerialExecutor().executor) else {
+       // TODO: offer information which executor we actually got
++      #if !$Embedded
+       let msg = "Incorrect actor executor assumption; Expected '\(self)' executor. \(message())"
++      #else
++      let msg = "Incorrect actor executor assumption. \(message())"
++      #endif
+       /// TODO: implement the logic in-place perhaps rather than delegating to precondition()?
+       assertionFailure(msg, file: file, line: line)
+       return
+@@ -228,7 +238,6 @@ extension Actor {
+   ///           where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public nonisolated func assertIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -238,7 +247,11 @@ extension Actor {
+     }
+
+     guard unsafe _taskIsCurrentExecutor(self.unownedExecutor.executor) else {
++      #if !$Embedded
+       let msg = unsafe "Incorrect actor executor assumption; Expected '\(self.unownedExecutor)' executor. \(message())"
++      #else
++      let msg = "Incorrect actor executor assumption. \(message())"
++      #endif
+       /// TODO: implement the logic in-place perhaps rather than delegating to precondition()?
+       assertionFailure(msg, file: file, line: line) // short-cut so we get the exact same failure reporting semantics
+       return
+@@ -274,7 +287,6 @@ extension GlobalActor {
+   ///           where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public static func assertIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -332,7 +344,6 @@ extension Actor {
+   @available(SwiftStdlib 5.1, *)
+   @_alwaysEmitIntoClient
+   @_unavailableFromAsync(message: "express the closure as an explicit function declared on the specified 'actor' instead")
+-  @_unavailableInEmbedded
+   public nonisolated func assumeIsolated<T : Sendable>(
+       _ operation: (isolated Self) throws -> T,
+       file: StaticString = #fileID, line: UInt = #line
+@@ -345,7 +356,11 @@ extension Actor {
+     let executor: Builtin.Executor = unsafe self.unownedExecutor.executor
+     guard _taskIsCurrentExecutor(executor) else {
+       // TODO: offer information which executor we actually got
++      #if !$Embedded
+       fatalError("Incorrect actor executor assumption; Expected same executor as \(self).", file: file, line: line)
++      #else
++      fatalError("Incorrect actor executor assumption.", file: file, line: line)
++      #endif
+     }
+
+     // To do the unsafe cast, we have to pretend it's @escaping.
+@@ -358,7 +373,6 @@ extension Actor {
+
+   @available(SwiftStdlib 5.9, *)
+   @usableFromInline
+-  @_unavailableInEmbedded
+   @_silgen_name("$sScAsE14assumeIsolated_4file4lineqd__qd__xYiKXE_s12StaticStringVSutKlF")
+   internal nonisolated func __abi__assumeIsolated<T : Sendable>(
+       _ operation: (isolated Self) throws -> T,
+diff --git a/stdlib/public/Concurrency/GlobalConcurrentExecutor.swift b/stdlib/public/Concurrency/GlobalConcurrentExecutor.swift
+index 50a5c4a..6fc9340 100644
+--- a/stdlib/public/Concurrency/GlobalConcurrentExecutor.swift
++++ b/stdlib/public/Concurrency/GlobalConcurrentExecutor.swift
+@@ -31,15 +31,19 @@ import Swift
+ ///
+ /// Customizing the global concurrent executor is currently not supported.
+ @available(SwiftStdlib 6.0, *)
+-@_unavailableInEmbedded
+ @diagnose(UselessAvailabilityCheck, as: ignored)
+ public var globalConcurrentExecutor: any TaskExecutor {
+   get {
++    #if FEATHEROS
++    // FeatherOS's global executor is the runtime's own, not one from an ExecutorFactory.
++    return _DefaultGlobalConcurrentExecutor.shared
++    #else
+     if #available(StdlibDeploymentTarget 6.3, *) {
+       return Task.defaultExecutor
+     } else {
+       fatalError("we shouldn't get here; if we have, availability is broken")
+     }
++    #endif
+   }
+ }
+
+@@ -47,7 +51,6 @@ public var globalConcurrentExecutor: any TaskExecutor {
+ /// thread pool that is used as the default executor for Swift concurrency
+ /// tasks.
+ @available(SwiftStdlib 6.0, *)
+-@_unavailableInEmbedded
+ internal final class _DefaultGlobalConcurrentExecutor: TaskExecutor {
+   public static let shared: _DefaultGlobalConcurrentExecutor = .init()
+
 diff --git a/stdlib/public/Concurrency/MainActor.swift b/stdlib/public/Concurrency/MainActor.swift
 index 6f5908e..9896879 100644
 --- a/stdlib/public/Concurrency/MainActor.swift
@@ -206,6 +446,57 @@ index 6f5908e..9896879 100644
 
 -#endif // os(WASI) || !$Embedded
 +#endif // os(WASI) || !$Embedded || FEATHEROS
+diff --git a/stdlib/public/Concurrency/PartialAsyncTask.swift b/stdlib/public/Concurrency/PartialAsyncTask.swift
+index cf19478..b31884e 100644
+--- a/stdlib/public/Concurrency/PartialAsyncTask.swift
++++ b/stdlib/public/Concurrency/PartialAsyncTask.swift
+@@ -32,14 +32,12 @@ import Swift
+ internal func _swiftJobRun(_ job: UnownedJob,
+                            _ executor: UnownedSerialExecutor) -> ()
+
+-@_unavailableInEmbedded
+ @available(StdlibDeploymentTarget 6.0, *)
+ @_silgen_name("swift_job_run_on_task_executor")
+ @usableFromInline
+ internal func _swiftJobRunOnTaskExecutor(_ job: UnownedJob,
+                                          _ executor: UnownedTaskExecutor) -> ()
+
+-@_unavailableInEmbedded
+ @available(StdlibDeploymentTarget 6.0, *)
+ @_silgen_name("swift_job_run_on_serial_and_task_executor")
+ @usableFromInline
+@@ -141,7 +139,6 @@ public struct UnownedJob: Sendable {
+   /// as a job can only ever be run once, and must not be accessed after it has been run.
+   ///
+   /// - Parameter executor: the task executor this job will be run on.
+-  @_unavailableInEmbedded
+   @available(StdlibDeploymentTarget 6.0, *)
+   @_alwaysEmitIntoClient
+   @inlinable
+@@ -170,7 +167,6 @@ public struct UnownedJob: Sendable {
+   ///
+   /// - SeeAlso: ``runSynchronously(on:)-(UnownedSerialExecutor)``
+   /// - SeeAlso: ``runSynchronously(on:)-(UnownedTaskExecutor)``
+-  @_unavailableInEmbedded
+   @available(StdlibDeploymentTarget 6.0, *)
+   @_alwaysEmitIntoClient
+   @inlinable
+@@ -422,7 +418,6 @@ extension ExecutorJob {
+   /// - Parameter executor: the executor this job will be run on.
+   ///
+   /// - SeeAlso: ``runSynchronously(isolatedTo:taskExecutor:)``
+-  @_unavailableInEmbedded
+   @available(StdlibDeploymentTarget 6.0, *)
+   @_alwaysEmitIntoClient
+   @inlinable
+@@ -446,7 +441,6 @@ extension ExecutorJob {
+   ///
+   /// - SeeAlso: ``runSynchronously(on:)-(UnownedSerialExecutor)``
+   /// - SeeAlso: ``runSynchronously(on:)-(UnownedTaskExecutor)``
+-  @_unavailableInEmbedded
+   @available(StdlibDeploymentTarget 6.0, *)
+   @_alwaysEmitIntoClient
+   @inlinable
 diff --git a/stdlib/public/Concurrency/SuspendingClock.swift b/stdlib/public/Concurrency/SuspendingClock.swift
 index d07a5b2..333633e 100644
 --- a/stdlib/public/Concurrency/SuspendingClock.swift
@@ -250,6 +541,47 @@ index d07a5b2..333633e 100644
  extension SuspendingClock.Instant: InstantProtocol {
    public static var now: SuspendingClock.Instant { SuspendingClock().now }
 
+diff --git a/stdlib/public/Concurrency/Task+TaskExecutor.swift b/stdlib/public/Concurrency/Task+TaskExecutor.swift
+index cfe8dbf..1c5b41e 100644
+--- a/stdlib/public/Concurrency/Task+TaskExecutor.swift
++++ b/stdlib/public/Concurrency/Task+TaskExecutor.swift
+@@ -126,7 +126,6 @@ import Swift
+ /// - Returns: the value returned from the `operation` closure
+ /// - Throws: if the operation closure throws
+ /// - SeeAlso: ``TaskExecutor``
+-@_unavailableInEmbedded
+ @available(SwiftStdlib 6.0, *)
+ public func withTaskExecutorPreference<T, Failure>(
+   _ taskExecutor: (any TaskExecutor)?,
+@@ -164,7 +163,6 @@ public func withTaskExecutorPreference<T, Failure>(
+ //
+ // This function also doubles as an ABI-compatibility shim predating the
+ // introduction of #isolation.
+-@_unavailableInEmbedded
+ @available(SwiftStdlib 6.0, *)
+ @_unsafeInheritExecutor // for ABI compatibility
+ @_silgen_name("$ss26withTaskExecutorPreference_9operationxSch_pSg_xyYaYbKXEtYaKs8SendableRzlF")
+@@ -188,7 +186,6 @@ public func _unsafeInheritExecutor_withTaskExecutorPreference<T: Sendable>(
+ }
+
+ @available(SwiftStdlib 6.0, *)
+-@_unavailableInEmbedded
+ extension UnsafeCurrentTask {
+
+   /// The current ``TaskExecutor`` preference, if this task has one configured.
+diff --git a/stdlib/public/Concurrency/Task.cpp b/stdlib/public/Concurrency/Task.cpp
+index c5a4a6b..7e00e82 100644
+--- a/stdlib/public/Concurrency/Task.cpp
++++ b/stdlib/public/Concurrency/Task.cpp
+@@ -766,7 +766,7 @@ swift_task_create_commonImpl(size_t rawTaskCreateFlags,
+       break;
+
+     case TaskOptionRecordKind::InitialTaskExecutorOwned:
+-      #if SWIFT_CONCURRENCY_EMBEDDED
++      #if SWIFT_CONCURRENCY_EMBEDDED && !defined(__featheros__)
+       swift_unreachable("owned TaskExecutor cannot be used in embedded Swift");
+       #else
+       taskExecutor = cast<InitialTaskExecutorOwnedPreferenceTaskOptionRecord>(option)
 diff --git a/stdlib/public/Concurrency/TaskCancellation.swift b/stdlib/public/Concurrency/TaskCancellation.swift
 index 71425da..bac01a7 100644
 --- a/stdlib/public/Concurrency/TaskCancellation.swift
@@ -262,6 +594,26 @@ index 71425da..bac01a7 100644
    public static func checkCancellation() throws {
      if Task<Never, Never>.isCancelled {
        throw _Concurrency.CancellationError()
+diff --git a/stdlib/public/Concurrency/TaskGroup+addTask.swift.gyb b/stdlib/public/Concurrency/TaskGroup+addTask.swift.gyb
+index e16561b..811e57c 100644
+--- a/stdlib/public/Concurrency/TaskGroup+addTask.swift.gyb
++++ b/stdlib/public/Concurrency/TaskGroup+addTask.swift.gyb
+@@ -32,7 +32,6 @@ import Swift
+ %        ],
+ %        [
+ %          '@available(SwiftStdlib 6.0, *)', # because task executor
+-%          '@_unavailableInEmbedded', # since TaskExecutor is not available on embedded
+ %        ],
+ %        ['addTask', 'addTaskUnlessCancelled'],
+ %        [
+@@ -91,7 +90,6 @@ import Swift
+ %        ],
+ %        [
+ %          '@available(SwiftStdlib 6.0, *)',
+-%          '@_unavailableInEmbedded', # since TaskExecutor is not available on embedded
+ %        ],
+ %        ['addTask', 'addTaskUnlessCancelled'],
+ %        [
 diff --git a/stdlib/public/Concurrency/TaskSleep.swift b/stdlib/public/Concurrency/TaskSleep.swift
 index d7568f6..fb5a81c 100644
 --- a/stdlib/public/Concurrency/TaskSleep.swift
