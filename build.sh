@@ -130,8 +130,9 @@ _fetch_swift_runtime_sources() {
     # Set every time, so a clone made with an older list gets what is added to it.
     git -C "$swift" sparse-checkout set --no-cone /include/swift/ /lib/Threading/ \
         /stdlib/include/ /stdlib/public/Concurrency/ /stdlib/public/CompatibilityOverride/ \
-        /stdlib/public/Cxx/ /stdlib/public/SwiftShims/ /stdlib/public/runtime/ /utils/gyb.py \
-        /utils/availability-macros.def
+        /stdlib/public/Cxx/ /stdlib/public/SwiftShims/ /stdlib/public/core/ \
+        /stdlib/public/runtime/ /utils/gyb.py /utils/SwiftIntTypes.py \
+        /utils/SwiftFloatingPointTypes.py /utils/availability-macros.def
     git -C "$swift" checkout --quiet
     if ! cmp -s "$patch" "$applied"; then
         _print "Patching the Swift sources"

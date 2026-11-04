@@ -24,10 +24,10 @@ add_custom_command(
     COMMAND ${FEATHEROS_SWIFTC} -target ${FEATHEROS_SWIFT_TARGET}
         -enable-experimental-feature Embedded -parse-as-library -wmo -O -module-name Cxx
         -cxx-interoperability-mode=default -Xcc -nostdinc++ ${features} -strict-memory-safety
-        ${FEATHEROS_SWIFT_AVAILABILITY}
+        ${FEATHEROS_SWIFT_AVAILABILITY} -I ${FEATHEROS_SWIFT_STDLIB_MODULE_DIRECTORY}
         -module-cache-path ${CMAKE_CURRENT_BINARY_DIR}/module-cache
         -emit-module -emit-module-path ${module} ${swift_sources}
-    DEPENDS ${swift_sources}
+    DEPENDS ${swift_sources} ${FEATHEROS_SWIFT_STDLIB_MODULE}
     COMMENT "Building Swift module Cxx"
     VERBATIM
 )

@@ -114,5 +114,32 @@ func callVariadicFunctions() -> String {
 }
 
 print("hello: \(callVariadicFunctions())")
+
+struct Version: TextOutputStreamable {
+    func write<Target: TextOutputStream>(to target: inout Target) {
+        target.write("6.4.2")
+    }
+}
+
+var printed = ""
+print("items", 3, 2.5, true, String(describing: Version()), separator: "|", to: &printed)
+print("hello: printed", printed, terminator: "")
+
+let hashables: Set<AnyHashable> = [1, "1", AnyHashable(1), AnyHashable(AnyHashable("1")), 2.5]
+let labels: [AnyHashable: String] = [1: "an Int", "1": "a String"]
+let base = AnyHashable(7).base as? Int ?? -1
+print("hello: \(hashables.count) hashables, \"1\" is \(labels["1"] ?? "missing"), base \(base)")
+
+// More integers and doubles than registers, so some go on the stack. Each element is converted
+// on its own, since converting a whole [Int] to [CVarArg] would be a dynamic cast.
+let integers = (1...8).map { $0 as CVarArg }
+let doubles = (1...9).map { Double($0) / 2 as CVarArg }
+let varArgs = withVaList(integers + doubles) { arguments in
+    var buffer = [CChar](repeating: 0, count: 128)
+    _ = vsnprintf(&buffer, buffer.count, "%d %d %d %d %d %d %d %d, %g %g %g %g %g %g %g %g %g",
+                  arguments)
+    return String(cString: buffer)
+}
+print("hello: withVaList \(varArgs)")
 let message: StaticString = "hello: written with write\n"
 _ = write(STDOUT_FILENO, message.utf8Start, message.utf8CodeUnitCount)

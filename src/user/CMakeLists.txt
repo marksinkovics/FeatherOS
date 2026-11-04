@@ -164,7 +164,7 @@ endforeach ()
 
 set(FEATHEROS_SWIFTC "" CACHE FILEPATH "swiftc from a swift.org toolchain, for Swift programs")
 set(FEATHEROS_SWIFT_SOURCE ${PROJECT_SOURCE_DIR}/deps/swift CACHE PATH
-    "The Swift sources, patched, for the concurrency runtime and the Cxx module")
+    "The Swift sources, patched, for the standard library, the concurrency runtime and Cxx")
 set(FEATHEROS_LIBCXX_SOURCE ${PROJECT_SOURCE_DIR}/deps/llvm-project/libcxx CACHE PATH
     "libc++'s sources, for the headers of the concurrency runtime and Swift's C++ programs")
 if (ARCH STREQUAL "x86_64")
@@ -192,7 +192,8 @@ set(FEATHEROS_SWIFT_FLAGS
     -I ${libc_source}/swift -Xcc -I${libc_source}/include -Xcc -ffreestanding
     -module-cache-path ${CMAKE_CURRENT_BINARY_DIR}/swift/module-cache
 )
-# swiftc's dependency files name the module map but not the headers behind it.
+# swiftc's dependency files name the module map but not the headers behind it. The list also
+# gets the standard library module once it is built from source.
 file(GLOB_RECURSE FEATHEROS_SWIFT_LIBC_FILES CONFIGURE_DEPENDS ${libc_source}/include/*.h)
 list(APPEND FEATHEROS_SWIFT_LIBC_FILES ${libc_source}/swift/module.modulemap)
 file(GLOB FEATHEROS_SWIFT_CXX_HEADERS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.h)
@@ -225,23 +226,27 @@ if (FEATHEROS_SWIFTC)
 else ()
     message(STATUS "No Swift toolchain found, so the Swift programs are skipped")
 endif ()
+if (swift_usable AND NOT (EXISTS ${FEATHEROS_SWIFT_SOURCE}/stdlib/public/core AND
+        EXISTS ${FEATHEROS_LIBCXX_SOURCE}/include))
+    set(swift_usable FALSE)
+    message(STATUS "No Swift or libc++ sources in ${FEATHEROS_SWIFT_SOURCE} and "
+        "${FEATHEROS_LIBCXX_SOURCE}, so the Swift programs are skipped")
+endif ()
 if (swift_usable)
+    # The probe used the toolchain's standard library; everything else uses ours.
+    add_subdirectory(swift_stdlib)
+    list(APPEND FEATHEROS_SWIFT_FLAGS -I ${FEATHEROS_SWIFT_STDLIB_MODULE_DIRECTORY})
+    list(APPEND FEATHEROS_SWIFT_LIBC_FILES ${FEATHEROS_SWIFT_STDLIB_MODULE})
     featheros_add_swift_support()
     foreach (entry ${FEATHEROS_SWIFT_PROGRAMS})
         featheros_add_swift_program(${entry})
     endforeach ()
-    if (EXISTS ${FEATHEROS_SWIFT_SOURCE}/stdlib/public/Concurrency AND
-            EXISTS ${FEATHEROS_LIBCXX_SOURCE}/include)
-        add_subdirectory(swift_concurrency)
-        add_subdirectory(swift_cxx)
-        foreach (entry ${FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS})
-            featheros_add_swift_program(${entry} CONCURRENCY)
-        endforeach ()
-        foreach (entry ${FEATHEROS_SWIFT_CXX_PROGRAMS})
-            featheros_add_swift_program(${entry} CXX)
-        endforeach ()
-    else ()
-        message(STATUS "No Swift or libc++ sources in ${FEATHEROS_SWIFT_SOURCE} and "
-            "${FEATHEROS_LIBCXX_SOURCE}, so the Swift concurrency and C++ programs are skipped")
-    endif ()
+    add_subdirectory(swift_concurrency)
+    add_subdirectory(swift_cxx)
+    foreach (entry ${FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS})
+        featheros_add_swift_program(${entry} CONCURRENCY)
+    endforeach ()
+    foreach (entry ${FEATHEROS_SWIFT_CXX_PROGRAMS})
+        featheros_add_swift_program(${entry} CXX)
+    endforeach ()
 endif ()

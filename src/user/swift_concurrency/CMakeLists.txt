@@ -92,8 +92,8 @@ set_source_files_properties(${objects} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED
 add_library(featheros_swift_concurrency STATIC ${objects})
 set_target_properties(featheros_swift_concurrency PROPERTIES LINKER_LANGUAGE CXX)
 
-# The _Concurrency module, with every availability macro expanded to "*", as for Embedded Swift
-# upstream. FEATHEROS selects what swift.patch adds, such as MainActor.
+# The _Concurrency module, over ../swift_stdlib's Swift module. FEATHEROS selects what
+# swift.patch adds, such as MainActor.
 set(swift_sources)
 file(STRINGS ${concurrency_source}/CMakeLists.txt concurrency_cmake)
 set(in_list FALSE)
@@ -122,17 +122,6 @@ foreach (name Task+init TaskGroup+addTask Task+immediate)
     list(APPEND swift_sources ${generated})
 endforeach ()
 
-set(availability)
-file(STRINGS ${swift_source}/utils/availability-macros.def definitions REGEX "^[^#].*:")
-foreach (definition ${definitions})
-    string(REGEX REPLACE ":.*" "" name "${definition}")
-    list(APPEND availability -Xfrontend -define-availability -Xfrontend "${name}:*")
-    if (name MATCHES "^SwiftStdlib (.*)")
-        list(APPEND availability
-            -Xfrontend -define-availability -Xfrontend "StdlibDeploymentTarget ${CMAKE_MATCH_1}:*")
-    endif ()
-endforeach ()
-
 set(module_directory ${output}/module)
 set(module ${module_directory}/_Concurrency.swiftmodule)
 set(features IsolatedAny AllowUnsafeAttribute Extern SuppressedAssociatedTypesWithDefaults
@@ -149,10 +138,10 @@ add_custom_command(
         -Xfrontend -enforce-exclusivity=unchecked -Xfrontend -empty-abi-descriptor
         -runtime-compatibility-version none -Xfrontend -disable-objc-interop
         -Xfrontend -disable-standard-substitutions-in-reflection-mangling
-        -Xfrontend -disable-stack-protector ${availability}
-        -module-cache-path ${output}/module-cache
+        -Xfrontend -disable-stack-protector ${FEATHEROS_SWIFT_AVAILABILITY}
+        -I ${FEATHEROS_SWIFT_STDLIB_MODULE_DIRECTORY} -module-cache-path ${output}/module-cache
         -emit-module -emit-module-path ${module} ${swift_sources}
-    DEPENDS ${swift_sources}
+    DEPENDS ${swift_sources} ${FEATHEROS_SWIFT_STDLIB_MODULE}
     COMMENT "Building Swift module _Concurrency"
     VERBATIM
 )
@@ -176,4 +165,3 @@ target_sources(featheros_swift_concurrency PRIVATE ${executors_object})
 set(FEATHEROS_SWIFT_CONCURRENCY_MODULE_DIRECTORY ${module_directory} PARENT_SCOPE)
 set(FEATHEROS_SWIFT_CONCURRENCY_MODULE ${module} PARENT_SCOPE)
 set(FEATHEROS_LIBCXX_CONFIG_DIRECTORY ${output}/libcxx PARENT_SCOPE)
-set(FEATHEROS_SWIFT_AVAILABILITY ${availability} PARENT_SCOPE)

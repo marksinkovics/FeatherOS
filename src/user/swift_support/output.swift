@@ -32,3 +32,20 @@ public struct Output: TextOutputStream {
         fflush(stream)
     }
 }
+
+// The standard library's own print takes a single item under Embedded Swift. This one is here
+// rather than in swift.patch because a non-generic function there changes how the standard
+// library's code inlines into every program.
+@_disfavoredOverload
+public func print(
+    _ items: any CustomStringConvertible..., separator: String = " ", terminator: String = "\n"
+) {
+    let output = Output.standard
+    var prefix = ""
+    for item in items {
+        output.write(prefix)
+        output.write(item.description)
+        prefix = separator
+    }
+    output.write(terminator)
+}

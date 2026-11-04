@@ -739,3 +739,250 @@ index d4e7605..971bfa5 100644
  /// Use this protocol to conform custom C++ sequence types to Swift's `Iterable`
  /// protocol like this:
  ///
+diff --git a/stdlib/public/core/AnyHashable.swift b/stdlib/public/core/AnyHashable.swift
+index 51451a9..15d322e 100644
+--- a/stdlib/public/core/AnyHashable.swift
++++ b/stdlib/public/core/AnyHashable.swift
+@@ -39,7 +39,6 @@ public protocol _HasCustomAnyHashableRepresentation {
+ }
+
+ @usableFromInline
+-@_unavailableInEmbedded
+ internal protocol _AnyHashableBox {
+   var _canonicalBox: _AnyHashableBox { get }
+
+@@ -54,18 +53,18 @@ internal protocol _AnyHashableBox {
+   func _rawHashValue(_seed: Int) -> Int
+
+   var _base: Any { get }
++#if !$Embedded
+   func _unbox<T: Hashable>() -> T?
+   func _downCastConditional<T>(into result: UnsafeMutablePointer<T>) -> Bool
++#endif
+ }
+
+-@_unavailableInEmbedded
+ extension _AnyHashableBox {
+   var _canonicalBox: _AnyHashableBox {
+     return self
+   }
+ }
+
+-@_unavailableInEmbedded
+ internal struct _ConcreteHashableBox<Base: Hashable>: _AnyHashableBox {
+   internal var _baseHashable: Base
+
+@@ -73,6 +72,14 @@ internal struct _ConcreteHashableBox<Base: Hashable>: _AnyHashableBox {
+     self._baseHashable = base
+   }
+
++#if $Embedded
++  internal func _isEqual(to rhs: _AnyHashableBox) -> Bool? {
++    if let rhs = rhs as? _ConcreteHashableBox<Base> {
++      return _baseHashable == rhs._baseHashable
++    }
++    return nil
++  }
++#else
+   internal func _unbox<T: Hashable>() -> T? {
+     return (self as _AnyHashableBox as? _ConcreteHashableBox<T>)?._baseHashable
+   }
+@@ -83,6 +90,7 @@ internal struct _ConcreteHashableBox<Base: Hashable>: _AnyHashableBox {
+     }
+     return nil
+   }
++#endif
+
+   internal var _hashValue: Int {
+     return _baseHashable.hashValue
+@@ -100,12 +108,14 @@ internal struct _ConcreteHashableBox<Base: Hashable>: _AnyHashableBox {
+     return _baseHashable
+   }
+
++#if !$Embedded
+   internal
+   func _downCastConditional<T>(into result: UnsafeMutablePointer<T>) -> Bool {
+     guard let value = _baseHashable as? T else { return false }
+     unsafe result.initialize(to: value)
+     return true
+   }
++#endif
+ }
+
+ /// A type-erased hashable value.
+@@ -139,7 +149,6 @@ internal struct _ConcreteHashableBox<Base: Hashable>: _AnyHashableBox {
+ /// compatible hashes, as the hash encoding that it uses may change between any
+ /// two releases of the standard library.
+ @frozen
+-@_unavailableInEmbedded
+ public struct AnyHashable {
+   internal var _box: _AnyHashableBox
+
+@@ -151,8 +160,16 @@ public struct AnyHashable {
+   ///
+   /// - Parameter base: A hashable value to wrap.
+   @_specialize(where H == String)
+-  @_unavailableInEmbedded
+   public init<H: Hashable>(_ base: H) {
++#if $Embedded
++    // Without the runtime there is no custom representation or upcast to a Hashable
++    // superclass; only an AnyHashable is not boxed again.
++    if H.self == AnyHashable.self {
++      self = _identityCast(base, to: AnyHashable.self)
++      return
++    }
++    self.init(_box: _ConcreteHashableBox(base))
++#else
+     if H.self == String.self {
+       self.init(_box: _ConcreteHashableBox(base))
+       return
+@@ -170,6 +187,7 @@ public struct AnyHashable {
+         base,
+         storingResultInto: $0)
+     }
++#endif
+   }
+
+   internal init<H: Hashable>(_usingDefaultRepresentationOf base: H) {
+@@ -194,6 +212,7 @@ public struct AnyHashable {
+   ///
+   /// This avoids the intermediate re-boxing we would get if we just did
+   /// a downcast on `base`.
++#if !$Embedded
+   internal
+   func _downCastConditional<T>(into result: UnsafeMutablePointer<T>) -> Bool {
+     // Attempt the downcast.
+@@ -210,12 +229,12 @@ public struct AnyHashable {
+
+     return false
+   }
++#endif
+ }
+
+ @available(*, unavailable)
+ extension AnyHashable: Sendable {}
+
+-@_unavailableInEmbedded
+ extension AnyHashable: Equatable {
+   /// Returns a Boolean value indicating whether two type-erased hashable
+   /// instances wrap the same value.
+@@ -244,7 +263,6 @@ extension AnyHashable: Equatable {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension AnyHashable: Hashable {
+   public var hashValue: Int {
+     return _box._canonicalBox._hashValue
+@@ -320,7 +338,6 @@ internal func _makeAnyHashableUpcastingToHashableBaseType<H: Hashable>(
+ )
+
+ @inlinable
+-@_unavailableInEmbedded
+ public // COMPILER_INTRINSIC
+ func _convertToAnyHashable<H: Hashable>(_ value: H) -> AnyHashable {
+   return AnyHashable(value)
+@@ -336,6 +353,7 @@ internal func _convertToAnyHashableIndirect<H: Hashable>(
+   unsafe target.initialize(to: AnyHashable(value))
+ }
+
++#if !$Embedded
+ /// Called by the casting machinery.
+ @_silgen_name("_swift_anyHashableDownCastConditionalIndirect")
+ @_unavailableInEmbedded
+@@ -345,3 +363,4 @@ internal func _anyHashableDownCastConditionalIndirect<T>(
+ ) -> Bool {
+   return unsafe value.pointee._downCastConditional(into: target)
+ }
++#endif
+diff --git a/stdlib/public/core/CMakeLists.txt b/stdlib/public/core/CMakeLists.txt
+index dd4faf6..34e8cdd 100644
+--- a/stdlib/public/core/CMakeLists.txt
++++ b/stdlib/public/core/CMakeLists.txt
+@@ -273,7 +273,7 @@ split_embedded_sources(
+   EMBEDDED UnsafePointer.swift
+   EMBEDDED UnsafeRawPointer.swift
+   EMBEDDED ValidUTF8Buffer.swift
+-    NORMAL VarArgs.swift
++  EMBEDDED VarArgs.swift
+   EMBEDDED WriteBackMutableSlice.swift
+   EMBEDDED Zip.swift
+   EMBEDDED _InlineArray.swift
+diff --git a/stdlib/public/core/EmbeddedPrint.swift b/stdlib/public/core/EmbeddedPrint.swift
+index 07eb0a9..69b0809 100644
+--- a/stdlib/public/core/EmbeddedPrint.swift
++++ b/stdlib/public/core/EmbeddedPrint.swift
+@@ -170,3 +170,19 @@ public func print(_ boolean: Bool, terminator: StaticString = "\n") {
+     print("false", terminator: terminator)
+   }
+ }
++
++// FeatherOS: upstream's print(_:separator:terminator:to:) takes Any and picks a description
++// through protocol casts, which Embedded Swift cannot perform, so this one takes the items as
++// CustomStringConvertible existentials instead.
++public func print<Target: TextOutputStream>(
++  _ items: any CustomStringConvertible..., separator: String = " ",
++  terminator: String = "\n", to output: inout Target
++) {
++  var prefix = ""
++  for item in items {
++    output.write(prefix)
++    output.write(item.description)
++    prefix = separator
++  }
++  output.write(terminator)
++}
+diff --git a/stdlib/public/core/VarArgs.swift b/stdlib/public/core/VarArgs.swift
+index 10de0a4..443a726 100644
+--- a/stdlib/public/core/VarArgs.swift
++++ b/stdlib/public/core/VarArgs.swift
+@@ -49,6 +49,11 @@ public protocol CVarArg {
+   /// Transform `self` into a series of machine words that can be
+   /// appropriately interpreted by C varargs.
+   var _cVarArgEncoding: [Int] { get }
++
++#if $Embedded
++  // Embedded Swift cannot cast to _CVarArgPassedAsDouble, so the builder asks this instead.
++  var _cVarArgPassedAsDouble: Bool { get }
++#endif
+ }
+
+ /// Floating point types need to be passed differently on x86_64
+@@ -56,6 +61,16 @@ public protocol CVarArg {
+ public // SPI(CoreGraphics)
+ protocol _CVarArgPassedAsDouble: CVarArg {}
+
++#if $Embedded
++extension CVarArg {
++  public var _cVarArgPassedAsDouble: Bool { false }
++}
++
++extension _CVarArgPassedAsDouble {
++  public var _cVarArgPassedAsDouble: Bool { true }
++}
++#endif
++
+ /// Some types require alignment greater than Int on some architectures.
+ public // SPI(CoreGraphics)
+ protocol _CVarArgAligned: CVarArg {
+@@ -506,7 +521,7 @@ final internal class __VaListBuilder {
+
+   @inlinable // c-abi
+   internal func append(_ arg: CVarArg) {
+-#if !_runtime(_ObjC)
++#if !_runtime(_ObjC) && !$Embedded
+     var arg = arg
+
+     // We may need to retain an object that provides a pointer value.
+@@ -519,7 +534,11 @@ final internal class __VaListBuilder {
+     var encoded = arg._cVarArgEncoding
+
+ #if arch(x86_64) || arch(arm64)
++#if $Embedded
++    let isDouble = arg._cVarArgPassedAsDouble
++#else
+     let isDouble = arg is _CVarArgPassedAsDouble
++#endif
+
+     if isDouble && fpRegistersUsed < _countFPRegisters {
+       #if arch(arm64)
