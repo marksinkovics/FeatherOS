@@ -6,5 +6,6 @@
   "cpus": 4,
   "ratio": -1.5e3,
   "swift": true,
-  "missing": null
+  "missing": null,
+  "versions": {"swift": 6.4, "limine": 9}
 }

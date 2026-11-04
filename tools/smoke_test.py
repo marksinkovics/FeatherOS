@@ -147,6 +147,12 @@ SWIFT_SHELL_INPUT = (
     b"echo [1,,2] | json\n"
     b"json .a..b /system/sample.json\n"
     b"json .name[0] /system/sample.json /none\n"
+    b'json -c -t "{double}" .versions /system/sample.json\n'
+    b"json -t [string] .architectures /system/sample.json\n"
+    b'json -c -t "{int?}" .milestones /system/sample.json\n'
+    b"echo [1,300] | json -t [int8]\n"
+    b'echo [1,null] | json -c -t "[uint16?]"\n'
+    b"json -t ratio .ratio /system/sample.json\n"
     b"json -h\n"
     b"life -p glider -s 6x6 -n 4\n"
     b"life -p blinker -s 5x5 -n 1\n"
@@ -179,6 +185,12 @@ EXPECTED_SWIFT_OUTPUT = (
     "hello: written with write",
     "hello: /etc/hosts read whole and by line alike true",
     "hello: /none: No such file or directory",
+    'hello: encoded {"number":25,"phase":"done","steps":'
+    '[{"build":{"arch":"aarch64"}},{"boot":{"seconds":1.5}}],'
+    '"counts":{"parts":8}}, alike true',
+    "hello: DecodingError.dataCorrupted: Data was corrupted. "
+    "Path: phase. Debug description: Cannot initialize from invalid "
+    "String value late",
     "tfiwS deddebmE",
     "fed cba",
     "rev: /tmp/none: No such file or directory",
@@ -195,7 +207,18 @@ EXPECTED_SWIFT_OUTPUT = (
     "json: invalid path .a..b: column 4: expected a name after '.'",
     "json: /system/sample.json: cannot index a string with a number",
     "json: /none: No such file or directory",
-    "usage: json [-c] [-r] [path [file...]]",
+    # -t decodes into Swift types with JSONDecoder and encodes them again.
+    '{"swift":6.4,"limine":9}',
+    '[\r\n  "x86_64",\r\n  "aarch64"\r\n]',
+    "json: /system/sample.json: DecodingError.typeMismatch. "
+    "Path: next. Debug description: Expected a number but found a string "
+    "instead.",
+    "json: standard input: DecodingError.dataCorrupted: Data was "
+    "corrupted. Path: [1]. Debug description: Parsed number <300> does not "
+    "fit in Int8.",
+    "[1,null]",
+    "json: unknown type ratio; see json -h",
+    "usage: json [-c] [-r] [-t type] [path [file...]]",
     "......\r\n......\r\n...#..\r\n....#.\r\n..###.\r\n......\r\n",
     ".....\r\n..#..\r\n..#..\r\n..#..\r\n.....\r\n",
     # 23 rows of 80 cells, the size without a terminal.
@@ -886,9 +909,9 @@ LINE_PROMPT = re.compile(
 )
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
-# The scripted shell session runs many programs; AArch64 emulation is slower,
-# and takes about 90 s for the whole session.
-SHELL_TIMEOUT_SECONDS = 180
+# The scripted shell session runs many programs and types each character 20 ms
+# apart; the whole session takes about 3 minutes on either architecture.
+SHELL_TIMEOUT_SECONDS = 300
 # The keyboard test switches through every console after its own keys.
 INPUT_TIMEOUT_SECONDS = 60
 QEMU_CPU_COUNT = 4

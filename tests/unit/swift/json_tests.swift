@@ -271,6 +271,18 @@ func testEvaluation() {
     check(query(".[]", "true") == ["cannot iterate over a boolean"], "iterate boolean")
 }
 
+func testTypeExpressions() {
+    check(TypeExpression(parsing: "uint8") == .uint8, "name")
+    check(TypeExpression(parsing: "[string]") == .array(.string), "array")
+    check(TypeExpression(parsing: "{int?}") == .dictionary(.optional(.int)), "object of optionals")
+    check(
+        TypeExpression(parsing: "[{double}]??")
+            == .optional(.optional(.array(.dictionary(.double)))), "nested, optional twice")
+    for invalid in ["", "byte", "[int", "{int]", "int]", "?", "[]", "int?x"] {
+        check(TypeExpression(parsing: invalid) == nil, "invalid \(invalid)")
+    }
+}
+
 @main
 struct JSONTests {
     static func main() {
@@ -281,6 +293,7 @@ struct JSONTests {
         testPrinters()
         testPaths()
         testEvaluation()
+        testTypeExpressions()
         print("\(checks) JSON checks, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
     }

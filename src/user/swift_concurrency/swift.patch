@@ -908,6 +908,74 @@ index dd4faf6..34e8cdd 100644
    EMBEDDED WriteBackMutableSlice.swift
    EMBEDDED Zip.swift
    EMBEDDED _InlineArray.swift
+diff --git a/stdlib/public/core/ClosedRange.swift b/stdlib/public/core/ClosedRange.swift
+index 75e670b..cf2788d 100644
+--- a/stdlib/public/core/ClosedRange.swift
++++ b/stdlib/public/core/ClosedRange.swift
+@@ -576,23 +576,29 @@ extension ClosedRange {
+ public typealias CountableClosedRange<Bound: Strideable> = ClosedRange<Bound>
+   where Bound.Stride: SignedInteger
+
+-@_unavailableInEmbedded
+ extension ClosedRange: Decodable where Bound: Decodable {
+   public init(from decoder: Decoder) throws {
+     var container = try decoder.unkeyedContainer()
+     let lowerBound = try container.decode(Bound.self)
+     let upperBound = try container.decode(Bound.self)
+     guard lowerBound <= upperBound else {
++#if $Embedded
++      // FeatherOS: Embedded Swift cannot print the type or a generic bound.
++      throw DecodingError.dataCorrupted(
++        DecodingError.Context(
++          codingPath: decoder.codingPath,
++          debugDescription: "Cannot initialize a range with a lowerBound greater than upperBound"))
++#else
+       throw DecodingError.dataCorrupted(
+         DecodingError.Context(
+           codingPath: decoder.codingPath,
+           debugDescription: "Cannot initialize \(ClosedRange.self) with a lowerBound (\(lowerBound)) greater than upperBound (\(upperBound))"))
++#endif
+     }
+     unsafe self.init(_uncheckedBounds: (lower: lowerBound, upper: upperBound))
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension ClosedRange: Encodable where Bound: Encodable {
+   public func encode(to encoder: Encoder) throws {
+     var container = encoder.unkeyedContainer()
+diff --git a/stdlib/public/core/CollectionDifference.swift b/stdlib/public/core/CollectionDifference.swift
+index 7bd729b..36265be 100644
+--- a/stdlib/public/core/CollectionDifference.swift
++++ b/stdlib/public/core/CollectionDifference.swift
+@@ -386,7 +386,6 @@ extension CollectionDifference where ChangeElement: Hashable {
+   }
+ }
+
+-#if !$Embedded
+ @available(SwiftStdlib 5.1, *)
+ extension CollectionDifference.Change: Codable where ChangeElement: Codable {
+   private enum _CodingKeys: String, CodingKey {
+@@ -450,7 +449,6 @@ extension CollectionDifference: Codable where ChangeElement: Codable {
+     try container.encode(removals, forKey: .removals)
+   }
+ }
+-#endif
+
+ @available(SwiftStdlib 5.1, *)
+ extension CollectionDifference: Sendable where ChangeElement: Sendable { }
+diff --git a/stdlib/public/core/Duration.swift b/stdlib/public/core/Duration.swift
+index 5ae2396..bc9ded6 100644
+--- a/stdlib/public/core/Duration.swift
++++ b/stdlib/public/core/Duration.swift
+@@ -264,7 +264,6 @@ extension Duration {
+ }
+
+ @available(StdlibDeploymentTarget 5.7, *)
+-@_unavailableInEmbedded
+ extension Duration: Codable {
+   @available(StdlibDeploymentTarget 5.7, *)
+   public init(from decoder: Decoder) throws {
 diff --git a/stdlib/public/core/EmbeddedPrint.swift b/stdlib/public/core/EmbeddedPrint.swift
 index 07eb0a9..69b0809 100644
 --- a/stdlib/public/core/EmbeddedPrint.swift
@@ -932,8 +1000,141 @@ index 07eb0a9..69b0809 100644
 +  }
 +  output.write(terminator)
 +}
+diff --git a/stdlib/public/core/EmbeddedStubs.swift b/stdlib/public/core/EmbeddedStubs.swift
+index a11aa28..ebafe3a 100644
+--- a/stdlib/public/core/EmbeddedStubs.swift
++++ b/stdlib/public/core/EmbeddedStubs.swift
+@@ -19,6 +19,8 @@ internal func _print_unlocked<T>(_ value: T, _ target: inout String) { fatalErro
+ @_unavailableInEmbedded
+ public func _debugPrint_unlocked<T>(_ value: T, _ target: inout String) { fatalError() }
+
++// FeatherOS: Codable is in src/user/swift_stdlib/codable.swift.
++#if false
+ /// Codable
+
+ @_unavailableInEmbedded
+@@ -85,3 +87,4 @@ public enum DecodingError: Error {
+   case keyNotFound(any CodingKey, Context)
+   case dataCorrupted(Context)
+ }
++#endif
+diff --git a/stdlib/public/core/GroupInfo.json b/stdlib/public/core/GroupInfo.json
+index 9507976..f520ffe 100644
+--- a/stdlib/public/core/GroupInfo.json
++++ b/stdlib/public/core/GroupInfo.json
+@@ -280,6 +280,7 @@
+     "EmbeddedRuntime.swift",
+     "EmbeddedStubs.swift",
+     "EmbeddedPrint.swift",
++    "codable.swift",
+     "InlineArray.swift",
+     "_InlineArray.swift",
+     "Exclusivity.swift",
+diff --git a/stdlib/public/core/Policy.swift b/stdlib/public/core/Policy.swift
+index f487021..22c2ade 100644
+--- a/stdlib/public/core/Policy.swift
++++ b/stdlib/public/core/Policy.swift
+@@ -79,14 +79,12 @@ extension Never: Identifiable {
+ }
+
+ @available(SwiftStdlib 5.9, *)
+-@_unavailableInEmbedded
+ extension Never: Encodable {
+   @available(SwiftStdlib 5.9, *)
+   public func encode(to encoder: any Encoder) throws {}
+ }
+
+ @available(SwiftStdlib 5.9, *)
+-@_unavailableInEmbedded
+ extension Never: Decodable {
+   @available(SwiftStdlib 5.9, *)
+   public init(from decoder: any Decoder) throws {
+diff --git a/stdlib/public/core/Range.swift b/stdlib/public/core/Range.swift
+index c5b462f..40775c4 100644
+--- a/stdlib/public/core/Range.swift
++++ b/stdlib/public/core/Range.swift
+@@ -447,23 +447,29 @@ extension Range: Hashable where Bound: Hashable {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension Range: Decodable where Bound: Decodable {
+   public init(from decoder: Decoder) throws {
+     var container = try decoder.unkeyedContainer()
+     let lowerBound = try container.decode(Bound.self)
+     let upperBound = try container.decode(Bound.self)
+     guard lowerBound <= upperBound else {
++#if $Embedded
++      // FeatherOS: Embedded Swift cannot print the type or a generic bound.
++      throw DecodingError.dataCorrupted(
++        DecodingError.Context(
++          codingPath: decoder.codingPath,
++          debugDescription: "Cannot initialize a range with a lowerBound greater than upperBound"))
++#else
+       throw DecodingError.dataCorrupted(
+         DecodingError.Context(
+           codingPath: decoder.codingPath,
+           debugDescription: "Cannot initialize \(Range.self) with a lowerBound (\(lowerBound)) greater than upperBound (\(upperBound))"))
++#endif
+     }
+     unsafe self.init(_uncheckedBounds: (lower: lowerBound, upper: upperBound))
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension Range: Encodable where Bound: Encodable {
+   public func encode(to encoder: Encoder) throws {
+     var container = encoder.unkeyedContainer()
+@@ -514,7 +520,6 @@ extension PartialRangeUpTo: RangeExpression {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeUpTo: Decodable where Bound: Decodable {
+   public init(from decoder: Decoder) throws {
+     var container = try decoder.unkeyedContainer()
+@@ -522,7 +527,6 @@ extension PartialRangeUpTo: Decodable where Bound: Decodable {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeUpTo: Encodable where Bound: Encodable {
+   public func encode(to encoder: Encoder) throws {
+     var container = encoder.unkeyedContainer()
+@@ -571,7 +575,6 @@ extension PartialRangeThrough: RangeExpression {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeThrough: Decodable where Bound: Decodable {
+   public init(from decoder: Decoder) throws {
+     var container = try decoder.unkeyedContainer()
+@@ -579,7 +582,6 @@ extension PartialRangeThrough: Decodable where Bound: Decodable {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeThrough: Encodable where Bound: Encodable {
+   public func encode(to encoder: Encoder) throws {
+     var container = encoder.unkeyedContainer()
+@@ -723,7 +725,6 @@ extension PartialRangeFrom: Sequence
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeFrom: Decodable where Bound: Decodable {
+   public init(from decoder: Decoder) throws {
+     var container = try decoder.unkeyedContainer()
+@@ -731,7 +732,6 @@ extension PartialRangeFrom: Decodable where Bound: Decodable {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeFrom: Encodable where Bound: Encodable {
+   public func encode(to encoder: Encoder) throws {
+     var container = encoder.unkeyedContainer()
 diff --git a/stdlib/public/core/VarArgs.swift b/stdlib/public/core/VarArgs.swift
-index 10de0a4..443a726 100644
+index 10de0a4..1b3a37e 100644
 --- a/stdlib/public/core/VarArgs.swift
 +++ b/stdlib/public/core/VarArgs.swift
 @@ -49,6 +49,11 @@ public protocol CVarArg {
@@ -986,3 +1187,12 @@ index 10de0a4..443a726 100644
 
      if isDouble && fpRegistersUsed < _countFPRegisters {
        #if arch(arm64)
+@@ -604,7 +623,7 @@ final internal class __VaListBuilder {
+
+   @inlinable // c-abi
+   internal func append(_ arg: CVarArg) {
+-#if !_runtime(_ObjC)
++#if !_runtime(_ObjC) && !$Embedded
+     var arg = arg
+
+     // We may need to retain an object that provides a pointer value.

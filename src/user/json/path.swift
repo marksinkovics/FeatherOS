@@ -1,3 +1,8 @@
+// The host tests compile this file with FeatherSupport's JSON sources in one module.
+#if canImport(FeatherSupport)
+    import FeatherSupport
+#endif
+
 struct JSONPathError: Error, CustomStringConvertible {
     let message: String
 
@@ -167,4 +172,12 @@ struct JSONPath: Equatable {
 
 private func isNameStart(_ byte: UInt8) -> Bool {
     isLetter(byte) || byte == UInt8(ascii: "_")
+}
+
+private func isDigit(_ byte: UInt8) -> Bool {
+    byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9")
+}
+
+private func isLetter(_ byte: UInt8) -> Bool {
+    (byte | 0x20) >= UInt8(ascii: "a") && (byte | 0x20) <= UInt8(ascii: "z")
 }

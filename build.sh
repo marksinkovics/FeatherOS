@@ -268,13 +268,14 @@ iso() {
         "$SCRIPT_DIR/initramfs/sample.json" "$SCRIPT_DIR/initramfs/http-request.txt" \
         "$SCRIPT_DIR/initramfs/http-response.txt" "$system_dir/"
     cp -R "$SCRIPT_DIR/initramfs/etc" "$root_dir/"
-    # Debug builds keep their debug information in build/<arch>/programs for gdb; the copies the
-    # system runs leave it out, so they stay small and within the 1 MiB program limit.
+    # Debug builds keep their debug information and symbols in build/<arch>/programs for gdb; the
+    # copies the system runs leave both out, so they stay small and within the 1 MiB program
+    # limit (Embedded Swift's mangled names alone take a quarter of a Swift program).
     _require_tools "$ARCH-elf-strip"
     local program
     for program in "${programs[@]}"; do
         local name="${program##*/}"
-        "$ARCH-elf-strip" --strip-debug -o "$system_dir/${name%-"$ARCH".elf}" "$program"
+        "$ARCH-elf-strip" --strip-all -o "$system_dir/${name%-"$ARCH".elf}" "$program"
     done
     python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$system_dir/badelf"
     # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
@@ -533,6 +534,7 @@ unit_test() {
     local swiftc
     if swiftc=$(_swift_compiler); then
         cmake_args+=(-DFEATHEROS_SWIFTC="$swiftc")
+        _fetch_swift_runtime_sources
     else
         _print "No Swift toolchain (swiftly or SWIFTC), so the Swift tests are skipped"
     fi

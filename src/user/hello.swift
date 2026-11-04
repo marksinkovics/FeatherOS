@@ -143,3 +143,35 @@ let varArgs = withVaList(integers + doubles) { arguments in
 print("hello: withVaList \(varArgs)")
 let message: StaticString = "hello: written with write\n"
 _ = write(STDOUT_FILENO, message.utf8Start, message.utf8CodeUnitCount)
+
+// Conformances the compiler synthesizes, over FeatherOS's Codable.
+enum Phase: String, Codable {
+    case planned, done
+}
+
+enum Step: Codable, Equatable {
+    case build(arch: String)
+    case boot(seconds: Double?)
+}
+
+struct Milestone: Codable, Equatable {
+    var number: Int
+    var phase: Phase
+    var steps: [Step]
+    var note: String?
+    var counts: [String: UInt8]
+}
+
+let milestone = Milestone(
+    number: 25, phase: .done, steps: [.build(arch: "aarch64"), .boot(seconds: 1.5)], note: nil,
+    counts: ["parts": 8])
+do {
+    let json = try JSONEncoder().encode(milestone)
+    let decoded = try JSONDecoder().decode(Milestone.self, from: json)
+    print("hello: encoded \(String(decoding: json, as: UTF8.self)), alike \(decoded == milestone)")
+    _ = try JSONDecoder().decode(Milestone.self, from: Array(#"{"number":25,"phase":"late"}"#.utf8))
+} catch let error as DecodingError {
+    print("hello: \(error)")
+} catch {
+    print("hello: encoding failed")
+}

@@ -176,17 +176,22 @@ catch_discover_tests(featheros_unit_tests)
 # toolchain's own standard library rather than Embedded Swift. Skipped without a Swift toolchain.
 set(FEATHEROS_SWIFTC "" CACHE FILEPATH "swiftc from a swift.org toolchain, for the Swift tests")
 if (FEATHEROS_SWIFTC)
-    set(swift_flags -O -parse-as-library)
+    set(sdk_flags)
     if (APPLE)
         execute_process(COMMAND xcrun --show-sdk-path OUTPUT_VARIABLE sdk
             OUTPUT_STRIP_TRAILING_WHITESPACE)
-        list(APPEND swift_flags -sdk ${sdk})
+        set(sdk_flags -sdk ${sdk})
     endif ()
+    set(swift_flags -O -parse-as-library ${sdk_flags})
     # Each program directory's sources but main.swift, with tests/unit/swift/<name>_tests.swift.
+    file(GLOB FEATHEROS_SWIFT_TEST_SOURCES_json CONFIGURE_DEPENDS
+        "${FEATHEROS_ROOT}/src/user/swift_support/json_*.swift")
+    list(FILTER FEATHEROS_SWIFT_TEST_SOURCES_json EXCLUDE REGEX "json_(en|de)coder\\.swift$")
     foreach (program json life)
         file(GLOB sources CONFIGURE_DEPENDS "${FEATHEROS_ROOT}/src/user/${program}/*.swift")
         list(REMOVE_ITEM sources "${FEATHEROS_ROOT}/src/user/${program}/main.swift")
-        list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/swift/${program}_tests.swift")
+        list(APPEND sources ${FEATHEROS_SWIFT_TEST_SOURCES_${program}}
+            "${CMAKE_CURRENT_SOURCE_DIR}/swift/${program}_tests.swift")
         set(tests ${CMAKE_CURRENT_BINARY_DIR}/swift/${program}_tests)
         add_custom_command(
             OUTPUT ${tests}
@@ -199,6 +204,45 @@ if (FEATHEROS_SWIFTC)
         add_custom_target(swift_${program}_tests ALL DEPENDS ${tests})
         add_test(NAME swift.${program} COMMAND ${tests})
     endforeach ()
+
+    # FeatherOS's Codable and FeatherSupport's JSON coders. The toolchain's standard library has
+    # upstream's Codable, so these are built with Embedded Swift for the host against the module
+    # FeatherOS's programs use (src/user/swift_stdlib/), at -Onone and -O as in Debug and Release.
+    set(FEATHEROS_SWIFT_SOURCE ${FEATHEROS_ROOT}/deps/swift)
+    execute_process(COMMAND ${FEATHEROS_SWIFTC} -print-target-info OUTPUT_VARIABLE target_info)
+    string(JSON host_triple GET ${target_info} target triple)
+    string(JSON host_module_triple GET ${target_info} target moduleTriple)
+    get_filename_component(swift_bin ${FEATHEROS_SWIFTC} DIRECTORY)
+    set(unicode_tables
+        ${swift_bin}/../lib/swift/embedded/${host_module_triple}/libswiftUnicodeDataTables.a)
+    if (NOT EXISTS ${FEATHEROS_SWIFT_SOURCE}/stdlib/public/core)
+        message(STATUS "No Swift sources in deps/swift, so the Codable tests are skipped")
+    elseif (NOT EXISTS ${unicode_tables})
+        message(STATUS "No Embedded Swift libraries for ${host_module_triple}, "
+            "so the Codable tests are skipped")
+    else ()
+        include(${FEATHEROS_ROOT}/src/user/swift_stdlib/swift_stdlib.cmake)
+        featheros_add_swift_stdlib(${host_triple} ${host_module_triple}
+            ${CMAKE_CURRENT_BINARY_DIR}/swift/stdlib swift_host_stdlib)
+        file(GLOB sources CONFIGURE_DEPENDS "${FEATHEROS_ROOT}/src/user/swift_support/json_*.swift")
+        list(APPEND sources "${CMAKE_CURRENT_SOURCE_DIR}/swift/codable_tests.swift")
+        foreach (optimization Onone O)
+            set(tests ${CMAKE_CURRENT_BINARY_DIR}/swift/codable_tests_${optimization})
+            add_custom_command(
+                OUTPUT ${tests}
+                COMMAND ${FEATHEROS_SWIFTC} -target ${host_triple} ${sdk_flags}
+                    -enable-experimental-feature Embedded -wmo -${optimization} -parse-as-library
+                    -I ${FEATHEROS_SWIFT_STDLIB_MODULE_DIRECTORY} -module-name codable_tests
+                    ${sources} -module-cache-path ${CMAKE_CURRENT_BINARY_DIR}/swift/module-cache
+                    -o ${tests} -Xlinker ${unicode_tables}
+                DEPENDS ${sources} ${FEATHEROS_SWIFT_STDLIB_MODULE}
+                COMMENT "Building Swift test swift/codable_tests_${optimization}"
+                VERBATIM
+            )
+            add_custom_target(swift_codable_tests_${optimization} ALL DEPENDS ${tests})
+            add_test(NAME swift.codable.${optimization} COMMAND ${tests})
+        endforeach ()
+    endif ()
 else ()
     message(STATUS "No Swift toolchain found, so the Swift tests are skipped")
 endif ()

@@ -34,7 +34,7 @@ set(FEATHEROS_SWIFT_CXX_PROGRAMS
 )
 set(FEATHEROS_SWIFT_CXX_SOURCES_cxxinterop cxx_interop.cpp)
 # Sources a Swift program compiles in from other programs' directories, by program name.
-set(FEATHEROS_SWIFT_SHARED_SOURCES_swiftbench life/grid.swift json/parser.swift json/value.swift)
+set(FEATHEROS_SWIFT_SHARED_SOURCES_swiftbench life/grid.swift)
 
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker_${ARCH}.ld)
 

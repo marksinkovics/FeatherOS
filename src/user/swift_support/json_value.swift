@@ -1,6 +1,6 @@
 // Strings and keys hold UTF-8 bytes rather than Strings, so the program never needs the Unicode
 // data tables. Numbers keep their text, so they print as they were written.
-indirect enum JSONValue: Equatable {
+public indirect enum JSONValue: Equatable {
     case null
     case bool(Bool)
     case number([UInt8])
@@ -8,7 +8,7 @@ indirect enum JSONValue: Equatable {
     case array([JSONValue])
     case object([JSONMember])
 
-    var kindName: String {
+    public var kindName: String {
         switch self {
         case .null: "null"
         case .bool: "a boolean"
@@ -19,7 +19,7 @@ indirect enum JSONValue: Equatable {
         }
     }
 
-    func member(_ key: [UInt8]) -> JSONValue? {
+    public func member(_ key: [UInt8]) -> JSONValue? {
         guard case .object(let members) = self else {
             return nil
         }
@@ -27,9 +27,14 @@ indirect enum JSONValue: Equatable {
     }
 }
 
-struct JSONMember: Equatable {
-    var key: [UInt8]
-    var value: JSONValue
+public struct JSONMember: Equatable {
+    public var key: [UInt8]
+    public var value: JSONValue
+
+    public init(key: [UInt8], value: JSONValue) {
+        self.key = key
+        self.value = value
+    }
 }
 
 // A repeated key keeps its first place and its last value, as in jq. Small objects are searched

@@ -1,29 +1,29 @@
-struct JSONParseError: Error, CustomStringConvertible {
-    let message: String
-    let offset: Int
-    let line: Int
-    let column: Int
+public struct JSONParseError: Error, CustomStringConvertible {
+    public let message: String
+    public let offset: Int
+    public let line: Int
+    public let column: Int
 
-    var description: String {
+    public var description: String {
         "line \(line), column \(column): \(message)"
     }
 }
 
 // RFC 8259 over bytes. The input may hold several values separated by whitespace, as jq reads.
-struct JSONParser {
+public struct JSONParser {
     // Each level of nesting is a recursive call on a user stack of 252 KiB.
     static let maximumDepth = 256
 
     private let bytes: [UInt8]
-    private(set) var offset: Int
+    public private(set) var offset: Int
     private var depth = 0
 
-    init(_ bytes: [UInt8], offset: Int = 0) {
+    public init(_ bytes: [UInt8], offset: Int = 0) {
         self.bytes = bytes
         self.offset = offset
     }
 
-    static func parseAll(_ bytes: [UInt8]) throws(JSONParseError) -> [JSONValue] {
+    public static func parseAll(_ bytes: [UInt8]) throws(JSONParseError) -> [JSONValue] {
         var parser = JSONParser(bytes)
         var values: [JSONValue] = []
         while let value = try parser.next() {
@@ -33,7 +33,7 @@ struct JSONParser {
     }
 
     // The next value, or nil at the end of the input.
-    mutating func next() throws(JSONParseError) -> JSONValue? {
+    public mutating func next() throws(JSONParseError) -> JSONValue? {
         skipWhitespace()
         if offset == bytes.count {
             return nil
@@ -139,7 +139,7 @@ struct JSONParser {
     }
 
     // The bytes of the string at the offset, with its escapes decoded.
-    mutating func parseString() throws(JSONParseError) -> [UInt8] {
+    public mutating func parseString() throws(JSONParseError) -> [UInt8] {
         offset += 1
         var text: [UInt8] = []
         while true {
@@ -393,11 +393,11 @@ func appendUTF8(_ scalar: UInt32, to text: inout [UInt8]) {
     }
 }
 
-func isDigit(_ byte: UInt8) -> Bool {
+private func isDigit(_ byte: UInt8) -> Bool {
     byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9")
 }
 
-func isLetter(_ byte: UInt8) -> Bool {
+private func isLetter(_ byte: UInt8) -> Bool {
     (byte | 0x20) >= UInt8(ascii: "a") && (byte | 0x20) <= UInt8(ascii: "z")
 }
 

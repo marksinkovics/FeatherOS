@@ -1,12 +1,12 @@
 // A printer chooses the layout; the shared extension walks the value.
-protocol JSONPrinter {
+public protocol JSONPrinter {
     var memberSeparator: StaticString { get }
     // Called before each element or member of a container, and before its closing bracket.
     func writeBreak(depth: Int, into output: inout [UInt8])
 }
 
 extension JSONPrinter {
-    func write(_ value: JSONValue, into output: inout [UInt8]) {
+    public func write(_ value: JSONValue, into output: inout [UInt8]) {
         write(value, depth: 0, into: &output)
     }
 
@@ -52,18 +52,24 @@ extension JSONPrinter {
     }
 }
 
-struct CompactPrinter: JSONPrinter {
-    var memberSeparator: StaticString { ":" }
+public struct CompactPrinter: JSONPrinter {
+    public init() {}
 
-    func writeBreak(depth: Int, into output: inout [UInt8]) {}
+    public var memberSeparator: StaticString { ":" }
+
+    public func writeBreak(depth: Int, into output: inout [UInt8]) {}
 }
 
-struct PrettyPrinter: JSONPrinter {
-    var indent = 2
+public struct PrettyPrinter: JSONPrinter {
+    public var indent: Int
 
-    var memberSeparator: StaticString { ": " }
+    public init(indent: Int = 2) {
+        self.indent = indent
+    }
 
-    func writeBreak(depth: Int, into output: inout [UInt8]) {
+    public var memberSeparator: StaticString { ": " }
+
+    public func writeBreak(depth: Int, into output: inout [UInt8]) {
         output.append(UInt8(ascii: "\n"))
         output += repeatElement(UInt8(ascii: " "), count: depth * indent)
     }
