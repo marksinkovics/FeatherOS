@@ -136,6 +136,7 @@ SWIFT_SHELL_INPUT = (
     b'echo "Embedded Swift" | rev\n'
     b"write /tmp/rev.txt abc def\n"
     b"rev /tmp/rev.txt /tmp/none\n"
+    b'echo "ab cd" | rev -n\n'
     b"rev -h\n"
     b"json .name /system/sample.json\n"
     b"json -r .motto /system/sample.json\n"
@@ -161,6 +162,11 @@ SWIFT_SHELL_INPUT = (
 EXPECTED_SWIFT_OUTPUT = (
     "Hello from Embedded Swift",
     "hello: arguments one, two words",
+    "hello: argc 3, the last argument two words",
+    "hello: formatted [ab   ] [003.1] [0xff] [+42] [A] "
+    "[-9223372036854775808] [%d]",
+    "hello: read feather, close-on-exec true then false, "
+    "ioctl on a file Not a terminal, on the terminal true",
     "hello: largest square of 25, rectangle of 12",
     "hello: tracker released",
     "hello: tracker was shared true",
@@ -173,7 +179,8 @@ EXPECTED_SWIFT_OUTPUT = (
     "tfiwS deddebmE",
     "fed cba",
     "rev: /tmp/none: No such file or directory",
-    "usage: rev [file...]",
+    "     1  dc ba",
+    "usage: rev [-n] [file...]",
     '"FeatherOS"',
     # The serial console shows the tab as a space.
     'light as a "feather"',
@@ -584,7 +591,7 @@ EXPECTED_SHELL_OUTPUT = (
     "spawned from the disk",
     "SPAWNED=yes",
     "libctest: /dev/tty works",
-    "libctest: 496 checks passed",
+    "libctest: 512 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",

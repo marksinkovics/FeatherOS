@@ -1,9 +1,10 @@
 #include <errno.h>
+#include <featheros.h>
 #include <stdarg.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 
-int ioctl(int descriptor, unsigned long request, ...)
+int featheros_ioctl(int descriptor, unsigned long request, void* argument)
 {
     if (descriptor < 0)
     {
@@ -20,9 +21,19 @@ int ioctl(int descriptor, unsigned long request, ...)
         }
         return -1;
     }
-    va_list arguments;
-    va_start(arguments, request);
-    auto* size = va_arg(arguments, struct winsize*);
-    va_end(arguments);
+    auto* size = static_cast<struct winsize*>(argument);
     return request == TIOCGWINSZ ? tcgetwinsize(descriptor, size) : tcsetwinsize(descriptor, size);
+}
+
+int ioctl(int descriptor, unsigned long request, ...)
+{
+    void* argument = nullptr;
+    if (request == TIOCGWINSZ || request == TIOCSWINSZ)
+    {
+        va_list arguments;
+        va_start(arguments, request);
+        argument = va_arg(arguments, void*);
+        va_end(arguments);
+    }
+    return featheros_ioctl(descriptor, request, argument);
 }

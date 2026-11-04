@@ -1,21 +1,30 @@
 import FeatherLibC
 
-// Top-level code does not see main's parameters, and Embedded Swift has no CommandLine.
-public enum Arguments {
-    public static var all: [String] {
-        let values = featheros_argument_values()!
-        return (0..<Int(featheros_argument_count())).map { String(cString: values[$0]!) }
+// Embedded Swift leaves CommandLine out, and top-level code does not see main's parameters, so
+// this one reads them from the C library.
+public enum CommandLine {
+    public static var argc: Int32 {
+        featheros_argument_count()
     }
 
+    public static var unsafeArgv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?> {
+        featheros_argument_values()!
+    }
+
+    public static var arguments: [String] = (0..<Int(argc)).map {
+        String(cString: unsafeArgv[$0]!)
+    }
+}
+
+public enum Arguments {
     public static var operands: [String] {
-        Array(all.dropFirst())
+        Array(CommandLine.arguments.dropFirst())
     }
 
     public static var programName: String {
-        guard let path = featheros_argument_values()?[0] else {
+        guard let name = CommandLine.arguments.first else {
             return "program"
         }
-        let name = String(cString: path)
         guard let slash = name.utf8.lastIndex(of: UInt8(ascii: "/")) else {
             return name
         }

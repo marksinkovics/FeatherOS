@@ -788,6 +788,62 @@ void CheckDescriptorFiles()
     Check(unlink("/home/LIBCRAW.TXT") == -1 && errno == ENOENT, "unlink a missing file");
 }
 
+void CheckFixedParameterCalls()
+{
+    const char* path = "/home/LIBCFIX.TXT";
+    const int descriptor = featheros_open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    Check(descriptor >= 3 && write(descriptor, "fixed", 5) == 5 && close(descriptor) == 0,
+          "featheros_open creates a file");
+    errno = 0;
+    Check(featheros_open(path, O_WRONLY | O_CREAT | O_EXCL, 0644) == -1 && errno == EEXIST,
+          "featheros_open with O_EXCL");
+    char saved[PATH_MAX];
+    Check(getcwd(saved, sizeof(saved)) != nullptr && chdir("/home") == 0, "chdir for openat");
+    const int reader = openat(AT_FDCWD, "LIBCFIX.TXT", O_RDONLY);
+    Check(chdir(saved) == 0, "chdir back after openat");
+    char bytes[8] = {};
+    Check(reader >= 3 && read(reader, bytes, sizeof(bytes)) == 5 && memcmp(bytes, "fixed", 5) == 0,
+          "openat relative to the working directory");
+    errno = 0;
+    Check(featheros_openat(reader, "LIBCFIX.TXT", O_RDONLY, 0) == -1 && errno == ENOTDIR,
+          "openat relative to a file");
+    errno = 0;
+    Check(featheros_openat(-1, "LIBCFIX.TXT", O_RDONLY, 0) == -1 && errno == EBADF,
+          "openat relative to a bad descriptor");
+    const int absolute = featheros_openat(reader, path, O_RDONLY, 0);
+    Check(absolute >= 3 && close(absolute) == 0, "openat with an absolute path");
+
+    Check(featheros_fcntl(reader, F_SETFD, FD_CLOEXEC) == 0 &&
+              featheros_fcntl(reader, F_GETFD, 0) == FD_CLOEXEC &&
+              featheros_fcntl(reader, F_GETFL, 0) == O_RDONLY,
+          "featheros_fcntl");
+    errno = 0;
+    Check(featheros_fcntl(reader, 9999, 0) == -1 && errno == EINVAL,
+          "featheros_fcntl with an unknown command");
+    struct winsize window = {};
+    Check(featheros_ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0 && window.ws_col >= 1,
+          "featheros_ioctl reads the console size");
+    errno = 0;
+    Check(featheros_ioctl(reader, TIOCGWINSZ, &window) == -1 && errno == ENOTTY,
+          "featheros_ioctl on a file");
+    Check(close(reader) == 0 && unlink(path) == 0, "remove the openat file");
+
+    featheros_format_argument arguments[3] = {};
+    arguments[0].type = FEATHEROS_FORMAT_STRING;
+    arguments[0].value.string = "id";
+    arguments[1].type = FEATHEROS_FORMAT_SIGNED;
+    arguments[1].value.signed_value = -42;
+    arguments[2].type = FEATHEROS_FORMAT_DOUBLE;
+    arguments[2].value.double_value = 2.5;
+    char text[32];
+    Check(featheros_format(text, sizeof(text), "%s %05d %.1f %d", arguments, 3) == 15 &&
+              strcmp(text, "id -0042 2.5 %d") == 0,
+          "featheros_format");
+    Check(featheros_format(text, 4, "%s %05d", arguments, 2) == 8 && strcmp(text, "id ") == 0,
+          "featheros_format truncates");
+    Check(featheros_format(nullptr, 0, "%s", arguments, 1) == 2, "featheros_format measures");
+}
+
 void CheckDirectories()
 {
     char directory[64];
@@ -3158,6 +3214,7 @@ int main(int argc, char** argv)
     CheckFormatting();
     CheckFileStreams();
     CheckDescriptorFiles();
+    CheckFixedParameterCalls();
     CheckDirectories();
     CheckVirtualFiles();
     CheckAddressNames();

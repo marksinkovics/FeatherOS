@@ -33,11 +33,16 @@
 #define F_DUPFD_CLOEXEC 1030
 #define FD_CLOEXEC 1
 
+// openat's directory for paths relative to the working directory.
+#define AT_FDCWD (-100)
+
 __BEGIN_DECLS
 
 // O_CREAT and O_TRUNC need write access. The mode argument is accepted and ignored, since there
 // are no permissions yet.
 int open(const char* path, int flags, ...);
+// Directories cannot be opened, so a relative path works only with AT_FDCWD.
+int openat(int directory, const char* path, int flags, ...);
 int creat(const char* path, mode_t mode);
 int fcntl(int descriptor, int command, ...);
 

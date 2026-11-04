@@ -49,11 +49,13 @@ func shareTracker() -> Bool {
 
 print("Hello from Embedded Swift")
 var line = "hello: arguments"
-for (index, argument) in Arguments.operands.enumerated() {
+for (index, argument) in CommandLine.arguments.dropFirst().enumerated() {
     line += index == 0 ? " " : ", "
     line += argument
 }
 print(line)
+let last = String(cString: CommandLine.unsafeArgv[Int(CommandLine.argc) - 1]!)
+print("hello: argc \(CommandLine.argc), the last argument \(last)")
 if let square = largest([Square(side: 3), Square(side: 5)]) {
     print("hello: largest \(describe(square)), \(describe(Rectangle(width: 3, height: 4)))")
 }
@@ -84,5 +86,33 @@ for path in ["/etc/hosts", "/none"] {
         print("hello: \(path): \(error)")
     }
 }
+print(
+    String(
+        format: "hello: formatted [%-5s] [%05.1f] [%#x] [%+d] [%c] [%d] [%d]", "ab", 3.14159, 255,
+        42, 65, Int.min, "not a number"))
+
+// open, openat, fcntl and ioctl are variadic in C, so these calls reach FeatherSupport's forms.
+func callVariadicFunctions() -> String {
+    let path = "/tmp/hello.txt"
+    let writer = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+    _ = write(writer, "feather", 7)
+    close(writer)
+    let reader = openat(AT_FDCWD, path, O_RDONLY | O_CLOEXEC)
+    var bytes = [UInt8](repeating: 0, count: 16)
+    let count = read(reader, &bytes, bytes.count)
+    let text = String(decoding: bytes[..<max(count, 0)], as: UTF8.self)
+    let closesOnExec = fcntl(reader, F_GETFD) == FD_CLOEXEC
+    let cleared = fcntl(reader, F_SETFD, 0) == 0 && fcntl(reader, F_GETFD) == 0
+    var size = winsize()
+    errno = 0
+    let onFile = ioctl(reader, UInt(TIOCGWINSZ), &size) == -1 ? "\(SystemError.current)" : "none"
+    close(reader)
+    unlink(path)
+    let onTerminal = ioctl(STDOUT_FILENO, UInt(TIOCGWINSZ), &size) == 0 && size.ws_row > 0
+    return "read \(text), close-on-exec \(closesOnExec) then \(!cleared), ioctl on a file \(onFile), "
+        + "on the terminal \(onTerminal)"
+}
+
+print("hello: \(callVariadicFunctions())")
 let message: StaticString = "hello: written with write\n"
 _ = write(STDOUT_FILENO, message.utf8Start, message.utf8CodeUnitCount)

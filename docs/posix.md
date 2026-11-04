@@ -135,9 +135,9 @@ libc++'s headers take `mbstate_t` from here.
 **Formatting.** The family is `printf`, `fprintf`, `dprintf`, `sprintf` and `snprintf`, plus their `v` forms. It supports:
 - every flag, width and precision (including `*`)
 - the length modifiers `hh h l ll j z t L`
-- the conversions `d i u o x X c s p n %`, and `f F e E g G a A`
+- the conversions `d i u o x X c s p %`, and `f F e E g G a A`
 
-Floating-point output is exact: it is computed with big integers, and matches glibc digit for digit. Positional arguments (`%1$d`) and wide characters (`%lc`, `%ls`) are not supported.
+Floating-point output is exact: it is computed with big integers, and matches glibc digit for digit. Positional arguments (`%1$d`), `%n` and wide characters (`%lc`, `%ls`) are not supported; `%n` is printed as written.
 
 **Scanning.** `scanf`, `fscanf` and `sscanf`, plus their `v` forms, read:
 - integers, with the same length modifiers as `printf`
@@ -207,6 +207,7 @@ Differences:
 - **Descriptors:**
   - `read`, `write`, `close` and `lseek`.
   - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC O_NONBLOCK O_NOCTTY`. The lowest free descriptor is used, out of 32. A session leader without a controlling terminal takes the first terminal it opens unless it passes `O_NOCTTY`.
+  - `openat` does what `open` does for an absolute path, or a relative one with `AT_FDCWD`. Directories cannot be opened, so a relative path with any other descriptor fails with `ENOTDIR`, or `EBADF` when the descriptor is not open.
   - `dup` and `dup2` share the open file, its offset and its `O_APPEND` and `O_NONBLOCK` flags. `fcntl` supports `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD` and `F_SETFD` (`FD_CLOEXEC`), and `F_GETFL` and `F_SETFL`, which reports the access mode and changes `O_APPEND` and `O_NONBLOCK`, ignoring other flags as Linux does. Locks are not provided.
   - `O_NONBLOCK` makes a pipe or socket call that would wait fail with `EAGAIN` instead; on files it changes nothing. A terminal's flags cannot change (`EINVAL`), since every process shares the console's open file; raw mode with `VMIN` 0 reads it without waiting.
   - Programs started with `posix_spawn` inherit every descriptor not marked close-on-exec.
@@ -232,7 +233,7 @@ Not provided:
 - `link` and `symlink`
 - `chmod` and `chown`
 - `getuid` and the other user and group functions
-- `ftruncate`, `fsync` and `fcntl`
+- `ftruncate` and `fsync`
 
 ### `dirent.h`
 
@@ -311,7 +312,7 @@ Only `ioctl(fd, TIOCGWINSZ, &size)` and `ioctl(fd, TIOCSWINSZ, &size)`, which do
 ### `termios.h`
 
 `tcgetattr`, `tcsetattr` and `cfmakeraw` on any terminal; other descriptors fail with `ENOTTY`. The constants have FeatherOS's own values.
-- **Window size:** `tcgetwinsize` and `tcsetwinsize` from POSIX 2024, with `struct winsize`, on a terminal or a pseudo-terminal master, which stands for its slave. Getting fills `ws_row` and `ws_col` and leaves the pixel sizes 0; the console's size is the text area below the status bar (80×24 without a framebuffer), and a new pty's is 80×24. Setting ignores the pixel sizes, works from either end of a pty and from any process, as on Linux, and a change sends `SIGWINCH` to the terminal's foreground group. Other descriptors fail with `ENOTTY`. Swift programs use these, since Swift does not import the variadic `ioctl`.
+- **Window size:** `tcgetwinsize` and `tcsetwinsize` from POSIX 2024, with `struct winsize`, on a terminal or a pseudo-terminal master, which stands for its slave. Getting fills `ws_row` and `ws_col` and leaves the pixel sizes 0; the console's size is the text area below the status bar (80×24 without a framebuffer), and a new pty's is 80×24. Setting ignores the pixel sizes, works from either end of a pty and from any process, as on Linux, and a change sends `SIGWINCH` to the terminal's foreground group. Other descriptors fail with `ENOTTY`.
 - **What has an effect:** `ICANON`, `ECHO` and `ISIG` in `c_lflag`, `ICRNL` in `c_iflag`, and `c_cc[VMIN]` and `c_cc[VTIME]` for non-canonical reads, with the POSIX meanings. The console's settings start with all four flags on, `VMIN` 1 and `VTIME` 0.
 - **Accepted without effect:** the other flags that `cfmakeraw` clears (`BRKINT`, `IXON`, `OPOST`, `IEXTEN`, …). The console never changes output, and `tcgetattr` always reports `OPOST` and `CS8`. `VINTR`, `VSUSP`, `VERASE` and `VEOF` report Ctrl+C, Ctrl+Z, Backspace and Ctrl+D but cannot be changed, and there is no end-of-file key yet.
 - **FeatherOS's own flag:** with `FEATHEROS_WAKE_ON_OUTPUT` in `c_lflag`, a non-canonical read with `VMIN` above 0 that has no byte yet returns 0 once output from other programs or the kernel reached the console and paused for a tenth of a second, with the cursor moved to the start of a row. The shell's line editor uses it to draw its prompt again below a service's message.
@@ -356,6 +357,8 @@ FeatherOS calls with no POSIX equivalent:
 - **`featheros_read_line(prompt, buffer, size)`** reads one console line with editing, and returns its length without the newline. It shows the prompt again after Ctrl+C discards a half-typed line, which printing a prompt and calling `fgets` cannot do. The shell, `calc` and `upper` use it. It flushes `stdout` first, but does not see input already buffered in `stdin`.
 - **`featheros_arguments_page()`** returns the read-only page where the kernel placed the arguments and environment. `aslr` uses it to show that the page moves between runs.
 - **`featheros_argument_count()`** and **`featheros_argument_values()`** return the `argc` and `argv` that `main` receives, for code that does not see `main`'s parameters: a Swift program's top-level code.
+- **`featheros_open`, `featheros_openat`, `featheros_fcntl`** and **`featheros_ioctl`** are `open`, `openat`, `fcntl` and `ioctl` with fixed parameters: a `mode_t` mode, an `intptr_t` argument for `fcntl` and a pointer for `ioctl`. Swift does not import variadic C functions, so `FeatherSupport` calls these.
+- **`featheros_format(buffer, size, format, arguments, count)`** is `snprintf` with its arguments in an array of `struct featheros_format_argument`, each tagged `FEATHEROS_FORMAT_SIGNED`, `_UNSIGNED`, `_DOUBLE`, `_STRING` or `_POINTER`, through the same engine as `printf`. An integer of either type suits `d i u o x X c` and `*`, and keeps all 64 bits unless `hh` or `h` asks for fewer, so `%d` prints any `Int`; a double suits the floating-point conversions whatever the length modifier, a string `%s` and a pointer `%p`. A conversion whose argument is missing or of another type is written as it appears in `format` and still takes its argument, so the ones after it keep theirs. `String(format:)` in `FeatherSupport` uses it.
 - **`featheros_network_settings(new_settings, old_settings, changes)`** reads and changes the network interface's settings in a `struct featheros_network`: the MAC, the IPv4 address, prefix length and gateway (all zero until DHCP or `net ipv4` sets them), the IPv6 link-local and global addresses and router, and up to `FEATHEROS_NAME_SERVERS` name servers as `sockaddr_in` or `sockaddr_in6` in `sockaddr_storage`. It stores the current settings in `old_settings` unless that is null, then applies the parts of `new_settings` that `changes` names: `FEATHEROS_NETWORK_IPV4`, `FEATHEROS_NETWORK_NAME_SERVERS` and `FEATHEROS_NETWORK_LINK`; a name server's port 0 means 53. The name servers set this way come first, then one a router advertised. IPv6 cannot be changed. `link_up` 0 with `FEATHEROS_NETWORK_LINK` takes the link down: the device is reset, the IPv4 and IPv6 addresses, the router's name server and the neighbor caches are dropped, TCP connections to anything but `127.0.0.0/8` and `::1` end with `ENETDOWN`, and sends and connects to anything else fail with `ENETDOWN` while loopback keeps working. `link_up` 1 starts the device and IPv6 autoconfiguration again; IPv4 waits for DHCP (`dhcp -r`) or `net ipv4`. Errors: `ENETUNREACH` without a network device, `EINVAL`, `EAFNOSUPPORT`, `ENETDOWN` for IPv4 while the link is down, `EIO` when the device does not start. `dhcp`, `net` and `getaddrinfo` use it.
 
 ### C++ support

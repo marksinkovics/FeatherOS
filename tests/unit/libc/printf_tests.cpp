@@ -6,6 +6,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <string>
 
 namespace
@@ -54,6 +55,54 @@ int Truncated(char* buffer, size_t size, const char* format, ...)
     sink.Terminate();
     va_end(arguments);
     return count;
+}
+
+featheros_format_argument Signed(long long value)
+{
+    featheros_format_argument argument = {};
+    argument.type = FEATHEROS_FORMAT_SIGNED;
+    argument.value.signed_value = value;
+    return argument;
+}
+
+featheros_format_argument Unsigned(unsigned long long value)
+{
+    featheros_format_argument argument = {};
+    argument.type = FEATHEROS_FORMAT_UNSIGNED;
+    argument.value.unsigned_value = value;
+    return argument;
+}
+
+featheros_format_argument Floating(double value)
+{
+    featheros_format_argument argument = {};
+    argument.type = FEATHEROS_FORMAT_DOUBLE;
+    argument.value.double_value = value;
+    return argument;
+}
+
+featheros_format_argument Text(const char* value)
+{
+    featheros_format_argument argument = {};
+    argument.type = FEATHEROS_FORMAT_STRING;
+    argument.value.string = value;
+    return argument;
+}
+
+featheros_format_argument Address(const void* value)
+{
+    featheros_format_argument argument = {};
+    argument.type = FEATHEROS_FORMAT_POINTER;
+    argument.value.pointer = value;
+    return argument;
+}
+
+std::string Tagged(const char* format, std::initializer_list<featheros_format_argument> arguments)
+{
+    StringSink sink;
+    const int count = FeatherOS::LibC::FormatTo(sink, format, arguments.begin(), arguments.size());
+    REQUIRE(count == static_cast<int>(sink.text.size()));
+    return sink.text;
 }
 
 } // namespace
@@ -196,4 +245,51 @@ TEST_CASE("snprintf keeps what fits and reports the full length")
     REQUIRE(Truncated(buffer, 1, "abc") == 3);
     REQUIRE(buffer[0] == '\0');
     REQUIRE(Truncated(nullptr, 0, "%d", 123456) == 6);
+}
+
+TEST_CASE("tagged arguments format as printf's do")
+{
+    REQUIRE(Tagged("%s-%05d-%#x %.2f %c|%-4s|", {Text("id"), Signed(42), Unsigned(255),
+                                                 Floating(3.14159), Signed('A'), Text("ab")}) ==
+            Host("%s-%05d-%#x %.2f %c|%-4s|", "id", 42, 255U, 3.14159, 'A', "ab"));
+    REQUIRE(Tagged("%e %g %a", {Floating(1e-5), Floating(0.1), Floating(1.0)}) ==
+            Host("%e %g %a", 1e-5, 0.1, 1.0));
+    REQUIRE(Tagged("[%*d] [%.*s]", {Signed(-5), Signed(42), Unsigned(2), Text("feather")}) ==
+            "[42   ] [fe]");
+    REQUIRE(Tagged("%p %p", {Address(reinterpret_cast<void*>(0x1234)), Address(nullptr)}) ==
+            "0x1234 (nil)");
+    REQUIRE(Tagged("100%%", {}) == "100%");
+}
+
+TEST_CASE("tagged integers keep 64 bits unless hh or h asks for fewer")
+{
+    REQUIRE(Tagged("%d %u %x %ld", {Signed(INT64_MIN), Unsigned(UINT64_MAX), Signed(-1),
+                                    Signed(INT64_MAX)}) ==
+            "-9223372036854775808 18446744073709551615 ffffffffffffffff 9223372036854775807");
+    REQUIRE(Tagged("%hhd %hu %hhx", {Signed(300), Unsigned(70000), Signed(-1)}) ==
+            Host("%hhd %hu %hhx", 300, 70000, -1));
+    REQUIRE(Tagged("%d %u", {Unsigned(7), Signed(-1)}) == "7 18446744073709551615");
+    REQUIRE(Tagged("%Lf", {Floating(1.5)}) == "1.500000");
+}
+
+TEST_CASE("tagged conversions without a suitable argument are written as they appear")
+{
+    REQUIRE(Tagged("%d|%s|%f|%p|%c", {Text("x"), Signed(1), Signed(2), Floating(1.0),
+                                      Floating(2.0)}) == "%d|%s|%f|%p|%c");
+    // Each conversion still takes its own argument.
+    REQUIRE(Tagged("%d %s", {Text("x"), Text("y")}) == "%d y");
+    REQUIRE(Tagged("%d %d", {Signed(1)}) == "1 %d");
+    REQUIRE(Tagged("%*d|%.*f", {Signed(INT64_MAX), Signed(1), Text("2"), Floating(1.0)}) ==
+            "%*d|%.*f");
+    REQUIRE(Tagged("%5s", {}) == "%5s");
+}
+
+TEST_CASE("tagged formatting into a buffer keeps what fits")
+{
+    char buffer[8];
+    const featheros_format_argument arguments[] = {Text("value"), Signed(12345)};
+    FeatherOS::LibC::BufferSink sink = {buffer, sizeof(buffer)};
+    REQUIRE(FeatherOS::LibC::FormatTo(sink, "%s=%d", arguments, 2) == 11);
+    sink.Terminate();
+    REQUIRE(std::string(buffer) == "value=1");
 }
