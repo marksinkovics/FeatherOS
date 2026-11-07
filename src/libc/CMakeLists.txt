@@ -36,6 +36,8 @@ add_library(featheros_c STATIC
     netdb.cpp
     poll.cpp
     pthread.cpp
+    regex.cpp
+    regex_engine.cpp
     thread_keys.cpp
     signal.cpp
     socket.cpp

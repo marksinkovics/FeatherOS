@@ -283,6 +283,16 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
 
 `strcasecmp` and `strncasecmp`, for ASCII.
 
+### `regex.h`
+
+`regcomp`, `regexec`, `regerror` and `regfree`, with POSIX's basic and extended syntax, `REG_EXTENDED`, `REG_ICASE`, `REG_NEWLINE`, `REG_NOSUB`, `REG_NOTBOL` and `REG_NOTEOL`, glibc's values for the flags and error codes, and `RE_DUP_MAX` of 255. The engine is in `src/libc/regex_engine.cpp`: a pattern compiles to a program that a Thompson simulation runs in time proportional to the text times the program, so patterns such as `(a*)*b` cannot take exponential time.
+
+- **Matching:** bytes in the C locale. Bracket expressions take ranges by byte value, the twelve `[:class:]` names, and `[=c=]` and `[.c.]` only for a single byte. `REG_ICASE` folds ASCII letters.
+- **The whole match** is the leftmost and then longest, as POSIX requires. **Subexpressions** are the first assignment found when alternatives are tried from left to right and repetitions take as much as they can, within that match; POSIX asks for each subexpression in turn to be the longest, which differs for patterns such as `(a|ab)(c|bcd)(d*)` against `abcd` (`a`, `bcd` and the empty string here, `ab`, `c` and `d` by POSIX). A repeated subexpression reports its last iteration, and those nested in it only what matched within that iteration.
+- **Back-references** `\1` to `\9` work in both syntaxes (in extended syntax as in glibc), searched by backtracking from each start in turn. A backtracking search that takes more than about 16 million steps fails with `REG_ESPACE`; without back-references that can only happen while finding the subexpressions of a match too long to remember which states were tried (over a million states times bytes).
+- **Escapes:** a backslash before a letter or digit other than a back-reference is `REG_EESCAPE`, so GNU's `\w`, `\d` and `\b` are reported rather than taken as plain letters (`\<` and `\>` are plain `<` and `>`), and so are basic syntax's `\+`, `\?` and `\|`, which are GNU operators. A backslash before any other character makes it plain.
+- **Undefined cases:** in extended syntax `*`, `+`, `?` and `{` at the start of an expression, a branch or a group are `REG_BADRPT`, `{` always starts an interval, and a `)` without its `(` is a plain character. A pattern's program is limited to 65536 instructions, which nested intervals such as `((a{255}){255}){255}` exceed with `REG_ESPACE`.
+
 ### `sched.h`
 
 `sched_getcpu`, the glibc extension, returns the CPU the caller was running on. That may change as soon as it returns. `sched_yield` lets other ready threads run first.

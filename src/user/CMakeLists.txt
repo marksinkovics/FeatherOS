@@ -19,7 +19,7 @@ set(FEATHEROS_START_PROGRAMS
 # Programs written in Embedded Swift, <program name>:<source file> with a .swift source. They
 # link against the C library like the others, and are skipped when no usable swiftc was found.
 set(FEATHEROS_SWIFT_PROGRAMS
-    hello:hello rev:rev json:json life:life swiftbench:swiftbench
+    hello:hello rev:rev json:json life:life swiftbench:swiftbench regex:regex
 )
 # Swift programs that use concurrency, built when deps/swift holds the runtime's sources (see
 # swift_concurrency/). Their top-level code runs on MainActor.

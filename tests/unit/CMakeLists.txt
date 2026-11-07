@@ -82,6 +82,7 @@ add_executable(featheros_unit_tests
     libc/integer_parse_tests.cpp
     libc/math_tests.cpp
     libc/printf_tests.cpp
+    libc/regex_tests.cpp
     libc/resolv_conf_tests.cpp
     libc/scanf_tests.cpp
     libc/spawn_request_tests.cpp
@@ -128,6 +129,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/libc/heap_sort.cpp"
     "${FEATHEROS_ROOT}/src/libc/hosts_file.cpp"
     "${FEATHEROS_ROOT}/src/libc/math_functions.cpp"
+    "${FEATHEROS_ROOT}/src/libc/regex_engine.cpp"
     "${FEATHEROS_ROOT}/src/libc/resolv_conf.cpp"
     "${FEATHEROS_ROOT}/src/libc/scan.cpp"
     "${FEATHEROS_ROOT}/src/libc/spawn_request.cpp"

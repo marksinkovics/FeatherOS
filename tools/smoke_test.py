@@ -87,6 +87,14 @@ SHELL_INPUT = (
     b"write /tmp/n.txt 10\nwrite -a /tmp/n.txt 9\n"
     b"write -a /tmp/n.txt 100\nsort -n /tmp/n.txt\n"
     b"sort -rn /tmp/n.txt\ngrep nothing /tmp/n.txt\n"
+    # grep takes basic regular expressions, extended ones with -E and plain
+    # text with -F.
+    b"write /tmp/g.txt key=42 id=7\nwrite -a /tmp/g.txt plain line\n"
+    b"write -a /tmp/g.txt a.b\nwrite -a /tmp/g.txt axb\n"
+    b"grep -n a.b /tmp/g.txt\ngrep -F -v -n a.b /tmp/g.txt\n"
+    b'grep "^p.*e$" /tmp/g.txt\ngrep -E "^[a-z]+=[0-9]{2} " /tmp/g.txt\n'
+    b'grep -E -o "[a-z]+=[0-9]+" /tmp/g.txt\n'
+    b'grep -o -i -E "(X|Q)B$" /tmp/g.txt\ngrep -E "(" /tmp/g.txt\n'
     # mv renames within a filesystem, and copies between /tmp and the disk.
     b"mkdir /tmp/box\nmv /tmp/copy.txt /tmp/box\nmv /tmp/box /tmp/crate\n"
     b"wc -l /tmp/crate/copy.txt\nmv /tmp/crate /tmp/crate/inner\n"
@@ -138,6 +146,12 @@ SWIFT_SHELL_INPUT = (
     b"rev /tmp/rev.txt /tmp/none\n"
     b'echo "ab cd" | rev -n\n'
     b"rev -h\n"
+    # regex reports subexpressions through FeatherSupport's
+    # RegularExpression over the C library's regex.h.
+    b"write /tmp/s.txt key=42 id=7\n"
+    b'regex -a "([a-z]+)=([0-9]+)( )?" /tmp/s.txt\n'
+    b"echo AxB a.b | regex -B -i a.\\(b\\)\n"
+    b"regex ( /tmp/s.txt\nregex -h\n"
     b"json .name /system/sample.json\n"
     b"json -r .motto /system/sample.json\n"
     b"json -c .milestones /system/sample.json\n"
@@ -196,6 +210,11 @@ EXPECTED_SWIFT_OUTPUT = (
     "rev: /tmp/none: No such file or directory",
     "     1  dc ba",
     "usage: rev [-n] [file...]",
+    "1: key=42  [key] [42] [ ]",
+    "1: id=7 [id] [7] -",
+    "1: AxB [B]",
+    "regex: Unmatched ( or \\(",
+    "usage: regex [-Bia] <pattern> [file...]",
     '"FeatherOS"',
     # The serial console shows the tab as a space.
     'light as a "feather"',
@@ -407,6 +426,13 @@ EXPECTED_TEXT_TOOLS = (
     r"^mv: /tmp/crate: Invalid argument\r?$",
     r"^wc: /tmp/crate/copy\.txt: No such file or directory\r?$",
     r"^4 work/moved copy\.txt\r?$",
+    r"^3:a\.b\r?\n4:axb\r?$",
+    r"^1:key=42 id=7\r?\n2:plain line\r?\n4:axb\r?$",
+    r"^plain line\r?$",
+    r"^key=42 id=7\r?$",
+    r"^key=42\r?\nid=7\r?$",
+    r"^xb\r?$",
+    r"^grep: Unmatched \( or \\\(\r?$",
 )
 EXPECTED_VI_LINES = {"HELLO WORLD": 2, "SECOND LINE": 2, "THIRD LINE": 2}
 KEYS_READY = "keys: press keys; q quits"

@@ -44,7 +44,7 @@ int main(int argc, char** argv)
         puts(Help);
         return 0;
     }
-    bool letters[26] = {};
+    bool letters[128] = {};
     char bad = 0;
     const int first = FeatherOS::User::ParseFlags(argc, argv, "lwc", letters, &bad);
     if (first < 0)
@@ -52,11 +52,11 @@ int main(int argc, char** argv)
         printf("wc: unknown option -%c\n", bad);
         return 1;
     }
-    if (letters['l' - 'a'] || letters['w' - 'a'] || letters['c' - 'a'])
+    if (letters['l'] || letters['w'] || letters['c'])
     {
-        show_lines = letters['l' - 'a'];
-        show_words = letters['w' - 'a'];
-        show_bytes = letters['c' - 'a'];
+        show_lines = letters['l'];
+        show_words = letters['w'];
+        show_bytes = letters['c'];
     }
     TextCounts total = {0, 0, 0};
     int status = 0;

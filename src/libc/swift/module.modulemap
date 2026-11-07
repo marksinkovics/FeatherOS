@@ -57,6 +57,10 @@ module FeatherLibC [system] {
         header "../include/pthread.h"
         export *
     }
+    module regex {
+        header "../include/regex.h"
+        export *
+    }
     module sched {
         header "../include/sched.h"
         export *
