@@ -1,0 +1,1198 @@
+diff --git a/lib/Threading/Pthreads.cpp b/lib/Threading/Pthreads.cpp
+index 1daa852..250d8e4 100644
+--- a/lib/Threading/Pthreads.cpp
++++ b/lib/Threading/Pthreads.cpp
+@@ -76,7 +76,12 @@ void swift::threading_impl::once_slow(once_t &predicate, void (*fn)(void *),
+   pthread_mutex_unlock(&onceMutex);
+ }
+
+-#if defined(__OpenBSD__)
++#if defined(__featheros__)
++std::optional<swift::threading_impl::stack_bounds>
++swift::threading_impl::thread_get_current_stack_bounds() {
++  return {};
++}
++#elif defined(__OpenBSD__)
+ std::optional<swift::threading_impl::stack_bounds>
+ swift::threading_impl::thread_get_current_stack_bounds() {
+   stack_t sinfo;
+diff --git a/stdlib/public/Concurrency/Actor.cpp b/stdlib/public/Concurrency/Actor.cpp
+index 1563307..5fe3027 100644
+--- a/stdlib/public/Concurrency/Actor.cpp
++++ b/stdlib/public/Concurrency/Actor.cpp
+@@ -72,7 +72,7 @@
+ #include <unwind.h>
+ #endif
+
+-#if defined(__ELF__)
++#if defined(__ELF__) && !defined(__featheros__)
+ #include <sys/syscall.h>
+ #endif
+
+@@ -419,6 +419,9 @@ __swift_bincompat_useLegacyNonCrashingExecutorChecks() {
+     options = swift_task_is_current_executor_flag(
+         options | swift_task_is_current_executor_flag::Assert);
+   }
++#elif defined(__featheros__)
++  options = swift_task_is_current_executor_flag(
++      options | swift_task_is_current_executor_flag::Assert);
+ #endif
+   _swift_task_debug_dumpIsCurrentExecutorFlags("runtime linking determined default mode", options);
+   return options;
+@@ -514,7 +517,7 @@ static bool swift_task_isCurrentExecutorWithFlagsImpl(
+       return true;
+     }
+
+-#if !SWIFT_CONCURRENCY_EMBEDDED
++#if !SWIFT_CONCURRENCY_EMBEDDED || defined(__featheros__)
+     // We cannot use 'complexEquality' as it requires two executor instances,
+     // and we do not have a 'current' executor here.
+
+@@ -554,7 +557,7 @@ static bool swift_task_isCurrentExecutorWithFlagsImpl(
+     }
+
+     assert(!options.contains(swift_task_is_current_executor_flag::Assert));
+-#endif // !SWIFT_CONCURRENCY_EMBEDDED
++#endif // !SWIFT_CONCURRENCY_EMBEDDED || defined(__featheros__)
+     return false;
+   }
+
+@@ -607,6 +610,7 @@ static bool swift_task_isCurrentExecutorWithFlagsImpl(
+     }
+   }
+
++#if !SWIFT_CONCURRENCY_EMBEDDED || defined(__featheros__)
+ #if !SWIFT_CONCURRENCY_EMBEDDED
+   // Complex equality means that if two executors of the same type have some
+   // special logic to check if they are "actually the same".
+@@ -647,6 +651,7 @@ static bool swift_task_isCurrentExecutorWithFlagsImpl(
+       } // else, we must give 'checkIsolated' a last chance to verify isolation
+     }
+   }
++#endif // !SWIFT_CONCURRENCY_EMBEDDED
+
+   // Invoke the 'isIsolatingCurrentContext' function if we can; If so, we can
+   // avoid calling the `checkIsolated` because their result will be the same.
+@@ -704,7 +709,7 @@ static bool swift_task_isCurrentExecutorWithFlagsImpl(
+   // In the end, since 'checkIsolated' could not be used, so we must assume
+   // that the executors are not the same context.
+   assert(!options.contains(swift_task_is_current_executor_flag::Assert));
+-#endif // !SWIFT_CONCURRENCY_EMBEDDED
++#endif // !SWIFT_CONCURRENCY_EMBEDDED || defined(__featheros__)
+   return false;
+ }
+
+@@ -1537,7 +1542,7 @@ void DefaultActorImpl::scheduleActorProcessJob(
+       priority, taskExecutor.getIdentity());
+
+   if (taskExecutor.isDefined()) {
+-#if SWIFT_CONCURRENCY_EMBEDDED
++#if SWIFT_CONCURRENCY_EMBEDDED && !defined(__featheros__)
+     swift_unreachable("task executors not supported in embedded Swift");
+ #else
+     auto taskExecutorIdentity = taskExecutor.getIdentity();
+@@ -2735,7 +2740,7 @@ static void swift_task_enqueueImpl(Job *job, SerialExecutorRef serialExecutorRef
+     if (auto task = dyn_cast<AsyncTask>(job)) {
+       auto taskExecutorRef = task->getPreferredTaskExecutor();
+       if (taskExecutorRef.isDefined()) {
+-#if SWIFT_CONCURRENCY_EMBEDDED
++#if SWIFT_CONCURRENCY_EMBEDDED && !defined(__featheros__)
+         swift_unreachable("task executors not supported in embedded Swift");
+ #else
+         auto taskExecutorIdentity = taskExecutorRef.getIdentity();
+@@ -2759,6 +2764,12 @@ static void swift_task_enqueueImpl(Job *job, SerialExecutorRef serialExecutorRef
+   auto serialExecutorIdentity = serialExecutorRef.getIdentity();
+   auto serialExecutorWtable = serialExecutorRef.getSerialExecutorWitnessTable();
+   _swift_task_enqueueOnExecutor(job, serialExecutorIdentity, serialExecutorWtable);
++#elif SWIFT_CONCURRENCY_EMBEDDED && defined(__featheros__)
++  // The main executor's jobs go to the main thread, the others to their executor's enqueue.
++  if (serialExecutorRef.isMainExecutor())
++    return swift_task_enqueueMainExecutor(job);
++  _swift_task_enqueueOnExecutor(job, serialExecutorRef.getIdentity(),
++                                serialExecutorRef.getSerialExecutorWitnessTable());
+ #elif SWIFT_CONCURRENCY_EMBEDDED
+   swift_unreachable("custom executors not supported in embedded Swift");
+ #else
+diff --git a/stdlib/public/Concurrency/Clock.cpp b/stdlib/public/Concurrency/Clock.cpp
+index 2d1e297..a233593 100644
+--- a/stdlib/public/Concurrency/Clock.cpp
++++ b/stdlib/public/Concurrency/Clock.cpp
+@@ -52,7 +52,7 @@ void swift_get_time(
+       clock_gettime(CLOCK_BOOTTIME, &continuous);
+ #elif defined(__APPLE__)
+       clock_gettime(CLOCK_MONOTONIC_RAW, &continuous);
+-#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__))
++#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__) || defined(__featheros__))
+       clock_gettime(CLOCK_MONOTONIC, &continuous);
+ #elif defined(_WIN32)
+       // This needs to match what swift-corelibs-libdispatch does
+@@ -85,7 +85,7 @@ void swift_get_time(
+       clock_gettime(CLOCK_MONOTONIC, &suspending);
+ #elif defined(__APPLE__)
+       clock_gettime(CLOCK_UPTIME_RAW, &suspending);
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__featheros__)
+       clock_gettime(CLOCK_MONOTONIC, &suspending);
+ #elif (defined(__OpenBSD__) || defined(__FreeBSD__))
+       clock_gettime(CLOCK_UPTIME, &suspending);
+@@ -115,7 +115,7 @@ void swift_get_time(
+       return;
+     case swift_clock_id_wall:
+       struct timespec wall;
+-#if defined(__linux__) || defined(__APPLE__) || defined(__wasi__) || defined(__OpenBSD__) || defined(__FreeBSD__)
++#if defined(__linux__) || defined(__APPLE__) || defined(__wasi__) || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__featheros__)
+       clock_gettime(CLOCK_REALTIME, &wall);
+ #elif defined(_WIN32)
+       // This needs to match what swift-corelibs-libdispatch does
+@@ -155,7 +155,7 @@ switch (clock_id) {
+       clock_getres(CLOCK_BOOTTIME, &continuous);
+ #elif defined(__APPLE__)
+       clock_getres(CLOCK_MONOTONIC_RAW, &continuous);
+-#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__))
++#elif (defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__) || defined(__featheros__))
+       clock_getres(CLOCK_MONOTONIC, &continuous);
+ #elif defined(_WIN32)
+       continuous.tv_sec = 0;
+@@ -178,7 +178,7 @@ switch (clock_id) {
+       clock_getres(CLOCK_MONOTONIC_RAW, &suspending);
+ #elif defined(__APPLE__)
+       clock_getres(CLOCK_UPTIME_RAW, &suspending);
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || defined(__featheros__)
+       clock_getres(CLOCK_MONOTONIC, &suspending);
+ #elif (defined(__OpenBSD__) || defined(__FreeBSD__))
+       clock_getres(CLOCK_UPTIME, &suspending);
+@@ -199,7 +199,7 @@ switch (clock_id) {
+     }
+     case swift_clock_id_wall: {
+       struct timespec wall;
+-#if defined(__linux__) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__)
++#if defined(__linux__) || defined(__APPLE__) || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__wasi__) || defined(__featheros__)
+       clock_getres(CLOCK_REALTIME, &wall);
+ #elif defined(_WIN32)
+       wall.tv_sec = 0;
+@@ -240,7 +240,7 @@ void swift_sleep(
+     delay = deadline - now;
+   }
+ #elif defined(__linux__) || defined(__APPLE__) || defined(__wasi__) \
+-  || defined(__OpenBSD__) || defined(__FreeBSD__)
++  || defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__featheros__)
+   struct timespec ts;
+   ts.tv_sec = seconds;
+   ts.tv_nsec = nanoseconds;
+diff --git a/stdlib/public/Concurrency/ContinuousClock.swift b/stdlib/public/Concurrency/ContinuousClock.swift
+index 9a2ca2a..d6c1634 100644
+--- a/stdlib/public/Concurrency/ContinuousClock.swift
++++ b/stdlib/public/Concurrency/ContinuousClock.swift
+@@ -21,7 +21,6 @@ import Swift
+ ///
+ /// This clock is suitable for high resolution measurements of execution.
+ @available(StdlibDeploymentTarget 5.7, *)
+-@_unavailableInEmbedded
+ public struct ContinuousClock: Sendable {
+   /// A continuous point in time used for `ContinuousClock`.
+   public struct Instant: Sendable {
+@@ -57,7 +56,6 @@ extension Duration {
+ }
+
+ @available(StdlibDeploymentTarget 5.7, *)
+-@_unavailableInEmbedded
+ extension Clock where Self == ContinuousClock {
+   /// A clock that measures time that always increments but does not stop
+   /// incrementing while the system is asleep.
+@@ -69,7 +67,6 @@ extension Clock where Self == ContinuousClock {
+ }
+
+ @available(StdlibDeploymentTarget 5.7, *)
+-@_unavailableInEmbedded
+ extension ContinuousClock: Clock {
+   /// The current continuous instant.
+   public var now: ContinuousClock.Instant {
+@@ -134,7 +131,6 @@ extension ContinuousClock: Clock {
+ }
+
+ @available(StdlibDeploymentTarget 5.7, *)
+-@_unavailableInEmbedded
+ extension ContinuousClock {
+   @available(SwiftStdlib 5.7, *)
+   @_alwaysEmitIntoClient
+@@ -144,7 +140,6 @@ extension ContinuousClock {
+ }
+
+ @available(SwiftStdlib 5.7, *)
+-@_unavailableInEmbedded
+ extension ContinuousClock.Instant: InstantProtocol {
+   public static var now: ContinuousClock.Instant { ContinuousClock.now }
+
+diff --git a/stdlib/public/Concurrency/Deque/Deque+Storage.swift b/stdlib/public/Concurrency/Deque/Deque+Storage.swift
+index 9ccd756..8cd7696 100644
+--- a/stdlib/public/Concurrency/Deque/Deque+Storage.swift
++++ b/stdlib/public/Concurrency/Deque/Deque+Storage.swift
+@@ -45,7 +45,7 @@ extension _Deque._Storage {
+     let object = _DequeBuffer<Element>.create(
+       minimumCapacity: minimumCapacity,
+       makingHeaderWith: {
+-        #if os(OpenBSD)
++        #if os(OpenBSD) || $Embedded
+         let capacity = minimumCapacity
+         #else
+         let capacity = $0.capacity
+diff --git a/stdlib/public/Concurrency/Deque/Deque+UnsafeHandle.swift b/stdlib/public/Concurrency/Deque/Deque+UnsafeHandle.swift
+index 1cf1b2f..c1fd926 100644
+--- a/stdlib/public/Concurrency/Deque/Deque+UnsafeHandle.swift
++++ b/stdlib/public/Concurrency/Deque/Deque+UnsafeHandle.swift
+@@ -258,7 +258,7 @@ extension _Deque._UnsafeHandle {
+     let object = _DequeBuffer<Element>.create(
+       minimumCapacity: minimumCapacity,
+       makingHeaderWith: {
+-        #if os(OpenBSD)
++        #if os(OpenBSD) || $Embedded
+         let capacity = minimumCapacity
+         #else
+         let capacity = $0.capacity
+@@ -291,7 +291,7 @@ extension _Deque._UnsafeHandle {
+     let object = _DequeBuffer<Element>.create(
+       minimumCapacity: minimumCapacity,
+       makingHeaderWith: {
+-        #if os(OpenBSD)
++        #if os(OpenBSD) || $Embedded
+         let capacity = minimumCapacity
+         #else
+         let capacity = $0.capacity
+diff --git a/stdlib/public/Concurrency/ExecutorAssertions.swift b/stdlib/public/Concurrency/ExecutorAssertions.swift
+index 90ef138..db4c7e8 100644
+--- a/stdlib/public/Concurrency/ExecutorAssertions.swift
++++ b/stdlib/public/Concurrency/ExecutorAssertions.swift
+@@ -46,7 +46,6 @@ extension SerialExecutor {
+   ///           the line where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public func preconditionIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -58,10 +57,15 @@ extension SerialExecutor {
+     let expectationCheck = unsafe _taskIsCurrentExecutor(self.asUnownedSerialExecutor().executor)
+
+     /// TODO: implement the logic in-place perhaps rather than delegating to precondition()?
++    #if !$Embedded
+     precondition(expectationCheck,
+         // TODO: offer information which executor we actually got
+         "Incorrect actor executor assumption; Expected '\(self)' executor. \(message())",
+         file: file, line: line) // short-cut so we get the exact same failure reporting semantics
++    #else
++    precondition(expectationCheck,
++        "Incorrect actor executor assumption. \(message())", file: file, line: line)
++    #endif
+   }
+ }
+
+@@ -93,7 +97,6 @@ extension Actor {
+   ///           where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public nonisolated func preconditionIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -107,9 +110,14 @@ extension Actor {
+     // It will call through to SerialExecutor.checkIsolated` as a last resort.
+     let expectationCheck = unsafe _taskIsCurrentExecutor(self.unownedExecutor.executor)
+
++    #if !$Embedded
+     precondition(expectationCheck,
+         unsafe "Incorrect actor executor assumption; Expected '\(self.unownedExecutor)' executor. \(message())",
+         file: file, line: line)
++    #else
++    precondition(expectationCheck,
++        "Incorrect actor executor assumption. \(message())", file: file, line: line)
++    #endif
+   }
+ }
+
+@@ -141,7 +149,6 @@ extension GlobalActor {
+   ///           where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public static func preconditionIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -181,7 +188,6 @@ extension SerialExecutor {
+   ///           where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public func assertIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -192,7 +198,11 @@ extension SerialExecutor {
+
+     guard unsafe _taskIsCurrentExecutor(self.asUnownedSerialExecutor().executor) else {
+       // TODO: offer information which executor we actually got
++      #if !$Embedded
+       let msg = "Incorrect actor executor assumption; Expected '\(self)' executor. \(message())"
++      #else
++      let msg = "Incorrect actor executor assumption. \(message())"
++      #endif
+       /// TODO: implement the logic in-place perhaps rather than delegating to precondition()?
+       assertionFailure(msg, file: file, line: line)
+       return
+@@ -228,7 +238,6 @@ extension Actor {
+   ///           where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public nonisolated func assertIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -238,7 +247,11 @@ extension Actor {
+     }
+
+     guard unsafe _taskIsCurrentExecutor(self.unownedExecutor.executor) else {
++      #if !$Embedded
+       let msg = unsafe "Incorrect actor executor assumption; Expected '\(self.unownedExecutor)' executor. \(message())"
++      #else
++      let msg = "Incorrect actor executor assumption. \(message())"
++      #endif
+       /// TODO: implement the logic in-place perhaps rather than delegating to precondition()?
+       assertionFailure(msg, file: file, line: line) // short-cut so we get the exact same failure reporting semantics
+       return
+@@ -274,7 +287,6 @@ extension GlobalActor {
+   ///           where this method was called.
+   @available(SwiftStdlib 5.1, *)
+   @backDeployed(before: SwiftStdlib 5.9)
+-  @_unavailableInEmbedded
+   public static func assertIsolated(
+       _ message: @autoclosure () -> String = String(),
+       file: StaticString = #fileID, line: UInt = #line
+@@ -332,7 +344,6 @@ extension Actor {
+   @available(SwiftStdlib 5.1, *)
+   @_alwaysEmitIntoClient
+   @_unavailableFromAsync(message: "express the closure as an explicit function declared on the specified 'actor' instead")
+-  @_unavailableInEmbedded
+   public nonisolated func assumeIsolated<T : Sendable>(
+       _ operation: (isolated Self) throws -> T,
+       file: StaticString = #fileID, line: UInt = #line
+@@ -345,7 +356,11 @@ extension Actor {
+     let executor: Builtin.Executor = unsafe self.unownedExecutor.executor
+     guard _taskIsCurrentExecutor(executor) else {
+       // TODO: offer information which executor we actually got
++      #if !$Embedded
+       fatalError("Incorrect actor executor assumption; Expected same executor as \(self).", file: file, line: line)
++      #else
++      fatalError("Incorrect actor executor assumption.", file: file, line: line)
++      #endif
+     }
+
+     // To do the unsafe cast, we have to pretend it's @escaping.
+@@ -358,7 +373,6 @@ extension Actor {
+
+   @available(SwiftStdlib 5.9, *)
+   @usableFromInline
+-  @_unavailableInEmbedded
+   @_silgen_name("$sScAsE14assumeIsolated_4file4lineqd__qd__xYiKXE_s12StaticStringVSutKlF")
+   internal nonisolated func __abi__assumeIsolated<T : Sendable>(
+       _ operation: (isolated Self) throws -> T,
+diff --git a/stdlib/public/Concurrency/GlobalConcurrentExecutor.swift b/stdlib/public/Concurrency/GlobalConcurrentExecutor.swift
+index 50a5c4a..6fc9340 100644
+--- a/stdlib/public/Concurrency/GlobalConcurrentExecutor.swift
++++ b/stdlib/public/Concurrency/GlobalConcurrentExecutor.swift
+@@ -31,15 +31,19 @@ import Swift
+ ///
+ /// Customizing the global concurrent executor is currently not supported.
+ @available(SwiftStdlib 6.0, *)
+-@_unavailableInEmbedded
+ @diagnose(UselessAvailabilityCheck, as: ignored)
+ public var globalConcurrentExecutor: any TaskExecutor {
+   get {
++    #if FEATHEROS
++    // FeatherOS's global executor is the runtime's own, not one from an ExecutorFactory.
++    return _DefaultGlobalConcurrentExecutor.shared
++    #else
+     if #available(StdlibDeploymentTarget 6.3, *) {
+       return Task.defaultExecutor
+     } else {
+       fatalError("we shouldn't get here; if we have, availability is broken")
+     }
++    #endif
+   }
+ }
+
+@@ -47,7 +51,6 @@ public var globalConcurrentExecutor: any TaskExecutor {
+ /// thread pool that is used as the default executor for Swift concurrency
+ /// tasks.
+ @available(SwiftStdlib 6.0, *)
+-@_unavailableInEmbedded
+ internal final class _DefaultGlobalConcurrentExecutor: TaskExecutor {
+   public static let shared: _DefaultGlobalConcurrentExecutor = .init()
+
+diff --git a/stdlib/public/Concurrency/MainActor.swift b/stdlib/public/Concurrency/MainActor.swift
+index 6f5908e..9896879 100644
+--- a/stdlib/public/Concurrency/MainActor.swift
++++ b/stdlib/public/Concurrency/MainActor.swift
+@@ -12,7 +12,7 @@
+
+ import Swift
+
+-#if os(WASI) || !$Embedded
++#if os(WASI) || !$Embedded || FEATHEROS
+
+ #if SWIFT_STDLIB_TASK_TO_THREAD_MODEL_CONCURRENCY
+ @available(SwiftStdlib 5.1, *)
+@@ -197,4 +197,4 @@ public func _deinitOnExecutorMainActorBackDeploy(
+
+ #endif // !SWIFT_STDLIB_TASK_TO_THREAD_MODEL_CONCURRENCY
+
+-#endif // os(WASI) || !$Embedded
++#endif // os(WASI) || !$Embedded || FEATHEROS
+diff --git a/stdlib/public/Concurrency/PartialAsyncTask.swift b/stdlib/public/Concurrency/PartialAsyncTask.swift
+index cf19478..b31884e 100644
+--- a/stdlib/public/Concurrency/PartialAsyncTask.swift
++++ b/stdlib/public/Concurrency/PartialAsyncTask.swift
+@@ -32,14 +32,12 @@ import Swift
+ internal func _swiftJobRun(_ job: UnownedJob,
+                            _ executor: UnownedSerialExecutor) -> ()
+
+-@_unavailableInEmbedded
+ @available(StdlibDeploymentTarget 6.0, *)
+ @_silgen_name("swift_job_run_on_task_executor")
+ @usableFromInline
+ internal func _swiftJobRunOnTaskExecutor(_ job: UnownedJob,
+                                          _ executor: UnownedTaskExecutor) -> ()
+
+-@_unavailableInEmbedded
+ @available(StdlibDeploymentTarget 6.0, *)
+ @_silgen_name("swift_job_run_on_serial_and_task_executor")
+ @usableFromInline
+@@ -141,7 +139,6 @@ public struct UnownedJob: Sendable {
+   /// as a job can only ever be run once, and must not be accessed after it has been run.
+   ///
+   /// - Parameter executor: the task executor this job will be run on.
+-  @_unavailableInEmbedded
+   @available(StdlibDeploymentTarget 6.0, *)
+   @_alwaysEmitIntoClient
+   @inlinable
+@@ -170,7 +167,6 @@ public struct UnownedJob: Sendable {
+   ///
+   /// - SeeAlso: ``runSynchronously(on:)-(UnownedSerialExecutor)``
+   /// - SeeAlso: ``runSynchronously(on:)-(UnownedTaskExecutor)``
+-  @_unavailableInEmbedded
+   @available(StdlibDeploymentTarget 6.0, *)
+   @_alwaysEmitIntoClient
+   @inlinable
+@@ -422,7 +418,6 @@ extension ExecutorJob {
+   /// - Parameter executor: the executor this job will be run on.
+   ///
+   /// - SeeAlso: ``runSynchronously(isolatedTo:taskExecutor:)``
+-  @_unavailableInEmbedded
+   @available(StdlibDeploymentTarget 6.0, *)
+   @_alwaysEmitIntoClient
+   @inlinable
+@@ -446,7 +441,6 @@ extension ExecutorJob {
+   ///
+   /// - SeeAlso: ``runSynchronously(on:)-(UnownedSerialExecutor)``
+   /// - SeeAlso: ``runSynchronously(on:)-(UnownedTaskExecutor)``
+-  @_unavailableInEmbedded
+   @available(StdlibDeploymentTarget 6.0, *)
+   @_alwaysEmitIntoClient
+   @inlinable
+diff --git a/stdlib/public/Concurrency/SuspendingClock.swift b/stdlib/public/Concurrency/SuspendingClock.swift
+index d07a5b2..333633e 100644
+--- a/stdlib/public/Concurrency/SuspendingClock.swift
++++ b/stdlib/public/Concurrency/SuspendingClock.swift
+@@ -21,7 +21,6 @@ import Swift
+ ///
+ /// This clock is suitable for high resolution measurements of execution.
+ @available(StdlibDeploymentTarget 5.7, *)
+-@_unavailableInEmbedded
+ public struct SuspendingClock: Sendable {
+   public struct Instant: Sendable {
+     internal var _value: Swift.Duration
+@@ -41,7 +40,6 @@ extension SuspendingClock.Instant: Codable {
+ #endif
+
+ @available(StdlibDeploymentTarget 5.7, *)
+-@_unavailableInEmbedded
+ extension Clock where Self == SuspendingClock {
+   /// A clock that measures time that always increments but stops incrementing
+   /// while the system is asleep.
+@@ -53,7 +51,6 @@ extension Clock where Self == SuspendingClock {
+ }
+
+ @available(StdlibDeploymentTarget 5.7, *)
+-@_unavailableInEmbedded
+ extension SuspendingClock: Clock {
+   /// The current instant accounting for machine suspension.
+   @available(StdlibDeploymentTarget 5.7, *)
+@@ -122,7 +119,6 @@ extension SuspendingClock: Clock {
+ }
+
+ @available(StdlibDeploymentTarget 5.7, *)
+-@_unavailableInEmbedded
+ extension SuspendingClock {
+   @available(SwiftStdlib 5.7, *)
+   @_alwaysEmitIntoClient
+@@ -132,7 +128,6 @@ extension SuspendingClock {
+ }
+
+ @available(SwiftStdlib 5.7, *)
+-@_unavailableInEmbedded
+ extension SuspendingClock.Instant: InstantProtocol {
+   public static var now: SuspendingClock.Instant { SuspendingClock().now }
+
+diff --git a/stdlib/public/Concurrency/Task+TaskExecutor.swift b/stdlib/public/Concurrency/Task+TaskExecutor.swift
+index cfe8dbf..1c5b41e 100644
+--- a/stdlib/public/Concurrency/Task+TaskExecutor.swift
++++ b/stdlib/public/Concurrency/Task+TaskExecutor.swift
+@@ -126,7 +126,6 @@ import Swift
+ /// - Returns: the value returned from the `operation` closure
+ /// - Throws: if the operation closure throws
+ /// - SeeAlso: ``TaskExecutor``
+-@_unavailableInEmbedded
+ @available(SwiftStdlib 6.0, *)
+ public func withTaskExecutorPreference<T, Failure>(
+   _ taskExecutor: (any TaskExecutor)?,
+@@ -164,7 +163,6 @@ public func withTaskExecutorPreference<T, Failure>(
+ //
+ // This function also doubles as an ABI-compatibility shim predating the
+ // introduction of #isolation.
+-@_unavailableInEmbedded
+ @available(SwiftStdlib 6.0, *)
+ @_unsafeInheritExecutor // for ABI compatibility
+ @_silgen_name("$ss26withTaskExecutorPreference_9operationxSch_pSg_xyYaYbKXEtYaKs8SendableRzlF")
+@@ -188,7 +186,6 @@ public func _unsafeInheritExecutor_withTaskExecutorPreference<T: Sendable>(
+ }
+
+ @available(SwiftStdlib 6.0, *)
+-@_unavailableInEmbedded
+ extension UnsafeCurrentTask {
+
+   /// The current ``TaskExecutor`` preference, if this task has one configured.
+diff --git a/stdlib/public/Concurrency/Task.cpp b/stdlib/public/Concurrency/Task.cpp
+index c5a4a6b..7e00e82 100644
+--- a/stdlib/public/Concurrency/Task.cpp
++++ b/stdlib/public/Concurrency/Task.cpp
+@@ -766,7 +766,7 @@ swift_task_create_commonImpl(size_t rawTaskCreateFlags,
+       break;
+
+     case TaskOptionRecordKind::InitialTaskExecutorOwned:
+-      #if SWIFT_CONCURRENCY_EMBEDDED
++      #if SWIFT_CONCURRENCY_EMBEDDED && !defined(__featheros__)
+       swift_unreachable("owned TaskExecutor cannot be used in embedded Swift");
+       #else
+       taskExecutor = cast<InitialTaskExecutorOwnedPreferenceTaskOptionRecord>(option)
+diff --git a/stdlib/public/Concurrency/TaskCancellation.swift b/stdlib/public/Concurrency/TaskCancellation.swift
+index 71425da..bac01a7 100644
+--- a/stdlib/public/Concurrency/TaskCancellation.swift
++++ b/stdlib/public/Concurrency/TaskCancellation.swift
+@@ -265,7 +265,6 @@ extension Task where Success == Never, Failure == Never {
+   /// The error is always an instance of `CancellationError`.
+   ///
+   /// - SeeAlso: `isCancelled()`
+-  @_unavailableInEmbedded
+   public static func checkCancellation() throws {
+     if Task<Never, Never>.isCancelled {
+       throw _Concurrency.CancellationError()
+diff --git a/stdlib/public/Concurrency/TaskGroup+addTask.swift.gyb b/stdlib/public/Concurrency/TaskGroup+addTask.swift.gyb
+index e16561b..811e57c 100644
+--- a/stdlib/public/Concurrency/TaskGroup+addTask.swift.gyb
++++ b/stdlib/public/Concurrency/TaskGroup+addTask.swift.gyb
+@@ -32,7 +32,6 @@ import Swift
+ %        ],
+ %        [
+ %          '@available(SwiftStdlib 6.0, *)', # because task executor
+-%          '@_unavailableInEmbedded', # since TaskExecutor is not available on embedded
+ %        ],
+ %        ['addTask', 'addTaskUnlessCancelled'],
+ %        [
+@@ -91,7 +90,6 @@ import Swift
+ %        ],
+ %        [
+ %          '@available(SwiftStdlib 6.0, *)',
+-%          '@_unavailableInEmbedded', # since TaskExecutor is not available on embedded
+ %        ],
+ %        ['addTask', 'addTaskUnlessCancelled'],
+ %        [
+diff --git a/stdlib/public/Concurrency/TaskSleep.swift b/stdlib/public/Concurrency/TaskSleep.swift
+index d7568f6..fb5a81c 100644
+--- a/stdlib/public/Concurrency/TaskSleep.swift
++++ b/stdlib/public/Concurrency/TaskSleep.swift
+@@ -14,7 +14,6 @@ import Swift
+
+ #if !SWIFT_STDLIB_TASK_TO_THREAD_MODEL_CONCURRENCY
+ @available(SwiftStdlib 5.1, *)
+-@_unavailableInEmbedded
+ extension Task where Success == Never, Failure == Never {
+   @available(*, deprecated, renamed: "Task.sleep(nanoseconds:)")
+   /// Suspends the current task for at least the given duration
+diff --git a/stdlib/public/Concurrency/TaskSleepDuration.swift b/stdlib/public/Concurrency/TaskSleepDuration.swift
+index c87073c..cd3c9fc 100644
+--- a/stdlib/public/Concurrency/TaskSleepDuration.swift
++++ b/stdlib/public/Concurrency/TaskSleepDuration.swift
+@@ -13,7 +13,6 @@
+ import Swift
+
+ #if !SWIFT_STDLIB_TASK_TO_THREAD_MODEL_CONCURRENCY
+-@_unavailableInEmbedded
+ extension ContinuousClock {
+   func timestamp(for instant: Instant)
+     -> (clockID: _ClockID, seconds: Int64, nanoseconds: Int64)
+@@ -31,7 +30,6 @@ extension ContinuousClock {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension SuspendingClock {
+   func timestamp(for instant: Instant)
+     -> (clockID: _ClockID, seconds: Int64, nanoseconds: Int64)
+@@ -49,35 +47,22 @@ extension SuspendingClock {
+   }
+ }
+
+-fileprivate func timestamp<C: Clock>(for instant: C.Instant, clock: C)
+-  -> (clockID: _ClockID, seconds: Int64, nanoseconds: Int64) {
+-  #if !$Embedded
+-  if let continuousClock = clock as? ContinuousClock {
+-    return continuousClock.timestamp(for: instant as! ContinuousClock.Instant)
+-  } else if let suspendingClock = clock as? SuspendingClock {
+-    return suspendingClock.timestamp(for: instant as! SuspendingClock.Instant)
+-  }
+-  #endif
+-  fatalError("unknown clock in fallback path")
++// Embedded Swift cannot cast a generic clock to a concrete one, so the clocks that _sleep
++// accepts convert their own instants.
++protocol _TimestampingClock: Clock {
++  func timestamp(for instant: Instant)
++    -> (clockID: _ClockID, seconds: Int64, nanoseconds: Int64)
++  func durationComponents(for duration: Duration)
++    -> (seconds: Int64, nanoseconds: Int64)
+ }
+
+-fileprivate func durationComponents<C: Clock>(for duration: C.Duration, clock: C)
+-  -> (seconds: Int64, nanoseconds: Int64) {
+-  #if !$Embedded
+-  if let continuousClock = clock as? ContinuousClock {
+-    return continuousClock.durationComponents(for: duration as! ContinuousClock.Duration)
+-  } else if let suspendingClock = clock as? SuspendingClock {
+-    return suspendingClock.durationComponents(for: duration as! SuspendingClock.Duration)
+-  }
+-  #endif
+-  fatalError("unknown clock in fallback path")
+-}
++extension ContinuousClock: _TimestampingClock {}
++extension SuspendingClock: _TimestampingClock {}
+
+ @available(StdlibDeploymentTarget 5.7, *)
+-@_unavailableInEmbedded
+ extension Task where Success == Never, Failure == Never {
+   @available(StdlibDeploymentTarget 5.7, *)
+-  internal static func _sleep<C: Clock>(
++  internal static func _sleep<C: _TimestampingClock>(
+     until instant: C.Instant,
+     tolerance: C.Duration?,
+     clock: C
+@@ -132,14 +117,13 @@ extension Task where Success == Never, Failure == Never {
+
+               // If there is no current scheduling executor, fall back to
+               // calling _enqueueJobGlobalWithDeadline().
+-              let (clockID, seconds, nanoseconds) = timestamp(for: instant,
+-                                                              clock: clock)
++              let (clockID, seconds, nanoseconds) = clock.timestamp(for: instant)
+               let toleranceSeconds: Int64
+               let toleranceNanoseconds: Int64
+               if #available(StdlibDeploymentTarget 6.3, *) {
+                 if let tolerance = tolerance {
+                   (toleranceSeconds, toleranceNanoseconds)
+-                    = durationComponents(for: tolerance, clock: clock)
++                    = clock.durationComponents(for: tolerance)
+                 } else {
+                   toleranceSeconds = 0
+                   toleranceNanoseconds = -1
+@@ -206,7 +190,6 @@ extension Task where Success == Never, Failure == Never {
+     }
+   }
+
+-  #if !$Embedded
+   /// Suspends the current task until the given deadline within a tolerance.
+   ///
+   /// If the task is canceled before the time ends, this function throws
+@@ -243,7 +226,6 @@ extension Task where Success == Never, Failure == Never {
+   ) async throws {
+     try await clock.sleep(for: duration, tolerance: tolerance)
+   }
+-  #endif
+ }
+ #else
+ @available(SwiftStdlib 5.7, *)
+diff --git a/stdlib/public/Cxx/CxxBorrowingSequence.swift b/stdlib/public/Cxx/CxxBorrowingSequence.swift
+index d4e7605..971bfa5 100644
+--- a/stdlib/public/Cxx/CxxBorrowingSequence.swift
++++ b/stdlib/public/Cxx/CxxBorrowingSequence.swift
+@@ -10,6 +10,9 @@
+ //
+ //===----------------------------------------------------------------------===//
+
++// Embedded Swift builds of this module (FeatherOS) read pointers' raw values in inlinable code.
++import Builtin
++
+ /// Use this protocol to conform custom C++ sequence types to Swift's `Iterable`
+ /// protocol like this:
+ ///
+diff --git a/stdlib/public/core/AnyHashable.swift b/stdlib/public/core/AnyHashable.swift
+index 51451a9..15d322e 100644
+--- a/stdlib/public/core/AnyHashable.swift
++++ b/stdlib/public/core/AnyHashable.swift
+@@ -39,7 +39,6 @@ public protocol _HasCustomAnyHashableRepresentation {
+ }
+
+ @usableFromInline
+-@_unavailableInEmbedded
+ internal protocol _AnyHashableBox {
+   var _canonicalBox: _AnyHashableBox { get }
+
+@@ -54,18 +53,18 @@ internal protocol _AnyHashableBox {
+   func _rawHashValue(_seed: Int) -> Int
+
+   var _base: Any { get }
++#if !$Embedded
+   func _unbox<T: Hashable>() -> T?
+   func _downCastConditional<T>(into result: UnsafeMutablePointer<T>) -> Bool
++#endif
+ }
+
+-@_unavailableInEmbedded
+ extension _AnyHashableBox {
+   var _canonicalBox: _AnyHashableBox {
+     return self
+   }
+ }
+
+-@_unavailableInEmbedded
+ internal struct _ConcreteHashableBox<Base: Hashable>: _AnyHashableBox {
+   internal var _baseHashable: Base
+
+@@ -73,6 +72,14 @@ internal struct _ConcreteHashableBox<Base: Hashable>: _AnyHashableBox {
+     self._baseHashable = base
+   }
+
++#if $Embedded
++  internal func _isEqual(to rhs: _AnyHashableBox) -> Bool? {
++    if let rhs = rhs as? _ConcreteHashableBox<Base> {
++      return _baseHashable == rhs._baseHashable
++    }
++    return nil
++  }
++#else
+   internal func _unbox<T: Hashable>() -> T? {
+     return (self as _AnyHashableBox as? _ConcreteHashableBox<T>)?._baseHashable
+   }
+@@ -83,6 +90,7 @@ internal struct _ConcreteHashableBox<Base: Hashable>: _AnyHashableBox {
+     }
+     return nil
+   }
++#endif
+
+   internal var _hashValue: Int {
+     return _baseHashable.hashValue
+@@ -100,12 +108,14 @@ internal struct _ConcreteHashableBox<Base: Hashable>: _AnyHashableBox {
+     return _baseHashable
+   }
+
++#if !$Embedded
+   internal
+   func _downCastConditional<T>(into result: UnsafeMutablePointer<T>) -> Bool {
+     guard let value = _baseHashable as? T else { return false }
+     unsafe result.initialize(to: value)
+     return true
+   }
++#endif
+ }
+
+ /// A type-erased hashable value.
+@@ -139,7 +149,6 @@ internal struct _ConcreteHashableBox<Base: Hashable>: _AnyHashableBox {
+ /// compatible hashes, as the hash encoding that it uses may change between any
+ /// two releases of the standard library.
+ @frozen
+-@_unavailableInEmbedded
+ public struct AnyHashable {
+   internal var _box: _AnyHashableBox
+
+@@ -151,8 +160,16 @@ public struct AnyHashable {
+   ///
+   /// - Parameter base: A hashable value to wrap.
+   @_specialize(where H == String)
+-  @_unavailableInEmbedded
+   public init<H: Hashable>(_ base: H) {
++#if $Embedded
++    // Without the runtime there is no custom representation or upcast to a Hashable
++    // superclass; only an AnyHashable is not boxed again.
++    if H.self == AnyHashable.self {
++      self = _identityCast(base, to: AnyHashable.self)
++      return
++    }
++    self.init(_box: _ConcreteHashableBox(base))
++#else
+     if H.self == String.self {
+       self.init(_box: _ConcreteHashableBox(base))
+       return
+@@ -170,6 +187,7 @@ public struct AnyHashable {
+         base,
+         storingResultInto: $0)
+     }
++#endif
+   }
+
+   internal init<H: Hashable>(_usingDefaultRepresentationOf base: H) {
+@@ -194,6 +212,7 @@ public struct AnyHashable {
+   ///
+   /// This avoids the intermediate re-boxing we would get if we just did
+   /// a downcast on `base`.
++#if !$Embedded
+   internal
+   func _downCastConditional<T>(into result: UnsafeMutablePointer<T>) -> Bool {
+     // Attempt the downcast.
+@@ -210,12 +229,12 @@ public struct AnyHashable {
+
+     return false
+   }
++#endif
+ }
+
+ @available(*, unavailable)
+ extension AnyHashable: Sendable {}
+
+-@_unavailableInEmbedded
+ extension AnyHashable: Equatable {
+   /// Returns a Boolean value indicating whether two type-erased hashable
+   /// instances wrap the same value.
+@@ -244,7 +263,6 @@ extension AnyHashable: Equatable {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension AnyHashable: Hashable {
+   public var hashValue: Int {
+     return _box._canonicalBox._hashValue
+@@ -320,7 +338,6 @@ internal func _makeAnyHashableUpcastingToHashableBaseType<H: Hashable>(
+ )
+
+ @inlinable
+-@_unavailableInEmbedded
+ public // COMPILER_INTRINSIC
+ func _convertToAnyHashable<H: Hashable>(_ value: H) -> AnyHashable {
+   return AnyHashable(value)
+@@ -336,6 +353,7 @@ internal func _convertToAnyHashableIndirect<H: Hashable>(
+   unsafe target.initialize(to: AnyHashable(value))
+ }
+
++#if !$Embedded
+ /// Called by the casting machinery.
+ @_silgen_name("_swift_anyHashableDownCastConditionalIndirect")
+ @_unavailableInEmbedded
+@@ -345,3 +363,4 @@ internal func _anyHashableDownCastConditionalIndirect<T>(
+ ) -> Bool {
+   return unsafe value.pointee._downCastConditional(into: target)
+ }
++#endif
+diff --git a/stdlib/public/core/CMakeLists.txt b/stdlib/public/core/CMakeLists.txt
+index dd4faf6..34e8cdd 100644
+--- a/stdlib/public/core/CMakeLists.txt
++++ b/stdlib/public/core/CMakeLists.txt
+@@ -273,7 +273,7 @@ split_embedded_sources(
+   EMBEDDED UnsafePointer.swift
+   EMBEDDED UnsafeRawPointer.swift
+   EMBEDDED ValidUTF8Buffer.swift
+-    NORMAL VarArgs.swift
++  EMBEDDED VarArgs.swift
+   EMBEDDED WriteBackMutableSlice.swift
+   EMBEDDED Zip.swift
+   EMBEDDED _InlineArray.swift
+diff --git a/stdlib/public/core/ClosedRange.swift b/stdlib/public/core/ClosedRange.swift
+index 75e670b..cf2788d 100644
+--- a/stdlib/public/core/ClosedRange.swift
++++ b/stdlib/public/core/ClosedRange.swift
+@@ -576,23 +576,29 @@ extension ClosedRange {
+ public typealias CountableClosedRange<Bound: Strideable> = ClosedRange<Bound>
+   where Bound.Stride: SignedInteger
+
+-@_unavailableInEmbedded
+ extension ClosedRange: Decodable where Bound: Decodable {
+   public init(from decoder: Decoder) throws {
+     var container = try decoder.unkeyedContainer()
+     let lowerBound = try container.decode(Bound.self)
+     let upperBound = try container.decode(Bound.self)
+     guard lowerBound <= upperBound else {
++#if $Embedded
++      // FeatherOS: Embedded Swift cannot print the type or a generic bound.
++      throw DecodingError.dataCorrupted(
++        DecodingError.Context(
++          codingPath: decoder.codingPath,
++          debugDescription: "Cannot initialize a range with a lowerBound greater than upperBound"))
++#else
+       throw DecodingError.dataCorrupted(
+         DecodingError.Context(
+           codingPath: decoder.codingPath,
+           debugDescription: "Cannot initialize \(ClosedRange.self) with a lowerBound (\(lowerBound)) greater than upperBound (\(upperBound))"))
++#endif
+     }
+     unsafe self.init(_uncheckedBounds: (lower: lowerBound, upper: upperBound))
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension ClosedRange: Encodable where Bound: Encodable {
+   public func encode(to encoder: Encoder) throws {
+     var container = encoder.unkeyedContainer()
+diff --git a/stdlib/public/core/CollectionDifference.swift b/stdlib/public/core/CollectionDifference.swift
+index 7bd729b..36265be 100644
+--- a/stdlib/public/core/CollectionDifference.swift
++++ b/stdlib/public/core/CollectionDifference.swift
+@@ -386,7 +386,6 @@ extension CollectionDifference where ChangeElement: Hashable {
+   }
+ }
+
+-#if !$Embedded
+ @available(SwiftStdlib 5.1, *)
+ extension CollectionDifference.Change: Codable where ChangeElement: Codable {
+   private enum _CodingKeys: String, CodingKey {
+@@ -450,7 +449,6 @@ extension CollectionDifference: Codable where ChangeElement: Codable {
+     try container.encode(removals, forKey: .removals)
+   }
+ }
+-#endif
+
+ @available(SwiftStdlib 5.1, *)
+ extension CollectionDifference: Sendable where ChangeElement: Sendable { }
+diff --git a/stdlib/public/core/Duration.swift b/stdlib/public/core/Duration.swift
+index 5ae2396..bc9ded6 100644
+--- a/stdlib/public/core/Duration.swift
++++ b/stdlib/public/core/Duration.swift
+@@ -264,7 +264,6 @@ extension Duration {
+ }
+
+ @available(StdlibDeploymentTarget 5.7, *)
+-@_unavailableInEmbedded
+ extension Duration: Codable {
+   @available(StdlibDeploymentTarget 5.7, *)
+   public init(from decoder: Decoder) throws {
+diff --git a/stdlib/public/core/EmbeddedPrint.swift b/stdlib/public/core/EmbeddedPrint.swift
+index 07eb0a9..69b0809 100644
+--- a/stdlib/public/core/EmbeddedPrint.swift
++++ b/stdlib/public/core/EmbeddedPrint.swift
+@@ -170,3 +170,19 @@ public func print(_ boolean: Bool, terminator: StaticString = "\n") {
+     print("false", terminator: terminator)
+   }
+ }
++
++// FeatherOS: upstream's print(_:separator:terminator:to:) takes Any and picks a description
++// through protocol casts, which Embedded Swift cannot perform, so this one takes the items as
++// CustomStringConvertible existentials instead.
++public func print<Target: TextOutputStream>(
++  _ items: any CustomStringConvertible..., separator: String = " ",
++  terminator: String = "\n", to output: inout Target
++) {
++  var prefix = ""
++  for item in items {
++    output.write(prefix)
++    output.write(item.description)
++    prefix = separator
++  }
++  output.write(terminator)
++}
+diff --git a/stdlib/public/core/EmbeddedStubs.swift b/stdlib/public/core/EmbeddedStubs.swift
+index a11aa28..ebafe3a 100644
+--- a/stdlib/public/core/EmbeddedStubs.swift
++++ b/stdlib/public/core/EmbeddedStubs.swift
+@@ -19,6 +19,8 @@ internal func _print_unlocked<T>(_ value: T, _ target: inout String) { fatalErro
+ @_unavailableInEmbedded
+ public func _debugPrint_unlocked<T>(_ value: T, _ target: inout String) { fatalError() }
+
++// FeatherOS: Codable is in src/user/swift_stdlib/codable.swift.
++#if false
+ /// Codable
+
+ @_unavailableInEmbedded
+@@ -85,3 +87,4 @@ public enum DecodingError: Error {
+   case keyNotFound(any CodingKey, Context)
+   case dataCorrupted(Context)
+ }
++#endif
+diff --git a/stdlib/public/core/GroupInfo.json b/stdlib/public/core/GroupInfo.json
+index 9507976..f520ffe 100644
+--- a/stdlib/public/core/GroupInfo.json
++++ b/stdlib/public/core/GroupInfo.json
+@@ -280,6 +280,7 @@
+     "EmbeddedRuntime.swift",
+     "EmbeddedStubs.swift",
+     "EmbeddedPrint.swift",
++    "codable.swift",
+     "InlineArray.swift",
+     "_InlineArray.swift",
+     "Exclusivity.swift",
+diff --git a/stdlib/public/core/Policy.swift b/stdlib/public/core/Policy.swift
+index f487021..22c2ade 100644
+--- a/stdlib/public/core/Policy.swift
++++ b/stdlib/public/core/Policy.swift
+@@ -79,14 +79,12 @@ extension Never: Identifiable {
+ }
+
+ @available(SwiftStdlib 5.9, *)
+-@_unavailableInEmbedded
+ extension Never: Encodable {
+   @available(SwiftStdlib 5.9, *)
+   public func encode(to encoder: any Encoder) throws {}
+ }
+
+ @available(SwiftStdlib 5.9, *)
+-@_unavailableInEmbedded
+ extension Never: Decodable {
+   @available(SwiftStdlib 5.9, *)
+   public init(from decoder: any Decoder) throws {
+diff --git a/stdlib/public/core/Range.swift b/stdlib/public/core/Range.swift
+index c5b462f..40775c4 100644
+--- a/stdlib/public/core/Range.swift
++++ b/stdlib/public/core/Range.swift
+@@ -447,23 +447,29 @@ extension Range: Hashable where Bound: Hashable {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension Range: Decodable where Bound: Decodable {
+   public init(from decoder: Decoder) throws {
+     var container = try decoder.unkeyedContainer()
+     let lowerBound = try container.decode(Bound.self)
+     let upperBound = try container.decode(Bound.self)
+     guard lowerBound <= upperBound else {
++#if $Embedded
++      // FeatherOS: Embedded Swift cannot print the type or a generic bound.
++      throw DecodingError.dataCorrupted(
++        DecodingError.Context(
++          codingPath: decoder.codingPath,
++          debugDescription: "Cannot initialize a range with a lowerBound greater than upperBound"))
++#else
+       throw DecodingError.dataCorrupted(
+         DecodingError.Context(
+           codingPath: decoder.codingPath,
+           debugDescription: "Cannot initialize \(Range.self) with a lowerBound (\(lowerBound)) greater than upperBound (\(upperBound))"))
++#endif
+     }
+     unsafe self.init(_uncheckedBounds: (lower: lowerBound, upper: upperBound))
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension Range: Encodable where Bound: Encodable {
+   public func encode(to encoder: Encoder) throws {
+     var container = encoder.unkeyedContainer()
+@@ -514,7 +520,6 @@ extension PartialRangeUpTo: RangeExpression {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeUpTo: Decodable where Bound: Decodable {
+   public init(from decoder: Decoder) throws {
+     var container = try decoder.unkeyedContainer()
+@@ -522,7 +527,6 @@ extension PartialRangeUpTo: Decodable where Bound: Decodable {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeUpTo: Encodable where Bound: Encodable {
+   public func encode(to encoder: Encoder) throws {
+     var container = encoder.unkeyedContainer()
+@@ -571,7 +575,6 @@ extension PartialRangeThrough: RangeExpression {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeThrough: Decodable where Bound: Decodable {
+   public init(from decoder: Decoder) throws {
+     var container = try decoder.unkeyedContainer()
+@@ -579,7 +582,6 @@ extension PartialRangeThrough: Decodable where Bound: Decodable {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeThrough: Encodable where Bound: Encodable {
+   public func encode(to encoder: Encoder) throws {
+     var container = encoder.unkeyedContainer()
+@@ -723,7 +725,6 @@ extension PartialRangeFrom: Sequence
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeFrom: Decodable where Bound: Decodable {
+   public init(from decoder: Decoder) throws {
+     var container = try decoder.unkeyedContainer()
+@@ -731,7 +732,6 @@ extension PartialRangeFrom: Decodable where Bound: Decodable {
+   }
+ }
+
+-@_unavailableInEmbedded
+ extension PartialRangeFrom: Encodable where Bound: Encodable {
+   public func encode(to encoder: Encoder) throws {
+     var container = encoder.unkeyedContainer()
+diff --git a/stdlib/public/core/VarArgs.swift b/stdlib/public/core/VarArgs.swift
+index 10de0a4..1b3a37e 100644
+--- a/stdlib/public/core/VarArgs.swift
++++ b/stdlib/public/core/VarArgs.swift
+@@ -49,6 +49,11 @@ public protocol CVarArg {
+   /// Transform `self` into a series of machine words that can be
+   /// appropriately interpreted by C varargs.
+   var _cVarArgEncoding: [Int] { get }
++
++#if $Embedded
++  // Embedded Swift cannot cast to _CVarArgPassedAsDouble, so the builder asks this instead.
++  var _cVarArgPassedAsDouble: Bool { get }
++#endif
+ }
+
+ /// Floating point types need to be passed differently on x86_64
+@@ -56,6 +61,16 @@ public protocol CVarArg {
+ public // SPI(CoreGraphics)
+ protocol _CVarArgPassedAsDouble: CVarArg {}
+
++#if $Embedded
++extension CVarArg {
++  public var _cVarArgPassedAsDouble: Bool { false }
++}
++
++extension _CVarArgPassedAsDouble {
++  public var _cVarArgPassedAsDouble: Bool { true }
++}
++#endif
++
+ /// Some types require alignment greater than Int on some architectures.
+ public // SPI(CoreGraphics)
+ protocol _CVarArgAligned: CVarArg {
+@@ -506,7 +521,7 @@ final internal class __VaListBuilder {
+
+   @inlinable // c-abi
+   internal func append(_ arg: CVarArg) {
+-#if !_runtime(_ObjC)
++#if !_runtime(_ObjC) && !$Embedded
+     var arg = arg
+
+     // We may need to retain an object that provides a pointer value.
+@@ -519,7 +534,11 @@ final internal class __VaListBuilder {
+     var encoded = arg._cVarArgEncoding
+
+ #if arch(x86_64) || arch(arm64)
++#if $Embedded
++    let isDouble = arg._cVarArgPassedAsDouble
++#else
+     let isDouble = arg is _CVarArgPassedAsDouble
++#endif
+
+     if isDouble && fpRegistersUsed < _countFPRegisters {
+       #if arch(arm64)
+@@ -604,7 +623,7 @@ final internal class __VaListBuilder {
+
+   @inlinable // c-abi
+   internal func append(_ arg: CVarArg) {
+-#if !_runtime(_ObjC)
++#if !_runtime(_ObjC) && !$Embedded
+     var arg = arg
+
+     // We may need to retain an object that provides a pointer value.

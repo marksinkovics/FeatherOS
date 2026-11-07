@@ -6,7 +6,13 @@ set -e
 SCRIPT_PATH=$(realpath "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 ARCH="${ARCH:-}"
+BUILD_TYPE="${BUILD_TYPE:-Debug}"
 LIMINE_TAG="v8.7.0-binary"
+# The Swift concurrency runtime is built from these sources (src/user/swift_concurrency): the
+# Swift release the pinned toolchain came from, and libc++'s headers from the LLVM release its
+# clang is based on.
+SWIFT_SOURCE_TAG="swift-$(cat "$SCRIPT_DIR/.swift-version")-RELEASE"
+LIBCXX_TAG="llvmorg-21.1.8"
 PATH="$HOME/.local/bin:$PATH"
 export PATH
 
@@ -21,7 +27,8 @@ _err() {
 _usage() {
     printf 'Usage: %s [--arch <x86_64|aarch64>] <action> [actions...]\n' "$0"
     printf '   or: ARCH=<x86_64|aarch64> %s <action> [actions...]\n' "$0"
-    printf 'Actions: build, iso, run, test, test-all, unit-test, debug, all, clean, fullclean\n'
+    printf 'BUILD_TYPE=Release builds at -O2 (Swift -O); the default, Debug, at -O0 -g (Swift -Onone).\n'
+    printf 'Actions: build, iso, run, test, test-all, unit-test, benchmark, debug, all, clean, fullclean\n'
 }
 
 _require_arch() {
@@ -93,9 +100,65 @@ _aarch64_firmware() {
     return 1
 }
 
+# swiftc from a swift.org toolchain: SWIFTC if set, otherwise the toolchain swiftly selects for
+# this checkout (.swift-version). Xcode's swiftc does not reliably target ELF, so it is not used.
+_swift_compiler() {
+    if [ -n "${SWIFTC:-}" ]; then
+        printf '%s\n' "$SWIFTC"
+        return
+    fi
+    command -v swiftly >/dev/null 2>&1 || return 1
+    local toolchain
+    toolchain=$(cd "$SCRIPT_DIR" && swiftly use --print-location 2>/dev/null) || return 1
+    [ -x "$toolchain/usr/bin/swiftc" ] || return 1
+    printf '%s\n' "$toolchain/usr/bin/swiftc"
+}
+
+# Shallow, sparse clones of what the runtime build reads. The Swift sources get
+# src/user/swift_concurrency/swift.patch, applied again from a clean tree whenever it changes.
+_fetch_swift_runtime_sources() {
+    local swift="$SCRIPT_DIR/deps/swift"
+    local libcxx="$SCRIPT_DIR/deps/llvm-project"
+    local patch="$SCRIPT_DIR/src/user/swift_concurrency/swift.patch"
+    local applied="$SCRIPT_DIR/deps/swift.patch.applied"
+    if [ ! -d "$swift/.git" ]; then
+        _print "Fetching the Swift sources ($SWIFT_SOURCE_TAG)"
+        rm -f "$applied"
+        git clone --branch="$SWIFT_SOURCE_TAG" --depth=1 --filter=blob:none --no-checkout \
+            https://github.com/swiftlang/swift.git "$swift"
+    fi
+    # Set every time, so a clone made with an older list gets what is added to it.
+    git -C "$swift" sparse-checkout set --no-cone /include/swift/ /lib/Threading/ \
+        /stdlib/include/ /stdlib/public/Concurrency/ /stdlib/public/CompatibilityOverride/ \
+        /stdlib/public/Cxx/ /stdlib/public/SwiftShims/ /stdlib/public/core/ \
+        /stdlib/public/runtime/ /utils/gyb.py /utils/SwiftIntTypes.py \
+        /utils/SwiftFloatingPointTypes.py /utils/availability-macros.def
+    git -C "$swift" checkout --quiet
+    if ! cmp -s "$patch" "$applied"; then
+        _print "Patching the Swift sources"
+        git -C "$swift" checkout --quiet -- .
+        git -C "$swift" apply "$patch"
+        cp "$patch" "$applied"
+    fi
+    if [ ! -d "$libcxx/.git" ]; then
+        _print "Fetching libc++'s headers ($LIBCXX_TAG)"
+        git clone --branch="$LIBCXX_TAG" --depth=1 --filter=blob:none --no-checkout \
+            https://github.com/llvm/llvm-project.git "$libcxx"
+        git -C "$libcxx" sparse-checkout set --no-cone /libcxx/include/ /libcxx/vendor/llvm/
+        git -C "$libcxx" checkout --quiet
+    fi
+}
+
 build() {
     _require_arch
     _require_tools git make cmake ninja
+    case "$BUILD_TYPE" in
+        Debug | Release) ;;
+        *)
+            _err "Unsupported BUILD_TYPE='$BUILD_TYPE'. Choose Debug or Release."
+            exit 1
+            ;;
+    esac
     case "$ARCH" in
         x86_64)
             _require_tools x86_64-elf-gcc x86_64-elf-g++ x86_64-elf-ld x86_64-elf-ar nasm
@@ -114,12 +177,21 @@ build() {
         make -C deps/limine
     fi
 
+    local swiftc
+    if ! swiftc=$(_swift_compiler); then
+        swiftc=""
+        _print "No Swift toolchain (swiftly or SWIFTC), so the Swift programs are skipped"
+    else
+        _fetch_swift_runtime_sources
+    fi
+
     local build_dir
     build_dir=$(_build_dir)
     mkdir -p "$build_dir"
     cd "$build_dir"
 
-    cmake --fresh "$SCRIPT_DIR" -G Ninja -DARCH="$ARCH" \
+    _print "Build $ARCH ($BUILD_TYPE)"
+    cmake --fresh "$SCRIPT_DIR" -G Ninja -DARCH="$ARCH" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
         -DFEATHEROS_PANIC_TEST="${PANIC_TEST:-OFF}" \
         -DFEATHEROS_EXCEPTION_TEST="${EXCEPTION_TEST:-OFF}" \
         -DFEATHEROS_INTERRUPT_TEST="${INTERRUPT_TEST:-OFF}" \
@@ -130,7 +202,8 @@ build() {
         -DFEATHEROS_SMP_TEST="${SMP_TEST:-OFF}" \
         -DFEATHEROS_STORAGE_TEST="${STORAGE_TEST:-OFF}" \
         -DFEATHEROS_NETWORK_TEST="${NETWORK_TEST:-OFF}" \
-        -DFEATHEROS_INPUT_TEST="${INPUT_TEST:-OFF}"
+        -DFEATHEROS_INPUT_TEST="${INPUT_TEST:-OFF}" \
+        -DFEATHEROS_SWIFTC="$swiftc"
 
     time cmake --build . --parallel
 }
@@ -159,6 +232,12 @@ clean_deps() {
         _print "Cleaning limine"
         rm -rf "$SCRIPT_DIR/deps/limine"
     fi
+
+    if [ -d "$SCRIPT_DIR/deps/swift" ] || [ -d "$SCRIPT_DIR/deps/llvm-project" ]; then
+        _print "Cleaning the Swift and libc++ sources"
+        rm -rf "$SCRIPT_DIR/deps/swift" "$SCRIPT_DIR/deps/llvm-project"
+        rm -f "$SCRIPT_DIR/deps/swift.patch.applied"
+    fi
 }
 
 iso() {
@@ -185,12 +264,18 @@ iso() {
     local system_dir="$root_dir/system"
     rm -rf "$root_dir" "$build_dir/system"
     mkdir -p "$system_dir"
-    cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" "$system_dir/"
+    cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" \
+        "$SCRIPT_DIR/initramfs/sample.json" "$SCRIPT_DIR/initramfs/http-request.txt" \
+        "$SCRIPT_DIR/initramfs/http-response.txt" "$system_dir/"
     cp -R "$SCRIPT_DIR/initramfs/etc" "$root_dir/"
+    # Debug builds keep their debug information and symbols in build/<arch>/programs for gdb; the
+    # copies the system runs leave both out, so they stay small and within the 1 MiB program
+    # limit (Embedded Swift's mangled names alone take a quarter of a Swift program).
+    _require_tools "$ARCH-elf-strip"
     local program
     for program in "${programs[@]}"; do
         local name="${program##*/}"
-        cp "$program" "$system_dir/${name%-"$ARCH".elf}"
+        "$ARCH-elf-strip" --strip-all -o "$system_dir/${name%-"$ARCH".elf}" "$program"
     done
     python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$system_dir/badelf"
     # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
@@ -409,6 +494,26 @@ smoke_test() {
     fi
 }
 
+benchmark() {
+    _require_arch
+    _require_tools python3 "qemu-system-$ARCH"
+
+    local iso_path build_dir
+    iso_path=$(_kernel_iso)
+    build_dir=$(_build_dir)
+    local -a benchmark_args=(--arch "$ARCH" --disk "$build_dir/virtio-disk.img"
+        --seconds "${BENCHMARK_SECONDS:-3}" --rounds "${BENCHMARK_ROUNDS:-3}")
+    if [ "$ARCH" = "aarch64" ]; then
+        local firmware
+        firmware=$(_aarch64_firmware) || {
+            _err "Set QEMU_EFI to an AArch64 UEFI firmware image."
+            exit 1
+        }
+        benchmark_args+=(--firmware "$firmware")
+    fi
+    python3 "$SCRIPT_DIR/tools/benchmark.py" "${benchmark_args[@]}" "$iso_path"
+}
+
 unit_test() {
     _require_tools cmake git ninja
 
@@ -425,6 +530,13 @@ unit_test() {
             exit 1
         fi
         cmake_args+=(-DCMAKE_C_COMPILER="$llvm_bin/clang" -DCMAKE_CXX_COMPILER="$llvm_bin/clang++")
+    fi
+    local swiftc
+    if swiftc=$(_swift_compiler); then
+        cmake_args+=(-DFEATHEROS_SWIFTC="$swiftc")
+        _fetch_swift_runtime_sources
+    else
+        _print "No Swift toolchain (swiftly or SWIFTC), so the Swift tests are skipped"
     fi
     cmake --fresh -S "$SCRIPT_DIR/tests/unit" -B "$unit_build_dir" -G Ninja "${cmake_args[@]}"
     cmake --build "$unit_build_dir" --parallel
@@ -500,6 +612,12 @@ for action in "${ACTIONS[@]}"; do
             ;;
         unit-test)
             unit_test
+            ;;
+        benchmark)
+            BUILD_TYPE=Release
+            build
+            iso
+            benchmark
             ;;
         debug)
             build

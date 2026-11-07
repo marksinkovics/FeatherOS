@@ -67,7 +67,7 @@ int main(int argc, char** argv)
         puts(Help);
         return 0;
     }
-    bool letters[26] = {};
+    bool letters[128] = {};
     char bad = 0;
     const int first = FeatherOS::User::ParseFlags(argc, argv, "rnu", letters, &bad);
     if (first < 0)
@@ -75,9 +75,9 @@ int main(int argc, char** argv)
         printf("sort: unknown option -%c\n", bad);
         return 1;
     }
-    reverse = letters['r' - 'a'];
-    numeric = letters['n' - 'a'];
-    const bool unique = letters['u' - 'a'];
+    reverse = letters['r'];
+    numeric = letters['n'];
+    const bool unique = letters['u'];
     char** lines = nullptr;
     size_t count = 0;
     size_t capacity = 0;

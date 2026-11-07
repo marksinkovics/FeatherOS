@@ -12,6 +12,10 @@ void SetExitFlush(void (*flush)());
 // that calls exit, exit itself) runs newest first.
 bool AddThreadExitHandler(void (*function)(void*), void* argument);
 void RunThreadExitHandlers();
+// pthread_key_create registers its destructors here, so programs without keys do not link them
+// or their thread-local values.
+void SetKeyDestructors(void (*run)());
+void RunKeyDestructors();
 
 } // namespace FeatherOS::LibC
 

@@ -1,8 +1,10 @@
 #ifndef FEATHEROS_LIBC_FEATHEROS_H
 #define FEATHEROS_LIBC_FEATHEROS_H
 
+#include <bits/featheros_format.h>
 #include <netinet/in.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/cdefs.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -45,6 +47,10 @@ ssize_t featheros_read_line(const char* prompt, char* buffer, size_t size);
 // library copies both out before main, so only its address is of interest, for example to see
 // address-space layout randomization.
 const void* featheros_arguments_page(void);
+// The argc and argv main receives, for code that does not see main's parameters, such as a Swift
+// program's top-level code.
+int featheros_argument_count(void);
+char** featheros_argument_values(void);
 // Stores the current settings in old_settings, unless it is null, then applies the parts of
 // new_settings that changes names (FEATHEROS_NETWORK_IPV4, FEATHEROS_NETWORK_NAME_SERVERS,
 // FEATHEROS_NETWORK_LINK). Taking the link down resets the device, drops the addresses, the
@@ -55,6 +61,18 @@ const void* featheros_arguments_page(void);
 // down, EIO when the device does not start again.
 int featheros_network_settings(const struct featheros_network* new_settings,
                                struct featheros_network* old_settings, int changes);
+// open, openat, fcntl and ioctl with fixed parameters, for languages that cannot call a variadic
+// C function, such as Swift. fcntl's argument is an int or a pointer.
+int featheros_open(const char* path, int flags, mode_t mode);
+int featheros_openat(int directory, const char* path, int flags, mode_t mode);
+int featheros_fcntl(int descriptor, int command, intptr_t argument);
+int featheros_ioctl(int descriptor, unsigned long request, void* argument);
+// snprintf with its arguments in an array of count tagged values. Integers of either type suit
+// d i u o x X c and *, keeping all 64 bits unless hh or h asks for fewer; doubles suit the
+// floating-point conversions, strings %s and pointers %p. A conversion whose argument is missing
+// or of an unsuitable type is written as it appears in format.
+int featheros_format(char* buffer, size_t size, const char* format,
+                     const struct featheros_format_argument* arguments, size_t count);
 
 __END_DECLS
 

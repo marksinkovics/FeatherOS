@@ -39,6 +39,12 @@ void* malloc(size_t size);
 void* calloc(size_t count, size_t size);
 void* realloc(void* pointer, size_t size);
 void free(void* pointer);
+// alignment is a power of two and a multiple of sizeof(void*). Returns 0, EINVAL or ENOMEM.
+int posix_memalign(void** result, size_t alignment, size_t size);
+
+// Fills buffer from /dev/random, as random as the kernel's source: hardware randomness mixed in
+// when the CPU has it, otherwise not cryptographic. Aborts if the device cannot be read.
+void arc4random_buf(void* buffer, size_t size);
 
 int abs(int value);
 long labs(long value);

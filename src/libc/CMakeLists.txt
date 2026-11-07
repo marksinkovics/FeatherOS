@@ -2,7 +2,9 @@ set(CMAKE_CXX_FLAGS "")
 
 add_library(featheros_c STATIC
     address_text.cpp
+    arc4random.cpp
     ctype.cpp
+    compiler_runtime.cpp
     cxx_runtime.cpp
     dirent.cpp
     dns_message.cpp
@@ -34,6 +36,9 @@ add_library(featheros_c STATIC
     netdb.cpp
     poll.cpp
     pthread.cpp
+    regex.cpp
+    regex_engine.cpp
+    thread_keys.cpp
     signal.cpp
     socket.cpp
     math.cpp
@@ -43,6 +48,8 @@ add_library(featheros_c STATIC
     stdlib.cpp
     string.cpp
     time.cpp
+    uchar.cpp
+    unicode_conversion.cpp
     unistd.cpp
     arch/${ARCH}/setjmp.cpp
     arch/${ARCH}/signal_return.cpp
@@ -51,9 +58,6 @@ add_library(featheros_c STATIC
 add_library(featheros_crt0 OBJECT start.cpp)
 
 foreach (target featheros_c featheros_crt0)
-    # Built at -O0 like the programs. With optimization, GCC also needs
-    # -fno-tree-loop-distribute-patterns here, or it can turn the loop inside memset into a call
-    # to memset.
     target_compile_options(${target} PRIVATE ${FEATHEROS_USER_FLAGS})
     target_include_directories(${target} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_include_directories(${target} PRIVATE ${PROJECT_SOURCE_DIR}/src)

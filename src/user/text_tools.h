@@ -18,16 +18,18 @@ struct TextCounts
 // once; words are runs of anything but spaces, tabs and newlines.
 void CountText(const char* text, size_t length, TextCounts* counts, bool* in_word);
 
-bool ContainsText(const char* line, const char* pattern, bool ignore_case);
+// text as a basic regular expression that matches it as plain text, for grep -F; the caller
+// frees it, and it is null when there is no memory.
+char* FixedTextPattern(const char* text);
 
 // sort's order: by bytes, or with numeric by the number each line starts with (a line without
 // one counts as 0), ties going by bytes.
 int CompareLines(const char* left, const char* right, bool numeric);
 
 // Reads single-dash options such as -i or -ic until the first operand or "--", setting
-// letters[letter - 'a'] for each. Returns the first operand's index, or -1 for a letter outside
+// letters[letter] for each. Returns the first operand's index, or -1 for a letter outside
 // allowed, which *bad then holds.
-int ParseFlags(int argc, char** argv, const char* allowed, bool (&letters)[26], char* bad);
+int ParseFlags(int argc, char** argv, const char* allowed, bool (&letters)[128], char* bad);
 
 // The last count lines given to Add, oldest first, for tail.
 class LastLines

@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <featheros.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <math.h>
 #include <netdb.h>
@@ -30,6 +31,7 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
+#include <uchar.h>
 #include <unistd.h>
 
 namespace
@@ -41,9 +43,9 @@ constexpr char Help[] =
     "stdlib.h, errno, setjmp, exit handlers, the console descriptors, stat, process\n"
     "IDs, the environment, the heap, stdio, files and directories, /dev, /tmp,\n"
     "/proc, getnameinfo, time, posix_spawn with file actions, dup, fcntl, pipes,\n"
-    "non-blocking pipes and loopback sockets, the FeatherOS extensions, and floating\n"
-    "point. It asks for three lines of input\n"
-    "at \"> \" prompts.";
+    "non-blocking pipes and loopback sockets, the FeatherOS extensions, threads and\n"
+    "their keys, uchar.h, inttypes.h, and floating point. It asks for three lines\n"
+    "of input at \"> \" prompts.";
 
 #if defined(__x86_64__)
 constexpr uintptr_t KernelAddress = 0xFFFF800000000000;
@@ -123,6 +125,8 @@ void CheckArguments(int argc, char** argv)
     Check(strcmp(argv[1], "one") == 0, "argv[1]");
     Check(strcmp(argv[2], "two words") == 0, "quoted argv[2]");
     Check(argv[argc] == nullptr, "argv terminator");
+    Check(featheros_argument_count() == argc && featheros_argument_values() == argv,
+          "featheros_argument_count and featheros_argument_values");
     // The strings are writable copies, so strtok may split them in place.
     Check(strcmp(strtok(argv[2], " "), "two") == 0, "strtok on argv");
 }
@@ -238,6 +242,48 @@ void CheckIntegerParsing()
     Check(strtoll("-77", nullptr, 8) == -63, "strtoll octal");
     Check(atoi("123") == 123 && atoi(" -7") == -7 && atol("40") == 40 && atoll("-5") == -5,
           "atoi family");
+
+    char formatted[64];
+    snprintf(formatted, sizeof(formatted), "%" PRId64 " %" PRIx32 " %" PRIuMAX " %" PRIdFAST8,
+             INT64_MIN, UINT32_C(0xBEEF), UINTMAX_MAX, static_cast<int_fast8_t>(-5));
+    Check(strcmp(formatted, "-9223372036854775808 beef 18446744073709551615 -5") == 0,
+          "inttypes.h printf formats");
+    int16_t small = 0;
+    int_fast8_t fast = 0;
+    uint64_t wide = 0;
+    Check(sscanf("-300 7 ffffffffffffffff", "%" SCNd16 " %" SCNdFAST8 " %" SCNx64, &small, &fast,
+                 &wide) == 3 &&
+              small == -300 && fast == 7 && wide == UINT64_MAX,
+          "inttypes.h scanf formats");
+    Check(strtoimax("-0x10", &end, 0) == -16 && *end == '\0' &&
+              strtoumax("777", nullptr, 8) == 511 && imaxabs(-9) == 9 &&
+              imaxdiv(-7, 2).quot == -3 && imaxdiv(-7, 2).rem == -1,
+          "strtoimax, strtoumax, imaxabs and imaxdiv");
+}
+
+void CheckUnicodeConversion()
+{
+    mbstate_t state = {};
+    char32_t character = 0;
+    const char euro[] = "\xE2\x82\xAC";
+    Check(mbrtoc32(&character, euro, 2, &state) == static_cast<size_t>(-2) &&
+              mbrtoc32(&character, euro + 2, 1, &state) == 1 && character == 0x20AC,
+          "mbrtoc32 across calls");
+    char bytes[4];
+    Check(c32rtomb(bytes, 0x1F600, &state) == 4 && memcmp(bytes, "\xF0\x9F\x98\x80", 4) == 0,
+          "c32rtomb");
+    errno = 0;
+    Check(c32rtomb(bytes, 0xD800, &state) == static_cast<size_t>(-1) && errno == EILSEQ,
+          "c32rtomb refuses a surrogate");
+    state = {};
+    char16_t units[2] = {};
+    Check(mbrtoc16(&units[0], "\xF0\x9F\x98\x80", 4, &state) == 4 &&
+              mbrtoc16(&units[1], "", 1, &state) == static_cast<size_t>(-3) && units[0] == 0xD83D &&
+              units[1] == 0xDE00,
+          "mbrtoc16 returns a surrogate pair");
+    Check(c16rtomb(bytes, units[0], &state) == 0 && c16rtomb(bytes, units[1], &state) == 4 &&
+              memcmp(bytes, "\xF0\x9F\x98\x80", 4) == 0,
+          "c16rtomb joins a surrogate pair");
 }
 
 void CheckArithmetic()
@@ -515,6 +561,16 @@ void CheckAllocation()
     auto* zeroed = static_cast<unsigned char*>(calloc(50, 100));
     Check(zeroed != nullptr && Filled(zeroed, 5000, 0), "calloc zeroes reused memory");
     free(zeroed);
+    void* aligned = nullptr;
+    Check(posix_memalign(&aligned, 4096, 100) == 0 &&
+              reinterpret_cast<uintptr_t>(aligned) % 4096 == 0,
+          "posix_memalign aligns");
+    free(aligned);
+    Check(posix_memalign(&aligned, 24, 100) == EINVAL && posix_memalign(&aligned, 4, 100) == EINVAL,
+          "posix_memalign rejects bad alignments");
+    unsigned char random_bytes[600] = {};
+    arc4random_buf(random_bytes, sizeof(random_bytes));
+    Check(!Filled(random_bytes, sizeof(random_bytes), 0), "arc4random_buf fills the buffer");
     Check(realloc(malloc(10), 0) == nullptr, "realloc to 0 frees");
     void* from_null = realloc(nullptr, 32);
     Check(from_null != nullptr, "realloc of nullptr allocates");
@@ -710,6 +766,10 @@ void CheckDescriptorFiles()
     Check(ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0 && window.ws_row >= 1 &&
               window.ws_col >= 1,
           "ioctl reads the console size");
+    struct winsize same = {};
+    Check(tcgetwinsize(STDOUT_FILENO, &same) == 0 && same.ws_row == window.ws_row &&
+              same.ws_col == window.ws_col,
+          "tcgetwinsize reads the console size");
     errno = 0;
     Check(ioctl(STDOUT_FILENO, 0x1234, &window) == -1 && errno == EINVAL,
           "ioctl with an unknown request");
@@ -718,12 +778,70 @@ void CheckDescriptorFiles()
     Check(text >= 3 && ioctl(text, TIOCGWINSZ, &window) == -1 && errno == ENOTTY &&
               close(text) == 0,
           "ioctl on a file");
+    errno = 0;
+    Check(tcgetwinsize(-1, &same) == -1 && errno == EBADF, "tcgetwinsize on a bad descriptor");
     Check(access("/system/hello.txt", R_OK) == 0, "access to read");
     errno = 0;
     Check(access("/system/hello.txt", W_OK) == -1 && errno == EROFS, "access to write");
     Check(unlink("/home/LIBCRAW.TXT") == 0, "unlink");
     errno = 0;
     Check(unlink("/home/LIBCRAW.TXT") == -1 && errno == ENOENT, "unlink a missing file");
+}
+
+void CheckFixedParameterCalls()
+{
+    const char* path = "/home/LIBCFIX.TXT";
+    const int descriptor = featheros_open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    Check(descriptor >= 3 && write(descriptor, "fixed", 5) == 5 && close(descriptor) == 0,
+          "featheros_open creates a file");
+    errno = 0;
+    Check(featheros_open(path, O_WRONLY | O_CREAT | O_EXCL, 0644) == -1 && errno == EEXIST,
+          "featheros_open with O_EXCL");
+    char saved[PATH_MAX];
+    Check(getcwd(saved, sizeof(saved)) != nullptr && chdir("/home") == 0, "chdir for openat");
+    const int reader = openat(AT_FDCWD, "LIBCFIX.TXT", O_RDONLY);
+    Check(chdir(saved) == 0, "chdir back after openat");
+    char bytes[8] = {};
+    Check(reader >= 3 && read(reader, bytes, sizeof(bytes)) == 5 && memcmp(bytes, "fixed", 5) == 0,
+          "openat relative to the working directory");
+    errno = 0;
+    Check(featheros_openat(reader, "LIBCFIX.TXT", O_RDONLY, 0) == -1 && errno == ENOTDIR,
+          "openat relative to a file");
+    errno = 0;
+    Check(featheros_openat(-1, "LIBCFIX.TXT", O_RDONLY, 0) == -1 && errno == EBADF,
+          "openat relative to a bad descriptor");
+    const int absolute = featheros_openat(reader, path, O_RDONLY, 0);
+    Check(absolute >= 3 && close(absolute) == 0, "openat with an absolute path");
+
+    Check(featheros_fcntl(reader, F_SETFD, FD_CLOEXEC) == 0 &&
+              featheros_fcntl(reader, F_GETFD, 0) == FD_CLOEXEC &&
+              featheros_fcntl(reader, F_GETFL, 0) == O_RDONLY,
+          "featheros_fcntl");
+    errno = 0;
+    Check(featheros_fcntl(reader, 9999, 0) == -1 && errno == EINVAL,
+          "featheros_fcntl with an unknown command");
+    struct winsize window = {};
+    Check(featheros_ioctl(STDOUT_FILENO, TIOCGWINSZ, &window) == 0 && window.ws_col >= 1,
+          "featheros_ioctl reads the console size");
+    errno = 0;
+    Check(featheros_ioctl(reader, TIOCGWINSZ, &window) == -1 && errno == ENOTTY,
+          "featheros_ioctl on a file");
+    Check(close(reader) == 0 && unlink(path) == 0, "remove the openat file");
+
+    featheros_format_argument arguments[3] = {};
+    arguments[0].type = FEATHEROS_FORMAT_STRING;
+    arguments[0].value.string = "id";
+    arguments[1].type = FEATHEROS_FORMAT_SIGNED;
+    arguments[1].value.signed_value = -42;
+    arguments[2].type = FEATHEROS_FORMAT_DOUBLE;
+    arguments[2].value.double_value = 2.5;
+    char text[32];
+    Check(featheros_format(text, sizeof(text), "%s %05d %.1f %d", arguments, 3) == 15 &&
+              strcmp(text, "id -0042 2.5 %d") == 0,
+          "featheros_format");
+    Check(featheros_format(text, 4, "%s %05d", arguments, 2) == 8 && strcmp(text, "id ") == 0,
+          "featheros_format truncates");
+    Check(featheros_format(nullptr, 0, "%s", arguments, 1) == 2, "featheros_format measures");
 }
 
 void CheckDirectories()
@@ -916,6 +1034,12 @@ void CheckTime()
     errno = 0;
     const struct timespec invalid = {0, 1000000000};
     Check(nanosleep(&invalid, nullptr) == -1 && errno == EINVAL, "nanosleep rejects bad input");
+    struct timespec resolution = {1, 0};
+    Check(clock_getres(CLOCK_MONOTONIC, &resolution) == 0 && resolution.tv_sec == 0 &&
+              resolution.tv_nsec == 10000000 && clock_getres(CLOCK_REALTIME, nullptr) == 0,
+          "clock_getres");
+    errno = 0;
+    Check(clock_getres(7, &resolution) == -1 && errno == EINVAL, "clock_getres rejects a clock");
     const time_t before_epoch = -1;
     errno = 0;
     Check(gmtime(&before_epoch) == nullptr && errno == EOVERFLOW, "gmtime before 1970");
@@ -1670,6 +1794,63 @@ void* WaitAtGate(void* argument)
     }
     pthread_mutex_unlock(&gate->mutex);
     return nullptr;
+}
+
+pthread_key_t value_key;
+int destructor_calls = 0;
+int resets_left = 0;
+
+void CountDestructor(void* value)
+{
+    __atomic_add_fetch(&destructor_calls, 1, __ATOMIC_RELAXED);
+    // Setting the value again makes the thread's end run the destructor another round.
+    if (__atomic_sub_fetch(&resets_left, 1, __ATOMIC_RELAXED) >= 0)
+    {
+        pthread_setspecific(value_key, value);
+    }
+}
+
+void* SetKeyValue(void* value)
+{
+    const bool unset = pthread_getspecific(value_key) == nullptr;
+    pthread_setspecific(value_key, value);
+    const bool own = pthread_getspecific(value_key) == value;
+    return reinterpret_cast<void*>(static_cast<uintptr_t>(unset && own));
+}
+
+void CheckThreadKeys()
+{
+    Check(pthread_key_create(&value_key, CountDestructor) == 0, "pthread_key_create");
+    int marker = 0;
+    pthread_setspecific(value_key, &marker);
+    pthread_t thread;
+    void* result = nullptr;
+    pthread_create(&thread, nullptr, SetKeyValue, &destructor_calls);
+    pthread_join(thread, &result);
+    Check(result != nullptr && pthread_getspecific(value_key) == &marker,
+          "each thread has its own key value");
+    Check(destructor_calls == 1, "a thread's end calls the key's destructor");
+    resets_left = 2;
+    pthread_create(&thread, nullptr, SetKeyValue, &destructor_calls);
+    pthread_join(thread, nullptr);
+    Check(destructor_calls == 4, "destructors run again while they set values");
+    Check(pthread_key_delete(value_key) == 0 && pthread_getspecific(value_key) == nullptr &&
+              pthread_setspecific(value_key, &marker) == EINVAL &&
+              pthread_key_delete(value_key) == EINVAL,
+          "pthread_key_delete");
+    pthread_key_t keys[PTHREAD_KEYS_MAX];
+    int created = 0;
+    while (created < PTHREAD_KEYS_MAX && pthread_key_create(&keys[created], nullptr) == 0)
+    {
+        ++created;
+    }
+    pthread_key_t extra;
+    Check(created == PTHREAD_KEYS_MAX && pthread_key_create(&extra, nullptr) == EAGAIN,
+          "PTHREAD_KEYS_MAX keys at most");
+    for (int index = 0; index < created; ++index)
+    {
+        pthread_key_delete(keys[index]);
+    }
 }
 
 pthread_once_t once_control = PTHREAD_ONCE_INIT;
@@ -2910,6 +3091,14 @@ void CheckFloatingPoint()
               Near(log10(1000.0), 3.0, 1e-15),
           "exp and the logarithms");
     Check(pow(2.0, 10.0) == 1024.0 && Near(pow(2.0, 0.5), M_SQRT2, 1e-15), "pow");
+    // The product 1 - 2^-60 rounds to 1, so only a single rounding keeps the -2^-60.
+    Check(fma(1 + 0x1p-30, 1 - 0x1p-30, -1.0) == -0x1p-60 &&
+              fmaf(1 + 0x1p-12f, 1 - 0x1p-12f, -1.0f) == -0x1p-24f,
+          "fma and fmaf");
+    errno = 0;
+    Check(isnan(fma(INFINITY, 0.0, 1.0)) && errno == EDOM, "fma of infinity times zero");
+    errno = 0;
+    Check(isinf(fma(1e300, 1e300, 1.0)) && errno == ERANGE, "fma overflow");
     Check(Near(atan2(1.0, 1.0), M_PI_4, 1e-15) && Near(asin(1.0), M_PI_2, 1e-15) &&
               Near(acos(-1.0), M_PI, 1e-15),
           "the inverse functions");
@@ -3012,6 +3201,7 @@ int main(int argc, char** argv)
     CheckStrings();
     CheckCharacterClasses();
     CheckIntegerParsing();
+    CheckUnicodeConversion();
     CheckArithmetic();
     CheckSorting();
     CheckJumps();
@@ -3024,6 +3214,7 @@ int main(int argc, char** argv)
     CheckFormatting();
     CheckFileStreams();
     CheckDescriptorFiles();
+    CheckFixedParameterCalls();
     CheckDirectories();
     CheckVirtualFiles();
     CheckAddressNames();
@@ -3049,6 +3240,7 @@ int main(int argc, char** argv)
     CheckThreads();
     CheckThreadLocalStorage();
     CheckSynchronization();
+    CheckThreadKeys();
     CheckThreadSafeLibrary();
     CheckMemoryReturns();
     CheckScanning();

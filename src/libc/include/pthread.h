@@ -57,6 +57,8 @@ typedef struct
 
 typedef int pthread_once_t;
 
+typedef unsigned int pthread_key_t;
+
 #define PTHREAD_ONCE_INIT 0
 
 __BEGIN_DECLS
@@ -102,6 +104,14 @@ int pthread_condattr_setclock(pthread_condattr_t* attributes, clockid_t clock);
 int pthread_condattr_getclock(const pthread_condattr_t* attributes, clockid_t* clock);
 
 int pthread_once(pthread_once_t* once, void (*routine)(void));
+
+// At most PTHREAD_KEYS_MAX keys at a time. A thread that ends through pthread_exit or by
+// returning calls each destructor on its non-null values, for up to PTHREAD_DESTRUCTOR_ITERATIONS
+// rounds while destructors set values again; exit calls none.
+int pthread_key_create(pthread_key_t* key, void (*destructor)(void* value));
+int pthread_key_delete(pthread_key_t key);
+void* pthread_getspecific(pthread_key_t key);
+int pthread_setspecific(pthread_key_t key, const void* value);
 
 __END_DECLS
 

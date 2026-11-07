@@ -1,6 +1,9 @@
 *.elf
 *.o
 deps/limine
+deps/swift
+deps/llvm-project
+deps/swift.patch.applied
 deps/stivale
 *.iso
 **/build

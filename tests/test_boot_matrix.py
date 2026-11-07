@@ -27,6 +27,7 @@ class BootMatrixTests(unittest.TestCase):
         shell_test=False,
         input_test=False,
         qemu_cpu=None,
+        build_type="Debug",
     ):
         environment = os.environ.copy()
         environment["PANIC_TEST"] = "ON" if panic_test else "OFF"
@@ -46,6 +47,7 @@ class BootMatrixTests(unittest.TestCase):
         environment["CALC_TEST"] = "ON" if calc_test else "OFF"
         environment["SHELL_TEST"] = "ON" if shell_test else "OFF"
         environment["INPUT_TEST"] = "ON" if input_test else "OFF"
+        environment["BUILD_TYPE"] = build_type
         environment.pop("QEMU_CPU", None)
         if qemu_cpu is not None:
             environment["QEMU_CPU"] = qemu_cpu
@@ -179,6 +181,13 @@ class BootMatrixTests(unittest.TestCase):
 
     def test_36_aarch64_network(self):
         self.run_boot_case("aarch64", network_test=True)
+
+    # Optimization can expose what -O0 hides, such as a missing volatile.
+    def test_37_x86_64_shell_release(self):
+        self.run_boot_case("x86_64", shell_test=True, build_type="Release")
+
+    def test_38_aarch64_shell_release(self):
+        self.run_boot_case("aarch64", shell_test=True, build_type="Release")
 
 
 if __name__ == "__main__":

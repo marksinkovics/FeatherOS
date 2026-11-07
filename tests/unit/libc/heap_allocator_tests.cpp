@@ -172,6 +172,56 @@ TEST_CASE("resizing stays in place when it can and otherwise moves the data")
     REQUIRE(heap.allocator.Free(moved));
 }
 
+TEST_CASE("aligned allocations land on their alignment and free back into one block")
+{
+    Heap heap;
+    // Each pass starts from a different offset, so both a small and a large gap come up.
+    for (size_t offset : {0, 16, 32, 48, 112})
+    {
+        void* padding = offset == 0 ? nullptr : heap.allocator.Allocate(offset - 8);
+        for (size_t alignment : {8, 16, 32, 64, 256, 4096})
+        {
+            auto* pointer = static_cast<uint8_t*>(heap.allocator.AllocateAligned(100, alignment));
+            REQUIRE(pointer != nullptr);
+            REQUIRE(reinterpret_cast<uintptr_t>(pointer) % alignment == 0);
+            REQUIRE(heap.allocator.UsableSize(pointer) >= 100);
+            std::memset(pointer, 0x3C, 100);
+            REQUIRE(heap.allocator.Free(pointer));
+        }
+        if (padding != nullptr)
+        {
+            REQUIRE(heap.allocator.Free(padding));
+        }
+        REQUIRE(heap.allocator.FreeBlockCount() == 1);
+    }
+    REQUIRE(heap.arena->grow_calls == 1);
+}
+
+TEST_CASE("aligned allocations stay disjoint from their neighbors")
+{
+    Heap heap;
+    std::vector<std::pair<uint8_t*, uint8_t>> pointers;
+    for (int index = 0; index < 40; ++index)
+    {
+        const size_t alignment = size_t{16} << (index % 6);
+        auto* pointer = static_cast<uint8_t*>(heap.allocator.AllocateAligned(48, alignment));
+        REQUIRE(pointer != nullptr);
+        REQUIRE(reinterpret_cast<uintptr_t>(pointer) % alignment == 0);
+        const auto value = static_cast<uint8_t>(index + 1);
+        std::memset(pointer, value, 48);
+        pointers.emplace_back(pointer, value);
+    }
+    for (const auto& [pointer, value] : pointers)
+    {
+        for (size_t index = 0; index < 48; ++index)
+        {
+            REQUIRE(pointer[index] == value);
+        }
+        REQUIRE(heap.allocator.Free(pointer));
+    }
+    REQUIRE(heap.allocator.FreeBlockCount() == 1);
+}
+
 TEST_CASE("the heap grows by as much as a large request needs")
 {
     Heap heap;

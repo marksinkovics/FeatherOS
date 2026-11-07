@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <featheros.h>
 #include <stdarg.h>
 #include <sched.h>
 #include <stdint.h>
@@ -23,7 +24,7 @@ constexpr int KnownOpenFlags =
 
 } // namespace
 
-int open(const char* path, int flags, ...)
+int featheros_open(const char* path, int flags, mode_t /*mode*/)
 {
     const int access_mode = flags & O_ACCMODE;
     if ((flags & ~KnownOpenFlags) != 0 || access_mode == O_ACCMODE)
@@ -73,6 +74,47 @@ int open(const char* path, int flags, ...)
         return -1;
     }
     return Check<int>(FeatherOS::User::OpenFile(path, open_flags));
+}
+
+int open(const char* path, int flags, ...)
+{
+    mode_t mode = 0;
+    if ((flags & O_CREAT) != 0)
+    {
+        va_list arguments;
+        va_start(arguments, flags);
+        mode = va_arg(arguments, mode_t);
+        va_end(arguments);
+    }
+    return featheros_open(path, flags, mode);
+}
+
+int featheros_openat(int directory, const char* path, int flags, mode_t mode)
+{
+    if (path != nullptr && path[0] != '/' && directory != AT_FDCWD)
+    {
+        // fstat sets EBADF for a closed descriptor; an open one is never a directory.
+        struct stat status;
+        if (fstat(directory, &status) == 0)
+        {
+            errno = ENOTDIR;
+        }
+        return -1;
+    }
+    return featheros_open(path, flags, mode);
+}
+
+int openat(int directory, const char* path, int flags, ...)
+{
+    mode_t mode = 0;
+    if ((flags & O_CREAT) != 0)
+    {
+        va_list arguments;
+        va_start(arguments, flags);
+        mode = va_arg(arguments, mode_t);
+        va_end(arguments);
+    }
+    return featheros_openat(directory, path, flags, mode);
 }
 
 int creat(const char* path, mode_t mode)
@@ -145,12 +187,10 @@ int dup2(int descriptor, int target)
                                                  FeatherOS::User::DuplicateExact));
 }
 
-int fcntl(int descriptor, int command, ...)
+int featheros_fcntl(int descriptor, int command, intptr_t value)
 {
-    va_list arguments;
-    va_start(arguments, command);
-    const int argument = command == F_GETFD || command == F_GETFL ? 0 : va_arg(arguments, int);
-    va_end(arguments);
+    // Every supported command takes an int, if anything.
+    const auto argument = static_cast<int>(value);
     const auto target = static_cast<uint64_t>(descriptor);
     switch (command)
     {
@@ -218,6 +258,15 @@ int fcntl(int descriptor, int command, ...)
         errno = EINVAL;
         return -1;
     }
+}
+
+int fcntl(int descriptor, int command, ...)
+{
+    va_list arguments;
+    va_start(arguments, command);
+    const int argument = command == F_GETFD || command == F_GETFL ? 0 : va_arg(arguments, int);
+    va_end(arguments);
+    return featheros_fcntl(descriptor, command, argument);
 }
 
 off_t lseek(int descriptor, off_t offset, int whence)

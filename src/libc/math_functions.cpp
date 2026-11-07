@@ -1,5 +1,7 @@
 #include "math_functions.h"
 
+#include "float_bits.h"
+
 #include <stdint.h>
 
 namespace FeatherOS::LibC::Math
@@ -752,6 +754,163 @@ double Hypot(double x, double y)
     }
     const double ratio = smaller / larger;
     return larger * Sqrt(1.0 + ratio * ratio);
+}
+
+namespace
+{
+
+// The product of two mantissas of at most 53 bits fits below this bit, and a sum of two values
+// aligned to it does not reach bit 127.
+constexpr int AlignedTop = 125;
+
+int HighestBit(Mantissa value)
+{
+    const auto high = static_cast<uint64_t>(value >> 64);
+    return high != 0 ? 127 - __builtin_clzll(high)
+                     : 63 - __builtin_clzll(static_cast<uint64_t>(value));
+}
+
+// Bits shifted out are kept as one sticky bit, which still decides rounding: the lowest bit lies
+// far below the result's last place.
+Mantissa ShiftRightSticky(Mantissa value, int shift)
+{
+    if (shift == 0)
+    {
+        return value;
+    }
+    if (shift >= 128)
+    {
+        return value != 0 ? 1 : 0;
+    }
+    const Mantissa lost = value & ((static_cast<Mantissa>(1) << shift) - 1);
+    return (value >> shift) | (lost != 0 ? 1 : 0);
+}
+
+// mantissa * 2^exponent, nonzero, rounded to nearest even in layout.
+Mantissa RoundToLayout(const FloatLayout& layout, bool negative, Mantissa mantissa, int exponent)
+{
+    const int last_place = layout.precision - 1;
+    const int subnormal_exponent = layout.minimum_exponent - last_place;
+    const int top = HighestBit(mantissa);
+    int shift = top - last_place;
+    if (exponent + shift < subnormal_exponent)
+    {
+        shift = subnormal_exponent - exponent;
+    }
+    Mantissa kept = 0;
+    if (shift <= 0)
+    {
+        kept = mantissa << -shift;
+    }
+    else if (shift < 128)
+    {
+        kept = mantissa >> shift;
+        const Mantissa rest = mantissa & ((static_cast<Mantissa>(1) << shift) - 1);
+        const Mantissa half = static_cast<Mantissa>(1) << (shift - 1);
+        if (rest > half || (rest == half && (kept & 1) != 0))
+        {
+            ++kept;
+        }
+    }
+    int place = exponent + shift;
+    if (kept == static_cast<Mantissa>(1) << layout.precision)
+    {
+        kept >>= 1;
+        ++place;
+    }
+    if (kept < static_cast<Mantissa>(1) << last_place)
+    {
+        return Encode(layout, negative, kept, 0);
+    }
+    const int biased = place + last_place + layout.maximum_exponent;
+    const int infinite = (1 << layout.exponent_bits) - 1;
+    return biased >= infinite ? Encode(layout, negative, 0, infinite)
+                              : Encode(layout, negative, kept, biased);
+}
+
+template <typename Value> Value Fused(const FloatLayout& layout, Value x, Value y, Value z)
+{
+    const DecodedFloat a = Decode(layout, RawBits(x));
+    const DecodedFloat b = Decode(layout, RawBits(y));
+    const DecodedFloat c = Decode(layout, RawBits(z));
+    const auto finite = [](const DecodedFloat& value)
+    { return value.kind == FloatKind::Zero || value.kind == FloatKind::Finite; };
+    if (!finite(a) || !finite(b))
+    {
+        return x * y + z;
+    }
+    // x * y alone could overflow to the infinity of the other sign.
+    if (!finite(c))
+    {
+        return z + z;
+    }
+    if (a.kind == FloatKind::Zero || b.kind == FloatKind::Zero)
+    {
+        return x * y + z;
+    }
+    // Adding a zero to the rounded product would lose the sign of a product that underflows.
+    if (c.kind == FloatKind::Zero)
+    {
+        return x * y;
+    }
+
+    Mantissa product = static_cast<Mantissa>(static_cast<uint64_t>(a.mantissa)) *
+                       static_cast<uint64_t>(b.mantissa);
+    const bool product_negative = a.negative != b.negative;
+    const int product_shift = AlignedTop - HighestBit(product);
+    product <<= product_shift;
+    int product_exponent = a.exponent + b.exponent - product_shift;
+    Mantissa addend = c.mantissa;
+    const int addend_shift = AlignedTop - HighestBit(addend);
+    addend <<= addend_shift;
+    int addend_exponent = c.exponent - addend_shift;
+
+    // A shift drops bits only when the top bits lie more than 20 places apart, and then a
+    // subtraction cancels at most one leading bit.
+    int exponent = product_exponent;
+    if (product_exponent >= addend_exponent)
+    {
+        addend = ShiftRightSticky(addend, product_exponent - addend_exponent);
+    }
+    else
+    {
+        product = ShiftRightSticky(product, addend_exponent - product_exponent);
+        exponent = addend_exponent;
+    }
+
+    bool negative = product_negative;
+    Mantissa sum = 0;
+    if (product_negative == c.negative)
+    {
+        sum = product + addend;
+    }
+    else if (product >= addend)
+    {
+        sum = product - addend;
+    }
+    else
+    {
+        sum = addend - product;
+        negative = c.negative;
+    }
+    // An exact zero from opposite signs is +0 when rounding to nearest.
+    if (sum == 0)
+    {
+        return Value{};
+    }
+    return FromRawBits<Value>(RoundToLayout(layout, negative, sum, exponent));
+}
+
+} // namespace
+
+double FusedMultiplyAdd(double x, double y, double z)
+{
+    return Fused(DoubleFormat, x, y, z);
+}
+
+float FusedMultiplyAdd(float x, float y, float z)
+{
+    return Fused(FloatFormat, x, y, z);
 }
 
 } // namespace FeatherOS::LibC::Math

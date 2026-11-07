@@ -12,6 +12,8 @@ namespace
 
 constexpr int64_t SecondsPerDay = 86400;
 constexpr uint64_t NanosecondsPerSecond = 1000000000;
+// Both clocks advance by the kernel's 100 Hz timer ticks.
+constexpr long ClockResolutionNanoseconds = 10000000;
 
 struct tm shared_time;
 char shared_text[32];
@@ -151,6 +153,20 @@ int clock_gettime(clockid_t clock, struct timespec* result)
     }
     errno = EINVAL;
     return -1;
+}
+
+int clock_getres(clockid_t clock, struct timespec* resolution)
+{
+    if (clock != CLOCK_REALTIME && clock != CLOCK_MONOTONIC)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    if (resolution != nullptr)
+    {
+        *resolution = {0, ClockResolutionNanoseconds};
+    }
+    return 0;
 }
 
 int clock_settime(clockid_t clock, const struct timespec* time)

@@ -7,6 +7,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <featheros.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -837,6 +838,15 @@ int snprintf(char* buffer, size_t size, const char* format, ...)
     const int count = vsnprintf(buffer, size, format, arguments);
     va_end(arguments);
     return count;
+}
+
+int featheros_format(char* buffer, size_t size, const char* format,
+                     const featheros_format_argument* arguments, size_t count)
+{
+    FeatherOS::LibC::BufferSink sink = {buffer, size};
+    const int length = FeatherOS::LibC::FormatTo(sink, format, arguments, count);
+    sink.Terminate();
+    return length;
 }
 
 int vsprintf(char* buffer, const char* format, va_list arguments)

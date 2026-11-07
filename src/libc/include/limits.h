@@ -19,4 +19,8 @@
 #define OPEN_MAX 32
 #define PATH_MAX 64
 
+// The C library's limits for pthread_key_create.
+#define PTHREAD_KEYS_MAX 128
+#define PTHREAD_DESTRUCTOR_ITERATIONS 4
+
 #endif

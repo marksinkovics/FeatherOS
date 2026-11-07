@@ -1,6 +1,5 @@
 #include "text_tools.h"
 
-#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -26,28 +25,24 @@ void CountText(const char* text, size_t length, TextCounts* counts, bool* in_wor
     }
 }
 
-bool ContainsText(const char* line, const char* pattern, bool ignore_case)
+char* FixedTextPattern(const char* text)
 {
-    const size_t pattern_length = strlen(pattern);
-    for (const char* start = line;; ++start)
+    auto* pattern = static_cast<char*>(malloc(2 * strlen(text) + 1));
+    if (pattern == nullptr)
     {
-        size_t matched = 0;
-        while (matched < pattern_length && start[matched] != '\0' &&
-               (ignore_case ? tolower(static_cast<unsigned char>(start[matched])) ==
-                                  tolower(static_cast<unsigned char>(pattern[matched]))
-                            : start[matched] == pattern[matched]))
-        {
-            ++matched;
-        }
-        if (matched == pattern_length)
-        {
-            return true;
-        }
-        if (*start == '\0')
-        {
-            return false;
-        }
+        return nullptr;
     }
+    char* cursor = pattern;
+    for (; *text != '\0'; ++text)
+    {
+        if (strchr(".[\\*^$", *text) != nullptr)
+        {
+            *cursor++ = '\\';
+        }
+        *cursor++ = *text;
+    }
+    *cursor = '\0';
+    return pattern;
 }
 
 int CompareLines(const char* left, const char* right, bool numeric)
@@ -64,7 +59,7 @@ int CompareLines(const char* left, const char* right, bool numeric)
     return strcmp(left, right);
 }
 
-int ParseFlags(int argc, char** argv, const char* allowed, bool (&letters)[26], char* bad)
+int ParseFlags(int argc, char** argv, const char* allowed, bool (&letters)[128], char* bad)
 {
     int index = 1;
     for (; index < argc && argv[index][0] == '-' && argv[index][1] != '\0'; ++index)
@@ -75,12 +70,14 @@ int ParseFlags(int argc, char** argv, const char* allowed, bool (&letters)[26], 
         }
         for (const char* letter = argv[index] + 1; *letter != '\0'; ++letter)
         {
-            if (*letter < 'a' || *letter > 'z' || strchr(allowed, *letter) == nullptr)
+            const bool is_letter =
+                (*letter >= 'a' && *letter <= 'z') || (*letter >= 'A' && *letter <= 'Z');
+            if (!is_letter || strchr(allowed, *letter) == nullptr)
             {
                 *bad = *letter;
                 return -1;
             }
-            letters[*letter - 'a'] = true;
+            letters[static_cast<unsigned char>(*letter)] = true;
         }
     }
     return index;

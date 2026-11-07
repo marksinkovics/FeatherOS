@@ -87,6 +87,14 @@ SHELL_INPUT = (
     b"write /tmp/n.txt 10\nwrite -a /tmp/n.txt 9\n"
     b"write -a /tmp/n.txt 100\nsort -n /tmp/n.txt\n"
     b"sort -rn /tmp/n.txt\ngrep nothing /tmp/n.txt\n"
+    # grep takes basic regular expressions, extended ones with -E and plain
+    # text with -F.
+    b"write /tmp/g.txt key=42 id=7\nwrite -a /tmp/g.txt plain line\n"
+    b"write -a /tmp/g.txt a.b\nwrite -a /tmp/g.txt axb\n"
+    b"grep -n a.b /tmp/g.txt\ngrep -F -v -n a.b /tmp/g.txt\n"
+    b'grep "^p.*e$" /tmp/g.txt\ngrep -E "^[a-z]+=[0-9]{2} " /tmp/g.txt\n'
+    b'grep -E -o "[a-z]+=[0-9]+" /tmp/g.txt\n'
+    b'grep -o -i -E "(X|Q)B$" /tmp/g.txt\ngrep -E "(" /tmp/g.txt\n'
     # mv renames within a filesystem, and copies between /tmp and the disk.
     b"mkdir /tmp/box\nmv /tmp/copy.txt /tmp/box\nmv /tmp/box /tmp/crate\n"
     b"wc -l /tmp/crate/copy.txt\nmv /tmp/crate /tmp/crate/inner\n"
@@ -125,8 +133,220 @@ SHELL_INPUT = (
     b"primes 4 100000\nprimes 16 20000\n"
     b"threads 4 100000\nthreads 15 20000\n"
     b"fptest 8\n"
+    b"cppbench -n 1\ncppbench -n 3 life json\ncppbench nothing\n"
     b"calc\n1 / 3\n7 / 0\nexit\n"
 )
+
+# Programs written in Embedded Swift, which the build skips without a Swift
+# toolchain.
+SWIFT_SHELL_INPUT = (
+    b'hello one "two words"\n'
+    b'echo "Embedded Swift" | rev\n'
+    b"write /tmp/rev.txt abc def\n"
+    b"rev /tmp/rev.txt /tmp/none\n"
+    b'echo "ab cd" | rev -n\n'
+    b"rev -h\n"
+    # regex reports subexpressions through FeatherSupport's
+    # RegularExpression over the C library's regex.h.
+    b"write /tmp/s.txt key=42 id=7\n"
+    b'regex -a "([a-z]+)=([0-9]+)( )?" /tmp/s.txt\n'
+    b"echo AxB a.b | regex -B -i a.\\(b\\)\n"
+    b"regex ( /tmp/s.txt\nregex -h\n"
+    b"json .name /system/sample.json\n"
+    b"json -r .motto /system/sample.json\n"
+    b"json -c .milestones /system/sample.json\n"
+    b"json .motto /system/sample.json\n"
+    b"json -c .architectures[] /system/sample.json\n"
+    b"echo [10,[20,30]] | json .[-1]\n"
+    b"echo [1,,2] | json\n"
+    b"json .a..b /system/sample.json\n"
+    b"json .name[0] /system/sample.json /none\n"
+    b'json -c -t "{double}" .versions /system/sample.json\n'
+    b"json -t [string] .architectures /system/sample.json\n"
+    b'json -c -t "{int?}" .milestones /system/sample.json\n'
+    b"echo [1,300] | json -t [int8]\n"
+    b'echo [1,null] | json -c -t "[uint16?]"\n'
+    b"json -t ratio .ratio /system/sample.json\n"
+    b"json -h\n"
+    b"life -p glider -s 6x6 -n 4\n"
+    b"life -p blinker -s 5x5 -n 1\n"
+    b"life -n 2 | wc -c\n"
+    b"life -p nothing\n"
+    b"life -s 2x2 -n 1\n"
+    b"life < /system/hello.txt\n"
+    b"life -h\n"
+    # The check values are cppbench's, so both did the same work.
+    b"swiftbench -n 2\n"
+    b"swiftbench -t x\n"
+)
+EXPECTED_SWIFT_OUTPUT = (
+    "Hello from Embedded Swift",
+    "hello: arguments one, two words",
+    "hello: argc 3, the last argument two words",
+    "hello: formatted [ab   ] [003.1] [0xff] [+42] [A] "
+    "[-9223372036854775808] [%d]",
+    "hello: read feather, close-on-exec true then false, "
+    "ioctl on a file Not a terminal, on the terminal true",
+    "hello: largest square of 25, rectangle of 12",
+    "hello: tracker released",
+    "hello: tracker was shared true",
+    "hello: 2 distinct words, 4 characters, roll in range true",
+    "hello: running as process ",
+    "hello: parsed 0.0025 and 0.1",
+    "hello: printed items|3|2.5|true|6.4.2",
+    'hello: 3 hashables, "1" is a String, base 7',
+    "hello: withVaList 1 2 3 4 5 6 7 8, 0.5 1 1.5 2 2.5 3 3.5 4 4.5",
+    "hello: written with write",
+    "hello: /etc/hosts read whole and by line alike true",
+    "hello: /none: No such file or directory",
+    'hello: encoded {"number":25,"phase":"done","steps":'
+    '[{"build":{"arch":"aarch64"}},{"boot":{"seconds":1.5}}],'
+    '"counts":{"parts":8}}, alike true',
+    "hello: DecodingError.dataCorrupted: Data was corrupted. "
+    "Path: phase. Debug description: Cannot initialize from invalid "
+    "String value late",
+    "tfiwS deddebmE",
+    "fed cba",
+    "rev: /tmp/none: No such file or directory",
+    "     1  dc ba",
+    "usage: rev [-n] [file...]",
+    "1: key=42  [key] [42] [ ]",
+    "1: id=7 [id] [7] -",
+    "1: AxB [B]",
+    "regex: Unmatched ( or \\(",
+    "usage: regex [-Bia] <pattern> [file...]",
+    '"FeatherOS"',
+    # The serial console shows the tab as a space.
+    'light as a "feather"',
+    '{"done":17,"next":"json"}',
+    '"light\\tas a \\"feather\\""',
+    '"x86_64"\r\n"aarch64"',
+    "[\r\n  20,\r\n  30\r\n]",
+    "json: standard input: line 1, column 4: expected a value, found ','",
+    "json: invalid path .a..b: column 4: expected a name after '.'",
+    "json: /system/sample.json: cannot index a string with a number",
+    "json: /none: No such file or directory",
+    # -t decodes into Swift types with JSONDecoder and encodes them again.
+    '{"swift":6.4,"limine":9}',
+    '[\r\n  "x86_64",\r\n  "aarch64"\r\n]',
+    "json: /system/sample.json: DecodingError.typeMismatch. "
+    "Path: next. Debug description: Expected a number but found a string "
+    "instead.",
+    "json: standard input: DecodingError.dataCorrupted: Data was "
+    "corrupted. Path: [1]. Debug description: Parsed number <300> does not "
+    "fit in Int8.",
+    "[1,null]",
+    "json: unknown type ratio; see json -h",
+    "usage: json [-c] [-r] [-t type] [path [file...]]",
+    "......\r\n......\r\n...#..\r\n....#.\r\n..###.\r\n......\r\n",
+    ".....\r\n..#..\r\n..#..\r\n..#..\r\n.....\r\n",
+    # 23 rows of 80 cells, the size without a terminal.
+    "\n1863\r\n",
+    "life: unknown pattern nothing; see life -h",
+    "life: invalid size 2x2; see life -h",
+    "life: standard input is not a terminal; use -n to print the grid",
+    "usage: life [-p glider|blinker|random] [-n generations]",
+    "life: generation 0, 5 alive; q quits",
+    "life: check 691, 2 runs in ",
+    "sieve: check 78498, 2 runs in ",
+    "quicksort: check 2963021034, 2 runs in ",
+    "sort: check 2963021034, 2 runs in ",
+    "json: check 138999, 2 runs in ",
+    "swiftbench: -t needs a positive count; see swiftbench -h",
+)
+
+
+# Swift concurrency, built where deps/ holds the runtime's sources.
+SWIFT_CONCURRENCY_INPUT = b"tasks\ntaskprimes 16 100000\nexecutors\n"
+EXPECTED_SWIFT_CONCURRENCY_OUTPUT = (
+    "tasks: top-level code on the main thread true, assumeIsolated true",
+    "tasks: a task returned 42",
+    "tasks: turns 3 pings and 3 pongs, each in order",
+    "tasks: 100 increments counted 100",
+    "tasks: squares of 1 to 10 sum to 385",
+    "tasks: async let gave 25",
+    "tasks: a continuation resumed with 7",
+    "tasks: a stream of 1 to 5 sums to 15",
+    "tasks: a buffered stream of 1 to 100 sums to 5050",
+    "tasks: cancelled after ",
+    "tasks: the error came through true",
+    "tasks: task-local outer, task outer, detached none",
+    "tasks: slept 20, 30 and 50 ms for at least 100 ms",
+    "tasks: a sleep of 60 s ended early with CancellationError",
+    "tasks: checkCancellation threw CancellationError",
+    "tasks: main actor from a worker: worker true, @MainActor function true, "
+    "MainActor.run true, @MainActor task true, detached task false",
+    "tasks: still on the main thread true",
+    "taskprimes: 9592 primes below 100000 with 16 tasks in ",
+    "executors: an actor ran 100 calls on its own thread true, "
+    "resumed there after sleeping true, "
+    "top-level code on the main thread true",
+    "executors: assumeIsolated outside a job: "
+    "isIsolatingCurrentContext true, checkIsolated true",
+    "executors: 16 tasks preferring a pool ran there true",
+    "executors: preferring the pool: a function true, async let true, "
+    "a default actor true, the pinned actor on its thread true, "
+    "Task {} false, globalConcurrentExecutor false",
+    "executors: Task(executorPreference:) on the pool true",
+)
+# Swift programs that call C++, built where deps/ holds the Cxx module's
+# sources.
+SWIFT_CXX_INPUT = (
+    b"cxxinterop\n"
+    b"http url http://example.com:8080/a/b/c?q ../d //[::1]/x ?r\n"
+    b"http url https://example.com\n"
+    b"http request /system/http-request.txt\n"
+    b"http response /system/http-response.txt\n"
+    b'echo "HTTP/1.1 200 OK" | http response\n'
+    b"http -h\n"
+)
+EXPECTED_SWIFT_CXX_OUTPUT = (
+    "cxxinterop: constant 42, the color after red is green true",
+    "cxxinterop: point sum (4, 6), equal true",
+    "cxxinterop: template box holds 7",
+    "cxxinterop: tracked 1 and 2, live 2",
+    "cxxinterop: tracked live after the scope 0",
+    "cxxinterop: move-only counter 2",
+    "cxxinterop: square area 9",
+    "cxxinterop: node value 5, live 1",
+    "cxxinterop: nodes live after the scope 0",
+    "cxxinterop: optional half of 8 4, of 7 nil true",
+    "cxxinterop: vector 0 1 4 of 5, sum through a span 30",
+    "cxxinterop: vowels in featheros 4",
+    "host example.com\r\nport 8080\r\npath /a/b/c?q\r\n"
+    "../d resolves to http://example.com:8080/a/d\r\n"
+    "//[::1]/x resolves to http://[::1]/x\r\n"
+    "?r resolves to http://example.com:8080/a/b/c?r",
+    "http: https://example.com: only http URLs are supported",
+    "GET /docs/a%20b/../index.html names /docs/index.html "
+    "(text/html; charset=utf-8), HTTP/1.1, keep-alive\r\n"
+    "HEAD /notes.txt?raw names /notes.txt (text/plain; charset=utf-8), "
+    "HTTP/1.0, close\r\n"
+    "refused with 505 HTTP Version Not Supported",
+    "200 OK\r\nFeather OS",
+    "http: connection closed before the end of the response",
+    "usage: http url <url> [reference...]",
+)
+# The global executor runs jobs on every CPU; QEMU has 4, so the tasks spread.
+TASK_PRIMES_SPREAD_OUTPUT = re.compile(
+    r"^taskprimes: the tasks ran on (\d+) threads "
+    r"and CPU (\d+(?:,\d+)*)\r?$",
+    re.MULTILINE,
+)
+
+
+def ProgramBuilt(arch, name):
+    programs = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "build",
+        arch,
+        "programs",
+    )
+    return os.path.exists(os.path.join(programs, f"{name}-{arch}.elf"))
+
+
+def SwiftProgramsBuilt(arch):
+    return ProgramBuilt(arch, "hello")
 
 
 class WholeWrite(bytes):
@@ -186,6 +406,8 @@ SHELL_VI_INPUT = (
 )
 # Without -n, top redraws in place on the alternate screen until q.
 SHELL_TOP_INPUT = (b"top -d 200\n", TypeWhen("; q quits", b"q"))
+# life animates on the alternate screen until q; only a glider has 5 alive.
+SWIFT_LIFE_INPUT = (b"life -p glider\n", TypeWhen("5 alive; q quits", b"q"))
 # Each pattern spans the lines one text-tool command printed, in order.
 EXPECTED_TEXT_TOOLS = (
     r"^alpha\r?\nmu\r?\nzeta\r?$",
@@ -204,6 +426,13 @@ EXPECTED_TEXT_TOOLS = (
     r"^mv: /tmp/crate: Invalid argument\r?$",
     r"^wc: /tmp/crate/copy\.txt: No such file or directory\r?$",
     r"^4 work/moved copy\.txt\r?$",
+    r"^3:a\.b\r?\n4:axb\r?$",
+    r"^1:key=42 id=7\r?\n2:plain line\r?\n4:axb\r?$",
+    r"^plain line\r?$",
+    r"^key=42 id=7\r?$",
+    r"^key=42\r?\nid=7\r?$",
+    r"^xb\r?$",
+    r"^grep: Unmatched \( or \\\(\r?$",
 )
 EXPECTED_VI_LINES = {"HELLO WORLD": 2, "SECOND LINE": 2, "THIRD LINE": 2}
 KEYS_READY = "keys: press keys; q quits"
@@ -452,7 +681,7 @@ EXPECTED_SHELL_OUTPUT = (
     "spawned from the disk",
     "SPAWNED=yes",
     "libctest: /dev/tty works",
-    "libctest: 471 checks passed",
+    "libctest: 512 checks passed",
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
@@ -534,6 +763,14 @@ EXPECTED_SHELL_OUTPUT = (
     # Threads of one process find the same counts as worker processes.
     "threads: 9592 primes below 100000 with 4 threads in ",
     "threads: 2262 primes below 20000 with 15 threads in ",
+    "life: check 691, 1 run in ",
+    "sieve: check 78498, 1 run in ",
+    "quicksort: check 2963021034, 1 run in ",
+    "sort: check 2963021034, 1 run in ",
+    "json: check 138999, 1 run in ",
+    "life: check 691, 3 runs in ",
+    "json: check 138999, 3 runs in ",
+    "cppbench: unknown workload nothing; see cppbench -h",
     "calc> ",
     "0.333333",
     "calc: division by zero",
@@ -698,9 +935,9 @@ LINE_PROMPT = re.compile(
 )
 INPUT_ECHO_SEQUENCE = b"abx\x08 \x08\r\n"
 QEMU_TIMEOUT_SECONDS = 10
-# The scripted shell session runs many programs; AArch64 emulation is slower,
-# and takes about 90 s for the whole session.
-SHELL_TIMEOUT_SECONDS = 180
+# The scripted shell session runs many programs and types each character 20 ms
+# apart; the whole session takes about 3 minutes on either architecture.
+SHELL_TIMEOUT_SECONDS = 300
 # The keyboard test switches through every console after its own keys.
 INPUT_TIMEOUT_SECONDS = 60
 QEMU_CPU_COUNT = 4
@@ -826,6 +1063,7 @@ NETWORK_SHELL_INPUT = (
     "fetch -o /tmp/lines http://10.0.2.2:{http_port}/lines\n"
     "wc -l /tmp/lines\ntail -n 1 /tmp/lines\n"
     "fetch https://featheros.test/\n"
+    "{fetch_json}"
     # httpd serves a directory in /tmp to fetch over both versions and,
     # through port forwarding, to the harness's HttpdClient. The files hold
     # upper-case text, so their contents differ from the typed commands.
@@ -874,6 +1112,16 @@ NETWORK_SHELL_INPUT = (
     "echo six back | nc -6 fec0::2 {echo_port}\n"
     "net\n"
 )
+# json, written in Swift, reads what fetch prints; skipped like the other Swift
+# programs.
+NETWORK_SWIFT_INPUT = (
+    "fetch 10.0.2.2:{http_port}/status.json | json -r .message\n"
+    "fetch http://[fec0::2]:{http_port}/status.json | json -c .checks[1]\n"
+)
+EXPECTED_NETWORK_SWIFT_OUTPUT = [
+    "parsed from the host",
+    '{"name":"tcp","passed":true}',
+]
 LINK_DOWN_MESSAGE = "KERN/I: Network: link down"
 LINK_UP_MESSAGE = "KERN/I: Network: link up"
 # Between the two messages, with the same placeholders as the input.
@@ -1406,6 +1654,14 @@ class HttpServer:
         if path == "/landing":
             via = query.partition("=")[2]
             return Complete("200 OK", "", f"landed via {via}\n".encode())
+        if path == "/status.json":
+            return Complete(
+                "200 OK",
+                "Content-Type: application/json\r\n",
+                b'{"message": "parsed from the host", "checks": '
+                b'[{"name": "udp", "passed": true}, '
+                b'{"name": "tcp", "passed": true}]}\n',
+            )
         if path == "/lines":
             # No length: the body ends when the connection closes.
             return b"HTTP/1.1 200 OK\r\n\r\n" + HTTP_LINES.encode()
@@ -2156,8 +2412,29 @@ def main():
     if args.expect_calc:
         pending_lines = CALC_INPUT.splitlines(keepends=True)
     elif args.expect_shell:
+        swift_built = SwiftProgramsBuilt(args.arch)
+        if not swift_built:
+            print("NOTE: Swift programs were not built; skipping their checks")
+        concurrency_built = ProgramBuilt(args.arch, "tasks")
+        if swift_built and not concurrency_built:
+            print("NOTE: Swift concurrency was not built; skipping its checks")
+        cxx_built = ProgramBuilt(args.arch, "http")
+        if swift_built and not cxx_built:
+            print("NOTE: Swift's C++ programs were not built; skipping them")
         pending_lines = (
-            SHELL_INPUT.splitlines(keepends=True)
+            (
+                SWIFT_SHELL_INPUT.splitlines(keepends=True)
+                + list(SWIFT_LIFE_INPUT)
+                if swift_built
+                else []
+            )
+            + (
+                SWIFT_CONCURRENCY_INPUT.splitlines(keepends=True)
+                if concurrency_built
+                else []
+            )
+            + (SWIFT_CXX_INPUT.splitlines(keepends=True) if cxx_built else [])
+            + SHELL_INPUT.splitlines(keepends=True)
             + list(SHELL_EDIT_INPUT)
             + list(SHELL_VI_INPUT)
             + list(SHELL_TOP_INPUT)
@@ -2167,8 +2444,14 @@ def main():
             + list(SHELL_INTERRUPT_INPUT)
         )
     elif args.expect_network:
+        swift_built = SwiftProgramsBuilt(args.arch)
+        if not swift_built:
+            print("NOTE: Swift programs were not built; skipping their checks")
         pending_lines = (
-            NETWORK_SHELL_INPUT.replace("{port}", str(dns_server.port))
+            NETWORK_SHELL_INPUT.replace(
+                "{fetch_json}", NETWORK_SWIFT_INPUT if swift_built else ""
+            )
+            .replace("{port}", str(dns_server.port))
             .replace("{echo_port}", str(echo_server.port))
             .replace("{lossy_echo_port}", str(lossy_echo_server.port))
             .replace("{udp_echo_port}", str(echo_server.udp_port))
@@ -2609,6 +2892,7 @@ def main():
         missing = [
             line
             for line in EXPECTED_NETWORK_SHELL_OUTPUT
+            + (EXPECTED_NETWORK_SWIFT_OUTPUT if swift_built else [])
             if line not in output
         ]
         if missing:
@@ -2804,6 +3088,9 @@ def main():
             for text in EXPECTED_SHELL_OUTPUT
             + EXPECTED_SCRIPT_OUTPUT
             + EXPECTED_STOP_OUTPUT
+            + (EXPECTED_SWIFT_OUTPUT if swift_built else ())
+            + (EXPECTED_SWIFT_CONCURRENCY_OUTPUT if concurrency_built else ())
+            + (EXPECTED_SWIFT_CXX_OUTPUT if cxx_built else ())
             if text not in output
         ]
         if missing:
@@ -2812,6 +3099,19 @@ def main():
                 file=sys.stderr,
             )
             return 1
+        if concurrency_built:
+            spread = TASK_PRIMES_SPREAD_OUTPUT.search(output)
+            if (
+                not spread
+                or int(spread.group(1)) < 2
+                or len(spread.group(2).split(",")) < 2
+            ):
+                print(
+                    "FAIL: taskprimes did not run on several threads and "
+                    f"CPUs: {spread.group(0).strip() if spread else 'none'}",
+                    file=sys.stderr,
+                )
+                return 1
         edits = {
             text: len(re.findall(rf"^{text}\r?$", output, re.MULTILINE))
             for text in EXPECTED_SHELL_EDITS

@@ -90,10 +90,12 @@ Each kernel error maps to one of them. A background read of the controlling term
 ### `stdlib.h`
 
 - **Process:** `exit`, `_Exit`, `abort` and `atexit`. `atexit` and `__cxa_atexit` share one list of 32 handlers.
-- **Memory:** `malloc`, `calloc`, `realloc` and `free`.
+- **Memory:** `malloc`, `calloc`, `realloc`, `free` and `posix_memalign`.
   - Blocks are 16-byte aligned and come from a first-fit allocator with address-ordered free lists.
+  - `posix_memalign` takes any power-of-two alignment: a larger one over-allocates and frees the bytes before the aligned block. `realloc` keeps only 16-byte alignment when it moves a block.
   - The heap grows in 64 KiB steps. Freed memory is reused, and once more than 256 KiB is free at the end of the heap, all but 64 KiB of it goes back to the kernel. Free space below blocks still in use stays, since only the end of the heap can move.
   - Freeing a pointer that `malloc` did not return, or freeing one twice, aborts.
+- **Randomness:** `arc4random_buf` fills a buffer from `/dev/random`, read 256 bytes at a time. It is only as random as the kernel's source (hardware randomness when the CPU has it, otherwise the cycle counter), so it is not cryptographic everywhere, and it aborts if the device cannot be opened. Swift's hashing and random numbers use it. `arc4random` and `arc4random_uniform` are not provided.
 - **Numbers:**
   - `abs`, `labs`, `llabs`, `div`, `ldiv` and `lldiv`.
   - `atoi`, `atol`, `atoll`, `strtol`, `strtoll`, `strtoul` and `strtoull`, with bases 0 and 2–36.
@@ -105,7 +107,20 @@ Each kernel error maps to one of them. A background read of the controlling term
 
 Not provided:
 - `system`, because there is no `/bin/sh -c`
-- `mkstemp`, `realpath`, `mbtowc` and the other multibyte functions
+- `mkstemp`, `realpath`, `mbtowc` and the other multibyte functions but `uchar.h`'s
+
+### `inttypes.h`
+
+The `PRI*` and `SCN*` format macros for every width, `least`, `fast`, `max` and `ptr` type, and `imaxabs`, `imaxdiv`, `strtoimax` and `strtoumax`. The 64-bit types and `intptr_t` are `long` on both targets. GCC makes the fast 8- and 16-bit types `int`, while Clang makes them `char` and `short`, so their `SCN` macros follow the compiler.
+
+### `uchar.h`
+
+`mbstate_t`, `mbrtoc16`, `c16rtomb`, `mbrtoc32` and `c32rtomb`. Multibyte text is always UTF-8.
+- **Decoding:** a character may arrive over several calls, which return `(size_t)-2` until it is complete.
+- **Errors:** overlong forms, surrogates, values past U+10FFFF and stray continuation bytes fail with `EILSEQ`.
+- **Surrogate pairs:** `mbrtoc16` returns a character past U+FFFF as a pair, the low half from the next call as `(size_t)-3`. `c16rtomb` writes nothing for a high surrogate, and the whole character for the low one that follows.
+
+libc++'s headers take `mbstate_t` from here.
 
 ### `stdio.h`
 
@@ -120,9 +135,9 @@ Not provided:
 **Formatting.** The family is `printf`, `fprintf`, `dprintf`, `sprintf` and `snprintf`, plus their `v` forms. It supports:
 - every flag, width and precision (including `*`)
 - the length modifiers `hh h l ll j z t L`
-- the conversions `d i u o x X c s p n %`, and `f F e E g G a A`
+- the conversions `d i u o x X c s p %`, and `f F e E g G a A`
 
-Floating-point output is exact: it is computed with big integers, and matches glibc digit for digit. Positional arguments (`%1$d`) and wide characters (`%lc`, `%ls`) are not supported.
+Floating-point output is exact: it is computed with big integers, and matches glibc digit for digit. Positional arguments (`%1$d`), `%n` and wide characters (`%lc`, `%ls`) are not supported; `%n` is printed as written.
 
 **Scanning.** `scanf`, `fscanf` and `sscanf`, plus their `v` forms, read:
 - integers, with the same length modifiers as `printf`
@@ -150,13 +165,15 @@ There are no signals, so `sigsetjmp` and `siglongjmp` are not provided.
 ### `math.h`
 
 Every function exists for `double` and, with an `f` suffix, `float`:
-- **Exact, bit for bit the same as glibc:** `fabs copysign floor ceil trunc round fmod frexp ldexp scalbn modf fmin fmax sqrt`
+- **Exact, bit for bit the same as glibc:** `fabs copysign floor ceil trunc round fmod frexp ldexp scalbn modf fmin fmax sqrt fma`
 - **Within 1–3 units in the last place of glibc:** `exp exp2 log log2 log10 pow sin cos tan asin acos atan atan2 sinh cosh tanh hypot`
 
 Also provided:
 - the classification macros: `fpclassify isnan isinf isfinite isnormal signbit`
 - `HUGE_VAL`, `INFINITY` and `NAN`
 - the common `M_*` constants
+
+`fma` and `fmaf` round `x * y + z` once. They work on the exact product in 128-bit integers, so they need no fused multiply-add instruction. `fmaf` rounds straight to `float`, since going through `double` would round twice.
 
 Errors set `errno` (`math_errhandling` is `MATH_ERRNO`):
 - `EDOM` outside a function's domain
@@ -165,20 +182,21 @@ Errors set `errno` (`math_errhandling` is `MATH_ERRNO`):
 Differences:
 - `sin`, `cos` and `tan` reduce their argument with a three-part π/2, so they lose precision above about 10^6.
 - There are no `long double` functions.
-- AArch64 programs cannot do `long double` arithmetic, because the compiler runtime routines for 128-bit floats are missing. They can still print, parse and copy `long double` values.
+- `fma` sets `ERANGE` only on overflow, not when the result underflows.
+- AArch64 programs cannot do `long double` arithmetic, because the compiler runtime routines for 128-bit floats are missing. They can still print, parse and copy `long double` values. Of libgcc's integer routines, the C library has only `__lshrti3` (`src/libc/compiler_runtime.cpp`), which AArch64 code at `-O2` calls to shift `unsigned __int128` values.
 - `fenv.h`, `lround`, `nextafter`, `erf`, `lgamma` and other less common functions are not provided.
 
 ### `time.h`
 
 There are no time zones: every time is UTC.
 
-- **Clocks:** `time`, `clock_gettime` with `CLOCK_REALTIME` (10 ms timer ticks, in nanoseconds) and `CLOCK_MONOTONIC` (milliseconds since boot), and `clock_settime` for `CLOCK_REALTIME`, which any process may call.
+- **Clocks:** `time`, `clock_gettime` with `CLOCK_REALTIME` (10 ms timer ticks, in nanoseconds) and `CLOCK_MONOTONIC` (milliseconds since boot), `clock_getres`, which gives 10 ms for both, and `clock_settime` for `CLOCK_REALTIME`, which any process may call.
 - **Conversions:**
   - `gmtime` and `gmtime_r`; `localtime` and `localtime_r` return the same as gmtime.
   - `mktime` and `timegm`, which normalize out-of-range fields.
   - `asctime` and `ctime`.
   - `strftime` with every C99 conversion, in the C locale.
-- **Sleeping:** `nanosleep`, which is never cut short, so `remaining` is always zero.
+- **Sleeping:** `nanosleep`, in whole milliseconds; a signal cuts it short with `EINTR` and the time left in `remaining`.
 
 Differences:
 - Dates before 1970 fail with `EOVERFLOW`.
@@ -189,6 +207,7 @@ Differences:
 - **Descriptors:**
   - `read`, `write`, `close` and `lseek`.
   - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC O_NONBLOCK O_NOCTTY`. The lowest free descriptor is used, out of 32. A session leader without a controlling terminal takes the first terminal it opens unless it passes `O_NOCTTY`.
+  - `openat` does what `open` does for an absolute path, or a relative one with `AT_FDCWD`. Directories cannot be opened, so a relative path with any other descriptor fails with `ENOTDIR`, or `EBADF` when the descriptor is not open.
   - `dup` and `dup2` share the open file, its offset and its `O_APPEND` and `O_NONBLOCK` flags. `fcntl` supports `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD` and `F_SETFD` (`FD_CLOEXEC`), and `F_GETFL` and `F_SETFL`, which reports the access mode and changes `O_APPEND` and `O_NONBLOCK`, ignoring other flags as Linux does. Locks are not provided.
   - `O_NONBLOCK` makes a pipe or socket call that would wait fail with `EAGAIN` instead; on files it changes nothing. A terminal's flags cannot change (`EINVAL`), since every process shares the console's open file; raw mode with `VMIN` 0 reads it without waiting.
   - Programs started with `posix_spawn` inherit every descriptor not marked close-on-exec.
@@ -214,7 +233,7 @@ Not provided:
 - `link` and `symlink`
 - `chmod` and `chown`
 - `getuid` and the other user and group functions
-- `ftruncate`, `fsync` and `fcntl`
+- `ftruncate` and `fsync`
 
 ### `dirent.h`
 
@@ -264,6 +283,16 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
 
 `strcasecmp` and `strncasecmp`, for ASCII.
 
+### `regex.h`
+
+`regcomp`, `regexec`, `regerror` and `regfree`, with POSIX's basic and extended syntax, `REG_EXTENDED`, `REG_ICASE`, `REG_NEWLINE`, `REG_NOSUB`, `REG_NOTBOL` and `REG_NOTEOL`, glibc's values for the flags and error codes, and `RE_DUP_MAX` of 255. The engine is in `src/libc/regex_engine.cpp`: a pattern compiles to a program that a Thompson simulation runs in time proportional to the text times the program, so patterns such as `(a*)*b` cannot take exponential time.
+
+- **Matching:** bytes in the C locale. Bracket expressions take ranges by byte value, the twelve `[:class:]` names, and `[=c=]` and `[.c.]` only for a single byte. `REG_ICASE` folds ASCII letters.
+- **The whole match** is the leftmost and then longest, as POSIX requires. **Subexpressions** are the first assignment found when alternatives are tried from left to right and repetitions take as much as they can, within that match; POSIX asks for each subexpression in turn to be the longest, which differs for patterns such as `(a|ab)(c|bcd)(d*)` against `abcd` (`a`, `bcd` and the empty string here, `ab`, `c` and `d` by POSIX). A repeated subexpression reports its last iteration, and those nested in it only what matched within that iteration.
+- **Back-references** `\1` to `\9` work in both syntaxes (in extended syntax as in glibc), searched by backtracking from each start in turn. A backtracking search that takes more than about 16 million steps fails with `REG_ESPACE`; without back-references that can only happen while finding the subexpressions of a match too long to remember which states were tried (over a million states times bytes).
+- **Escapes:** a backslash before a letter or digit other than a back-reference is `REG_EESCAPE`, so GNU's `\w`, `\d` and `\b` are reported rather than taken as plain letters (`\<` and `\>` are plain `<` and `>`), and so are basic syntax's `\+`, `\?` and `\|`, which are GNU operators. A backslash before any other character makes it plain.
+- **Undefined cases:** in extended syntax `*`, `+`, `?` and `{` at the start of an expression, a branch or a group are `REG_BADRPT`, `{` always starts an interval, and a `)` without its `(` is a plain character. A pattern's program is limited to 65536 instructions, which nested intervals such as `((a{255}){255}){255}` exceed with `REG_ESPACE`.
+
 ### `sched.h`
 
 `sched_getcpu`, the glibc extension, returns the CPU the caller was running on. That may change as soon as it returns. `sched_yield` lets other ready threads run first.
@@ -276,18 +305,24 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
 - **Mutexes:** `pthread_mutex_init`, `lock`, `trylock`, `unlock` and `destroy`, with `PTHREAD_MUTEX_INITIALIZER` and the `NORMAL`, `ERRORCHECK` and `RECURSIVE` types through `pthread_mutexattr_settype`. A contended mutex sleeps in the kernel (`FutexWait`); an uncontended lock and unlock make no syscall. `ERRORCHECK` returns `EDEADLK` for a relock by its owner and `EPERM` for an unlock by another thread; `RECURSIVE` counts its owner's locks. There is no `pthread_mutex_timedlock`, robust or priority-inheritance mutexes.
 - **Condition variables:** `pthread_cond_wait`, `timedwait`, `signal` and `broadcast`, with `PTHREAD_COND_INITIALIZER` and `pthread_condattr_setclock`. Wakeups may be spurious, as POSIX allows, so wait in a loop. The deadline is on `CLOCK_REALTIME` unless the attributes chose `CLOCK_MONOTONIC`.
 - **`pthread_once`:** the first caller runs the routine while later ones sleep until it returns.
+- **Keys:** `pthread_key_create`, `pthread_key_delete`, `pthread_getspecific` and `pthread_setspecific`.
+  - There are at most `PTHREAD_KEYS_MAX` (128) keys at a time; past that, `pthread_key_create` fails with `EAGAIN`.
+  - A thread that ends through `pthread_exit` or by returning calls each key's destructor on its non-null values. It does so for up to `PTHREAD_DESTRUCTOR_ITERATIONS` (4) rounds while destructors set values again. `exit` calls none, as POSIX says.
+  - A deleted key's values read as null, even once the key is created again.
+  - The values take 2 KiB of each thread's thread-local storage, but only in programs that create a key.
 - **Ending:** `exit`, a fault or a terminating signal in any thread ends the whole process. `pthread_exit` ends one thread; in the last thread running it exits as `exit(0)` does.
 - **Signals:** actions are shared; masks are per thread, but there is no `pthread_sigmask` yet (`sigprocmask` sets the calling thread's). Signals sent to the process go to the main thread, or to the first live one after it has ended.
 - **Thread-local storage:** `__thread` and `thread_local` work for variables with constant initializers, at most 16 KiB per thread; each thread's copy starts from the program's initial values. `thread_local` objects with constructors and destructors work too.
-- **Missing:** read-write locks, barriers, spinlocks, `pthread_key_*`, `pthread_cancel`, `pthread_kill` and `pthread_sigmask`.
+- **Missing:** read-write locks, barriers, spinlocks, `pthread_cancel`, `pthread_kill` and `pthread_sigmask`.
 
 ### `sys/ioctl.h`
 
-Only `ioctl(fd, TIOCGWINSZ, &size)` and `ioctl(fd, TIOCSWINSZ, &size)` on a terminal or a pseudo-terminal master, which stands for its slave. `TIOCGWINSZ` fills `ws_row` and `ws_col` and leaves the pixel sizes 0; the console's size is the text area below the status bar (80×24 without a framebuffer), and a new pty's is 80×24. `TIOCSWINSZ` sets them, ignoring the pixel sizes, from either end of a pty and from any process, as on Linux, and a change sends `SIGWINCH` to the terminal's foreground group. Other descriptors fail with `ENOTTY`, and other requests with `EINVAL`. The console understands the VT100 sequences listed in `docs/development.md`.
+Only `ioctl(fd, TIOCGWINSZ, &size)` and `ioctl(fd, TIOCSWINSZ, &size)`, which do what `tcgetwinsize` and `tcsetwinsize` in `termios.h` do, and include `termios.h` for `struct winsize`. On a terminal, other requests fail with `EINVAL`; other descriptors fail with `ENOTTY`. The console understands the VT100 sequences listed in `docs/development.md`.
 
 ### `termios.h`
 
 `tcgetattr`, `tcsetattr` and `cfmakeraw` on any terminal; other descriptors fail with `ENOTTY`. The constants have FeatherOS's own values.
+- **Window size:** `tcgetwinsize` and `tcsetwinsize` from POSIX 2024, with `struct winsize`, on a terminal or a pseudo-terminal master, which stands for its slave. Getting fills `ws_row` and `ws_col` and leaves the pixel sizes 0; the console's size is the text area below the status bar (80×24 without a framebuffer), and a new pty's is 80×24. Setting ignores the pixel sizes, works from either end of a pty and from any process, as on Linux, and a change sends `SIGWINCH` to the terminal's foreground group. Other descriptors fail with `ENOTTY`.
 - **What has an effect:** `ICANON`, `ECHO` and `ISIG` in `c_lflag`, `ICRNL` in `c_iflag`, and `c_cc[VMIN]` and `c_cc[VTIME]` for non-canonical reads, with the POSIX meanings. The console's settings start with all four flags on, `VMIN` 1 and `VTIME` 0.
 - **Accepted without effect:** the other flags that `cfmakeraw` clears (`BRKINT`, `IXON`, `OPOST`, `IEXTEN`, …). The console never changes output, and `tcgetattr` always reports `OPOST` and `CS8`. `VINTR`, `VSUSP`, `VERASE` and `VEOF` report Ctrl+C, Ctrl+Z, Backspace and Ctrl+D but cannot be changed, and there is no end-of-file key yet.
 - **FeatherOS's own flag:** with `FEATHEROS_WAKE_ON_OUTPUT` in `c_lflag`, a non-canonical read with `VMIN` above 0 that has no byte yet returns 0 once output from other programs or the kernel reached the console and paused for a tenth of a second, with the cursor moved to the start of a row. The shell's line editor uses it to draw its prompt again below a service's message.
@@ -331,11 +366,14 @@ Sockets are descriptors: `read`, `write`, `close`, `dup`, `fstat` (`S_IFSOCK`), 
 FeatherOS calls with no POSIX equivalent:
 - **`featheros_read_line(prompt, buffer, size)`** reads one console line with editing, and returns its length without the newline. It shows the prompt again after Ctrl+C discards a half-typed line, which printing a prompt and calling `fgets` cannot do. The shell, `calc` and `upper` use it. It flushes `stdout` first, but does not see input already buffered in `stdin`.
 - **`featheros_arguments_page()`** returns the read-only page where the kernel placed the arguments and environment. `aslr` uses it to show that the page moves between runs.
+- **`featheros_argument_count()`** and **`featheros_argument_values()`** return the `argc` and `argv` that `main` receives, for code that does not see `main`'s parameters: a Swift program's top-level code.
+- **`featheros_open`, `featheros_openat`, `featheros_fcntl`** and **`featheros_ioctl`** are `open`, `openat`, `fcntl` and `ioctl` with fixed parameters: a `mode_t` mode, an `intptr_t` argument for `fcntl` and a pointer for `ioctl`. Swift does not import variadic C functions, so `FeatherSupport` calls these.
+- **`featheros_format(buffer, size, format, arguments, count)`** is `snprintf` with its arguments in an array of `struct featheros_format_argument`, each tagged `FEATHEROS_FORMAT_SIGNED`, `_UNSIGNED`, `_DOUBLE`, `_STRING` or `_POINTER`, through the same engine as `printf`. An integer of either type suits `d i u o x X c` and `*`, and keeps all 64 bits unless `hh` or `h` asks for fewer, so `%d` prints any `Int`; a double suits the floating-point conversions whatever the length modifier, a string `%s` and a pointer `%p`. A conversion whose argument is missing or of another type is written as it appears in `format` and still takes its argument, so the ones after it keep theirs. `String(format:)` in `FeatherSupport` uses it.
 - **`featheros_network_settings(new_settings, old_settings, changes)`** reads and changes the network interface's settings in a `struct featheros_network`: the MAC, the IPv4 address, prefix length and gateway (all zero until DHCP or `net ipv4` sets them), the IPv6 link-local and global addresses and router, and up to `FEATHEROS_NAME_SERVERS` name servers as `sockaddr_in` or `sockaddr_in6` in `sockaddr_storage`. It stores the current settings in `old_settings` unless that is null, then applies the parts of `new_settings` that `changes` names: `FEATHEROS_NETWORK_IPV4`, `FEATHEROS_NETWORK_NAME_SERVERS` and `FEATHEROS_NETWORK_LINK`; a name server's port 0 means 53. The name servers set this way come first, then one a router advertised. IPv6 cannot be changed. `link_up` 0 with `FEATHEROS_NETWORK_LINK` takes the link down: the device is reset, the IPv4 and IPv6 addresses, the router's name server and the neighbor caches are dropped, TCP connections to anything but `127.0.0.0/8` and `::1` end with `ENETDOWN`, and sends and connects to anything else fail with `ENETDOWN` while loopback keeps working. `link_up` 1 starts the device and IPv6 autoconfiguration again; IPv4 waits for DHCP (`dhcp -r`) or `net ipv4`. Errors: `ENETUNREACH` without a network device, `EINVAL`, `EAFNOSUPPORT`, `ENETDOWN` for IPv4 while the link is down, `EIO` when the device does not start. `dhcp`, `net` and `getaddrinfo` use it.
 
 ### C++ support
 
-The runtime hooks `__cxa_atexit`, `__cxa_guard_acquire`/`release`/`abort`, `__cxa_pure_virtual` and `__dso_handle` are provided. So are `operator new` and `operator delete`, in their plain, array and sized forms. They are built on `malloc`, and a failed `new` aborts; the aligned and `nothrow` forms are not provided yet. Programs are built with `-fno-exceptions -fno-rtti`, and there is no C++ standard library.
+The runtime hooks `__cxa_atexit`, `__cxa_guard_acquire`/`release`/`abort`, `__cxa_pure_virtual` and `__dso_handle` are provided. So are `operator new` and `operator delete`, in their plain, array, sized and aligned forms (`std::align_val_t`, defined here since there is no `<new>`). They are built on `malloc` and `posix_memalign`, and a failed `new` aborts; the `nothrow` forms are not provided yet. Programs are built with `-fno-exceptions -fno-rtti`, and there is no C++ standard library. For Swift programs that use libc++'s header-only types, the library also defines `std::__libcpp_verbose_abort`, which libc++'s compiled library would otherwise provide: it prints its message to standard error and aborts.
 
 ## Left out on purpose
 
@@ -345,9 +383,9 @@ These need kernel features that do not exist yet. Each one is planned in [roadma
 | --- | --- | --- |
 | `SA_SIGINFO`, `sigsuspend`, `alarm`, real-time signals | Handlers get only the signal number; no timers send signals | Not scheduled |
 | `fork`, `exec*` | Processes start with `Spawn`; `fork` needs copy-on-write | M11, if adopted |
-| C11 `threads.h`, read-write locks, barriers, thread-specific keys | Not needed by any program yet | Not scheduled |
+| C11 `threads.h`, read-write locks, barriers | Not needed by any program yet | Not scheduled |
 | `mmap`, `munmap` | The heap is the only growable mapping, so free space below used blocks cannot be returned | [ideas.md](ideas.md) |
-| `locale.h`, `wchar.h`, multibyte | ASCII and the `"C"` locale only | Not scheduled |
+| `locale.h`, `wchar.h`, multibyte functions but `uchar.h`'s | ASCII and the `"C"` locale only; `uchar.h` converts UTF-8 | Not scheduled |
 | Time zones | Everything is UTC | Not scheduled |
 | Users, permissions, `getuid` | No user accounts | Not scheduled |
 | `select` | `poll` does the same job | Not scheduled |

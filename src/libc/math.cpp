@@ -44,6 +44,25 @@ bool AnyNaN(double x, double y = 0)
     return Math::IsNaN(x) || Math::IsNaN(y);
 }
 
+// inf * 0 or inf - inf is a domain error; an infinite result from finite arguments, overflow.
+double FusedChecked(double x, double y, double z, double result)
+{
+    if (AnyNaN(x, y) || Math::IsNaN(z))
+    {
+        return result;
+    }
+    if (Math::IsNaN(result))
+    {
+        errno = EDOM;
+    }
+    else if (Math::IsInfinite(result) && !Math::IsInfinite(x) && !Math::IsInfinite(y) &&
+             !Math::IsInfinite(z))
+    {
+        errno = ERANGE;
+    }
+    return result;
+}
+
 } // namespace
 
 double fabs(double x)
@@ -132,6 +151,11 @@ double fmax(double x, double y)
 double sqrt(double x)
 {
     return AnyNaN(x) ? x : DomainChecked(Math::Sqrt(x));
+}
+
+double fma(double x, double y, double z)
+{
+    return FusedChecked(x, y, z, Math::FusedMultiplyAdd(x, y, z));
 }
 
 double hypot(double x, double y)
@@ -304,6 +328,12 @@ float fmaxf(float x, float y)
 float sqrtf(float x)
 {
     return static_cast<float>(::sqrt(static_cast<double>(x)));
+}
+
+// Not through fma: rounding to double and then to float can differ from rounding once.
+float fmaf(float x, float y, float z)
+{
+    return static_cast<float>(FusedChecked(x, y, z, Math::FusedMultiplyAdd(x, y, z)));
 }
 
 float hypotf(float x, float y)

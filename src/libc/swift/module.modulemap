@@ -1,0 +1,141 @@
+// The C library as one Swift module, FeatherLibC. assert.h is left out: each include of it
+// depends on NDEBUG, and Swift programs have their own assert.
+module FeatherLibC [system] {
+    module arpa_inet {
+        header "../include/arpa/inet.h"
+        export *
+    }
+    module ctype {
+        header "../include/ctype.h"
+        export *
+    }
+    module dirent {
+        header "../include/dirent.h"
+        export *
+    }
+    module errno {
+        header "../include/errno.h"
+        export *
+    }
+    module fcntl {
+        header "../include/fcntl.h"
+        export *
+    }
+    module featheros {
+        header "../include/featheros.h"
+        export *
+    }
+    module limits {
+        header "../include/limits.h"
+        export *
+    }
+    module math {
+        header "../include/math.h"
+        export *
+    }
+    module netdb {
+        header "../include/netdb.h"
+        export *
+    }
+    module netinet_icmp6 {
+        header "../include/netinet/icmp6.h"
+        export *
+    }
+    module netinet_in {
+        header "../include/netinet/in.h"
+        export *
+    }
+    module netinet_ip_icmp {
+        header "../include/netinet/ip_icmp.h"
+        export *
+    }
+    module poll {
+        header "../include/poll.h"
+        export *
+    }
+    module pthread {
+        header "../include/pthread.h"
+        export *
+    }
+    module regex {
+        header "../include/regex.h"
+        export *
+    }
+    module sched {
+        header "../include/sched.h"
+        export *
+    }
+    module setjmp {
+        header "../include/setjmp.h"
+        export *
+    }
+    module signal {
+        header "../include/signal.h"
+        export *
+    }
+    module spawn {
+        header "../include/spawn.h"
+        export *
+    }
+    module stdio {
+        header "../include/stdio.h"
+        export *
+    }
+    module stdlib {
+        header "../include/stdlib.h"
+        export *
+    }
+    module string {
+        header "../include/string.h"
+        export *
+    }
+    module strings {
+        header "../include/strings.h"
+        export *
+    }
+    module sys_cdefs {
+        header "../include/sys/cdefs.h"
+        export *
+    }
+    module sys_ioctl {
+        header "../include/sys/ioctl.h"
+        export *
+    }
+    module sys_reboot {
+        header "../include/sys/reboot.h"
+        export *
+    }
+    module sys_socket {
+        header "../include/sys/socket.h"
+        export *
+    }
+    module sys_stat {
+        header "../include/sys/stat.h"
+        export *
+    }
+    module sys_time {
+        header "../include/sys/time.h"
+        export *
+    }
+    module sys_types {
+        header "../include/sys/types.h"
+        export *
+    }
+    module sys_wait {
+        header "../include/sys/wait.h"
+        export *
+    }
+    module termios {
+        header "../include/termios.h"
+        export *
+    }
+    module time {
+        header "../include/time.h"
+        export *
+    }
+    module unistd {
+        header "../include/unistd.h"
+        export *
+    }
+    export *
+}

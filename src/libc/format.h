@@ -2,6 +2,7 @@
 #define FEATHEROS_LIBC_FORMAT_H
 
 #include "libc/float_format.h"
+#include "libc/include/bits/featheros_format.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -14,6 +15,10 @@ namespace FeatherOS::LibC
 // characters the format produces. %n is not supported, since it writes through a pointer the
 // format supplies.
 template <typename Sink> int FormatTo(Sink& sink, const char* format, va_list arguments);
+// The same with featheros_format's tagged arguments.
+template <typename Sink>
+int FormatTo(Sink& sink, const char* format, const featheros_format_argument* arguments,
+             size_t count);
 
 // snprintf's sink: keeps what fits, always leaves room for the terminator, and counts the rest.
 struct BufferSink
@@ -171,8 +176,49 @@ void WriteInteger(Writer<Sink>& writer, const Specification& specification, uint
     }
 }
 
-int64_t SignedArgument(const Specification& specification, va_list* arguments);
-uint64_t UnsignedArgument(const Specification& specification, va_list* arguments);
+// The engine's arguments come from one of these. Each call takes the next argument, and returns
+// false when it is missing or of another type.
+class VariadicArguments
+{
+public:
+    explicit VariadicArguments(va_list arguments);
+    ~VariadicArguments();
+    VariadicArguments(const VariadicArguments&) = delete;
+    VariadicArguments& operator=(const VariadicArguments&) = delete;
+
+    bool Int(int* value);
+    bool Signed(const Specification& specification, int64_t* value);
+    bool Unsigned(const Specification& specification, uint64_t* value);
+    bool Character(char* value);
+    bool String(const char** value);
+    bool Pointer(const void** value);
+    bool Float(const Specification& specification, DecodedFloat* value);
+
+private:
+    va_list list;
+};
+
+class TaggedArguments
+{
+public:
+    TaggedArguments(const featheros_format_argument* arguments, size_t count);
+
+    bool Int(int* value);
+    bool Signed(const Specification& specification, int64_t* value);
+    bool Unsigned(const Specification& specification, uint64_t* value);
+    bool Character(char* value);
+    bool String(const char** value);
+    bool Pointer(const void** value);
+    bool Float(const Specification& specification, DecodedFloat* value);
+
+private:
+    const featheros_format_argument* Take(int type);
+    bool Integer(uint64_t* bits);
+
+    const featheros_format_argument* arguments;
+    size_t count;
+    size_t next = 0;
+};
 
 template <typename Sink>
 void WriteFloat(Writer<Sink>& writer, const Specification& specification, char conversion,
@@ -211,13 +257,13 @@ bool IsDigit(char character);
 
 } // namespace FormatDetail
 
-template <typename Sink> int FormatTo(Sink& sink, const char* format, va_list arguments)
+namespace FormatDetail
 {
-    using namespace FormatDetail;
+
+template <typename Sink, typename Arguments>
+int Format(Sink& sink, const char* format, Arguments& arguments)
+{
     Writer<Sink> writer(sink);
-    // Copied so that helpers can take its address, which is portable for every va_list type.
-    va_list list;
-    va_copy(list, arguments);
     while (*format != '\0')
     {
         if (*format != '%')
@@ -227,6 +273,8 @@ template <typename Sink> int FormatTo(Sink& sink, const char* format, va_list ar
         }
         const char* start = format++;
         Specification specification;
+        // Set when a * has no suitable argument, so that the whole specification is written as is.
+        bool missing = false;
         for (;; ++format)
         {
             if (*format == '-')
@@ -256,7 +304,7 @@ template <typename Sink> int FormatTo(Sink& sink, const char* format, va_list ar
         }
         if (*format == '*')
         {
-            specification.width = va_arg(list, int);
+            missing = !arguments.Int(&specification.width);
             // A negative width from an argument means left alignment.
             if (specification.width < 0)
             {
@@ -275,7 +323,7 @@ template <typename Sink> int FormatTo(Sink& sink, const char* format, va_list ar
             specification.precision = 0;
             if (*format == '*')
             {
-                specification.precision = va_arg(list, int);
+                missing = !arguments.Int(&specification.precision) || missing;
                 ++format;
             }
             for (; IsDigit(*format); ++format)
@@ -308,33 +356,47 @@ template <typename Sink> int FormatTo(Sink& sink, const char* format, va_list ar
             break;
         }
         ++format;
+        // The argument's text when it is missing or unsuitable.
+        const auto as_written = [&] { writer.Text(start, static_cast<size_t>(format - start)); };
         switch (conversion)
         {
         case 'd':
         case 'i':
         {
-            const int64_t value = SignedArgument(specification, &list);
+            int64_t value = 0;
+            if (!arguments.Signed(specification, &value) || missing)
+            {
+                as_written();
+                break;
+            }
             const uint64_t magnitude =
                 value < 0 ? 0 - static_cast<uint64_t>(value) : static_cast<uint64_t>(value);
             WriteInteger(writer, specification, magnitude, value < 0, 10, false, true);
             break;
         }
         case 'u':
-            WriteInteger(writer, specification, UnsignedArgument(specification, &list), false, 10,
-                         false, false);
-            break;
         case 'o':
-            WriteInteger(writer, specification, UnsignedArgument(specification, &list), false, 8,
-                         false, false);
-            break;
         case 'x':
         case 'X':
-            WriteInteger(writer, specification, UnsignedArgument(specification, &list), false, 16,
-                         conversion == 'X', false);
+        {
+            uint64_t value = 0;
+            if (!arguments.Unsigned(specification, &value) || missing)
+            {
+                as_written();
+                break;
+            }
+            const unsigned base = conversion == 'u' ? 10 : (conversion == 'o' ? 8 : 16);
+            WriteInteger(writer, specification, value, false, base, conversion == 'X', false);
             break;
+        }
         case 'p':
         {
-            const void* pointer = va_arg(list, void*);
+            const void* pointer = nullptr;
+            if (!arguments.Pointer(&pointer) || missing)
+            {
+                as_written();
+                break;
+            }
             if (pointer == nullptr)
             {
                 PadAndWrite(writer, specification, "(nil)", 5);
@@ -348,13 +410,23 @@ template <typename Sink> int FormatTo(Sink& sink, const char* format, va_list ar
         }
         case 'c':
         {
-            const char character = static_cast<char>(va_arg(list, int));
+            char character = 0;
+            if (!arguments.Character(&character) || missing)
+            {
+                as_written();
+                break;
+            }
             PadAndWrite(writer, specification, &character, 1);
             break;
         }
         case 's':
         {
-            const char* text = va_arg(list, const char*);
+            const char* text = nullptr;
+            if (!arguments.String(&text) || missing)
+            {
+                as_written();
+                break;
+            }
             if (text == nullptr)
             {
                 text = "(null)";
@@ -370,28 +442,42 @@ template <typename Sink> int FormatTo(Sink& sink, const char* format, va_list ar
         case 'G':
         case 'a':
         case 'A':
-            if (specification.length == 'L')
+        {
+            DecodedFloat value;
+            if (!arguments.Float(specification, &value) || missing)
             {
-                WriteFloat(writer, specification, conversion,
-                           Decode(LongDoubleFormat, RawBits(va_arg(list, long double))));
+                as_written();
+                break;
             }
-            else
-            {
-                WriteFloat(writer, specification, conversion,
-                           Decode(DoubleFormat, RawBits(va_arg(list, double))));
-            }
+            WriteFloat(writer, specification, conversion, value);
             break;
+        }
         case '%':
             writer.Put('%');
             break;
         default:
             // Unsupported conversions are printed as written.
-            writer.Text(start, static_cast<size_t>(format - start));
+            as_written();
             break;
         }
     }
-    va_end(list);
     return writer.Count();
+}
+
+} // namespace FormatDetail
+
+template <typename Sink> int FormatTo(Sink& sink, const char* format, va_list arguments)
+{
+    FormatDetail::VariadicArguments source(arguments);
+    return FormatDetail::Format(sink, format, source);
+}
+
+template <typename Sink>
+int FormatTo(Sink& sink, const char* format, const featheros_format_argument* arguments,
+             size_t count)
+{
+    FormatDetail::TaggedArguments source(arguments, count);
+    return FormatDetail::Format(sink, format, source);
 }
 
 } // namespace FeatherOS::LibC
