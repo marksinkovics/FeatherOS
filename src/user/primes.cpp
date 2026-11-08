@@ -71,7 +71,10 @@ int StartWorker(unsigned long long index, unsigned long long workers, unsigned l
 bool CollectWorker(int output, pid_t child, unsigned long long* primes, unsigned long long* cpus)
 {
     FILE* stream = fdopen(output, "r");
-    const bool parsed = stream != nullptr && fscanf(stream, "%llu %llu", primes, cpus) == 2;
+    // The worker writes this line itself.
+    const bool parsed = stream != nullptr &&
+                        // NOLINTNEXTLINE(bugprone-unchecked-string-to-number-conversion)
+                        fscanf(stream, "%llu %llu", primes, cpus) == 2;
     if (stream != nullptr)
     {
         fclose(stream);

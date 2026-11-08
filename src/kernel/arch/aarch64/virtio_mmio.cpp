@@ -87,7 +87,7 @@ bool ReadCells(const uint8_t* data, uint32_t count, uint64_t* value)
     uint64_t result = 0;
     for (uint32_t index = 0; index < count; ++index)
     {
-        result = (result << 32) | ReadBigEndian32(data + index * 4);
+        result = (result << 32) | ReadBigEndian32(data + static_cast<size_t>(index) * 4);
     }
     *value = result;
     return true;

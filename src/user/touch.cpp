@@ -20,7 +20,7 @@ int main(int argc, char** argv)
     int status = 0;
     for (int index = 1; index < argc; ++index)
     {
-        const int descriptor = open(argv[index], O_WRONLY | O_CREAT);
+        const int descriptor = open(argv[index], O_WRONLY | O_CREAT, 0644);
         if (descriptor < 0)
         {
             printf("touch: %s: %s\n", argv[index], strerror(errno));

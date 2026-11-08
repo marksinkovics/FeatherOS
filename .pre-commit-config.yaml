@@ -1,5 +1,9 @@
 minimum_pre_commit_version: "3.0.0"
 
+# Each check is its own hook, so a commit shows which one runs, fails or takes the time, and
+# skips the ones whose files it does not touch. `verbose` makes pre-commit print each hook's
+# duration. clang-tidy gets the staged files and checks the sources they affect, headers
+# included; the other checks are fast and cover the whole tree.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -8,10 +12,52 @@ repos:
 
   - repo: local
     hooks:
-      - id: featheros-quality
-        name: FeatherOS format and lint checks
-        entry: bash tools/quality.sh check
+      - id: clang-format
+        name: clang-format
+        entry: bash tools/quality.sh check clang-format
         language: system
         pass_filenames: false
-        always_run: true
-        stages: [pre-commit]
+        files: ^(src/.*\.(c|cpp|h|hpp)|\.clang-format)$
+        verbose: true
+      - id: clang-tidy-x86_64
+        name: clang-tidy x86_64
+        entry: bash tools/quality.sh check clang-tidy-x86_64 --
+        language: system
+        require_serial: true
+        files: ^(src/.*\.(c|cpp|h|hpp)|\.clang-tidy|.*CMakeLists\.txt|.*\.cmake)$
+        verbose: true
+      - id: clang-tidy-aarch64
+        name: clang-tidy aarch64
+        entry: bash tools/quality.sh check clang-tidy-aarch64 --
+        language: system
+        require_serial: true
+        files: ^(src/.*\.(c|cpp|h|hpp)|\.clang-tidy|.*CMakeLists\.txt|.*\.cmake)$
+        verbose: true
+      - id: ruff-check
+        name: Ruff check
+        entry: bash tools/quality.sh check ruff-check
+        language: system
+        pass_filenames: false
+        files: ^((tools|tests)/.*\.py|pyproject\.toml)$
+        verbose: true
+      - id: ruff-format
+        name: Ruff format check
+        entry: bash tools/quality.sh check ruff-format
+        language: system
+        pass_filenames: false
+        files: ^((tools|tests)/.*\.py|pyproject\.toml)$
+        verbose: true
+      - id: shellcheck
+        name: ShellCheck
+        entry: bash tools/quality.sh check shellcheck
+        language: system
+        pass_filenames: false
+        files: (\.sh|^\.shellcheckrc)$
+        verbose: true
+      - id: shfmt
+        name: shfmt check
+        entry: bash tools/quality.sh check shfmt
+        language: system
+        pass_filenames: false
+        files: \.sh$
+        verbose: true

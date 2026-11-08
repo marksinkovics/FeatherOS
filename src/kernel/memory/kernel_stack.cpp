@@ -24,8 +24,8 @@ struct FreeStack
 // Freed stacks stay mapped for reuse. Unmapping one would need a TLB shootdown, because
 // another CPU may still cache its translation.
 constinit Sync::SpinLock stack_lock;
-FreeStack* free_stacks = nullptr;
-uint64_t next_slot = 0;
+FreeStack* free_stacks GUARDED_BY(stack_lock) = nullptr;
+uint64_t next_slot GUARDED_BY(stack_lock) = 0;
 
 // No other CPU has touched a stack that is still being set up, so unmapping needs no shootdown.
 void ReleasePartialStack(uint64_t base, const uint64_t* frames, uint64_t mapped_pages)

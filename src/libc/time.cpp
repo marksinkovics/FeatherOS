@@ -122,6 +122,8 @@ char* asctime(const struct tm* time)
 char* ctime(const time_t* seconds)
 {
     struct tm calendar;
+    // ctime is defined as asctime(localtime()).
+    // NOLINTNEXTLINE(bugprone-unsafe-functions)
     return localtime_r(seconds, &calendar) == nullptr ? nullptr : asctime(&calendar);
 }
 

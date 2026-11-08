@@ -76,12 +76,12 @@ uint64_t device_hhdm_offset = 0;
 uint64_t queue_physical_address = 0;
 volatile uint8_t* queue_virtual_address = nullptr;
 uint64_t capacity_sectors = 0;
-uint16_t available_index_value = 0;
+// One request buffer serves every caller, so requests from different CPUs take turns.
+constinit Sync::SpinLock device_lock;
+uint16_t available_index_value GUARDED_BY(device_lock) = 0;
 bool read_only = false;
 bool flush_supported = false;
 bool initialized = false;
-// One request buffer serves every caller, so requests from different CPUs take turns.
-constinit Sync::SpinLock device_lock;
 
 volatile uint32_t* Registers()
 {
@@ -148,7 +148,7 @@ bool InitializeQueue()
 }
 
 // Hands the prepared request to the device and polls until it completes.
-bool SubmitLocked()
+bool SubmitLocked() REQUIRES(device_lock)
 {
     auto* status = queue_virtual_address + StatusOffset;
     auto* available_index =

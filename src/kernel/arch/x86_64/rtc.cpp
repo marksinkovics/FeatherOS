@@ -53,13 +53,13 @@ uint8_t ReadPort(uint16_t port)
     return value;
 }
 
-uint8_t ReadRegister(uint8_t index)
+uint8_t ReadRegister(uint8_t index) REQUIRES(cmos_lock)
 {
     WritePort(CmosAddressPort, index);
     return ReadPort(CmosDataPort);
 }
 
-bool ReadRawTime(RawTime* time)
+bool ReadRawTime(RawTime* time) REQUIRES(cmos_lock)
 {
     // The RTC updates its registers once a second; never read in the middle of an update.
     uint32_t wait = 0;

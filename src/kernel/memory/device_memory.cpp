@@ -16,10 +16,10 @@ constexpr uint64_t DeviceWindowSize = 1ULL << 40;
 constexpr uint32_t MaximumDevicePages = 128;
 
 constinit Sync::SpinLock device_lock;
-uint64_t mapped_pages[MaximumDevicePages];
-uint32_t mapped_page_count = 0;
+uint64_t mapped_pages[MaximumDevicePages] GUARDED_BY(device_lock);
+uint32_t mapped_page_count GUARDED_BY(device_lock) = 0;
 
-bool IsMapped(uint64_t physical_page)
+bool IsMapped(uint64_t physical_page) REQUIRES(device_lock)
 {
     for (uint32_t index = 0; index < mapped_page_count; ++index)
     {

@@ -13,10 +13,10 @@ namespace
 
 using FeatherOS::LibC::HeapAllocator;
 
-HeapAllocator allocator;
-bool initialized = false;
 // One lock over the whole heap: threads allocate one at a time.
 constinit FeatherOS::LibC::Lock heap_lock;
+HeapAllocator allocator GUARDED_BY(heap_lock);
+bool initialized GUARDED_BY(heap_lock) = false;
 
 // Grows the program break, first padding it to the allocator's alignment.
 void* GrowHeap(size_t bytes, void*)
@@ -51,7 +51,7 @@ bool ShrinkHeap(void* end, size_t bytes, void*)
     return !FeatherOS::User::IsSyscallError(FeatherOS::User::ExtendHeap(0 - bytes));
 }
 
-HeapAllocator& Heap()
+HeapAllocator& Heap() REQUIRES(heap_lock)
 {
     if (!initialized)
     {

@@ -24,16 +24,19 @@ constexpr uint64_t NeighborLifetimeSeconds = 300;
 
 // Unconfigured, 0.0.0.0, until DHCP or the user sets it.
 constinit Sync::SpinLock configuration_lock;
-InterfaceConfiguration configuration = {};
+InterfaceConfiguration configuration GUARDED_BY(configuration_lock) = {};
+// Set once by Initialize, before anything reads them.
 MacAddress local_mac = {};
 bool up = false;
+// Read and written atomically.
 bool link_up = false;
 // Held while a frame is handled and while the link changes, so no frame that arrived before the
 // link went down is handled after its state was dropped.
 constinit Sync::Mutex link_mutex;
+// Only the receive task uses it.
 uint8_t received_frame[MaximumFrameSize];
-constinit NeighborCache neighbor_cache;
 constinit Sync::SpinLock neighbor_lock;
+constinit NeighborCache neighbor_cache GUARDED_BY(neighbor_lock);
 constinit Scheduler::WaitQueue neighbor_waiters;
 
 bool SendArp(uint16_t operation, const MacAddress& destination, const MacAddress& target_mac,

@@ -18,24 +18,28 @@ namespace FeatherOS::Scheduler
 namespace
 {
 
+// Lock order: subsystem locks before the scheduler lock. It is held across context switches and
+// released by the task that switches in.
+constinit Sync::SpinLock scheduler_lock;
+
 struct Task
 {
     // Ring of the boot task and every created task; idle tasks are not in it.
-    Task* next;
-    Task* previous;
+    Task* next GUARDED_BY(scheduler_lock);
+    Task* previous GUARDED_BY(scheduler_lock);
     uint64_t stack_pointer;
     TaskEntry entry;
     void* context;
     TaskId id;
-    TaskState state;
-    TaskPriority priority;
-    uint64_t exit_status;
+    TaskState state GUARDED_BY(scheduler_lock);
+    TaskPriority priority GUARDED_BY(scheduler_lock);
+    uint64_t exit_status GUARDED_BY(scheduler_lock);
     // Timer ticks the task was running for, and the CPU it last ran on.
-    uint64_t run_ticks;
-    uint32_t last_cpu;
+    uint64_t run_ticks GUARDED_BY(scheduler_lock);
+    uint32_t last_cpu GUARDED_BY(scheduler_lock);
     // 0 = no deadline.
-    uint64_t wake_tick;
-    const WaitQueue* wait_queue;
+    uint64_t wake_tick GUARDED_BY(scheduler_lock);
+    const WaitQueue* wait_queue GUARDED_BY(scheduler_lock);
     void* user_context;
     // Null for the boot task and secondary idle tasks, which run on the bootloader's stacks.
     uint8_t* stack;
@@ -45,18 +49,15 @@ struct Task
     uint64_t thread_pointer;
 };
 
-// Lock order: subsystem locks before the scheduler lock. It is held across context switches and
-// released by the task that switches in.
-constinit Sync::SpinLock scheduler_lock;
 Task boot_task;
 // Secondary CPUs run their idle task on the stack they started on; only the boot CPU needs one.
 Task idle_tasks[Cpu::MaximumCpus];
 alignas(16) uint8_t boot_idle_stack[Memory::KernelStackSize];
 Task* current_tasks[Cpu::MaximumCpus];
-bool cpu_scheduling[Cpu::MaximumCpus];
+bool cpu_scheduling[Cpu::MaximumCpus] GUARDED_BY(scheduler_lock);
 // Timer ticks that found the CPU running something other than its idle task.
 volatile uint64_t busy_ticks[Cpu::MaximumCpus];
-TaskId next_task_id = 1;
+TaskId next_task_id GUARDED_BY(scheduler_lock) = 1;
 bool initialized = false;
 volatile bool preemption_enabled = false;
 
@@ -78,7 +79,8 @@ Task& IdleTask()
     FeatherOS::Panic("Cooperative task returned through an invalid stack frame");
 }
 
-void ResetTask(Task& task)
+// Callers hold the scheduler lock or reset a new task that no other CPU can see yet.
+void ResetTask(Task& task) NO_THREAD_SAFETY_ANALYSIS
 {
     task.next = nullptr;
     task.previous = nullptr;
@@ -99,7 +101,7 @@ void ResetTask(Task& task)
     Arch::FloatingPoint::InitializeState(&task.floating_point);
 }
 
-Task* FindTask(TaskId task_id)
+Task* FindTask(TaskId task_id) REQUIRES(scheduler_lock)
 {
     if (task_id == 0)
     {
@@ -115,7 +117,7 @@ Task* FindTask(TaskId task_id)
     return nullptr;
 }
 
-Task* FindReadyTask(const Task* after)
+Task* FindReadyTask(const Task* after) REQUIRES(scheduler_lock)
 {
     // Idle tasks are outside the ring, so their search starts at the boot task.
     Task* start = after->next != nullptr ? after->next : &boot_task;
@@ -134,7 +136,7 @@ Task* FindReadyTask(const Task* after)
 }
 
 // An idle CPU halts until an interrupt, so new work would otherwise wait for its next tick.
-void WakeIdleCpu()
+void WakeIdleCpu() REQUIRES(scheduler_lock)
 {
     const uint32_t self = Cpu::CurrentIndex();
     for (uint32_t cpu = 0; cpu < Cpu::MaximumCpus; ++cpu)
@@ -147,7 +149,7 @@ void WakeIdleCpu()
     }
 }
 
-void MakeReady(Task& task)
+void MakeReady(Task& task) REQUIRES(scheduler_lock)
 {
     task.state = TaskState::Ready;
     task.wake_tick = 0;
@@ -155,7 +157,7 @@ void MakeReady(Task& task)
     WakeIdleCpu();
 }
 
-void WakeAllLocked(const WaitQueue& queue)
+void WakeAllLocked(const WaitQueue& queue) REQUIRES(scheduler_lock)
 {
     Task* task = &boot_task;
     do
@@ -188,7 +190,7 @@ void ActivateTaskAddressSpace(const Task* task)
     }
 }
 
-bool Schedule()
+bool Schedule() REQUIRES(scheduler_lock)
 {
     Task* previous = CurrentTask();
     Task* next = FindReadyTask(previous);
@@ -224,7 +226,7 @@ bool Schedule()
 }
 
 // Entered from a context switch, so the scheduler lock is still held.
-void TaskBootstrap()
+void TaskBootstrap() RELEASE(scheduler_lock)
 {
     scheduler_lock.Unlock();
     Arch::Interrupts::Enable();

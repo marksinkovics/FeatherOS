@@ -28,6 +28,7 @@ volatile uint64_t* root_table = nullptr;
 uint64_t kernel_root_physical_address = 0;
 // Kernel tables are shared by every address space and CPU; held while any table is edited.
 constinit FeatherOS::Sync::SpinLock page_table_lock;
+// Each CPU writes its own slot without the lock, and others read it, so every access is atomic.
 uint64_t active_root_physical_addresses[FeatherOS::Cpu::MaximumCpus] = {};
 
 // A CPU asked to flush finds requested ahead of completed; it reloads CR3, which drops every
@@ -42,9 +43,9 @@ FlushRequest flush_requests[FeatherOS::Cpu::MaximumCpus] = {};
 
 bool IsActiveOnAnyCpu(uint64_t root_physical_address)
 {
-    for (const uint64_t active_root : active_root_physical_addresses)
+    for (const uint64_t& active_root : active_root_physical_addresses)
     {
-        if (active_root == root_physical_address)
+        if (__atomic_load_n(&active_root, __ATOMIC_SEQ_CST) == root_physical_address)
         {
             return true;
         }
@@ -210,7 +211,8 @@ bool InitializeVirtualMemory(uint64_t offset)
     uint64_t cr3;
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
     kernel_root_physical_address = cr3 & PageAddressMask;
-    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = kernel_root_physical_address;
+    __atomic_store_n(&active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()],
+                     kernel_root_physical_address, __ATOMIC_SEQ_CST);
     root_table = PhysicalTable(kernel_root_physical_address);
     if (root_table == nullptr)
     {

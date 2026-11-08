@@ -27,7 +27,7 @@ uint8_t In(uint16_t port)
     return value;
 }
 
-void WriteCharacter(char character)
+void WriteCharacter(char character) REQUIRES(write_lock)
 {
     // Wait for the transmitter holding register to empty, but don't hang forever
     // if no serial device is responding.
@@ -84,7 +84,8 @@ void Write(const char* text)
 
 void InitializeMapping() {}
 
-void ForceUnlock()
+// A panic breaks the lock whoever holds it.
+void ForceUnlock() NO_THREAD_SAFETY_ANALYSIS
 {
     write_lock.Unlock();
 }

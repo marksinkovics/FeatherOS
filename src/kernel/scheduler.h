@@ -52,7 +52,7 @@ TaskId CurrentTaskId();
 // Timer ticks the task has run for, on any CPU, and the CPU it last ran on.
 bool GetUsage(TaskId task_id, uint64_t* run_ticks, uint32_t* last_cpu);
 
-void WaitOn(WaitQueue& queue, Sync::SpinLock& lock, uint64_t deadline_tick = 0);
+void WaitOn(WaitQueue& queue, Sync::SpinLock& lock, uint64_t deadline_tick = 0) REQUIRES(lock);
 void WakeAll(WaitQueue& queue);
 // Ends a sleep or wait early; waiters treat it as a spurious wakeup and recheck their condition.
 void WakeTask(TaskId task_id);

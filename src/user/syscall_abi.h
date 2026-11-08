@@ -272,6 +272,8 @@ struct DirectoryEntry
 
 enum class FileType : uint32_t
 {
+    // A zeroed FileStatus; the kernel never reports it.
+    Unknown = 0,
     Regular = 1,
     Directory = 2,
     Terminal = 3,

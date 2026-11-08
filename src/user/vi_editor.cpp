@@ -1475,11 +1475,13 @@ void ViEditor::BuildStatusRow()
     {
         memset(m_row.text + m_row.length, ' ', ruler_column - m_row.length);
         m_row.length = ruler_column;
-        const size_t ruler_length = strlen(ruler);
+        size_t ruler_length = strlen(ruler);
+        ruler_length = ruler_length < width - ruler_column ? ruler_length : width - ruler_column;
         memcpy(m_row.text + m_row.length, ruler, ruler_length);
         m_row.length += ruler_length;
     }
-    m_row.text[m_row.length] = '\0';
+    // Render reserved m_columns + 1 bytes, and the row holds at most width = m_columns - 1.
+    m_row.text[m_row.length] = '\0'; // NOLINT(clang-analyzer-security.ArrayBound)
 }
 
 } // namespace FeatherOS::User

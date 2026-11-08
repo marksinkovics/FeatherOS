@@ -23,10 +23,10 @@ struct Waiter
 constinit Sync::SpinLock futex_lock;
 // Every waiter blocks on this queue, but wakes are aimed at single tasks.
 constinit Scheduler::WaitQueue futex_queue;
-Waiter* first_waiter = nullptr;
-Waiter* last_waiter = nullptr;
+Waiter* first_waiter GUARDED_BY(futex_lock) = nullptr;
+Waiter* last_waiter GUARDED_BY(futex_lock) = nullptr;
 
-void Append(Waiter* waiter)
+void Append(Waiter* waiter) REQUIRES(futex_lock)
 {
     waiter->next = nullptr;
     if (last_waiter == nullptr)
@@ -40,7 +40,7 @@ void Append(Waiter* waiter)
     last_waiter = waiter;
 }
 
-void Remove(Waiter* waiter, Waiter* previous)
+void Remove(Waiter* waiter, Waiter* previous) REQUIRES(futex_lock)
 {
     (previous == nullptr ? first_waiter : previous->next) = waiter->next;
     if (last_waiter == waiter)
@@ -49,7 +49,7 @@ void Remove(Waiter* waiter, Waiter* previous)
     }
 }
 
-void RemoveWaiter(Waiter* waiter)
+void RemoveWaiter(Waiter* waiter) REQUIRES(futex_lock)
 {
     Waiter* previous = nullptr;
     for (Waiter* candidate = first_waiter; candidate != nullptr; candidate = candidate->next)

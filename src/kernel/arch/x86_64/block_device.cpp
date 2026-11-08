@@ -72,12 +72,12 @@ uint16_t device_io_base = 0;
 uint64_t queue_physical_address = 0;
 volatile uint8_t* queue_virtual_address = nullptr;
 uint64_t capacity_sectors = 0;
-uint16_t available_index_value = 0;
+// One request buffer serves every caller, so requests from different CPUs take turns.
+constinit Sync::SpinLock device_lock;
+uint16_t available_index_value GUARDED_BY(device_lock) = 0;
 bool read_only = false;
 bool flush_supported = false;
 bool initialized = false;
-// One request buffer serves every caller, so requests from different CPUs take turns.
-constinit Sync::SpinLock device_lock;
 
 bool AllocateQueue(uint64_t hhdm_offset)
 {
@@ -90,7 +90,7 @@ bool AllocateQueue(uint64_t hhdm_offset)
     {
         for (uint32_t index = 0; index < QueuePageCount; ++index)
         {
-            Memory::FreePageFrame(physical + index * QueuePageSize);
+            Memory::FreePageFrame(physical + static_cast<uint64_t>(index) * QueuePageSize);
         }
         return false;
     }
@@ -115,7 +115,7 @@ void ConfigureDescriptor(uint16_t index, uint64_t address, uint32_t length, uint
 }
 
 // Hands the prepared request to the device and polls until it completes.
-bool SubmitLocked()
+bool SubmitLocked() REQUIRES(device_lock)
 {
     auto* available_index =
         reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 2);

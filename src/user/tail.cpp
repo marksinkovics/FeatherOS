@@ -57,7 +57,7 @@ int main(int argc, char** argv)
     {
         fputs(last.Line(index), stdout);
     }
-    if (file != stdin)
+    if (name != nullptr)
     {
         fclose(file);
     }

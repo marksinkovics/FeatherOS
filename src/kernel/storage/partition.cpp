@@ -2,6 +2,8 @@
 
 #include "kernel/storage/block_device.h"
 
+#include <stddef.h>
+
 namespace FeatherOS::Partition
 {
 namespace
@@ -113,7 +115,7 @@ uint32_t FindGpt(Range (&ranges)[MaximumPartitions])
         {
             return 0;
         }
-        const uint8_t* raw = sector + (entry % entries_per_sector) * entry_size;
+        const uint8_t* raw = sector + static_cast<size_t>(entry % entries_per_sector) * entry_size;
         crc = UpdateCrc32(crc, raw, entry_size);
         bool used = false;
         for (uint32_t index = 0; index < 16; ++index)
@@ -143,7 +145,7 @@ uint32_t Find(Range (&ranges)[MaximumPartitions])
     uint32_t found = 0;
     for (uint32_t index = 0; index < 4; ++index)
     {
-        const uint8_t* entry = mbr + MbrPartitionTable + index * MbrEntrySize;
+        const uint8_t* entry = mbr + MbrPartitionTable + static_cast<size_t>(index) * MbrEntrySize;
         if (entry[4] == ProtectiveMbrType)
         {
             return FindGpt(ranges);
@@ -151,7 +153,7 @@ uint32_t Find(Range (&ranges)[MaximumPartitions])
     }
     for (uint32_t index = 0; index < 4; ++index)
     {
-        const uint8_t* entry = mbr + MbrPartitionTable + index * MbrEntrySize;
+        const uint8_t* entry = mbr + MbrPartitionTable + static_cast<size_t>(index) * MbrEntrySize;
         const uint64_t first = ReadLittleEndian32(entry + 8);
         const uint64_t count = ReadLittleEndian32(entry + 12);
         if ((entry[4] == Fat16Type || entry[4] == Fat16LbaType) && count != 0 &&

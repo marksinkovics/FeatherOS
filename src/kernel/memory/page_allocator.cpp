@@ -10,10 +10,11 @@ namespace
 {
 
 constinit FeatherOS::Sync::SpinLock allocator_lock;
-volatile uint8_t* allocation_bitmap = nullptr;
+volatile uint8_t* allocation_bitmap GUARDED_BY(allocator_lock)
+    PT_GUARDED_BY(allocator_lock) = nullptr;
 uint64_t frame_count = 0;
-uint64_t free_frame_count = 0;
-uint64_t next_search_index = 0;
+uint64_t free_frame_count GUARDED_BY(allocator_lock) = 0;
+uint64_t next_search_index GUARDED_BY(allocator_lock) = 0;
 uint64_t bitmap_physical_address = 0;
 uint64_t bitmap_frame_count = 0;
 size_t bitmap_size_bytes = 0;
@@ -56,13 +57,13 @@ bool GetFrameCount(const FeatherOS::Memory::Region& region, uint64_t* count)
     return true;
 }
 
-bool IsAllocated(uint64_t index)
+bool IsAllocated(uint64_t index) REQUIRES(allocator_lock)
 {
     const uint8_t mask = static_cast<uint8_t>(1U << (index & 7));
     return (allocation_bitmap[index >> 3] & mask) != 0;
 }
 
-void SetAllocated(uint64_t index, bool allocated)
+void SetAllocated(uint64_t index, bool allocated) REQUIRES(allocator_lock)
 {
     const size_t byte_index = static_cast<size_t>(index >> 3);
     const uint8_t mask = static_cast<uint8_t>(1U << (index & 7));
@@ -158,6 +159,8 @@ namespace FeatherOS::Memory
 
 bool InitializePageAllocator(uint64_t hhdm_offset)
 {
+    // Only the boot CPU runs yet, but the lock keeps the rule for allocator state simple.
+    FeatherOS::Sync::SpinLockGuard guard(allocator_lock);
     if (initialized)
     {
         return false;

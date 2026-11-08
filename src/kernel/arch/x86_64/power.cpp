@@ -2,6 +2,8 @@
 
 #include "kernel/memory/device_memory.h"
 
+#include <stddef.h>
+
 namespace FeatherOS::Arch::Power
 {
 namespace
@@ -126,7 +128,7 @@ const uint8_t* FindTable(uint64_t rsdp_physical, const char* signature)
     const uint32_t entry_count = (Read32(root + 4) - SdtHeaderSize) / entry_size;
     for (uint32_t index = 0; index < entry_count; ++index)
     {
-        const uint8_t* entry = root + SdtHeaderSize + index * entry_size;
+        const uint8_t* entry = root + SdtHeaderSize + static_cast<size_t>(index) * entry_size;
         const uint8_t* table = MapTable(extended ? Read64(entry) : Read32(entry), signature);
         if (table != nullptr)
         {

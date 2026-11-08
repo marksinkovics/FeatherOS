@@ -28,11 +28,11 @@ constexpr uint64_t DigitValue(char character)
     }
     if (character >= 'a' && character <= 'z')
     {
-        return static_cast<uint64_t>(character - 'a' + 10);
+        return static_cast<uint64_t>(character - 'a') + 10;
     }
     if (character >= 'A' && character <= 'Z')
     {
-        return static_cast<uint64_t>(character - 'A' + 10);
+        return static_cast<uint64_t>(character - 'A') + 10;
     }
     return UINT64_MAX;
 }

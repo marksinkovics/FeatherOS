@@ -50,7 +50,7 @@ int main(int argc, char** argv)
             fputs(line, stdout);
         }
         free(line);
-        if (file != stdin)
+        if (name != nullptr)
         {
             fclose(file);
         }

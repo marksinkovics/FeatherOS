@@ -36,7 +36,7 @@ bool CopyFile(const char* program, const char* source, const char* target)
         printf("%s: %s: %s\n", program, source, strerror(errno));
         return false;
     }
-    const int output = open(target, O_WRONLY | O_CREAT | O_TRUNC);
+    const int output = open(target, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (output < 0)
     {
         printf("%s: %s: %s\n", program, target, strerror(errno));

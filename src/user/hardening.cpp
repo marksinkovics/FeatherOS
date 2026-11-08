@@ -46,7 +46,7 @@ bool WriteFile(const char* path, const char* from, size_t size)
 {
     static char buffer[4096];
     const int source = from == nullptr ? -1 : open(from, O_RDONLY);
-    const int target = open(path, O_WRONLY | O_CREAT | O_TRUNC);
+    const int target = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     memset(buffer, 'x', sizeof(buffer));
     bool written = target >= 0 && (from == nullptr || source >= 0);
     for (size_t done = 0; written && done < size;)
@@ -166,7 +166,7 @@ void CheckZeroLengthRanges()
 {
     Check(FeatherOS::User::WriteFile(1, nullptr, 0) == 0, "an empty console write");
     Check(PollDescriptors(nullptr, 0, 0) == 0, "a poll with no entries");
-    uint64_t ends[2];
+    uint64_t ends[2] = {};
     Check(CreatePipe(ends, 0) == 0 && FeatherOS::User::WriteFile(ends[1], nullptr, 0) == 0 &&
               ReadFile(ends[0], nullptr, 0) == 0,
           "empty pipe reads and writes");

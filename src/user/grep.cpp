@@ -183,7 +183,7 @@ int main(int argc, char** argv)
         const Options options = {letters['v'], letters['n'], letters['c'], only_matching,
                                  files > 1 ? name : nullptr};
         const long selected = Search(regex, file, options);
-        if (file != stdin)
+        if (name != nullptr)
         {
             fclose(file);
         }

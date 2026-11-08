@@ -26,6 +26,11 @@ constexpr int KnownOpenFlags =
 
 int featheros_open(const char* path, int flags, mode_t /*mode*/)
 {
+    if (path == nullptr)
+    {
+        errno = EFAULT;
+        return -1;
+    }
     const int access_mode = flags & O_ACCMODE;
     if ((flags & ~KnownOpenFlags) != 0 || access_mode == O_ACCMODE)
     {
@@ -91,7 +96,12 @@ int open(const char* path, int flags, ...)
 
 int featheros_openat(int directory, const char* path, int flags, mode_t mode)
 {
-    if (path != nullptr && path[0] != '/' && directory != AT_FDCWD)
+    if (path == nullptr)
+    {
+        errno = EFAULT;
+        return -1;
+    }
+    if (path[0] != '/' && directory != AT_FDCWD)
     {
         // fstat sets EBADF for a closed descriptor; an open one is never a directory.
         struct stat status;
@@ -160,7 +170,7 @@ int pipe2(int descriptors[2], int flags)
     {
         pipe_flags |= FeatherOS::User::PipeNonBlocking;
     }
-    uint64_t ends[2];
+    uint64_t ends[2] = {};
     if (Check<int>(FeatherOS::User::CreatePipe(ends, pipe_flags)) < 0)
     {
         return -1;

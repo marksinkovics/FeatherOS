@@ -9,9 +9,9 @@ namespace FeatherOS::User
 
 struct Rational
 {
-    int64_t numerator;
+    int64_t numerator = 0;
     // Always positive, and coprime with the numerator.
-    int64_t denominator;
+    int64_t denominator = 1;
 };
 
 enum class CalculationError : uint8_t

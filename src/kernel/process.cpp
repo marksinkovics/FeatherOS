@@ -58,6 +58,8 @@ constexpr uint16_t UserMachine = ELF::MachineX86_64;
 constexpr uint16_t UserMachine = ELF::MachineAArch64;
 #endif
 
+constinit Sync::SpinLock process_lock;
+
 struct ProcessRecord;
 
 // A change the parent's Wait has not reported yet.
@@ -88,18 +90,18 @@ struct ThreadRecord
 
 struct ProcessRecord
 {
-    ProcessRecord* next;
+    ProcessRecord* next GUARDED_BY(process_lock);
     ProcessId id;
-    ProcessId parent;
+    ProcessId parent GUARDED_BY(process_lock);
     // Ctrl+C and terminal input go to every process in the foreground group.
-    ProcessId group;
+    ProcessId group GUARDED_BY(process_lock);
     // The leader's process ID. A session leader's descendants form Ctrl+C jobs.
-    ProcessId session;
+    ProcessId session GUARDED_BY(process_lock);
     // The session's controlling terminal, or null; it changes under the process lock.
-    Terminals::Terminal* terminal;
+    Terminals::Terminal* terminal GUARDED_BY(process_lock);
     // The tick the process was spawned at, for ps.
     uint64_t start_tick;
-    uint32_t live_children;
+    uint32_t live_children GUARDED_BY(process_lock);
     Scheduler::TaskId task;
     char name[MaximumCommandNameLength + 1];
     Files::Table files;
@@ -109,19 +111,18 @@ struct ProcessRecord
     ThreadRecord threads[User::MaximumThreads - 1];
     uint64_t next_thread_id;
     // Set when exit, a fault or a terminating signal ends the process while threads may run.
-    bool exiting;
-    uint64_t exit_status;
+    bool exiting GUARDED_BY(process_lock);
+    uint64_t exit_status GUARDED_BY(process_lock);
     // From a stop signal until SIGCONT; its threads wait on resumed meanwhile.
-    bool stopped;
-    int stop_signal;
+    bool stopped GUARDED_BY(process_lock);
+    int stop_signal GUARDED_BY(process_lock);
     volatile Report report;
     Scheduler::WaitQueue resumed;
 };
 
 uint64_t hhdm_offset = 0;
-constinit Sync::SpinLock process_lock;
-ProcessRecord* process_list = nullptr;
-ProcessId next_process_id = 1;
+ProcessRecord* process_list GUARDED_BY(process_lock) = nullptr;
+ProcessId next_process_id GUARDED_BY(process_lock) = 1;
 
 volatile uint8_t* PhysicalBytes(uint64_t physical_address)
 {
@@ -154,6 +155,7 @@ bool AllocateZeroedPage(uint64_t* physical_address)
 }
 
 bool AllocateProgramPage(UserProgram* program, uint64_t* physical_address)
+    REQUIRES(program->memory_lock)
 {
     if (program->mapped_page_count >= program->page_limit || !AllocateZeroedPage(physical_address))
     {
@@ -161,6 +163,13 @@ bool AllocateProgramPage(UserProgram* program, uint64_t* physical_address)
     }
     ++program->mapped_page_count;
     return true;
+}
+
+// For the loader, which maps many pages: the lock is held for one page at a time.
+bool AllocateLoaderPage(UserProgram* program, uint64_t* physical_address)
+{
+    Sync::SpinLockGuard guard(program->memory_lock);
+    return AllocateProgramPage(program, physical_address);
 }
 
 bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_size,
@@ -188,7 +197,7 @@ bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_siz
     while (page_address < page_end)
     {
         uint64_t physical_address;
-        if (!AllocateProgramPage(program, &physical_address))
+        if (!AllocateLoaderPage(program, &physical_address))
         {
             return false;
         }
@@ -284,7 +293,7 @@ bool ProtectUserSegment(void* context, uint64_t virtual_address, uint64_t memory
 }
 
 // Maps a zeroed page of a thread stack slot unless one is there; memory_lock must be held.
-bool MapStackPageLocked(UserProgram* program, uint64_t page_address)
+bool MapStackPageLocked(UserProgram* program, uint64_t page_address) REQUIRES(program->memory_lock)
 {
     uint64_t physical_address;
     bool writable;
@@ -394,7 +403,7 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     }
 
     uint64_t stack_physical_address;
-    if (!AllocateProgramPage(program, &stack_physical_address))
+    if (!AllocateLoaderPage(program, &stack_physical_address))
     {
         return false;
     }
@@ -408,7 +417,7 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     }
 
     uint64_t arguments_physical_address;
-    if (!AllocateProgramPage(program, &arguments_physical_address))
+    if (!AllocateLoaderPage(program, &arguments_physical_address))
     {
         return false;
     }
@@ -479,7 +488,7 @@ void RemoveProcess(ProcessRecord* process)
     Memory::Deallocate(process);
 }
 
-ProcessRecord* FindProcessLocked(ProcessId process_id)
+ProcessRecord* FindProcessLocked(ProcessId process_id) REQUIRES(process_lock)
 {
     for (ProcessRecord* process = process_list; process != nullptr; process = process->next)
     {
@@ -497,7 +506,7 @@ ProcessRecord* FindProcess(ProcessId process_id)
     return FindProcessLocked(process_id);
 }
 
-bool DescendsFromLocked(const ProcessRecord* process, ProcessId ancestor)
+bool DescendsFromLocked(const ProcessRecord* process, ProcessId ancestor) REQUIRES(process_lock)
 {
     for (; process != nullptr; process = FindProcessLocked(process->parent))
     {
@@ -512,7 +521,7 @@ bool DescendsFromLocked(const ProcessRecord* process, ProcessId ancestor)
 void SendSignalLocked(ProcessRecord* process, int signal);
 
 // Every thread wakes, so whichever one waits in Wait sees a child's report.
-void WakeThreadsLocked(const ProcessRecord& process)
+void WakeThreadsLocked(const ProcessRecord& process) REQUIRES(process_lock)
 {
     Scheduler::WakeTask(process.task);
     for (const ThreadRecord& thread : process.threads)
@@ -524,7 +533,7 @@ void WakeThreadsLocked(const ProcessRecord& process)
     }
 }
 
-void SetStoppedLocked(ProcessRecord* process, bool stopped)
+void SetStoppedLocked(ProcessRecord* process, bool stopped) REQUIRES(process_lock)
 {
     process->stopped = stopped;
     process->program.execution_context.stopped = stopped;
@@ -537,7 +546,7 @@ void SetStoppedLocked(ProcessRecord* process, bool stopped)
     }
 }
 
-void ReportToParentLocked(ProcessRecord* process, Report report)
+void ReportToParentLocked(ProcessRecord* process, Report report) REQUIRES(process_lock)
 {
     process->report = report;
     ProcessRecord* parent = FindProcessLocked(process->parent);
@@ -550,7 +559,7 @@ void ReportToParentLocked(ProcessRecord* process, Report report)
 
 // No member has a parent in another group of the same session, so nobody there could continue
 // the group, and the terminal's stop signals leave it running.
-bool GroupOrphanedLocked(ProcessId group, ProcessId session)
+bool GroupOrphanedLocked(ProcessId group, ProcessId session) REQUIRES(process_lock)
 {
     for (const ProcessRecord* member = process_list; member != nullptr; member = member->next)
     {
@@ -565,7 +574,7 @@ bool GroupOrphanedLocked(ProcessId group, ProcessId session)
 }
 
 // Wakes the process if it sleeps or waits, so blocking calls can give up for the signal.
-void SendSignalLocked(ProcessRecord* process, int signal)
+void SendSignalLocked(ProcessRecord* process, int signal) REQUIRES(process_lock)
 {
     // The task exists only once the program has loaded; before that there is nothing to signal.
     if (process->task == 0)
@@ -603,7 +612,7 @@ void SendSignalLocked(ProcessRecord* process, int signal)
     }
 }
 
-void RequestKillLocked(ProcessRecord* process)
+void RequestKillLocked(ProcessRecord* process) REQUIRES(process_lock)
 {
     SendSignalLocked(process, User::SignalKill);
 }
@@ -632,15 +641,26 @@ Terminals::Terminal* ConsoleTerminal()
     return Console::Terminal();
 }
 
-bool IsSessionLeader(const ProcessRecord& process)
+// A process changes its own session and group under the process lock, so it reads them without
+// it; other processes read them under the lock.
+ProcessId OwnSession(const ProcessRecord& process) NO_THREAD_SAFETY_ANALYSIS
 {
-    return process.session == process.id;
+    return process.session;
 }
 
-// A process changes its own session and group, so it reads them without the process lock.
+ProcessId OwnGroup(const ProcessRecord& process) NO_THREAD_SAFETY_ANALYSIS
+{
+    return process.group;
+}
+
+bool IsSessionLeader(const ProcessRecord& process)
+{
+    return OwnSession(process) == process.id;
+}
+
 Terminals::Caller CallerOf(const ProcessRecord& process)
 {
-    return {process.session, process.group};
+    return {OwnSession(process), OwnGroup(process)};
 }
 
 Terminals::Terminal* ControllingTerminal(const ProcessRecord& process)
@@ -684,7 +704,7 @@ uint64_t CheckBackgroundAccess(const ProcessRecord& process, Terminals::Terminal
 }
 
 // A process may use its own group, or one that holds one of its children in its session.
-bool GroupJoinableLocked(const ProcessRecord& caller, ProcessId group)
+bool GroupJoinableLocked(const ProcessRecord& caller, ProcessId group) REQUIRES(process_lock)
 {
     if (group == caller.group)
     {
@@ -700,7 +720,7 @@ bool GroupJoinableLocked(const ProcessRecord& caller, ProcessId group)
     return false;
 }
 
-bool GroupInSessionLocked(ProcessId session, ProcessId group)
+bool GroupInSessionLocked(ProcessId session, ProcessId group) REQUIRES(process_lock)
 {
     for (const ProcessRecord* other = process_list; other != nullptr; other = other->next)
     {
@@ -964,7 +984,8 @@ uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint
     {
         return access;
     }
-    const uint64_t length = terminal->ReadLine(process->group, prompt_text, line, line_capacity);
+    const uint64_t length =
+        terminal->ReadLine(OwnGroup(*process), prompt_text, line, line_capacity);
     if (User::IsSyscallError(length))
     {
         return length;
@@ -1064,10 +1085,14 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
     {
         return User::SyscallErrorInvalidArgument;
     }
-    ProcessRecord* child = FindProcess(process_id);
-    if (child == nullptr || child->parent != process->id)
+    ProcessRecord* child;
     {
-        return User::SyscallErrorNotChild;
+        Sync::SpinLockGuard guard(process_lock);
+        child = FindProcessLocked(process_id);
+        if (child == nullptr || child->parent != process->id)
+        {
+            return User::SyscallErrorNotChild;
+        }
     }
     if (!UserRangeWritable(*process, status_pointer, sizeof(uint64_t)))
     {
@@ -2762,6 +2787,8 @@ uint64_t ProcessIdSyscall(void* context)
 
 uint64_t ParentProcessIdSyscall(void* context)
 {
+    // A parent that exits hands its children to init from another CPU.
+    Sync::SpinLockGuard guard(process_lock);
     return static_cast<const ProcessRecord*>(context)->parent;
 }
 
@@ -2840,8 +2867,13 @@ uint64_t RunProcess(void* context)
         ExitProcess(process, main_status);
     }
     WaitForThreads(process);
-    const uint64_t exit_status = process->exiting ? process->exit_status : 0;
-    process->exit_status = exit_status;
+    uint64_t exit_status;
+    {
+        // A signal from another process may be ending this one at the same time.
+        Sync::SpinLockGuard guard(process_lock);
+        exit_status = process->exiting ? process->exit_status : 0;
+        process->exit_status = exit_status;
+    }
     Files::CloseAll(&process->files);
     for (uint32_t console = 0; console < Console::Count; ++console)
     {
@@ -2929,7 +2961,7 @@ char StateLetter(Scheduler::TaskState state)
 bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
 {
     Sync::SpinLockGuard guard(process_lock);
-    const ProcessRecord* process = FindProcessLocked(process_id);
+    ProcessRecord* process = FindProcessLocked(process_id);
     if (process == nullptr)
     {
         return false;
@@ -2971,7 +3003,10 @@ bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
     status->process_id = process->id;
     status->parent_id = process->parent;
     status->group = process->group;
-    status->pages = process->program.mapped_page_count;
+    {
+        Sync::SpinLockGuard memory_guard(process->program.memory_lock);
+        status->pages = process->program.mapped_page_count;
+    }
     status->page_limit = process->program.page_limit;
     status->open_files = 0;
     for (const Files::Slot& slot : process->files.slots)
@@ -3042,7 +3077,8 @@ void Initialize(uint64_t offset)
     }
 }
 
-void InitializeUserProgram(UserProgram* program)
+// Nothing else can see the program yet.
+void InitializeUserProgram(UserProgram* program) NO_THREAD_SAFETY_ANALYSIS
 {
     program->address_space.root_physical_address = 0;
     program->mapped_page_count = 0;
@@ -3345,6 +3381,8 @@ bool Wait(ProcessId process_id, uint64_t* exit_status)
     }
     if (exit_status != nullptr)
     {
+        // Until the record is unlinked, a kill from another process can still reach it.
+        Sync::SpinLockGuard guard(process_lock);
         *exit_status = process->exit_status;
     }
     ReleaseUserProgram(&process->program);
@@ -3432,7 +3470,7 @@ bool StopOtherProcesses(ProcessId caller)
         return running;
     };
     others_running(true);
-    const uint64_t deadline = Time::TickCount() + 2 * Time::TicksPerSecond();
+    const uint64_t deadline = Time::TickCount() + 2 * static_cast<uint64_t>(Time::TicksPerSecond());
     while (Time::TickCount() < deadline)
     {
         if (!others_running(false))

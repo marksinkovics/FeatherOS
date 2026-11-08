@@ -13,9 +13,9 @@ namespace
 // Bytes read from /dev/random ahead of use, so callers that take a few bytes at a time (Swift's
 // random number generator takes 8) do not open the device each time.
 constexpr size_t PoolSize = 256;
-unsigned char pool[PoolSize];
-size_t pool_left = 0;
 constinit FeatherOS::LibC::Lock pool_lock;
+unsigned char pool[PoolSize] GUARDED_BY(pool_lock);
+size_t pool_left GUARDED_BY(pool_lock) = 0;
 
 [[noreturn]] void NoRandomness()
 {
@@ -24,7 +24,7 @@ constinit FeatherOS::LibC::Lock pool_lock;
     abort();
 }
 
-void Refill()
+void Refill() REQUIRES(pool_lock)
 {
     const int descriptor = open("/dev/random", O_RDONLY | O_CLOEXEC);
     if (descriptor < 0)

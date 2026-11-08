@@ -134,10 +134,11 @@ void Start(Service* service)
     size_t count = 0;
     posix_spawnattr_t attributes;
     posix_spawnattr_init(&attributes);
-    posix_spawnattr_setflags(&attributes, service->policy == Policy::Console ? POSIX_SPAWN_SETSID
-                                          : service->policy == Policy::Respawn
-                                              ? POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_BACKGROUND
-                                              : 0);
+    posix_spawnattr_setflags(
+        &attributes, static_cast<short>(service->policy == Policy::Console ? POSIX_SPAWN_SETSID
+                                        : service->policy == Policy::Respawn
+                                            ? POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_BACKGROUND
+                                            : 0));
     posix_spawn_file_actions_t file_actions;
     posix_spawn_file_actions_init(&file_actions);
     if (service->policy == Policy::Console)

@@ -74,15 +74,17 @@ int main(int argc, char** argv)
         TextCounts counts = {0, 0, 0};
         bool in_word = false;
         char buffer[512];
-        for (size_t count; (count = fread(buffer, 1, sizeof(buffer), file)) > 0;)
+        // A short read means end of file or an error.
+        for (size_t count = sizeof(buffer); count == sizeof(buffer);)
         {
+            count = fread(buffer, 1, sizeof(buffer), file);
             FeatherOS::User::CountText(buffer, count, &counts, &in_word);
         }
         PrintCounts(counts, name);
         total.lines += counts.lines;
         total.words += counts.words;
         total.bytes += counts.bytes;
-        if (file != stdin)
+        if (name != nullptr)
         {
             fclose(file);
         }

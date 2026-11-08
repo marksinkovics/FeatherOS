@@ -27,18 +27,18 @@ struct AddressSlot
 // Guards everything below.
 constinit Sync::SpinLock configuration_lock;
 constinit Scheduler::WaitQueue advertisement_waiters;
-AddressSlot link_local = {};
-AddressSlot global = {};
-IpAddress router = {};
-uint64_t router_until = 0;
-bool advertised = false;
+AddressSlot link_local GUARDED_BY(configuration_lock) = {};
+AddressSlot global GUARDED_BY(configuration_lock) = {};
+IpAddress router GUARDED_BY(configuration_lock) = {};
+uint64_t router_until GUARDED_BY(configuration_lock) = 0;
+bool advertised GUARDED_BY(configuration_lock) = false;
 
 bool Usable(const AddressSlot& slot)
 {
     return slot.address.version == IpVersion::V6 && !slot.duplicate;
 }
 
-AddressSlot* OwnSlotLocked(const IpAddress& address)
+AddressSlot* OwnSlotLocked(const IpAddress& address) REQUIRES(configuration_lock)
 {
     if (Usable(link_local) && link_local.address == address)
     {
@@ -106,7 +106,8 @@ void HandleRouterAdvertisement(const Ipv6Packet& packet)
         {
             router = packet.source;
             router_until =
-                Time::TickCount() + advertisement.router_lifetime * Time::TicksPerSecond();
+                Time::TickCount() +
+                static_cast<uint64_t>(advertisement.router_lifetime) * Time::TicksPerSecond();
         }
         else if (router == packet.source)
         {

@@ -185,6 +185,8 @@ bool ReadFloatText(Reader<Source>& reader, size_t width, char (&text)[MaximumFlo
             {
                 take();
             }
+            // take() advances both length and character.
+            // NOLINTNEXTLINE(bugprone-infinite-loop)
             while (length < limit && character >= '0' && character <= '9')
             {
                 take();

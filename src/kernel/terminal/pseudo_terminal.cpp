@@ -6,6 +6,12 @@
 
 namespace FeatherOS::PseudoTerminals
 {
+namespace
+{
+
+constinit Sync::SpinLock pairs_lock;
+
+} // namespace
 
 struct Pair
 {
@@ -17,18 +23,17 @@ struct Pair
     // end of file once they are all closed; until the first slave opens, the pair holds one.
     Pipes::Pipe* output = nullptr;
     uint64_t output_count = 0;
-    uint32_t slaves = 0;
-    bool in_use = false;
-    bool master_open = false;
-    bool locked = false;
-    bool slave_opened = false;
+    uint32_t slaves GUARDED_BY(pairs_lock) = 0;
+    bool in_use GUARDED_BY(pairs_lock) = false;
+    bool master_open GUARDED_BY(pairs_lock) = false;
+    bool locked GUARDED_BY(pairs_lock) = false;
+    bool slave_opened GUARDED_BY(pairs_lock) = false;
     bool at_row_start = true;
 };
 
 namespace
 {
 
-constinit Sync::SpinLock pairs_lock;
 constinit Pair pairs[User::MaximumPseudoTerminals];
 
 Pair* Owner(void* context)
@@ -110,20 +115,20 @@ void DeviceStartFreshRow(void* context)
 
 // Every program has let go of a pair once its master and slave descriptors are closed. The
 // master's close hung the terminal up, so no session has it.
-bool ReclaimableLocked(const Pair& pair)
+bool ReclaimableLocked(const Pair& pair) REQUIRES(pairs_lock)
 {
     return pair.in_use && !pair.master_open && pair.slaves == 0;
 }
 
 // The pipe is freed with its last end, after the pair stops using it; a pair in use under the
 // lock still has it.
-void ReclaimLocked(Pair& pair)
+void ReclaimLocked(Pair& pair) REQUIRES(pairs_lock)
 {
     pair.output = nullptr;
     pair.in_use = false;
 }
 
-void AddSlaveLocked(Pair& pair)
+void AddSlaveLocked(Pair& pair) REQUIRES(pairs_lock)
 {
     ++pair.slaves;
     if (pair.slave_opened)
@@ -134,7 +139,7 @@ void AddSlaveLocked(Pair& pair)
 }
 
 // No session can have the terminal of a pair that is not in use, so it can start over.
-void Claim(Pair* pair, Pipes::Pipe* output)
+void Claim(Pair* pair, Pipes::Pipe* output) REQUIRES(pairs_lock)
 {
     pair->device = {
         .context = pair,

@@ -24,7 +24,7 @@ volatile uint32_t* Register(uint32_t offset)
     return reinterpret_cast<volatile uint32_t*>(uart_base + offset);
 }
 
-void WriteCharacter(char character)
+void WriteCharacter(char character) REQUIRES(write_lock)
 {
     for (uint32_t attempt = 0; attempt < 100000; ++attempt)
     {
@@ -77,7 +77,8 @@ void InitializeMapping()
     }
 }
 
-void ForceUnlock()
+// A panic breaks the lock whoever holds it.
+void ForceUnlock() NO_THREAD_SAFETY_ANALYSIS
 {
     write_lock.Unlock();
 }

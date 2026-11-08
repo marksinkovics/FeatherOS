@@ -14,9 +14,9 @@ constexpr uint64_t NanosecondsPerSecond = 1000000000;
 constexpr uint64_t MaximumNanoseconds = UINT64_MAX / 2;
 
 constinit Sync::SpinLock clock_lock;
-bool based = false;
-uint64_t base_nanoseconds = 0;
-uint64_t base_tick = 0;
+bool based GUARDED_BY(clock_lock) = false;
+uint64_t base_nanoseconds GUARDED_BY(clock_lock) = 0;
+uint64_t base_tick GUARDED_BY(clock_lock) = 0;
 
 bool ReadRealTimeClock(uint64_t* nanoseconds)
 {

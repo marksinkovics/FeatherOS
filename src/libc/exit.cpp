@@ -24,9 +24,9 @@ constexpr size_t MaximumExitHandlers = 32;
 // What a shell shows for SIGABRT, 128 + 6, if the signal somehow did not end the program.
 constexpr int AbortStatus = 134;
 
-ExitHandler handlers[MaximumExitHandlers];
-size_t handler_count = 0;
 constinit FeatherOS::LibC::Lock handlers_lock;
+ExitHandler handlers[MaximumExitHandlers] GUARDED_BY(handlers_lock);
+size_t handler_count GUARDED_BY(handlers_lock) = 0;
 void (*exit_flush)() = nullptr;
 void (*key_destructors)() = nullptr;
 
@@ -139,9 +139,10 @@ extern "C" void exit(int status)
             handler.with_argument(handler.argument);
         }
     }
+    // The linker places the array between the two symbols, which the analyzer cannot know.
     for (const FiniFunction* function = __fini_array_end; function != __fini_array_start;)
     {
-        (*--function)();
+        (*--function)(); // NOLINT(clang-analyzer-security.ArrayBound)
     }
     // Streams are flushed last, so output from handlers and destructors is not lost.
     if (exit_flush != nullptr)

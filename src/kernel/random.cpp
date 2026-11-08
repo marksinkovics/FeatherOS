@@ -9,7 +9,7 @@ namespace
 {
 
 constinit Sync::SpinLock random_lock;
-uint64_t state = 0;
+uint64_t state GUARDED_BY(random_lock) = 0;
 
 uint64_t ReadCycleCounter()
 {

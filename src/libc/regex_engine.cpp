@@ -1195,7 +1195,7 @@ Status Matcher::Search(long start, long required_end, long* registers, long* fou
                 break;
             case Op::Reference:
             {
-                const long from = registers[2 * instruction.a];
+                const long from = registers[2 * static_cast<size_t>(instruction.a)];
                 const long to = registers[2 * instruction.a + 1];
                 if (from < 0 || to < from || to - from > limit - position)
                 {

@@ -33,11 +33,12 @@ Screen screens[Count] = {{0, nullptr}, {1, nullptr}, {2, nullptr}, {3, nullptr}}
 // The consoles share one framebuffer, and programs on different CPUs one screen.
 constinit Sync::SpinLock display_lock;
 // Changes under display_lock.
-uint32_t shown_console = 0;
+uint32_t shown_console GUARDED_BY(display_lock) = 0;
 
 constinit Sync::SpinLock status_lock;
 constinit Scheduler::WaitQueue status_waiters;
-bool status_changed = false;
+bool status_changed GUARDED_BY(status_lock) = false;
+// Set once at boot, then read without the lock.
 bool status_running = false;
 
 Screen& ScreenOf(void* context)
@@ -300,7 +301,7 @@ void Initialize(Term* terms)
     {
         Panic("Could not start the status bar task");
     }
-    status_running = true;
+    __atomic_store_n(&status_running, true, __ATOMIC_RELEASE);
 }
 
 void Show(uint32_t console)
@@ -336,7 +337,7 @@ uint32_t Shown()
 
 void NotifyStatusChanged()
 {
-    if (!status_running)
+    if (!__atomic_load_n(&status_running, __ATOMIC_ACQUIRE))
     {
         return;
     }
