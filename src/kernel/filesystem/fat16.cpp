@@ -197,7 +197,8 @@ bool SlotSector(Slot slot, uint64_t* sector)
 template <typename Visit> Lookup ScanDirectory(uint32_t directory, Visit visit)
 {
     uint8_t sector[BytesPerSector];
-    uint64_t loaded_sector = UINT64_MAX;
+    uint64_t loaded_sector = 0;
+    bool loaded = false;
     for (uint32_t index = 0;; ++index)
     {
         uint64_t sector_number;
@@ -205,15 +206,17 @@ template <typename Visit> Lookup ScanDirectory(uint32_t directory, Visit visit)
         {
             return Lookup::Missing;
         }
-        if (sector_number != loaded_sector)
+        if (!loaded || sector_number != loaded_sector)
         {
             if (!BlockDevice::ReadSector(sector_number, sector))
             {
                 return Lookup::Error;
             }
             loaded_sector = sector_number;
+            loaded = true;
         }
-        const uint8_t* entry = sector + (index % EntriesPerSector) * RootEntrySize;
+        const uint8_t* entry =
+            sector + static_cast<size_t>(index % EntriesPerSector) * RootEntrySize;
         if (visit(entry, Slot{directory, index}))
         {
             return Lookup::Found;
@@ -393,7 +396,7 @@ bool ReadSlot(Slot slot, uint8_t (&sector)[BytesPerSector], uint64_t* sector_num
     {
         return false;
     }
-    *entry = sector + (slot.index % EntriesPerSector) * RootEntrySize;
+    *entry = sector + static_cast<size_t>(slot.index % EntriesPerSector) * RootEntrySize;
     return true;
 }
 
@@ -484,7 +487,7 @@ bool AllocateCluster(uint32_t* cluster)
             {
                 return false;
             }
-            if (ReadLittleEndian16(sector + slot * 2) != Fat16FreeCluster)
+            if (ReadLittleEndian16(sector + static_cast<size_t>(slot) * 2) != Fat16FreeCluster)
             {
                 continue;
             }
@@ -781,7 +784,8 @@ bool GrowDirectory(uint32_t directory)
 bool FindFreeRun(uint32_t directory, uint32_t count, Slot* first)
 {
     uint8_t sector[BytesPerSector];
-    uint64_t loaded_sector = UINT64_MAX;
+    uint64_t loaded_sector = 0;
+    bool loaded = false;
     uint32_t run_start = 0;
     uint32_t run_length = 0;
     for (uint32_t index = 0; index < MaximumDirectoryEntries;)
@@ -795,15 +799,17 @@ bool FindFreeRun(uint32_t directory, uint32_t count, Slot* first)
             }
             continue;
         }
-        if (sector_number != loaded_sector)
+        if (!loaded || sector_number != loaded_sector)
         {
             if (!BlockDevice::ReadSector(sector_number, sector))
             {
                 return false;
             }
             loaded_sector = sector_number;
+            loaded = true;
         }
-        const uint8_t marker = sector[(index % EntriesPerSector) * RootEntrySize];
+        const uint8_t marker =
+            sector[static_cast<size_t>(index % EntriesPerSector) * RootEntrySize];
         if (marker == EndOfDirectory || marker == DeletedEntry)
         {
             run_start = run_length == 0 ? index : run_start;
@@ -1248,7 +1254,7 @@ uint32_t FreeClusterCount()
         {
             const uint32_t cluster = fat_sector * FatEntriesPerSector + slot;
             if (cluster >= 2 && IsDataCluster(cluster) &&
-                ReadLittleEndian16(sector + slot * 2) == Fat16FreeCluster)
+                ReadLittleEndian16(sector + static_cast<size_t>(slot) * 2) == Fat16FreeCluster)
             {
                 ++free_clusters;
             }

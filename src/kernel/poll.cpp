@@ -10,8 +10,8 @@ namespace
 
 constinit Sync::SpinLock poll_lock;
 constinit Scheduler::WaitQueue poll_waiters;
-uint64_t generation = 0;
-uint32_t waiting = 0;
+uint64_t generation GUARDED_BY(poll_lock) = 0;
+uint32_t waiting GUARDED_BY(poll_lock) = 0;
 
 } // namespace
 

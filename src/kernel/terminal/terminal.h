@@ -188,29 +188,29 @@ private:
     Sync::SpinLock lock;
     Scheduler::WaitQueue readers;
     Scheduler::WaitQueue room;
-    uint32_t room_waiters = 0;
-    char queue[QueueCapacity] = {};
-    uint32_t queue_head = 0;
-    uint32_t queue_tail = 0;
-    uint32_t queue_size = 0;
-    User::TerminalSettings settings = DefaultSettings;
-    uint64_t settings_owner = 0;
-    uint32_t rows = DefaultRows;
-    uint32_t columns = DefaultColumns;
-    uint64_t foreground_group = 0;
-    uint64_t session = 0;
-    bool hung_up = false;
+    uint32_t room_waiters GUARDED_BY(lock) = 0;
+    char queue[QueueCapacity] GUARDED_BY(lock) = {};
+    uint32_t queue_head GUARDED_BY(lock) = 0;
+    uint32_t queue_tail GUARDED_BY(lock) = 0;
+    uint32_t queue_size GUARDED_BY(lock) = 0;
+    User::TerminalSettings settings GUARDED_BY(lock) = DefaultSettings;
+    uint64_t settings_owner GUARDED_BY(lock) = 0;
+    uint32_t rows GUARDED_BY(lock) = DefaultRows;
+    uint32_t columns GUARDED_BY(lock) = DefaultColumns;
+    uint64_t foreground_group GUARDED_BY(lock) = 0;
+    uint64_t session GUARDED_BY(lock) = 0;
+    bool hung_up GUARDED_BY(lock) = false;
     // Readers waiting with TerminalWakeOnOutput.
-    uint32_t output_watchers = 0;
+    uint32_t output_watchers GUARDED_BY(lock) = 0;
     // The rest of a canonical line that a read did not take, with its '\n'.
-    char line[User::MaximumCommandLineLength] = {};
-    uint32_t line_length = 0;
-    uint32_t line_offset = 0;
+    char line[User::MaximumCommandLineLength] GUARDED_BY(lock) = {};
+    uint32_t line_length GUARDED_BY(lock) = 0;
+    uint32_t line_offset GUARDED_BY(lock) = 0;
 
     void Poll();
     bool TryReadByte(char* byte);
     void WaitForInput(uint64_t deadline_tick);
-    void QueueLocked(char byte);
+    void QueueLocked(char byte) REQUIRES(lock);
     // 0, or the device's error.
     uint64_t Output(const char* text, size_t length);
     void DeliverJobSignal(char byte);

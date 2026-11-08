@@ -69,7 +69,7 @@ DIR* opendir(const char* path)
 
 struct dirent* readdir(DIR* directory)
 {
-    FeatherOS::User::DirectoryEntry entry;
+    FeatherOS::User::DirectoryEntry entry{};
     const uint64_t result =
         FeatherOS::User::ReadDirectory(directory->path, directory->index, &entry);
     // Past the last entry is the normal end of the listing, which leaves errno alone.

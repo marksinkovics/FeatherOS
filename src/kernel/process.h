@@ -59,7 +59,7 @@ struct UserProgram
     Memory::AddressSpace address_space;
     // Threads on different CPUs map pages at once: it guards the mappings and the page count.
     Sync::SpinLock memory_lock;
-    uint32_t mapped_page_count;
+    uint32_t mapped_page_count GUARDED_BY(memory_lock);
     uint32_t page_limit;
     // Bit n is set once thread stack slot n has been used; slot 0 is the main thread's.
     uint32_t stack_slots;

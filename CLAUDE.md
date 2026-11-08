@@ -63,6 +63,7 @@ Get the code lint-clean **before** running any QEMU smoke test or `test-all`. Al
 - Shared code goes in `src/kernel/`. Anything CPU- or board-specific goes under `arch/<arch>/`. Never share GDT/TSS/IDT concepts with AArch64. Full rules: "Architecture Boundaries" in `docs/roadmap.md`.
 - Put implementations in `.cpp` files and only declarations in headers; templates are the exception.
 - Keep comments minimal: only for education (hardware quirks, non-obvious invariants) or when the code can't be understood without them. Never describe what a function does; that goes stale when the code changes.
+- Shared state names its lock: `GUARDED_BY(lock)` on the data and `REQUIRES(lock)` on `...Locked` helpers, from `src/user/thread_safety.h`; clang-tidy's thread-safety analysis rejects unlocked access ("Lock annotations" in `docs/development.md`). clang-tidy warnings are errors.
 - Namespaces are `FeatherOS::<Subsystem>`, with PascalCase functions. clang-format uses LLVM style, 4-space indent, 100 columns.
 - Early logging and panic must not allocate. Physical addresses use explicit 64-bit types, and code must not hard-code physical memory addresses (obtain them from the Limine memory map).
 - Every feature should land with tests on **both** architectures: a QEMU case in `test_boot_matrix.py` and, where logic is host-testable, a unit test.

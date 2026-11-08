@@ -1,6 +1,8 @@
 #ifndef FEATHEROS_LIBC_LOCK_H
 #define FEATHEROS_LIBC_LOCK_H
 
+#include "user/thread_safety.h"
+
 #include <stdint.h>
 
 // The C library's own locks, which sleep in the kernel (FutexWait) only while contended. Both
@@ -23,42 +25,43 @@ void LockWord(int* state, bool contended_from_start);
 bool TryLockWord(int* state);
 void UnlockWord(int* state);
 
-struct Lock
+// The analysis trusts these primitives without checking them.
+struct CAPABILITY("mutex") Lock
 {
     int state = 0;
 
-    void Acquire()
+    void Acquire() ACQUIRE() NO_THREAD_SAFETY_ANALYSIS
     {
         LockWord(&state, false);
     }
 
-    void Release()
+    void Release() RELEASE() NO_THREAD_SAFETY_ANALYSIS
     {
         UnlockWord(&state);
     }
 };
 
 // One thread may take it again while holding it, as stdio's flockfile requires.
-struct RecursiveLock
+struct CAPABILITY("mutex") RecursiveLock
 {
     int state;
     unsigned long owner;
     unsigned count;
 
-    void Acquire();
-    bool TryAcquire();
-    void Release();
+    void Acquire() ACQUIRE() NO_THREAD_SAFETY_ANALYSIS;
+    bool TryAcquire() TRY_ACQUIRE(true) NO_THREAD_SAFETY_ANALYSIS;
+    void Release() RELEASE() NO_THREAD_SAFETY_ANALYSIS;
 };
 
-template <typename Held> class Guard
+template <typename Held> class SCOPED_CAPABILITY Guard
 {
 public:
-    explicit Guard(Held& lock) : m_lock(lock)
+    explicit Guard(Held& lock) ACQUIRE(lock) : m_lock(lock)
     {
         m_lock.Acquire();
     }
 
-    ~Guard()
+    ~Guard() RELEASE()
     {
         m_lock.Release();
     }

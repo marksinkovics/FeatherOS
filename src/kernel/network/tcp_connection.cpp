@@ -590,6 +590,8 @@ void TcpConnection::StoreOutOfOrder(uint32_t begin, uint32_t end)
         const size_t merged = last - first - 1;
         for (size_t index = last; index < out_of_order_count; ++index)
         {
+            // out_of_order_count never exceeds OutOfOrderRanges.
+            // NOLINTNEXTLINE(clang-analyzer-security.ArrayBound)
             out_of_order[index - merged] = out_of_order[index];
         }
         out_of_order_count -= merged;

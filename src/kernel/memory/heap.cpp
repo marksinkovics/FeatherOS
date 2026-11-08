@@ -27,9 +27,9 @@ struct Block
 
 constexpr size_t HeaderSize = (sizeof(Block) + HeapAlignment - 1) & ~(HeapAlignment - 1);
 
-Block* first_block = nullptr;
-Block* last_block = nullptr;
-uint64_t mapped_page_count = 0;
+Block* first_block GUARDED_BY(heap_lock) = nullptr;
+Block* last_block GUARDED_BY(heap_lock) = nullptr;
+uint64_t mapped_page_count GUARDED_BY(heap_lock) = 0;
 bool initialized = false;
 
 bool AlignSize(size_t size, size_t* aligned)
@@ -51,7 +51,7 @@ uint8_t* Payload(Block* block)
     return reinterpret_cast<uint8_t*>(block) + HeaderSize;
 }
 
-Block* FindBlock(void* pointer)
+Block* FindBlock(void* pointer) REQUIRES(heap_lock)
 {
     if (pointer == nullptr || first_block == nullptr)
     {
@@ -67,7 +67,7 @@ Block* FindBlock(void* pointer)
     return nullptr;
 }
 
-void SplitBlock(Block* block, size_t requested_size)
+void SplitBlock(Block* block, size_t requested_size) REQUIRES(heap_lock)
 {
     const size_t remaining = block->size - requested_size;
     if (remaining < HeaderSize + HeapAlignment)
@@ -92,7 +92,7 @@ void SplitBlock(Block* block, size_t requested_size)
     block->size = requested_size;
 }
 
-bool GrowHeap(size_t minimum_size)
+bool GrowHeap(size_t minimum_size) REQUIRES(heap_lock)
 {
     if (minimum_size > SIZE_MAX - HeaderSize)
     {
@@ -174,6 +174,7 @@ namespace FeatherOS::Memory
 
 uint64_t HeapMappedBytes()
 {
+    Sync::SpinLockGuard guard(heap_lock);
     return mapped_page_count * PageSize;
 }
 

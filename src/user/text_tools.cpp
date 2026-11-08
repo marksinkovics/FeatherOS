@@ -95,7 +95,7 @@ LastLines::~LastLines()
     {
         free(m_lines[index]);
     }
-    free(m_lines);
+    free(static_cast<void*>(m_lines));
 }
 
 bool LastLines::Add(const char* line)

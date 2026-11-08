@@ -15,11 +15,11 @@ struct Pipe
     // Readers wait here for data, and writers for space.
     Scheduler::WaitQueue readable;
     Scheduler::WaitQueue writable;
-    uint8_t data[Capacity];
-    uint64_t start;
-    uint64_t length;
-    uint32_t readers;
-    uint32_t writers;
+    uint8_t data[Capacity] GUARDED_BY(lock);
+    uint64_t start GUARDED_BY(lock);
+    uint64_t length GUARDED_BY(lock);
+    uint32_t readers GUARDED_BY(lock);
+    uint32_t writers GUARDED_BY(lock);
 };
 
 namespace
@@ -39,6 +39,7 @@ Pipe* Create()
     {
         return nullptr;
     }
+    Sync::SpinLockGuard guard(pipe->lock);
     pipe->readers = 1;
     pipe->writers = 1;
     return pipe;

@@ -119,7 +119,7 @@ void* CheckAllocation(void* pointer)
 // <new> declares it; there is no C++ standard library, so the type is defined here.
 namespace std
 {
-enum class align_val_t : size_t
+enum class align_val_t : size_t // NOLINT(bugprone-std-namespace-modification)
 {
 };
 } // namespace std
@@ -190,7 +190,7 @@ void operator delete[](void* pointer, size_t, std::align_val_t) noexcept
 
 // libc++'s headers call this where they would throw or a check fails. Its compiled library
 // would provide it, and Swift programs use only the headers.
-namespace std::inline __1
+namespace std::inline __1 // NOLINT(bugprone-std-namespace-modification)
 {
 [[noreturn]] void __libcpp_verbose_abort(const char* format, ...) noexcept
 {

@@ -35,8 +35,9 @@ bool UnixSecondsFromCalendar(const CalendarTime& time, uint64_t* seconds)
     {
         return false;
     }
-    *seconds = DaysFromCivil(time.year, time.month, time.day) * 86400 + time.hour * 3600 +
-               time.minute * 60 + time.second;
+    *seconds = DaysFromCivil(time.year, time.month, time.day) * 86400 +
+               static_cast<uint64_t>(time.hour) * 3600 + static_cast<uint64_t>(time.minute) * 60 +
+               time.second;
     return true;
 }
 

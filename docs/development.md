@@ -19,7 +19,23 @@ sudo apt-get install clang-format clang-tidy shellcheck shfmt pre-commit pipx ni
 pipx install ruff
 ```
 
-Run `bash tools/quality.sh --fix` to apply available formatting and lint fixes, then install the pre-commit hook with `pre-commit install` once per clone. The hook quietly runs the quality checks before each commit and prints diagnostics only on failure. Build at least one architecture first so clang-tidy can use `build/<arch>/compile_commands.json`; issues without automatic fixes are reported for manual repair.
+Run `bash tools/quality.sh --fix` to apply available formatting and lint fixes, then install the pre-commit hook with `pre-commit install` once per clone. Each check is its own hook (clang-format, clang-tidy per architecture, Ruff, ShellCheck, shfmt) that runs only when the commit touches files it covers, prints its duration, and prints diagnostics on failure. The clang-tidy hooks check only the sources the staged files affect: the staged sources and every source whose last build included a staged header, from Ninja's dependency log (`ninja -t deps`); a staged `.clang-tidy` or CMake file, or a missing log, checks everything. `bash tools/quality.sh check` runs every stage with one timed line each; `bash tools/quality.sh check clang-tidy-x86_64` runs one (`bash tools/quality.sh stages` lists them). Build at least one architecture first so clang-tidy can use `build/<arch>/compile_commands.json`; issues without automatic fixes are reported for manual repair.
+
+### clang-tidy checks
+
+`.clang-tidy` turns every warning into an error, so a commit with one fails. It enables `bugprone-*`, `clang-analyzer-*` and `performance-*`, minus the checks that flag what a kernel and its C library do on purpose: integers made into pointers for MMIO and physical memory (`performance-no-int-to-ptr`), enum widths set by hardware and the ABI (`performance-enum-size`), flag enums that combine bits (`EnumCastOutOfRange`), layouts that follow hardware (`Padding`), libc's own `strcpy` and `malloc(0)`, and case-by-case `if` ladders (`bugprone-branch-clone`). Multiplications of constants are not flagged as widening; any other `uint32_t` product that becomes a 64-bit address or offset is computed in 64 bits (`static_cast<uint64_t>(index) * PageSize`), since sector, page and cluster numbers are where 32-bit overflow hides. A finding the analyzer gets wrong takes a `NOLINT(<check>)` with the reason on the line above; `libctest` misuses functions on purpose and turns those checks off for the whole file.
+
+### Lock annotations
+
+clang-tidy runs Clang's thread-safety analysis (`-Wthread-safety`, passed through `ExtraArgsBefore`; GCC builds the code and ignores the annotations). The macros are in `src/user/thread_safety.h`, shared by the kernel and libc:
+
+- `Sync::SpinLock` and `Sync::Mutex` in the kernel, and `LibC::Lock`/`RecursiveLock` in libc, are capabilities; their guards (`SpinLockGuard`, `MutexGuard`, `LibC::Guard`) take and release them for a scope.
+- Data a lock protects is declared `GUARDED_BY(lock)` (`PT_GUARDED_BY` for what a pointer points at), with the lock declared first. Reading or writing it without the lock is an error.
+- A function that expects its caller to hold a lock says `REQUIRES(lock)`; by convention its name ends in `Locked`. `Scheduler::WaitOn` requires the lock it sleeps on.
+- `NO_THREAD_SAFETY_ANALYSIS`, with a comment saying why, marks the few places that are right but cannot be expressed: the lock primitives themselves, a panic breaking the serial lock, `Files::Quiesce` holding the file system lock until shutdown, objects set up before any other CPU can see them or freed after none can, a process reading its own group and session, and stdio's `flockfile` family.
+- Data that each CPU writes for itself and others read, or that is set once at boot, is read and written with `__atomic` builtins instead of a lock, and says so where it is declared.
+
+New shared state gets a lock and `GUARDED_BY` when it is added.
 
 ## Prerequisite for the GCC + Binutils
 

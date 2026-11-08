@@ -41,9 +41,9 @@ struct sigaction FromKernel(const FeatherOS::User::SignalAction& action)
     struct sigaction result = {};
     result.sa_handler = reinterpret_cast<sighandler_t>(action.handler);
     result.sa_mask = action.mask;
-    result.sa_flags =
-        ((action.flags & FeatherOS::User::SignalResetHandler) != 0 ? SA_RESETHAND : 0) |
-        ((action.flags & FeatherOS::User::SignalNoDefer) != 0 ? SA_NODEFER : 0);
+    result.sa_flags = static_cast<int>(
+        ((action.flags & FeatherOS::User::SignalResetHandler) != 0 ? SA_RESETHAND : 0U) |
+        ((action.flags & FeatherOS::User::SignalNoDefer) != 0 ? SA_NODEFER : 0U));
     result.sa_restorer = reinterpret_cast<void (*)()>(action.restorer);
     return result;
 }

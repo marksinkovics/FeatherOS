@@ -9,14 +9,15 @@ namespace FeatherOS::Sync
 
 // A lock whose waiters block instead of spinning, for work that runs long, such as disk I/O.
 // Only tasks may take it; interrupt handlers must not.
-class Mutex
+class CAPABILITY("mutex") Mutex
 {
 public:
     constexpr Mutex() = default;
     Mutex(const Mutex&) = delete;
     Mutex& operator=(const Mutex&) = delete;
 
-    void Lock()
+    // The analysis cannot see that held is the lock, so it trusts these two.
+    void Lock() ACQUIRE() NO_THREAD_SAFETY_ANALYSIS
     {
         const uint64_t flags = state_lock.LockIrqSave();
         while (held)
@@ -27,7 +28,7 @@ public:
         state_lock.UnlockIrqRestore(flags);
     }
 
-    void Unlock()
+    void Unlock() RELEASE() NO_THREAD_SAFETY_ANALYSIS
     {
         const uint64_t flags = state_lock.LockIrqSave();
         held = false;
@@ -38,17 +39,17 @@ public:
 private:
     SpinLock state_lock;
     Scheduler::WaitQueue waiters;
-    bool held = false;
+    bool held GUARDED_BY(state_lock) = false;
 };
 
-class MutexGuard
+class SCOPED_CAPABILITY MutexGuard
 {
 public:
-    explicit MutexGuard(Mutex& mutex) : mutex(mutex)
+    explicit MutexGuard(Mutex& mutex) ACQUIRE(mutex) : mutex(mutex)
     {
         mutex.Lock();
     }
-    ~MutexGuard()
+    ~MutexGuard() RELEASE()
     {
         mutex.Unlock();
     }

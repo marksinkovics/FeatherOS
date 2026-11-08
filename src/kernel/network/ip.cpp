@@ -23,7 +23,8 @@ constexpr uint8_t DefaultHopLimit = 64;
 
 uint16_t next_identification = 1;
 constinit Sync::SpinLock icmp_error_lock;
-IcmpErrorLimit icmp_error_limit = {.tokens = IcmpErrorBurst, .refilled_at_ms = 0};
+IcmpErrorLimit icmp_error_limit GUARDED_BY(icmp_error_lock) = {.tokens = IcmpErrorBurst,
+                                                               .refilled_at_ms = 0};
 
 void FillChecksum(const IpAddress& source, const IpAddress& destination, uint8_t protocol,
                   uint8_t* payload, size_t length, size_t offset)

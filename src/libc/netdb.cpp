@@ -375,6 +375,8 @@ Dns::Outcome AskOverTcp(const sockaddr_storage& server, int timeout_seconds, con
         ReceiveAll(socket_descriptor, prefix, sizeof(prefix)))
     {
         const size_t response_length = (static_cast<size_t>(prefix[0]) << 8) | prefix[1];
+        // Two bytes bound the length to 65535.
+        // NOLINTNEXTLINE(clang-analyzer-optin.taint.TaintedAlloc)
         auto* response = static_cast<uint8_t*>(malloc(response_length > 0 ? response_length : 1));
         if (response != nullptr && ReceiveAll(socket_descriptor, response, response_length))
         {
@@ -765,6 +767,10 @@ int getaddrinfo(const char* node, const char* service, const struct addrinfo* hi
             }
             link = &(*link)->ai_next;
         }
+    }
+    if (first == nullptr)
+    {
+        return EAI_NONAME;
     }
     if ((flags & AI_CANONNAME) != 0)
     {

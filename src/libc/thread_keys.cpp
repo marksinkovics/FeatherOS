@@ -22,8 +22,8 @@ struct KeyValue
     unsigned sequence;
 };
 
-KeySlot key_slots[PTHREAD_KEYS_MAX];
 constinit FeatherOS::LibC::Lock key_lock;
+KeySlot key_slots[PTHREAD_KEYS_MAX] GUARDED_BY(key_lock);
 thread_local KeyValue key_values[PTHREAD_KEYS_MAX];
 
 bool KeyInUse(unsigned sequence)

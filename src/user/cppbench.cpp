@@ -263,7 +263,8 @@ unsigned long long RunSieve()
     unsigned long long primes = 0;
     for (size_t number = 2; number < SieveLimit; ++number)
     {
-        if (!composite[number])
+        // new bool[]() zeroes the array, which the analyzer does not model.
+        if (!composite[number]) // NOLINT(clang-analyzer-core.uninitialized.Branch)
         {
             ++primes;
             for (size_t multiple = number * number; multiple < SieveLimit; multiple += number)

@@ -34,6 +34,15 @@
 #include <uchar.h>
 #include <unistd.h>
 
+// The tests call these functions the ways the checks warn about, to see how they behave.
+// NOLINTBEGIN(bugprone-unchecked-string-to-number-conversion)
+// NOLINTBEGIN(bugprone-unsafe-functions)
+// NOLINTBEGIN(bugprone-random-generator-seed)
+// NOLINTBEGIN(bugprone-suspicious-memory-comparison)
+// NOLINTBEGIN(clang-analyzer-unix.cstring.NullArg)
+// NOLINTBEGIN(clang-analyzer-unix.StdCLibraryFunctions)
+// NOLINTBEGIN(clang-analyzer-unix.Stream)
+
 namespace
 {
 
@@ -696,7 +705,7 @@ void CheckFileStreams()
     size_t capacity = 0;
     int lines = 0;
     bool last_line_matches = false;
-    for (ssize_t length; (length = getline(&line, &capacity, file)) > 0;)
+    while (getline(&line, &capacity, file) > 0)
     {
         ++lines;
         last_line_matches = strcmp(line, "Z+end") == 0;
@@ -748,7 +757,7 @@ void CheckDescriptorFiles()
     Check(close(descriptor) == 0, "close");
 
     errno = 0;
-    Check(open("/home/LIBCRAW.TXT", O_WRONLY | O_CREAT | O_EXCL) == -1 && errno == EEXIST,
+    Check(open("/home/LIBCRAW.TXT", O_WRONLY | O_CREAT | O_EXCL, 0644) == -1 && errno == EEXIST,
           "O_EXCL on an existing file");
     const int appender = open("/home/LIBCRAW.TXT", O_WRONLY | O_APPEND);
     Check(appender >= 3 && lseek(appender, 0, SEEK_SET) == 0 && write(appender, "AB", 2) == 2 &&
@@ -2066,6 +2075,8 @@ void* HammerHeap(void* argument)
         blocks[slot] = static_cast<unsigned char*>(malloc(sizes[slot]));
         if (blocks[slot] == nullptr)
         {
+            // The test fails here anyway; the other blocks go when the process ends.
+            // NOLINTNEXTLINE(clang-analyzer-unix.Malloc)
             return reinterpret_cast<void*>(uintptr_t{1});
         }
         if (round % 5 == 0)
@@ -2187,7 +2198,7 @@ void CheckMemoryReturns()
     const unsigned long grown = ReadOwnPages();
     free(block);
     Check(block != nullptr && grown > after + 100 &&
-              static_cast<char*>(sbrk(0)) < static_cast<char*>(start) + 256 * 1024 &&
+              static_cast<char*>(sbrk(0)) < static_cast<char*>(start) + 256 * size_t{1024} &&
               ReadOwnPages() < grown - 100,
           "a process with threads still gives heap pages back");
 }
@@ -2310,7 +2321,7 @@ void WriteAtexitMark()
 
 int RunThreadLocalExitChild()
 {
-    order_file = open("/tmp/order.txt", O_WRONLY | O_CREAT | O_TRUNC);
+    order_file = open("/tmp/order.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     atexit(WriteAtexitMark);
     writes_at_exit.used = true;
     exit(0);
@@ -2437,7 +2448,7 @@ void* ExitFromThread(void*)
 
 void* FaultInThread(void*)
 {
-    *static_cast<volatile int*>(nullptr) = 1;
+    *static_cast<volatile int*>(nullptr) = 1; // NOLINT(clang-analyzer-core.NullDereference)
     return nullptr;
 }
 
@@ -3249,3 +3260,11 @@ int main(int argc, char** argv)
     printf("libctest: %llu checks passed\n", static_cast<unsigned long long>(passed_checks));
     return 0;
 }
+
+// NOLINTEND(clang-analyzer-unix.Stream)
+// NOLINTEND(clang-analyzer-unix.StdCLibraryFunctions)
+// NOLINTEND(clang-analyzer-unix.cstring.NullArg)
+// NOLINTEND(bugprone-suspicious-memory-comparison)
+// NOLINTEND(bugprone-random-generator-seed)
+// NOLINTEND(bugprone-unsafe-functions)
+// NOLINTEND(bugprone-unchecked-string-to-number-conversion)

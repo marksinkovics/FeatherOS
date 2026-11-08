@@ -40,12 +40,12 @@ struct FeatherFile
     int descriptor;
     unsigned flags;
     int buffering;
-    bool reading;
-    int pushback;
-    size_t length;
-    size_t position;
-    long offset;
-    unsigned char buffer[BUFSIZ];
+    bool reading GUARDED_BY(lock);
+    int pushback GUARDED_BY(lock);
+    size_t length GUARDED_BY(lock);
+    size_t position GUARDED_BY(lock);
+    long offset GUARDED_BY(lock);
+    unsigned char buffer[BUFSIZ] GUARDED_BY(lock);
     // Every public function holds it, so each call's output or input stays whole; flockfile
     // holds it across calls.
     FeatherOS::LibC::RecursiveLock lock;
@@ -66,7 +66,7 @@ constinit FeatherOS::LibC::Lock streams_lock;
 using StreamGuard = FeatherOS::LibC::Guard<FeatherOS::LibC::RecursiveLock>;
 using ListGuard = FeatherOS::LibC::Guard<FeatherOS::LibC::Lock>;
 
-bool WriteAll(FeatherFile* stream, const unsigned char* bytes, size_t count)
+bool WriteAll(FeatherFile* stream, const unsigned char* bytes, size_t count) REQUIRES(stream->lock)
 {
     while (count > 0)
     {
@@ -83,7 +83,7 @@ bool WriteAll(FeatherFile* stream, const unsigned char* bytes, size_t count)
     return true;
 }
 
-bool SeekDescriptor(FeatherFile* stream, long offset)
+bool SeekDescriptor(FeatherFile* stream, long offset) REQUIRES(stream->lock)
 {
     if (lseek(stream->descriptor, offset, SEEK_SET) < 0)
     {
@@ -93,7 +93,7 @@ bool SeekDescriptor(FeatherFile* stream, long offset)
     return true;
 }
 
-long FileSize(FeatherFile* stream)
+long FileSize(FeatherFile* stream) REQUIRES(stream->lock)
 {
     struct stat status;
     return fstat(stream->descriptor, &status) == 0 ? static_cast<long>(status.st_size) : -1;
@@ -101,7 +101,7 @@ long FileSize(FeatherFile* stream)
 
 // Writes out buffered output, or drops buffered input after moving the descriptor back to
 // where the caller has read up to.
-bool Settle(FeatherFile* stream)
+bool Settle(FeatherFile* stream) REQUIRES(stream->lock)
 {
     if (stream->reading)
     {
@@ -132,7 +132,7 @@ bool Settle(FeatherFile* stream)
     return WriteAll(stream, stream->buffer, length);
 }
 
-bool PutByte(FeatherFile* stream, unsigned char byte)
+bool PutByte(FeatherFile* stream, unsigned char byte) REQUIRES(stream->lock)
 {
     if ((stream->flags & Writable) == 0)
     {
@@ -153,12 +153,12 @@ bool PutByte(FeatherFile* stream, unsigned char byte)
 }
 
 // Unbuffered streams still collect one call's output and write it at once.
-bool FinishOutput(FeatherFile* stream)
+bool FinishOutput(FeatherFile* stream) REQUIRES(stream->lock)
 {
     return stream->buffering != _IONBF || Settle(stream);
 }
 
-int GetByte(FeatherFile* stream)
+int GetByte(FeatherFile* stream) REQUIRES(stream->lock)
 {
     if ((stream->flags & Readable) == 0)
     {
@@ -301,12 +301,13 @@ __attribute__((constructor)) void RegisterExitFlush()
     FeatherOS::LibC::SetExitFlush(FlushAll);
 }
 
+// The printf engine writes through it while the caller holds the stream's lock.
 struct StreamSink
 {
     FeatherFile* stream;
     bool failed = false;
 
-    void Put(char character)
+    void Put(char character) NO_THREAD_SAFETY_ANALYSIS
     {
         failed = !PutByte(stream, static_cast<unsigned char>(character)) || failed;
     }
@@ -375,6 +376,8 @@ FILE* fopen(const char* path, const char* mode)
     }
     if ((flags & Append) != 0)
     {
+        // The stream is already open to fflush(NULL) on other threads.
+        const StreamGuard guard(stream->lock);
         stream->offset = FileSize(stream);
     }
     return stream;
@@ -638,17 +641,18 @@ int puts(const char* text)
     return fputs(text, stdout) == 0 && fputc('\n', stdout) != EOF ? 0 : EOF;
 }
 
-void flockfile(FILE* stream)
+// These hand the stream's lock to the caller, so the analysis cannot follow them.
+void flockfile(FILE* stream) NO_THREAD_SAFETY_ANALYSIS
 {
     stream->lock.Acquire();
 }
 
-int ftrylockfile(FILE* stream)
+int ftrylockfile(FILE* stream) NO_THREAD_SAFETY_ANALYSIS
 {
     return stream->lock.TryAcquire() ? 0 : -1;
 }
 
-void funlockfile(FILE* stream)
+void funlockfile(FILE* stream) NO_THREAD_SAFETY_ANALYSIS
 {
     stream->lock.Release();
 }
@@ -866,11 +870,12 @@ int sprintf(char* buffer, const char* format, ...)
 namespace
 {
 
+// The scanf engine reads through it while the caller holds the stream's lock.
 struct StreamSource
 {
     FeatherFile* stream;
 
-    int Get()
+    int Get() NO_THREAD_SAFETY_ANALYSIS
     {
         return GetByte(stream);
     }

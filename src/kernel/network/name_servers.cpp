@@ -10,10 +10,10 @@ namespace
 
 // Guards everything below.
 constinit Sync::SpinLock name_server_lock;
-NameServer configured[MaximumNameServers] = {};
-size_t configured_count = 0;
-IpAddress advertised = {};
-uint64_t advertised_until = 0;
+NameServer configured[MaximumNameServers] GUARDED_BY(name_server_lock) = {};
+size_t configured_count GUARDED_BY(name_server_lock) = 0;
+IpAddress advertised GUARDED_BY(name_server_lock) = {};
+uint64_t advertised_until GUARDED_BY(name_server_lock) = 0;
 
 } // namespace
 

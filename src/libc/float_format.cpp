@@ -349,6 +349,8 @@ void WriteHexadecimal(TextWriter& writer, const DecodedFloat& value, const Float
         fraction_bits -= dropped_bits;
         digits = options.precision;
     }
+    // A decoded mantissa has at most 113 bits (binary128), so fraction_bits stays below 128.
+    // NOLINTNEXTLINE(clang-analyzer-core.BitwiseShift)
     writer.Put(digit_set[static_cast<int>(mantissa >> fraction_bits)]);
     const int requested = options.precision > digits ? options.precision : digits;
     if (requested > 0 || options.alternate)

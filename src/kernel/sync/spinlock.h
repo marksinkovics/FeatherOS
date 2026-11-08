@@ -2,6 +2,7 @@
 #define FEATHEROS_SYNC_SPINLOCK_H
 
 #include "kernel/arch/interrupts.h"
+#include "user/thread_safety.h"
 
 #include <stdint.h>
 
@@ -17,7 +18,8 @@ inline void CpuRelax()
 #endif
 }
 
-class SpinLock
+// The primitives below are what the thread-safety analysis trusts, so it does not check them.
+class CAPABILITY("spinlock") SpinLock
 {
 public:
     // constexpr: global locks are usable before global constructors run.
@@ -25,7 +27,7 @@ public:
     SpinLock(const SpinLock&) = delete;
     SpinLock& operator=(const SpinLock&) = delete;
 
-    void Lock()
+    void Lock() ACQUIRE() NO_THREAD_SAFETY_ANALYSIS
     {
         while (__atomic_exchange_n(&locked, 1U, __ATOMIC_ACQUIRE) != 0)
         {
@@ -36,12 +38,12 @@ public:
         }
     }
 
-    bool TryLock()
+    bool TryLock() TRY_ACQUIRE(true) NO_THREAD_SAFETY_ANALYSIS
     {
         return __atomic_exchange_n(&locked, 1U, __ATOMIC_ACQUIRE) == 0;
     }
 
-    void Unlock()
+    void Unlock() RELEASE() NO_THREAD_SAFETY_ANALYSIS
     {
         __atomic_store_n(&locked, 0U, __ATOMIC_RELEASE);
     }
@@ -51,14 +53,14 @@ public:
         return __atomic_load_n(&locked, __ATOMIC_RELAXED) != 0;
     }
 
-    uint64_t LockIrqSave()
+    uint64_t LockIrqSave() ACQUIRE()
     {
         const uint64_t flags = Arch::Interrupts::SaveAndDisable();
         Lock();
         return flags;
     }
 
-    void UnlockIrqRestore(uint64_t flags)
+    void UnlockIrqRestore(uint64_t flags) RELEASE()
     {
         Unlock();
         Arch::Interrupts::Restore(flags);
@@ -68,11 +70,11 @@ private:
     uint32_t locked = 0;
 };
 
-class SpinLockGuard
+class SCOPED_CAPABILITY SpinLockGuard
 {
 public:
-    explicit SpinLockGuard(SpinLock& lock) : lock(lock), flags(lock.LockIrqSave()) {}
-    ~SpinLockGuard()
+    explicit SpinLockGuard(SpinLock& lock) ACQUIRE(lock) : lock(lock), flags(lock.LockIrqSave()) {}
+    ~SpinLockGuard() RELEASE()
     {
         lock.UnlockIrqRestore(flags);
     }

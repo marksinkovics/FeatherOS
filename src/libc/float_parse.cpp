@@ -239,7 +239,6 @@ ParsedFloat ParseFloat(const FloatLayout& layout, const char* text)
             {
                 break;
             }
-            any_digit = true;
             if (kept < MaximumHexDigits && (kept > 0 || digit != 0))
             {
                 value.MultiplyAdd(16, static_cast<uint32_t>(digit));

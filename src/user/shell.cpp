@@ -89,8 +89,7 @@ void ProcessName(pid_t process, char* name, size_t size)
     char line[64];
     if (fgets(line, sizeof(line), status) != nullptr && strncmp(line, "Name:\t", 6) == 0)
     {
-        line[strcspn(line, "\n")] = '\0';
-        snprintf(name, size, "%s", line + 6);
+        snprintf(name, size, "%.*s", static_cast<int>(strcspn(line + 6, "\n")), line + 6);
     }
     fclose(status);
 }

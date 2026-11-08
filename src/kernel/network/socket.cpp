@@ -35,53 +35,54 @@ enum class Kind : uint8_t
     Tcp,
 };
 
+// Guards the socket list, bindings, every receive queue and every TCP connection.
+constinit Sync::SpinLock socket_lock;
+
 } // namespace
 
 struct Socket
 {
-    Socket* next;
+    Socket* next GUARDED_BY(socket_lock);
     // Every wait on the socket: data, space, a new connection, or the handshake.
     Scheduler::WaitQueue waiters;
     // Datagram sockets only.
-    Datagram* queue;
-    uint32_t queue_start;
-    uint32_t queue_length;
+    Datagram* queue GUARDED_BY(socket_lock) PT_GUARDED_BY(socket_lock);
+    uint32_t queue_start GUARDED_BY(socket_lock);
+    uint32_t queue_length GUARDED_BY(socket_lock);
     // TCP sockets from Connect, and connections a listener accepted.
-    TcpConnection* connection;
+    TcpConnection* connection GUARDED_BY(socket_lock) PT_GUARDED_BY(socket_lock);
     // An accepted connection's listener, until Accept hands the connection out.
-    Socket* listener;
-    uint64_t accept_order;
+    Socket* listener GUARDED_BY(socket_lock);
+    uint64_t accept_order GUARDED_BY(socket_lock);
     uint64_t receive_timeout_ms;
     // A UDP socket's error from an ICMP message, which its next send or receive returns.
-    uint64_t pending_error;
+    uint64_t pending_error GUARDED_BY(socket_lock);
     // Unspecified unless bound to one of our addresses, which then is the only destination it
     // receives for. A TCP connection's is the address it uses.
-    IpAddress local_address;
-    Endpoint remote;
-    uint32_t backlog;
+    IpAddress local_address GUARDED_BY(socket_lock);
+    Endpoint remote GUARDED_BY(socket_lock);
+    uint32_t backlog GUARDED_BY(socket_lock);
     IpVersion version;
     Kind kind;
-    uint16_t port;
-    bool bound;
+    uint16_t port GUARDED_BY(socket_lock);
+    bool bound GUARDED_BY(socket_lock);
     // remote holds the peer: a datagram socket's from Connect, or a TCP connection's.
-    bool connected;
-    bool listening;
-    bool read_shut;
+    bool connected GUARDED_BY(socket_lock);
+    bool listening GUARDED_BY(socket_lock);
+    bool read_shut GUARDED_BY(socket_lock);
     // Its descriptor is closed; a TCP connection still finishes before the socket is freed.
-    bool orphaned;
+    bool orphaned GUARDED_BY(socket_lock);
 };
 
 namespace
 {
 
-// Guards the socket list, bindings, every receive queue and every TCP connection.
-constinit Sync::SpinLock socket_lock;
-Socket* sockets = nullptr;
+Socket* sockets GUARDED_BY(socket_lock) = nullptr;
 // Echo identifiers take any value; UDP and TCP pick from the dynamic ports (RFC 6335 6).
 constexpr uint16_t FirstDynamicPort = 49152;
-uint16_t next_identifier = 1;
-uint16_t next_dynamic_port = FirstDynamicPort;
-uint64_t next_accept_order = 0;
+uint16_t next_identifier GUARDED_BY(socket_lock) = 1;
+uint16_t next_dynamic_port GUARDED_BY(socket_lock) = FirstDynamicPort;
+uint64_t next_accept_order GUARDED_BY(socket_lock) = 0;
 
 // Resets for segments no connection takes, waiting for the TCP task to send them.
 struct ResetReply
@@ -94,10 +95,10 @@ struct ResetReply
 };
 
 constexpr uint32_t MaximumResetReplies = 8;
-ResetReply reset_replies[MaximumResetReplies];
-uint32_t reset_reply_count = 0;
+ResetReply reset_replies[MaximumResetReplies] GUARDED_BY(socket_lock);
+uint32_t reset_reply_count GUARDED_BY(socket_lock) = 0;
 constinit Scheduler::WaitQueue tcp_waiters;
-bool tcp_work_pending = false;
+bool tcp_work_pending GUARDED_BY(socket_lock) = false;
 
 uint64_t NowMilliseconds()
 {
@@ -115,7 +116,8 @@ uint16_t LocalMss(IpVersion version)
         (version == IpVersion::V6 ? MaximumIpv6Payload : MaximumIpv4Payload) - TcpHeaderSize);
 }
 
-void Free(Socket* socket)
+// The socket is unlinked, so nothing else can reach it.
+void Free(Socket* socket) NO_THREAD_SAFETY_ANALYSIS
 {
     if (socket->connection != nullptr)
     {
@@ -129,7 +131,7 @@ void Free(Socket* socket)
     Memory::Deallocate(socket);
 }
 
-void UnlinkLocked(Socket* socket)
+void UnlinkLocked(Socket* socket) REQUIRES(socket_lock)
 {
     for (Socket** link = &sockets; *link != nullptr; link = &(*link)->next)
     {
@@ -141,7 +143,7 @@ void UnlinkLocked(Socket* socket)
     }
 }
 
-void ChangedLocked(Socket* socket)
+void ChangedLocked(Socket* socket) REQUIRES(socket_lock)
 {
     Scheduler::WakeAll(socket->waiters);
     if (socket->listener != nullptr)
@@ -151,7 +153,7 @@ void ChangedLocked(Socket* socket)
     Poll::Notify();
 }
 
-void PostTcpWorkLocked()
+void PostTcpWorkLocked() REQUIRES(socket_lock)
 {
     tcp_work_pending = true;
     Scheduler::WakeAll(tcp_waiters);
@@ -160,6 +162,7 @@ void PostTcpWorkLocked()
 // When binding, only sockets holding the port against a bind count; when picking a free port,
 // every socket on it does.
 bool PortInUseLocked(Kind kind, IpVersion version, uint16_t port, bool binding)
+    REQUIRES(socket_lock)
 {
     for (const Socket* socket = sockets; socket != nullptr; socket = socket->next)
     {
@@ -178,7 +181,7 @@ bool PortInUseLocked(Kind kind, IpVersion version, uint16_t port, bool binding)
     return false;
 }
 
-uint16_t PickPortLocked(Kind kind, IpVersion version)
+uint16_t PickPortLocked(Kind kind, IpVersion version) REQUIRES(socket_lock)
 {
     const uint16_t first = kind == Kind::Icmp ? 1 : FirstDynamicPort;
     uint16_t& next = kind == Kind::Icmp ? next_identifier : next_dynamic_port;
@@ -194,7 +197,7 @@ uint16_t PickPortLocked(Kind kind, IpVersion version)
     return 0;
 }
 
-uint64_t BindLocked(Socket* socket, uint16_t port)
+uint64_t BindLocked(Socket* socket, uint16_t port) REQUIRES(socket_lock)
 {
     if (port == 0)
     {
@@ -229,6 +232,7 @@ uint64_t BoundPort(Socket* socket, uint16_t* port)
 }
 
 void EnqueueLocked(Socket* socket, const Endpoint& source, const uint8_t* data, size_t length)
+    REQUIRES(socket_lock)
 {
     if (socket->queue_length == ReceiveQueueLength || socket->read_shut)
     {
@@ -301,6 +305,7 @@ bool TimedOut(uint64_t deadline)
 }
 
 Socket* FindConnectionLocked(const Endpoint& source, const Endpoint& destination)
+    REQUIRES(socket_lock)
 {
     for (Socket* socket = sockets; socket != nullptr; socket = socket->next)
     {
@@ -315,7 +320,7 @@ Socket* FindConnectionLocked(const Endpoint& source, const Endpoint& destination
     return nullptr;
 }
 
-Socket* FindListenerLocked(const Endpoint& destination)
+Socket* FindListenerLocked(const Endpoint& destination) REQUIRES(socket_lock)
 {
     for (Socket* socket = sockets; socket != nullptr; socket = socket->next)
     {
@@ -329,7 +334,7 @@ Socket* FindListenerLocked(const Endpoint& destination)
     return nullptr;
 }
 
-uint32_t PendingCountLocked(const Socket* listener)
+uint32_t PendingCountLocked(const Socket* listener) REQUIRES(socket_lock)
 {
     uint32_t count = 0;
     for (const Socket* socket = sockets; socket != nullptr; socket = socket->next)
@@ -343,7 +348,7 @@ uint32_t PendingCountLocked(const Socket* listener)
 }
 
 // The oldest connection that finished its handshake, for Accept.
-Socket* ReadyConnectionLocked(const Socket* listener)
+Socket* ReadyConnectionLocked(const Socket* listener) REQUIRES(socket_lock)
 {
     Socket* ready = nullptr;
     for (Socket* socket = sockets; socket != nullptr; socket = socket->next)
@@ -360,7 +365,7 @@ Socket* ReadyConnectionLocked(const Socket* listener)
 
 // RFC 9293 3.10.7.1: the reset answers the segment's acknowledgment, or acknowledges the segment.
 void QueueResetLocked(const Endpoint& source, const Endpoint& destination,
-                      const TcpSegment& segment)
+                      const TcpSegment& segment) REQUIRES(socket_lock)
 {
     if (reset_reply_count == MaximumResetReplies)
     {
@@ -551,11 +556,12 @@ uint64_t Create(uint64_t family, uint64_t type, uint64_t protocol, Socket** sock
     {
         return User::SyscallErrorNoMemory;
     }
+    Datagram* queue = nullptr;
     if (kind != Kind::Tcp)
     {
-        created->queue =
+        queue =
             static_cast<Datagram*>(Memory::AllocateZeroed(ReceiveQueueLength, sizeof(Datagram)));
-        if (created->queue == nullptr)
+        if (queue == nullptr)
         {
             Memory::Deallocate(created);
             return User::SyscallErrorNoMemory;
@@ -563,9 +569,10 @@ uint64_t Create(uint64_t family, uint64_t type, uint64_t protocol, Socket** sock
     }
     created->version = ipv6 ? IpVersion::V6 : IpVersion::V4;
     created->kind = kind;
-    created->local_address.version = created->version;
     {
         Sync::SpinLockGuard guard(socket_lock);
+        created->queue = queue;
+        created->local_address.version = created->version;
         created->next = sockets;
         sockets = created;
     }

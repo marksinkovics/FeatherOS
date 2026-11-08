@@ -28,13 +28,14 @@ volatile uint64_t* root_table = nullptr;
 uint64_t kernel_ttbr0 = 0;
 // Kernel tables are shared by every address space and CPU; held while any table is edited.
 constinit FeatherOS::Sync::SpinLock page_table_lock;
+// Each CPU writes its own slot without the lock, and others read it, so every access is atomic.
 uint64_t active_root_physical_addresses[FeatherOS::Cpu::MaximumCpus] = {};
 
 bool IsActiveOnAnyCpu(uint64_t root_physical_address)
 {
-    for (const uint64_t active_root : active_root_physical_addresses)
+    for (const uint64_t& active_root : active_root_physical_addresses)
     {
-        if (active_root == root_physical_address)
+        if (__atomic_load_n(&active_root, __ATOMIC_SEQ_CST) == root_physical_address)
         {
             return true;
         }
@@ -224,7 +225,8 @@ bool InitializeVirtualMemory(uint64_t offset)
     asm volatile("mrs %0, TTBR1_EL1" : "=r"(ttbr1));
     root_table = PhysicalTable(ttbr1 & PageAddressMask);
     asm volatile("mrs %0, TTBR0_EL1" : "=r"(kernel_ttbr0));
-    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = kernel_ttbr0 & PageAddressMask;
+    __atomic_store_n(&active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()],
+                     kernel_ttbr0 & PageAddressMask, __ATOMIC_SEQ_CST);
     return root_table != nullptr;
 }
 
@@ -500,7 +502,8 @@ bool ActivateAddressSpace(const AddressSpace& address_space)
                  :
                  : "r"(root)
                  : "memory");
-    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = root;
+    __atomic_store_n(&active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()], root,
+                     __ATOMIC_SEQ_CST);
     return true;
 }
 
@@ -512,7 +515,8 @@ void ActivateKernelAddressSpace()
                  :
                  : "r"(root)
                  : "memory");
-    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()] = root & PageAddressMask;
+    __atomic_store_n(&active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()],
+                     root & PageAddressMask, __ATOMIC_SEQ_CST);
 }
 
 bool UnmapPage(uint64_t virtual_address)

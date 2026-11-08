@@ -202,7 +202,8 @@ size_t FormatIpv6Text(const uint8_t (&address)[16], char* text, size_t capacity)
     unsigned groups[GroupCount];
     for (int index = 0; index < GroupCount; ++index)
     {
-        groups[index] = (static_cast<unsigned>(address[index * 2]) << 8) | address[index * 2 + 1];
+        groups[index] = (static_cast<unsigned>(address[static_cast<size_t>(index) * 2]) << 8) |
+                        address[static_cast<size_t>(index) * 2 + 1];
     }
     // RFC 5952: the longest run of two or more zero groups, the first of equal ones, becomes "::".
     int run_start = -1;

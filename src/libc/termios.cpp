@@ -15,7 +15,7 @@ int tcgetattr(int descriptor, struct termios* settings)
         errno = EBADF;
         return -1;
     }
-    FeatherOS::User::TerminalSettings current;
+    FeatherOS::User::TerminalSettings current{};
     if (Check<int>(FeatherOS::User::Syscall(FeatherOS::User::SyscallNumber::TerminalMode,
                                             static_cast<uint64_t>(descriptor), 0,
                                             reinterpret_cast<uint64_t>(&current))) < 0)

@@ -22,17 +22,17 @@ struct BufferPool
     uint8_t* memory[BufferCount];
 };
 
-Virtio::Virtqueue receive_queue;
-Virtio::Virtqueue transmit_queue;
+constinit Sync::SpinLock receive_lock;
+constinit Sync::SpinLock transmit_lock;
+Virtio::Virtqueue receive_queue GUARDED_BY(receive_lock);
+Virtio::Virtqueue transmit_queue GUARDED_BY(transmit_lock);
 BufferPool receive_buffers;
 BufferPool transmit_buffers;
-uint16_t free_transmit[BufferCount];
-uint16_t free_transmit_count = 0;
+uint16_t free_transmit[BufferCount] GUARDED_BY(transmit_lock);
+uint16_t free_transmit_count GUARDED_BY(transmit_lock) = 0;
 uint32_t header_size = 0;
 MacAddress mac_address = {};
 bool ready = false;
-constinit Sync::SpinLock receive_lock;
-constinit Sync::SpinLock transmit_lock;
 constinit Scheduler::WaitQueue receive_waiters;
 
 bool AllocateBuffers(BufferPool* pool, uint64_t hhdm_offset)
@@ -46,9 +46,9 @@ bool AllocateBuffers(BufferPool* pool, uint64_t hhdm_offset)
         }
         for (uint32_t part = 0; part < BuffersPerPage; ++part)
         {
-            pool->physical[index + part] = page + part * BufferSize;
-            pool->memory[index + part] = reinterpret_cast<uint8_t*>(
-                static_cast<uintptr_t>(hhdm_offset + page + part * BufferSize));
+            pool->physical[index + part] = page + static_cast<uint64_t>(part) * BufferSize;
+            pool->memory[index + part] = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(
+                hhdm_offset + page + static_cast<uint64_t>(part) * BufferSize));
         }
     }
     return true;
@@ -65,7 +65,7 @@ void OnInterrupt()
 }
 
 // With both locks held and the device negotiated.
-bool StartLocked()
+bool StartLocked() REQUIRES(receive_lock, transmit_lock)
 {
     // Sent buffers are reclaimed on the next send instead.
     transmit_queue.SuppressInterrupts();
@@ -93,6 +93,8 @@ bool Initialize(const void* platform_data, uint64_t hhdm_offset)
     {
         return false;
     }
+    Sync::SpinLockGuard receive_guard(receive_lock);
+    Sync::SpinLockGuard transmit_guard(transmit_lock);
     header_size = Arch::VirtioNet::HeaderSize();
     const uint16_t receive_size =
         Arch::VirtioNet::QueueSize(Arch::VirtioNet::ReceiveQueue, PreferredQueueSize);
@@ -107,8 +109,6 @@ bool Initialize(const void* platform_data, uint64_t hhdm_offset)
         return false;
     }
     Arch::VirtioNet::ReadMacAddress(mac_address.bytes);
-    Sync::SpinLockGuard receive_guard(receive_lock);
-    Sync::SpinLockGuard transmit_guard(transmit_lock);
     return StartLocked();
 }
 

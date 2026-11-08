@@ -160,7 +160,7 @@ void Framebuffer::fillSpan(uint8_t* destination, uint32_t count, uint32_t pixel)
     }
     for (uint32_t index = 0; index < count; ++index)
     {
-        writePixel(destination + index * m_bytes_per_pixel, pixel);
+        writePixel(destination + static_cast<size_t>(index) * m_bytes_per_pixel, pixel);
     }
 }
 
@@ -198,7 +198,7 @@ void Framebuffer::drawCharacter(uint8_t ch_index, uint32_t x, uint32_t y, uint32
     const uint32_t rows = m_height - y < FONT_HEIGHT ? m_height - y : FONT_HEIGHT;
     const uint32_t fg_pixel = packColor(fg_color);
     const uint32_t bg_pixel = packColor(bg_color);
-    const uint8_t* glyph = font16_8 + static_cast<uint32_t>(ch_index) * FONT_HEIGHT;
+    const uint8_t* glyph = font16_8 + static_cast<size_t>(ch_index) * FONT_HEIGHT;
     for (uint32_t i = 0; i < rows; i++)
     {
         uint8_t* destination = m_backbuffer + static_cast<size_t>(m_pitch) * (y + i) +
@@ -206,7 +206,7 @@ void Framebuffer::drawCharacter(uint8_t ch_index, uint32_t x, uint32_t y, uint32
         const uint8_t bits = glyph[i];
         for (uint32_t j = 0; j < columns; j++)
         {
-            writePixel(destination + j * m_bytes_per_pixel,
+            writePixel(destination + static_cast<size_t>(j) * m_bytes_per_pixel,
                        (bits & (1U << j)) != 0 ? fg_pixel : bg_pixel);
         }
     }

@@ -108,7 +108,7 @@ void FormatIpv6(const IpAddress& address, char (&text)[FormattedIpv6Length])
     uint16_t groups[GroupCount];
     for (int index = 0; index < GroupCount; ++index)
     {
-        groups[index] = ReadBig16(address.bytes + index * 2);
+        groups[index] = ReadBig16(address.bytes + static_cast<size_t>(index) * 2);
     }
     // RFC 5952: the longest run of two or more zero groups, the first of equal ones, becomes "::".
     int run_start = -1;

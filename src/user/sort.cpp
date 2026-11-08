@@ -38,7 +38,8 @@ bool ReadLines(FILE* file, char*** lines, size_t* count, size_t* capacity)
         if (*count == *capacity)
         {
             const size_t grown = *capacity == 0 ? 64 : *capacity * 2;
-            auto* larger = static_cast<char**>(realloc(*lines, grown * sizeof(char*)));
+            auto* larger =
+                static_cast<char**>(realloc(static_cast<void*>(*lines), grown * sizeof(char*)));
             if (larger == nullptr)
             {
                 free(line);
@@ -56,6 +57,15 @@ bool ReadLines(FILE* file, char*** lines, size_t* count, size_t* capacity)
     }
     free(line);
     return true;
+}
+
+void FreeLines(char** lines, size_t count)
+{
+    for (size_t index = 0; index < count; ++index)
+    {
+        free(lines[index]);
+    }
+    free(static_cast<void*>(lines));
 }
 
 } // namespace
@@ -94,25 +104,27 @@ int main(int argc, char** argv)
             continue;
         }
         const bool read = ReadLines(file, &lines, &count, &capacity);
-        if (file != stdin)
+        if (name != nullptr)
         {
             fclose(file);
         }
         if (!read)
         {
             puts("sort: out of memory");
+            FreeLines(lines, count);
             return 1;
         }
     }
-    qsort(lines, count, sizeof(char*), CompareEntries);
+    qsort(static_cast<void*>(lines), count, sizeof(char*), CompareEntries);
     for (size_t index = 0; index < count; ++index)
     {
-        if (!unique || index == 0 || CompareEntries(&lines[index - 1], &lines[index]) != 0)
+        if (!unique || index == 0 ||
+            CompareEntries(static_cast<const void*>(&lines[index - 1]),
+                           static_cast<const void*>(&lines[index])) != 0)
         {
             puts(lines[index]);
         }
-        free(lines[index]);
     }
-    free(lines);
+    FreeLines(lines, count);
     return status;
 }

@@ -39,7 +39,12 @@ int main(int argc, char** argv)
         putchar(character);
         last = character;
     }
-    if (ferror(file))
+    const bool failed = ferror(file) != 0;
+    if (argc == 2)
+    {
+        fclose(file);
+    }
+    if (failed)
     {
         puts("cat: read failed");
         return 1;
@@ -47,10 +52,6 @@ int main(int argc, char** argv)
     if (last != '\n')
     {
         putchar('\n');
-    }
-    if (file != stdin)
-    {
-        fclose(file);
     }
     return 0;
 }

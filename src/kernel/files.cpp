@@ -48,8 +48,8 @@ struct DiskFileUse
 // Filesystem updates span many sectors; one lock keeps them from interleaving. It also guards
 // the descriptor tables and open-file references.
 constinit Sync::Mutex file_system_lock;
-DiskFileUse disk_files[MaximumOpenDiskFiles];
-uint32_t disk_file_count = 0;
+DiskFileUse disk_files[MaximumOpenDiskFiles] GUARDED_BY(file_system_lock);
+uint32_t disk_file_count GUARDED_BY(file_system_lock) = 0;
 // Every process's console descriptors share this one, which is never freed.
 OpenFile console = {{},    nullptr, 1,       Kind::Terminal, true,   true,
                     false, false,   nullptr, nullptr,        nullptr};
@@ -68,7 +68,7 @@ bool IsReadOnlyKind(VFS::FileKind kind)
     return kind == VFS::FileKind::Archive || kind == VFS::FileKind::Generated;
 }
 
-DiskFileUse* FindUse(uint64_t key)
+DiskFileUse* FindUse(uint64_t key) REQUIRES(file_system_lock)
 {
     for (uint32_t index = 0; index < disk_file_count; ++index)
     {
@@ -80,7 +80,7 @@ DiskFileUse* FindUse(uint64_t key)
     return nullptr;
 }
 
-uint64_t AddUse(uint64_t key, bool writable)
+uint64_t AddUse(uint64_t key, bool writable) REQUIRES(file_system_lock)
 {
     DiskFileUse* use = FindUse(key);
     if (use != nullptr)
@@ -100,7 +100,7 @@ uint64_t AddUse(uint64_t key, bool writable)
     return 0;
 }
 
-void DropUse(uint64_t key, bool writable)
+void DropUse(uint64_t key, bool writable) REQUIRES(file_system_lock)
 {
     DiskFileUse* use = FindUse(key);
     if (use == nullptr)
@@ -138,7 +138,7 @@ OpenFile* FindFile(Table* table, uint64_t descriptor)
     return slot == nullptr || slot->file->kind != Kind::File ? nullptr : slot->file;
 }
 
-void ReleaseLocked(OpenFile* file)
+void ReleaseLocked(OpenFile* file) REQUIRES(file_system_lock)
 {
     if (file == &console || --file->references > 0)
     {
@@ -177,14 +177,14 @@ void ReleaseLocked(OpenFile* file)
     Memory::Deallocate(file);
 }
 
-void CloseSlotLocked(Slot* slot)
+void CloseSlotLocked(Slot* slot) REQUIRES(file_system_lock)
 {
     ReleaseLocked(slot->file);
     slot->file = nullptr;
     slot->close_on_exec = false;
 }
 
-uint64_t FreeSlotLocked(const Table* table, uint64_t minimum)
+uint64_t FreeSlotLocked(const Table* table, uint64_t minimum) REQUIRES(file_system_lock)
 {
     for (uint64_t descriptor = minimum; descriptor < User::MaximumDescriptors; ++descriptor)
     {
@@ -196,7 +196,7 @@ uint64_t FreeSlotLocked(const Table* table, uint64_t minimum)
     return User::SyscallErrorTooManyOpenFiles;
 }
 
-bool ExistsLocked(const char* path)
+bool ExistsLocked(const char* path) REQUIRES(file_system_lock)
 {
     VFS::FileHandle handle;
     if (VFS::IsDirectory(path))
@@ -213,7 +213,7 @@ bool ExistsLocked(const char* path)
 
 // Paths reach Files already resolved to absolute form, so the parent is everything before the
 // last '/'.
-bool ParentExistsLocked(const char* path)
+bool ParentExistsLocked(const char* path) REQUIRES(file_system_lock)
 {
     char parent[User::MaximumPathLength];
     uint64_t last_separator = 0;
@@ -231,7 +231,7 @@ bool ParentExistsLocked(const char* path)
 }
 
 // Why an operation that changes path could not create it.
-uint64_t CreateErrorLocked(const char* path)
+uint64_t CreateErrorLocked(const char* path) REQUIRES(file_system_lock)
 {
     if (ExistsLocked(path))
     {
@@ -244,13 +244,13 @@ uint64_t CreateErrorLocked(const char* path)
     return ParentExistsLocked(path) ? User::SyscallErrorFailed : User::SyscallErrorNotFound;
 }
 
-uint64_t MissingErrorLocked(const char* path)
+uint64_t MissingErrorLocked(const char* path) REQUIRES(file_system_lock)
 {
     return ExistsLocked(path) ? User::SyscallErrorNotDirectory : User::SyscallErrorNotFound;
 }
 
 // The use key of the disk or /tmp file at path; false for anything else.
-bool FileKeyLocked(const char* path, uint64_t* key)
+bool FileKeyLocked(const char* path, uint64_t* key) REQUIRES(file_system_lock)
 {
     VFS::FileHandle handle;
     if (!VFS::Open(path, &handle))
@@ -1148,7 +1148,8 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
     return 0;
 }
 
-void Quiesce()
+// Held until the machine stops, so nothing writes to the disk after it.
+void Quiesce() NO_THREAD_SAFETY_ANALYSIS
 {
     file_system_lock.Lock();
 }

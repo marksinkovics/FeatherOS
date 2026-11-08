@@ -293,7 +293,7 @@ volatile uint64_t preemption_progress[2] = {};
 constinit Sync::SpinLock blocking_test_lock;
 constinit Scheduler::WaitQueue blocking_test_queue;
 constinit Scheduler::WaitQueue timeout_test_queue;
-bool blocking_test_signaled = false;
+bool blocking_test_signaled GUARDED_BY(blocking_test_lock) = false;
 
 uint64_t FirstCooperativeTask(void*)
 {
@@ -398,7 +398,10 @@ void RunBlockingTests(const void* platform_data)
     uint64_t waiter_status = 0;
     uint64_t signaling_status = 0;
     scheduler_sequence = 0;
-    blocking_test_signaled = false;
+    {
+        Sync::SpinLockGuard guard(blocking_test_lock);
+        blocking_test_signaled = false;
+    }
     if (!Scheduler::CreateTask(BlockedWaiterTask, nullptr, &waiter_task) ||
         !Scheduler::CreateTask(SignalingTask, nullptr, &signaling_task) ||
         !Scheduler::Wait(waiter_task, &waiter_status) ||
@@ -428,7 +431,8 @@ void RunBlockingTests(const void* platform_data)
 
 uint64_t PriorityTask(void* context)
 {
-    scheduler_sequence = scheduler_sequence * 10 + reinterpret_cast<uint64_t>(context);
+    scheduler_sequence =
+        scheduler_sequence * 10 + static_cast<uint32_t>(reinterpret_cast<uintptr_t>(context));
     return 0;
 }
 
@@ -869,7 +873,7 @@ constexpr uint64_t SmpCounterIterations = 20000;
 constexpr uint64_t SmpStartTimeoutTicks = 200;
 
 constinit Sync::SpinLock smp_counter_lock;
-uint64_t smp_counter = 0;
+uint64_t smp_counter GUARDED_BY(smp_counter_lock) = 0;
 uint32_t smp_started_tasks = 0;
 uint32_t smp_concurrent_tasks = 0;
 uint32_t smp_cpus_seen = 0;
@@ -938,8 +942,13 @@ void RunSmpTests()
             cpus_counted_busy += Scheduler::BusyTickCount(cpu) > busy_before[cpu] ? 1 : 0;
         }
     }
+    uint64_t counted;
+    {
+        Sync::SpinLockGuard guard(smp_counter_lock);
+        counted = smp_counter;
+    }
     if (smp_concurrent_tasks != SmpTestTasks || cpus_used != SmpTestTasks ||
-        smp_counter != SmpTestTasks * SmpCounterIterations)
+        counted != SmpTestTasks * SmpCounterIterations)
     {
         Panic("Tasks did not run concurrently on separate CPUs");
     }
@@ -962,7 +971,7 @@ constexpr char BootCountMagic[] = "FOSBOOT";
 
 uint8_t PatternByte(uint32_t index, uint64_t boot_count)
 {
-    return static_cast<uint8_t>(index * 7 + boot_count);
+    return static_cast<uint8_t>(static_cast<uint64_t>(index) * 7 + boot_count);
 }
 
 // The host-side check in tools/smoke_test.py rebuilds the same text.

@@ -18,7 +18,7 @@ Terminals::Terminal* serial_target = nullptr;
 // Changes when another console is shown, perhaps on another CPU than a key's interrupt.
 Terminals::Terminal* keyboard_target = nullptr;
 void (*console_switch)(uint32_t console) = nullptr;
-bool previous_was_carriage_return = false;
+bool previous_was_carriage_return GUARDED_BY(poll_lock) = false;
 
 } // namespace
 

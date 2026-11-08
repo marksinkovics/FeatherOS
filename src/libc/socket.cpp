@@ -82,13 +82,7 @@ void FromKernelAddress(const FeatherOS::User::SocketAddress& source, struct sock
         }
         size = sizeof(sockaddr_in6);
     }
-    const socklen_t copied = *length < size ? *length : size;
-    const auto* from = reinterpret_cast<const char*>(&storage);
-    auto* to = reinterpret_cast<char*>(address);
-    for (socklen_t index = 0; index < copied; ++index)
-    {
-        to[index] = from[index];
-    }
+    memcpy(address, &storage, *length < size ? *length : size);
     *length = size;
 }
 
