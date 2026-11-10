@@ -5,6 +5,9 @@
 #include "kernel/arch/floating_point.h"
 #include "kernel/arch/serial.h"
 #include "kernel/exception.h"
+#if defined(FEATHEROS_KERNEL_TESTS)
+#include "kernel/kernel_test_mode.h"
+#endif
 #include "kernel/process.h"
 #include "kernel/scheduler.h"
 #include "kernel/cpu.h"
@@ -84,7 +87,9 @@ struct CpuTables
     alignas(16) uint8_t double_fault_stack[16384];
     alignas(16) uint8_t nmi_stack[16384];
     alignas(16) uint8_t machine_check_stack[16384];
+#if defined(FEATHEROS_KERNEL_TESTS)
     alignas(16) uint8_t test_exception_stack[16384];
+#endif
 };
 
 IdtEntry idt[256];
@@ -183,7 +188,9 @@ void LoadCpuTables(CpuTables& cpu)
     cpu_tss.ist[0] = StackTop(cpu.double_fault_stack);
     cpu_tss.ist[1] = StackTop(cpu.nmi_stack);
     cpu_tss.ist[2] = StackTop(cpu.machine_check_stack);
+#if defined(FEATHEROS_KERNEL_TESTS)
     cpu_tss.ist[3] = StackTop(cpu.test_exception_stack);
+#endif
     cpu_tss.iomap_base = sizeof(cpu_tss);
 
     uint64_t* gdt = cpu.gdt;
@@ -235,8 +242,8 @@ void InitializeExceptions()
         {
             ist = 3;
         }
-#if defined(FEATHEROS_EXCEPTION_TEST)
-        else if (vector == 0)
+#if defined(FEATHEROS_KERNEL_TESTS)
+        else if (vector == 0 && KernelTest::Selected(KernelTest::Mode::Exception))
         {
             ist = 4;
         }
@@ -576,7 +583,7 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
     {
         asm volatile("mov %%cr2, %0" : "=r"(report.fault_address));
     }
-#if defined(FEATHEROS_MEMORY_TEST)
+#if defined(FEATHEROS_KERNEL_TESTS)
     if (FeatherOS::TryRecoverTestException(&report))
     {
         context->instruction_pointer = report.instruction_pointer;

@@ -2,50 +2,34 @@
 
 #include "kernel/arch/cpu_features.h"
 #include "kernel/arch/serial.h"
+#include "kernel/console.h"
+#include "kernel/cpu.h"
 #include "kernel/exception.h"
+#include "kernel/filesystem/fat16.h"
+#include "kernel/filesystem/vfs.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/kernel_stack.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/memory/virtual_memory.h"
-#include "kernel/panic.h"
-#if defined(FEATHEROS_SCHEDULER_TEST) || defined(FEATHEROS_SMP_TEST)
-#include "kernel/scheduler.h"
-#endif
-#if defined(FEATHEROS_NETWORK_TEST)
 #include "kernel/network/interface.h"
 #include "kernel/network/neighbor_discovery.h"
-#endif
-#if defined(FEATHEROS_STORAGE_TEST)
-#include "kernel/filesystem/fat16.h"
-#include "kernel/filesystem/vfs.h"
-#include "kernel/storage/block_device.h"
-#endif
-#if defined(FEATHEROS_SMP_TEST)
-#include "kernel/cpu.h"
-#endif
-#if defined(FEATHEROS_INPUT_TEST)
-#include "kernel/console.h"
+#include "kernel/panic.h"
 #include "kernel/process.h"
 #include "kernel/scheduler.h"
+#include "kernel/storage/block_device.h"
+#include "kernel/string/format.h"
 #include "kernel/string/memory_functions.h"
 #include "kernel/terminal/terminal.h"
 #include "kernel/time/timer.h"
-#endif
-#include "kernel/string/format.h"
-#if defined(FEATHEROS_TIMER_TEST) || defined(FEATHEROS_SCHEDULER_TEST) ||                          \
-    defined(FEATHEROS_SMP_TEST) || defined(FEATHEROS_NETWORK_TEST)
-#include "kernel/time/timer.h"
-#endif
 
-#if defined(ARCH_x86_64) && defined(FEATHEROS_INTERRUPT_TEST)
+#if defined(ARCH_x86_64)
 #include "kernel/arch/x86_64/interrupts.h"
-#elif defined(ARCH_aarch64) && defined(FEATHEROS_INTERRUPT_TEST)
+#elif defined(ARCH_aarch64)
 #include "kernel/arch/aarch64/interrupts.h"
 #endif
 
 #include <stdint.h>
 
-#if defined(FEATHEROS_MEMORY_TEST)
 extern "C" void FeatherOSMemoryTestWriteProtected(volatile uint8_t* address, uint8_t value);
 extern "C" void FeatherOSMemoryTestReadUnmapped(volatile uint8_t* address);
 extern "C" void FeatherOSMemoryTestExecuteNonExecutable(void* address);
@@ -215,23 +199,20 @@ bool RecoverExpectedMemoryFault(FeatherOS::ExceptionReport* report)
 }
 
 } // namespace
-#endif
 
-#if defined(ARCH_aarch64) && (defined(FEATHEROS_INTERRUPT_TEST) || defined(FEATHEROS_TIMER_TEST))
+#if defined(ARCH_aarch64)
 namespace
 {
 
-#if defined(FEATHEROS_INTERRUPT_TEST)
 volatile uint64_t gic_interrupt_count = 0;
 
 void OnGicInterrupt()
 {
     gic_interrupt_count = gic_interrupt_count + 1;
 }
-#endif
 
 } // namespace
-#elif defined(ARCH_x86_64) && defined(FEATHEROS_INTERRUPT_TEST)
+#elif defined(ARCH_x86_64)
 namespace
 {
 
@@ -245,7 +226,6 @@ void OnPitInterrupt()
 } // namespace
 #endif
 
-#if defined(FEATHEROS_TIMER_TEST)
 namespace FeatherOS::KernelTest
 {
 namespace
@@ -279,12 +259,10 @@ void RunTimerTests(const void* device_tree)
 
 } // namespace
 } // namespace FeatherOS::KernelTest
-#endif
 
 namespace FeatherOS::KernelTest
 {
 
-#if defined(FEATHEROS_SCHEDULER_TEST)
 namespace
 {
 
@@ -583,9 +561,7 @@ void RunSchedulerTests(const void* platform_data)
 }
 
 } // namespace
-#endif
 
-#if defined(FEATHEROS_MEMORY_TEST)
 namespace
 {
 
@@ -862,9 +838,7 @@ void RunMemoryTests()
 }
 
 } // namespace
-#endif
 
-#if defined(FEATHEROS_SMP_TEST)
 namespace
 {
 
@@ -959,9 +933,7 @@ void RunSmpTests()
     Serial::Write("KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact; busy CPUs "
                   "counted\n");
 }
-#endif
 
-#if defined(FEATHEROS_STORAGE_TEST)
 namespace
 {
 
@@ -1156,9 +1128,7 @@ void RunStorageTests()
     }
     Serial::Write(message);
 }
-#endif
 
-#if defined(FEATHEROS_NETWORK_TEST)
 void RunNetworkTests()
 {
     if (!Network::IsUp())
@@ -1220,9 +1190,7 @@ void RunNetworkTests()
     }
     Serial::Write(message);
 }
-#endif
 
-#if defined(FEATHEROS_INPUT_TEST)
 namespace
 {
 
@@ -1274,27 +1242,13 @@ void StartConsoleReports()
         Panic("Could not start the console report task");
     }
 }
-#endif
 
-void Run(const void* platform_data)
+namespace
 {
-    (void)platform_data;
-#if defined(FEATHEROS_SCHEDULER_TEST)
-    RunSchedulerTests(platform_data);
-#endif
-#if defined(FEATHEROS_TIMER_TEST)
-    RunTimerTests(platform_data);
-#endif
 
-#if defined(FEATHEROS_MEMORY_TEST)
-    RunMemoryTests();
-#endif
-
-#if defined(FEATHEROS_PANIC_TEST)
-    Panic("Intentional panic test");
-#endif
-
-#if defined(FEATHEROS_EXCEPTION_TEST) && defined(ARCH_x86_64)
+void TriggerException()
+{
+#if defined(ARCH_x86_64)
     asm volatile("xor %%edx, %%edx\n\t"
                  "mov $1, %%eax\n\t"
                  "xor %%ecx, %%ecx\n\t"
@@ -1302,11 +1256,15 @@ void Run(const void* platform_data)
                  :
                  :
                  : "rax", "rcx", "rdx", "cc");
-#elif defined(FEATHEROS_EXCEPTION_TEST) && defined(ARCH_aarch64)
+#elif defined(ARCH_aarch64)
     asm volatile(".inst 0x00000000");
 #endif
+}
 
-#if defined(FEATHEROS_INTERRUPT_TEST) && defined(ARCH_x86_64)
+void RunInterruptTest(const void* platform_data)
+{
+    (void)platform_data;
+#if defined(ARCH_x86_64)
     Arch::X86_64::RegisterInterruptHandler(0, OnPitInterrupt);
     Arch::X86_64::InitializeInterruptController();
     Arch::X86_64::StartPit(100);
@@ -1317,7 +1275,7 @@ void Run(const void* platform_data)
     }
     asm volatile("cli" ::: "memory");
     Serial::Write("KERN/IRQ: PIT interrupt acknowledged\n");
-#elif defined(FEATHEROS_INTERRUPT_TEST) && defined(ARCH_aarch64)
+#elif defined(ARCH_aarch64)
     if (platform_data == nullptr)
     {
         Panic("AArch64 IRQ test requires a device tree");
@@ -1344,6 +1302,34 @@ void Run(const void* platform_data)
     asm volatile("msr daifset, #2" ::: "memory");
     Serial::Write("KERN/IRQ: GIC software interrupt acknowledged\n");
 #endif
+}
+
+} // namespace
+
+void Run(const void* platform_data)
+{
+    switch (SelectedMode())
+    {
+    case Mode::Scheduler:
+        RunSchedulerTests(platform_data);
+        break;
+    case Mode::Timer:
+        RunTimerTests(platform_data);
+        break;
+    case Mode::Memory:
+        RunMemoryTests();
+        break;
+    case Mode::Panic:
+        Panic("Intentional panic test");
+    case Mode::Exception:
+        TriggerException();
+        break;
+    case Mode::Interrupt:
+        RunInterruptTest(platform_data);
+        break;
+    default:
+        break;
+    }
 }
 
 } // namespace FeatherOS::KernelTest

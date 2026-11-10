@@ -45,8 +45,9 @@ typedef struct
 __BEGIN_DECLS
 
 // path is a program file, as "/bin/tool" or "./tool", or a name without a '/', which FeatherOS
-// looks up in /system ("ls" is "/system/ls"). Any regular file up to 1 MiB may be tried: one that
-// is not a program fails with ENOEXEC, a larger one with ENOMEM, and a directory with EISDIR.
+// looks up in /system ("ls" is "/system/ls"). Any regular file may be tried: one that is not a
+// program fails with ENOEXEC, one too large for a process's memory with ENOMEM, and a directory
+// with EISDIR.
 // Unless the attributes say otherwise, the child takes the console until it exits. argv[0] is
 // replaced by path, or by the name for a program in /system. Returns 0 or an errno value.
 int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t* file_actions,

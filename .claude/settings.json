@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/format-edited-file.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(x86_64-elf-nm *)",
+      "Bash(size *)",
+      "Bash(x86_64-elf-size *)",
+      "Bash(nm *)",
+      "Bash(x86_64-elf-readelf *)",
+      "Bash(aarch64-elf-readelf *)",
+      "Bash(aarch64-elf-nm *)",
+      "Bash(x86_64-elf-objdump *)",
+      "Bash(objdump *)",
+      "Bash(aarch64-elf-objdump *)",
+      "Bash(bash tools/quality.sh check)"
+    ]
+  }
+}

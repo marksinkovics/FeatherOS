@@ -4,6 +4,12 @@ import _Concurrency
 // Custom executors: actors whose jobs run on a thread of their own, and a pool of threads that
 // tasks can prefer over the global executor. Each check records the threads its code ran on.
 
+// The same source builds as fullexecutors, in full Swift.
+#if $Embedded
+let program = "executors"
+#else
+let program = "fullexecutors"
+#endif
 let mainThread = pthread_self()
 
 func onMainThread() -> Bool {
@@ -35,7 +41,7 @@ class WorkThreads: @unchecked Sendable {
                         Unmanaged<WorkThreads>.fromOpaque(context!).takeUnretainedValue().runWork()
                     }, context) == 0
             else {
-                fatalError("executors: could not start a thread")
+                fatalError("\(program): could not start a thread")
             }
             threads.append(thread)
         }
@@ -54,7 +60,7 @@ class WorkThreads: @unchecked Sendable {
     }
 
     func run(_ job: UnownedJob) {
-        fatalError("executors: no way to run a job")
+        fatalError("\(program): no way to run a job")
     }
 
     private func add(_ item: Work) {
@@ -106,7 +112,7 @@ final class ActorThread: WorkThreads, SerialExecutor, @unchecked Sendable {
 
     func checkIsolated() {
         isolationChecks += 1
-        precondition(onThread, "executors: not on the actor's thread")
+        precondition(onThread, "\(program): not on the actor's thread")
     }
 }
 
@@ -218,13 +224,13 @@ let pool = Pool(count: 2)
 
 let calls = await callsOnOwnThread(pinned, count: 100)
 let slept = await pinned.onOwnThreadAfterSleeping()
-print("executors: an actor ran 100 calls on its own thread \(calls),", terminator: " ")
+print("\(program): an actor ran 100 calls on its own thread \(calls),", terminator: " ")
 print("resumed there after sleeping \(slept), top-level code on the main thread \(onMainThread())")
 let answered = await assumedOutsideJob(pinned) && answering.isolationAnswers > 0
 let checkedOutside = await assumedOutsideJob(checked) && checking.isolationChecks > 0
-print("executors: assumeIsolated outside a job:", terminator: " ")
+print("\(program): assumeIsolated outside a job:", terminator: " ")
 print("isIsolatingCurrentContext \(answered), checkIsolated \(checkedOutside)")
-print("executors: 16 tasks preferring a pool ran there \(await groupOnPool(pool, tasks: 16))")
-print("executors: preferring the pool: \(await preferringPool(pool, pinned))")
+print("\(program): 16 tasks preferring a pool ran there \(await groupOnPool(pool, tasks: 16))")
+print("\(program): preferring the pool: \(await preferringPool(pool, pinned))")
 let preferred = await Task(executorPreference: pool) { await currentThread() }.value
-print("executors: Task(executorPreference:) on the pool \(onPool(pool, preferred))")
+print("\(program): Task(executorPreference:) on the pool \(onPool(pool, preferred))")

@@ -19,6 +19,7 @@
 #include "kernel/random.h"
 #include "kernel/scheduler.h"
 #include "kernel/smp.h"
+#include "kernel/string/memory_functions.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/syscall.h"
 #include "kernel/terminal/pseudo_terminal.h"
@@ -40,8 +41,10 @@ namespace FeatherOS::Process
 namespace
 {
 
-// Covers every user page: ELF segments, the stack, and the arguments block.
-constexpr uint32_t DefaultProcessPageLimit = 1024;
+// Covers every user page: ELF segments, the heap, the stacks, and the arguments block.
+constexpr uint32_t DefaultProcessPageLimit = 16384;
+// File bytes pass through a kernel buffer of this size on their way to a program's pages.
+constexpr uint64_t ProgramLoadBufferSize = 64 * 1024;
 constexpr uint32_t MaximumChildrenPerProcess = 16;
 constexpr size_t MaximumCommandNameLength = 32;
 // Room for the shell's prompt, which shows its working directory.
@@ -215,38 +218,58 @@ bool MapUserSegment(void* context, uint64_t virtual_address, uint64_t memory_siz
     return true;
 }
 
-bool CopyUserSegment(void*, uint64_t virtual_address, const uint8_t* source, uint64_t size)
+// Segments are written through their physical pages, not their user addresses: reading the
+// program file may block, and the task resumes with its own address space active, not the new
+// program's. A null source writes zeros.
+bool WriteProgramBytes(UserProgram* program, uint64_t virtual_address, const uint8_t* source,
+                       uint64_t size)
 {
-    if (source == nullptr || virtual_address > UINTPTR_MAX ||
-        size > UINTPTR_MAX - static_cast<uintptr_t>(virtual_address))
+    if (program == nullptr || virtual_address >= UserAddressLimit ||
+        size > UserAddressLimit - virtual_address)
     {
         return false;
     }
-    auto* destination =
-        reinterpret_cast<volatile uint8_t*>(static_cast<uintptr_t>(virtual_address));
-    const Arch::CpuFeatures::UserAccessWindow user_access;
-    for (uint64_t index = 0; index < size; ++index)
+    while (size > 0)
     {
-        destination[index] = source[index];
+        const uint64_t page = virtual_address & ~(Memory::PageSize - 1);
+        const uint64_t offset = virtual_address - page;
+        const uint64_t chunk = Memory::PageSize - offset < size ? Memory::PageSize - offset : size;
+        uint64_t physical_address;
+        bool writable;
+        if (!Memory::TranslateUserPage(program->address_space, page, &physical_address, &writable))
+        {
+            return false;
+        }
+        volatile uint8_t* bytes = PhysicalBytes(physical_address);
+        if (bytes == nullptr)
+        {
+            return false;
+        }
+        auto* destination = const_cast<uint8_t*>(bytes + offset);
+        if (source != nullptr)
+        {
+            memcpy(destination, source, chunk);
+            source += chunk;
+        }
+        else
+        {
+            memset(destination, 0, chunk);
+        }
+        virtual_address += chunk;
+        size -= chunk;
     }
     return true;
 }
 
-bool ZeroUserSegment(void*, uint64_t virtual_address, uint64_t size)
+bool CopyUserSegment(void* context, uint64_t virtual_address, const uint8_t* source, uint64_t size)
 {
-    if (virtual_address > UINTPTR_MAX ||
-        size > UINTPTR_MAX - static_cast<uintptr_t>(virtual_address))
-    {
-        return false;
-    }
-    auto* destination =
-        reinterpret_cast<volatile uint8_t*>(static_cast<uintptr_t>(virtual_address));
-    const Arch::CpuFeatures::UserAccessWindow user_access;
-    for (uint64_t index = 0; index < size; ++index)
-    {
-        destination[index] = 0;
-    }
-    return true;
+    return source != nullptr &&
+           WriteProgramBytes(static_cast<UserProgram*>(context), virtual_address, source, size);
+}
+
+bool ZeroUserSegment(void* context, uint64_t virtual_address, uint64_t size)
+{
+    return WriteProgramBytes(static_cast<UserProgram*>(context), virtual_address, nullptr, size);
 }
 
 bool ProtectUserSegment(void* context, uint64_t virtual_address, uint64_t memory_size,
@@ -371,8 +394,13 @@ bool SetUpThreadArea(UserProgram* program, uint64_t slot_top, uint64_t* thread_p
     return true;
 }
 
-bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& arguments,
-                     UserProgram* program)
+bool ReadProgramFile(void* context, uint64_t offset, void* buffer, uint64_t size)
+{
+    return static_cast<Files::ProgramFile*>(context)->ReadAt(offset, buffer, size);
+}
+
+bool MapProgramPages(const ELF::Image& image, const ELF::Source& source,
+                     const User::ProgramArguments& arguments, UserProgram* program)
 {
     if (!Memory::CreateAddressSpace(&program->address_space))
     {
@@ -381,16 +409,18 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     program->execution_context.address_space_root_physical_address =
         program->address_space.root_physical_address;
 
-    // Segment data is copied through user addresses, so the new address space must be active.
-    if (!Memory::ActivateAddressSpace(program->address_space))
-    {
-        return false;
-    }
     const ELF::LoadOperations operations = {
         program, MapUserSegment, CopyUserSegment, ZeroUserSegment, ProtectUserSegment,
     };
     const uint64_t load_bias = image.position_independent ? program->layout.image_base : 0;
-    if (!ELF::LoadSegments(image, load_bias, operations))
+    auto* buffer = static_cast<uint8_t*>(Memory::Allocate(ProgramLoadBufferSize));
+    const bool loaded = buffer != nullptr && ELF::LoadSegments(image, source, load_bias, operations,
+                                                               buffer, ProgramLoadBufferSize);
+    if (buffer != nullptr)
+    {
+        Memory::Deallocate(buffer);
+    }
+    if (!loaded)
     {
         return false;
     }
@@ -422,10 +452,10 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
         return false;
     }
     volatile uint8_t* arguments_page = PhysicalBytes(arguments_physical_address);
-    const auto* source = reinterpret_cast<const uint8_t*>(&arguments);
+    const auto* argument_bytes = reinterpret_cast<const uint8_t*>(&arguments);
     for (size_t index = 0; index < sizeof(arguments); ++index)
     {
-        arguments_page[index] = source[index];
+        arguments_page[index] = argument_bytes[index];
     }
     if (!Memory::MapPage(program->address_space, program->layout.arguments_address,
                          arguments_physical_address,
@@ -436,6 +466,11 @@ bool MapProgramPages(const ELF::Image& image, const User::ProgramArguments& argu
     }
 
     program->entry_point = image.entry_point + load_bias;
+    // The thread area is written through user addresses; nothing blocks from here on.
+    if (!Memory::ActivateAddressSpace(program->address_space))
+    {
+        return false;
+    }
     uint64_t stack_start = 0;
     if (!SetUpThreadArea(program, program->layout.stack_top,
                          &program->execution_context.thread_pointer, &stack_start))
@@ -1041,6 +1076,8 @@ uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags, uint
         return User::SyscallErrorNotExecutable;
     case SpawnStatus::NoResources:
         return User::SyscallErrorNoMemory;
+    case SpawnStatus::Busy:
+        return User::SyscallErrorBusy;
     default:
         return User::SyscallErrorFailed;
     }
@@ -3112,15 +3149,15 @@ void InitializeUserProgram(UserProgram* program) NO_THREAD_SAFETY_ANALYSIS
     Signals::Reset(&program->execution_context.signals);
 }
 
-bool LoadUserProgram(const ELF::Image& image, const User::ProgramArguments& arguments,
-                     UserProgram* program)
+bool LoadUserProgram(const ELF::Image& image, const ELF::Source& source,
+                     const User::ProgramArguments& arguments, UserProgram* program)
 {
     if (program == nullptr)
     {
         return false;
     }
     program->execution_context.preemption_enabled = arguments.user_preemption_test != 0;
-    const bool loaded = MapProgramPages(image, arguments, program);
+    const bool loaded = MapProgramPages(image, source, arguments, program);
     // Loading may run inside a syscall, so restore the caller's address space, not the kernel's.
     Scheduler::ActivateCurrentAddressSpace();
     return loaded;
@@ -3228,7 +3265,7 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         return SpawnStatus::NameTooLong;
     }
     Files::ProgramFile file;
-    switch (file.Read(path))
+    switch (file.Open(path))
     {
     case 0:
         break;
@@ -3238,11 +3275,14 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         return SpawnStatus::IsDirectory;
     case User::SyscallErrorNotExecutable:
         return SpawnStatus::InvalidExecutable;
+    case User::SyscallErrorBusy:
+        return SpawnStatus::Busy;
     default:
         return SpawnStatus::NoResources;
     }
+    const ELF::Source source = {&file, ReadProgramFile};
     ELF::Image image;
-    if (!ELF::Parse(file.Data(), file.Size(), UserMachine, &image))
+    if (!ELF::Parse(source, file.Size(), UserMachine, &image))
     {
         return SpawnStatus::InvalidExecutable;
     }
@@ -3342,7 +3382,7 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         Signals::Inherit(&process->program.execution_context.signals,
                          inherited_from->program.execution_context.signals);
     }
-    const bool loaded = LoadUserProgram(image, arguments, &process->program);
+    const bool loaded = LoadUserProgram(image, source, arguments, &process->program);
     // Spawned programs are time-sliced: user mode runs with interrupts unmasked, and each timer
     // tick may switch to another ready task.
     process->program.execution_context.preemption_enabled = true;

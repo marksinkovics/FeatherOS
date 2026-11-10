@@ -86,16 +86,18 @@ enum class SpawnStatus : uint8_t
     InvalidExecutable,
     InvalidArguments,
     NoResources,
+    // The program file is open for writing.
+    Busy,
 };
 
 void Initialize(uint64_t hhdm_offset);
 
 void InitializeUserProgram(UserProgram* program);
-// Creates an address space for image with its segments, a stack, and a copy of arguments.
-// Leaves the caller's address space active. On failure, the caller destroys
+// Creates an address space for image with its segments, read from source, a stack, and a copy
+// of arguments. Leaves the caller's address space active. On failure, the caller destroys
 // program->address_space if its root is set.
-bool LoadUserProgram(const ELF::Image& image, const User::ProgramArguments& arguments,
-                     UserProgram* program);
+bool LoadUserProgram(const ELF::Image& image, const ELF::Source& source,
+                     const User::ProgramArguments& arguments, UserProgram* program);
 // Maps a stack page for a not-present user fault in the growable stack region.
 bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address);
 // For signal frames: copy between kernel memory and the current program's memory, mapping

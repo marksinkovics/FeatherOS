@@ -91,6 +91,21 @@ double Round(double value)
     return Abs(value - truncated) >= 0.5 ? truncated + CopySign(1.0, value) : truncated;
 }
 
+double RoundToEven(double value)
+{
+    if (!(Abs(value) < 0x1p52))
+    {
+        return value;
+    }
+    const double truncated = Trunc(value);
+    const double fraction = Abs(value - truncated);
+    if (fraction > 0.5 || (fraction == 0.5 && Remainder(truncated, 2.0) != 0))
+    {
+        return truncated + CopySign(1.0, value);
+    }
+    return truncated;
+}
+
 double ScaleB(double value, int exponent)
 {
     if (exponent > 1023)
@@ -218,6 +233,42 @@ double Remainder(double x, double y)
         magnitude_x = (static_cast<uint64_t>(exponent_x) << 52) | (mantissa_x & FractionMask);
     }
     return FromBits(magnitude_x | (x_bits & SignBit));
+}
+
+// The remainder modulo 2y, in [0, 2|y|), keeps the parity of the quotient, and the subtractions
+// that bring it into [-|y|/2, |y|/2] are exact by Sterbenz's lemma.
+double NearestRemainder(double x, double y)
+{
+    if (IsNaN(x) || IsNaN(y) || y == 0 || IsInfinite(x))
+    {
+        return (x * y) / (x * y);
+    }
+    const double divisor = Abs(y);
+    double result = divisor < 0x1p1023 ? Abs(Remainder(x, divisor * 2)) : Abs(x);
+    if (divisor < 0x1p-1021)
+    {
+        if (result + result > divisor)
+        {
+            result -= divisor;
+            if (result + result >= divisor)
+            {
+                result -= divisor;
+            }
+        }
+    }
+    else
+    {
+        const double half = divisor * 0.5;
+        if (result > half)
+        {
+            result -= divisor;
+            if (result >= half)
+            {
+                result -= divisor;
+            }
+        }
+    }
+    return (Bits(x) & SignBit) != 0 ? -result : result;
 }
 
 int Nearest(double value)

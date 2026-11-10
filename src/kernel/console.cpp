@@ -368,7 +368,7 @@ void WriteLine(const char* text)
     console_terminals[0].NotifyOutput();
 }
 
-#if defined(FEATHEROS_INPUT_TEST)
+#if defined(FEATHEROS_KERNEL_TESTS)
 void WriteSerialLine(const char* text)
 {
     Sync::SpinLockGuard guard(display_lock);

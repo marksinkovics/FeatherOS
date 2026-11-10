@@ -15,7 +15,7 @@ namespace FeatherOS
 namespace
 {
 
-#if defined(FEATHEROS_MEMORY_TEST)
+#if defined(FEATHEROS_KERNEL_TESTS)
 TestExceptionHandler test_exception_handler = nullptr;
 #endif
 
@@ -55,7 +55,7 @@ void InitializeSecondaryCpuExceptions(uint32_t cpu_index)
 #endif
 }
 
-#if defined(FEATHEROS_MEMORY_TEST)
+#if defined(FEATHEROS_KERNEL_TESTS)
 void SetTestExceptionHandler(TestExceptionHandler handler)
 {
     test_exception_handler = handler;

@@ -51,9 +51,13 @@ add_library(featheros_c STATIC
     uchar.cpp
     unicode_conversion.cpp
     unistd.cpp
+    wide_division.cpp
     arch/${ARCH}/setjmp.cpp
     arch/${ARCH}/signal_return.cpp
 )
+if (ARCH STREQUAL "x86_64")
+    target_sources(featheros_c PRIVATE arch/x86_64/long_double.cpp)
+endif ()
 # Program startup (_start, which calls main) is linked only into programs that have a main.
 add_library(featheros_crt0 OBJECT start.cpp)
 

@@ -6,7 +6,8 @@
 #
 # Modes are build.sh test toggles without _TEST (SHELL for SHELL_TEST=ON); none runs no QEMU
 # test. --matrix runs ./build.sh test-all after everything else passed. Full logs are under
-# build/check/, and each smoke test's whole session is in build/<arch>/smoke-output.txt.
+# build/check/, each smoke test's whole session is in build/<arch>/smoke-output.txt, and each matrix
+# case's log and session are in build/matrix/<case>/.
 
 set -uo pipefail
 
@@ -65,6 +66,8 @@ stage() {
     return 1
 }
 
+# With the kernel test hooks, which the smoke tests need and clang-tidy then checks too.
+export KERNEL_TESTS=ON
 for arch in x86_64 aarch64; do
     stage "build $arch" "error|undefined reference|FAILED" ./build.sh --arch "$arch" build || exit 1
 done

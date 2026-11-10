@@ -3,6 +3,7 @@
 deps/limine
 deps/swift
 deps/llvm-project
+deps/swift-experimental-string-processing
 deps/swift.patch.applied
 deps/stivale
 *.iso
@@ -12,3 +13,4 @@ deps/stivale
 .cache
 .DS_Store
 __pycache__
+.claude/scheduled_tasks.lock

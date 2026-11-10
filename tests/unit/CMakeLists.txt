@@ -49,6 +49,7 @@ add_executable(featheros_unit_tests
     support/scheduler_stubs.cpp
     support/terminal_device.cpp
     kernel/input/keyboard_tests.cpp
+    kernel/kernel_test/kernel_test_mode_tests.cpp
     kernel/klogger/klogger_tests.cpp
     kernel/memory/memory_map_tests.cpp
     kernel/process/calculator_tests.cpp
@@ -88,6 +89,7 @@ add_executable(featheros_unit_tests
     libc/spawn_request_tests.cpp
     libc/time_format_tests.cpp
     libc/unicode_conversion_tests.cpp
+    libc/wide_division_tests.cpp
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat16.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat_names.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"
@@ -103,6 +105,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/term.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/input.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/keyboard.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/kernel_test_mode.cpp"
     "${FEATHEROS_ROOT}/src/kernel/network/address.cpp"
     "${FEATHEROS_ROOT}/src/kernel/network/arp.cpp"
     "${FEATHEROS_ROOT}/src/kernel/network/checksum.cpp"
@@ -135,6 +138,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/libc/spawn_request.cpp"
     "${FEATHEROS_ROOT}/src/libc/time_format.cpp"
     "${FEATHEROS_ROOT}/src/libc/unicode_conversion.cpp"
+    "${FEATHEROS_ROOT}/src/libc/wide_division.cpp"
     "${FEATHEROS_ROOT}/src/user/calculator.cpp"
     "${FEATHEROS_ROOT}/src/user/calendar.cpp"
     "${FEATHEROS_ROOT}/src/user/command_line.cpp"
@@ -245,6 +249,22 @@ if (FEATHEROS_SWIFTC)
             add_test(NAME swift.codable.${optimization} COMMAND ${tests})
         endforeach ()
     endif ()
+    # The same tests in full Swift, as FeatherOS's full-Swift programs use the JSON coders:
+    # through the host library's Codable and FeatherSupport's codable_containers.swift.
+    file(GLOB sources CONFIGURE_DEPENDS "${FEATHEROS_ROOT}/src/user/swift_support/json_*.swift")
+    list(APPEND sources "${FEATHEROS_ROOT}/src/user/swift_support/codable_containers.swift"
+        "${CMAKE_CURRENT_SOURCE_DIR}/swift/codable_tests.swift")
+    set(tests ${CMAKE_CURRENT_BINARY_DIR}/swift/codable_tests_full)
+    add_custom_command(
+        OUTPUT ${tests}
+        COMMAND ${FEATHEROS_SWIFTC} ${swift_flags} -module-name codable_tests ${sources}
+            -module-cache-path ${CMAKE_CURRENT_BINARY_DIR}/swift/module-cache -o ${tests}
+        DEPENDS ${sources}
+        COMMENT "Building Swift test swift/codable_tests_full"
+        VERBATIM
+    )
+    add_custom_target(swift_codable_tests_full ALL DEPENDS ${tests})
+    add_test(NAME swift.codable.full COMMAND ${tests})
 else ()
     message(STATUS "No Swift toolchain found, so the Swift tests are skipped")
 endif ()

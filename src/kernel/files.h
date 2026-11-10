@@ -111,8 +111,8 @@ uint64_t Stat(const char* path, User::FileStatus* status);
 uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* status);
 void CloseAll(Table* table);
 
-// A program file for Spawn. Initramfs files are used in place; others are copied into a kernel
-// buffer, which lives as long as this object.
+// A program file for Spawn, open for reading while it is loaded, so it cannot be written,
+// replaced or removed meanwhile.
 class ProgramFile
 {
 public:
@@ -122,15 +122,17 @@ public:
     ProgramFile& operator=(const ProgramFile&) = delete;
 
     // 0, or SyscallErrorNotFound, SyscallErrorIsDirectory, SyscallErrorNotExecutable for a device
-    // or an empty file, or SyscallErrorNoMemory past User::MaximumProgramSize.
-    uint64_t Read(const char* path);
-    const uint8_t* Data() const;
+    // or an empty file, SyscallErrorBusy while it is open for writing, or
+    // SyscallErrorTooManyOpenFiles.
+    uint64_t Open(const char* path);
     uint64_t Size() const;
+    // Fills the whole buffer or fails.
+    bool ReadAt(uint64_t offset, void* buffer, uint64_t size);
 
 private:
-    const uint8_t* data = nullptr;
-    uint64_t size = 0;
-    uint8_t* buffer = nullptr;
+    VFS::FileHandle handle = {};
+    bool open = false;
+    bool tracked = false;
 };
 // Waits for any filesystem call in progress, then blocks all later ones, for shutdown.
 void Quiesce();

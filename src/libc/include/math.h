@@ -33,17 +33,20 @@
 
 __BEGIN_DECLS
 
-// Exact: fabs, copysign, floor, ceil, trunc, round, fmod, frexp, ldexp, modf, sqrt, fmin, fmax,
-// fma.
+// Exact: fabs, copysign, floor, ceil, trunc, round, rint, nearbyint, fmod, remainder, frexp,
+// ldexp, modf, sqrt, fmin, fmax, fma.
 // The rest are within a few units in the last place; sin, cos and tan lose precision for
-// |x| above about 10^6. There are no long double functions yet.
+// |x| above about 10^6.
 double fabs(double x);
 double copysign(double magnitude, double sign);
 double floor(double x);
 double ceil(double x);
 double trunc(double x);
 double round(double x);
+double rint(double x);
+double nearbyint(double x);
 double fmod(double x, double y);
+double remainder(double x, double y);
 double frexp(double x, int* exponent);
 double ldexp(double x, int exponent);
 double scalbn(double x, int exponent);
@@ -76,7 +79,10 @@ float floorf(float x);
 float ceilf(float x);
 float truncf(float x);
 float roundf(float x);
+float rintf(float x);
+float nearbyintf(float x);
 float fmodf(float x, float y);
+float remainderf(float x, float y);
 float fminf(float x, float y);
 float fmaxf(float x, float y);
 float sqrtf(float x);
@@ -98,6 +104,32 @@ float atan2f(float y, float x);
 float sinhf(float x);
 float coshf(float x);
 float tanhf(float x);
+
+#if defined(__x86_64__)
+// The x87 format. Exact: fabsl copysignl floorl ceill truncl roundl rintl nearbyintl fmodl
+// remainderl sqrtl fmal. The rest are within a few units in the last place: expl, exp2l and the
+// logarithms through the x87 unit's f2xm1 and fyl2x, sinl and cosl from series, which lose
+// precision for |x| beyond 2^30. AArch64 has none of these.
+long double fabsl(long double x);
+long double copysignl(long double magnitude, long double sign);
+long double floorl(long double x);
+long double ceill(long double x);
+long double truncl(long double x);
+long double roundl(long double x);
+long double rintl(long double x);
+long double nearbyintl(long double x);
+long double fmodl(long double x, long double y);
+long double remainderl(long double x, long double y);
+long double sqrtl(long double x);
+long double fmal(long double x, long double y, long double z);
+long double expl(long double x);
+long double exp2l(long double x);
+long double logl(long double x);
+long double log2l(long double x);
+long double log10l(long double x);
+long double sinl(long double x);
+long double cosl(long double x);
+#endif
 
 __END_DECLS
 

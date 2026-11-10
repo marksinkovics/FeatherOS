@@ -1172,70 +1172,63 @@ void CloseAll(Table* table)
 
 ProgramFile::~ProgramFile()
 {
-    if (buffer != nullptr)
+    if (!open)
     {
-        Memory::Deallocate(buffer);
+        return;
     }
+    Sync::MutexGuard guard(file_system_lock);
+    if (tracked)
+    {
+        DropUse(UseKey(handle), false);
+    }
+    VFS::Close(&handle);
 }
 
-uint64_t ProgramFile::Read(const char* path)
+uint64_t ProgramFile::Open(const char* path)
 {
-    if (path == nullptr || data != nullptr)
+    if (path == nullptr || open)
     {
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
-    VFS::FileHandle handle;
     if (!VFS::Open(path, &handle))
     {
         return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorNotFound;
     }
-    uint64_t result = 0;
     if (handle.kind == VFS::FileKind::Device || handle.size == 0)
     {
-        result = User::SyscallErrorNotExecutable;
+        VFS::Close(&handle);
+        return User::SyscallErrorNotExecutable;
     }
-    else if (handle.size > User::MaximumProgramSize)
+    if (VFS::IsTracked(handle))
     {
-        result = User::SyscallErrorNoMemory;
-    }
-    else if (handle.kind == VFS::FileKind::Archive)
-    {
-        data = handle.data;
-        size = handle.size;
-    }
-    else
-    {
-        buffer = static_cast<uint8_t*>(Memory::Allocate(handle.size));
-        uint64_t bytes_read = 0;
-        if (buffer == nullptr)
+        const uint64_t added = AddUse(UseKey(handle), false);
+        if (User::IsSyscallError(added))
         {
-            result = User::SyscallErrorNoMemory;
+            VFS::Close(&handle);
+            return added;
         }
-        else if (!VFS::Read(&handle, buffer, handle.size, &bytes_read) || bytes_read != handle.size)
-        {
-            Memory::Deallocate(buffer);
-            buffer = nullptr;
-            result = User::SyscallErrorFailed;
-        }
-        else
-        {
-            data = buffer;
-            size = handle.size;
-        }
+        tracked = true;
     }
-    VFS::Close(&handle);
-    return result;
-}
-
-const uint8_t* ProgramFile::Data() const
-{
-    return data;
+    open = true;
+    return 0;
 }
 
 uint64_t ProgramFile::Size() const
 {
-    return size;
+    return open ? handle.size : 0;
+}
+
+bool ProgramFile::ReadAt(uint64_t offset, void* buffer, uint64_t size)
+{
+    if (!open || offset > handle.size || size > handle.size - offset)
+    {
+        return false;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    uint64_t bytes_read = 0;
+    return VFS::Seek(&handle, offset) && VFS::Read(&handle, buffer, size, &bytes_read) &&
+           bytes_read == size;
 }
 
 } // namespace FeatherOS::Files

@@ -33,8 +33,22 @@ set(FEATHEROS_SWIFT_CXX_PROGRAMS
     http:http cxxinterop:cxxinterop
 )
 set(FEATHEROS_SWIFT_CXX_SOURCES_cxxinterop cxx_interop.cpp)
+# Programs in full Swift, with runtime type information (see swift_runtime/), built when deps/
+# holds the runtime's sources. They import a FeatherSupport built in full mode, and cannot import
+# the Embedded modules.
+set(FEATHEROS_SWIFT_FULL_PROGRAMS
+    fullhello:fullhello reflect:reflect fulltasks:tasks fullexecutors:executors
+    fullregex:fullregex fullcodable:fullcodable fulljson:json fulllife:life
+    fullswiftbench:swiftbench
+)
+# Full-Swift programs that import C++ headers, as FEATHEROS_SWIFT_CXX_PROGRAMS do.
+set(FEATHEROS_SWIFT_FULL_CXX_PROGRAMS
+    fullcxxinterop:cxxinterop fullhttp:http
+)
+set(FEATHEROS_SWIFT_CXX_SOURCES_fullcxxinterop cxx_interop.cpp)
 # Sources a Swift program compiles in from other programs' directories, by program name.
 set(FEATHEROS_SWIFT_SHARED_SOURCES_swiftbench life/grid.swift)
+set(FEATHEROS_SWIFT_SHARED_SOURCES_fullswiftbench life/grid.swift)
 
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker_${ARCH}.ld)
 
@@ -155,6 +169,115 @@ function(featheros_add_swift_program entry)
     target_sources(user_${name} PRIVATE ${FEATHEROS_SWIFT_CXX_SOURCES_${name}})
 endfunction()
 
+# FeatherSupport again for full-Swift programs, from the same sources: codable_containers.swift
+# gives its JSON coders the EncoderBase and DecoderBase that Embedded Swift's library has. Unlike
+# Embedded Swift, full Swift links the module's code from its object rather than compiling it into
+# each program.
+set(FEATHEROS_SWIFT_FULL_SUPPORT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/swift_full/support)
+function(featheros_add_full_swift_support)
+    file(GLOB sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/swift_support/*.swift)
+    set(object ${FEATHEROS_SWIFT_FULL_SUPPORT_DIRECTORY}/FeatherSupport.o)
+    set(module ${FEATHEROS_SWIFT_FULL_SUPPORT_DIRECTORY}/FeatherSupport.swiftmodule)
+    add_custom_command(
+        OUTPUT ${object} ${module}
+        COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FULL_FLAGS} ${FEATHEROS_SWIFT_OPTIMIZATION}
+            -parse-as-library -module-name FeatherSupport -emit-module -emit-module-path ${module}
+            -c ${sources} -o ${object}
+        DEPENDS ${sources} ${FEATHEROS_SWIFT_LIBC_FILES} ${FEATHEROS_SWIFT_FULL_MODULES}
+        COMMENT "Building full Swift module FeatherSupport"
+        VERBATIM
+    )
+    set_source_files_properties(${object} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+    add_library(featheros_swift_full_support STATIC ${object})
+    set_target_properties(featheros_swift_full_support PROPERTIES LINKER_LANGUAGE CXX)
+    add_dependencies(featheros_swift_full_support featheros_swift_full)
+    set(FEATHEROS_SWIFT_FULL_SUPPORT_MODULE ${module} PARENT_SCOPE)
+endfunction()
+
+# A full-Swift program links the standard library's object, the runtime and the C library with
+# the toolchain's ld.lld, which also does the link-time optimization of Release builds. GCC
+# cannot drive it here: the cross compilers ignore -fuse-ld=lld.
+function(featheros_add_full_swift_program entry)
+    cmake_parse_arguments(PARSE_ARGV 1 program "CXX" "" "")
+    string(REPLACE ":" ";" parts ${entry})
+    list(GET parts 0 name)
+    list(GET parts 1 source)
+    set(source ${CMAKE_CURRENT_SOURCE_DIR}/${source})
+    if (IS_DIRECTORY ${source})
+        file(GLOB sources CONFIGURE_DEPENDS ${source}/*.swift)
+    else ()
+        set(sources ${source}.swift)
+    endif ()
+    list(TRANSFORM FEATHEROS_SWIFT_SHARED_SOURCES_${name} PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/
+        OUTPUT_VARIABLE shared_sources)
+    list(APPEND sources ${shared_sources})
+    set(object ${CMAKE_CURRENT_BINARY_DIR}/swift_full/${name}.o)
+    set(cxx_headers)
+    set(mode)
+    set(module_dependency)
+    set(cxx_objects)
+    set(cxx_libraries)
+    if (program_CXX)
+        set(cxx_headers -Xcc -nostdinc++ -Xcc -I${FEATHEROS_LIBCXX_CONFIG_DIRECTORY}
+            -Xcc -I${FEATHEROS_LIBCXX_SOURCE}/include)
+        # The link names Cxx's archive. Left in, the compiler's request for swiftCxx becomes an
+        # ELF dependent library in Release's bitcode, which ld.lld fails to find.
+        set(mode -cxx-interoperability-mode=default -Xcc -std=gnu++23 -Xcc -fno-exceptions
+            -Xcc -fno-rtti -I ${CMAKE_CURRENT_SOURCE_DIR}/swift_cxx
+            -Xfrontend -disable-autolink-library -Xfrontend swiftCxx)
+        set(module_dependency ${FEATHEROS_SWIFT_CXX_HEADERS})
+        set(cxx_libraries $<TARGET_FILE:featheros_swift_full_cxx>
+            $<TARGET_FILE:featheros_user_support>)
+        if (FEATHEROS_SWIFT_CXX_SOURCES_${name})
+            add_library(user_${name}_cxx OBJECT ${FEATHEROS_SWIFT_CXX_SOURCES_${name}})
+            target_compile_options(user_${name}_cxx PRIVATE ${FEATHEROS_USER_FLAGS})
+            target_link_libraries(user_${name}_cxx PRIVATE featheros_c)
+            set(cxx_objects $<TARGET_OBJECTS:user_${name}_cxx>)
+        endif ()
+    endif ()
+    add_custom_command(
+        OUTPUT ${object}
+        COMMAND ${FEATHEROS_SWIFTC} ${cxx_headers} ${FEATHEROS_SWIFT_FULL_FLAGS}
+            ${FEATHEROS_SWIFT_OPTIMIZATION} ${FEATHEROS_SWIFT_PROGRAM_DEBUG} ${mode}
+            -I ${FEATHEROS_SWIFT_FULL_SUPPORT_DIRECTORY}
+            -enable-bare-slash-regex -module-name ${name} -c ${sources} -o ${object}
+        DEPENDS ${sources} ${FEATHEROS_SWIFT_LIBC_FILES} ${FEATHEROS_SWIFT_FULL_MODULES}
+            ${FEATHEROS_SWIFT_FULL_SUPPORT_MODULE} ${module_dependency}
+        COMMENT "Building full Swift object swift_full/${name}.o"
+        VERBATIM
+    )
+    set(program ${CMAKE_BINARY_DIR}/programs/${name}-${ARCH}.elf)
+    add_custom_command(
+        OUTPUT ${program}
+        COMMAND ${FEATHEROS_SWIFT_LLD} -pie --no-dynamic-linker -z text -T ${USER_LINKER_SCRIPT}
+            -e _start --build-id=none -z max-page-size=0x1000 --gc-sections
+            ${FEATHEROS_SWIFT_FULL_LINK_FLAGS}
+            ${object} ${cxx_objects} $<TARGET_OBJECTS:featheros_crt0>
+            ${FEATHEROS_SWIFT_FULL_OBJECTS} --start-group ${cxx_libraries}
+            $<TARGET_FILE:featheros_swift_full_support>
+            $<TARGET_FILE:featheros_swift_full_string_processing>
+            $<TARGET_FILE:featheros_swift_full_concurrency>
+            $<TARGET_FILE:featheros_swift_runtime> $<TARGET_FILE:featheros_c>
+            --end-group -o ${program}
+        DEPENDS ${object} ${cxx_objects} ${cxx_libraries} ${FEATHEROS_SWIFT_FULL_OBJECTS}
+            $<TARGET_OBJECTS:featheros_crt0> featheros_swift_full_support
+            featheros_swift_full_string_processing
+            featheros_swift_full_concurrency
+            featheros_swift_runtime featheros_c ${USER_LINKER_SCRIPT}
+        COMMENT "Linking full Swift program ${name}-${ARCH}.elf"
+        COMMAND_EXPAND_LISTS
+        VERBATIM
+    )
+    add_custom_target(user_${name} ALL DEPENDS ${program})
+    add_dependencies(user_${name} featheros_swift_full)
+    if (program_CXX)
+        add_dependencies(user_${name} featheros_swift_full_cxx featheros_user_support)
+    endif ()
+    if (cxx_objects)
+        add_dependencies(user_${name} user_${name}_cxx)
+    endif ()
+endfunction()
+
 foreach (entry ${FEATHEROS_PROGRAMS})
     featheros_add_program(${entry} featheros_crt0)
 endforeach ()
@@ -167,6 +290,9 @@ set(FEATHEROS_SWIFT_SOURCE ${PROJECT_SOURCE_DIR}/deps/swift CACHE PATH
     "The Swift sources, patched, for the standard library, the concurrency runtime and Cxx")
 set(FEATHEROS_LIBCXX_SOURCE ${PROJECT_SOURCE_DIR}/deps/llvm-project/libcxx CACHE PATH
     "libc++'s sources, for the headers of the concurrency runtime and Swift's C++ programs")
+set(FEATHEROS_STRING_PROCESSING_SOURCE
+    ${PROJECT_SOURCE_DIR}/deps/swift-experimental-string-processing CACHE PATH
+    "swift-experimental-string-processing's sources, for full Swift's regular expressions")
 if (ARCH STREQUAL "x86_64")
     set(FEATHEROS_SWIFT_TARGET x86_64-unknown-none-elf)
 else ()
@@ -227,10 +353,12 @@ else ()
     message(STATUS "No Swift toolchain found, so the Swift programs are skipped")
 endif ()
 if (swift_usable AND NOT (EXISTS ${FEATHEROS_SWIFT_SOURCE}/stdlib/public/core AND
-        EXISTS ${FEATHEROS_LIBCXX_SOURCE}/include))
+        EXISTS ${FEATHEROS_LIBCXX_SOURCE}/include AND
+        EXISTS ${FEATHEROS_STRING_PROCESSING_SOURCE}/Sources/_StringProcessing))
     set(swift_usable FALSE)
-    message(STATUS "No Swift or libc++ sources in ${FEATHEROS_SWIFT_SOURCE} and "
-        "${FEATHEROS_LIBCXX_SOURCE}, so the Swift programs are skipped")
+    message(STATUS "No Swift, libc++ or string-processing sources in ${FEATHEROS_SWIFT_SOURCE}, "
+        "${FEATHEROS_LIBCXX_SOURCE} and ${FEATHEROS_STRING_PROCESSING_SOURCE}, so the Swift "
+        "programs are skipped")
 endif ()
 if (swift_usable)
     # The probe used the toolchain's standard library; everything else uses ours.
@@ -248,5 +376,13 @@ if (swift_usable)
     endforeach ()
     foreach (entry ${FEATHEROS_SWIFT_CXX_PROGRAMS})
         featheros_add_swift_program(${entry} CXX)
+    endforeach ()
+    add_subdirectory(swift_runtime)
+    featheros_add_full_swift_support()
+    foreach (entry ${FEATHEROS_SWIFT_FULL_PROGRAMS})
+        featheros_add_full_swift_program(${entry})
+    endforeach ()
+    foreach (entry ${FEATHEROS_SWIFT_FULL_CXX_PROGRAMS})
+        featheros_add_full_swift_program(${entry} CXX)
     endforeach ()
 endif ()

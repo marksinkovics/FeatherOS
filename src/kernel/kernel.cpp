@@ -12,7 +12,7 @@
 #include "kernel/memory/page_allocator.h"
 #include "kernel/memory/virtual_memory.h"
 #include "kernel/panic.h"
-#if defined(FEATHEROS_KERNEL_TEST)
+#if defined(FEATHEROS_KERNEL_TESTS)
 #include "kernel/kernel_test.h"
 #endif
 
@@ -59,6 +59,12 @@ __attribute__((used, section(".limine_requests"))) volatile limine_smp_request s
 __attribute__((used, section(".limine_requests"))) volatile limine_rsdp_request rsdp_request = {
     .id = LIMINE_RSDP_REQUEST, .revision = 0, .response = nullptr};
 
+#if defined(FEATHEROS_KERNEL_TESTS)
+__attribute__((
+    used, section(".limine_requests"))) volatile limine_kernel_file_request kernel_file_request = {
+    .id = LIMINE_KERNEL_FILE_REQUEST, .revision = 0, .response = nullptr};
+#endif
+
 #if defined(ARCH_aarch64)
 __attribute__((used, section(".limine_requests"))) volatile limine_dtb_request dtb_request = {
     .id = LIMINE_DTB_REQUEST, .revision = 0, .response = nullptr};
@@ -97,6 +103,20 @@ extern "C" void kmain()
     {
         FeatherOS::Panic("Unsupported Limine base revision");
     }
+#if defined(FEATHEROS_KERNEL_TESTS)
+    const char* command_line = nullptr;
+    if (kernel_file_request.response != nullptr &&
+        kernel_file_request.response->kernel_file != nullptr)
+    {
+        command_line = kernel_file_request.response->kernel_file->cmdline;
+    }
+    FeatherOS::KernelTest::Mode test_mode = FeatherOS::KernelTest::Mode::None;
+    if (!FeatherOS::KernelTest::ParseCommandLine(command_line, &test_mode))
+    {
+        FeatherOS::Panic("Unknown test= mode on the kernel command line");
+    }
+    FeatherOS::KernelTest::SelectMode(test_mode);
+#endif
 
     const void* platform_data = nullptr;
 #if defined(ARCH_aarch64)
@@ -151,7 +171,7 @@ extern "C" void kmain()
     klogger.Init(hhdm_request.response->offset);
     klogger.Info("Limine transferred control to the kernel");
 
-#if defined(FEATHEROS_KERNEL_TEST)
+#if defined(FEATHEROS_KERNEL_TESTS)
     FeatherOS::KernelTest::Run(platform_data);
 #endif
 

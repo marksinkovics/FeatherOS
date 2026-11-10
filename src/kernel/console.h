@@ -36,7 +36,7 @@ void NotifyStatusChanged();
 // Kernel output, on the first console.
 void WriteCharacter(char character);
 void WriteLine(const char* text);
-#if defined(FEATHEROS_INPUT_TEST)
+#if defined(FEATHEROS_KERNEL_TESTS)
 // Serial only, kept whole among the first console's output.
 void WriteSerialLine(const char* text);
 #endif

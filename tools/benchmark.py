@@ -10,10 +10,15 @@ import subprocess
 import sys
 import time
 
-from smoke_test import ANSI_ESCAPE_BYTES, QEMU_CPU_COUNT, SHELL_PROMPT
+from smoke.boot import QEMU_CPU_COUNT
+from smoke.terminal import ANSI_ESCAPE_BYTES, SHELL_PROMPT
 
 # C++ first; Swift's times are given as a ratio to it.
-PROGRAMS = (("cppbench", "C++ -O2"), ("swiftbench", "Swift -O"))
+PROGRAMS = (
+    ("cppbench", "C++ -O2"),
+    ("swiftbench", "Embedded -O"),
+    ("fullswiftbench", "Full Swift -O"),
+)
 RESULT = re.compile(
     rb"^(\w+): check (\d+), (\d+) runs? in (\d+) ms, (\d+) us each\r?$",
     re.MULTILINE,
@@ -133,7 +138,7 @@ def SegmentSizes(path):
 
 # Each workload's fastest run over the rounds, since QEMU's timing varies
 # with the host's load.
-def Report(arch, seconds, rounds, results, programs):
+def Report(arch, seconds, rounds, results, programs, directory):
     print(
         f"FeatherOS benchmark on {arch} in QEMU, {seconds} s a workload, "
         f"best time per run of {rounds} rounds"
@@ -168,7 +173,7 @@ def Report(arch, seconds, rounds, results, programs):
     print("\nLoaded bytes: code, then data")
     for program, label in programs:
         code, other = SegmentSizes(
-            os.path.join(ProgramsDirectory(arch), f"{program}-{arch}.elf")
+            os.path.join(directory, f"{program}-{arch}.elf")
         )
         print(f"{label:<13} {code:>8} {other:>8}")
     if mismatched:
@@ -176,28 +181,24 @@ def Report(arch, seconds, rounds, results, programs):
     return 1 if mismatched else 0
 
 
-def ProgramsDirectory(arch):
-    return os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "build",
-        arch,
-        "programs",
-    )
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Boot FeatherOS in QEMU and compare cppbench with "
-        "swiftbench."
+        "swiftbench in Embedded and full Swift."
     )
     parser.add_argument("--arch", choices=("x86_64", "aarch64"), required=True)
     parser.add_argument("--firmware", help="AArch64 UEFI firmware image")
     parser.add_argument("--disk", required=True, help="Raw virtio block image")
     parser.add_argument(
-        "--seconds", type=int, default=3, help="Time for each workload"
+        "--programs",
+        required=True,
+        help="The build's programs folder, for the programs' sizes",
     )
     parser.add_argument(
-        "--rounds", type=int, default=3, help="Runs of every program"
+        "--seconds", type=int, default=1, help="Time for each workload"
+    )
+    parser.add_argument(
+        "--rounds", type=int, default=2, help="Runs of every program"
     )
     parser.add_argument("iso", help="Path to the bootable FeatherOS ISO")
     args = parser.parse_args()
@@ -208,7 +209,7 @@ def main():
         print(f"ERROR: {command[0]} was not found on PATH", file=sys.stderr)
         return 1
 
-    directory = ProgramsDirectory(args.arch)
+    directory = args.programs
     programs = [
         program
         for program in PROGRAMS
@@ -216,8 +217,9 @@ def main():
             os.path.join(directory, f"{program[0]}-{args.arch}.elf")
         )
     ]
-    if len(programs) < len(PROGRAMS):
-        print("NOTE: Swift programs were not built; skipping swiftbench")
+    for program, _ in PROGRAMS:
+        if program not in (name for name, _ in programs):
+            print(f"NOTE: {program} was not built; skipping it")
 
     process = subprocess.Popen(
         command,
@@ -248,7 +250,9 @@ def main():
         log = os.path.join(os.path.dirname(directory), "benchmark-output.txt")
         with open(log, "wb") as file:
             file.write(session.captured)
-    return Report(args.arch, args.seconds, args.rounds, results, programs)
+    return Report(
+        args.arch, args.seconds, args.rounds, results, programs, directory
+    )
 
 
 if __name__ == "__main__":

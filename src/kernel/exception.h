@@ -27,7 +27,7 @@ void InitializeExceptions();
 void InitializeSecondaryCpuExceptions(uint32_t cpu_index);
 [[noreturn]] void ReportFatalException(const ExceptionReport& report);
 
-#if defined(FEATHEROS_MEMORY_TEST)
+#if defined(FEATHEROS_KERNEL_TESTS)
 using TestExceptionHandler = bool (*)(ExceptionReport* report);
 void SetTestExceptionHandler(TestExceptionHandler handler);
 bool TryRecoverTestException(ExceptionReport* report);

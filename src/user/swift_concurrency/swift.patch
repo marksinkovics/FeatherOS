@@ -16,6 +16,60 @@ index 1daa852..250d8e4 100644
  std::optional<swift::threading_impl::stack_bounds>
  swift::threading_impl::thread_get_current_stack_bounds() {
    stack_t sinfo;
+diff --git a/stdlib/public/CommandLineSupport/CommandLine.cpp b/stdlib/public/CommandLineSupport/CommandLine.cpp
+index 4056e7e..057864f 100644
+--- a/stdlib/public/CommandLineSupport/CommandLine.cpp
++++ b/stdlib/public/CommandLineSupport/CommandLine.cpp
+@@ -48,6 +48,10 @@
+ #include <unistd.h>
+ #endif
+
++#if defined(__featheros__)
++#include <featheros.h>
++#endif
++
+ // Backing storage for overrides of `Swift.CommandLine.arguments`.
+ static char **_swift_stdlib_ProcessOverrideUnsafeArgv = nullptr;
+ static int _swift_stdlib_ProcessOverrideUnsafeArgc = 0;
+@@ -179,6 +183,15 @@ static char **swift::getUnsafeArgvArgc(int *outArgLen) {
+   return *_NSGetArgv();
+ }
+
++template <typename F>
++static void swift::enumerateUnsafeArgv(const F& body) { }
++#elif defined(__featheros__)
++// The C library keeps the arguments the kernel passed to the program.
++static char **swift::getUnsafeArgvArgc(int *outArgLen) {
++  *outArgLen = featheros_argument_count();
++  return featheros_argument_values();
++}
++
+ template <typename F>
+ static void swift::enumerateUnsafeArgv(const F& body) { }
+ #elif defined(__linux__)
+@@ -586,6 +599,22 @@ void _swift_stdlib_withExecutablePath(
+
+ #if defined(__APPLE__)
+ // Implemented in Swift on Darwin so it can be back-deployed.
++#elif defined(__featheros__)
++// The kernel makes argv[0] the path the program was started from, or its bare name for a
++// program in /system.
++static ExecutablePath getExecutablePath(void) {
++  int argc = 0;
++  char **argv = getUnsafeArgvArgc(&argc);
++  if (argc == 0) {
++    return "";
++  }
++  ExecutablePath result;
++  if (strchr(argv[0], '/') == nullptr) {
++    result = "/system/";
++  }
++  result += argv[0];
++  return result;
++}
+ #elif defined(__linux__) || defined(__ANDROID__)
+ static ExecutablePath getExecutablePath(void) {
+   size_t byteCount = PATH_MAX;
 diff --git a/stdlib/public/Concurrency/Actor.cpp b/stdlib/public/Concurrency/Actor.cpp
 index 1563307..5fe3027 100644
 --- a/stdlib/public/Concurrency/Actor.cpp
@@ -739,6 +793,20 @@ index d4e7605..971bfa5 100644
  /// Use this protocol to conform custom C++ sequence types to Swift's `Iterable`
  /// protocol like this:
  ///
+diff --git a/stdlib/public/SwiftShims/swift/shims/LibcShims.h b/stdlib/public/SwiftShims/swift/shims/LibcShims.h
+index 27060e3..caddf23 100644
+--- a/stdlib/public/SwiftShims/swift/shims/LibcShims.h
++++ b/stdlib/public/SwiftShims/swift/shims/LibcShims.h
+@@ -105,7 +105,8 @@ static inline __swift_size_t _swift_stdlib_malloc_size(const void *ptr) {
+   return malloc_size(ptr);
+ }
+ #elif defined(__linux__) || defined(__CYGWIN__) || defined(__ANDROID__) \
+-   || defined(__HAIKU__) || defined(__FreeBSD__) || defined(__wasi__)
++   || defined(__HAIKU__) || defined(__FreeBSD__) || defined(__wasi__) \
++   || defined(__featheros__)
+ #define HAS_MALLOC_SIZE 1
+ static inline __swift_size_t _swift_stdlib_malloc_size(const void *ptr) {
+ #if defined(__ANDROID__)
 diff --git a/stdlib/public/core/AnyHashable.swift b/stdlib/public/core/AnyHashable.swift
 index 51451a9..15d322e 100644
 --- a/stdlib/public/core/AnyHashable.swift
@@ -908,6 +976,21 @@ index dd4faf6..34e8cdd 100644
    EMBEDDED WriteBackMutableSlice.swift
    EMBEDDED Zip.swift
    EMBEDDED _InlineArray.swift
+diff --git a/stdlib/public/core/CTypes.swift b/stdlib/public/core/CTypes.swift
+index 6a7978c..2713005 100644
+--- a/stdlib/public/core/CTypes.swift
++++ b/stdlib/public/core/CTypes.swift
+@@ -119,6 +119,10 @@ public typealias CLongDouble = Double
+ #if arch(x86_64) || arch(i386)
+ public typealias CLongDouble = Float80
+ #endif
++#elseif os(none) && !$Embedded
++#if arch(x86_64)
++public typealias CLongDouble = Float80
++#endif
+ #elseif $Embedded
+ #if arch(x86_64) || arch(i386)
+ public typealias CLongDouble = Double
 diff --git a/stdlib/public/core/ClosedRange.swift b/stdlib/public/core/ClosedRange.swift
 index 75e670b..cf2788d 100644
 --- a/stdlib/public/core/ClosedRange.swift
@@ -1196,3 +1279,16 @@ index 10de0a4..1b3a37e 100644
      var arg = arg
 
      // We may need to retain an object that provides a pointer value.
+diff --git a/stdlib/public/stubs/Random.cpp b/stdlib/public/stubs/Random.cpp
+index 9062346..c7afab0 100644
+--- a/stdlib/public/stubs/Random.cpp
++++ b/stdlib/public/stubs/Random.cpp
+@@ -54,7 +54,7 @@
+
+ using namespace swift;
+
+-#if defined(__APPLE__)
++#if defined(__APPLE__) || defined(__featheros__)
+
+ SWIFT_RUNTIME_STDLIB_API
+ void swift_stdlib_random(void *buf, __swift_size_t nbytes) {

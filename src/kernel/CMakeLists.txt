@@ -123,8 +123,8 @@ set(SRC
     ${SRCROOT}/kernel.cpp
 )
 
-if (FEATHEROS_KERNEL_TEST)
-    list(APPEND SRC ${SRCROOT}/kernel_test.cpp)
+if (FEATHEROS_KERNEL_TESTS)
+    list(APPEND SRC ${SRCROOT}/kernel_test.cpp ${SRCROOT}/kernel_test_mode.cpp)
 endif ()
 
 target_sources(${KERNEL_BINARY} PRIVATE ${SRC})

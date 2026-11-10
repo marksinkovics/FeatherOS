@@ -29,6 +29,7 @@ SHELL_FILES=(
     "$REPO_ROOT/tools/gen_font.sh"
     "$REPO_ROOT/tools/check.sh"
     "$REPO_ROOT/tools/quality.sh"
+    "$REPO_ROOT/.claude/hooks/format-edited-file.sh"
 )
 
 ARCHES=(x86_64 aarch64)
@@ -89,20 +90,23 @@ job_count() {
     fi
 }
 
-# The sources clang-tidy checks for one architecture: the shared ones and that arch's own. The
-# Swift concurrency runtime's file is compiled by a custom command, so it has no entry in
-# compile_commands.json.
+# The sources clang-tidy checks for one architecture: the shared ones and that arch's own, as far
+# as the build compiled them. The Swift runtimes' files are compiled by custom commands, so they
+# have no entry in compile_commands.json; the kernel test hooks have none in a build without
+# KERNEL_TESTS, and clang-tidy would only guess their flags.
 tidy_sources() {
     local arch="$1"
-    find "$REPO_ROOT/src" -type f \
-        \( -name '*.c' -o -name '*.cpp' \) \
-        ! -path "$REPO_ROOT/src/kernel/arch/*" \
-        ! -path "$REPO_ROOT/src/libc/arch/*" \
-        ! -path "$REPO_ROOT/src/user/swift_concurrency/*" \
-        -print0
-    find "$REPO_ROOT/src/kernel/arch/$arch" "$REPO_ROOT/src/libc/arch/$arch" -type f \
-        \( -name '*.c' -o -name '*.cpp' \) \
-        -print0
+    {
+        find "$REPO_ROOT/src" -type f \
+            \( -name '*.c' -o -name '*.cpp' \) \
+            ! -path "$REPO_ROOT/src/kernel/arch/*" \
+            ! -path "$REPO_ROOT/src/libc/arch/*" \
+            ! -path "$REPO_ROOT/src/user/swift_concurrency/*" \
+            ! -path "$REPO_ROOT/src/user/swift_runtime/*"
+        find "$REPO_ROOT/src/kernel/arch/$arch" "$REPO_ROOT/src/libc/arch/$arch" -type f \
+            \( -name '*.c' -o -name '*.cpp' \)
+    } | grep -Fxf <(grep -o '"file": *"[^"]*"' "$REPO_ROOT/build/$arch/compile_commands.json" \
+        | sed 's/.*"\([^"]*\)"$/\1/') | tr '\n' '\0'
 }
 
 # The sources among tidy_sources that the given files can change the diagnostics of, one per

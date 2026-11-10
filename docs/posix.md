@@ -47,7 +47,7 @@ These come from the kernel and apply everywhere below.
 | Path | 63 characters |
 | Open files per process | 16 descriptors, plus the console's 0, 1 and 2 |
 | Running children per process | 16 |
-| Memory per process | 1024 pages (4 MiB), including the image and stack |
+| Memory per process | 16384 pages (64 MiB), including the image and stack |
 | Clocks | the wall clock counts whole seconds; the monotonic clock counts milliseconds |
 
 ## The file system
@@ -90,7 +90,7 @@ Each kernel error maps to one of them. A background read of the controlling term
 ### `stdlib.h`
 
 - **Process:** `exit`, `_Exit`, `abort` and `atexit`. `atexit` and `__cxa_atexit` share one list of 32 handlers.
-- **Memory:** `malloc`, `calloc`, `realloc`, `free` and `posix_memalign`.
+- **Memory:** `malloc`, `calloc`, `realloc`, `free` and `posix_memalign`, plus glibc's `malloc_usable_size` in `malloc.h`, which full Swift's `ManagedBuffer.capacity` reads.
   - Blocks are 16-byte aligned and come from a first-fit allocator with address-ordered free lists.
   - `posix_memalign` takes any power-of-two alignment: a larger one over-allocates and frees the bytes before the aligned block. `realloc` keeps only 16-byte alignment when it moves a block.
   - The heap grows in 64 KiB steps. Freed memory is reused, and once more than 256 KiB is free at the end of the heap, all but 64 KiB of it goes back to the kernel. Free space below blocks still in use stays, since only the end of the heap can move.
@@ -165,7 +165,7 @@ There are no signals, so `sigsetjmp` and `siglongjmp` are not provided.
 ### `math.h`
 
 Every function exists for `double` and, with an `f` suffix, `float`:
-- **Exact, bit for bit the same as glibc:** `fabs copysign floor ceil trunc round fmod frexp ldexp scalbn modf fmin fmax sqrt fma`
+- **Exact, bit for bit the same as glibc:** `fabs copysign floor ceil trunc round rint nearbyint fmod remainder frexp ldexp scalbn modf fmin fmax sqrt fma`
 - **Within 1–3 units in the last place of glibc:** `exp exp2 log log2 log10 pow sin cos tan asin acos atan atan2 sinh cosh tanh hypot`
 
 Also provided:
@@ -175,15 +175,18 @@ Also provided:
 
 `fma` and `fmaf` round `x * y + z` once. They work on the exact product in 128-bit integers, so they need no fused multiply-add instruction. `fmaf` rounds straight to `float`, since going through `double` would round twice.
 
+On x86-64, the `long double` (x87 80-bit) functions `fabsl copysignl floorl ceill truncl roundl rintl nearbyintl fmodl remainderl sqrtl fmal expl exp2l logl log2l log10l sinl cosl` are provided too (`src/libc/arch/x86_64/long_double.cpp`), the ones full Swift's `Float80` calls. Most use x87 instructions: `frndint` under a changed rounding mode, `fprem`/`fprem1`, `fsqrt`, `f2xm1` with `fscale`, and `fyl2x`. `fmal` adds the exact 128-bit product to the addend in 256-bit integers. `sinl` and `cosl` reduce by a three-part π/2 and sum Taylor series, since QEMU computes `fsin` and `fcos` only in double precision. All but the exponentials, logarithms, `sinl` and `cosl` are exact; those are within a few units in the last place.
+
 Errors set `errno` (`math_errhandling` is `MATH_ERRNO`):
 - `EDOM` outside a function's domain
 - `ERANGE` on overflow, underflow or a pole
 
 Differences:
 - `sin`, `cos` and `tan` reduce their argument with a three-part π/2, so they lose precision above about 10^6.
-- There are no `long double` functions.
+- `rint` and `nearbyint` always round to nearest, ties to even, since there is no `fesetround`; the x87 `rintl` follows the x87 unit's rounding mode, which is to nearest unless a program changes it.
+- `sinl` and `cosl` reduce arguments beyond 2^30 modulo the rounded 2π first, so they lose precision there. AArch64 has no `long double` functions.
 - `fma` sets `ERANGE` only on overflow, not when the result underflows.
-- AArch64 programs cannot do `long double` arithmetic, because the compiler runtime routines for 128-bit floats are missing. They can still print, parse and copy `long double` values. Of libgcc's integer routines, the C library has only `__lshrti3` (`src/libc/compiler_runtime.cpp`), which AArch64 code at `-O2` calls to shift `unsigned __int128` values.
+- AArch64 programs cannot do `long double` arithmetic, because the compiler runtime routines for 128-bit floats are missing. They can still print, parse and copy `long double` values. Of libgcc's integer routines, the C library has `__lshrti3` (`src/libc/compiler_runtime.cpp`), which AArch64 code at `-O2` calls to shift `unsigned __int128` values, and the 128-bit divisions `__udivti3`, `__umodti3`, `__divti3` and `__modti3`, which C's `__int128` and Swift's `Int128` and `UInt128` divide through (long division in `src/libc/wide_division.cpp`, host-tested; division by zero traps).
 - `fenv.h`, `lround`, `nextafter`, `erf`, `lgamma` and other less common functions are not provided.
 
 ### `time.h`
@@ -246,7 +249,7 @@ Not provided:
 ### `spawn.h` and `sys/wait.h`
 
 **`posix_spawn` and `posix_spawnp`.** The path names a program file anywhere the VFS can read: the disk, `/tmp`, or `/system`. A relative path such as `./tool` starts at the working directory. FeatherOS difference: a name without a `/` is looked up in `/system`, so `posix_spawn("ls", …)` runs `/system/ls`, where POSIX would look in the working directory.
-- **Programs:** FAT16 has no execute bit, so any regular file up to 1 MiB may be tried. The kernel reads it whole and checks it like a `/system` program; one that is not a valid program fails with `ENOEXEC`, as do devices, a larger file fails with `ENOMEM`, a directory with `EISDIR`, and a missing file with `ENOENT`.
+- **Programs:** FAT16 has no execute bit, so any regular file may be tried. The kernel checks it like a `/system` program and reads only its segments, so the file's size does not matter; one that is not a valid program fails with `ENOEXEC`, as do devices, one whose segments need more memory than a process may have fails with `ENOMEM`, one open for writing with `EBUSY`, a directory with `EISDIR`, and a missing file with `ENOENT`.
 - **Arguments:** the kernel always makes the path its `argv[0]`, or the bare name for a program in `/system`.
 - **Errors:** the path or an argument containing a double quote fails with `EINVAL`. A command line or environment over the limits fails with `E2BIG`; the path counts toward the 63-character command line, and must resolve to at most 63 characters (`ENAMETOOLONG`).
 - **Console:** by default the child takes the console until it exits.

@@ -17,6 +17,22 @@ constexpr size_t ProgramHeaderSize = 56;
 constexpr size_t SegmentFileOffset = 4096;
 constexpr uint64_t SegmentVirtualAddress = 0x400000;
 
+bool ParseBytes(const uint8_t* data, size_t size, uint16_t machine, FeatherOS::ELF::Image* image)
+{
+    FeatherOS::ELF::MemoryFile file = {data, size};
+    return FeatherOS::ELF::Parse({&file, FeatherOS::ELF::ReadMemoryFile}, size, machine, image);
+}
+
+bool LoadBytes(const std::vector<uint8_t>& bytes, const FeatherOS::ELF::Image& image,
+               uint64_t bias, const FeatherOS::ELF::LoadOperations& operations,
+               uint64_t buffer_size = 4096)
+{
+    FeatherOS::ELF::MemoryFile file = {bytes.data(), bytes.size()};
+    std::vector<uint8_t> buffer(buffer_size);
+    return FeatherOS::ELF::LoadSegments(image, {&file, FeatherOS::ELF::ReadMemoryFile}, bias,
+                                        operations, buffer.data(), buffer.size());
+}
+
 struct LoadTarget
 {
     std::array<uint8_t, 64> memory;
@@ -247,17 +263,18 @@ std::vector<uint8_t> MakePositionIndependent(uint64_t relocation_info)
     return image;
 }
 
-bool LoadPie(const std::vector<uint8_t>& bytes, uint64_t bias, PieTarget* target)
+bool LoadPie(const std::vector<uint8_t>& bytes, uint64_t bias, PieTarget* target,
+             uint64_t buffer_size = 4096)
 {
     FeatherOS::ELF::Image image{};
-    if (!FeatherOS::ELF::Parse(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
+    if (!ParseBytes(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
                                &image))
     {
         return false;
     }
     const FeatherOS::ELF::LoadOperations operations = {target, MapPie, CopyPie, ZeroPie,
                                                        ProtectPie};
-    return FeatherOS::ELF::LoadSegments(image, bias, operations);
+    return LoadBytes(bytes, image, bias, operations, buffer_size);
 }
 
 } // namespace
@@ -266,7 +283,7 @@ TEST_CASE("ELF64 loader relocates a position-independent executable at its load 
 {
     const std::vector<uint8_t> bytes = MakePositionIndependent(8);
     FeatherOS::ELF::Image image{};
-    REQUIRE(FeatherOS::ELF::Parse(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
+    REQUIRE(ParseBytes(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
                                   &image));
     REQUIRE(image.position_independent);
 
@@ -279,6 +296,14 @@ TEST_CASE("ELF64 loader relocates a position-independent executable at its load 
     REQUIRE(target.protections[1].first == Bias + PieDataAddress);
     REQUIRE(target.protections[1].second ==
             (FeatherOS::ELF::SegmentFlagRead | FeatherOS::ELF::SegmentFlagWrite));
+}
+
+TEST_CASE("ELF64 loader skips NONE relocations")
+{
+    constexpr uint64_t Bias = 0x0000100000000000;
+    PieTarget target;
+    REQUIRE(LoadPie(MakePositionIndependent(0), Bias, &target));
+    REQUIRE(Read64(target, Bias + PieDataAddress) == 0);
 }
 
 TEST_CASE("ELF64 loader rejects relocations a static PIE must not need")
@@ -306,11 +331,11 @@ TEST_CASE("ELF64 loader keeps fixed-address executables at their link address")
 {
     const std::vector<uint8_t> bytes = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     FeatherOS::ELF::Image image{};
-    REQUIRE(FeatherOS::ELF::Parse(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
+    REQUIRE(ParseBytes(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
                                   &image));
     REQUIRE_FALSE(image.position_independent);
     LoadTarget target;
-    REQUIRE_FALSE(FeatherOS::ELF::LoadSegments(image, 0x1000, OperationsFor(&target)));
+    REQUIRE_FALSE(LoadBytes(bytes, image, 0x1000, OperationsFor(&target)));
 }
 
 TEST_CASE("ELF64 parser accepts matching x86-64 and AArch64 executables")
@@ -319,18 +344,17 @@ TEST_CASE("ELF64 parser accepts matching x86-64 and AArch64 executables")
     {
         const std::vector<uint8_t> bytes = MakeExecutable(machine);
         FeatherOS::ELF::Image image{};
-        REQUIRE(FeatherOS::ELF::Parse(bytes.data(), bytes.size(), machine, &image));
+        REQUIRE(ParseBytes(bytes.data(), bytes.size(), machine, &image));
         REQUIRE(image.entry_point == SegmentVirtualAddress);
         REQUIRE(image.load_segment_count == 1);
 
         FeatherOS::ELF::LoadSegment segment{};
         REQUIRE(FeatherOS::ELF::GetLoadSegment(image, 0, &segment));
-        REQUIRE(segment.file_data == bytes.data() + SegmentFileOffset);
+        REQUIRE(segment.file_offset == SegmentFileOffset);
         REQUIRE(segment.file_size == 4);
         REQUIRE(segment.memory_size == 16);
         REQUIRE(segment.alignment == 4096);
         REQUIRE(segment.flags == 5);
-        REQUIRE(segment.file_data[0] == 0xAA);
         REQUIRE_FALSE(FeatherOS::ELF::GetLoadSegment(image, 1, &segment));
     }
 }
@@ -339,22 +363,22 @@ TEST_CASE("ELF64 parser rejects invalid identity and target machine")
 {
     auto image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     FeatherOS::ELF::Image parsed{};
-    REQUIRE_FALSE(FeatherOS::ELF::Parse(image.data(), image.size() - 1,
+    REQUIRE_FALSE(ParseBytes(image.data(), image.size() - 1,
                                         FeatherOS::ELF::MachineX86_64, &parsed));
 
     image[0] = 0;
-    REQUIRE_FALSE(FeatherOS::ELF::Parse(image.data(), image.size(),
+    REQUIRE_FALSE(ParseBytes(image.data(), image.size(),
                                         FeatherOS::ELF::MachineX86_64, &parsed));
     image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     image[4] = 1;
-    REQUIRE_FALSE(FeatherOS::ELF::Parse(image.data(), image.size(),
+    REQUIRE_FALSE(ParseBytes(image.data(), image.size(),
                                         FeatherOS::ELF::MachineX86_64, &parsed));
     image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     image[5] = 2;
-    REQUIRE_FALSE(FeatherOS::ELF::Parse(image.data(), image.size(),
+    REQUIRE_FALSE(ParseBytes(image.data(), image.size(),
                                         FeatherOS::ELF::MachineX86_64, &parsed));
     image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
-    REQUIRE_FALSE(FeatherOS::ELF::Parse(image.data(), image.size(),
+    REQUIRE_FALSE(ParseBytes(image.data(), image.size(),
                                         FeatherOS::ELF::MachineAArch64, &parsed));
 }
 
@@ -364,23 +388,23 @@ TEST_CASE("ELF64 parser rejects invalid program tables and load segments")
 
     auto image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     Write64(image, 32, image.size() - 1);
-    REQUIRE_FALSE(FeatherOS::ELF::Parse(image.data(), image.size(),
+    REQUIRE_FALSE(ParseBytes(image.data(), image.size(),
                                         FeatherOS::ELF::MachineX86_64, &parsed));
 
     image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     Write64(image, ProgramHeaderOffset + 32, 20);
     Write64(image, ProgramHeaderOffset + 40, 16);
-    REQUIRE_FALSE(FeatherOS::ELF::Parse(image.data(), image.size(),
+    REQUIRE_FALSE(ParseBytes(image.data(), image.size(),
                                         FeatherOS::ELF::MachineX86_64, &parsed));
 
     image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     Write64(image, ProgramHeaderOffset + 8, UINT64_MAX - 1);
-    REQUIRE_FALSE(FeatherOS::ELF::Parse(image.data(), image.size(),
+    REQUIRE_FALSE(ParseBytes(image.data(), image.size(),
                                         FeatherOS::ELF::MachineX86_64, &parsed));
 
     image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     Write64(image, ProgramHeaderOffset + 48, 3);
-    REQUIRE_FALSE(FeatherOS::ELF::Parse(image.data(), image.size(),
+    REQUIRE_FALSE(ParseBytes(image.data(), image.size(),
                                         FeatherOS::ELF::MachineX86_64, &parsed));
 }
 
@@ -389,12 +413,12 @@ TEST_CASE("ELF64 entry point must lie inside an executable load segment")
     auto image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     Write64(image, 24, SegmentVirtualAddress + 16);
     FeatherOS::ELF::Image parsed{};
-    REQUIRE_FALSE(FeatherOS::ELF::Parse(image.data(), image.size(),
+    REQUIRE_FALSE(ParseBytes(image.data(), image.size(),
                                         FeatherOS::ELF::MachineX86_64, &parsed));
 
     image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     Write32(image, ProgramHeaderOffset + 4, 4);
-    REQUIRE_FALSE(FeatherOS::ELF::Parse(image.data(), image.size(),
+    REQUIRE_FALSE(ParseBytes(image.data(), image.size(),
                                         FeatherOS::ELF::MachineX86_64, &parsed));
 }
 
@@ -402,12 +426,12 @@ TEST_CASE("ELF64 segment loader maps, copies file bytes, and zeroes BSS")
 {
     const std::vector<uint8_t> bytes = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     FeatherOS::ELF::Image image{};
-    REQUIRE(FeatherOS::ELF::Parse(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
+    REQUIRE(ParseBytes(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
                                   &image));
 
     LoadTarget target;
     target.memory.fill(0xCC);
-    REQUIRE(FeatherOS::ELF::LoadSegments(image, 0, OperationsFor(&target)));
+    REQUIRE(LoadBytes(bytes, image, 0, OperationsFor(&target)));
     REQUIRE(target.mapped);
     REQUIRE(target.flags == (FeatherOS::ELF::SegmentFlagRead | FeatherOS::ELF::SegmentFlagWrite |
                              FeatherOS::ELF::SegmentFlagExecute));
@@ -441,12 +465,12 @@ TEST_CASE("ELF64 loader accepts and skips an empty unaligned load segment")
     Write64(bytes, second + 48, 4096);
 
     FeatherOS::ELF::Image image{};
-    REQUIRE(FeatherOS::ELF::Parse(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
+    REQUIRE(ParseBytes(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
                                   &image));
     REQUIRE(image.load_segment_count == 2);
 
     LoadTarget target;
-    REQUIRE(FeatherOS::ELF::LoadSegments(image, 0, OperationsFor(&target)));
+    REQUIRE(LoadBytes(bytes, image, 0, OperationsFor(&target)));
     REQUIRE(target.memory[0] == 0xAA);
     REQUIRE(target.final_flags ==
             (FeatherOS::ELF::SegmentFlagRead | FeatherOS::ELF::SegmentFlagExecute));
@@ -456,25 +480,25 @@ TEST_CASE("ELF64 segment loader rejects missing or failed memory callbacks")
 {
     const std::vector<uint8_t> bytes = MakeExecutable(FeatherOS::ELF::MachineX86_64);
     FeatherOS::ELF::Image image{};
-    REQUIRE(FeatherOS::ELF::Parse(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
+    REQUIRE(ParseBytes(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64,
                                   &image));
 
     LoadTarget target;
     target.memory.fill(0xCC);
     FeatherOS::ELF::LoadOperations missing_operations{};
-    REQUIRE_FALSE(FeatherOS::ELF::LoadSegments(image, 0, missing_operations));
+    REQUIRE_FALSE(LoadBytes(bytes, image, 0, missing_operations));
 
     target.fail_map = true;
-    REQUIRE_FALSE(FeatherOS::ELF::LoadSegments(image, 0, OperationsFor(&target)));
+    REQUIRE_FALSE(LoadBytes(bytes, image, 0, OperationsFor(&target)));
     target.fail_map = false;
     target.fail_copy = true;
-    REQUIRE_FALSE(FeatherOS::ELF::LoadSegments(image, 0, OperationsFor(&target)));
+    REQUIRE_FALSE(LoadBytes(bytes, image, 0, OperationsFor(&target)));
     target.fail_copy = false;
     target.fail_zero = true;
-    REQUIRE_FALSE(FeatherOS::ELF::LoadSegments(image, 0, OperationsFor(&target)));
+    REQUIRE_FALSE(LoadBytes(bytes, image, 0, OperationsFor(&target)));
     target.fail_zero = false;
     target.fail_protect = true;
-    REQUIRE_FALSE(FeatherOS::ELF::LoadSegments(image, 0, OperationsFor(&target)));
+    REQUIRE_FALSE(LoadBytes(bytes, image, 0, OperationsFor(&target)));
 }
 TEST_CASE("ELF64 parser records a TLS template inside a load segment")
 {
@@ -495,13 +519,13 @@ TEST_CASE("ELF64 parser records a TLS template inside a load segment")
     };
     FeatherOS::ELF::Image parsed{};
     std::vector<uint8_t> image = MakeExecutable(FeatherOS::ELF::MachineX86_64);
-    REQUIRE(FeatherOS::ELF::Parse(image.data(), image.size(), FeatherOS::ELF::MachineX86_64,
+    REQUIRE(ParseBytes(image.data(), image.size(), FeatherOS::ELF::MachineX86_64,
                                   &parsed));
     REQUIRE_FALSE(parsed.has_tls);
     REQUIRE(parsed.tls_alignment == 1);
 
     image = with_tls(SegmentVirtualAddress + 2, 2, 64, 8);
-    REQUIRE(FeatherOS::ELF::Parse(image.data(), image.size(), FeatherOS::ELF::MachineX86_64,
+    REQUIRE(ParseBytes(image.data(), image.size(), FeatherOS::ELF::MachineX86_64,
                                   &parsed));
     REQUIRE(parsed.has_tls);
     REQUIRE(parsed.tls_virtual_address == SegmentVirtualAddress + 2);
@@ -515,7 +539,67 @@ TEST_CASE("ELF64 parser records a TLS template inside a load segment")
                             with_tls(SegmentVirtualAddress, 2, 32 * 1024, 8),
                             with_tls(SegmentVirtualAddress, 2, 8, 12)})
     {
-        REQUIRE_FALSE(FeatherOS::ELF::Parse(bad.data(), bad.size(), FeatherOS::ELF::MachineX86_64,
+        REQUIRE_FALSE(ParseBytes(bad.data(), bad.size(), FeatherOS::ELF::MachineX86_64,
                                             &parsed));
     }
+}
+
+TEST_CASE("ELF64 loader reads segments and relocations through a small buffer")
+{
+    // The data segment's file bytes hold the relocation and dynamic tables from 0x40.
+    std::vector<uint8_t> bytes = MakePositionIndependent(8);
+    for (size_t index = 8; index < 0x40; ++index)
+    {
+        bytes[0x2000 + index] = static_cast<uint8_t>(index);
+    }
+    constexpr uint64_t Bias = 0x0000100000000000;
+    PieTarget target;
+    REQUIRE(LoadPie(bytes, Bias, &target, FeatherOS::ELF::MinimumLoadBufferSize));
+    REQUIRE(Read64(target, Bias + PieDataAddress) == Bias + 0x10);
+    for (uint64_t index = 8; index < 0x40; ++index)
+    {
+        REQUIRE(target.memory.at(Bias + PieDataAddress + index) == static_cast<uint8_t>(index));
+    }
+    REQUIRE(Read64(target, Bias + PieRelaAddress) == PieDataAddress);
+    REQUIRE(target.memory.at(Bias + PieDataAddress + 0x1FF) == 0);
+    REQUIRE_FALSE(LoadPie(bytes, Bias, &target, FeatherOS::ELF::MinimumLoadBufferSize - 1));
+}
+
+TEST_CASE("ELF64 parser rejects more load segments than it keeps")
+{
+    std::vector<uint8_t> bytes = MakeExecutable(FeatherOS::ELF::MachineX86_64);
+    const uint16_t count = FeatherOS::ELF::MaximumLoadSegments + 1;
+    Write16(bytes, 56, count);
+    for (uint16_t index = 1; index < count; ++index)
+    {
+        const size_t header = ProgramHeaderOffset + index * ProgramHeaderSize;
+        Write32(bytes, header, 1);
+        Write32(bytes, header + 4, FeatherOS::ELF::SegmentFlagRead);
+        Write64(bytes, header + 8, SegmentFileOffset);
+        Write64(bytes, header + 16, SegmentVirtualAddress + index * 0x1000ULL);
+        Write64(bytes, header + 32, 4);
+        Write64(bytes, header + 40, 4);
+        Write64(bytes, header + 48, 0x1000);
+    }
+    FeatherOS::ELF::Image image{};
+    REQUIRE_FALSE(ParseBytes(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64, &image));
+    Write16(bytes, 56, count - 1);
+    REQUIRE(ParseBytes(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64, &image));
+    REQUIRE(image.load_segment_count == FeatherOS::ELF::MaximumLoadSegments);
+}
+
+TEST_CASE("ELF64 loader fails when its source cannot be read")
+{
+    const std::vector<uint8_t> bytes = MakeExecutable(FeatherOS::ELF::MachineX86_64);
+    FeatherOS::ELF::Image image{};
+    REQUIRE(ParseBytes(bytes.data(), bytes.size(), FeatherOS::ELF::MachineX86_64, &image));
+    // A file that shrank after it was parsed.
+    const std::vector<uint8_t> shorter(bytes.begin(), bytes.begin() + SegmentFileOffset + 2);
+    LoadTarget target;
+    REQUIRE_FALSE(LoadBytes(shorter, image, 0, OperationsFor(&target)));
+
+    const FeatherOS::ELF::Source failing = {
+        nullptr, [](void*, uint64_t, void*, uint64_t) { return false; }};
+    REQUIRE_FALSE(FeatherOS::ELF::Parse(failing, bytes.size(), FeatherOS::ELF::MachineX86_64,
+                                        &image));
 }

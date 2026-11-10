@@ -4,6 +4,7 @@
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,6 +69,66 @@ bool WriteFile(const char* path, const char* from, size_t size)
     return target >= 0 && close(target) == 0 && written;
 }
 
+void Store(uint8_t* bytes, size_t offset, uint64_t value, size_t size)
+{
+    for (size_t index = 0; index < size; ++index)
+    {
+        bytes[offset + index] = static_cast<uint8_t>(value >> (index * 8));
+    }
+}
+
+// A valid fixed-address program whose one segment needs more pages than a process may have.
+bool WriteOversizedProgram(const char* path)
+{
+#if defined(__x86_64__)
+    constexpr uint16_t Machine = 62;
+#elif defined(__aarch64__)
+    constexpr uint16_t Machine = 183;
+#endif
+    constexpr uint64_t Base = 0x400000;
+    constexpr size_t HeaderSize = 64;
+    constexpr size_t ProgramHeaderSize = 56;
+    constexpr uint64_t SegmentSize = 1ULL << 30;
+    uint8_t image[HeaderSize + ProgramHeaderSize + 16] = {0x7F, 'E', 'L', 'F', 2, 1, 1};
+    Store(image, 16, 2, 2);
+    Store(image, 18, Machine, 2);
+    Store(image, 20, 1, 4);
+    Store(image, 24, Base + HeaderSize + ProgramHeaderSize, 8);
+    Store(image, 32, HeaderSize, 8);
+    Store(image, 52, HeaderSize, 2);
+    Store(image, 54, ProgramHeaderSize, 2);
+    Store(image, 56, 1, 2);
+    Store(image, HeaderSize, 1, 4);
+    Store(image, HeaderSize + 4, 4 | 1, 4);
+    Store(image, HeaderSize + 16, Base, 8);
+    Store(image, HeaderSize + 24, Base, 8);
+    Store(image, HeaderSize + 32, sizeof(image), 8);
+    Store(image, HeaderSize + 40, SegmentSize, 8);
+    Store(image, HeaderSize + 48, 0x1000, 8);
+    const int file = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    const bool written =
+        file >= 0 && write(file, image, sizeof(image)) == static_cast<ssize_t>(sizeof(image));
+    return file >= 0 && close(file) == 0 && written;
+}
+
+// Spawn reads only a program's segments, so bytes past them do not count against any limit.
+bool WriteLongProgram(const char* path, const char* from)
+{
+    constexpr size_t PaddingSize = 1536 * 1024;
+    static char padding[4096];
+    if (!WriteFile(path, from, SIZE_MAX))
+    {
+        return false;
+    }
+    const int file = open(path, O_WRONLY | O_APPEND);
+    bool written = file >= 0;
+    for (size_t done = 0; written && done < PaddingSize; done += sizeof(padding))
+    {
+        written = write(file, padding, sizeof(padding)) == static_cast<ssize_t>(sizeof(padding));
+    }
+    return file >= 0 && close(file) == 0 && written;
+}
+
 // Programs from files other than the initramfs go through the same checks.
 void CheckProgramFiles()
 {
@@ -78,13 +139,20 @@ void CheckProgramFiles()
     Check(WriteFile("/tmp/truncated", "/system/echo", 2048) &&
               Spawn("/tmp/truncated") == SyscallErrorNotExecutable,
           "Spawn of a truncated program");
-    Check(WriteFile("/tmp/badelf", "/system/badelf", MaximumProgramSize),
-          "copying the kernel-half ELF");
+    Check(WriteFile("/tmp/badelf", "/system/badelf", SIZE_MAX), "copying the kernel-half ELF");
     const uint64_t bad_elf = Spawn("/tmp/badelf");
     Check(IsSyscallError(bad_elf) && bad_elf != SyscallErrorNotFound, "kernel-half ELF from /tmp");
-    Check(WriteFile("/tmp/large", nullptr, MaximumProgramSize + 1) &&
-              Spawn("/tmp/large") == SyscallErrorNoMemory,
-          "Spawn of a file over the size limit");
+    Check(WriteOversizedProgram("/tmp/huge") && Spawn("/tmp/huge") == SyscallErrorNoMemory,
+          "Spawn of a program over the page limit");
+    const int writer = open("/tmp/huge", O_WRONLY);
+    Check(writer >= 0 && Spawn("/tmp/huge") == SyscallErrorBusy && close(writer) == 0,
+          "Spawn of a program open for writing");
+    uint64_t status = 1;
+    const uint64_t long_program =
+        WriteLongProgram("/tmp/long", "/system/sleep") ? Spawn("/tmp/long 0") : SyscallErrorFailed;
+    Check(!IsSyscallError(long_program) && !IsSyscallError(Wait(long_program, &status)) &&
+              status == 0,
+          "Spawn of a program file over 1 MiB");
     char original[MaximumPathLength];
     char long_path[MaximumCommandLineLength - 2];
     memset(long_path, 'p', sizeof(long_path) - 1);
@@ -94,7 +162,8 @@ void CheckProgramFiles()
     Check(getcwd(original, sizeof(original)) != nullptr && chdir("/tmp") == 0 &&
               Spawn(long_path) == SyscallErrorNameTooLong && chdir(original) == 0,
           "Spawn of a path too long once resolved");
-    Check(unlink("/tmp/truncated") == 0 && unlink("/tmp/badelf") == 0 && unlink("/tmp/large") == 0,
+    Check(unlink("/tmp/truncated") == 0 && unlink("/tmp/badelf") == 0 && unlink("/tmp/huge") == 0 &&
+              unlink("/tmp/long") == 0,
           "removing the program files");
 }
 

@@ -3,7 +3,7 @@ import FeatherSupport
 
 let help = """
     usage: swiftbench [-n runs | -t seconds] [workload...]
-    Runs the workloads cppbench runs, written the same way in Embedded Swift, and prints
+    Runs the workloads cppbench runs, written the same way in Swift, and prints
     each one's check value, which matches cppbench's, its runs and the time each took.
       life       64x64 cells for 20 generations, on life's own grid
       sieve      the primes below 1000000

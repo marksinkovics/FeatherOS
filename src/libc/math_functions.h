@@ -39,6 +39,8 @@ double Ceil(double value);
 
 // Halfway cases go away from zero.
 double Round(double value);
+// Halfway cases go to the even neighbor, whatever the rounding mode.
+double RoundToEven(double value);
 
 // value * 2^exponent with one rounding, even when the result is subnormal.
 double ScaleB(double value, int exponent);
@@ -50,6 +52,8 @@ double SplitInteger(double value, double* integer);
 
 // The exact remainder of x / y, computed on the integer mantissas.
 double Remainder(double x, double y);
+// x - n * y for the integer n nearest x / y, even on a tie: IEEE 754's remainder. Exact.
+double NearestRemainder(double x, double y);
 
 // Rounds to the nearest integer for argument reduction; |value| must fit in an int.
 int Nearest(double value);

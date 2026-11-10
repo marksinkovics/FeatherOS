@@ -94,6 +94,7 @@ TEST_CASE("exact functions match the host bit for bit")
         REQUIRE(SameBits(Math::Ceil(value), std::ceil(value)));
         REQUIRE(SameBits(Math::Trunc(value), std::trunc(value)));
         REQUIRE(SameBits(Math::Round(value), std::round(value)));
+        REQUIRE(SameBits(Math::RoundToEven(value), std::rint(value)));
         REQUIRE(SameBits(Math::Abs(value), std::fabs(value)));
         REQUIRE(SameBits(Math::Sqrt(Math::Abs(value)), std::sqrt(std::fabs(value))));
         int ours_exponent = 0;
@@ -115,6 +116,32 @@ TEST_CASE("exact functions match the host bit for bit")
         for (const double divisor : {1.0, -0.3, 7.0, 1e-300, 0x1p-1060, 1e300, 0.0})
         {
             REQUIRE(SameBits(Math::Remainder(value, divisor), std::fmod(value, divisor)));
+            REQUIRE(SameBits(Math::NearestRemainder(value, divisor),
+                             std::remainder(value, divisor)));
+        }
+    }
+}
+
+TEST_CASE("rint and remainder break ties toward even")
+{
+    for (double value = -6.5; value <= 6.5; value += 0.25)
+    {
+        INFO(value);
+        REQUIRE(SameBits(Math::RoundToEven(value), std::rint(value)));
+        for (const double divisor : {1.0, 2.0, -2.0, 0.5, 3.0, 0x1p-1073, 0x1.8p1023})
+        {
+            REQUIRE(SameBits(Math::NearestRemainder(value, divisor),
+                             std::remainder(value, divisor)));
+        }
+    }
+    const double tiny = 0x1p-1074;
+    for (const double value : {tiny, 3 * tiny, 5 * tiny, 7 * tiny, 1.0, 0x1.fffffffffffffp1023})
+    {
+        INFO(value);
+        for (const double divisor : {2 * tiny, 4 * tiny, 0x1p-1022, 0x1.fffffffffffffp1023})
+        {
+            REQUIRE(SameBits(Math::NearestRemainder(value, divisor),
+                             std::remainder(value, divisor)));
         }
     }
 }

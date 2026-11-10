@@ -12,10 +12,11 @@
 #include <time.h>
 #include <unistd.h>
 
-// The global executor, in place of upstream's single-threaded CooperativeGlobalExecutor.cpp: one
-// queue of jobs, run by a worker thread for every CPU, which start with the first job. MainActor's
-// jobs wait in a queue of their own, which only the main thread runs, in
-// swift_task_asyncMainDrainQueue.
+// The global executor: one queue of jobs, run by a worker thread for every CPU, which start with
+// the first job. MainActor's jobs wait in a queue of their own, which only the main thread runs.
+// Embedded Swift reaches it through the runtime's *Impl hooks, in place of upstream's
+// single-threaded CooperativeGlobalExecutor.cpp. Full Swift reaches it through the swift_dispatch*
+// functions behind upstream's DispatchExecutor.swift, which is otherwise built over Dispatch.
 
 namespace
 {
@@ -42,34 +43,19 @@ struct JobQueueTraits
 
 constexpr uint64_t NanosecondsPerSecond = 1000000000;
 
+struct JobQueue
+{
+    swift::PriorityQueue<SwiftJob*, JobQueueTraits> ready;
+    // Sorted by deadline, then in the order they came.
+    SwiftJob* delayed = nullptr;
+    // On CLOCK_MONOTONIC, set up by Start.
+    pthread_cond_t queued;
+};
+
 pthread_once_t started = PTHREAD_ONCE_INIT;
 pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
-// On CLOCK_MONOTONIC, set up by Start.
-pthread_cond_t job_queued;
-swift::PriorityQueue<SwiftJob*, JobQueueTraits> ready_jobs;
-pthread_cond_t main_job_queued = PTHREAD_COND_INITIALIZER;
-swift::PriorityQueue<SwiftJob*, JobQueueTraits> main_jobs;
-// Sorted by deadline, then in the order they came.
-SwiftJob* delayed_jobs = nullptr;
-
-// The main executor is an ordinary one to the runtime, which only compares its identity; its
-// witness table is never called, since swift.patch sends its jobs to
-// swift_task_enqueueMainExecutor.
-alignas(16) char main_executor_identity[16];
-alignas(16) char main_executor_witness_table[16];
-
-SwiftExecutorRef MainExecutor()
-{
-    return swift_executor_ordinary(
-        reinterpret_cast<SwiftHeapObject*>(main_executor_identity),
-        reinterpret_cast<SwiftExecutorWitnessTable*>(main_executor_witness_table));
-}
-
-bool IsMain(SwiftExecutorRef executor)
-{
-    return swift_executor_getIdentity(executor) ==
-           reinterpret_cast<SwiftHeapObject*>(main_executor_identity);
-}
+JobQueue global_queue;
+JobQueue main_queue;
 
 uint64_t Now()
 {
@@ -84,41 +70,50 @@ uint64_t DeadlineOf(SwiftJob* job)
     return reinterpret_cast<uintptr_t>(job->schedulerPrivate[1]);
 }
 
-void MoveReadyDelayedJobs()
+// From a time on one of the runtime's clocks to one on CLOCK_MONOTONIC.
+uint64_t DeadlineOn(int clock, long long seconds, long long nanoseconds)
 {
-    if (delayed_jobs == nullptr)
+    const SwiftTime now = swift_time_now(clock);
+    const long long delay = (seconds - now.seconds) * static_cast<long long>(NanosecondsPerSecond) +
+                            nanoseconds - now.nanoseconds;
+    return Now() + (delay > 0 ? static_cast<uint64_t>(delay) : 0);
+}
+
+void MoveReadyDelayedJobs(JobQueue& queue)
+{
+    if (queue.delayed == nullptr)
     {
         return;
     }
     const uint64_t now = Now();
-    while (delayed_jobs != nullptr && DeadlineOf(delayed_jobs) <= now)
+    while (queue.delayed != nullptr && DeadlineOf(queue.delayed) <= now)
     {
-        SwiftJob* job = delayed_jobs;
-        delayed_jobs = JobQueueTraits::getNext(job);
-        ready_jobs.enqueue(job);
+        SwiftJob* job = queue.delayed;
+        queue.delayed = JobQueueTraits::getNext(job);
+        queue.ready.enqueue(job);
     }
 }
 
 // Called and returns with queue_lock held. Without wait, returns null once nothing is queued.
-SwiftJob* TakeJob(bool wait)
+SwiftJob* TakeJob(JobQueue& queue, bool wait)
 {
     while (true)
     {
-        MoveReadyDelayedJobs();
-        if (SwiftJob* job = ready_jobs.dequeue())
+        MoveReadyDelayedJobs(queue);
+        if (SwiftJob* job = queue.ready.dequeue())
         {
             return job;
         }
-        if (delayed_jobs != nullptr)
+        if (queue.delayed != nullptr)
         {
-            const uint64_t deadline = DeadlineOf(delayed_jobs);
+            const uint64_t deadline = DeadlineOf(queue.delayed);
             const struct timespec until = {static_cast<time_t>(deadline / NanosecondsPerSecond),
                                            static_cast<long>(deadline % NanosecondsPerSecond)};
-            pthread_cond_timedwait(&job_queued, &queue_lock, &until);
+            pthread_cond_timedwait(&queue.queued, &queue_lock, &until);
         }
         else if (wait)
         {
-            pthread_cond_wait(&job_queued, &queue_lock);
+            pthread_cond_wait(&queue.queued, &queue_lock);
         }
         else
         {
@@ -132,7 +127,7 @@ SwiftJob* TakeJob(bool wait)
     pthread_mutex_lock(&queue_lock);
     while (true)
     {
-        SwiftJob* job = TakeJob(true);
+        SwiftJob* job = TakeJob(global_queue, true);
         pthread_mutex_unlock(&queue_lock);
         swift_job_run(job, swift_executor_generic());
         pthread_mutex_lock(&queue_lock);
@@ -144,7 +139,8 @@ void Start()
     pthread_condattr_t attributes;
     pthread_condattr_init(&attributes);
     pthread_condattr_setclock(&attributes, CLOCK_MONOTONIC);
-    pthread_cond_init(&job_queued, &attributes);
+    pthread_cond_init(&global_queue.queued, &attributes);
+    pthread_cond_init(&main_queue.queued, &attributes);
     pthread_condattr_destroy(&attributes);
 
     const long cpus = sysconf(_SC_NPROCESSORS_ONLN);
@@ -166,11 +162,19 @@ void LockQueue()
     pthread_mutex_lock(&queue_lock);
 }
 
-void EnqueueDelayed(SwiftJob* job, uint64_t deadline)
+void Enqueue(JobQueue& queue, SwiftJob* job)
+{
+    LockQueue();
+    queue.ready.enqueue(job);
+    pthread_cond_signal(&queue.queued);
+    pthread_mutex_unlock(&queue_lock);
+}
+
+void EnqueueDelayed(JobQueue& queue, SwiftJob* job, uint64_t deadline)
 {
     job->schedulerPrivate[1] = reinterpret_cast<void*>(static_cast<uintptr_t>(deadline));
     LockQueue();
-    SwiftJob** position = &delayed_jobs;
+    SwiftJob** position = &queue.delayed;
     while (*position != nullptr && DeadlineOf(*position) <= deadline)
     {
         position = reinterpret_cast<SwiftJob**>(&(*position)->schedulerPrivate[0]);
@@ -178,41 +182,70 @@ void EnqueueDelayed(SwiftJob* job, uint64_t deadline)
     JobQueueTraits::setNext(job, *position);
     *position = job;
     // Waiting threads take their timeouts from the earliest deadline.
-    pthread_cond_broadcast(&job_queued);
+    pthread_cond_broadcast(&queue.queued);
     pthread_mutex_unlock(&queue_lock);
+}
+
+[[noreturn]] void RunMainJobs(SwiftExecutorRef executor)
+{
+    LockQueue();
+    while (true)
+    {
+        SwiftJob* job = TakeJob(main_queue, true);
+        pthread_mutex_unlock(&queue_lock);
+        swift_job_run(job, executor);
+        pthread_mutex_lock(&queue_lock);
+    }
+}
+
+} // namespace
+
+#if SWIFT_CONCURRENCY_EMBEDDED
+
+namespace
+{
+
+// The main executor is an ordinary one to the runtime, which only compares its identity; its
+// witness table is never called, since swift.patch sends its jobs to
+// swift_task_enqueueMainExecutor.
+alignas(16) char main_executor_identity[16];
+alignas(16) char main_executor_witness_table[16];
+
+SwiftExecutorRef MainExecutor()
+{
+    return swift_executor_ordinary(
+        reinterpret_cast<SwiftHeapObject*>(main_executor_identity),
+        reinterpret_cast<SwiftExecutorWitnessTable*>(main_executor_witness_table));
+}
+
+bool IsMain(SwiftExecutorRef executor)
+{
+    return swift_executor_getIdentity(executor) ==
+           reinterpret_cast<SwiftHeapObject*>(main_executor_identity);
 }
 
 } // namespace
 
 SWIFT_CC(swift) void swift_task_enqueueGlobalImpl(SwiftJob* job)
 {
-    LockQueue();
-    ready_jobs.enqueue(job);
-    pthread_cond_signal(&job_queued);
-    pthread_mutex_unlock(&queue_lock);
+    Enqueue(global_queue, job);
 }
 
 SWIFT_CC(swift) void swift_task_enqueueMainExecutorImpl(SwiftJob* job)
 {
-    LockQueue();
-    main_jobs.enqueue(job);
-    pthread_cond_signal(&main_job_queued);
-    pthread_mutex_unlock(&queue_lock);
+    Enqueue(main_queue, job);
 }
 
 SWIFT_CC(swift) void swift_task_enqueueGlobalWithDelayImpl(SwiftJobDelay delay, SwiftJob* job)
 {
-    EnqueueDelayed(job, Now() + delay);
+    EnqueueDelayed(global_queue, job, Now() + delay);
 }
 
 SWIFT_CC(swift)
 void swift_task_enqueueGlobalWithDeadlineImpl(long long seconds, long long nanoseconds, long long,
                                               long long, int clock, SwiftJob* job)
 {
-    const SwiftTime now = swift_time_now(clock);
-    const long long delay = (seconds - now.seconds) * static_cast<long long>(NanosecondsPerSecond) +
-                            nanoseconds - now.nanoseconds;
-    EnqueueDelayed(job, Now() + (delay > 0 ? static_cast<uint64_t>(delay) : 0));
+    EnqueueDelayed(global_queue, job, DeadlineOn(clock, seconds, nanoseconds));
 }
 
 SWIFT_CC(swift) void swift_task_checkIsolatedImpl(SwiftExecutorRef executor)
@@ -242,7 +275,7 @@ void swift_task_donateThreadToGlobalExecutorUntilImpl(bool (*condition)(void*), 
     while (!condition(context))
     {
         LockQueue();
-        SwiftJob* job = TakeJob(false);
+        SwiftJob* job = TakeJob(global_queue, false);
         pthread_mutex_unlock(&queue_lock);
         if (job == nullptr)
         {
@@ -254,19 +287,7 @@ void swift_task_donateThreadToGlobalExecutorUntilImpl(bool (*condition)(void*), 
 
 SWIFT_RUNTIME_ATTRIBUTE_NORETURN SWIFT_CC(swift) void swift_task_asyncMainDrainQueueImpl()
 {
-    LockQueue();
-    while (true)
-    {
-        SwiftJob* job = main_jobs.dequeue();
-        if (job == nullptr)
-        {
-            pthread_cond_wait(&main_job_queued, &queue_lock);
-            continue;
-        }
-        pthread_mutex_unlock(&queue_lock);
-        swift_job_run(job, MainExecutor());
-        pthread_mutex_lock(&queue_lock);
-    }
+    RunMainJobs(MainExecutor());
 }
 
 SWIFT_CC(swift) SwiftExecutorRef swift_task_getMainExecutorImpl()
@@ -278,3 +299,43 @@ SWIFT_CC(swift) bool swift_task_isMainExecutorImpl(SwiftExecutorRef executor)
 {
     return IsMain(executor);
 }
+
+#else
+
+// The main executor is upstream's DispatchMainExecutor, whose reference the runtime gets from
+// MainActor.
+
+extern "C" SWIFT_CC(swift) void swift_dispatchEnqueueGlobal(SwiftJob* job)
+{
+    Enqueue(global_queue, job);
+}
+
+extern "C" SWIFT_CC(swift) void swift_dispatchEnqueueMain(SwiftJob* job)
+{
+    Enqueue(main_queue, job);
+}
+
+// A tolerance of -1 nanoseconds means none was given; the queues ignore tolerances.
+extern "C" SWIFT_CC(swift) void swift_dispatchEnqueueWithDeadline(bool global, long long seconds,
+                                                                  long long nanoseconds, long long,
+                                                                  long long, int clock,
+                                                                  SwiftJob* job)
+{
+    EnqueueDelayed(global ? global_queue : main_queue, job,
+                   DeadlineOn(clock, seconds, nanoseconds));
+}
+
+extern "C" SWIFT_CC(swift) [[noreturn]] void swift_dispatchMain()
+{
+    RunMainJobs(swift_task_getMainExecutorImpl());
+}
+
+extern "C" SWIFT_CC(swift) void swift_dispatchAssertMainQueue()
+{
+    if (!swift::Thread::onMainThread())
+    {
+        swift::swift_Concurrency_fatalError(0, "Expected to run on the main thread\n");
+    }
+}
+
+#endif

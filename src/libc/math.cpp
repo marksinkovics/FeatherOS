@@ -95,9 +95,25 @@ double round(double x)
     return Math::Round(x);
 }
 
+// Always to nearest, ties to even: there is no fesetround.
+double rint(double x)
+{
+    return Math::RoundToEven(x);
+}
+
+double nearbyint(double x)
+{
+    return Math::RoundToEven(x);
+}
+
 double fmod(double x, double y)
 {
     return AnyNaN(x, y) ? x + y : DomainChecked(Math::Remainder(x, y));
+}
+
+double remainder(double x, double y)
+{
+    return AnyNaN(x, y) ? x + y : DomainChecked(Math::NearestRemainder(x, y));
 }
 
 double frexp(double x, int* exponent)
@@ -310,9 +326,24 @@ float roundf(float x)
     return static_cast<float>(::round(static_cast<double>(x)));
 }
 
+float rintf(float x)
+{
+    return static_cast<float>(::rint(static_cast<double>(x)));
+}
+
+float nearbyintf(float x)
+{
+    return static_cast<float>(::nearbyint(static_cast<double>(x)));
+}
+
 float fmodf(float x, float y)
 {
     return static_cast<float>(::fmod(static_cast<double>(x), static_cast<double>(y)));
+}
+
+float remainderf(float x, float y)
+{
+    return static_cast<float>(::remainder(static_cast<double>(x), static_cast<double>(y)));
 }
 
 float fminf(float x, float y)

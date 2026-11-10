@@ -1,5 +1,6 @@
 // Host tests for FeatherOS's Codable (src/user/swift_stdlib/codable.swift) and FeatherSupport's
-// JSON coders, built with Embedded Swift against FeatherOS's standard library module.
+// JSON coders, built with Embedded Swift against FeatherOS's standard library module, and in full
+// Swift against the host's library with FeatherSupport's codable_containers.swift.
 
 @_silgen_name("exit")
 func exit(_ status: Int32) -> Never
@@ -27,7 +28,7 @@ func encoded<T: Encodable>(_ value: T, _ formatting: JSONEncoder.OutputFormattin
     do {
         return text(try encoder.encode(value))
     } catch let error as EncodingError {
-        return "error: \(error)"
+        return "error: \(describe(error))"
     } catch {
         return "unexpected error"
     }
@@ -42,11 +43,91 @@ func decodingError<T: Codable>(_ type: T.Type, _ json: String) -> String {
     do {
         return "decoded \(encoded(try JSONDecoder().decode(type, from: Array(json.utf8))))"
     } catch let error as DecodingError {
-        return error.description
+        return describe(error)
     } catch {
         return "unexpected error"
     }
 }
+
+#if $Embedded
+    func describe(_ error: EncodingError) -> String {
+        error.description
+    }
+
+    func describe(_ error: DecodingError) -> String {
+        error.description
+    }
+#else
+    // The host's library words its descriptions as its own release does, and names types, so the
+    // checks compare what Embedded Swift's description is made of.
+    func describe(_ error: EncodingError) -> String {
+        switch error {
+        case .invalidValue(_, let context):
+            describe("EncodingError.invalidValue", context.codingPath, context.debugDescription)
+        @unknown default:
+            "unknown error"
+        }
+    }
+
+    func describe(_ error: DecodingError) -> String {
+        switch error {
+        case .typeMismatch(_, let context):
+            describe("DecodingError.typeMismatch", context.codingPath, context.debugDescription)
+        case .valueNotFound(_, let context):
+            describe("DecodingError.valueNotFound", context.codingPath, context.debugDescription)
+        case .keyNotFound(let key, let context):
+            describe(
+                "DecodingError.keyNotFound: Key '\(describe([key]))' not found in keyed decoding "
+                    + "container", context.codingPath, context.debugDescription)
+        case .dataCorrupted(let context):
+            describe(
+                "DecodingError.dataCorrupted: Data was corrupted", context.codingPath,
+                context.debugDescription)
+        @unknown default:
+            "unknown error"
+        }
+    }
+
+    func describe(_ message: String, _ path: [any CodingKey], _ debugDescription: String)
+        -> String
+    {
+        var output = message
+        if !path.isEmpty {
+            output += ". Path: \(describe(path))"
+        }
+        if !debugDescription.isEmpty {
+            output += ". Debug description: \(debugDescription)"
+        }
+        return output
+    }
+
+    func describe(_ path: [any CodingKey]) -> String {
+        var output = ""
+        for (position, key) in path.enumerated() {
+            if let index = key.intValue {
+                output += "[\(index)]"
+                continue
+            }
+            if position > 0 {
+                output += "."
+            }
+            let name = key.stringValue
+            guard name.contains(where: { $0 == "." || $0 == "`" || $0 == "\\" }) else {
+                output += name
+                continue
+            }
+            output += "`"
+            for character in name {
+                if character == "`" || character == "\\" {
+                    output += "\\"
+                }
+                output.append(character)
+            }
+            output += "`"
+        }
+        return output
+    }
+#endif
 
 func roundTrips<T: Codable & Equatable>(_ value: T, line: Int = #line) {
     var encoder = JSONEncoder()
@@ -418,11 +499,17 @@ func testErrors() {
         decodingError(Holder.self, #"{"inner":null}"#)
             == "DecodingError.valueNotFound. Path: inner. Debug description: Expected an object "
             + "but found null instead.", decodingError(Holder.self, #"{"inner":null}"#))
-    check(
-        decodingError(Holder.self, #"{"inner":{"name":"n","tags":[]},"level":5}"#)
-            == "DecodingError.dataCorrupted: Data was corrupted. Path: level. Debug description: "
-            + "Cannot initialize from invalid Int value 5",
-        decodingError(Holder.self, #"{"inner":{"name":"n","tags":[]},"level":5}"#))
+    // The library writes this message itself, and in full Swift the host's release words it.
+    let badLevel = #"{"inner":{"name":"n","tags":[]},"level":5}"#
+    #if $Embedded
+        check(
+            decodingError(Holder.self, badLevel)
+                == "DecodingError.dataCorrupted: Data was corrupted. Path: level. Debug "
+                + "description: Cannot initialize from invalid Int value 5",
+            decodingError(Holder.self, badLevel))
+    #else
+        check(decoded(Holder.self, badLevel) == nil, "decoding fails")
+    #endif
     check(
         decodingError([Int8].self, "[1,300]")
             == "DecodingError.dataCorrupted: Data was corrupted. Path: [1]. Debug description: "
@@ -439,11 +526,16 @@ func testErrors() {
         decodingError(Pair.self, "[1]")
             == "DecodingError.valueNotFound. Path: [1]. Debug description: Unkeyed container is "
             + "at end.", decodingError(Pair.self, "[1]"))
-    check(
-        decodingError(Range<Int>.self, "[5,1]")
-            == "DecodingError.dataCorrupted: Data was corrupted. Debug description: Cannot "
-            + "initialize a range with a lowerBound greater than upperBound",
-        decodingError(Range<Int>.self, "[5,1]"))
+    // The library writes this message itself, and in full Swift the host's release words it.
+    #if $Embedded
+        check(
+            decodingError(Range<Int>.self, "[5,1]")
+                == "DecodingError.dataCorrupted: Data was corrupted. Debug description: Cannot "
+                + "initialize a range with a lowerBound greater than upperBound",
+            decodingError(Range<Int>.self, "[5,1]"))
+    #else
+        check(decoded(Range<Int>.self, "[5,1]") == nil, "decoding fails")
+    #endif
     check(
         decodingError(SIMD2<Int>.self, "[1,2,3]")
             == "DecodingError.dataCorrupted: Data was corrupted. Debug description: Expected "
@@ -453,11 +545,16 @@ func testErrors() {
             == "DecodingError.dataCorrupted: Data was corrupted. Debug description: Expected "
             + "collection of key-value pairs; encountered odd-length array instead.",
         decodingError([Bool: Int].self, "[true]"))
-    check(
-        decodingError([Int: Int].self, #"{"x":1}"#)
-            == "DecodingError.dataCorrupted: Data was corrupted. Path: x. Debug description: "
-            + "Could not convert key to the dictionary's key type",
-        decodingError([Int: Int].self, #"{"x":1}"#))
+    // The library writes this message itself, and in full Swift the host's release words it.
+    #if $Embedded
+        check(
+            decodingError([Int: Int].self, #"{"x":1}"#)
+                == "DecodingError.dataCorrupted: Data was corrupted. Path: x. Debug description: "
+                + "Could not convert key to the dictionary's key type",
+            decodingError([Int: Int].self, #"{"x":1}"#))
+    #else
+        check(decoded([Int: Int].self, #"{"x":1}"#) == nil, "decoding fails")
+    #endif
     check(
         decodingError([String: Int].self, #"{"a.b":true}"#)
             == "DecodingError.typeMismatch. Path: `a.b`. Debug description: Expected a number "
@@ -488,8 +585,14 @@ func testErrors() {
             + "bits.", encoded(Int128.max))
     check(decoded(UInt128.self, "18446744073709551615") == UInt128(UInt64.max), "wide decode")
 
+    // Full Swift's description starts with the key's type.
     let key = Name("k")
-    check(key.description == #"CodingKey(stringValue: "k", intValue: nil)"#, key.description)
+    #if $Embedded
+        let keyDescription = #"CodingKey(stringValue: "k", intValue: nil)"#
+    #else
+        let keyDescription = #"Name(stringValue: "k", intValue: nil)"#
+    #endif
+    check(key.description == keyDescription, key.description)
 }
 
 @main

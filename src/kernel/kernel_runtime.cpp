@@ -21,8 +21,7 @@
 #include "kernel/process.h"
 #include "kernel/process_arguments.h"
 #include "kernel/scheduler.h"
-#if defined(FEATHEROS_SMP_TEST) || defined(FEATHEROS_STORAGE_TEST) ||                              \
-    defined(FEATHEROS_NETWORK_TEST) || defined(FEATHEROS_INPUT_TEST)
+#if defined(FEATHEROS_KERNEL_TESTS)
 #include "kernel/kernel_test.h"
 #endif
 #include "kernel/smp.h"
@@ -119,9 +118,14 @@ void LoadTestExecutable(KLogger& logger, const BootInfo& boot_info)
 #endif
 
     Initramfs::File file;
+    if (!Initramfs::Open("system", test_path, &file))
+    {
+        Panic("Initramfs ELF test executable is missing");
+    }
+    ELF::MemoryFile memory_file = {file.data, file.size};
+    const ELF::Source source = {&memory_file, ELF::ReadMemoryFile};
     ELF::Image image;
-    if (!Initramfs::Open("system", test_path, &file) ||
-        !ELF::Parse(file.data, file.size, user_machine, &image))
+    if (!ELF::Parse(source, file.size, user_machine, &image))
     {
         Panic("Initramfs ELF test executable is invalid");
     }
@@ -130,8 +134,8 @@ void LoadTestExecutable(KLogger& logger, const BootInfo& boot_info)
     Process::UserProgram isolation_program;
     Process::InitializeUserProgram(&console_program);
     Process::InitializeUserProgram(&isolation_program);
-#if defined(FEATHEROS_USER_PREEMPTION_TEST)
-    constexpr bool user_preemption_test = true;
+#if defined(FEATHEROS_KERNEL_TESTS)
+    const bool user_preemption_test = KernelTest::Selected(KernelTest::Mode::UserPreemption);
 #else
     constexpr bool user_preemption_test = false;
 #endif
@@ -148,9 +152,10 @@ void LoadTestExecutable(KLogger& logger, const BootInfo& boot_info)
     isolation_arguments.test_case = 1;
     isolation_arguments.user_preemption_test = user_preemption_test ? 1 : 0;
     const bool console_loaded =
-        Process::LoadUserProgram(image, console_arguments, &console_program);
+        Process::LoadUserProgram(image, source, console_arguments, &console_program);
     const bool isolation_loaded =
-        console_loaded && Process::LoadUserProgram(image, isolation_arguments, &isolation_program);
+        console_loaded &&
+        Process::LoadUserProgram(image, source, isolation_arguments, &isolation_program);
     if (!console_loaded || !isolation_loaded)
     {
         if (console_program.address_space.root_physical_address != 0)
@@ -170,23 +175,23 @@ void LoadTestExecutable(KLogger& logger, const BootInfo& boot_info)
     {
         Panic("Could not initialize user-program scheduler");
     }
-#if defined(FEATHEROS_USER_PREEMPTION_TEST)
-    if (!Time::InitializeTimer(100, boot_info.platform_data))
+    if (user_preemption_test && !Time::InitializeTimer(100, boot_info.platform_data))
     {
         Panic("Could not initialize timer for user-mode preemption test");
     }
-#endif
     if (!Scheduler::CreateTask(Process::RunUserProgram, &console_program, &console_task) ||
         !Scheduler::CreateTask(Process::RunUserProgram, &isolation_program, &isolation_task))
     {
-#if defined(FEATHEROS_USER_PREEMPTION_TEST)
-        Time::StopTimer();
-#endif
+        if (user_preemption_test)
+        {
+            Time::StopTimer();
+        }
         Panic("Could not create user-program scheduler tasks");
     }
-#if defined(FEATHEROS_USER_PREEMPTION_TEST)
-    Scheduler::EnablePreemption();
-#endif
+    if (user_preemption_test)
+    {
+        Scheduler::EnablePreemption();
+    }
 
     uint64_t console_exit_status = UINT64_MAX;
     uint64_t isolation_exit_status = UINT64_MAX;
@@ -195,10 +200,11 @@ void LoadTestExecutable(KLogger& logger, const BootInfo& boot_info)
         console_completed && Scheduler::Wait(isolation_task, &isolation_exit_status);
     const bool tasks_reaped = isolation_completed && Scheduler::ReapTask(console_task) &&
                               Scheduler::ReapTask(isolation_task);
-#if defined(FEATHEROS_USER_PREEMPTION_TEST)
-    Scheduler::DisablePreemption();
-    Time::StopTimer();
-#endif
+    if (user_preemption_test)
+    {
+        Scheduler::DisablePreemption();
+        Time::StopTimer();
+    }
     Memory::ActivateKernelAddressSpace();
     const bool spaces_destroyed = Memory::DestroyAddressSpace(&console_program.address_space) &&
                                   Memory::DestroyAddressSpace(&isolation_program.address_space);
@@ -209,9 +215,10 @@ void LoadTestExecutable(KLogger& logger, const BootInfo& boot_info)
         Panic("Scheduled user programs did not complete or release their resources");
     }
     logger.Info("ELF64: two isolated user programs exited and were reaped");
-#if defined(FEATHEROS_USER_PREEMPTION_TEST)
-    Serial::Write("KERN/SCHEDULER: user-mode preemption passed\n");
-#endif
+    if (user_preemption_test)
+    {
+        Serial::Write("KERN/SCHEDULER: user-mode preemption passed\n");
+    }
 #if defined(ARCH_x86_64)
     logger.Info("ELF64: ring 3 console and exit syscalls passed");
     logger.Info("ELF64: ring 3 kernel-memory isolation passed");
@@ -233,8 +240,11 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     {
         Panic("MBR partition or FAT16 mount failed");
     }
-#if defined(FEATHEROS_STORAGE_TEST)
-    KernelTest::RunStorageTests();
+#if defined(FEATHEROS_KERNEL_TESTS)
+    if (KernelTest::Selected(KernelTest::Mode::Storage))
+    {
+        KernelTest::RunStorageTests();
+    }
 #endif
 
     constexpr char expected_contents[] = "FeatherOS FAT16 volume OK";
@@ -340,8 +350,11 @@ void StartSecondaryCpus(KLogger& logger, limine_smp_response* smp)
         Panic("SMP summary formatting failed");
     }
     logger.Info(message);
-#if defined(FEATHEROS_SMP_TEST)
-    KernelTest::RunSmpTests();
+#if defined(FEATHEROS_KERNEL_TESTS)
+    if (KernelTest::Selected(KernelTest::Mode::Smp))
+    {
+        KernelTest::RunSmpTests();
+    }
 #endif
 }
 
@@ -387,8 +400,11 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
         Panic("Network IPv6 summary formatting failed");
     }
     logger.Info(ipv6_message);
-#if defined(FEATHEROS_NETWORK_TEST)
-    KernelTest::RunNetworkTests();
+#if defined(FEATHEROS_KERNEL_TESTS)
+    if (KernelTest::Selected(KernelTest::Mode::Network))
+    {
+        KernelTest::RunNetworkTests();
+    }
 #endif
 }
 
@@ -410,8 +426,11 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
         logger.Warning("Keyboard device unavailable; use serial input");
     }
     Console::Initialize(display_ready ? terms : nullptr);
-#if defined(FEATHEROS_INPUT_TEST)
-    KernelTest::StartConsoleReports();
+#if defined(FEATHEROS_KERNEL_TESTS)
+    if (KernelTest::Selected(KernelTest::Mode::Input))
+    {
+        KernelTest::StartConsoleReports();
+    }
 #endif
 
     // init starts and supervises the services in /init.conf; restart it if it ever exits.

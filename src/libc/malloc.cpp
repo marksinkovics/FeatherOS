@@ -3,6 +3,7 @@
 #include "user/syscall.h"
 
 #include <errno.h>
+#include <malloc.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -164,4 +165,22 @@ void* realloc(void* pointer, size_t size)
         errno = ENOMEM;
     }
     return resized;
+}
+
+size_t malloc_usable_size(void* pointer)
+{
+    if (pointer == nullptr)
+    {
+        return 0;
+    }
+    size_t size = 0;
+    {
+        const FeatherOS::LibC::Guard<FeatherOS::LibC::Lock> guard(heap_lock);
+        size = Heap().UsableSize(pointer);
+    }
+    if (size == 0)
+    {
+        InvalidPointer("malloc_usable_size");
+    }
+    return size;
 }

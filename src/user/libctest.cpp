@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <malloc.h>
 #include <math.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -563,6 +564,8 @@ void CheckAllocation()
     auto* first = static_cast<unsigned char*>(malloc(100));
     Check(first != nullptr && reinterpret_cast<uintptr_t>(first) % 16 == 0, "malloc aligns");
     memset(first, 0xAB, 100);
+    Check(malloc_usable_size(first) >= 100 && malloc_usable_size(nullptr) == 0,
+          "malloc_usable_size");
     auto* grown = static_cast<unsigned char*>(realloc(first, 5000));
     Check(grown != nullptr && Filled(grown, 100, 0xAB), "realloc keeps the contents");
     memset(grown, 0xCD, 5000);
@@ -638,9 +641,9 @@ void CheckHeapReuse()
     }
     Check(ProgramBreak() == settled_break, "repeated allocations reuse memory");
 
-    // More than the 1024-page limit fails without using up pages, so the heap can still grow.
+    // More than the 16384-page limit fails without using up pages, so the heap can still grow.
     errno = 0;
-    Check(malloc(8 * 1024 * 1024) == nullptr && errno == ENOMEM, "malloc past the page limit");
+    Check(malloc(128 * 1024 * 1024) == nullptr && errno == ENOMEM, "malloc past the page limit");
     void* larger = malloc(Pieces * PieceSize + 256 * 1024);
     Check(larger != nullptr && ProgramBreak() > settled_break,
           "the heap grows after a failed request");
@@ -3058,6 +3061,67 @@ bool Near(double value, double expected, double tolerance)
     return fabs(value - expected) <= tolerance;
 }
 
+// GCC divides 128-bit integers through the C library's __udivti3 and its relatives.
+void CheckWideIntegers()
+{
+    const unsigned __int128 big =
+        static_cast<unsigned __int128>(0x0123456789ABCDEFULL) << 64 | 0xFEDCBA9876543210ULL;
+    volatile unsigned __int128 divisor = static_cast<unsigned __int128>(1) << 64 | 3;
+    const unsigned __int128 quotient = big / divisor;
+    const unsigned __int128 remainder = big % divisor;
+    Check(quotient * divisor + remainder == big && remainder < divisor &&
+              quotient == 0x0123456789ABCDEFULL,
+          "128-bit unsigned division");
+    volatile __int128 negative = -static_cast<__int128>(big);
+    Check(negative / 7 == -static_cast<__int128>(big / 7) &&
+              negative % 7 == -static_cast<__int128>(big % 7),
+          "128-bit signed division truncates");
+}
+
+#if defined(__x86_64__)
+bool NearLong(long double value, long double expected, long double tolerance)
+{
+    return fabsl(value - expected) <= tolerance;
+}
+
+void CheckLongDouble()
+{
+    Check(floorl(-2.5L) == -3 && ceill(-2.5L) == -2 && truncl(-2.5L) == -2 && roundl(-2.5L) == -3 &&
+              rintl(2.5L) == 2 && nearbyintl(3.5L) == 4,
+          "long double rounding");
+    Check(fmodl(10.0L, 3.0L) == 1 && remainderl(10.0L, 3.0L) == 1 && remainderl(11.0L, 3.0L) == -1,
+          "fmodl and remainderl");
+    Check(fmodl(0x1p16000L, 3.0L) == 1 && sqrtl(2.0L) * sqrtl(2.0L) - 2 < 1e-18L,
+          "fmodl of a large value, sqrtl");
+    // The product 1 - 2^-80 rounds to 1, so only a single rounding keeps the -2^-80.
+    Check(fmal(1 + 0x1p-40L, 1 - 0x1p-40L, -1.0L) == -0x1p-80L &&
+              fmal(0x1p-16382L, 0x1p-60L, 0x1p-16440L) == 0x1p-16440L + 0x1p-16442L &&
+              fmal(3.0L, 5.0L, -15.0L) == 0,
+          "fmal");
+    constexpr long double E = 2.718281828459045235360287471352662498L;
+    Check(NearLong(expl(1.0L), E, 1e-18L) && NearLong(logl(E), 1, 1e-18L) && exp2l(10.0L) == 1024 &&
+              log2l(1024.0L) == 10 && NearLong(log10l(1000.0L), 3, 1e-18L),
+          "expl, exp2l and the logarithms");
+    Check(NearLong(expl(-11000.0L) * expl(11000.0L), 1, 1e-14L), "expl of large arguments");
+    constexpr long double Pi = 3.141592653589793238462643383279502884L;
+    Check(NearLong(sinl(Pi / 6), 0.5L, 1e-18L) && NearLong(cosl(Pi / 3), 0.5L, 1e-18L),
+          "sinl and cosl");
+    const long double sine = sinl(1000.0L);
+    const long double cosine = cosl(1000.0L);
+    Check(NearLong(sine * sine + cosine * cosine, 1, 4e-19L) &&
+              NearLong(sine, 0.8268795405L, 1e-10L),
+          "sinl and cosl of 1000");
+    Check(signbit(sinl(-0.0L)) && cosl(-0.0L) == 1 && NearLong(sinl(Pi), 0, 1e-19L),
+          "sinl and cosl at zero and pi");
+    errno = 0;
+    Check(isnan(sqrtl(-1.0L)) && errno == EDOM, "sqrtl of a negative number");
+    errno = 0;
+    Check(isinf(logl(0.0L)) && errno == ERANGE, "logl of zero");
+    errno = 0;
+    Check(isinf(expl(20000.0L)) && errno == ERANGE, "expl overflow");
+}
+#endif
+
 void CheckFloatingPoint()
 {
     Check(Formats("3.141593 3.142e+00 3.14159 0x1.921fb54442d18p+1", "%f %.3e %g %a", M_PI, M_PI,
@@ -3116,6 +3180,13 @@ void CheckFloatingPoint()
     Check(floor(-2.5) == -3.0 && ceil(-2.5) == -2.0 && round(-2.5) == -3.0 && trunc(-2.5) == -2.0 &&
               fmod(10.0, 3.0) == 1.0,
           "rounding and fmod");
+    Check(rint(2.5) == 2.0 && rint(-3.5) == -4.0 && nearbyint(0.5) == 0.0 && rintf(1.5f) == 2.0f &&
+              nearbyintf(-0.5f) == 0.0f && signbit(nearbyintf(-0.5f)),
+          "rint and nearbyint round ties to even");
+    Check(remainder(10.0, 3.0) == 1.0 && remainder(11.0, 3.0) == -1.0 &&
+              remainder(5.0, 2.0) == 1.0 && remainder(7.0, 2.0) == -1.0 &&
+              remainderf(-6.5f, 2.0f) == -0.5f,
+          "remainder");
     int exponent = 0;
     Check(frexp(48.0, &exponent) == 0.75 && exponent == 6 && ldexp(0.75, 6) == 48.0, "frexp");
     errno = 0;
@@ -3125,6 +3196,10 @@ void CheckFloatingPoint()
     errno = 0;
     Check(isinf(pow(0.0, -1.0)) && errno == ERANGE, "pow pole");
     Check(sqrtf(2.25f) == 1.5f && Near(sinf(1.0f), 0.841470985, 1e-7), "float functions");
+    CheckWideIntegers();
+#if defined(__x86_64__)
+    CheckLongDouble();
+#endif
 
     // Lots of floating-point work while other programs run, checked against a known sum.
     double sum = 0;

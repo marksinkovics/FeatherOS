@@ -364,7 +364,7 @@ extern "C" void FeatherOS_AArch64_ExceptionDispatch(ExceptionContext* context)
     report.error_code = 0;
     report.syndrome = context->esr;
     report.fault_address = context->far;
-#if defined(FEATHEROS_MEMORY_TEST)
+#if defined(FEATHEROS_KERNEL_TESTS)
     if (FeatherOS::TryRecoverTestException(&report))
     {
         context->elr = report.instruction_pointer;

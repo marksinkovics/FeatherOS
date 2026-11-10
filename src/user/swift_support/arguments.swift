@@ -1,20 +1,22 @@
 import FeatherLibC
 
 // Embedded Swift leaves CommandLine out, and top-level code does not see main's parameters, so
-// this one reads them from the C library.
-public enum CommandLine {
-    public static var argc: Int32 {
-        featheros_argument_count()
-    }
+// this one reads them from the C library. Full Swift has the standard library's.
+#if $Embedded
+    public enum CommandLine {
+        public static var argc: Int32 {
+            featheros_argument_count()
+        }
 
-    public static var unsafeArgv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?> {
-        featheros_argument_values()!
-    }
+        public static var unsafeArgv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?> {
+            featheros_argument_values()!
+        }
 
-    public static var arguments: [String] = (0..<Int(argc)).map {
-        String(cString: unsafeArgv[$0]!)
+        public static var arguments: [String] = (0..<Int(argc)).map {
+            String(cString: unsafeArgv[$0]!)
+        }
     }
-}
+#endif
 
 public enum Arguments {
     public static var operands: [String] {

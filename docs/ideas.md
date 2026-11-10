@@ -119,3 +119,7 @@ These remove the known limits listed in `CLAUDE.md`:
 
 - **Continuous integration:** a GitHub Actions job that builds both architectures, runs lint and unit tests, and runs `./build.sh test-all` on every push.
 - **Installation and updates:** produce an installable image and define a reliable system update and recovery workflow.
+
+## Known Bugs
+
+- **AArch64 kernel jumps to a user address (intermittent).** Seen once, on 2026-11-08 on `feat/swift`, in the matrix case `test_26_aarch64_shell_with_cpu_protections` (Debug, QEMU `-cpu max`, so PAN and PXN are on). While the shell session started `life -p glider -s 6x6 -n 4`, right after the `json` checks, the kernel panicked with `ESR 0x8600000F` (an instruction abort at EL1, a level-3 permission fault) and `FAR` = `ELR` = `0x000010BC9D7E5DC0`. That is an address in a user program's randomized image, so EL1 branched or returned to user code instead of dropping to EL0. Two reruns of the same case passed. Suspects: a context switch or exception return that restores a user `ELR_EL1` with EL1 in `SPSR_EL1` (for example when a task is preempted or switched during `Spawn` or signal delivery on another CPU), or a kernel stack that holds a user frame. To chase it, run the case in a loop and print `SPSR_EL1`, `SP` and the current task in the panic.
