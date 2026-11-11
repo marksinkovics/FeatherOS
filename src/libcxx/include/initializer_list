@@ -1,0 +1,74 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_INITIALIZER_LIST
+#define FEATHEROS_LIBCXX_INITIALIZER_LIST
+
+#include "__featheros_config"
+
+#if FEATHEROS_STD_IS_STD
+
+namespace std
+{
+// The compiler builds these for braced lists. GCC and Clang both accept a pointer to the
+// elements followed by their count, in this order.
+template <class T> class initializer_list
+{
+public:
+    using value_type = T;
+    using reference = const T&;
+    using const_reference = const T&;
+    using size_type = size_t;
+    using iterator = const T*;
+    using const_iterator = const T*;
+
+    constexpr initializer_list() noexcept = default;
+
+    constexpr size_t size() const noexcept
+    {
+        return m_size;
+    }
+    constexpr const T* begin() const noexcept
+    {
+        return m_elements;
+    }
+    constexpr const T* end() const noexcept
+    {
+        return m_elements + m_size;
+    }
+
+private:
+    // GCC calls this constructor; Clang fills the members directly.
+    constexpr initializer_list(const T* elements, size_t size) noexcept
+        : m_elements(elements), m_size(size)
+    {
+    }
+
+    const T* m_elements = nullptr;
+    size_t m_size = 0;
+};
+} // namespace std
+
+#else
+
+#include <initializer_list>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+using std::initializer_list;
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+template <class T> constexpr const T* begin(initializer_list<T> list) noexcept
+{
+    return list.begin();
+}
+
+template <class T> constexpr const T* end(initializer_list<T> list) noexcept
+{
+    return list.end();
+}
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

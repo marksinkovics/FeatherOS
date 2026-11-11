@@ -2,6 +2,8 @@
 
 #include "kernel/memory/page_allocator.h"
 
+#include <atomic>
+
 namespace FeatherOS::Virtio
 {
 namespace
@@ -34,7 +36,7 @@ constexpr uint32_t AvailableOffset(uint16_t size)
 // it sees.
 void Fence()
 {
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
 }
 
 } // namespace

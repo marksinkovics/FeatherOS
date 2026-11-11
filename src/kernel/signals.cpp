@@ -1,5 +1,7 @@
 #include "signals.h"
 
+#include <bit>
+
 namespace FeatherOS::Signals
 {
 namespace
@@ -85,7 +87,7 @@ Decision TakeNext(State* state)
         {
             return {DecisionKind::None, 0, {}, 0};
         }
-        const int signal = __builtin_ctzll(deliverable);
+        const int signal = std::countr_zero(deliverable);
         __atomic_fetch_and(&state->pending, ~Bit(signal), __ATOMIC_SEQ_CST);
         // A signal pending since before its action changed to ignore is dropped now.
         if (Ignores(*state, signal))

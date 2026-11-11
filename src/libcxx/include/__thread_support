@@ -1,0 +1,116 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_THREAD_SUPPORT
+#define FEATHEROS_LIBCXX_THREAD_SUPPORT
+
+// What <thread>, <mutex>, <shared_mutex> and <condition_variable> share: timeouts as steady
+// deadlines, and a pthreads condition variable that waits on the steady clock. User space only;
+// the kernel has no pthreads.
+
+#include "__featheros_config"
+#include "chrono"
+#include "type_traits"
+
+#include <pthread.h>
+
+// Clang's thread-safety analysis (-Wthread-safety, which clang-tidy runs) on the mutexes and
+// lock_guard, as for src/user/thread_safety.h's annotations.
+#if defined(__clang__)
+#define FEATHEROS_THREAD_ANNOTATION(x) __attribute__((x))
+#else
+#define FEATHEROS_THREAD_ANNOTATION(x)
+#endif
+#define FEATHEROS_CAPABILITY FEATHEROS_THREAD_ANNOTATION(capability("mutex"))
+#define FEATHEROS_SCOPED_CAPABILITY FEATHEROS_THREAD_ANNOTATION(scoped_lockable)
+#define FEATHEROS_ACQUIRE(...) FEATHEROS_THREAD_ANNOTATION(acquire_capability(__VA_ARGS__))
+#define FEATHEROS_RELEASE(...) FEATHEROS_THREAD_ANNOTATION(release_capability(__VA_ARGS__))
+#define FEATHEROS_TRY_ACQUIRE(...) FEATHEROS_THREAD_ANNOTATION(try_acquire_capability(__VA_ARGS__))
+#define FEATHEROS_REQUIRES(...) FEATHEROS_THREAD_ANNOTATION(requires_capability(__VA_ARGS__))
+#define FEATHEROS_ACQUIRE_SHARED(...)                                                              \
+    FEATHEROS_THREAD_ANNOTATION(acquire_shared_capability(__VA_ARGS__))
+#define FEATHEROS_RELEASE_SHARED(...)                                                              \
+    FEATHEROS_THREAD_ANNOTATION(release_shared_capability(__VA_ARGS__))
+#define FEATHEROS_TRY_ACQUIRE_SHARED(...)                                                          \
+    FEATHEROS_THREAD_ANNOTATION(try_acquire_shared_capability(__VA_ARGS__))
+#define FEATHEROS_NO_THREAD_SAFETY_ANALYSIS FEATHEROS_THREAD_ANNOTATION(no_thread_safety_analysis)
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+
+// d in whole nanoseconds, rounded up and saturated at the representable range, so a timeout of
+// hours::max() waits forever instead of overflowing.
+template <class Rep, class Period>
+constexpr chrono::nanoseconds ClampedNanoseconds(const chrono::duration<Rep, Period>& d) noexcept
+{
+    constexpr double Limit = 9.0e18;
+    const double nanoseconds = chrono::duration<double, nano>(d).count();
+    if (nanoseconds >= Limit)
+    {
+        return chrono::nanoseconds::max();
+    }
+    if (nanoseconds <= -Limit)
+    {
+        return chrono::nanoseconds::min();
+    }
+    return chrono::ceil<chrono::nanoseconds>(d);
+}
+
+template <class Rep, class Period>
+chrono::steady_clock::time_point
+SteadyDeadlineAfter(const chrono::duration<Rep, Period>& d) noexcept
+{
+    const chrono::steady_clock::time_point now = chrono::steady_clock::now();
+    const chrono::nanoseconds wait = ClampedNanoseconds(d);
+    if (wait > chrono::steady_clock::time_point::max() - now)
+    {
+        return chrono::steady_clock::time_point::max();
+    }
+    return now + wait;
+}
+
+template <class Duration>
+constexpr chrono::steady_clock::time_point
+SteadyDeadline(const chrono::time_point<chrono::steady_clock, Duration>& deadline) noexcept
+{
+    return chrono::steady_clock::time_point(ClampedNanoseconds(deadline.time_since_epoch()));
+}
+
+// A deadline on another clock, as the steady deadline that is as far away now. The waits check
+// the original clock again after waking, since the two may drift apart.
+template <class Clock, class Duration>
+chrono::steady_clock::time_point
+SteadyDeadline(const chrono::time_point<Clock, Duration>& deadline) noexcept
+{
+    return SteadyDeadlineAfter(deadline - Clock::now());
+}
+
+class Condition
+{
+public:
+    Condition() noexcept;
+    ~Condition();
+    Condition(const Condition&) = delete;
+    Condition& operator=(const Condition&) = delete;
+
+    void Wait(pthread_mutex_t* mutex) noexcept;
+    // false when the deadline passed. Like Wait, it may also return early for no reason.
+    bool WaitUntil(pthread_mutex_t* mutex, chrono::steady_clock::time_point deadline) noexcept;
+    void NotifyOne() noexcept;
+    void NotifyAll() noexcept;
+
+    pthread_cond_t* Handle() noexcept
+    {
+        return &m_handle;
+    }
+
+private:
+    pthread_cond_t m_handle;
+};
+
+} // namespace __detail
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

@@ -1,0 +1,48 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_PRINT
+#define FEATHEROS_LIBCXX_PRINT
+
+#include "__featheros_config"
+#include "cstdio"
+#include "format"
+
+// The text is formatted straight into the stream through a small buffer, with the stream locked
+// for the whole call, so a print from one thread is not interleaved with another's. A console
+// here takes UTF-8 as it is, so vprint_unicode and vprint_nonunicode write the same bytes.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+void vprint_unicode(FILE* stream, string_view pattern, format_args args);
+void vprint_unicode(string_view pattern, format_args args);
+void vprint_nonunicode(FILE* stream, string_view pattern, format_args args);
+void vprint_nonunicode(string_view pattern, format_args args);
+
+namespace __detail
+{
+void VPrintLine(FILE* stream, string_view pattern, format_args args);
+} // namespace __detail
+
+template <class... Args> void print(FILE* stream, format_string<Args...> pattern, Args&&... args)
+{
+    _FSTD::vprint_unicode(stream, pattern.get(), _FSTD::make_format_args(args...));
+}
+
+template <class... Args> void print(format_string<Args...> pattern, Args&&... args)
+{
+    _FSTD::vprint_unicode(stdout, pattern.get(), _FSTD::make_format_args(args...));
+}
+
+template <class... Args> void println(FILE* stream, format_string<Args...> pattern, Args&&... args)
+{
+    __detail::VPrintLine(stream, pattern.get(), _FSTD::make_format_args(args...));
+}
+
+template <class... Args> void println(format_string<Args...> pattern, Args&&... args)
+{
+    __detail::VPrintLine(stdout, pattern.get(), _FSTD::make_format_args(args...));
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

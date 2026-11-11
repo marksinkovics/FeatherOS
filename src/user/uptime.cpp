@@ -1,5 +1,7 @@
 #include "command_line.h"
 
+#include <chrono>
+#include <print>
 #include <stdio.h>
 #include <time.h>
 
@@ -19,7 +21,7 @@ int main(int argc, char** argv)
         puts("uptime: unavailable");
         return 1;
     }
-    const long seconds = since_boot.tv_sec;
-    printf("uptime: %ld:%02ld:%02ld\n", seconds / 3600, seconds / 60 % 60, seconds % 60);
+    const std::chrono::seconds up(since_boot.tv_sec);
+    std::println("uptime: {}:{:%M:%S}", std::chrono::floor<std::chrono::hours>(up).count(), up);
     return 0;
 }

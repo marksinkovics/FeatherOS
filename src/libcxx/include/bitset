@@ -1,0 +1,415 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_BITSET
+#define FEATHEROS_LIBCXX_BITSET
+
+#include "__char_traits"
+#include "__featheros_config"
+#include "__hash_base"
+#include "bit"
+#include "string"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+// The bits in 64-bit words, bit 0 of the set in bit 0 of word 0. Bits past Size in the last word
+// stay zero, so count, ==, any and the conversions read whole words.
+template <size_t Size> class bitset
+{
+    using Word = unsigned long long;
+    static constexpr size_t WordBits = 64;
+    static constexpr size_t WordCount = Size == 0 ? 1 : (Size + WordBits - 1) / WordBits;
+    static constexpr Word LastWordMask =
+        Size % WordBits == 0 ? ~Word(0) : (Word(1) << (Size % WordBits)) - 1;
+
+public:
+    class reference
+    {
+    public:
+        constexpr reference(const reference&) = default;
+        constexpr ~reference() = default;
+
+        constexpr reference& operator=(bool value) noexcept
+        {
+            m_set->set(m_position, value);
+            return *this;
+        }
+        constexpr reference& operator=(const reference& other) noexcept
+        {
+            m_set->set(m_position, static_cast<bool>(other));
+            return *this;
+        }
+        constexpr bool operator~() const noexcept
+        {
+            return !m_set->test_unchecked(m_position);
+        }
+        constexpr operator bool() const noexcept
+        {
+            return m_set->test_unchecked(m_position);
+        }
+        constexpr reference& flip() noexcept
+        {
+            m_set->m_words[m_position / WordBits] ^= Word(1) << (m_position % WordBits);
+            return *this;
+        }
+
+    private:
+        friend class bitset;
+        constexpr reference(bitset* set, size_t position) noexcept
+            : m_set(set), m_position(position)
+        {
+        }
+
+        bitset* m_set;
+        size_t m_position;
+    };
+
+    constexpr bitset() noexcept = default;
+
+    constexpr bitset(unsigned long long value) noexcept
+    {
+        m_words[0] = value;
+        Trim();
+    }
+
+    template <class CharT, class Traits, class Allocator>
+    constexpr explicit bitset(const basic_string<CharT, Traits, Allocator>& text,
+                              size_t position = 0,
+                              size_t count = basic_string<CharT, Traits, Allocator>::npos,
+                              CharT zero = CharT('0'), CharT one = CharT('1'))
+    {
+        if (position > text.size())
+        {
+            __detail::LibraryAbort("bitset: the position is past the string's end");
+        }
+        const size_t available = text.size() - position;
+        Parse<Traits>(text.data() + position, count < available ? count : available, zero, one);
+    }
+
+    template <class CharT>
+    constexpr explicit bitset(const CharT* text, size_t count = basic_string<CharT>::npos,
+                              CharT zero = CharT('0'), CharT one = CharT('1'))
+    {
+        using Traits = char_traits<CharT>;
+        Parse<Traits>(text, count == basic_string<CharT>::npos ? Traits::length(text) : count, zero,
+                      one);
+    }
+
+    constexpr bitset& operator&=(const bitset& other) noexcept
+    {
+        for (size_t index = 0; index != WordCount; ++index)
+        {
+            m_words[index] &= other.m_words[index];
+        }
+        return *this;
+    }
+    constexpr bitset& operator|=(const bitset& other) noexcept
+    {
+        for (size_t index = 0; index != WordCount; ++index)
+        {
+            m_words[index] |= other.m_words[index];
+        }
+        return *this;
+    }
+    constexpr bitset& operator^=(const bitset& other) noexcept
+    {
+        for (size_t index = 0; index != WordCount; ++index)
+        {
+            m_words[index] ^= other.m_words[index];
+        }
+        return *this;
+    }
+
+    constexpr bitset& operator<<=(size_t shift) noexcept
+    {
+        if (shift >= Size)
+        {
+            return reset();
+        }
+        const size_t words = shift / WordBits;
+        const size_t bits = shift % WordBits;
+        for (size_t index = WordCount; index-- != 0;)
+        {
+            Word value = 0;
+            if (index >= words)
+            {
+                value = m_words[index - words] << bits;
+                if (bits != 0 && index > words)
+                {
+                    value |= m_words[index - words - 1] >> (WordBits - bits);
+                }
+            }
+            m_words[index] = value;
+        }
+        Trim();
+        return *this;
+    }
+    constexpr bitset& operator>>=(size_t shift) noexcept
+    {
+        if (shift >= Size)
+        {
+            return reset();
+        }
+        const size_t words = shift / WordBits;
+        const size_t bits = shift % WordBits;
+        for (size_t index = 0; index != WordCount; ++index)
+        {
+            Word value = 0;
+            if (index + words < WordCount)
+            {
+                value = m_words[index + words] >> bits;
+                if (bits != 0 && index + words + 1 < WordCount)
+                {
+                    value |= m_words[index + words + 1] << (WordBits - bits);
+                }
+            }
+            m_words[index] = value;
+        }
+        return *this;
+    }
+    constexpr bitset operator<<(size_t shift) const noexcept
+    {
+        bitset result = *this;
+        return result <<= shift;
+    }
+    constexpr bitset operator>>(size_t shift) const noexcept
+    {
+        bitset result = *this;
+        return result >>= shift;
+    }
+
+    constexpr bitset& set() noexcept
+    {
+        for (Word& word : m_words)
+        {
+            word = ~Word(0);
+        }
+        Trim();
+        return *this;
+    }
+    constexpr bitset& set(size_t position, bool value = true)
+    {
+        Check(position, "bitset::set: the position is out of range");
+        const Word mask = Word(1) << (position % WordBits);
+        Word& word = m_words[position / WordBits];
+        word = value ? word | mask : word & ~mask;
+        return *this;
+    }
+    constexpr bitset& reset() noexcept
+    {
+        for (Word& word : m_words)
+        {
+            word = 0;
+        }
+        return *this;
+    }
+    constexpr bitset& reset(size_t position)
+    {
+        return set(position, false);
+    }
+    constexpr bitset operator~() const noexcept
+    {
+        bitset result = *this;
+        return result.flip();
+    }
+    constexpr bitset& flip() noexcept
+    {
+        for (Word& word : m_words)
+        {
+            word = ~word;
+        }
+        Trim();
+        return *this;
+    }
+    constexpr bitset& flip(size_t position)
+    {
+        Check(position, "bitset::flip: the position is out of range");
+        m_words[position / WordBits] ^= Word(1) << (position % WordBits);
+        return *this;
+    }
+
+    constexpr bool operator[](size_t position) const
+    {
+        return test_unchecked(position);
+    }
+    constexpr reference operator[](size_t position)
+    {
+        return reference(this, position);
+    }
+
+    constexpr unsigned long to_ulong() const
+    {
+        if constexpr (sizeof(unsigned long) < sizeof(Word))
+        {
+            if (m_words[0] >> (8 * sizeof(unsigned long)) != 0)
+            {
+                __detail::LibraryAbort("bitset::to_ulong: the value does not fit");
+            }
+        }
+        CheckHighWordsZero("bitset::to_ulong: the value does not fit");
+        return static_cast<unsigned long>(m_words[0]);
+    }
+    constexpr unsigned long long to_ullong() const
+    {
+        CheckHighWordsZero("bitset::to_ullong: the value does not fit");
+        return m_words[0];
+    }
+
+    template <class CharT = char, class Traits = char_traits<CharT>,
+              class Allocator = allocator<CharT>>
+    constexpr basic_string<CharT, Traits, Allocator> to_string(CharT zero = CharT('0'),
+                                                               CharT one = CharT('1')) const
+    {
+        basic_string<CharT, Traits, Allocator> text(Size, zero);
+        for (size_t position = 0; position != Size; ++position)
+        {
+            if (test_unchecked(position))
+            {
+                text[Size - 1 - position] = one;
+            }
+        }
+        return text;
+    }
+
+    constexpr size_t count() const noexcept
+    {
+        size_t result = 0;
+        for (const Word word : m_words)
+        {
+            result += static_cast<size_t>(_FSTD::popcount(word));
+        }
+        return result;
+    }
+    constexpr size_t size() const noexcept
+    {
+        return Size;
+    }
+
+    constexpr bool operator==(const bitset& other) const noexcept
+    {
+        for (size_t index = 0; index != WordCount; ++index)
+        {
+            if (m_words[index] != other.m_words[index])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    constexpr bool test(size_t position) const
+    {
+        Check(position, "bitset::test: the position is out of range");
+        return test_unchecked(position);
+    }
+    constexpr bool all() const noexcept
+    {
+        return count() == Size;
+    }
+    constexpr bool any() const noexcept
+    {
+        for (const Word word : m_words)
+        {
+            if (word != 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+    constexpr bool none() const noexcept
+    {
+        return !any();
+    }
+
+private:
+    friend struct hash<bitset>;
+
+    constexpr bool test_unchecked(size_t position) const noexcept
+    {
+        return ((m_words[position / WordBits] >> (position % WordBits)) & 1) != 0;
+    }
+
+    static constexpr void Check(size_t position, const char* message)
+    {
+        if (position >= Size)
+        {
+            __detail::LibraryAbort(message);
+        }
+    }
+
+    constexpr void CheckHighWordsZero(const char* message) const
+    {
+        for (size_t index = 1; index != WordCount; ++index)
+        {
+            if (m_words[index] != 0)
+            {
+                __detail::LibraryAbort(message);
+            }
+        }
+    }
+
+    constexpr void Trim() noexcept
+    {
+        m_words[WordCount - 1] &= Size == 0 ? 0 : LastWordMask;
+    }
+
+    // [bitset.cons]: every character must be zero or one, the first is the highest bit, and of a
+    // longer string only the first Size characters count.
+    template <class Traits, class CharT>
+    constexpr void Parse(const CharT* text, size_t length, CharT zero, CharT one)
+    {
+        for (size_t index = 0; index != length; ++index)
+        {
+            if (!Traits::eq(text[index], zero) && !Traits::eq(text[index], one))
+            {
+                __detail::LibraryAbort("bitset: a character is neither zero nor one");
+            }
+        }
+        const size_t used = length < Size ? length : Size;
+        for (size_t bit = 0; bit != used; ++bit)
+        {
+            if (Traits::eq(text[used - 1 - bit], one))
+            {
+                m_words[bit / WordBits] |= Word(1) << (bit % WordBits);
+            }
+        }
+    }
+
+    Word m_words[WordCount] = {};
+};
+
+template <size_t Size>
+constexpr bitset<Size> operator&(const bitset<Size>& left, const bitset<Size>& right) noexcept
+{
+    bitset<Size> result = left;
+    return result &= right;
+}
+template <size_t Size>
+constexpr bitset<Size> operator|(const bitset<Size>& left, const bitset<Size>& right) noexcept
+{
+    bitset<Size> result = left;
+    return result |= right;
+}
+template <size_t Size>
+constexpr bitset<Size> operator^(const bitset<Size>& left, const bitset<Size>& right) noexcept
+{
+    bitset<Size> result = left;
+    return result ^= right;
+}
+
+template <size_t Size> struct hash<bitset<Size>>
+{
+    constexpr size_t operator()(const bitset<Size>& bits) const noexcept
+    {
+        size_t result = Size;
+        for (const auto word : bits.m_words)
+        {
+            result = __detail::HashCombine(result, static_cast<size_t>(word));
+        }
+        return result;
+    }
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

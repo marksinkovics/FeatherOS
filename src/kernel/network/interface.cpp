@@ -14,6 +14,8 @@
 #include "kernel/sync/spinlock.h"
 #include "kernel/time/timer.h"
 
+#include <atomic>
+
 namespace FeatherOS::Network
 {
 namespace
@@ -29,7 +31,7 @@ InterfaceConfiguration configuration GUARDED_BY(configuration_lock) = {};
 MacAddress local_mac = {};
 bool up = false;
 // Read and written atomically.
-bool link_up = false;
+std::atomic<bool> link_up = false;
 // Held while a frame is handled and while the link changes, so no frame that arrived before the
 // link went down is handled after its state was dropped.
 constinit Sync::Mutex link_mutex;
@@ -128,7 +130,7 @@ bool Initialize(const void* platform_data, uint64_t hhdm_offset)
         return false;
     }
     up = true;
-    __atomic_store_n(&link_up, true, __ATOMIC_RELEASE);
+    link_up.store(true, std::memory_order_release);
     return true;
 }
 
@@ -139,7 +141,7 @@ bool IsUp()
 
 bool LinkIsUp()
 {
-    return __atomic_load_n(&link_up, __ATOMIC_ACQUIRE);
+    return link_up.load(std::memory_order_acquire);
 }
 
 bool SetLink(bool new_state)
@@ -156,7 +158,7 @@ bool SetLink(bool new_state)
         }
         if (!new_state)
         {
-            __atomic_store_n(&link_up, false, __ATOMIC_RELEASE);
+            link_up.store(false, std::memory_order_release);
             Console::WriteLine("KERN/I: Network: link down");
             Device::Stop();
             {
@@ -178,7 +180,7 @@ bool SetLink(bool new_state)
         {
             return false;
         }
-        __atomic_store_n(&link_up, true, __ATOMIC_RELEASE);
+        link_up.store(true, std::memory_order_release);
         StartIpv6();
     }
     // The receive task handles the router's advertisement, which needs the mutex.

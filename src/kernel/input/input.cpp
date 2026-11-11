@@ -5,6 +5,8 @@
 #include "kernel/sync/spinlock.h"
 #include "kernel/terminal/terminal.h"
 
+#include <atomic>
+
 namespace FeatherOS::Input
 {
 namespace
@@ -16,7 +18,7 @@ namespace
 constinit Sync::SpinLock poll_lock;
 Terminals::Terminal* serial_target = nullptr;
 // Changes when another console is shown, perhaps on another CPU than a key's interrupt.
-Terminals::Terminal* keyboard_target = nullptr;
+std::atomic<Terminals::Terminal*> keyboard_target = nullptr;
 void (*console_switch)(uint32_t console) = nullptr;
 bool previous_was_carriage_return GUARDED_BY(poll_lock) = false;
 
@@ -30,7 +32,7 @@ void SetTerminal(Terminals::Terminal* terminal)
 
 void SetKeyboardTerminal(Terminals::Terminal* terminal)
 {
-    __atomic_store_n(&keyboard_target, terminal, __ATOMIC_RELEASE);
+    keyboard_target.store(terminal, std::memory_order_release);
 }
 
 void SetConsoleSwitch(void (*switch_console)(uint32_t console))
@@ -59,7 +61,7 @@ void SubmitKey(Keyboard& keyboard, uint16_t code, bool pressed)
 
 void SubmitBytes(const char* bytes, size_t length)
 {
-    Terminals::Terminal* target = __atomic_load_n(&keyboard_target, __ATOMIC_ACQUIRE);
+    Terminals::Terminal* target = keyboard_target.load(std::memory_order_acquire);
     if (target != nullptr)
     {
         target->Receive(bytes, length);

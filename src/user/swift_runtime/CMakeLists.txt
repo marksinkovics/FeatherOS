@@ -32,12 +32,13 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release")
 else ()
     set(debug_flags -g)
 endif ()
-# Upstream builds the runtime optimized and without assertions. __featheros__ picks the cases
-# swift.patch adds; FeatherOS is little-endian on both targets. include/ holds a cxxabi.h for the
-# declaration the runtime includes.
+# Upstream builds the runtime optimized and without assertions, as C++17; FeatherOS's C++ headers
+# (src/libcxx) need C++20, and featheros_cxx is behind them in each program's link. __featheros__
+# picks the cases swift.patch adds; FeatherOS is little-endian on both targets. include/ holds a
+# cxxabi.h for the declaration the runtime includes.
 set(cxx_flags
-    ${target_flags} -std=c++17 -O2 ${debug_flags} -DNDEBUG
-    -nostdinc -isystem ${FEATHEROS_LIBCXX_CONFIG_DIRECTORY} -isystem ${FEATHEROS_LIBCXX_SOURCE}/include
+    ${target_flags} -std=c++20 -O2 ${debug_flags} -DNDEBUG
+    -nostdinc -isystem ${PROJECT_SOURCE_DIR}/src/libcxx/include
     -isystem ${PROJECT_SOURCE_DIR}/src/libc/include -isystem ${clang_resource_include}
     -isystem ${CMAKE_CURRENT_SOURCE_DIR}/include
     -ffreestanding -fno-exceptions -fno-cxx-exceptions -fno-rtti -fno-unwind-tables
@@ -118,7 +119,7 @@ function(featheros_swift_runtime_objects objects_variable directory)
             OUTPUT ${object}
             COMMAND ${clang} ${language_flags} ${arg_FLAGS} ${warnings} -MD -MF ${object}.d
                 -c ${source} -o ${object}
-            DEPENDS ${source} ${FEATHEROS_LIBCXX_CONFIG_DIRECTORY}/__config_site
+            DEPENDS ${source}
             DEPFILE ${object}.d
             COMMENT "Building Swift ${directory} object ${name}.o"
             VERBATIM
@@ -131,7 +132,7 @@ endfunction()
 
 featheros_swift_runtime_objects(objects runtime
     FLAGS -DSWIFT_TARGET_LIBRARY_NAME=swiftRuntimeCore
-    SOURCES ${runtime_sources} ${CMAKE_CURRENT_SOURCE_DIR}/platform.cpp)
+    SOURCES ${runtime_sources})
 # Registers the program's swift5_* sections with the runtime from a constructor, through the
 # linker's __start_ and __stop_ symbols. Nothing refers to it, so programs link the object itself.
 featheros_swift_runtime_objects(registration_object runtime
@@ -382,6 +383,40 @@ add_library(featheros_swift_full_cxx STATIC ${cxx_object})
 set_target_properties(featheros_swift_full_cxx PROPERTIES LINKER_LANGUAGE CXX)
 list(APPEND module_dependencies ${cxx_module})
 
+# Swift's CxxStdlib overlay over FeatherOS's C++ library, as ../swift_cxx builds it for Embedded
+# Swift. The toolchain names the CxxStdlibShim module the overlay imports only for Embedded Swift
+# and its own platforms, so full Swift loads that module map by name. Programs link the Cxx archive
+# by name, so the overlay must not ask for swiftCxx: in Release's bitcode that request becomes an
+# ELF dependent library ld.lld cannot find.
+set(cxx_shim -Xcc -fmodule-map-file=${resource_directory}/embedded/libcxxshim.modulemap)
+set(cxx_stdlib_source ${cxx_source}/std)
+set(cxx_stdlib_sources ${cxx_stdlib_source}/std.swift ${cxx_stdlib_source}/Chrono.swift
+    ${cxx_stdlib_source}/String.swift)
+set(cxx_stdlib_module
+    ${module_directory}/CxxStdlib.swiftmodule/${FEATHEROS_SWIFT_TARGET}.swiftmodule)
+set(cxx_stdlib_object ${output}/objects/cxx/CxxStdlib.o)
+set(features AllowUnsafeAttribute Lifetimes)
+list(TRANSFORM features PREPEND "-enable-experimental-feature;")
+add_custom_command(
+    OUTPUT ${cxx_stdlib_module} ${cxx_stdlib_object}
+    COMMAND ${FEATHEROS_SWIFTC} ${FEATHEROS_SWIFT_FULL_FLAGS} ${below_string_processing}
+        -I ${module_directory} ${features} ${FEATHEROS_SWIFT_CXX_INCLUDES} ${cxx_shim}
+        -cxx-interoperability-mode=default ${FEATHEROS_SWIFT_CXX_CLANG_FLAGS} -strict-memory-safety
+        -module-name CxxStdlib -parse-as-library -O -library-level api
+        -Xfrontend -disable-objc-interop ${FEATHEROS_SWIFT_AVAILABILITY}
+        -Xfrontend -disable-autolink-library -Xfrontend swiftCxx
+        -emit-module -emit-module-path ${cxx_stdlib_module} -c ${cxx_stdlib_sources}
+        -o ${cxx_stdlib_object}
+    DEPENDS ${cxx_stdlib_sources} ${module} ${concurrency_module} ${cxx_module}
+        ${FEATHEROS_CXX_HEADER_FILES}
+    COMMENT "Building full Swift module CxxStdlib"
+    VERBATIM
+)
+set_source_files_properties(${cxx_stdlib_object} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+add_library(featheros_swift_full_cxx_stdlib STATIC ${cxx_stdlib_object})
+set_target_properties(featheros_swift_full_cxx_stdlib PROPERTIES LINKER_LANGUAGE CXX)
+list(APPEND module_dependencies ${cxx_stdlib_module})
+
 # Swift's regular expressions from swift-experimental-string-processing, as upstream builds them:
 # the parser _RegexParser, the engine _StringProcessing (with the C tables of _CUnicode), which
 # programs import implicitly, and RegexBuilder. Programs link them from one archive.
@@ -442,3 +477,4 @@ set(FEATHEROS_SWIFT_FULL_OBJECTS ${registration_object} ${FEATHEROS_SWIFT_FULL_O
     PARENT_SCOPE)
 set(FEATHEROS_SWIFT_LLD ${swift_bin}/ld.lld PARENT_SCOPE)
 set(FEATHEROS_SWIFT_FULL_CXX_MODULE ${cxx_module} PARENT_SCOPE)
+set(FEATHEROS_SWIFT_FULL_CXX_SHIM ${cxx_shim} PARENT_SCOPE)

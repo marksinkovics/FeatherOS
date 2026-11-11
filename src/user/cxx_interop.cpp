@@ -116,6 +116,61 @@ int Node::Value() const
     return m_value;
 }
 
+std::optional<int> Half(int value)
+{
+    if (value % 2 != 0)
+    {
+        return std::nullopt;
+    }
+    return value / 2;
+}
+
+IntVector Squares(int count)
+{
+    IntVector squares;
+    for (int value = 0; value < count; ++value)
+    {
+        squares.push_back(value * value);
+    }
+    return squares;
+}
+
+int Sum(IntSpan values)
+{
+    int sum = 0;
+    for (int value : values)
+    {
+        sum += value;
+    }
+    return sum;
+}
+
+int CountVowels(std::string_view text)
+{
+    int count = 0;
+    for (char character : text)
+    {
+        count += std::string_view("aeiou").contains(character) ? 1 : 0;
+    }
+    return count;
+}
+
+std::string Greeting(std::string_view name)
+{
+    return "hello, " + std::string(name);
+}
+
+std::size_t CountWords(const std::string& text)
+{
+    std::size_t words = 0;
+    for (std::size_t start = text.find_first_not_of(' '); start != std::string::npos;
+         start = text.find_first_not_of(' ', text.find(' ', start)))
+    {
+        ++words;
+    }
+    return words;
+}
+
 } // namespace FeatherOS::User::Interop
 
 void RetainInteropNode(FeatherOS::User::Interop::Node* node)

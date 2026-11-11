@@ -1,0 +1,18 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CUCHAR
+#define FEATHEROS_LIBCXX_CUCHAR
+
+#include "__featheros_config"
+
+#include <uchar.h>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+using ::c16rtomb;
+using ::c32rtomb;
+using ::mbrtoc16;
+using ::mbrtoc32;
+using ::mbstate_t;
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

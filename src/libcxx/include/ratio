@@ -1,0 +1,149 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_RATIO
+#define FEATHEROS_LIBCXX_RATIO
+
+#include "__featheros_config"
+#include "cstdint"
+#include "type_traits"
+
+// The arithmetic is exact in 128 bits, so a result that does not fit intmax_t is a compile-time
+// error rather than a wrong ratio. yocto, zepto, zetta, yotta and the C++26 ones do not fit.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+using RatioWide = __int128;
+
+consteval RatioWide RatioMagnitude(RatioWide value)
+{
+    return value < 0 ? -value : value;
+}
+
+consteval RatioWide RatioGcd(RatioWide left, RatioWide right)
+{
+    left = RatioMagnitude(left);
+    right = RatioMagnitude(right);
+    while (right != 0)
+    {
+        const RatioWide rest = left % right;
+        left = right;
+        right = rest;
+    }
+    return left == 0 ? 1 : left;
+}
+
+consteval bool FitsIntmax(RatioWide value)
+{
+    return value >= -static_cast<RatioWide>(INTMAX_MAX) && value <= INTMAX_MAX;
+}
+} // namespace __detail
+
+template <intmax_t N, intmax_t D = 1> class ratio
+{
+    static_assert(D != 0, "a ratio's denominator cannot be zero");
+    static_assert(N >= -INTMAX_MAX && D >= -INTMAX_MAX,
+                  "a ratio's numerator and denominator must be representable when negated");
+
+    static constexpr __detail::RatioWide Divisor = __detail::RatioGcd(N, D);
+
+public:
+    static constexpr intmax_t num =
+        static_cast<intmax_t>((D < 0 ? -N : N) / static_cast<intmax_t>(Divisor));
+    static constexpr intmax_t den =
+        static_cast<intmax_t>((D < 0 ? -D : D) / static_cast<intmax_t>(Divisor));
+    using type = ratio<num, den>;
+};
+
+namespace __detail
+{
+template <class T> inline constexpr bool IsRatio = false;
+template <intmax_t N, intmax_t D> inline constexpr bool IsRatio<ratio<N, D>> = true;
+
+template <RatioWide N, RatioWide D> struct RatioFrom
+{
+    static constexpr RatioWide Divisor = RatioGcd(N, D);
+    static constexpr RatioWide Numerator = (D < 0 ? -N : N) / Divisor;
+    static constexpr RatioWide Denominator = RatioMagnitude(D) / Divisor;
+    static_assert(FitsIntmax(Numerator) && FitsIntmax(Denominator),
+                  "the ratio's result does not fit intmax_t");
+    using type = ratio<static_cast<intmax_t>(Numerator), static_cast<intmax_t>(Denominator)>;
+};
+} // namespace __detail
+
+template <class R1, class R2>
+using ratio_add =
+    typename __detail::RatioFrom<static_cast<__detail::RatioWide>(R1::num) * R2::den +
+                                     static_cast<__detail::RatioWide>(R2::num) * R1::den,
+                                 static_cast<__detail::RatioWide>(R1::den) * R2::den>::type;
+
+template <class R1, class R2>
+using ratio_subtract =
+    typename __detail::RatioFrom<static_cast<__detail::RatioWide>(R1::num) * R2::den -
+                                     static_cast<__detail::RatioWide>(R2::num) * R1::den,
+                                 static_cast<__detail::RatioWide>(R1::den) * R2::den>::type;
+
+template <class R1, class R2>
+using ratio_multiply =
+    typename __detail::RatioFrom<static_cast<__detail::RatioWide>(R1::num) * R2::num,
+                                 static_cast<__detail::RatioWide>(R1::den) * R2::den>::type;
+
+template <class R1, class R2>
+using ratio_divide =
+    typename __detail::RatioFrom<static_cast<__detail::RatioWide>(R1::num) * R2::den,
+                                 static_cast<__detail::RatioWide>(R1::den) * R2::num>::type;
+
+template <class R1, class R2>
+struct ratio_equal : bool_constant<R1::num == R2::num && R1::den == R2::den>
+{
+};
+template <class R1, class R2> struct ratio_not_equal : bool_constant<!ratio_equal<R1, R2>::value>
+{
+};
+template <class R1, class R2>
+    struct ratio_less
+    : bool_constant < static_cast<__detail::RatioWide>(R1::num) *
+                          R2::den<static_cast<__detail::RatioWide>(R2::num) * R1::den>
+{
+};
+template <class R1, class R2> struct ratio_less_equal : bool_constant<!ratio_less<R2, R1>::value>
+{
+};
+template <class R1, class R2> struct ratio_greater : bool_constant<ratio_less<R2, R1>::value>
+{
+};
+template <class R1, class R2> struct ratio_greater_equal : bool_constant<!ratio_less<R1, R2>::value>
+{
+};
+
+template <class R1, class R2> inline constexpr bool ratio_equal_v = ratio_equal<R1, R2>::value;
+template <class R1, class R2>
+inline constexpr bool ratio_not_equal_v = ratio_not_equal<R1, R2>::value;
+template <class R1, class R2> inline constexpr bool ratio_less_v = ratio_less<R1, R2>::value;
+template <class R1, class R2>
+inline constexpr bool ratio_less_equal_v = ratio_less_equal<R1, R2>::value;
+template <class R1, class R2> inline constexpr bool ratio_greater_v = ratio_greater<R1, R2>::value;
+template <class R1, class R2>
+inline constexpr bool ratio_greater_equal_v = ratio_greater_equal<R1, R2>::value;
+
+using atto = ratio<1, 1'000'000'000'000'000'000>;
+using femto = ratio<1, 1'000'000'000'000'000>;
+using pico = ratio<1, 1'000'000'000'000>;
+using nano = ratio<1, 1'000'000'000>;
+using micro = ratio<1, 1'000'000>;
+using milli = ratio<1, 1'000>;
+using centi = ratio<1, 100>;
+using deci = ratio<1, 10>;
+using deca = ratio<10, 1>;
+using hecto = ratio<100, 1>;
+using kilo = ratio<1'000, 1>;
+using mega = ratio<1'000'000, 1>;
+using giga = ratio<1'000'000'000, 1>;
+using tera = ratio<1'000'000'000'000, 1>;
+using peta = ratio<1'000'000'000'000'000, 1>;
+using exa = ratio<1'000'000'000'000'000'000, 1>;
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

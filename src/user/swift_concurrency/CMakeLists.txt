@@ -2,23 +2,18 @@
 # and patches with swift.patch, as upstream builds it for Embedded Swift but with the pthreads
 # threading package over the C library and global_executor.cpp's thread pool in place of the
 # single-threaded cooperative executor. Its C++ half needs Clang and a C++ standard library, so
-# it uses the toolchain's clang++ and libc++'s headers from deps/llvm-project, configured by
-# libcxx/__config_site; nothing calls into a compiled libc++. The Swift half is only the
-# _Concurrency module: Embedded Swift compiles the parts a program uses into the program.
+# it uses the toolchain's clang++ over FeatherOS's own headers (src/libcxx), with featheros_cxx
+# behind them in each program's link. The Swift half is only the _Concurrency module: Embedded
+# Swift compiles the parts a program uses into the program.
 
 set(swift_source ${FEATHEROS_SWIFT_SOURCE})
 set(concurrency_source ${swift_source}/stdlib/public/Concurrency)
-set(libcxx_source ${FEATHEROS_LIBCXX_SOURCE})
 set(output ${CMAKE_CURRENT_BINARY_DIR})
 
 get_filename_component(swift_bin ${FEATHEROS_SWIFTC} DIRECTORY)
 set(clang ${swift_bin}/clang++)
 file(GLOB clang_resource_include ${swift_bin}/../lib/clang/*/include)
 
-# libc++'s generated headers: the settings, and its default assertion handler.
-configure_file(libcxx/__config_site ${output}/libcxx/__config_site COPYONLY)
-configure_file(${libcxx_source}/vendor/llvm/default_assertion_handler.in
-    ${output}/libcxx/__assertion_handler COPYONLY)
 file(READ ${PROJECT_SOURCE_DIR}/.swift-version swift_version)
 string(REGEX MATCH "^([0-9]+)\\.([0-9]+)" swift_version "${swift_version}")
 set(SWIFT_VERSION_MAJOR ${CMAKE_MATCH_1})
@@ -37,11 +32,12 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release")
 else ()
     set(debug_flags -g)
 endif ()
-# Upstream builds the Embedded runtime only optimized, without assertions. __featheros__ picks
-# the cases swift.patch adds; FeatherOS is little-endian on both targets.
+# Upstream builds the Embedded runtime only optimized, without assertions, as C++17; our headers
+# need C++20. __featheros__ picks the cases swift.patch adds; FeatherOS is little-endian on both
+# targets.
 set(cxx_flags
-    ${target_flags} -std=c++17 -O2 ${debug_flags} -DNDEBUG
-    -nostdinc -isystem ${output}/libcxx -isystem ${libcxx_source}/include
+    ${target_flags} -std=c++20 -O2 ${debug_flags} -DNDEBUG
+    -nostdinc -isystem ${PROJECT_SOURCE_DIR}/src/libcxx/include
     -isystem ${PROJECT_SOURCE_DIR}/src/libc/include -isystem ${clang_resource_include}
     -ffreestanding -fno-exceptions -fno-cxx-exceptions -fno-rtti -fno-unwind-tables
     -fno-stack-protector -fpie -ffunction-sections -fdata-sections -fswift-async-fp=never
@@ -81,7 +77,7 @@ foreach (source ${runtime_sources} ${own_sources})
     add_custom_command(
         OUTPUT ${object}
         COMMAND ${clang} ${cxx_flags} ${warnings} -MD -MF ${object}.d -c ${source} -o ${object}
-        DEPENDS ${source} ${output}/libcxx/__config_site
+        DEPENDS ${source}
         DEPFILE ${object}.d
         COMMENT "Building Swift concurrency runtime object ${name}.o"
         VERBATIM
@@ -164,4 +160,3 @@ target_sources(featheros_swift_concurrency PRIVATE ${executors_object})
 
 set(FEATHEROS_SWIFT_CONCURRENCY_MODULE_DIRECTORY ${module_directory} PARENT_SCOPE)
 set(FEATHEROS_SWIFT_CONCURRENCY_MODULE ${module} PARENT_SCOPE)
-set(FEATHEROS_LIBCXX_CONFIG_DIRECTORY ${output}/libcxx PARENT_SCOPE)

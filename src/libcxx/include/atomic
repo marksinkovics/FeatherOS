@@ -1,0 +1,1119 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_ATOMIC
+#define FEATHEROS_LIBCXX_ATOMIC
+
+#include "__featheros_config"
+#include "__memory_base"
+#include "cstdint"
+#include "type_traits"
+
+// Over the compiler's __atomic builtins. There is no libatomic, so a type the target cannot
+// update in one instruction (16 bytes under GCC, or a size that is not a power of two) is guarded
+// by a spin lock chosen by its address from a small table. The kernel must not use such types: an
+// interrupt handler taking the same lock would spin forever.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+enum class memory_order : int
+{
+    relaxed = __ATOMIC_RELAXED,
+    consume = __ATOMIC_CONSUME,
+    acquire = __ATOMIC_ACQUIRE,
+    release = __ATOMIC_RELEASE,
+    acq_rel = __ATOMIC_ACQ_REL,
+    seq_cst = __ATOMIC_SEQ_CST,
+};
+inline constexpr memory_order memory_order_relaxed = memory_order::relaxed;
+inline constexpr memory_order memory_order_consume = memory_order::consume;
+inline constexpr memory_order memory_order_acquire = memory_order::acquire;
+inline constexpr memory_order memory_order_release = memory_order::release;
+inline constexpr memory_order memory_order_acq_rel = memory_order::acq_rel;
+inline constexpr memory_order memory_order_seq_cst = memory_order::seq_cst;
+
+template <class T> T kill_dependency(T value) noexcept
+{
+    return value;
+}
+
+inline void atomic_thread_fence(memory_order order) noexcept
+{
+    __atomic_thread_fence(static_cast<int>(order));
+}
+
+inline void atomic_signal_fence(memory_order order) noexcept
+{
+    __atomic_signal_fence(static_cast<int>(order));
+}
+
+namespace __detail
+{
+
+constexpr int AtomicOrder(memory_order order)
+{
+    return static_cast<int>(order);
+}
+
+constexpr memory_order AtomicFailureOrder(memory_order order)
+{
+    if (order == memory_order::acq_rel)
+    {
+        return memory_order::acquire;
+    }
+    if (order == memory_order::release)
+    {
+        return memory_order::relaxed;
+    }
+    return order;
+}
+
+template <class T>
+inline constexpr bool AtomicIsLockFree = sizeof(T) <= 16 && (sizeof(T) & (sizeof(T) - 1)) == 0 &&
+                                         __atomic_always_lock_free(sizeof(T), 0);
+
+// A lock-free type must be aligned to its size, which a struct of smaller members may not be.
+template <class T>
+inline constexpr size_t AtomicAlignment = AtomicIsLockFree<T> && sizeof(T) > alignof(T)
+                                              ? sizeof(T)
+                                              : alignof(T);
+
+// Lock-free types move as an unsigned integer of their size, whose alignment the compiler can see;
+// given a T* aligned only to alignof(T), Clang would call libatomic instead.
+template <size_t Size> struct AtomicWordOf;
+template <> struct AtomicWordOf<1>
+{
+    typedef uint8_t __attribute__((may_alias)) Type;
+};
+template <> struct AtomicWordOf<2>
+{
+    typedef uint16_t __attribute__((may_alias)) Type;
+};
+template <> struct AtomicWordOf<4>
+{
+    typedef uint32_t __attribute__((may_alias)) Type;
+};
+template <> struct AtomicWordOf<8>
+{
+    typedef uint64_t __attribute__((may_alias)) Type;
+};
+template <> struct AtomicWordOf<16>
+{
+    typedef unsigned __int128 __attribute__((may_alias)) Type;
+};
+template <class T> using AtomicWord = typename AtomicWordOf<sizeof(T)>::Type;
+
+template <class T> AtomicWord<T> AtomicToWord(const T& value) noexcept
+{
+    AtomicWord<T> word;
+    __builtin_memcpy(&word, _FSTD::addressof(value), sizeof(T));
+    return word;
+}
+
+// Bits outside the value (a struct's padding, x86-64's long double past 80 bits) would make a
+// compare-exchange fail between equal values, so stored values keep them zero. Clang has no
+// __builtin_clear_padding, so there (as in libc++) only an expected value loaded from the atomic
+// is sure to match.
+template <class T>
+inline constexpr bool AtomicMayHavePadding =
+    !has_unique_object_representations_v<T> && !is_same_v<T, float> && !is_same_v<T, double>;
+
+template <class T> constexpr void AtomicClearPadding(T& value) noexcept
+{
+#if !__has_builtin(__builtin_clear_padding)
+    (void)value;
+#else
+    if constexpr (AtomicMayHavePadding<T>)
+    {
+        if (!__builtin_is_constant_evaluated())
+        {
+            __builtin_clear_padding(_FSTD::addressof(value));
+        }
+    }
+#endif
+}
+
+inline constexpr size_t AtomicLockCount = 64;
+inline constinit unsigned char AtomicLocks[AtomicLockCount] = {};
+
+inline void AtomicPause() noexcept
+{
+#if defined(__x86_64__)
+    asm volatile("pause" ::: "memory");
+#elif defined(__aarch64__)
+    asm volatile("yield" ::: "memory");
+#endif
+}
+
+class AtomicLockGuard
+{
+public:
+    explicit AtomicLockGuard(const void* address) noexcept
+        : m_lock(&AtomicLocks[(reinterpret_cast<uintptr_t>(address) >> 4) % AtomicLockCount])
+    {
+        while (__atomic_exchange_n(m_lock, 1, __ATOMIC_ACQUIRE) != 0)
+        {
+            while (__atomic_load_n(m_lock, __ATOMIC_RELAXED) != 0)
+            {
+                AtomicPause();
+            }
+        }
+    }
+    AtomicLockGuard(const AtomicLockGuard&) = delete;
+    AtomicLockGuard& operator=(const AtomicLockGuard&) = delete;
+    ~AtomicLockGuard()
+    {
+        __atomic_store_n(m_lock, 0, __ATOMIC_RELEASE);
+    }
+
+private:
+    unsigned char* m_lock;
+};
+
+// T need not be default constructible, so results are built in raw storage.
+template <class T> struct AtomicBuffer
+{
+    alignas(T) unsigned char bytes[sizeof(T)];
+
+    T* Pointer() noexcept
+    {
+        return reinterpret_cast<T*>(bytes);
+    }
+};
+
+template <class T> T AtomicLoad(const T* pointer, memory_order order) noexcept
+{
+    AtomicBuffer<T> result;
+    if constexpr (AtomicIsLockFree<T>)
+    {
+        const AtomicWord<T> word =
+            __atomic_load_n(reinterpret_cast<const AtomicWord<T>*>(pointer), AtomicOrder(order));
+        __builtin_memcpy(result.bytes, &word, sizeof(T));
+    }
+    else
+    {
+        const AtomicLockGuard guard(pointer);
+        __builtin_memcpy(result.bytes, pointer, sizeof(T));
+    }
+    return *result.Pointer();
+}
+
+template <class T> void AtomicStore(T* pointer, T value, memory_order order) noexcept
+{
+    AtomicClearPadding(value);
+    if constexpr (AtomicIsLockFree<T>)
+    {
+        __atomic_store_n(reinterpret_cast<AtomicWord<T>*>(pointer), AtomicToWord(value),
+                         AtomicOrder(order));
+    }
+    else
+    {
+        const AtomicLockGuard guard(pointer);
+        __builtin_memcpy(pointer, _FSTD::addressof(value), sizeof(T));
+    }
+}
+
+template <class T> T AtomicExchange(T* pointer, T value, memory_order order) noexcept
+{
+    AtomicClearPadding(value);
+    AtomicBuffer<T> result;
+    if constexpr (AtomicIsLockFree<T>)
+    {
+        const AtomicWord<T> word = __atomic_exchange_n(reinterpret_cast<AtomicWord<T>*>(pointer),
+                                                       AtomicToWord(value), AtomicOrder(order));
+        __builtin_memcpy(result.bytes, &word, sizeof(T));
+    }
+    else
+    {
+        const AtomicLockGuard guard(pointer);
+        __builtin_memcpy(result.bytes, pointer, sizeof(T));
+        __builtin_memcpy(pointer, _FSTD::addressof(value), sizeof(T));
+    }
+    return *result.Pointer();
+}
+
+template <class T>
+bool AtomicCompareExchangeBytes(T* pointer, T* expected, T* desired, bool weak,
+                                memory_order success, memory_order failure) noexcept
+{
+    if constexpr (AtomicIsLockFree<T>)
+    {
+        AtomicWord<T> seen = AtomicToWord(*expected);
+        if (__atomic_compare_exchange_n(reinterpret_cast<AtomicWord<T>*>(pointer), &seen,
+                                        AtomicToWord(*desired), weak, AtomicOrder(success),
+                                        AtomicOrder(failure)))
+        {
+            return true;
+        }
+        __builtin_memcpy(expected, &seen, sizeof(T));
+        return false;
+    }
+    else
+    {
+        const AtomicLockGuard guard(pointer);
+        if (__builtin_memcmp(pointer, expected, sizeof(T)) == 0)
+        {
+            __builtin_memcpy(pointer, desired, sizeof(T));
+            return true;
+        }
+        __builtin_memcpy(expected, pointer, sizeof(T));
+        return false;
+    }
+}
+
+// An atomic_ref may point at an object whose padding was never cleared, so a failure caused by
+// padding alone is retried with the bits actually stored.
+template <class T>
+bool AtomicCompareExchange(T* pointer, T& expected, T desired, bool weak, memory_order success,
+                           memory_order failure) noexcept
+{
+    AtomicClearPadding(desired);
+    if constexpr (!AtomicMayHavePadding<T>)
+    {
+        return AtomicCompareExchangeBytes(pointer, _FSTD::addressof(expected),
+                                          _FSTD::addressof(desired), weak, success, failure);
+    }
+    else
+    {
+        AtomicBuffer<T> wanted;
+        __builtin_memcpy(wanted.bytes, _FSTD::addressof(expected), sizeof(T));
+        AtomicClearPadding(*wanted.Pointer());
+        AtomicBuffer<T> current = wanted;
+        while (true)
+        {
+            if (AtomicCompareExchangeBytes(pointer, current.Pointer(), _FSTD::addressof(desired),
+                                           weak, success, failure))
+            {
+                return true;
+            }
+            AtomicBuffer<T> seen = current;
+            AtomicClearPadding(*seen.Pointer());
+            if (weak || __builtin_memcmp(seen.bytes, wanted.bytes, sizeof(T)) != 0)
+            {
+                __builtin_memcpy(_FSTD::addressof(expected), current.bytes, sizeof(T));
+                return false;
+            }
+        }
+    }
+}
+
+template <class T, class Function>
+T AtomicFetchModify(T* pointer, Function function, memory_order order) noexcept
+{
+    T current = AtomicLoad(pointer, memory_order::relaxed);
+    while (!AtomicCompareExchange(pointer, current, function(current), true, order,
+                                  memory_order::relaxed))
+    {
+    }
+    return current;
+}
+
+template <class T>
+inline constexpr bool AtomicIsIntegral = is_integral_v<T> && !is_same_v<remove_cv_t<T>, bool>;
+
+// Waiting is for programs only: featheros_cxx keeps the futex words it sleeps on (atomic_wait.cpp).
+// A word stands for many addresses, so a notification wakes all of its waiters, and each one
+// polls again. Deadlines are steady_clock nanoseconds.
+using AtomicPoll = bool (*)(void* context) noexcept;
+inline constexpr int64_t AtomicWaitForever = INT64_MAX;
+bool AtomicWaitSlow(const void* address, AtomicPoll poll, void* context, int64_t deadline) noexcept;
+void AtomicNotify(const void* address) noexcept;
+
+// true once poll() returns true, false when the deadline passes first.
+template <class Poll>
+bool AtomicWaitUntil(const void* address, Poll poll, int64_t deadline = AtomicWaitForever) noexcept
+{
+    constexpr int SpinCount = 64;
+    for (int spin = 0; spin < SpinCount; ++spin)
+    {
+        if (poll())
+        {
+            return true;
+        }
+        AtomicPause();
+    }
+    return AtomicWaitSlow(
+        address, [](void* context) noexcept { return (*static_cast<Poll*>(context))(); },
+        _FSTD::addressof(poll), deadline);
+}
+
+// Values are compared as compare_exchange compares them: by their bits, padding aside.
+template <class T> void AtomicWait(const T* pointer, T old, memory_order order) noexcept
+{
+    AtomicClearPadding(old);
+    AtomicWaitUntil(pointer,
+                    [pointer, &old, order]() noexcept
+                    {
+                        T current = AtomicLoad(pointer, order);
+                        AtomicClearPadding(current);
+                        return __builtin_memcmp(_FSTD::addressof(current), _FSTD::addressof(old),
+                                                sizeof(T)) != 0;
+                    });
+}
+
+} // namespace __detail
+
+// The members atomic and atomic_ref share. MUTATING is const for atomic_ref, whose operations
+// all are, and empty for atomic.
+#define FEATHEROS_ATOMIC_COMMON(MUTATING)                                                          \
+public:                                                                                            \
+    static constexpr bool is_always_lock_free = __detail::AtomicIsLockFree<value_type>;            \
+    bool is_lock_free() const noexcept                                                             \
+    {                                                                                              \
+        return is_always_lock_free;                                                                \
+    }                                                                                              \
+    void store(value_type desired, memory_order order = memory_order::seq_cst) MUTATING noexcept   \
+    {                                                                                              \
+        __detail::AtomicStore(Address(), desired, order);                                          \
+    }                                                                                              \
+    value_type operator=(value_type desired) MUTATING noexcept                                     \
+    {                                                                                              \
+        store(desired);                                                                            \
+        return desired;                                                                            \
+    }                                                                                              \
+    value_type load(memory_order order = memory_order::seq_cst) const noexcept                     \
+    {                                                                                              \
+        return __detail::AtomicLoad(Address(), order);                                             \
+    }                                                                                              \
+    operator value_type() const noexcept                                                           \
+    {                                                                                              \
+        return load();                                                                             \
+    }                                                                                              \
+    value_type exchange(value_type desired, memory_order order = memory_order::seq_cst)            \
+        MUTATING noexcept                                                                          \
+    {                                                                                              \
+        return __detail::AtomicExchange(Address(), desired, order);                                \
+    }                                                                                              \
+    bool compare_exchange_weak(value_type& expected, value_type desired, memory_order success,     \
+                               memory_order failure) MUTATING noexcept                             \
+    {                                                                                              \
+        return __detail::AtomicCompareExchange(Address(), expected, desired, true, success,        \
+                                               failure);                                           \
+    }                                                                                              \
+    bool compare_exchange_weak(value_type& expected, value_type desired,                           \
+                               memory_order order = memory_order::seq_cst) MUTATING noexcept       \
+    {                                                                                              \
+        return __detail::AtomicCompareExchange(Address(), expected, desired, true, order,          \
+                                               __detail::AtomicFailureOrder(order));               \
+    }                                                                                              \
+    bool compare_exchange_strong(value_type& expected, value_type desired, memory_order success,   \
+                                 memory_order failure) MUTATING noexcept                           \
+    {                                                                                              \
+        return __detail::AtomicCompareExchange(Address(), expected, desired, false, success,       \
+                                               failure);                                           \
+    }                                                                                              \
+    bool compare_exchange_strong(value_type& expected, value_type desired,                         \
+                                 memory_order order = memory_order::seq_cst) MUTATING noexcept     \
+    {                                                                                              \
+        return __detail::AtomicCompareExchange(Address(), expected, desired, false, order,         \
+                                               __detail::AtomicFailureOrder(order));               \
+    }                                                                                              \
+    void wait(value_type old, memory_order order = memory_order::seq_cst) const noexcept           \
+    {                                                                                              \
+        __detail::AtomicWait<value_type>(Address(), old, order);                                   \
+    }                                                                                              \
+    void notify_one() MUTATING noexcept                                                            \
+    {                                                                                              \
+        __detail::AtomicNotify(Address());                                                         \
+    }                                                                                              \
+    void notify_all() MUTATING noexcept                                                            \
+    {                                                                                              \
+        __detail::AtomicNotify(Address());                                                         \
+    }
+
+#define FEATHEROS_ATOMIC_INTEGRAL(MUTATING)                                                        \
+public:                                                                                            \
+    value_type fetch_add(value_type operand, memory_order order = memory_order::seq_cst)           \
+        MUTATING noexcept                                                                          \
+    {                                                                                              \
+        return __atomic_fetch_add(Address(), operand, __detail::AtomicOrder(order));               \
+    }                                                                                              \
+    value_type fetch_sub(value_type operand, memory_order order = memory_order::seq_cst)           \
+        MUTATING noexcept                                                                          \
+    {                                                                                              \
+        return __atomic_fetch_sub(Address(), operand, __detail::AtomicOrder(order));               \
+    }                                                                                              \
+    value_type fetch_and(value_type operand, memory_order order = memory_order::seq_cst)           \
+        MUTATING noexcept                                                                          \
+    {                                                                                              \
+        return __atomic_fetch_and(Address(), operand, __detail::AtomicOrder(order));               \
+    }                                                                                              \
+    value_type fetch_or(value_type operand, memory_order order = memory_order::seq_cst)            \
+        MUTATING noexcept                                                                          \
+    {                                                                                              \
+        return __atomic_fetch_or(Address(), operand, __detail::AtomicOrder(order));                \
+    }                                                                                              \
+    value_type fetch_xor(value_type operand, memory_order order = memory_order::seq_cst)           \
+        MUTATING noexcept                                                                          \
+    {                                                                                              \
+        return __atomic_fetch_xor(Address(), operand, __detail::AtomicOrder(order));               \
+    }                                                                                              \
+    value_type operator++(int) MUTATING noexcept                                                   \
+    {                                                                                              \
+        return fetch_add(1);                                                                       \
+    }                                                                                              \
+    value_type operator--(int) MUTATING noexcept                                                   \
+    {                                                                                              \
+        return fetch_sub(1);                                                                       \
+    }                                                                                              \
+    value_type operator++() MUTATING noexcept                                                      \
+    {                                                                                              \
+        return __atomic_add_fetch(Address(), 1, __ATOMIC_SEQ_CST);                                 \
+    }                                                                                              \
+    value_type operator--() MUTATING noexcept                                                      \
+    {                                                                                              \
+        return __atomic_sub_fetch(Address(), 1, __ATOMIC_SEQ_CST);                                 \
+    }                                                                                              \
+    value_type operator+=(value_type operand) MUTATING noexcept                                    \
+    {                                                                                              \
+        return __atomic_add_fetch(Address(), operand, __ATOMIC_SEQ_CST);                           \
+    }                                                                                              \
+    value_type operator-=(value_type operand) MUTATING noexcept                                    \
+    {                                                                                              \
+        return __atomic_sub_fetch(Address(), operand, __ATOMIC_SEQ_CST);                           \
+    }                                                                                              \
+    value_type operator&=(value_type operand) MUTATING noexcept                                    \
+    {                                                                                              \
+        return __atomic_and_fetch(Address(), operand, __ATOMIC_SEQ_CST);                           \
+    }                                                                                              \
+    value_type operator|=(value_type operand) MUTATING noexcept                                    \
+    {                                                                                              \
+        return __atomic_or_fetch(Address(), operand, __ATOMIC_SEQ_CST);                            \
+    }                                                                                              \
+    value_type operator^=(value_type operand) MUTATING noexcept                                    \
+    {                                                                                              \
+        return __atomic_xor_fetch(Address(), operand, __ATOMIC_SEQ_CST);                           \
+    }
+
+#define FEATHEROS_ATOMIC_FLOATING(MUTATING)                                                        \
+public:                                                                                            \
+    value_type fetch_add(value_type operand, memory_order order = memory_order::seq_cst)           \
+        MUTATING noexcept                                                                          \
+    {                                                                                              \
+        return __detail::AtomicFetchModify(                                                        \
+            Address(), [operand](value_type value) { return value + operand; }, order);            \
+    }                                                                                              \
+    value_type fetch_sub(value_type operand, memory_order order = memory_order::seq_cst)           \
+        MUTATING noexcept                                                                          \
+    {                                                                                              \
+        return __detail::AtomicFetchModify(                                                        \
+            Address(), [operand](value_type value) { return value - operand; }, order);            \
+    }                                                                                              \
+    value_type operator+=(value_type operand) MUTATING noexcept                                    \
+    {                                                                                              \
+        return fetch_add(operand) + operand;                                                       \
+    }                                                                                              \
+    value_type operator-=(value_type operand) MUTATING noexcept                                    \
+    {                                                                                              \
+        return fetch_sub(operand) - operand;                                                       \
+    }
+
+// The builtins add bytes to a pointer, not elements.
+#define FEATHEROS_ATOMIC_POINTER(MUTATING)                                                         \
+public:                                                                                            \
+    value_type fetch_add(difference_type operand, memory_order order = memory_order::seq_cst)      \
+        MUTATING noexcept                                                                          \
+    {                                                                                              \
+        return __atomic_fetch_add(Address(), operand * ElementSize(),                              \
+                                  __detail::AtomicOrder(order));                                   \
+    }                                                                                              \
+    value_type fetch_sub(difference_type operand, memory_order order = memory_order::seq_cst)      \
+        MUTATING noexcept                                                                          \
+    {                                                                                              \
+        return __atomic_fetch_sub(Address(), operand * ElementSize(),                              \
+                                  __detail::AtomicOrder(order));                                   \
+    }                                                                                              \
+    value_type operator++(int) MUTATING noexcept                                                   \
+    {                                                                                              \
+        return fetch_add(1);                                                                       \
+    }                                                                                              \
+    value_type operator--(int) MUTATING noexcept                                                   \
+    {                                                                                              \
+        return fetch_sub(1);                                                                       \
+    }                                                                                              \
+    value_type operator++() MUTATING noexcept                                                      \
+    {                                                                                              \
+        return __atomic_add_fetch(Address(), ElementSize(), __ATOMIC_SEQ_CST);                     \
+    }                                                                                              \
+    value_type operator--() MUTATING noexcept                                                      \
+    {                                                                                              \
+        return __atomic_sub_fetch(Address(), ElementSize(), __ATOMIC_SEQ_CST);                     \
+    }                                                                                              \
+    value_type operator+=(difference_type operand) MUTATING noexcept                               \
+    {                                                                                              \
+        return __atomic_add_fetch(Address(), operand * ElementSize(), __ATOMIC_SEQ_CST);           \
+    }                                                                                              \
+    value_type operator-=(difference_type operand) MUTATING noexcept                               \
+    {                                                                                              \
+        return __atomic_sub_fetch(Address(), operand * ElementSize(), __ATOMIC_SEQ_CST);           \
+    }                                                                                              \
+                                                                                                   \
+private:                                                                                           \
+    static constexpr difference_type ElementSize() noexcept                                        \
+    {                                                                                              \
+        static_assert(is_object_v<remove_pointer_t<value_type>>,                                   \
+                      "pointer arithmetic needs a pointer to an object type");                     \
+        return static_cast<difference_type>(sizeof(remove_pointer_t<value_type>));                 \
+    }
+
+template <class T> struct atomic
+{
+    static_assert(is_trivially_copyable_v<T> && is_copy_constructible_v<T> &&
+                      is_move_constructible_v<T> && is_copy_assignable_v<T> &&
+                      is_move_assignable_v<T>,
+                  "atomic needs a trivially copyable type");
+    static_assert(!is_const_v<T> && !is_volatile_v<T>, "atomic's type cannot be cv-qualified");
+
+public:
+    using value_type = T;
+
+    constexpr atomic() noexcept(is_nothrow_default_constructible_v<T>)
+        requires is_default_constructible_v<T>
+        : m_value()
+    {
+        __detail::AtomicClearPadding(m_value);
+    }
+    constexpr atomic(T desired) noexcept : m_value(desired)
+    {
+        __detail::AtomicClearPadding(m_value);
+    }
+    atomic(const atomic&) = delete;
+    atomic& operator=(const atomic&) = delete;
+    ~atomic() = default;
+
+    FEATHEROS_ATOMIC_COMMON()
+
+private:
+    T* Address() noexcept
+    {
+        return _FSTD::addressof(m_value);
+    }
+    const T* Address() const noexcept
+    {
+        return _FSTD::addressof(m_value);
+    }
+
+    alignas(__detail::AtomicAlignment<T>) T m_value;
+};
+
+template <class T>
+    requires __detail::AtomicIsIntegral<T>
+struct atomic<T>
+{
+    static_assert(__detail::AtomicIsLockFree<T>);
+
+public:
+    using value_type = T;
+    using difference_type = T;
+
+    constexpr atomic() noexcept = default;
+    constexpr atomic(T desired) noexcept : m_value(desired) {}
+    atomic(const atomic&) = delete;
+    atomic& operator=(const atomic&) = delete;
+    ~atomic() = default;
+
+    FEATHEROS_ATOMIC_COMMON()
+    FEATHEROS_ATOMIC_INTEGRAL()
+
+private:
+    T* Address() noexcept
+    {
+        return &m_value;
+    }
+    const T* Address() const noexcept
+    {
+        return &m_value;
+    }
+
+    alignas(sizeof(T)) T m_value = 0;
+};
+
+template <class T>
+    requires is_floating_point_v<T>
+struct atomic<T>
+{
+public:
+    using value_type = T;
+    using difference_type = T;
+
+    constexpr atomic() noexcept : m_value()
+    {
+        __detail::AtomicClearPadding(m_value);
+    }
+    constexpr atomic(T desired) noexcept : m_value(desired)
+    {
+        __detail::AtomicClearPadding(m_value);
+    }
+    atomic(const atomic&) = delete;
+    atomic& operator=(const atomic&) = delete;
+    ~atomic() = default;
+
+    FEATHEROS_ATOMIC_COMMON()
+    FEATHEROS_ATOMIC_FLOATING()
+
+private:
+    T* Address() noexcept
+    {
+        return &m_value;
+    }
+    const T* Address() const noexcept
+    {
+        return &m_value;
+    }
+
+    alignas(__detail::AtomicAlignment<T>) T m_value;
+};
+
+template <class T> struct atomic<T*>
+{
+public:
+    using value_type = T*;
+    using difference_type = ptrdiff_t;
+
+    constexpr atomic() noexcept = default;
+    constexpr atomic(T* desired) noexcept : m_value(desired) {}
+    atomic(const atomic&) = delete;
+    atomic& operator=(const atomic&) = delete;
+    ~atomic() = default;
+
+    FEATHEROS_ATOMIC_COMMON()
+    FEATHEROS_ATOMIC_POINTER()
+
+private:
+    T** Address() noexcept
+    {
+        return &m_value;
+    }
+    T* const* Address() const noexcept
+    {
+        return &m_value;
+    }
+
+    T* m_value = nullptr;
+};
+
+template <class T> struct atomic_ref
+{
+    static_assert(is_trivially_copyable_v<T>, "atomic_ref needs a trivially copyable type");
+
+public:
+    using value_type = T;
+    static constexpr size_t required_alignment = __detail::AtomicAlignment<T>;
+
+    explicit atomic_ref(T& object) noexcept : m_pointer(_FSTD::addressof(object)) {}
+    atomic_ref(const atomic_ref&) noexcept = default;
+    atomic_ref& operator=(const atomic_ref&) = delete;
+    ~atomic_ref() = default;
+
+    FEATHEROS_ATOMIC_COMMON(const)
+
+private:
+    T* Address() const noexcept
+    {
+        return m_pointer;
+    }
+
+    T* m_pointer;
+};
+
+template <class T>
+    requires __detail::AtomicIsIntegral<T>
+struct atomic_ref<T>
+{
+    static_assert(__detail::AtomicIsLockFree<T>);
+
+public:
+    using value_type = T;
+    using difference_type = T;
+    static constexpr size_t required_alignment = sizeof(T);
+
+    explicit atomic_ref(T& object) noexcept : m_pointer(&object) {}
+    atomic_ref(const atomic_ref&) noexcept = default;
+    atomic_ref& operator=(const atomic_ref&) = delete;
+    ~atomic_ref() = default;
+
+    FEATHEROS_ATOMIC_COMMON(const)
+    FEATHEROS_ATOMIC_INTEGRAL(const)
+
+private:
+    T* Address() const noexcept
+    {
+        return m_pointer;
+    }
+
+    T* m_pointer;
+};
+
+template <class T>
+    requires is_floating_point_v<T>
+struct atomic_ref<T>
+{
+public:
+    using value_type = T;
+    using difference_type = T;
+    static constexpr size_t required_alignment = __detail::AtomicAlignment<T>;
+
+    explicit atomic_ref(T& object) noexcept : m_pointer(&object) {}
+    atomic_ref(const atomic_ref&) noexcept = default;
+    atomic_ref& operator=(const atomic_ref&) = delete;
+    ~atomic_ref() = default;
+
+    FEATHEROS_ATOMIC_COMMON(const)
+    FEATHEROS_ATOMIC_FLOATING(const)
+
+private:
+    T* Address() const noexcept
+    {
+        return m_pointer;
+    }
+
+    T* m_pointer;
+};
+
+template <class T> struct atomic_ref<T*>
+{
+public:
+    using value_type = T*;
+    using difference_type = ptrdiff_t;
+    static constexpr size_t required_alignment = alignof(T*);
+
+    explicit atomic_ref(T*& object) noexcept : m_pointer(&object) {}
+    atomic_ref(const atomic_ref&) noexcept = default;
+    atomic_ref& operator=(const atomic_ref&) = delete;
+    ~atomic_ref() = default;
+
+    FEATHEROS_ATOMIC_COMMON(const)
+    FEATHEROS_ATOMIC_POINTER(const)
+
+private:
+    T** Address() const noexcept
+    {
+        return m_pointer;
+    }
+
+    T** m_pointer;
+};
+
+#undef FEATHEROS_ATOMIC_COMMON
+#undef FEATHEROS_ATOMIC_INTEGRAL
+#undef FEATHEROS_ATOMIC_FLOATING
+#undef FEATHEROS_ATOMIC_POINTER
+
+struct atomic_flag
+{
+public:
+    constexpr atomic_flag() noexcept = default;
+    atomic_flag(const atomic_flag&) = delete;
+    atomic_flag& operator=(const atomic_flag&) = delete;
+    ~atomic_flag() = default;
+
+    bool test(memory_order order = memory_order::seq_cst) const noexcept
+    {
+        return __atomic_load_n(&m_value, __detail::AtomicOrder(order)) != 0;
+    }
+    bool test_and_set(memory_order order = memory_order::seq_cst) noexcept
+    {
+        return __atomic_test_and_set(&m_value, __detail::AtomicOrder(order));
+    }
+    void clear(memory_order order = memory_order::seq_cst) noexcept
+    {
+        __atomic_clear(&m_value, __detail::AtomicOrder(order));
+    }
+    void wait(bool old, memory_order order = memory_order::seq_cst) const noexcept
+    {
+        __detail::AtomicWaitUntil(&m_value,
+                                  [this, old, order]() noexcept { return test(order) != old; });
+    }
+    void notify_one() noexcept
+    {
+        __detail::AtomicNotify(&m_value);
+    }
+    void notify_all() noexcept
+    {
+        __detail::AtomicNotify(&m_value);
+    }
+
+private:
+    unsigned char m_value = 0;
+};
+
+#define ATOMIC_FLAG_INIT                                                                           \
+    {                                                                                              \
+    }
+
+#define ATOMIC_BOOL_LOCK_FREE __GCC_ATOMIC_BOOL_LOCK_FREE
+#define ATOMIC_CHAR_LOCK_FREE __GCC_ATOMIC_CHAR_LOCK_FREE
+#define ATOMIC_CHAR8_T_LOCK_FREE __GCC_ATOMIC_CHAR_LOCK_FREE
+#define ATOMIC_CHAR16_T_LOCK_FREE __GCC_ATOMIC_CHAR16_T_LOCK_FREE
+#define ATOMIC_CHAR32_T_LOCK_FREE __GCC_ATOMIC_CHAR32_T_LOCK_FREE
+#define ATOMIC_WCHAR_T_LOCK_FREE __GCC_ATOMIC_WCHAR_T_LOCK_FREE
+#define ATOMIC_SHORT_LOCK_FREE __GCC_ATOMIC_SHORT_LOCK_FREE
+#define ATOMIC_INT_LOCK_FREE __GCC_ATOMIC_INT_LOCK_FREE
+#define ATOMIC_LONG_LOCK_FREE __GCC_ATOMIC_LONG_LOCK_FREE
+#define ATOMIC_LLONG_LOCK_FREE __GCC_ATOMIC_LLONG_LOCK_FREE
+#define ATOMIC_POINTER_LOCK_FREE __GCC_ATOMIC_POINTER_LOCK_FREE
+
+template <class T> bool atomic_is_lock_free(const atomic<T>* object) noexcept
+{
+    return object->is_lock_free();
+}
+
+template <class T>
+void atomic_store(atomic<T>* object, typename atomic<T>::value_type desired) noexcept
+{
+    object->store(desired);
+}
+
+template <class T>
+void atomic_store_explicit(atomic<T>* object, typename atomic<T>::value_type desired,
+                           memory_order order) noexcept
+{
+    object->store(desired, order);
+}
+
+template <class T> T atomic_load(const atomic<T>* object) noexcept
+{
+    return object->load();
+}
+
+template <class T> T atomic_load_explicit(const atomic<T>* object, memory_order order) noexcept
+{
+    return object->load(order);
+}
+
+template <class T>
+T atomic_exchange(atomic<T>* object, typename atomic<T>::value_type desired) noexcept
+{
+    return object->exchange(desired);
+}
+
+template <class T>
+T atomic_exchange_explicit(atomic<T>* object, typename atomic<T>::value_type desired,
+                           memory_order order) noexcept
+{
+    return object->exchange(desired, order);
+}
+
+template <class T>
+bool atomic_compare_exchange_weak(atomic<T>* object, typename atomic<T>::value_type* expected,
+                                  typename atomic<T>::value_type desired) noexcept
+{
+    return object->compare_exchange_weak(*expected, desired);
+}
+
+template <class T>
+bool atomic_compare_exchange_strong(atomic<T>* object, typename atomic<T>::value_type* expected,
+                                    typename atomic<T>::value_type desired) noexcept
+{
+    return object->compare_exchange_strong(*expected, desired);
+}
+
+template <class T>
+bool atomic_compare_exchange_weak_explicit(atomic<T>* object,
+                                           typename atomic<T>::value_type* expected,
+                                           typename atomic<T>::value_type desired,
+                                           memory_order success, memory_order failure) noexcept
+{
+    return object->compare_exchange_weak(*expected, desired, success, failure);
+}
+
+template <class T>
+bool atomic_compare_exchange_strong_explicit(atomic<T>* object,
+                                             typename atomic<T>::value_type* expected,
+                                             typename atomic<T>::value_type desired,
+                                             memory_order success, memory_order failure) noexcept
+{
+    return object->compare_exchange_strong(*expected, desired, success, failure);
+}
+
+template <class T>
+T atomic_fetch_add(atomic<T>* object, typename atomic<T>::difference_type operand) noexcept
+{
+    return object->fetch_add(operand);
+}
+
+template <class T>
+T atomic_fetch_add_explicit(atomic<T>* object, typename atomic<T>::difference_type operand,
+                            memory_order order) noexcept
+{
+    return object->fetch_add(operand, order);
+}
+
+template <class T>
+T atomic_fetch_sub(atomic<T>* object, typename atomic<T>::difference_type operand) noexcept
+{
+    return object->fetch_sub(operand);
+}
+
+template <class T>
+T atomic_fetch_sub_explicit(atomic<T>* object, typename atomic<T>::difference_type operand,
+                            memory_order order) noexcept
+{
+    return object->fetch_sub(operand, order);
+}
+
+template <class T>
+T atomic_fetch_and(atomic<T>* object, typename atomic<T>::value_type operand) noexcept
+{
+    return object->fetch_and(operand);
+}
+
+template <class T>
+T atomic_fetch_and_explicit(atomic<T>* object, typename atomic<T>::value_type operand,
+                            memory_order order) noexcept
+{
+    return object->fetch_and(operand, order);
+}
+
+template <class T>
+T atomic_fetch_or(atomic<T>* object, typename atomic<T>::value_type operand) noexcept
+{
+    return object->fetch_or(operand);
+}
+
+template <class T>
+T atomic_fetch_or_explicit(atomic<T>* object, typename atomic<T>::value_type operand,
+                           memory_order order) noexcept
+{
+    return object->fetch_or(operand, order);
+}
+
+template <class T>
+T atomic_fetch_xor(atomic<T>* object, typename atomic<T>::value_type operand) noexcept
+{
+    return object->fetch_xor(operand);
+}
+
+template <class T>
+T atomic_fetch_xor_explicit(atomic<T>* object, typename atomic<T>::value_type operand,
+                            memory_order order) noexcept
+{
+    return object->fetch_xor(operand, order);
+}
+
+template <class T>
+void atomic_wait(const atomic<T>* object, typename atomic<T>::value_type old) noexcept
+{
+    object->wait(old);
+}
+
+template <class T>
+void atomic_wait_explicit(const atomic<T>* object, typename atomic<T>::value_type old,
+                          memory_order order) noexcept
+{
+    object->wait(old, order);
+}
+
+template <class T> void atomic_notify_one(atomic<T>* object) noexcept
+{
+    object->notify_one();
+}
+
+template <class T> void atomic_notify_all(atomic<T>* object) noexcept
+{
+    object->notify_all();
+}
+
+inline bool atomic_flag_test(const atomic_flag* flag) noexcept
+{
+    return flag->test();
+}
+
+inline bool atomic_flag_test_explicit(const atomic_flag* flag, memory_order order) noexcept
+{
+    return flag->test(order);
+}
+
+inline bool atomic_flag_test_and_set(atomic_flag* flag) noexcept
+{
+    return flag->test_and_set();
+}
+
+inline bool atomic_flag_test_and_set_explicit(atomic_flag* flag, memory_order order) noexcept
+{
+    return flag->test_and_set(order);
+}
+
+inline void atomic_flag_clear(atomic_flag* flag) noexcept
+{
+    flag->clear();
+}
+
+inline void atomic_flag_clear_explicit(atomic_flag* flag, memory_order order) noexcept
+{
+    flag->clear(order);
+}
+
+inline void atomic_flag_wait(const atomic_flag* flag, bool old) noexcept
+{
+    flag->wait(old);
+}
+
+inline void atomic_flag_wait_explicit(const atomic_flag* flag, bool old,
+                                      memory_order order) noexcept
+{
+    flag->wait(old, order);
+}
+
+inline void atomic_flag_notify_one(atomic_flag* flag) noexcept
+{
+    flag->notify_one();
+}
+
+inline void atomic_flag_notify_all(atomic_flag* flag) noexcept
+{
+    flag->notify_all();
+}
+
+using atomic_bool = atomic<bool>;
+using atomic_char = atomic<char>;
+using atomic_schar = atomic<signed char>;
+using atomic_uchar = atomic<unsigned char>;
+using atomic_short = atomic<short>;
+using atomic_ushort = atomic<unsigned short>;
+using atomic_int = atomic<int>;
+using atomic_uint = atomic<unsigned int>;
+using atomic_long = atomic<long>;
+using atomic_ulong = atomic<unsigned long>;
+using atomic_llong = atomic<long long>;
+using atomic_ullong = atomic<unsigned long long>;
+using atomic_char8_t = atomic<char8_t>;
+using atomic_char16_t = atomic<char16_t>;
+using atomic_char32_t = atomic<char32_t>;
+using atomic_wchar_t = atomic<wchar_t>;
+using atomic_int8_t = atomic<int8_t>;
+using atomic_uint8_t = atomic<uint8_t>;
+using atomic_int16_t = atomic<int16_t>;
+using atomic_uint16_t = atomic<uint16_t>;
+using atomic_int32_t = atomic<int32_t>;
+using atomic_uint32_t = atomic<uint32_t>;
+using atomic_int64_t = atomic<int64_t>;
+using atomic_uint64_t = atomic<uint64_t>;
+using atomic_int_least8_t = atomic<int_least8_t>;
+using atomic_uint_least8_t = atomic<uint_least8_t>;
+using atomic_int_least16_t = atomic<int_least16_t>;
+using atomic_uint_least16_t = atomic<uint_least16_t>;
+using atomic_int_least32_t = atomic<int_least32_t>;
+using atomic_uint_least32_t = atomic<uint_least32_t>;
+using atomic_int_least64_t = atomic<int_least64_t>;
+using atomic_uint_least64_t = atomic<uint_least64_t>;
+using atomic_int_fast8_t = atomic<int_fast8_t>;
+using atomic_uint_fast8_t = atomic<uint_fast8_t>;
+using atomic_int_fast16_t = atomic<int_fast16_t>;
+using atomic_uint_fast16_t = atomic<uint_fast16_t>;
+using atomic_int_fast32_t = atomic<int_fast32_t>;
+using atomic_uint_fast32_t = atomic<uint_fast32_t>;
+using atomic_int_fast64_t = atomic<int_fast64_t>;
+using atomic_uint_fast64_t = atomic<uint_fast64_t>;
+using atomic_intptr_t = atomic<intptr_t>;
+using atomic_uintptr_t = atomic<uintptr_t>;
+using atomic_size_t = atomic<size_t>;
+using atomic_ptrdiff_t = atomic<ptrdiff_t>;
+using atomic_intmax_t = atomic<intmax_t>;
+using atomic_uintmax_t = atomic<uintmax_t>;
+// The futex word is 32 bits, so these are what waiting suits best.
+using atomic_signed_lock_free = atomic<int>;
+using atomic_unsigned_lock_free = atomic<unsigned int>;
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

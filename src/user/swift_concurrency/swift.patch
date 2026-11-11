@@ -636,6 +636,18 @@ index c5a4a6b..7e00e82 100644
        swift_unreachable("owned TaskExecutor cannot be used in embedded Swift");
        #else
        taskExecutor = cast<InitialTaskExecutorOwnedPreferenceTaskOptionRecord>(option)
+diff --git a/stdlib/public/Concurrency/TaskAlloc.cpp b/stdlib/public/Concurrency/TaskAlloc.cpp
+index 1e98a2f..2142afb 100644
+--- a/stdlib/public/Concurrency/TaskAlloc.cpp
++++ b/stdlib/public/Concurrency/TaskAlloc.cpp
+@@ -21,6 +21,7 @@
+ #include "swift/ABI/Task.h"
+ #include "swift/Runtime/Concurrency.h"
+
++#include <stdio.h>
+ #include <stdlib.h>
+
+ using namespace swift;
 diff --git a/stdlib/public/Concurrency/TaskCancellation.swift b/stdlib/public/Concurrency/TaskCancellation.swift
 index 71425da..bac01a7 100644
 --- a/stdlib/public/Concurrency/TaskCancellation.swift
@@ -1279,6 +1291,18 @@ index 10de0a4..1b3a37e 100644
      var arg = arg
 
      // We may need to retain an object that provides a pointer value.
+diff --git a/stdlib/public/runtime/MetadataLookup.cpp b/stdlib/public/runtime/MetadataLookup.cpp
+index df087e7..34bdafb 100644
+--- a/stdlib/public/runtime/MetadataLookup.cpp
++++ b/stdlib/public/runtime/MetadataLookup.cpp
+@@ -40,7 +40,6 @@
+ #include <cctype>
+ #include <cstring>
+ #include <functional>
+-#include <list>
+ #include <new>
+ #include <optional>
+ #include <vector>
 diff --git a/stdlib/public/stubs/Random.cpp b/stdlib/public/stubs/Random.cpp
 index 9062346..c7afab0 100644
 --- a/stdlib/public/stubs/Random.cpp

@@ -1,0 +1,232 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CHARCONV
+#define FEATHEROS_LIBCXX_CHARCONV
+
+#include "__errc"
+#include "__featheros_config"
+#include "limits"
+#include "type_traits"
+
+// The integer conversions are templates here and constexpr, as C++23 has them. The
+// floating-point ones are compiled into featheros_cxx over the C library's exact float engine
+// (src/libc/float_format.h, float_parse.h).
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+enum class chars_format
+{
+    scientific = 1,
+    fixed = 2,
+    hex = 4,
+    general = fixed | scientific,
+};
+
+constexpr chars_format operator&(chars_format left, chars_format right) noexcept
+{
+    return static_cast<chars_format>(static_cast<int>(left) & static_cast<int>(right));
+}
+constexpr chars_format operator|(chars_format left, chars_format right) noexcept
+{
+    return static_cast<chars_format>(static_cast<int>(left) | static_cast<int>(right));
+}
+constexpr chars_format operator^(chars_format left, chars_format right) noexcept
+{
+    return static_cast<chars_format>(static_cast<int>(left) ^ static_cast<int>(right));
+}
+constexpr chars_format operator~(chars_format format) noexcept
+{
+    return static_cast<chars_format>(~static_cast<int>(format) & 7);
+}
+constexpr chars_format& operator&=(chars_format& left, chars_format right) noexcept
+{
+    return left = left & right;
+}
+constexpr chars_format& operator|=(chars_format& left, chars_format right) noexcept
+{
+    return left = left | right;
+}
+constexpr chars_format& operator^=(chars_format& left, chars_format right) noexcept
+{
+    return left = left ^ right;
+}
+
+struct to_chars_result
+{
+    char* ptr;
+    errc ec;
+    friend bool operator==(const to_chars_result&, const to_chars_result&) = default;
+};
+
+struct from_chars_result
+{
+    const char* ptr;
+    errc ec;
+    friend bool operator==(const from_chars_result&, const from_chars_result&) = default;
+};
+
+namespace __detail
+{
+// Arithmetic on at least unsigned int, so narrow types do not promote to int.
+template <class T>
+using CharconvUnsigned =
+    conditional_t<(sizeof(T) < sizeof(unsigned)), unsigned, make_unsigned_t<T>>;
+
+template <class T>
+constexpr to_chars_result IntegerToChars(char* first, char* last, T value, int base) noexcept
+{
+    using Unsigned = CharconvUnsigned<T>;
+    auto magnitude = static_cast<Unsigned>(static_cast<make_unsigned_t<T>>(value));
+    if constexpr (is_signed_v<T>)
+    {
+        if (value < 0)
+        {
+            if (first == last)
+            {
+                return {last, errc::value_too_large};
+            }
+            *first++ = '-';
+            magnitude = static_cast<Unsigned>(static_cast<make_unsigned_t<T>>(0U - magnitude));
+        }
+    }
+    const auto radix = static_cast<Unsigned>(base);
+    ptrdiff_t digits = 1;
+    for (Unsigned rest = magnitude; rest >= radix; rest /= radix)
+    {
+        ++digits;
+    }
+    if (last - first < digits)
+    {
+        return {last, errc::value_too_large};
+    }
+    char* const end = first + digits;
+    char* out = end;
+    do
+    {
+        *--out = "0123456789abcdefghijklmnopqrstuvwxyz"[magnitude % radix];
+        magnitude /= radix;
+    } while (magnitude != 0);
+    return {end, errc{}};
+}
+
+constexpr unsigned CharconvDigit(char character) noexcept
+{
+    if (character >= '0' && character <= '9')
+    {
+        return static_cast<unsigned>(character - '0');
+    }
+    if (character >= 'a' && character <= 'z')
+    {
+        return static_cast<unsigned>(character - 'a') + 10;
+    }
+    if (character >= 'A' && character <= 'Z')
+    {
+        return static_cast<unsigned>(character - 'A') + 10;
+    }
+    return 36;
+}
+
+template <class T>
+constexpr from_chars_result IntegerFromChars(const char* first, const char* last, T& value,
+                                             int base) noexcept
+{
+    using Unsigned = CharconvUnsigned<T>;
+    const char* cursor = first;
+    bool negative = false;
+    if constexpr (is_signed_v<T>)
+    {
+        if (cursor != last && *cursor == '-')
+        {
+            negative = true;
+            ++cursor;
+        }
+    }
+    const auto maximum = static_cast<Unsigned>(numeric_limits<T>::max());
+    const Unsigned limit = negative ? maximum + 1 : maximum;
+    const auto radix = static_cast<Unsigned>(base);
+    Unsigned result = 0;
+    bool overflow = false;
+    const char* const digits = cursor;
+    for (; cursor != last; ++cursor)
+    {
+        const Unsigned digit = CharconvDigit(*cursor);
+        if (digit >= radix)
+        {
+            break;
+        }
+        if (overflow || result > (limit - digit) / radix)
+        {
+            overflow = true;
+            continue;
+        }
+        result = result * radix + digit;
+    }
+    if (cursor == digits)
+    {
+        return {first, errc::invalid_argument};
+    }
+    if (overflow)
+    {
+        return {cursor, errc::result_out_of_range};
+    }
+    value = static_cast<T>(negative ? static_cast<Unsigned>(0U - result) : result);
+    return {cursor, errc{}};
+}
+} // namespace __detail
+
+#define FEATHEROS_LIBCXX_INTEGER_CHARCONV(T)                                                       \
+    constexpr to_chars_result to_chars(char* first, char* last, T value, int base = 10)            \
+    {                                                                                              \
+        return __detail::IntegerToChars(first, last, value, base);                                 \
+    }                                                                                              \
+    constexpr from_chars_result from_chars(const char* first, const char* last, T& value,          \
+                                           int base = 10)                                          \
+    {                                                                                              \
+        return __detail::IntegerFromChars(first, last, value, base);                               \
+    }
+
+FEATHEROS_LIBCXX_INTEGER_CHARCONV(char)
+FEATHEROS_LIBCXX_INTEGER_CHARCONV(signed char)
+FEATHEROS_LIBCXX_INTEGER_CHARCONV(unsigned char)
+FEATHEROS_LIBCXX_INTEGER_CHARCONV(short)
+FEATHEROS_LIBCXX_INTEGER_CHARCONV(unsigned short)
+FEATHEROS_LIBCXX_INTEGER_CHARCONV(int)
+FEATHEROS_LIBCXX_INTEGER_CHARCONV(unsigned)
+FEATHEROS_LIBCXX_INTEGER_CHARCONV(long)
+FEATHEROS_LIBCXX_INTEGER_CHARCONV(unsigned long)
+FEATHEROS_LIBCXX_INTEGER_CHARCONV(long long)
+FEATHEROS_LIBCXX_INTEGER_CHARCONV(unsigned long long)
+#undef FEATHEROS_LIBCXX_INTEGER_CHARCONV
+
+to_chars_result to_chars(char* first, char* last, bool value, int base = 10) = delete;
+
+// Without a format, the shortest text that reads back as the same value, in fixed or scientific
+// notation, whichever is shorter (fixed on a tie). With a format but no precision, the shortest
+// in that format; general picks fixed for decimal exponents from -4 to 5, as %g does. With a
+// precision, what printf's %f, %e, %g or %a prints, hex without its 0x.
+to_chars_result to_chars(char* first, char* last, float value) noexcept;
+to_chars_result to_chars(char* first, char* last, double value) noexcept;
+to_chars_result to_chars(char* first, char* last, float value, chars_format format) noexcept;
+to_chars_result to_chars(char* first, char* last, double value, chars_format format) noexcept;
+to_chars_result to_chars(char* first, char* last, float value, chars_format format,
+                         int precision) noexcept;
+to_chars_result to_chars(char* first, char* last, double value, chars_format format,
+                         int precision) noexcept;
+from_chars_result from_chars(const char* first, const char* last, float& value,
+                             chars_format format = chars_format::general) noexcept;
+from_chars_result from_chars(const char* first, const char* last, double& value,
+                             chars_format format = chars_format::general) noexcept;
+
+// Clang rejects long double where x86-64 has no floating-point registers, as in the kernel.
+#if !defined(__x86_64__) || defined(__SSE__)
+to_chars_result to_chars(char* first, char* last, long double value) noexcept;
+to_chars_result to_chars(char* first, char* last, long double value, chars_format format) noexcept;
+to_chars_result to_chars(char* first, char* last, long double value, chars_format format,
+                         int precision) noexcept;
+from_chars_result from_chars(const char* first, const char* last, long double& value,
+                             chars_format format = chars_format::general) noexcept;
+#endif
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

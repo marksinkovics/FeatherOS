@@ -47,7 +47,7 @@ void Term::Print(const char* str)
 {
     Write(str);
     Refresh();
-    __atomic_add_fetch(&m_output_count, 1, __ATOMIC_RELEASE);
+    m_output_count.fetch_add(1, std::memory_order_release);
 }
 
 void Term::PrintLn(const char* str)
@@ -55,7 +55,7 @@ void Term::PrintLn(const char* str)
     Write(str);
     Write("\n");
     Refresh();
-    __atomic_add_fetch(&m_output_count, 1, __ATOMIC_RELEASE);
+    m_output_count.fetch_add(1, std::memory_order_release);
 }
 
 void Term::Write(const char* str)
@@ -410,7 +410,7 @@ uint32_t Term::CursorColumn() const
 
 uint64_t Term::OutputCount() const
 {
-    return __atomic_load_n(&m_output_count, __ATOMIC_ACQUIRE);
+    return m_output_count.load(std::memory_order_acquire);
 }
 
 uint32_t Term::ContentRows() const

@@ -1,0 +1,14 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CSTDARG
+#define FEATHEROS_LIBCXX_CSTDARG
+
+#include "__featheros_config"
+
+#include <stdarg.h>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+using ::va_list;
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

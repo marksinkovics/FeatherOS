@@ -90,6 +90,36 @@ add_executable(featheros_unit_tests
     libc/time_format_tests.cpp
     libc/unicode_conversion_tests.cpp
     libc/wide_division_tests.cpp
+    libcxx/algorithm_tests.cpp
+    libcxx/array_span_tests.cpp
+    libcxx/atomic_tests.cpp
+    libcxx/bitset_adaptor_tests.cpp
+    libcxx/charconv_tests.cpp
+    libcxx/chrono_format_tests.cpp
+    libcxx/chrono_tests.cpp
+    libcxx/cmath_exception_tests.cpp
+    libcxx/deque_tests.cpp
+    libcxx/expected_tests.cpp
+    libcxx/format_range_tests.cpp
+    libcxx/format_tests.cpp
+    libcxx/functional_tests.cpp
+    libcxx/iterator_functional_tests.cpp
+    libcxx/limits_bit_tests.cpp
+    libcxx/map_set_tests.cpp
+    libcxx/memory_tests.cpp
+    libcxx/numeric_tests.cpp
+    libcxx/optional_tests.cpp
+    libcxx/string_tests.cpp
+    libcxx/string_view_tests.cpp
+    libcxx/thread_tests.cpp
+    libcxx/tuple_tests.cpp
+    libcxx/type_traits_tests.cpp
+    libcxx/unordered_tests.cpp
+    libcxx/utility_tests.cpp
+    libcxx/variant_tests.cpp
+    libcxx/vector_tests.cpp
+    libcxx/wait_tests.cpp
+    libcxx/host_futex.cpp
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat16.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat_names.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"
@@ -139,6 +169,19 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/libc/time_format.cpp"
     "${FEATHEROS_ROOT}/src/libc/unicode_conversion.cpp"
     "${FEATHEROS_ROOT}/src/libc/wide_division.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/atomic_wait.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/charconv.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/chrono.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/chrono_format.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/condition_variable.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/exception.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/format.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/mutex.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/print.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/stop_token.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/string.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/thread.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/tree.cpp"
     "${FEATHEROS_ROOT}/src/user/calculator.cpp"
     "${FEATHEROS_ROOT}/src/user/calendar.cpp"
     "${FEATHEROS_ROOT}/src/user/command_line.cpp"
@@ -169,7 +212,29 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/string/format.cpp"
 )
 target_compile_features(featheros_unit_tests PRIVATE cxx_std_23)
-target_compile_definitions(featheros_unit_tests PRIVATE FEATHEROS_HOST_TEST)
+# FeatherOS's C++ library is tested in a namespace of its own, beside the host's std, and with
+# the warnings its usual place as a system include directory hides.
+target_compile_definitions(featheros_unit_tests PRIVATE FEATHEROS_HOST_TEST
+    FEATHEROS_STD_NAMESPACE=featheros_std)
+set_source_files_properties(libcxx/algorithm_tests.cpp libcxx/array_span_tests.cpp
+    libcxx/atomic_tests.cpp libcxx/charconv_tests.cpp libcxx/chrono_tests.cpp libcxx/deque_tests.cpp
+    libcxx/map_set_tests.cpp libcxx/string_tests.cpp libcxx/unordered_tests.cpp
+    "${FEATHEROS_ROOT}/src/libcxx/src/charconv.cpp" "${FEATHEROS_ROOT}/src/libcxx/src/chrono.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/string.cpp" "${FEATHEROS_ROOT}/src/libcxx/src/tree.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/condition_variable.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/mutex.cpp" "${FEATHEROS_ROOT}/src/libcxx/src/stop_token.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/thread.cpp" libcxx/thread_tests.cpp
+    "${FEATHEROS_ROOT}/src/libcxx/src/atomic_wait.cpp" libcxx/wait_tests.cpp
+    "${FEATHEROS_ROOT}/src/libcxx/src/format.cpp" "${FEATHEROS_ROOT}/src/libcxx/src/print.cpp"
+    "${FEATHEROS_ROOT}/src/libcxx/src/chrono_format.cpp" libcxx/chrono_format_tests.cpp
+    libcxx/format_range_tests.cpp libcxx/format_tests.cpp libcxx/bitset_adaptor_tests.cpp
+    libcxx/cmath_exception_tests.cpp "${FEATHEROS_ROOT}/src/libcxx/src/exception.cpp"
+    libcxx/expected_tests.cpp libcxx/functional_tests.cpp libcxx/iterator_functional_tests.cpp
+    libcxx/limits_bit_tests.cpp libcxx/memory_tests.cpp libcxx/numeric_tests.cpp
+    libcxx/optional_tests.cpp libcxx/string_view_tests.cpp
+    libcxx/tuple_tests.cpp libcxx/type_traits_tests.cpp libcxx/utility_tests.cpp
+    libcxx/variant_tests.cpp libcxx/vector_tests.cpp
+    PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Wshadow;-Werror")
 target_include_directories(featheros_unit_tests PRIVATE
     "${FEATHEROS_ROOT}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}"

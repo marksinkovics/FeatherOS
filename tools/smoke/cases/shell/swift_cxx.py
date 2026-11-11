@@ -25,6 +25,8 @@ EXPECTED_SWIFT_CXX_OUTPUT = (
     "cxxinterop: optional half of 8 4, of 7 nil true",
     "cxxinterop: vector 0 1 4 of 5, sum through a span 30",
     "cxxinterop: vowels in featheros 4",
+    "cxxinterop: string hello, swift, 5 words, equal true, same hash true",
+    "cxxinterop: chrono 90 seconds, true",
     "host example.com\r\nport 8080\r\npath /a/b/c?q\r\n"
     "../d resolves to http://example.com:8080/a/d\r\n"
     "//[::1]/x resolves to http://[::1]/x\r\n"

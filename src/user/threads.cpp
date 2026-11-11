@@ -1,10 +1,10 @@
 #include "command_line.h"
 #include "prime_count.h"
 
+#include <chrono>
 #include <pthread.h>
-#include <stdint.h>
+#include <print>
 #include <stdio.h>
-#include <time.h>
 
 using namespace FeatherOS::User;
 
@@ -37,13 +37,6 @@ void* RunWorker(void* argument)
     return nullptr;
 }
 
-uint64_t MillisecondsSinceBoot()
-{
-    timespec now{};
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return static_cast<uint64_t>(now.tv_sec) * 1000 + static_cast<uint64_t>(now.tv_nsec) / 1000000;
-}
-
 } // namespace
 
 int main(int argc, char** argv)
@@ -62,7 +55,7 @@ int main(int argc, char** argv)
         puts("usage: threads <threads 1-15> [limit up to 1000000000]");
         return 1;
     }
-    const uint64_t start = MillisecondsSinceBoot();
+    const auto start = std::chrono::steady_clock::now();
     Work work[MaximumWorkers];
     pthread_t threads[MaximumWorkers];
     for (unsigned long long index = 0; index < workers; ++index)
@@ -80,12 +73,13 @@ int main(int argc, char** argv)
     {
         pthread_join(threads[index], nullptr);
         total += work[index].result.primes;
-        printf("threads: thread %llu found %llu on CPU ", index, work[index].result.primes);
+        std::print("threads: thread {} found {} on CPU ", index, work[index].result.primes);
         WriteCpus(work[index].result.cpus);
         putchar('\n');
     }
-    const uint64_t elapsed = MillisecondsSinceBoot() - start;
-    printf("threads: %llu primes below %llu with %llu %s in %llu ms\n", total, limit, workers,
-           workers == 1 ? "thread" : "threads", static_cast<unsigned long long>(elapsed));
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start);
+    std::println("threads: {} primes below {} with {} {} in {} ms", total, limit, workers,
+                 workers == 1 ? "thread" : "threads", elapsed.count());
     return 0;
 }

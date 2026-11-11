@@ -1,0 +1,792 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_TUPLE
+#define FEATHEROS_LIBCXX_TUPLE
+
+#include "__featheros_config"
+#include "__memory_base"
+#include "array"
+#include "compare"
+#include "concepts"
+#include "type_traits"
+#include "utility"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+// tuple and its lvalue get are declared in <utility>.
+
+namespace __detail
+{
+template <class T> inline constexpr bool IsTupleLike = false;
+template <class T, size_t Size> inline constexpr bool IsTupleLike<array<T, Size>> = true;
+template <class First, class Second> inline constexpr bool IsTupleLike<pair<First, Second>> = true;
+template <class... T> inline constexpr bool IsTupleLike<tuple<T...>> = true;
+
+template <class T>
+concept TupleLike = IsTupleLike<remove_cvref_t<T>>;
+
+template <class T> inline constexpr bool IsPair = false;
+template <class First, class Second> inline constexpr bool IsPair<pair<First, Second>> = true;
+
+template <class T> inline constexpr bool IsTupleOrPair = false;
+template <class First, class Second>
+inline constexpr bool IsTupleOrPair<pair<First, Second>> = true;
+template <class... T> inline constexpr bool IsTupleOrPair<tuple<T...>> = true;
+
+struct TupleFromElements
+{
+    explicit TupleFromElements() = default;
+};
+struct TupleFromTuple
+{
+    explicit TupleFromTuple() = default;
+};
+struct TupleWithAllocator
+{
+    explicit TupleWithAllocator() = default;
+};
+struct TupleFromArguments
+{
+    explicit TupleFromArguments() = default;
+};
+
+// Defined after tuple; <memory>'s uses_allocator_construction_args calls it too.
+template <class T> struct UsesAllocatorConstruction;
+
+// Each element lives in a base of its own, indexed so that equal types stay distinct, and
+// [[no_unique_address]] lets empty elements take no space.
+template <size_t Index, class T> struct TupleLeaf
+{
+    [[no_unique_address]] T __value;
+
+    constexpr TupleLeaf() : __value() {}
+    template <class U>
+    constexpr TupleLeaf(TupleFromElements, U&& value) : __value(_FSTD::forward<U>(value))
+    {
+    }
+
+    template <class Alloc, class... U>
+    constexpr TupleLeaf(TupleWithAllocator, const Alloc& allocator, U&&... values)
+        : TupleLeaf(TupleFromArguments{}, UsesAllocatorConstruction<remove_cv_t<T>>::Arguments(
+                                              allocator, _FSTD::forward<U>(values)...))
+    {
+    }
+
+private:
+    template <class Arguments>
+    constexpr TupleLeaf(TupleFromArguments tag, Arguments&& arguments)
+        : TupleLeaf(tag, _FSTD::move(arguments),
+                    make_index_sequence<tuple_size_v<remove_cvref_t<Arguments>>>{})
+    {
+    }
+
+    // Only the lvalue get is declared yet, so each element is forwarded by its own type.
+    template <class Arguments, size_t... Position>
+    constexpr TupleLeaf(TupleFromArguments, Arguments&& arguments, index_sequence<Position...>)
+        : __value(_FSTD::forward<tuple_element_t<Position, remove_cvref_t<Arguments>>>(
+              _FSTD::get<Position>(arguments))...)
+    {
+    }
+};
+
+template <class Indices, class... T> struct TupleStorage;
+template <size_t... Index, class... T>
+struct TupleStorage<index_sequence<Index...>, T...> : TupleLeaf<Index, T>...
+{
+    constexpr TupleStorage() = default;
+    template <class... U>
+    constexpr explicit TupleStorage(TupleFromElements tag, U&&... values)
+        : TupleLeaf<Index, T>(tag, _FSTD::forward<U>(values))...
+    {
+    }
+
+    template <class Alloc>
+    constexpr TupleStorage(TupleWithAllocator tag, const Alloc& allocator)
+        : TupleLeaf<Index, T>(tag, allocator)...
+    {
+    }
+    template <class Alloc, class... U>
+    constexpr TupleStorage(TupleWithAllocator tag, const Alloc& allocator, U&&... values)
+        : TupleLeaf<Index, T>(tag, allocator, _FSTD::forward<U>(values))...
+    {
+    }
+};
+
+template <size_t Index, class T> constexpr T& LeafValue(TupleLeaf<Index, T>& leaf) noexcept
+{
+    return leaf.__value;
+}
+template <size_t Index, class T>
+constexpr const T& LeafValue(const TupleLeaf<Index, T>& leaf) noexcept
+{
+    return leaf.__value;
+}
+} // namespace __detail
+
+template <class... T> struct tuple_size<tuple<T...>> : integral_constant<size_t, sizeof...(T)>
+{
+};
+
+template <size_t Index, class... T> struct tuple_element<Index, tuple<T...>>
+{
+    static_assert(Index < sizeof...(T), "tuple index out of bounds");
+    using type = __detail::PackElement<Index, T...>;
+};
+
+template <size_t Index, class... T>
+constexpr tuple_element_t<Index, tuple<T...>>& get(tuple<T...>& value) noexcept
+{
+    return __detail::LeafValue<Index>(value.__elements);
+}
+
+template <size_t Index, class... T>
+constexpr const tuple_element_t<Index, tuple<T...>>& get(const tuple<T...>& value) noexcept
+{
+    return __detail::LeafValue<Index>(value.__elements);
+}
+
+template <size_t Index, class... T>
+constexpr tuple_element_t<Index, tuple<T...>>&& get(tuple<T...>&& value) noexcept
+{
+    return static_cast<tuple_element_t<Index, tuple<T...>>&&>(
+        __detail::LeafValue<Index>(value.__elements));
+}
+
+template <size_t Index, class... T>
+constexpr const tuple_element_t<Index, tuple<T...>>&& get(const tuple<T...>&& value) noexcept
+{
+    return static_cast<const tuple_element_t<Index, tuple<T...>>&&>(
+        __detail::LeafValue<Index>(value.__elements));
+}
+
+template <class T, class... Types>
+    requires(__detail::PackCount<T, Types...> == 1)
+constexpr T& get(tuple<Types...>& value) noexcept
+{
+    return _FSTD::get<__detail::PackIndex<T, Types...>()>(value);
+}
+
+template <class T, class... Types>
+    requires(__detail::PackCount<T, Types...> == 1)
+constexpr const T& get(const tuple<Types...>& value) noexcept
+{
+    return _FSTD::get<__detail::PackIndex<T, Types...>()>(value);
+}
+
+template <class T, class... Types>
+    requires(__detail::PackCount<T, Types...> == 1)
+constexpr T&& get(tuple<Types...>&& value) noexcept
+{
+    return _FSTD::get<__detail::PackIndex<T, Types...>()>(_FSTD::move(value));
+}
+
+template <class T, class... Types>
+    requires(__detail::PackCount<T, Types...> == 1)
+constexpr const T&& get(const tuple<Types...>&& value) noexcept
+{
+    return _FSTD::get<__detail::PackIndex<T, Types...>()>(_FSTD::move(value));
+}
+
+namespace __detail
+{
+template <class Source, class Indices, class... Types> struct ElementwiseConstructible : false_type
+{
+};
+template <class Source, size_t... Index, class... Types>
+    requires(sizeof...(Index) == sizeof...(Types))
+struct ElementwiseConstructible<Source, index_sequence<Index...>, Types...>
+    : bool_constant<(is_constructible_v<Types, decltype(_FSTD::get<Index>(declval<Source>()))> &&
+                     ...)>
+{
+};
+
+template <class Source, class Indices, class... Types> struct ElementwiseConvertible : false_type
+{
+};
+template <class Source, size_t... Index, class... Types>
+    requires(sizeof...(Index) == sizeof...(Types))
+struct ElementwiseConvertible<Source, index_sequence<Index...>, Types...>
+    : bool_constant<(is_convertible_v<decltype(_FSTD::get<Index>(declval<Source>())), Types> &&
+                     ...)>
+{
+};
+
+template <class Source, class Indices, class... Types> struct ElementwiseAssignable : false_type
+{
+};
+template <class Source, size_t... Index, class... Types>
+    requires(sizeof...(Index) == sizeof...(Types))
+struct ElementwiseAssignable<Source, index_sequence<Index...>, Types...>
+    : bool_constant<(is_assignable_v<Types&, decltype(_FSTD::get<Index>(declval<Source>()))> &&
+                     ...)>
+{
+};
+
+template <class Source>
+using TupleIndices = make_index_sequence<tuple_size_v<remove_cvref_t<Source>>>;
+
+// The constraints of tuple's constructors from another tuple-like object: element by element,
+// and for a one-element tuple, only where the source would not initialize that element whole.
+template <class Source, class... Types>
+concept TupleConstructibleFrom =
+    tuple_size_v<remove_cvref_t<Source>> == sizeof...(Types) &&
+    ElementwiseConstructible<Source, TupleIndices<Source>, Types...>::value &&
+    (sizeof...(Types) != 1 ||
+     ((!is_convertible_v<Source, Types> && !is_constructible_v<Types, Source>) && ...));
+
+template <class Source, class... Types>
+inline constexpr bool TupleConvertibleFrom =
+    ElementwiseConvertible<Source, TupleIndices<Source>, Types...>::value;
+
+template <class Source, class... Types>
+concept TupleAssignableFrom = tuple_size_v<remove_cvref_t<Source>> == sizeof...(Types) &&
+                              ElementwiseAssignable<Source, TupleIndices<Source>, Types...>::value;
+} // namespace __detail
+
+template <class... Types> class tuple
+{
+    using Indices = index_sequence_for<Types...>;
+
+public:
+    __detail::TupleStorage<Indices, Types...> __elements;
+
+    explicit(!(__detail::ImplicitlyDefaultConstructible<Types> && ...)) constexpr tuple()
+        requires(is_default_constructible_v<Types> && ...)
+        : __elements()
+    {
+    }
+
+    explicit(!(is_convertible_v<const Types&, Types> &&
+               ...)) constexpr tuple(const Types&... values)
+        requires(is_copy_constructible_v<Types> && ...)
+        : __elements(__detail::TupleFromElements{}, values...)
+    {
+    }
+
+    template <class... U>
+        requires(sizeof...(U) == sizeof...(Types)) &&
+                (sizeof...(Types) != 1 || (!is_same_v<remove_cvref_t<U>, tuple> && ...)) &&
+                (is_constructible_v<Types, U> && ...)
+    explicit(!(is_convertible_v<U, Types> && ...)) constexpr tuple(U&&... values)
+        : __elements(__detail::TupleFromElements{}, _FSTD::forward<U>(values)...)
+    {
+    }
+
+    tuple(const tuple&) = default;
+    tuple(tuple&&) = default;
+
+    template <class... U>
+        requires __detail::TupleConstructibleFrom<tuple<U...>&, Types...> &&
+                 (sizeof...(Types) != 1 || (!is_same_v<Types, U> && ...))
+    explicit(!__detail::TupleConvertibleFrom<tuple<U...>&, Types...>) constexpr tuple(
+        tuple<U...>& other)
+        : tuple(__detail::TupleFromTuple{}, other, Indices{})
+    {
+    }
+
+    template <class... U>
+        requires __detail::TupleConstructibleFrom<const tuple<U...>&, Types...> &&
+                 (sizeof...(Types) != 1 || (!is_same_v<Types, U> && ...))
+    explicit(!__detail::TupleConvertibleFrom<const tuple<U...>&, Types...>) constexpr tuple(
+        const tuple<U...>& other)
+        : tuple(__detail::TupleFromTuple{}, other, Indices{})
+    {
+    }
+
+    template <class... U>
+        requires __detail::TupleConstructibleFrom<tuple<U...>&&, Types...> &&
+                 (sizeof...(Types) != 1 || (!is_same_v<Types, U> && ...))
+    explicit(!__detail::TupleConvertibleFrom<tuple<U...>&&, Types...>) constexpr tuple(
+        tuple<U...>&& other)
+        : tuple(__detail::TupleFromTuple{}, _FSTD::move(other), Indices{})
+    {
+    }
+
+    template <class... U>
+        requires __detail::TupleConstructibleFrom<const tuple<U...>&&, Types...> &&
+                 (sizeof...(Types) != 1 || (!is_same_v<Types, U> && ...))
+    explicit(!__detail::TupleConvertibleFrom<const tuple<U...>&&, Types...>) constexpr tuple(
+        const tuple<U...>&& other)
+        : tuple(__detail::TupleFromTuple{}, _FSTD::move(other), Indices{})
+    {
+    }
+
+    template <class U1, class U2>
+        requires __detail::TupleConstructibleFrom<pair<U1, U2>&, Types...>
+    explicit(!__detail::TupleConvertibleFrom<pair<U1, U2>&, Types...>) constexpr tuple(
+        pair<U1, U2>& other)
+        : tuple(__detail::TupleFromTuple{}, other, Indices{})
+    {
+    }
+
+    template <class U1, class U2>
+        requires __detail::TupleConstructibleFrom<const pair<U1, U2>&, Types...>
+    explicit(!__detail::TupleConvertibleFrom<const pair<U1, U2>&, Types...>) constexpr tuple(
+        const pair<U1, U2>& other)
+        : tuple(__detail::TupleFromTuple{}, other, Indices{})
+    {
+    }
+
+    template <class U1, class U2>
+        requires __detail::TupleConstructibleFrom<pair<U1, U2>&&, Types...>
+    explicit(!__detail::TupleConvertibleFrom<pair<U1, U2>&&, Types...>) constexpr tuple(
+        pair<U1, U2>&& other)
+        : tuple(__detail::TupleFromTuple{}, _FSTD::move(other), Indices{})
+    {
+    }
+
+    template <class U1, class U2>
+        requires __detail::TupleConstructibleFrom<const pair<U1, U2>&&, Types...>
+    explicit(!__detail::TupleConvertibleFrom<const pair<U1, U2>&&, Types...>) constexpr tuple(
+        const pair<U1, U2>&& other)
+        : tuple(__detail::TupleFromTuple{}, _FSTD::move(other), Indices{})
+    {
+    }
+
+    // Other tuple-like types, which are arrays until ranges::subrange exists.
+    template <__detail::TupleLike Other>
+        requires(!__detail::IsTupleOrPair<remove_cvref_t<Other>>) &&
+                __detail::TupleConstructibleFrom<Other, Types...>
+    explicit(!__detail::TupleConvertibleFrom<Other, Types...>) constexpr tuple(Other&& other)
+        : tuple(__detail::TupleFromTuple{}, _FSTD::forward<Other>(other), Indices{})
+    {
+    }
+
+    // The allocator-extended constructors build each element with uses-allocator construction.
+    // One template covers copies, moves and every tuple-like source.
+    template <class Alloc>
+        requires(is_default_constructible_v<Types> && ...)
+    explicit(!(__detail::ImplicitlyDefaultConstructible<Types> &&
+               ...)) constexpr tuple(allocator_arg_t, const Alloc& allocator)
+        : __elements(__detail::TupleWithAllocator{}, allocator)
+    {
+    }
+
+    template <class Alloc>
+        requires(is_copy_constructible_v<Types> && ...)
+    explicit(!(is_convertible_v<const Types&, Types> &&
+               ...)) constexpr tuple(allocator_arg_t, const Alloc& allocator,
+                                     const Types&... values)
+        : __elements(__detail::TupleWithAllocator{}, allocator, values...)
+    {
+    }
+
+    template <class Alloc, class... U>
+        requires(sizeof...(U) == sizeof...(Types)) &&
+                (sizeof...(Types) != 1 || (!is_same_v<remove_cvref_t<U>, tuple> && ...)) &&
+                (is_constructible_v<Types, U> && ...)
+    explicit(!(is_convertible_v<U, Types> &&
+               ...)) constexpr tuple(allocator_arg_t, const Alloc& allocator, U&&... values)
+        : __elements(__detail::TupleWithAllocator{}, allocator, _FSTD::forward<U>(values)...)
+    {
+    }
+
+    template <class Alloc, __detail::TupleLike Other>
+        requires __detail::TupleConstructibleFrom<Other, Types...>
+    explicit(!__detail::TupleConvertibleFrom<Other, Types...>) constexpr tuple(
+        allocator_arg_t, const Alloc& allocator, Other&& other)
+        : tuple(__detail::TupleWithAllocator{}, allocator, _FSTD::forward<Other>(other), Indices{})
+    {
+    }
+
+    // Assignment goes through the elements, so a tuple of references assigns what they refer to.
+    constexpr tuple& operator=(const tuple& other)
+        requires(is_copy_assignable_v<Types> && ...)
+    {
+        AssignFrom(other, Indices{});
+        return *this;
+    }
+
+    constexpr tuple& operator=(tuple&& other) noexcept((is_nothrow_move_assignable_v<Types> && ...))
+        requires(is_move_assignable_v<Types> && ...)
+    {
+        AssignFrom(_FSTD::move(other), Indices{});
+        return *this;
+    }
+
+    template <class... U>
+        requires __detail::TupleAssignableFrom<const tuple<U...>&, Types...>
+    constexpr tuple& operator=(const tuple<U...>& other)
+    {
+        AssignFrom(other, Indices{});
+        return *this;
+    }
+
+    template <class... U>
+        requires __detail::TupleAssignableFrom<tuple<U...>&&, Types...>
+    constexpr tuple& operator=(tuple<U...>&& other)
+    {
+        AssignFrom(_FSTD::move(other), Indices{});
+        return *this;
+    }
+
+    template <class U1, class U2>
+        requires __detail::TupleAssignableFrom<const pair<U1, U2>&, Types...>
+    constexpr tuple& operator=(const pair<U1, U2>& other)
+    {
+        AssignFrom(other, Indices{});
+        return *this;
+    }
+
+    template <class U1, class U2>
+        requires __detail::TupleAssignableFrom<pair<U1, U2>&&, Types...>
+    constexpr tuple& operator=(pair<U1, U2>&& other)
+    {
+        AssignFrom(_FSTD::move(other), Indices{});
+        return *this;
+    }
+
+    template <__detail::TupleLike Other>
+        requires(!__detail::IsTupleOrPair<remove_cvref_t<Other>>) &&
+                __detail::TupleAssignableFrom<Other, Types...>
+    constexpr tuple& operator=(Other&& other)
+    {
+        AssignFrom(_FSTD::forward<Other>(other), Indices{});
+        return *this;
+    }
+
+    constexpr void swap(tuple& other) noexcept((is_nothrow_swappable_v<Types> && ...))
+    {
+        SwapWith(other, Indices{});
+    }
+
+private:
+    template <class Source, size_t... Index>
+    constexpr tuple(__detail::TupleFromTuple, Source&& source, index_sequence<Index...>)
+        : __elements(__detail::TupleFromElements{},
+                     _FSTD::get<Index>(_FSTD::forward<Source>(source))...)
+    {
+    }
+
+    template <class Alloc, class Source, size_t... Index>
+    constexpr tuple(__detail::TupleWithAllocator tag, const Alloc& allocator, Source&& source,
+                    index_sequence<Index...>)
+        : __elements(tag, allocator, _FSTD::get<Index>(_FSTD::forward<Source>(source))...)
+    {
+    }
+
+    template <class Source, size_t... Index>
+    constexpr void AssignFrom(Source&& source, index_sequence<Index...>)
+    {
+        ((_FSTD::get<Index>(*this) = _FSTD::get<Index>(_FSTD::forward<Source>(source))), ...);
+    }
+
+    template <size_t... Index> constexpr void SwapWith(tuple& other, index_sequence<Index...>)
+    {
+        using _FSTD::swap;
+        (swap(_FSTD::get<Index>(*this), _FSTD::get<Index>(other)), ...);
+    }
+};
+
+template <> class tuple<>
+{
+public:
+    constexpr tuple() noexcept = default;
+    template <class Alloc> constexpr tuple(allocator_arg_t, const Alloc&) noexcept {}
+    template <class Alloc> constexpr tuple(allocator_arg_t, const Alloc&, const tuple&) noexcept {}
+
+    constexpr void swap(tuple&) noexcept {}
+};
+
+template <class... Types, class Alloc> struct uses_allocator<tuple<Types...>, Alloc> : true_type
+{
+};
+
+template <class... T> tuple(T...) -> tuple<T...>;
+template <class First, class Second> tuple(pair<First, Second>) -> tuple<First, Second>;
+
+template <class... T>
+    requires(is_swappable_v<T> && ...)
+constexpr void swap(tuple<T...>& left, tuple<T...>& right) noexcept(noexcept(left.swap(right)))
+{
+    left.swap(right);
+}
+
+namespace __detail
+{
+template <class T, class U>
+concept EqualityTestable = requires(const T& left, const U& right) {
+    { left == right } -> BooleanTestable;
+};
+
+template <class Left, class Right, size_t... Index>
+constexpr bool TupleEqual([[maybe_unused]] const Left& left, [[maybe_unused]] const Right& right,
+                          index_sequence<Index...>)
+{
+    return ((_FSTD::get<Index>(left) == _FSTD::get<Index>(right)) && ...);
+}
+
+template <class Result, size_t Index, class Left, class Right>
+constexpr Result TupleCompare(const Left& left, const Right& right)
+{
+    if constexpr (Index == tuple_size_v<Left>)
+    {
+        return Result::equivalent;
+    }
+    else
+    {
+        if (auto order = synth_three_way(_FSTD::get<Index>(left), _FSTD::get<Index>(right));
+            order != 0)
+        {
+            return order;
+        }
+        return TupleCompare<Result, Index + 1>(left, right);
+    }
+}
+} // namespace __detail
+
+template <class... T, class... U>
+    requires(sizeof...(T) == sizeof...(U)) && (__detail::EqualityTestable<T, U> && ...)
+constexpr bool operator==(const tuple<T...>& left, const tuple<U...>& right)
+{
+    return __detail::TupleEqual(left, right, index_sequence_for<T...>{});
+}
+
+template <class... T, class... U>
+    requires(sizeof...(T) == sizeof...(U))
+constexpr common_comparison_category_t<__detail::SynthThreeWayResult<T, U>...>
+operator<=>(const tuple<T...>& left, const tuple<U...>& right)
+{
+    using Result = common_comparison_category_t<__detail::SynthThreeWayResult<T, U>...>;
+    return __detail::TupleCompare<Result, 0>(left, right);
+}
+
+template <class... T> constexpr tuple<unwrap_ref_decay_t<T>...> make_tuple(T&&... values)
+{
+    return tuple<unwrap_ref_decay_t<T>...>(_FSTD::forward<T>(values)...);
+}
+
+template <class... T> constexpr tuple<T&&...> forward_as_tuple(T&&... values) noexcept
+{
+    return tuple<T&&...>(_FSTD::forward<T>(values)...);
+}
+
+template <class... T> constexpr tuple<T&...> tie(T&... values) noexcept
+{
+    return tuple<T&...>(values...);
+}
+
+namespace __detail
+{
+struct Ignore
+{
+    template <class T> constexpr const Ignore& operator=(const T&) const noexcept
+    {
+        return *this;
+    }
+};
+} // namespace __detail
+inline constexpr __detail::Ignore ignore;
+
+namespace __detail
+{
+template <class Tuple, class Indices> struct TupleOfElements;
+template <class Tuple, size_t... Index> struct TupleOfElements<Tuple, index_sequence<Index...>>
+{
+    using type = tuple<tuple_element_t<Index, Tuple>...>;
+};
+
+template <class... Tuples> struct TupleConcat;
+template <> struct TupleConcat<>
+{
+    using type = tuple<>;
+};
+template <class... T> struct TupleConcat<tuple<T...>>
+{
+    using type = tuple<T...>;
+};
+template <class... T, class... U, class... Rest>
+struct TupleConcat<tuple<T...>, tuple<U...>, Rest...> : TupleConcat<tuple<T..., U...>, Rest...>
+{
+};
+
+// Element k of tuple_cat's result is element Inner[k] of argument Outer[k].
+template <size_t... Sizes> constexpr auto TupleCatOuter()
+{
+    constexpr size_t sizes[] = {Sizes..., 0};
+    array<size_t, (Sizes + ... + 0)> outer{};
+    size_t position = 0;
+    for (size_t argument = 0; argument != sizeof...(Sizes); ++argument)
+    {
+        for (size_t element = 0; element < sizes[argument]; ++element)
+        {
+            outer[position++] = argument;
+        }
+    }
+    return outer;
+}
+
+template <size_t... Sizes> constexpr auto TupleCatInner()
+{
+    constexpr size_t sizes[] = {Sizes..., 0};
+    array<size_t, (Sizes + ... + 0)> inner{};
+    size_t position = 0;
+    for (size_t argument = 0; argument != sizeof...(Sizes); ++argument)
+    {
+        for (size_t element = 0; element < sizes[argument]; ++element)
+        {
+            inner[position++] = element;
+        }
+    }
+    return inner;
+}
+
+template <class Result, size_t... Sizes, class Arguments, size_t... Position>
+constexpr Result TupleCat([[maybe_unused]] Arguments&& arguments, index_sequence<Position...>)
+{
+    [[maybe_unused]] constexpr auto outer = TupleCatOuter<Sizes...>();
+    [[maybe_unused]] constexpr auto inner = TupleCatInner<Sizes...>();
+    return Result(_FSTD::get<inner[Position]>(
+        _FSTD::get<outer[Position]>(_FSTD::forward<Arguments>(arguments)))...);
+}
+} // namespace __detail
+
+template <__detail::TupleLike... Tuples>
+constexpr typename __detail::TupleConcat<typename __detail::TupleOfElements<
+    remove_cvref_t<Tuples>, __detail::TupleIndices<Tuples>>::type...>::type
+tuple_cat(Tuples&&... tuples)
+{
+    using Result = typename __detail::TupleConcat<typename __detail::TupleOfElements<
+        remove_cvref_t<Tuples>, __detail::TupleIndices<Tuples>>::type...>::type;
+    return __detail::TupleCat<Result, tuple_size_v<remove_cvref_t<Tuples>>...>(
+        _FSTD::forward_as_tuple(_FSTD::forward<Tuples>(tuples)...),
+        make_index_sequence<tuple_size_v<Result>>{});
+}
+
+namespace __detail
+{
+template <class F, class Tuple, size_t... Index>
+constexpr decltype(auto)
+Apply(F&& function, [[maybe_unused]] Tuple&& arguments, index_sequence<Index...>) noexcept(
+    noexcept(__detail::Invoke(_FSTD::forward<F>(function),
+                              _FSTD::get<Index>(_FSTD::forward<Tuple>(arguments))...)))
+{
+    return __detail::Invoke(_FSTD::forward<F>(function),
+                            _FSTD::get<Index>(_FSTD::forward<Tuple>(arguments))...);
+}
+
+template <class T, class Tuple, size_t... Index>
+    requires is_constructible_v<T, decltype(_FSTD::get<Index>(declval<Tuple>()))...>
+constexpr T MakeFromTuple([[maybe_unused]] Tuple&& arguments, index_sequence<Index...>)
+{
+    return T(_FSTD::get<Index>(_FSTD::forward<Tuple>(arguments))...);
+}
+} // namespace __detail
+
+template <class F, __detail::TupleLike Tuple>
+constexpr decltype(auto) apply(F&& function, Tuple&& arguments) noexcept(
+    noexcept(__detail::Apply(_FSTD::forward<F>(function), _FSTD::forward<Tuple>(arguments),
+                             __detail::TupleIndices<Tuple>{})))
+{
+    return __detail::Apply(_FSTD::forward<F>(function), _FSTD::forward<Tuple>(arguments),
+                           __detail::TupleIndices<Tuple>{});
+}
+
+template <class T, __detail::TupleLike Tuple>
+constexpr T make_from_tuple(Tuple&& arguments)
+    requires requires {
+        __detail::MakeFromTuple<T>(_FSTD::forward<Tuple>(arguments),
+                                   __detail::TupleIndices<Tuple>{});
+    }
+{
+    return __detail::MakeFromTuple<T>(_FSTD::forward<Tuple>(arguments),
+                                      __detail::TupleIndices<Tuple>{});
+}
+
+namespace __detail
+{
+// Uses-allocator construction: the arguments that build a T with an allocator, as a tuple.
+template <class T> struct UsesAllocatorConstruction
+{
+    template <class Alloc, class... Args>
+    static constexpr auto Arguments([[maybe_unused]] const Alloc& allocator,
+                                    Args&&... args) noexcept
+    {
+        if constexpr (!uses_allocator_v<T, Alloc>)
+        {
+            static_assert(is_constructible_v<T, Args...>,
+                          "uses-allocator construction: no constructor takes these arguments");
+            return _FSTD::forward_as_tuple(_FSTD::forward<Args>(args)...);
+        }
+        else if constexpr (is_constructible_v<T, allocator_arg_t, const Alloc&, Args...>)
+        {
+            return tuple<allocator_arg_t, const Alloc&, Args&&...>(allocator_arg, allocator,
+                                                                   _FSTD::forward<Args>(args)...);
+        }
+        else
+        {
+            static_assert(is_constructible_v<T, Args..., const Alloc&>,
+                          "uses-allocator construction: no constructor takes the allocator");
+            return _FSTD::forward_as_tuple(_FSTD::forward<Args>(args)..., allocator);
+        }
+    }
+};
+
+// A pair passes the allocator on to both its members, through its piecewise constructor.
+template <class First, class Second> struct UsesAllocatorConstruction<pair<First, Second>>
+{
+    template <class Alloc, class FirstArguments, class SecondArguments>
+    static constexpr auto Arguments(const Alloc& allocator, piecewise_construct_t,
+                                    FirstArguments&& first, SecondArguments&& second) noexcept
+    {
+        return _FSTD::make_tuple(
+            piecewise_construct,
+            _FSTD::apply(
+                [&allocator](auto&&... args)
+                {
+                    return UsesAllocatorConstruction<remove_cv_t<First>>::Arguments(
+                        allocator, _FSTD::forward<decltype(args)>(args)...);
+                },
+                _FSTD::forward<FirstArguments>(first)),
+            _FSTD::apply(
+                [&allocator](auto&&... args)
+                {
+                    return UsesAllocatorConstruction<remove_cv_t<Second>>::Arguments(
+                        allocator, _FSTD::forward<decltype(args)>(args)...);
+                },
+                _FSTD::forward<SecondArguments>(second)));
+    }
+
+    template <class Alloc> static constexpr auto Arguments(const Alloc& allocator) noexcept
+    {
+        return Arguments(allocator, piecewise_construct, tuple<>(), tuple<>());
+    }
+
+    template <class Alloc, class U, class V>
+    static constexpr auto Arguments(const Alloc& allocator, U&& first, V&& second) noexcept
+    {
+        return Arguments(allocator, piecewise_construct,
+                         _FSTD::forward_as_tuple(_FSTD::forward<U>(first)),
+                         _FSTD::forward_as_tuple(_FSTD::forward<V>(second)));
+    }
+
+    template <class Alloc, class Pair>
+        requires IsPair<remove_cvref_t<Pair>>
+    static constexpr auto Arguments(const Alloc& allocator, Pair&& value) noexcept
+    {
+        return Arguments(allocator, piecewise_construct,
+                         _FSTD::forward_as_tuple(_FSTD::get<0>(_FSTD::forward<Pair>(value))),
+                         _FSTD::forward_as_tuple(_FSTD::get<1>(_FSTD::forward<Pair>(value))));
+    }
+};
+} // namespace __detail
+
+template <class... T, class... U>
+    requires(sizeof...(T) == sizeof...(U)) && requires { typename tuple<common_type_t<T, U>...>; }
+struct common_type<tuple<T...>, tuple<U...>>
+{
+    using type = tuple<common_type_t<T, U>...>;
+};
+
+template <class... T, class... U, template <class> class TQualifiers,
+          template <class> class UQualifiers>
+    requires(sizeof...(T) == sizeof...(U)) &&
+            requires { typename tuple<common_reference_t<TQualifiers<T>, UQualifiers<U>>...>; }
+struct basic_common_reference<tuple<T...>, tuple<U...>, TQualifiers, UQualifiers>
+{
+    using type = tuple<common_reference_t<TQualifiers<T>, UQualifiers<U>>...>;
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

@@ -5,6 +5,7 @@
 #include "kernel/memory/page_allocator.h"
 #include "kernel/sync/spinlock.h"
 
+#include <atomic>
 #include <stddef.h>
 
 namespace FeatherOS::Memory::Arch::X86_64
@@ -29,23 +30,23 @@ uint64_t kernel_root_physical_address = 0;
 // Kernel tables are shared by every address space and CPU; held while any table is edited.
 constinit FeatherOS::Sync::SpinLock page_table_lock;
 // Each CPU writes its own slot without the lock, and others read it, so every access is atomic.
-uint64_t active_root_physical_addresses[FeatherOS::Cpu::MaximumCpus] = {};
+std::atomic<uint64_t> active_root_physical_addresses[FeatherOS::Cpu::MaximumCpus] = {};
 
 // A CPU asked to flush finds requested ahead of completed; it reloads CR3, which drops every
 // user translation (they are never global), and catches completed up.
 struct alignas(64) FlushRequest
 {
-    uint64_t requested;
-    uint64_t completed;
+    std::atomic<uint64_t> requested;
+    std::atomic<uint64_t> completed;
 };
 
 FlushRequest flush_requests[FeatherOS::Cpu::MaximumCpus] = {};
 
 bool IsActiveOnAnyCpu(uint64_t root_physical_address)
 {
-    for (const uint64_t& active_root : active_root_physical_addresses)
+    for (const std::atomic<uint64_t>& active_root : active_root_physical_addresses)
     {
-        if (__atomic_load_n(&active_root, __ATOMIC_SEQ_CST) == root_physical_address)
+        if (active_root.load(std::memory_order_seq_cst) == root_physical_address)
         {
             return true;
         }
@@ -211,8 +212,8 @@ bool InitializeVirtualMemory(uint64_t offset)
     uint64_t cr3;
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
     kernel_root_physical_address = cr3 & PageAddressMask;
-    __atomic_store_n(&active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()],
-                     kernel_root_physical_address, __ATOMIC_SEQ_CST);
+    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()].store(
+        kernel_root_physical_address, std::memory_order_seq_cst);
     root_table = PhysicalTable(kernel_root_physical_address);
     if (root_table == nullptr)
     {
@@ -477,8 +478,8 @@ bool ActivateAddressSpace(const AddressSpace& address_space)
     const uint64_t root = address_space.root_physical_address;
     // Recorded before the switch: a shootdown that misses this CPU must have changed the page
     // tables before this CPU starts reading them.
-    __atomic_store_n(&active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()], root,
-                     __ATOMIC_SEQ_CST);
+    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()].store(root,
+                                                                         std::memory_order_seq_cst);
     asm volatile("mov %0, %%cr3" : : "r"(root) : "memory");
     return true;
 }
@@ -486,22 +487,22 @@ bool ActivateAddressSpace(const AddressSpace& address_space)
 void ActivateKernelAddressSpace()
 {
     const uint64_t root = kernel_root_physical_address;
-    __atomic_store_n(&active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()], root,
-                     __ATOMIC_SEQ_CST);
+    active_root_physical_addresses[FeatherOS::Cpu::CurrentIndex()].store(root,
+                                                                         std::memory_order_seq_cst);
     asm volatile("mov %0, %%cr3" : : "r"(root) : "memory");
 }
 
 void ServiceShootDown()
 {
     FlushRequest& request = flush_requests[FeatherOS::Cpu::CurrentIndex()];
-    const uint64_t wanted = __atomic_load_n(&request.requested, __ATOMIC_ACQUIRE);
-    if (__atomic_load_n(&request.completed, __ATOMIC_RELAXED) == wanted)
+    const uint64_t wanted = request.requested.load(std::memory_order_acquire);
+    if (request.completed.load(std::memory_order_relaxed) == wanted)
     {
         return;
     }
     uint64_t cr3;
     asm volatile("mov %%cr3, %0\n\tmov %0, %%cr3" : "=r"(cr3) : : "memory");
-    __atomic_store_n(&request.completed, wanted, __ATOMIC_RELEASE);
+    request.completed.store(wanted, std::memory_order_release);
 }
 
 // invlpg flushes only this CPU, so every other CPU running the address space gets an IPI and is
@@ -512,21 +513,21 @@ void ShootDownUserMappings(const AddressSpace& address_space)
     const uint64_t root = address_space.root_physical_address;
     const uint32_t self = FeatherOS::Cpu::CurrentIndex();
     uint64_t wanted[FeatherOS::Cpu::MaximumCpus] = {};
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
     for (uint32_t cpu = 0; cpu < FeatherOS::Cpu::MaximumCpus; ++cpu)
     {
         if (cpu == self ||
-            __atomic_load_n(&active_root_physical_addresses[cpu], __ATOMIC_SEQ_CST) != root)
+            active_root_physical_addresses[cpu].load(std::memory_order_seq_cst) != root)
         {
             continue;
         }
-        wanted[cpu] = __atomic_add_fetch(&flush_requests[cpu].requested, 1, __ATOMIC_ACQ_REL);
+        wanted[cpu] = flush_requests[cpu].requested.fetch_add(1, std::memory_order_acq_rel) + 1;
         FeatherOS::Arch::Interrupts::SendIpi(cpu);
     }
     for (uint32_t cpu = 0; cpu < FeatherOS::Cpu::MaximumCpus; ++cpu)
     {
         while (wanted[cpu] != 0 &&
-               __atomic_load_n(&flush_requests[cpu].completed, __ATOMIC_ACQUIRE) < wanted[cpu])
+               flush_requests[cpu].completed.load(std::memory_order_acquire) < wanted[cpu])
         {
             ServiceShootDown();
             FeatherOS::Sync::CpuRelax();

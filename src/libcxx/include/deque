@@ -1,0 +1,1055 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_DEQUE
+#define FEATHEROS_LIBCXX_DEQUE
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "__memory_base"
+#include "algorithm"
+#include "compare"
+#include "initializer_list"
+#include "iterator"
+#include "limits"
+#include "memory"
+#include "type_traits"
+#include "utility"
+
+// Left out: allocators whose pointer is not a plain pointer and pmr::deque. A size past
+// max_size() (length_error) and at() out of range (out_of_range) call the library's abort hook.
+//
+// The elements live in blocks of a power-of-two count, which never move, so push_front and
+// push_back keep references valid. A map of block pointers lists the blocks in order; an
+// iterator is the map and a position counted from the map's first slot, so erasing at either
+// end, which never moves the map, leaves the other iterators valid. At most one spare block
+// stays at each end, and a spare block at one end is moved to the other before a new one is
+// allocated, so a queue's blocks circulate.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+template <class T> constexpr size_t DequeBlockSize()
+{
+    size_t count = sizeof(T) < 32 ? 512 / sizeof(T) : 16;
+    while ((count & (count - 1)) != 0)
+    {
+        count &= count - 1;
+    }
+    return count;
+}
+
+template <class T, bool IsConst> class DequeIterator
+{
+    static constexpr size_t Block = DequeBlockSize<T>();
+
+public:
+    using iterator_category = random_access_iterator_tag;
+    using value_type = T;
+    using difference_type = ptrdiff_t;
+    using pointer = conditional_t<IsConst, const T*, T*>;
+    using reference = conditional_t<IsConst, const T&, T&>;
+
+    DequeIterator() noexcept = default;
+    DequeIterator(T* const* map, size_t position) noexcept : m_map(map), m_position(position) {}
+    template <bool OtherConst>
+        requires(IsConst && !OtherConst)
+    DequeIterator(const DequeIterator<T, OtherConst>& other) noexcept
+        : m_map(other.Map()), m_position(other.Position())
+    {
+    }
+
+    T* const* Map() const noexcept
+    {
+        return m_map;
+    }
+    size_t Position() const noexcept
+    {
+        return m_position;
+    }
+
+    reference operator*() const noexcept
+    {
+        return m_map[m_position / Block][m_position % Block];
+    }
+    pointer operator->() const noexcept
+    {
+        return m_map[m_position / Block] + m_position % Block;
+    }
+    reference operator[](difference_type count) const noexcept
+    {
+        return *(*this + count);
+    }
+
+    DequeIterator& operator++() noexcept
+    {
+        ++m_position;
+        return *this;
+    }
+    DequeIterator operator++(int) noexcept
+    {
+        DequeIterator previous = *this;
+        ++m_position;
+        return previous;
+    }
+    DequeIterator& operator--() noexcept
+    {
+        --m_position;
+        return *this;
+    }
+    DequeIterator operator--(int) noexcept
+    {
+        DequeIterator previous = *this;
+        --m_position;
+        return previous;
+    }
+    DequeIterator& operator+=(difference_type count) noexcept
+    {
+        m_position += static_cast<size_t>(count);
+        return *this;
+    }
+    DequeIterator& operator-=(difference_type count) noexcept
+    {
+        m_position -= static_cast<size_t>(count);
+        return *this;
+    }
+    DequeIterator operator+(difference_type count) const noexcept
+    {
+        return DequeIterator(m_map, m_position + static_cast<size_t>(count));
+    }
+    DequeIterator operator-(difference_type count) const noexcept
+    {
+        return DequeIterator(m_map, m_position - static_cast<size_t>(count));
+    }
+    friend DequeIterator operator+(difference_type count, const DequeIterator& iterator) noexcept
+    {
+        return iterator + count;
+    }
+
+private:
+    T* const* m_map = nullptr;
+    size_t m_position = 0;
+};
+
+template <class T, bool LeftConst, bool RightConst>
+bool operator==(const DequeIterator<T, LeftConst>& left,
+                const DequeIterator<T, RightConst>& right) noexcept
+{
+    return left.Position() == right.Position();
+}
+
+template <class T, bool LeftConst, bool RightConst>
+strong_ordering operator<=>(const DequeIterator<T, LeftConst>& left,
+                            const DequeIterator<T, RightConst>& right) noexcept
+{
+    return left.Position() <=> right.Position();
+}
+
+template <class T, bool LeftConst, bool RightConst>
+ptrdiff_t operator-(const DequeIterator<T, LeftConst>& left,
+                    const DequeIterator<T, RightConst>& right) noexcept
+{
+    return static_cast<ptrdiff_t>(left.Position() - right.Position());
+}
+} // namespace __detail
+
+template <class T, class Allocator = allocator<T>> class deque
+{
+    using Traits = allocator_traits<Allocator>;
+    using MapAllocator = typename Traits::template rebind_alloc<T*>;
+    using MapTraits = allocator_traits<MapAllocator>;
+
+    static constexpr size_t Block()
+    {
+        return __detail::DequeBlockSize<T>();
+    }
+
+public:
+    using value_type = T;
+    using allocator_type = Allocator;
+    using pointer = typename Traits::pointer;
+    using const_pointer = typename Traits::const_pointer;
+    using reference = T&;
+    using const_reference = const T&;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+    using iterator = __detail::DequeIterator<T, false>;
+    using const_iterator = __detail::DequeIterator<T, true>;
+    using reverse_iterator = _FSTD::reverse_iterator<iterator>;
+    using const_reverse_iterator = _FSTD::reverse_iterator<const_iterator>;
+
+    static_assert(is_same_v<typename Allocator::value_type, T>,
+                  "deque's allocator must allocate its value_type");
+    static_assert(is_pointer_v<typename Traits::pointer>,
+                  "deque needs an allocator whose pointer is a plain pointer");
+
+    deque() : deque(Allocator()) {}
+    explicit deque(const Allocator& allocator) : m_allocator(allocator) {}
+
+    explicit deque(size_type count, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        resize(count);
+    }
+
+    deque(size_type count, const T& value, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        resize(count, value);
+    }
+
+    template <__detail::ClassicInput I>
+    deque(I first, I last, const Allocator& allocator = Allocator()) : m_allocator(allocator)
+    {
+        AppendFrom(first, last);
+    }
+
+    template <__detail::ContainerCompatibleRange<T> R>
+    deque(from_range_t, R&& range, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        append_range(_FSTD::forward<R>(range));
+    }
+
+    deque(const deque& other)
+        : m_allocator(Traits::select_on_container_copy_construction(other.m_allocator))
+    {
+        AppendFrom(other.begin(), other.end());
+    }
+
+    deque(deque&& other) noexcept : m_allocator(_FSTD::move(other.m_allocator))
+    {
+        Steal(other);
+    }
+
+    deque(const deque& other, const type_identity_t<Allocator>& allocator) : m_allocator(allocator)
+    {
+        AppendFrom(other.begin(), other.end());
+    }
+
+    deque(deque&& other, const type_identity_t<Allocator>& allocator) : m_allocator(allocator)
+    {
+        if (Traits::is_always_equal::value || m_allocator == other.m_allocator)
+        {
+            Steal(other);
+        }
+        else
+        {
+            AppendFrom(_FSTD::make_move_iterator(other.begin()),
+                       _FSTD::make_move_iterator(other.end()));
+        }
+    }
+
+    deque(initializer_list<T> values, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        AppendFrom(values.begin(), values.end());
+    }
+
+    ~deque()
+    {
+        Release();
+    }
+
+    deque& operator=(const deque& other)
+    {
+        if (this == &other)
+        {
+            return *this;
+        }
+        if constexpr (Traits::propagate_on_container_copy_assignment::value)
+        {
+            if (!Traits::is_always_equal::value && m_allocator != other.m_allocator)
+            {
+                Release();
+            }
+            m_allocator = other.m_allocator;
+        }
+        assign(other.begin(), other.end());
+        return *this;
+    }
+
+    deque& operator=(deque&& other) noexcept(Traits::is_always_equal::value)
+    {
+        if (this == &other)
+        {
+            return *this;
+        }
+        if (Traits::propagate_on_container_move_assignment::value ||
+            Traits::is_always_equal::value || m_allocator == other.m_allocator)
+        {
+            Release();
+            if constexpr (Traits::propagate_on_container_move_assignment::value)
+            {
+                m_allocator = _FSTD::move(other.m_allocator);
+            }
+            Steal(other);
+        }
+        else
+        {
+            assign(_FSTD::make_move_iterator(other.begin()),
+                   _FSTD::make_move_iterator(other.end()));
+        }
+        return *this;
+    }
+
+    deque& operator=(initializer_list<T> values)
+    {
+        assign(values.begin(), values.end());
+        return *this;
+    }
+
+    template <__detail::ClassicInput I> void assign(I first, I last)
+    {
+        AssignFrom(first, last);
+    }
+    template <__detail::ContainerCompatibleRange<T> R> void assign_range(R&& range)
+    {
+        AssignFrom(ranges::begin(range), ranges::end(range));
+    }
+    void assign(size_type count, const T& value)
+    {
+        const size_type kept = _FSTD::min(count, m_size);
+        _FSTD::fill_n(begin(), static_cast<difference_type>(kept), value);
+        if (count > kept)
+        {
+            AppendCopies(count - kept, value);
+        }
+        else
+        {
+            DestroyBack(m_size - count);
+        }
+    }
+    void assign(initializer_list<T> values)
+    {
+        assign(values.begin(), values.end());
+    }
+
+    allocator_type get_allocator() const noexcept
+    {
+        return m_allocator;
+    }
+
+    iterator begin() noexcept
+    {
+        return iterator(m_map, m_start);
+    }
+    const_iterator begin() const noexcept
+    {
+        return const_iterator(m_map, m_start);
+    }
+    iterator end() noexcept
+    {
+        return iterator(m_map, m_start + m_size);
+    }
+    const_iterator end() const noexcept
+    {
+        return const_iterator(m_map, m_start + m_size);
+    }
+    reverse_iterator rbegin() noexcept
+    {
+        return reverse_iterator(end());
+    }
+    const_reverse_iterator rbegin() const noexcept
+    {
+        return const_reverse_iterator(end());
+    }
+    reverse_iterator rend() noexcept
+    {
+        return reverse_iterator(begin());
+    }
+    const_reverse_iterator rend() const noexcept
+    {
+        return const_reverse_iterator(begin());
+    }
+    const_iterator cbegin() const noexcept
+    {
+        return begin();
+    }
+    const_iterator cend() const noexcept
+    {
+        return end();
+    }
+    const_reverse_iterator crbegin() const noexcept
+    {
+        return rbegin();
+    }
+    const_reverse_iterator crend() const noexcept
+    {
+        return rend();
+    }
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return m_size == 0;
+    }
+    size_type size() const noexcept
+    {
+        return m_size;
+    }
+    size_type max_size() const noexcept
+    {
+        return _FSTD::min<size_type>(Traits::max_size(m_allocator),
+                                     numeric_limits<difference_type>::max());
+    }
+
+    void resize(size_type count)
+    {
+        if (count <= m_size)
+        {
+            DestroyBack(m_size - count);
+            return;
+        }
+        Reserve(count);
+        EnsureBack(count - m_size);
+        while (m_size != count)
+        {
+            Traits::construct(m_allocator, Slot(m_start + m_size));
+            ++m_size;
+        }
+    }
+
+    void resize(size_type count, const T& value)
+    {
+        if (count <= m_size)
+        {
+            DestroyBack(m_size - count);
+            return;
+        }
+        Reserve(count);
+        AppendCopies(count - m_size, value);
+    }
+
+    void shrink_to_fit()
+    {
+        if (m_size == 0)
+        {
+            Release();
+            return;
+        }
+        TrimFront(Block());
+        TrimBack(Block());
+    }
+
+    reference operator[](size_type index)
+    {
+        return *Slot(m_start + index);
+    }
+    const_reference operator[](size_type index) const
+    {
+        return *Slot(m_start + index);
+    }
+    reference at(size_type index)
+    {
+        CheckIndex(index);
+        return *Slot(m_start + index);
+    }
+    const_reference at(size_type index) const
+    {
+        CheckIndex(index);
+        return *Slot(m_start + index);
+    }
+    reference front()
+    {
+        return *Slot(m_start);
+    }
+    const_reference front() const
+    {
+        return *Slot(m_start);
+    }
+    reference back()
+    {
+        return *Slot(m_start + m_size - 1);
+    }
+    const_reference back() const
+    {
+        return *Slot(m_start + m_size - 1);
+    }
+
+    template <class... Args> reference emplace_front(Args&&... args)
+    {
+        Reserve(m_size + 1);
+        EnsureFront(1);
+        Traits::construct(m_allocator, Slot(m_start - 1), _FSTD::forward<Args>(args)...);
+        --m_start;
+        ++m_size;
+        return front();
+    }
+    template <class... Args> reference emplace_back(Args&&... args)
+    {
+        Reserve(m_size + 1);
+        EnsureBack(1);
+        Traits::construct(m_allocator, Slot(m_start + m_size), _FSTD::forward<Args>(args)...);
+        ++m_size;
+        return back();
+    }
+
+    void push_front(const T& value)
+    {
+        emplace_front(value);
+    }
+    void push_front(T&& value)
+    {
+        emplace_front(_FSTD::move(value));
+    }
+    void push_back(const T& value)
+    {
+        emplace_back(value);
+    }
+    void push_back(T&& value)
+    {
+        emplace_back(_FSTD::move(value));
+    }
+
+    template <__detail::ContainerCompatibleRange<T> R> void prepend_range(R&& range)
+    {
+        insert_range(cbegin(), _FSTD::forward<R>(range));
+    }
+    template <__detail::ContainerCompatibleRange<T> R> void append_range(R&& range)
+    {
+        insert_range(cend(), _FSTD::forward<R>(range));
+    }
+
+    void pop_front() noexcept
+    {
+        Traits::destroy(m_allocator, Slot(m_start));
+        ++m_start;
+        --m_size;
+        TrimFront(2 * Block());
+    }
+    void pop_back() noexcept
+    {
+        --m_size;
+        Traits::destroy(m_allocator, Slot(m_start + m_size));
+        TrimBack(2 * Block());
+    }
+
+    // A single element shifts the shorter side by one, built first, so args may refer to an
+    // element.
+    template <class... Args> iterator emplace(const_iterator position, Args&&... args)
+    {
+        const size_type index = Index(position);
+        if (index == 0)
+        {
+            emplace_front(_FSTD::forward<Args>(args)...);
+            return begin();
+        }
+        if (index == m_size)
+        {
+            emplace_back(_FSTD::forward<Args>(args)...);
+            return end() - 1;
+        }
+        T value(_FSTD::forward<Args>(args)...);
+        const auto offset = static_cast<difference_type>(index);
+        if (index < m_size - index)
+        {
+            emplace_front(_FSTD::move(front()));
+            _FSTD::move(begin() + 2, begin() + offset + 1, begin() + 1);
+        }
+        else
+        {
+            emplace_back(_FSTD::move(back()));
+            _FSTD::move_backward(begin() + offset, end() - 2, end() - 1);
+        }
+        *(begin() + offset) = _FSTD::move(value);
+        return begin() + offset;
+    }
+
+    iterator insert(const_iterator position, const T& value)
+    {
+        return emplace(position, value);
+    }
+    iterator insert(const_iterator position, T&& value)
+    {
+        return emplace(position, _FSTD::move(value));
+    }
+
+    iterator insert(const_iterator position, size_type count, const T& value)
+    {
+        const size_type index = Index(position);
+        if (count == 0)
+        {
+            return begin() + static_cast<difference_type>(index);
+        }
+        Reserve(m_size + count);
+        if (index < m_size - index)
+        {
+            EnsureFront(count);
+            for (size_type built = 0; built != count; ++built)
+            {
+                Traits::construct(m_allocator, Slot(m_start - count + built), value);
+            }
+            m_start -= count;
+            m_size += count;
+            RotateFrontInto(count, index);
+        }
+        else
+        {
+            const size_type old_size = m_size;
+            AppendCopies(count, value);
+            RotateBackInto(old_size, index);
+        }
+        return begin() + static_cast<difference_type>(index);
+    }
+
+    template <__detail::ClassicInput I> iterator insert(const_iterator position, I first, I last)
+    {
+        return InsertFrom(Index(position), first, last);
+    }
+    template <__detail::ContainerCompatibleRange<T> R>
+    iterator insert_range(const_iterator position, R&& range)
+    {
+        return InsertFrom(Index(position), ranges::begin(range), ranges::end(range));
+    }
+    iterator insert(const_iterator position, initializer_list<T> values)
+    {
+        return InsertFrom(Index(position), values.begin(), values.end());
+    }
+
+    iterator erase(const_iterator position)
+    {
+        return erase(position, position + 1);
+    }
+
+    iterator erase(const_iterator first, const_iterator last)
+    {
+        const size_type index = Index(first);
+        const auto count = static_cast<size_type>(last - first);
+        if (count == 0)
+        {
+            return begin() + static_cast<difference_type>(index);
+        }
+        const auto offset = static_cast<difference_type>(index);
+        if (index < m_size - index - count)
+        {
+            _FSTD::move_backward(begin(), begin() + offset,
+                                 begin() + offset + static_cast<difference_type>(count));
+            for (size_type removed = 0; removed != count; ++removed)
+            {
+                Traits::destroy(m_allocator, Slot(m_start + removed));
+            }
+            m_start += count;
+            m_size -= count;
+            TrimFront(2 * Block());
+        }
+        else
+        {
+            _FSTD::move(begin() + offset + static_cast<difference_type>(count), end(),
+                        begin() + offset);
+            DestroyBack(count);
+        }
+        return begin() + offset;
+    }
+
+    void swap(deque& other) noexcept(Traits::is_always_equal::value)
+    {
+        using _FSTD::swap;
+        if constexpr (Traits::propagate_on_container_swap::value)
+        {
+            swap(m_allocator, other.m_allocator);
+        }
+        swap(m_map, other.m_map);
+        swap(m_map_size, other.m_map_size);
+        swap(m_block_begin, other.m_block_begin);
+        swap(m_block_end, other.m_block_end);
+        swap(m_start, other.m_start);
+        swap(m_size, other.m_size);
+    }
+
+    // Keeps one block, in the middle of the map, so the next pushes at either end need none.
+    void clear() noexcept
+    {
+        DestroyBack(m_size);
+        if (m_block_begin == m_block_end)
+        {
+            return;
+        }
+        T* const kept = m_map[m_block_begin];
+        m_map[m_block_begin] = nullptr;
+        for (size_type slot = m_block_begin + 1; slot != m_block_end; ++slot)
+        {
+            Traits::deallocate(m_allocator, m_map[slot], Block());
+            m_map[slot] = nullptr;
+        }
+        m_block_begin = m_map_size / 2;
+        m_block_end = m_block_begin + 1;
+        m_map[m_block_begin] = kept;
+        m_start = m_block_begin * Block() + Block() / 2;
+    }
+
+private:
+    T** m_map = nullptr;
+    size_t m_map_size = 0;
+    // Blocks are allocated for the map's slots [m_block_begin, m_block_end).
+    size_t m_block_begin = 0;
+    size_t m_block_end = 0;
+    // The first element's position, counted from the start of the map's first slot.
+    size_t m_start = 0;
+    size_t m_size = 0;
+    [[no_unique_address]] Allocator m_allocator;
+
+    T* Slot(size_t position) const noexcept
+    {
+        return m_map[position / Block()] + position % Block();
+    }
+
+    size_type Index(const_iterator position) const noexcept
+    {
+        return position.Position() - m_start;
+    }
+
+    void CheckIndex(size_type index) const
+    {
+        if (index >= m_size)
+        {
+            __detail::LibraryAbort("deque::at: the index is out of range");
+        }
+    }
+
+    void Reserve(size_type count) const
+    {
+        if (count > max_size())
+        {
+            __detail::LibraryAbort("deque: the size exceeds max_size()");
+        }
+    }
+
+    size_t FrontSpare() const noexcept
+    {
+        return m_start - m_block_begin * Block();
+    }
+    size_t BackSpare() const noexcept
+    {
+        return m_block_end * Block() - (m_start + m_size);
+    }
+
+    void Steal(deque& other) noexcept
+    {
+        m_map = _FSTD::exchange(other.m_map, nullptr);
+        m_map_size = _FSTD::exchange(other.m_map_size, 0);
+        m_block_begin = _FSTD::exchange(other.m_block_begin, 0);
+        m_block_end = _FSTD::exchange(other.m_block_end, 0);
+        m_start = _FSTD::exchange(other.m_start, 0);
+        m_size = _FSTD::exchange(other.m_size, 0);
+    }
+
+    void Release() noexcept
+    {
+        DestroyBack(m_size);
+        for (size_type slot = m_block_begin; slot != m_block_end; ++slot)
+        {
+            Traits::deallocate(m_allocator, m_map[slot], Block());
+        }
+        if (m_map != nullptr)
+        {
+            MapAllocator map_allocator(m_allocator);
+            MapTraits::deallocate(map_allocator, m_map, m_map_size);
+        }
+        m_map = nullptr;
+        m_map_size = 0;
+        m_block_begin = 0;
+        m_block_end = 0;
+        m_start = 0;
+    }
+
+    void DestroyBack(size_type count) noexcept
+    {
+        for (; count != 0; --count)
+        {
+            --m_size;
+            Traits::destroy(m_allocator, Slot(m_start + m_size));
+        }
+        TrimBack(2 * Block());
+    }
+
+    // Frees whole blocks at the front while at least spare positions stay unused there.
+    void TrimFront(size_t spare) noexcept
+    {
+        while (m_block_begin != m_block_end && FrontSpare() >= spare)
+        {
+            Traits::deallocate(m_allocator, m_map[m_block_begin], Block());
+            m_map[m_block_begin] = nullptr;
+            ++m_block_begin;
+        }
+    }
+
+    void TrimBack(size_t spare) noexcept
+    {
+        while (m_block_begin != m_block_end && BackSpare() >= spare)
+        {
+            --m_block_end;
+            Traits::deallocate(m_allocator, m_map[m_block_end], Block());
+            m_map[m_block_end] = nullptr;
+        }
+    }
+
+    // Makes room for front free slots before the blocks and back free slots after them, by
+    // moving the block pointers within the map when it is at most half full, or else into a
+    // map twice as large as needed. Positions move with the blocks.
+    void ReserveSlots(size_t front, size_t back)
+    {
+        if (m_block_begin >= front && m_map_size - m_block_end >= back)
+        {
+            return;
+        }
+        const size_t used = m_block_end - m_block_begin;
+        const size_t needed = used + front + back;
+        size_t new_begin = 0;
+        if (2 * needed <= m_map_size)
+        {
+            new_begin = front + (m_map_size - needed) / 2;
+            if (new_begin < m_block_begin)
+            {
+                for (size_t index = 0; index != used; ++index)
+                {
+                    m_map[new_begin + index] = m_map[m_block_begin + index];
+                }
+            }
+            else
+            {
+                for (size_t index = used; index != 0; --index)
+                {
+                    m_map[new_begin + index - 1] = m_map[m_block_begin + index - 1];
+                }
+            }
+            for (size_t slot = 0; slot != m_map_size; ++slot)
+            {
+                if (slot < new_begin || slot >= new_begin + used)
+                {
+                    m_map[slot] = nullptr;
+                }
+            }
+        }
+        else
+        {
+            const size_t new_size = _FSTD::max<size_t>(8, 2 * needed);
+            MapAllocator map_allocator(m_allocator);
+            T** const map = MapTraits::allocate(map_allocator, new_size);
+            for (size_t slot = 0; slot != new_size; ++slot)
+            {
+                map[slot] = nullptr;
+            }
+            new_begin = front + (new_size - needed) / 2;
+            for (size_t index = 0; index != used; ++index)
+            {
+                map[new_begin + index] = m_map[m_block_begin + index];
+            }
+            if (m_map != nullptr)
+            {
+                MapTraits::deallocate(map_allocator, m_map, m_map_size);
+            }
+            m_map = map;
+            m_map_size = new_size;
+        }
+        m_start = m_start - m_block_begin * Block() + new_begin * Block();
+        m_block_begin = new_begin;
+        m_block_end = new_begin + used;
+    }
+
+    // At least count unused positions after the last element, in allocated blocks.
+    void EnsureBack(size_t count)
+    {
+        const size_t spare = BackSpare();
+        if (spare >= count)
+        {
+            return;
+        }
+        const size_t blocks = (count - spare + Block() - 1) / Block();
+        ReserveSlots(0, blocks);
+        for (size_t added = 0; added != blocks; ++added)
+        {
+            if (m_block_end - m_block_begin > 1 && FrontSpare() >= Block())
+            {
+                m_map[m_block_end] = m_map[m_block_begin];
+                m_map[m_block_begin] = nullptr;
+                ++m_block_begin;
+            }
+            else
+            {
+                m_map[m_block_end] = Traits::allocate(m_allocator, Block());
+            }
+            ++m_block_end;
+        }
+    }
+
+    void EnsureFront(size_t count)
+    {
+        if (m_block_begin == m_block_end)
+        {
+            // No blocks: the first element goes where a new block at the front ends.
+            ReserveSlots(1, 0);
+            m_start = m_block_begin * Block();
+        }
+        const size_t spare = FrontSpare();
+        if (spare >= count)
+        {
+            return;
+        }
+        const size_t blocks = (count - spare + Block() - 1) / Block();
+        ReserveSlots(blocks, 0);
+        for (size_t added = 0; added != blocks; ++added)
+        {
+            --m_block_begin;
+            if (m_block_end - m_block_begin > 2 && BackSpare() >= Block())
+            {
+                --m_block_end;
+                m_map[m_block_begin] = m_map[m_block_end];
+                m_map[m_block_end] = nullptr;
+            }
+            else
+            {
+                m_map[m_block_begin] = Traits::allocate(m_allocator, Block());
+            }
+        }
+    }
+
+    template <class I, class S> static size_type Distance(I first, S last)
+    {
+        if constexpr (sized_sentinel_for<S, I>)
+        {
+            return static_cast<size_type>(last - first);
+        }
+        else
+        {
+            size_type count = 0;
+            for (; first != last; ++first)
+            {
+                ++count;
+            }
+            return count;
+        }
+    }
+
+    void AppendCopies(size_type count, const T& value)
+    {
+        Reserve(m_size + count);
+        EnsureBack(count);
+        for (; count != 0; --count)
+        {
+            Traits::construct(m_allocator, Slot(m_start + m_size), value);
+            ++m_size;
+        }
+    }
+
+    template <class I, class S> void AppendFrom(I first, S last)
+    {
+        if constexpr (sized_sentinel_for<S, I> || forward_iterator<I>)
+        {
+            const auto count = Distance(first, last);
+            Reserve(m_size + count);
+            EnsureBack(count);
+        }
+        for (; first != last; ++first)
+        {
+            emplace_back(*first);
+        }
+    }
+
+    template <class I, class S> void AssignFrom(I first, S last)
+    {
+        iterator out = begin();
+        const iterator stop = end();
+        for (; first != last && out != stop; ++first, (void)++out)
+        {
+            *out = *first;
+        }
+        if (out != stop)
+        {
+            DestroyBack(static_cast<size_type>(stop - out));
+            return;
+        }
+        AppendFrom(_FSTD::move(first), last);
+    }
+
+    // The count elements just built at the front move to index.
+    void RotateFrontInto(size_type count, size_type index)
+    {
+        _FSTD::rotate(begin(), begin() + static_cast<difference_type>(count),
+                      begin() + static_cast<difference_type>(count + index));
+    }
+
+    // The elements from old_size on, just built at the back, move to index.
+    void RotateBackInto(size_type old_size, size_type index)
+    {
+        _FSTD::rotate(begin() + static_cast<difference_type>(index),
+                      begin() + static_cast<difference_type>(old_size), end());
+    }
+
+    template <class I, class S> iterator InsertFrom(size_type index, I first, S last)
+    {
+        if constexpr (sized_sentinel_for<S, I> || forward_iterator<I>)
+        {
+            const auto count = Distance(first, last);
+            Reserve(m_size + count);
+            if (index < m_size - index)
+            {
+                EnsureFront(count);
+                for (size_type built = 0; built != count; ++built, (void)++first)
+                {
+                    Traits::construct(m_allocator, Slot(m_start - count + built), *first);
+                }
+                m_start -= count;
+                m_size += count;
+                RotateFrontInto(count, index);
+                return begin() + static_cast<difference_type>(index);
+            }
+        }
+        const size_type old_size = m_size;
+        AppendFrom(_FSTD::move(first), last);
+        RotateBackInto(old_size, index);
+        return begin() + static_cast<difference_type>(index);
+    }
+};
+
+template <__detail::ClassicInput I,
+          class Allocator = allocator<typename iterator_traits<I>::value_type>>
+deque(I, I, Allocator = Allocator()) -> deque<typename iterator_traits<I>::value_type, Allocator>;
+
+template <ranges::input_range R, class Allocator = allocator<ranges::range_value_t<R>>>
+deque(from_range_t, R&&, Allocator = Allocator()) -> deque<ranges::range_value_t<R>, Allocator>;
+
+template <class T, class Allocator>
+bool operator==(const deque<T, Allocator>& left, const deque<T, Allocator>& right)
+{
+    return left.size() == right.size() && _FSTD::equal(left.begin(), left.end(), right.begin());
+}
+
+template <class T, class Allocator>
+__detail::SynthThreeWayResult<T> operator<=>(const deque<T, Allocator>& left,
+                                             const deque<T, Allocator>& right)
+{
+    return _FSTD::lexicographical_compare_three_way(left.begin(), left.end(), right.begin(),
+                                                    right.end(), __detail::synth_three_way);
+}
+
+template <class T, class Allocator>
+void swap(deque<T, Allocator>& left,
+          deque<T, Allocator>& right) noexcept(noexcept(left.swap(right)))
+{
+    left.swap(right);
+}
+
+template <class T, class Allocator, class U = T>
+typename deque<T, Allocator>::size_type erase(deque<T, Allocator>& container, const U& value)
+{
+    const auto end = container.end();
+    const auto kept = _FSTD::remove(container.begin(), end, value);
+    const auto removed = static_cast<typename deque<T, Allocator>::size_type>(end - kept);
+    container.erase(kept, end);
+    return removed;
+}
+
+template <class T, class Allocator, class Predicate>
+typename deque<T, Allocator>::size_type erase_if(deque<T, Allocator>& container,
+                                                 Predicate predicate)
+{
+    const auto end = container.end();
+    const auto kept = _FSTD::remove_if(container.begin(), end, predicate);
+    const auto removed = static_cast<typename deque<T, Allocator>::size_type>(end - kept);
+    container.erase(kept, end);
+    return removed;
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

@@ -1,0 +1,19 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CINTTYPES
+#define FEATHEROS_LIBCXX_CINTTYPES
+
+#include "__featheros_config"
+#include "cstdint"
+
+#include <inttypes.h>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+using ::imaxabs;
+using ::imaxdiv;
+using ::imaxdiv_t;
+using ::strtoimax;
+using ::strtoumax;
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

@@ -83,7 +83,7 @@ fi
 stage "unit tests" "FAILED|Failed|error:|with expansion|REQUIRE" ./build.sh unit-test || exit 1
 for arch in $arches; do
     for mode in $modes; do
-        stage "$mode $arch" "^FAIL|^PASS|PANIC|libctest: failed|hardening: failed" \
+        stage "$mode $arch" "^FAIL|^PASS|PANIC|libctest: failed|cxxtest: failed|hardening: failed" \
             env "${mode}_TEST=ON" ./build.sh --arch "$arch" test || exit 1
     done
 done

@@ -3,6 +3,7 @@
 #include "syscall_result.h"
 #include "user/syscall.h"
 
+#include <atomic>
 #include <errno.h>
 #include <limits.h>
 #include <pthread.h>
@@ -14,7 +15,7 @@ namespace
 {
 
 // The main thread counts too, so the last thread to call pthread_exit knows to end the process.
-int live_threads = 1;
+std::atomic<int> live_threads = 1;
 using FeatherOS::LibC::CurrentThread;
 using FeatherOS::LibC::FutexWait;
 using FeatherOS::LibC::FutexWake;
@@ -71,7 +72,7 @@ uint64_t MillisecondsUntil(clockid_t clock, const struct timespec* deadline, boo
 {
     FeatherOS::LibC::RunThreadExitHandlers();
     FeatherOS::LibC::RunKeyDestructors();
-    if (__atomic_sub_fetch(&live_threads, 1, __ATOMIC_ACQ_REL) == 0)
+    if (live_threads.fetch_sub(1, std::memory_order_acq_rel) == 1)
     {
         exit(0);
     }
@@ -98,14 +99,14 @@ int pthread_create(pthread_t* thread, const pthread_attr_t* attributes,
     {
         return EINVAL;
     }
-    __atomic_add_fetch(&live_threads, 1, __ATOMIC_ACQ_REL);
+    live_threads.fetch_add(1, std::memory_order_acq_rel);
     const uint64_t result = FeatherOS::User::Syscall(
         FeatherOS::User::SyscallNumber::ThreadCreate,
         reinterpret_cast<uint64_t>(&FeatherOSThreadStart), reinterpret_cast<uint64_t>(start),
         reinterpret_cast<uint64_t>(argument));
     if (FeatherOS::User::IsSyscallError(result))
     {
-        __atomic_sub_fetch(&live_threads, 1, __ATOMIC_ACQ_REL);
+        live_threads.fetch_sub(1, std::memory_order_acq_rel);
         return result == FeatherOS::User::SyscallErrorWouldBlock
                    ? EAGAIN
                    : FeatherOS::LibC::ErrorNumber(result);

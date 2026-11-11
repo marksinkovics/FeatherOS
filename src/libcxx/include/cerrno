@@ -1,0 +1,9 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CERRNO
+#define FEATHEROS_LIBCXX_CERRNO
+
+#include "__featheros_config"
+
+#include <errno.h>
+
+#endif

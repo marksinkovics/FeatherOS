@@ -1,0 +1,79 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CSTRING
+#define FEATHEROS_LIBCXX_CSTRING
+
+#include "__featheros_config"
+
+#include <string.h>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+using ::memcmp;
+using ::memcpy;
+using ::memmove;
+using ::memset;
+using ::strcat;
+using ::strcmp;
+using ::strcpy;
+using ::strcspn;
+using ::strerror;
+using ::strlen;
+using ::strncat;
+using ::strncmp;
+using ::strncpy;
+using ::strspn;
+using ::strtok;
+
+// C++ replaces C's search functions with pairs that keep the argument's constness.
+inline const void* memchr(const void* bytes, int value, size_t count)
+{
+    return ::memchr(bytes, value, count);
+}
+
+inline void* memchr(void* bytes, int value, size_t count)
+{
+    return ::memchr(bytes, value, count);
+}
+
+inline const char* strchr(const char* text, int character)
+{
+    return ::strchr(text, character);
+}
+
+inline char* strchr(char* text, int character)
+{
+    return ::strchr(text, character);
+}
+
+inline const char* strrchr(const char* text, int character)
+{
+    return ::strrchr(text, character);
+}
+
+inline char* strrchr(char* text, int character)
+{
+    return ::strrchr(text, character);
+}
+
+inline const char* strpbrk(const char* text, const char* accept)
+{
+    return ::strpbrk(text, accept);
+}
+
+inline char* strpbrk(char* text, const char* accept)
+{
+    return ::strpbrk(text, accept);
+}
+
+inline const char* strstr(const char* text, const char* pattern)
+{
+    return ::strstr(text, pattern);
+}
+
+inline char* strstr(char* text, const char* pattern)
+{
+    return ::strstr(text, pattern);
+}
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

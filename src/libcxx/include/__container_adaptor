@@ -1,0 +1,55 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CONTAINER_ADAPTOR
+#define FEATHEROS_LIBCXX_CONTAINER_ADAPTOR
+
+// What <queue> and <stack> share.
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "__memory_base"
+#include "__node_handle"
+#include "compare"
+#include "type_traits"
+#include "utility"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+namespace __detail
+{
+// [container.adaptors.general]: the allocator-extended constructors take part only when the
+// container uses the allocator.
+template <class A, class Container>
+concept AdaptorAllocator = uses_allocator_v<Container, A>;
+
+template <class Container, class R> void AdaptorAppendRange(Container& container, R&& range)
+{
+    if constexpr (requires { container.append_range(_FSTD::forward<R>(range)); })
+    {
+        container.append_range(_FSTD::forward<R>(range));
+    }
+    else
+    {
+        for (auto&& element : range)
+        {
+            container.push_back(_FSTD::forward<decltype(element)>(element));
+        }
+    }
+}
+
+template <class Container, class R> Container AdaptorFromRange(R&& range)
+{
+    if constexpr (is_constructible_v<Container, from_range_t, R>)
+    {
+        return Container(from_range, _FSTD::forward<R>(range));
+    }
+    else
+    {
+        Container container;
+        __detail::AdaptorAppendRange(container, _FSTD::forward<R>(range));
+        return container;
+    }
+}
+} // namespace __detail
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

@@ -1,0 +1,464 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_MUTEX
+#define FEATHEROS_LIBCXX_MUTEX
+
+#include "__featheros_config"
+#include "__thread_support"
+#include "atomic"
+#include "chrono"
+#include "tuple"
+#include "type_traits"
+#include "utility"
+
+#include <pthread.h>
+
+// mutex and recursive_mutex are pthread mutexes. The C library has no pthread_mutex_timedlock, so
+// the timed mutexes are a flag under a pthread mutex with a condition variable to wait on, as
+// libstdc++ does without it. What would throw system_error (unique_lock::lock without a mutex or
+// when it already owns one, unlock when it owns none, a failing pthread call) calls the library's
+// abort hook. The mutexes and lock_guard carry Clang's thread-safety annotations; unique_lock,
+// whose ownership changes at run time, does not.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+class FEATHEROS_CAPABILITY mutex
+{
+public:
+    constexpr mutex() noexcept = default;
+    mutex(const mutex&) = delete;
+    mutex& operator=(const mutex&) = delete;
+
+    void lock() FEATHEROS_ACQUIRE();
+    [[nodiscard]] bool try_lock() FEATHEROS_TRY_ACQUIRE(true);
+    void unlock() FEATHEROS_RELEASE();
+
+    using native_handle_type = pthread_mutex_t*;
+    [[nodiscard]] native_handle_type native_handle()
+    {
+        return &m_handle;
+    }
+
+private:
+    pthread_mutex_t m_handle = PTHREAD_MUTEX_INITIALIZER;
+};
+
+class FEATHEROS_CAPABILITY recursive_mutex
+{
+public:
+    recursive_mutex();
+    ~recursive_mutex();
+    recursive_mutex(const recursive_mutex&) = delete;
+    recursive_mutex& operator=(const recursive_mutex&) = delete;
+
+    void lock() FEATHEROS_ACQUIRE();
+    [[nodiscard]] bool try_lock() noexcept FEATHEROS_TRY_ACQUIRE(true);
+    void unlock() FEATHEROS_RELEASE();
+
+    using native_handle_type = pthread_mutex_t*;
+    [[nodiscard]] native_handle_type native_handle()
+    {
+        return &m_handle;
+    }
+
+private:
+    pthread_mutex_t m_handle;
+};
+
+class FEATHEROS_CAPABILITY timed_mutex
+{
+public:
+    timed_mutex() = default;
+    timed_mutex(const timed_mutex&) = delete;
+    timed_mutex& operator=(const timed_mutex&) = delete;
+
+    void lock() FEATHEROS_ACQUIRE();
+    [[nodiscard]] bool try_lock() FEATHEROS_TRY_ACQUIRE(true);
+    template <class Rep, class Period>
+    [[nodiscard]] bool try_lock_for(const chrono::duration<Rep, Period>& timeout)
+        FEATHEROS_TRY_ACQUIRE(true)
+    {
+        return TryLockUntil(__detail::SteadyDeadlineAfter(timeout));
+    }
+    template <class Clock, class Duration>
+    [[nodiscard]] bool try_lock_until(const chrono::time_point<Clock, Duration>& deadline)
+        FEATHEROS_TRY_ACQUIRE(true)
+    {
+        static_assert(chrono::is_clock_v<Clock>);
+        while (!TryLockUntil(__detail::SteadyDeadline(deadline)))
+        {
+            if (Clock::now() >= deadline)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    void unlock() FEATHEROS_RELEASE();
+
+private:
+    bool TryLockUntil(chrono::steady_clock::time_point deadline) FEATHEROS_TRY_ACQUIRE(true);
+
+    pthread_mutex_t m_mutex = PTHREAD_MUTEX_INITIALIZER;
+    __detail::Condition m_released;
+    bool m_locked = false;
+};
+
+class FEATHEROS_CAPABILITY recursive_timed_mutex
+{
+public:
+    recursive_timed_mutex() = default;
+    recursive_timed_mutex(const recursive_timed_mutex&) = delete;
+    recursive_timed_mutex& operator=(const recursive_timed_mutex&) = delete;
+
+    void lock() FEATHEROS_ACQUIRE();
+    [[nodiscard]] bool try_lock() noexcept FEATHEROS_TRY_ACQUIRE(true);
+    template <class Rep, class Period>
+    [[nodiscard]] bool try_lock_for(const chrono::duration<Rep, Period>& timeout)
+        FEATHEROS_TRY_ACQUIRE(true)
+    {
+        return TryLockUntil(__detail::SteadyDeadlineAfter(timeout));
+    }
+    template <class Clock, class Duration>
+    [[nodiscard]] bool try_lock_until(const chrono::time_point<Clock, Duration>& deadline)
+        FEATHEROS_TRY_ACQUIRE(true)
+    {
+        static_assert(chrono::is_clock_v<Clock>);
+        while (!TryLockUntil(__detail::SteadyDeadline(deadline)))
+        {
+            if (Clock::now() >= deadline)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    void unlock() FEATHEROS_RELEASE();
+
+private:
+    bool TryLockUntil(chrono::steady_clock::time_point deadline) FEATHEROS_TRY_ACQUIRE(true);
+
+    pthread_mutex_t m_mutex = PTHREAD_MUTEX_INITIALIZER;
+    __detail::Condition m_released;
+    pthread_t m_owner{};
+    size_t m_count = 0;
+};
+
+struct defer_lock_t
+{
+    explicit defer_lock_t() = default;
+};
+struct try_to_lock_t
+{
+    explicit try_to_lock_t() = default;
+};
+struct adopt_lock_t
+{
+    explicit adopt_lock_t() = default;
+};
+inline constexpr defer_lock_t defer_lock{};
+inline constexpr try_to_lock_t try_to_lock{};
+inline constexpr adopt_lock_t adopt_lock{};
+
+template <class Mutex> class [[nodiscard]] FEATHEROS_SCOPED_CAPABILITY lock_guard
+{
+public:
+    using mutex_type = Mutex;
+
+    explicit lock_guard(mutex_type& mutex) FEATHEROS_ACQUIRE(mutex) : m_mutex(mutex)
+    {
+        m_mutex.lock();
+    }
+    lock_guard(mutex_type& mutex, adopt_lock_t) FEATHEROS_REQUIRES(mutex) : m_mutex(mutex) {}
+    ~lock_guard() FEATHEROS_RELEASE()
+    {
+        m_mutex.unlock();
+    }
+    lock_guard(const lock_guard&) = delete;
+    lock_guard& operator=(const lock_guard&) = delete;
+
+private:
+    mutex_type& m_mutex;
+};
+
+template <class Mutex> class [[nodiscard]] unique_lock
+{
+public:
+    using mutex_type = Mutex;
+
+    unique_lock() noexcept = default;
+    explicit unique_lock(mutex_type& mutex) : m_mutex(&mutex)
+    {
+        m_mutex->lock();
+        m_owns = true;
+    }
+    unique_lock(mutex_type& mutex, defer_lock_t) noexcept : m_mutex(&mutex) {}
+    unique_lock(mutex_type& mutex, try_to_lock_t) : m_mutex(&mutex), m_owns(mutex.try_lock()) {}
+    unique_lock(mutex_type& mutex, adopt_lock_t) : m_mutex(&mutex), m_owns(true) {}
+    template <class Clock, class Duration>
+    unique_lock(mutex_type& mutex, const chrono::time_point<Clock, Duration>& deadline)
+        : m_mutex(&mutex), m_owns(mutex.try_lock_until(deadline))
+    {
+    }
+    template <class Rep, class Period>
+    unique_lock(mutex_type& mutex, const chrono::duration<Rep, Period>& timeout)
+        : m_mutex(&mutex), m_owns(mutex.try_lock_for(timeout))
+    {
+    }
+    ~unique_lock()
+    {
+        if (m_owns)
+        {
+            m_mutex->unlock();
+        }
+    }
+    unique_lock(const unique_lock&) = delete;
+    unique_lock& operator=(const unique_lock&) = delete;
+    unique_lock(unique_lock&& other) noexcept
+        : m_mutex(_FSTD::exchange(other.m_mutex, nullptr)),
+          m_owns(_FSTD::exchange(other.m_owns, false))
+    {
+    }
+    unique_lock& operator=(unique_lock&& other) noexcept
+    {
+        unique_lock(_FSTD::move(other)).swap(*this);
+        return *this;
+    }
+
+    void lock()
+    {
+        CheckLockable();
+        m_mutex->lock();
+        m_owns = true;
+    }
+    [[nodiscard]] bool try_lock()
+    {
+        CheckLockable();
+        m_owns = m_mutex->try_lock();
+        return m_owns;
+    }
+    template <class Rep, class Period>
+    [[nodiscard]] bool try_lock_for(const chrono::duration<Rep, Period>& timeout)
+    {
+        CheckLockable();
+        m_owns = m_mutex->try_lock_for(timeout);
+        return m_owns;
+    }
+    template <class Clock, class Duration>
+    [[nodiscard]] bool try_lock_until(const chrono::time_point<Clock, Duration>& deadline)
+    {
+        CheckLockable();
+        m_owns = m_mutex->try_lock_until(deadline);
+        return m_owns;
+    }
+    void unlock()
+    {
+        if (!m_owns)
+        {
+            __detail::LibraryAbort("unique_lock::unlock: not locked");
+        }
+        m_mutex->unlock();
+        m_owns = false;
+    }
+
+    void swap(unique_lock& other) noexcept
+    {
+        _FSTD::swap(m_mutex, other.m_mutex);
+        _FSTD::swap(m_owns, other.m_owns);
+    }
+    mutex_type* release() noexcept
+    {
+        m_owns = false;
+        return _FSTD::exchange(m_mutex, nullptr);
+    }
+
+    [[nodiscard]] bool owns_lock() const noexcept
+    {
+        return m_owns;
+    }
+    explicit operator bool() const noexcept
+    {
+        return m_owns;
+    }
+    [[nodiscard]] mutex_type* mutex() const noexcept
+    {
+        return m_mutex;
+    }
+
+    friend void swap(unique_lock& left, unique_lock& right) noexcept
+    {
+        left.swap(right);
+    }
+
+private:
+    void CheckLockable() const
+    {
+        if (m_mutex == nullptr)
+        {
+            __detail::LibraryAbort("unique_lock: no mutex");
+        }
+        if (m_owns)
+        {
+            __detail::LibraryAbort("unique_lock: already locked");
+        }
+    }
+
+    mutex_type* m_mutex = nullptr;
+    bool m_owns = false;
+};
+
+namespace __detail
+{
+
+// A lockable behind three function pointers, so lock and try_lock can step through their
+// arguments by a run-time index.
+struct ErasedLockable
+{
+    template <class Lockable>
+    explicit ErasedLockable(Lockable& lockable) noexcept
+        : m_object(&lockable), m_lock([](void* object) { static_cast<Lockable*>(object)->lock(); }),
+          m_try_lock([](void* object)
+                     { return static_cast<bool>(static_cast<Lockable*>(object)->try_lock()); }),
+          m_unlock([](void* object) { static_cast<Lockable*>(object)->unlock(); })
+    {
+    }
+
+    void* m_object;
+    void (*m_lock)(void*);
+    bool (*m_try_lock)(void*);
+    void (*m_unlock)(void*);
+};
+
+// try_lock on each in turn, starting with first and wrapping around, past first's own when
+// lock_first already holds it; on a failure, unlocks what it took and returns the failed index.
+int TryLockAll(ErasedLockable* lockables, int count, int first, bool lock_first) noexcept;
+
+} // namespace __detail
+
+template <class L1, class L2, class... L3> [[nodiscard]] int try_lock(L1& l1, L2& l2, L3&... l3)
+{
+    __detail::ErasedLockable lockables[] = {__detail::ErasedLockable(l1),
+                                            __detail::ErasedLockable(l2),
+                                            __detail::ErasedLockable(l3)...};
+    return __detail::TryLockAll(lockables, 2 + static_cast<int>(sizeof...(L3)), 0, false);
+}
+
+// Waits on whichever lock was busy, then tries the others, so no order of the arguments can
+// deadlock against another call.
+template <class L1, class L2, class... L3> void lock(L1& l1, L2& l2, L3&... l3)
+{
+    __detail::ErasedLockable lockables[] = {__detail::ErasedLockable(l1),
+                                            __detail::ErasedLockable(l2),
+                                            __detail::ErasedLockable(l3)...};
+    int first = 0;
+    while (true)
+    {
+        lockables[first].m_lock(lockables[first].m_object);
+        const int failed =
+            __detail::TryLockAll(lockables, 2 + static_cast<int>(sizeof...(L3)), first, true);
+        if (failed < 0)
+        {
+            return;
+        }
+        first = failed;
+    }
+}
+
+template <class... Mutexes> class [[nodiscard]] scoped_lock
+{
+public:
+    explicit scoped_lock(Mutexes&... mutexes) : m_mutexes(mutexes...)
+    {
+        _FSTD::lock(mutexes...);
+    }
+    explicit scoped_lock(adopt_lock_t, Mutexes&... mutexes) : m_mutexes(mutexes...) {}
+    ~scoped_lock()
+    {
+        _FSTD::apply([](auto&... mutexes) { (mutexes.unlock(), ...); }, m_mutexes);
+    }
+    scoped_lock(const scoped_lock&) = delete;
+    scoped_lock& operator=(const scoped_lock&) = delete;
+
+private:
+    tuple<Mutexes&...> m_mutexes;
+};
+
+template <> class [[nodiscard]] scoped_lock<>
+{
+public:
+    explicit scoped_lock() = default;
+    explicit scoped_lock(adopt_lock_t) {}
+    scoped_lock(const scoped_lock&) = delete;
+    scoped_lock& operator=(const scoped_lock&) = delete;
+};
+
+template <class Mutex> class [[nodiscard]] FEATHEROS_SCOPED_CAPABILITY scoped_lock<Mutex>
+{
+public:
+    using mutex_type = Mutex;
+
+    explicit scoped_lock(mutex_type& mutex) FEATHEROS_ACQUIRE(mutex) : m_mutex(mutex)
+    {
+        m_mutex.lock();
+    }
+    explicit scoped_lock(adopt_lock_t, mutex_type& mutex) FEATHEROS_REQUIRES(mutex) : m_mutex(mutex)
+    {
+    }
+    ~scoped_lock() FEATHEROS_RELEASE()
+    {
+        m_mutex.unlock();
+    }
+    scoped_lock(const scoped_lock&) = delete;
+    scoped_lock& operator=(const scoped_lock&) = delete;
+
+private:
+    mutex_type& m_mutex;
+};
+
+template <class... Mutexes> scoped_lock(Mutexes&...) -> scoped_lock<Mutexes...>;
+template <class... Mutexes> scoped_lock(adopt_lock_t, Mutexes&...) -> scoped_lock<Mutexes...>;
+
+namespace __detail
+{
+// once_flag's states. A thread that finds the flag running waits on one condition variable that
+// every call_once shares, so the callable runs without any lock held and may call call_once on
+// other flags.
+inline constexpr int OnceNotRun = 0;
+inline constexpr int OnceRunning = 1;
+inline constexpr int OnceDone = 2;
+
+// true when the caller is to run the callable; false once another thread has run it.
+bool OnceBegin(atomic<int>& state) noexcept;
+void OnceEnd(atomic<int>& state) noexcept;
+} // namespace __detail
+
+struct once_flag
+{
+    constexpr once_flag() noexcept = default;
+    once_flag(const once_flag&) = delete;
+    once_flag& operator=(const once_flag&) = delete;
+
+private:
+    template <class Callable, class... Args>
+    friend void call_once(once_flag& flag, Callable&& callable, Args&&... arguments);
+
+    atomic<int> m_state{__detail::OnceNotRun};
+};
+
+template <class Callable, class... Args>
+void call_once(once_flag& flag, Callable&& callable, Args&&... arguments)
+{
+    if (flag.m_state.load(memory_order_acquire) == __detail::OnceDone)
+    {
+        return;
+    }
+    if (__detail::OnceBegin(flag.m_state))
+    {
+        __detail::Invoke(_FSTD::forward<Callable>(callable), _FSTD::forward<Args>(arguments)...);
+        __detail::OnceEnd(flag.m_state);
+    }
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

@@ -1,0 +1,448 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CHRONO_FORMAT
+#define FEATHEROS_LIBCXX_CHRONO_FORMAT
+
+#include "__featheros_config"
+#include "format"
+
+// The formatters of <chrono>'s types, included at its end where <time.h> exists, so not in the
+// kernel. Each formatter checks its chrono-specs against the fields its type has at parse time
+// (compile time for a checked format string), then breaks the value down into
+// __detail::ChronoParts for the conversion engine in featheros_cxx
+// (src/libcxx/src/chrono_format.cpp). Only the "C" locale and UTC: L and the E and O modifiers are
+// accepted and change nothing.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+
+enum class ChronoKind : unsigned char
+{
+    Duration,
+    TimePoint,
+    TimeOfDay,
+    Day,
+    Month,
+    Year,
+    Weekday,
+    Date,
+};
+
+// The fields a conversion reads. Days is a date's day of the year or a duration's day count.
+enum ChronoField : unsigned
+{
+    ChronoDay = 1,
+    ChronoMonth = 2,
+    ChronoYear = 4,
+    ChronoWeekday = 8,
+    ChronoDate = 16,
+    ChronoTime = 32,
+    ChronoCount = 64,
+    ChronoZone = 128,
+    ChronoDays = 256,
+    ChronoInvalid = ~0u,
+};
+
+constexpr unsigned ChronoFieldsOf(ChronoKind kind)
+{
+    switch (kind)
+    {
+    case ChronoKind::Duration:
+        return ChronoTime | ChronoCount | ChronoDays;
+    case ChronoKind::TimePoint:
+        return ChronoDay | ChronoMonth | ChronoYear | ChronoWeekday | ChronoDate | ChronoTime |
+               ChronoZone | ChronoDays;
+    case ChronoKind::TimeOfDay:
+        return ChronoTime;
+    case ChronoKind::Day:
+        return ChronoDay;
+    case ChronoKind::Month:
+        return ChronoMonth;
+    case ChronoKind::Year:
+        return ChronoYear;
+    case ChronoKind::Weekday:
+        return ChronoWeekday;
+    case ChronoKind::Date:
+        return ChronoDay | ChronoMonth | ChronoYear | ChronoWeekday | ChronoDate | ChronoDays;
+    }
+    return 0;
+}
+
+constexpr bool IsCharIn(char character, const char* set)
+{
+    for (; *set != '\0'; ++set)
+    {
+        if (*set == character)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// modifier is '\0', 'E' or 'O'.
+constexpr unsigned ChronoConversionFields(char modifier, char conversion)
+{
+    if ((modifier == 'E' && !IsCharIn(conversion, "cCxXyYz")) ||
+        (modifier == 'O' && !IsCharIn(conversion, "deHImMSuUVwWyz")))
+    {
+        return ChronoInvalid;
+    }
+    switch (conversion)
+    {
+    case 'a':
+    case 'A':
+    case 'u':
+    case 'w':
+        return ChronoWeekday;
+    case 'b':
+    case 'B':
+    case 'h':
+    case 'm':
+        return ChronoMonth;
+    case 'C':
+    case 'y':
+    case 'Y':
+        return ChronoYear;
+    case 'd':
+    case 'e':
+        return ChronoDay;
+    case 'D':
+    case 'F':
+    case 'g':
+    case 'G':
+    case 'U':
+    case 'V':
+    case 'W':
+    case 'x':
+        return ChronoDate;
+    case 'c':
+        return ChronoDate | ChronoTime;
+    case 'j':
+        return ChronoDays;
+    case 'H':
+    case 'I':
+    case 'M':
+    case 'S':
+    case 'p':
+    case 'r':
+    case 'R':
+    case 'T':
+    case 'X':
+        return ChronoTime;
+    case 'Q':
+    case 'q':
+        return ChronoCount;
+    case 'z':
+    case 'Z':
+        return ChronoZone;
+    case 'n':
+    case 't':
+    case '%':
+        return 0;
+    default:
+        return ChronoInvalid;
+    }
+}
+
+// [[fill]align][width][.precision][L][chrono-specs], where chrono-specs starts with a conversion
+// and holds no braces. A precision is for floating-point durations only.
+template <class CharT>
+constexpr const char* ParseChronoSpec(basic_format_parse_context<CharT>& context, FormatSpec& spec,
+                                      string_view& chrono_specs, ChronoKind kind, bool precision)
+{
+    static_assert(is_same_v<CharT, char>, "only char formatting is supported");
+    const char* cursor = context.begin();
+    const char* const end = context.end();
+    chrono_specs = {};
+    if (cursor == end || *cursor == '}')
+    {
+        return cursor;
+    }
+    ParseFormatFillAndAlign(cursor, end, spec, true);
+    ParseFormatWidth(context, cursor, end, spec);
+    if (cursor != end && *cursor == '.' && !precision)
+    {
+        FormatError("a precision suits only a floating-point duration");
+    }
+    ParseFormatPrecision(context, cursor, end, spec);
+    if (cursor != end && *cursor == 'L')
+    {
+        spec.locale = true;
+        ++cursor;
+    }
+    const char* const first = cursor;
+    if (cursor != end && *cursor != '}' && *cursor != '%')
+    {
+        FormatError("chrono specs must start with a conversion such as %H");
+    }
+    const unsigned available = ChronoFieldsOf(kind);
+    while (cursor != end && *cursor != '}')
+    {
+        if (*cursor == '{')
+        {
+            FormatError("'{' cannot appear in chrono specs");
+        }
+        if (*cursor++ != '%')
+        {
+            continue;
+        }
+        char modifier = '\0';
+        if (cursor != end && (*cursor == 'E' || *cursor == 'O'))
+        {
+            modifier = *cursor++;
+        }
+        if (cursor == end)
+        {
+            FormatError("chrono specs end inside a conversion");
+        }
+        const unsigned needed = ChronoConversionFields(modifier, *cursor);
+        if (needed == ChronoInvalid)
+        {
+            FormatError("invalid conversion in chrono specs");
+        }
+        if ((needed & ~available) != 0)
+        {
+            FormatError("the chrono specs need a field the value does not have");
+        }
+        ++cursor;
+    }
+    chrono_specs = string_view(first, static_cast<size_t>(cursor - first));
+    return cursor;
+}
+
+// A value broken down for the engine. A duration or time of day keeps its sign apart and its
+// fields as magnitudes; count is a duration's count, also as a magnitude.
+struct ChronoParts
+{
+    explicit ChronoParts(ChronoKind value_kind) noexcept : kind(value_kind) {}
+
+    ChronoKind kind;
+    bool negative = false;
+    // A time point of whole days prints only its date by default.
+    bool date_only = false;
+    int year = 0;
+    unsigned month = 0;
+    unsigned day = 0;
+    // weekday::c_encoding(), which may be out of range.
+    unsigned weekday = 0;
+    unsigned long long hours = 0;
+    unsigned minutes = 0;
+    unsigned seconds = 0;
+    unsigned long long subseconds = 0;
+    unsigned fractional_width = 0;
+    basic_format_arg<format_context> count;
+    intmax_t period_num = 1;
+    intmax_t period_den = 1;
+};
+
+void FormatChronoValue(format_context& context, const FormatSpec& spec, string_view chrono_specs,
+                       const ChronoParts& parts);
+
+template <ChronoKind Kind, bool Precision = false> class ChronoFormatter
+{
+public:
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        return ParseChronoSpec(context, m_spec, m_chrono_specs, Kind, Precision);
+    }
+
+protected:
+    template <class FormatContext>
+    typename FormatContext::iterator FormatParts(const ChronoParts& parts,
+                                                 FormatContext& context) const
+    {
+        FormatChronoValue(context, m_spec, m_chrono_specs, parts);
+        return context.out();
+    }
+
+private:
+    FormatSpec m_spec;
+    string_view m_chrono_specs;
+};
+
+template <class Duration>
+void SetChronoTime(ChronoParts& parts, const chrono::hh_mm_ss<Duration>& time)
+{
+    parts.negative = time.is_negative();
+    parts.hours = static_cast<unsigned long long>(time.hours().count());
+    parts.minutes = static_cast<unsigned>(time.minutes().count());
+    parts.seconds = static_cast<unsigned>(time.seconds().count());
+    // A floating-point fraction is cut to the digits shown.
+    parts.subseconds = static_cast<unsigned long long>(time.subseconds().count());
+    parts.fractional_width = chrono::hh_mm_ss<Duration>::fractional_width;
+}
+
+// Whether an hour converts to Period without overflow; hh_mm_ss of a finer duration (attoseconds)
+// does not compile, and such a duration cannot hold an hour anyway.
+template <class Period> consteval bool ChronoHoursFit()
+{
+    const intmax_t common = ChronoGcd(3600, Period::num);
+    return Period::den <= numeric_limits<intmax_t>::max() / (3600 / common);
+}
+
+template <class Duration> void SetChronoDuration(ChronoParts& parts, const Duration& value)
+{
+    if constexpr (ChronoHoursFit<typename Duration::period>())
+    {
+        SetChronoTime(parts, chrono::hh_mm_ss<Duration>(value));
+    }
+    else
+    {
+        const Duration magnitude = value < Duration::zero() ? Duration::zero() - value : value;
+        const auto whole = chrono::duration_cast<chrono::seconds>(magnitude);
+        const auto total = static_cast<unsigned long long>(whole.count());
+        parts.negative = value < Duration::zero();
+        parts.hours = total / 3600;
+        parts.minutes = static_cast<unsigned>(total / 60 % 60);
+        parts.seconds = static_cast<unsigned>(total % 60);
+        using Precision = typename chrono::hh_mm_ss<Duration>::precision;
+        parts.subseconds = static_cast<unsigned long long>(
+            chrono::duration_cast<Precision>(magnitude - whole).count());
+        parts.fractional_width = chrono::hh_mm_ss<Duration>::fractional_width;
+    }
+}
+
+inline void SetChronoDate(ChronoParts& parts, const chrono::year_month_day& date)
+{
+    parts.year = static_cast<int>(date.year());
+    parts.month = static_cast<unsigned>(date.month());
+    parts.day = static_cast<unsigned>(date.day());
+}
+
+template <class Rep>
+concept ChronoFormattableRep = is_arithmetic_v<Rep> && !is_same_v<Rep, bool>;
+
+} // namespace __detail
+
+template <__detail::ChronoFormattableRep Rep, class Period>
+struct formatter<chrono::duration<Rep, Period>, char>
+    : __detail::ChronoFormatter<__detail::ChronoKind::Duration,
+                                chrono::treat_as_floating_point_v<Rep>>
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const chrono::duration<Rep, Period>& value,
+                                            FormatContext& context) const
+    {
+        using Duration = chrono::duration<Rep, Period>;
+        __detail::ChronoParts parts(__detail::ChronoKind::Duration);
+        __detail::SetChronoDuration(parts, value);
+        const bool negative = value < Duration::zero();
+        if constexpr (is_integral_v<Rep>)
+        {
+            const auto bits = static_cast<unsigned long long>(value.count());
+            unsigned long long magnitude = negative ? 0ULL - bits : bits;
+            parts.count = __detail::MakeFormatArg<format_context>(magnitude);
+        }
+        else
+        {
+            Rep magnitude = negative ? -value.count() : value.count();
+            parts.count = __detail::MakeFormatArg<format_context>(magnitude);
+        }
+        parts.period_num = Period::num;
+        parts.period_den = Period::den;
+        return this->FormatParts(parts, context);
+    }
+};
+
+template <class Duration>
+struct formatter<chrono::sys_time<Duration>, char>
+    : __detail::ChronoFormatter<__detail::ChronoKind::TimePoint>
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const chrono::sys_time<Duration>& value,
+                                            FormatContext& context) const
+    {
+        const chrono::sys_days day_point = chrono::floor<chrono::days>(value);
+        __detail::ChronoParts parts(__detail::ChronoKind::TimePoint);
+        __detail::SetChronoDate(parts, chrono::year_month_day(day_point));
+        __detail::SetChronoTime(parts, chrono::hh_mm_ss(value - day_point));
+        parts.date_only = !(Duration(1) < chrono::days(1));
+        return this->FormatParts(parts, context);
+    }
+};
+
+template <class Duration>
+struct formatter<chrono::hh_mm_ss<Duration>, char>
+    : __detail::ChronoFormatter<__detail::ChronoKind::TimeOfDay>
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const chrono::hh_mm_ss<Duration>& value,
+                                            FormatContext& context) const
+    {
+        __detail::ChronoParts parts(__detail::ChronoKind::TimeOfDay);
+        __detail::SetChronoTime(parts, value);
+        return this->FormatParts(parts, context);
+    }
+};
+
+template <>
+struct formatter<chrono::day, char> : __detail::ChronoFormatter<__detail::ChronoKind::Day>
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const chrono::day& value, FormatContext& context) const
+    {
+        __detail::ChronoParts parts(__detail::ChronoKind::Day);
+        parts.day = static_cast<unsigned>(value);
+        return FormatParts(parts, context);
+    }
+};
+
+template <>
+struct formatter<chrono::month, char> : __detail::ChronoFormatter<__detail::ChronoKind::Month>
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const chrono::month& value,
+                                            FormatContext& context) const
+    {
+        __detail::ChronoParts parts(__detail::ChronoKind::Month);
+        parts.month = static_cast<unsigned>(value);
+        return FormatParts(parts, context);
+    }
+};
+
+template <>
+struct formatter<chrono::year, char> : __detail::ChronoFormatter<__detail::ChronoKind::Year>
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const chrono::year& value, FormatContext& context) const
+    {
+        __detail::ChronoParts parts(__detail::ChronoKind::Year);
+        parts.year = static_cast<int>(value);
+        return FormatParts(parts, context);
+    }
+};
+
+template <>
+struct formatter<chrono::weekday, char> : __detail::ChronoFormatter<__detail::ChronoKind::Weekday>
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const chrono::weekday& value,
+                                            FormatContext& context) const
+    {
+        __detail::ChronoParts parts(__detail::ChronoKind::Weekday);
+        parts.weekday = value.c_encoding();
+        return FormatParts(parts, context);
+    }
+};
+
+template <>
+struct formatter<chrono::year_month_day, char>
+    : __detail::ChronoFormatter<__detail::ChronoKind::Date>
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const chrono::year_month_day& value,
+                                            FormatContext& context) const
+    {
+        __detail::ChronoParts parts(__detail::ChronoKind::Date);
+        __detail::SetChronoDate(parts, value);
+        return FormatParts(parts, context);
+    }
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

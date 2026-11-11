@@ -1,0 +1,27 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CCTYPE
+#define FEATHEROS_LIBCXX_CCTYPE
+
+#include "__featheros_config"
+
+#include <ctype.h>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+using ::isalnum;
+using ::isalpha;
+using ::isblank;
+using ::iscntrl;
+using ::isdigit;
+using ::isgraph;
+using ::islower;
+using ::isprint;
+using ::ispunct;
+using ::isspace;
+using ::isupper;
+using ::isxdigit;
+using ::tolower;
+using ::toupper;
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

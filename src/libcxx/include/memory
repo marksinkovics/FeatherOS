@@ -1,0 +1,1868 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_MEMORY
+#define FEATHEROS_LIBCXX_MEMORY
+
+#include "__featheros_config"
+#include "__hash_base"
+#include "__iterator_base"
+#include "__memory_base"
+#include "compare"
+#include "concepts"
+#include "functional"
+#include "limits"
+#include "new"
+#include "tuple"
+#include "type_traits"
+#include "utility"
+
+// Left out: shared_ptr's allocator-taking constructors and allocate_shared, make_shared of
+// arrays, dynamic_pointer_cast (needs RTTI), atomic<shared_ptr>, out_ptr and inout_ptr, and
+// the ranges:: forms of the uninitialized-memory algorithms. A shared_ptr made from an expired
+// weak_ptr calls the library's abort hook instead of throwing bad_weak_ptr. Without exceptions
+// a constructor cannot fail, so the uninitialized-memory algorithms never roll back.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class Pointer, class SizeType = size_t> struct allocation_result
+{
+    Pointer ptr;
+    SizeType count;
+};
+
+template <class T> class allocator
+{
+public:
+    using value_type = T;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+    using propagate_on_container_move_assignment = true_type;
+    using is_always_equal = true_type;
+
+    constexpr allocator() noexcept = default;
+    constexpr allocator(const allocator&) noexcept = default;
+    template <class U> constexpr allocator(const allocator<U>&) noexcept {}
+    constexpr ~allocator() = default;
+    constexpr allocator& operator=(const allocator&) = default;
+
+    [[nodiscard]] constexpr T* allocate(size_t count)
+    {
+        static_assert(sizeof(T) != 0, "allocator needs a complete type");
+        if (count > static_cast<size_t>(-1) / sizeof(T))
+        {
+            __detail::LibraryAbort("allocator::allocate: the size overflows");
+        }
+        if (__builtin_is_constant_evaluated())
+        {
+            // Constant evaluation allows ::operator new only inside std::allocator<T>::allocate.
+#if FEATHEROS_STD_IS_STD
+            return static_cast<T*>(::operator new(count * sizeof(T)));
+#else
+            return ::std::allocator<T>().allocate(count);
+#endif
+        }
+        if constexpr (alignof(T) > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
+        {
+            return static_cast<T*>(::operator new(count * sizeof(T), align_val_t(alignof(T))));
+        }
+        else
+        {
+            return static_cast<T*>(::operator new(count * sizeof(T)));
+        }
+    }
+
+    [[nodiscard]] constexpr allocation_result<T*> allocate_at_least(size_t count)
+    {
+        return {allocate(count), count};
+    }
+
+    constexpr void deallocate(T* pointer, size_t count)
+    {
+        if (__builtin_is_constant_evaluated())
+        {
+#if FEATHEROS_STD_IS_STD
+            ::operator delete(pointer);
+#else
+            ::std::allocator<T>().deallocate(pointer, count);
+#endif
+            return;
+        }
+        if constexpr (alignof(T) > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
+        {
+            ::operator delete(pointer, count * sizeof(T), align_val_t(alignof(T)));
+        }
+        else
+        {
+            ::operator delete(pointer, count * sizeof(T));
+        }
+    }
+};
+
+template <class T, class U>
+constexpr bool operator==(const allocator<T>&, const allocator<U>&) noexcept
+{
+    return true;
+}
+
+namespace __detail
+{
+template <class Alloc, class T> struct AllocatorRebind
+{
+};
+template <class Alloc, class T>
+    requires requires { typename Alloc::template rebind<T>::other; }
+struct AllocatorRebind<Alloc, T>
+{
+    using type = typename Alloc::template rebind<T>::other;
+};
+template <template <class, class...> class Alloc, class U, class... Rest, class T>
+    requires(!requires { typename Alloc<U, Rest...>::template rebind<T>::other; })
+struct AllocatorRebind<Alloc<U, Rest...>, T>
+{
+    using type = Alloc<T, Rest...>;
+};
+
+// Each member type of allocator_traits is the allocator's own when it has one.
+template <class Alloc> constexpr auto AllocatorPointer()
+{
+    if constexpr (requires { typename Alloc::pointer; })
+    {
+        return type_identity<typename Alloc::pointer>{};
+    }
+    else
+    {
+        return type_identity<typename Alloc::value_type*>{};
+    }
+}
+
+template <class Alloc, class Pointer> constexpr auto AllocatorConstPointer()
+{
+    if constexpr (requires { typename Alloc::const_pointer; })
+    {
+        return type_identity<typename Alloc::const_pointer>{};
+    }
+    else
+    {
+        return type_identity<
+            typename pointer_traits<Pointer>::template rebind<const typename Alloc::value_type>>{};
+    }
+}
+
+template <class Alloc, class Pointer> constexpr auto AllocatorVoidPointer()
+{
+    if constexpr (requires { typename Alloc::void_pointer; })
+    {
+        return type_identity<typename Alloc::void_pointer>{};
+    }
+    else
+    {
+        return type_identity<typename pointer_traits<Pointer>::template rebind<void>>{};
+    }
+}
+
+template <class Alloc, class Pointer> constexpr auto AllocatorConstVoidPointer()
+{
+    if constexpr (requires { typename Alloc::const_void_pointer; })
+    {
+        return type_identity<typename Alloc::const_void_pointer>{};
+    }
+    else
+    {
+        return type_identity<typename pointer_traits<Pointer>::template rebind<const void>>{};
+    }
+}
+
+template <class Alloc, class Pointer> constexpr auto AllocatorDifference()
+{
+    if constexpr (requires { typename Alloc::difference_type; })
+    {
+        return type_identity<typename Alloc::difference_type>{};
+    }
+    else
+    {
+        return type_identity<typename pointer_traits<Pointer>::difference_type>{};
+    }
+}
+
+template <class Alloc, class Difference> constexpr auto AllocatorSize()
+{
+    if constexpr (requires { typename Alloc::size_type; })
+    {
+        return type_identity<typename Alloc::size_type>{};
+    }
+    else
+    {
+        return type_identity<make_unsigned_t<Difference>>{};
+    }
+}
+
+template <class Alloc> constexpr auto AllocatorPropagateOnCopy()
+{
+    if constexpr (requires { typename Alloc::propagate_on_container_copy_assignment; })
+    {
+        return type_identity<typename Alloc::propagate_on_container_copy_assignment>{};
+    }
+    else
+    {
+        return type_identity<false_type>{};
+    }
+}
+
+template <class Alloc> constexpr auto AllocatorPropagateOnMove()
+{
+    if constexpr (requires { typename Alloc::propagate_on_container_move_assignment; })
+    {
+        return type_identity<typename Alloc::propagate_on_container_move_assignment>{};
+    }
+    else
+    {
+        return type_identity<false_type>{};
+    }
+}
+
+template <class Alloc> constexpr auto AllocatorPropagateOnSwap()
+{
+    if constexpr (requires { typename Alloc::propagate_on_container_swap; })
+    {
+        return type_identity<typename Alloc::propagate_on_container_swap>{};
+    }
+    else
+    {
+        return type_identity<false_type>{};
+    }
+}
+
+template <class Alloc> constexpr auto AllocatorAlwaysEqual()
+{
+    if constexpr (requires { typename Alloc::is_always_equal; })
+    {
+        return type_identity<typename Alloc::is_always_equal>{};
+    }
+    else
+    {
+        return type_identity<typename is_empty<Alloc>::type>{};
+    }
+}
+} // namespace __detail
+
+template <class Alloc> struct allocator_traits
+{
+    using allocator_type = Alloc;
+    using value_type = typename Alloc::value_type;
+    using pointer = typename decltype(__detail::AllocatorPointer<Alloc>())::type;
+    using const_pointer =
+        typename decltype(__detail::AllocatorConstPointer<Alloc, pointer>())::type;
+    using void_pointer = typename decltype(__detail::AllocatorVoidPointer<Alloc, pointer>())::type;
+    using const_void_pointer =
+        typename decltype(__detail::AllocatorConstVoidPointer<Alloc, pointer>())::type;
+    using difference_type =
+        typename decltype(__detail::AllocatorDifference<Alloc, pointer>())::type;
+    using size_type = typename decltype(__detail::AllocatorSize<Alloc, difference_type>())::type;
+    using propagate_on_container_copy_assignment =
+        typename decltype(__detail::AllocatorPropagateOnCopy<Alloc>())::type;
+    using propagate_on_container_move_assignment =
+        typename decltype(__detail::AllocatorPropagateOnMove<Alloc>())::type;
+    using propagate_on_container_swap =
+        typename decltype(__detail::AllocatorPropagateOnSwap<Alloc>())::type;
+    using is_always_equal = typename decltype(__detail::AllocatorAlwaysEqual<Alloc>())::type;
+
+    template <class T> using rebind_alloc = typename __detail::AllocatorRebind<Alloc, T>::type;
+    template <class T> using rebind_traits = allocator_traits<rebind_alloc<T>>;
+
+    [[nodiscard]] static constexpr pointer allocate(Alloc& allocator, size_type count)
+    {
+        return allocator.allocate(count);
+    }
+
+    [[nodiscard]] static constexpr pointer allocate(Alloc& allocator, size_type count,
+                                                    const_void_pointer hint)
+    {
+        if constexpr (requires { allocator.allocate(count, hint); })
+        {
+            return allocator.allocate(count, hint);
+        }
+        else
+        {
+            return allocator.allocate(count);
+        }
+    }
+
+    [[nodiscard]] static constexpr allocation_result<pointer, size_type>
+    allocate_at_least(Alloc& allocator, size_type count)
+    {
+        if constexpr (requires { allocator.allocate_at_least(count); })
+        {
+            return allocator.allocate_at_least(count);
+        }
+        else
+        {
+            return {allocator.allocate(count), count};
+        }
+    }
+
+    static constexpr void deallocate(Alloc& allocator, pointer location, size_type count)
+    {
+        allocator.deallocate(location, count);
+    }
+
+    template <class T, class... Args>
+    static constexpr void construct(Alloc& allocator, T* location, Args&&... args)
+    {
+        if constexpr (requires { allocator.construct(location, _FSTD::forward<Args>(args)...); })
+        {
+            allocator.construct(location, _FSTD::forward<Args>(args)...);
+        }
+        else
+        {
+            __detail::ConstructAt(location, _FSTD::forward<Args>(args)...);
+        }
+    }
+
+    template <class T> static constexpr void destroy(Alloc& allocator, T* location)
+    {
+        if constexpr (requires { allocator.destroy(location); })
+        {
+            allocator.destroy(location);
+        }
+        else
+        {
+            _FSTD::destroy_at(location);
+        }
+    }
+
+    static constexpr size_type max_size(const Alloc& allocator) noexcept
+    {
+        if constexpr (requires { allocator.max_size(); })
+        {
+            return allocator.max_size();
+        }
+        else
+        {
+            return numeric_limits<size_type>::max() / sizeof(value_type);
+        }
+    }
+
+    static constexpr Alloc select_on_container_copy_construction(const Alloc& allocator)
+    {
+        if constexpr (requires { allocator.select_on_container_copy_construction(); })
+        {
+            return allocator.select_on_container_copy_construction();
+        }
+        else
+        {
+            return allocator;
+        }
+    }
+};
+
+template <class T, class Alloc, class... Args>
+constexpr auto uses_allocator_construction_args(const Alloc& allocator, Args&&... args) noexcept
+    -> decltype(__detail::UsesAllocatorConstruction<remove_cv_t<T>>::Arguments(
+        allocator, _FSTD::forward<Args>(args)...))
+{
+    return __detail::UsesAllocatorConstruction<remove_cv_t<T>>::Arguments(
+        allocator, _FSTD::forward<Args>(args)...);
+}
+
+template <class T, class Alloc, class... Args>
+constexpr T make_obj_using_allocator(const Alloc& allocator, Args&&... args)
+{
+    return _FSTD::make_from_tuple<T>(
+        _FSTD::uses_allocator_construction_args<T>(allocator, _FSTD::forward<Args>(args)...));
+}
+
+template <class T, class Alloc, class... Args>
+constexpr T* uninitialized_construct_using_allocator(T* location, const Alloc& allocator,
+                                                     Args&&... args)
+{
+    return _FSTD::apply(
+        [location](auto&&... arguments)
+        {
+            return __detail::ConstructAt(location,
+                                         _FSTD::forward<decltype(arguments)>(arguments)...);
+        },
+        _FSTD::uses_allocator_construction_args<T>(allocator, _FSTD::forward<Args>(args)...));
+}
+
+template <size_t Alignment, class T> [[nodiscard]] constexpr T* assume_aligned(T* pointer)
+{
+    static_assert(Alignment != 0 && (Alignment & (Alignment - 1)) == 0,
+                  "assume_aligned needs a power of two");
+    if (__builtin_is_constant_evaluated())
+    {
+        return pointer;
+    }
+    return static_cast<T*>(__builtin_assume_aligned(pointer, Alignment));
+}
+
+inline void* align(size_t alignment, size_t size, void*& pointer, size_t& space) noexcept
+{
+    const auto address = reinterpret_cast<__UINTPTR_TYPE__>(pointer);
+    const auto aligned = (address + alignment - 1) & ~static_cast<__UINTPTR_TYPE__>(alignment - 1);
+    const auto padding = static_cast<size_t>(aligned - address);
+    if (size > space || padding > space - size)
+    {
+        return nullptr;
+    }
+    space -= padding;
+    pointer = reinterpret_cast<void*>(aligned);
+    return pointer;
+}
+
+// The uninitialized-memory algorithms.
+
+namespace __detail
+{
+template <class I> constexpr auto* VoidifiedAddress(I& iterator)
+{
+    return _FSTD::addressof(*iterator);
+}
+} // namespace __detail
+
+template <class I, class F> constexpr F uninitialized_copy(I first, I last, F out)
+{
+    for (; first != last; ++first, (void)++out)
+    {
+        __detail::ConstructAt(__detail::VoidifiedAddress(out), *first);
+    }
+    return out;
+}
+
+template <class I, class Size, class F> constexpr F uninitialized_copy_n(I first, Size count, F out)
+{
+    for (; count > 0; ++first, (void)++out, --count)
+    {
+        __detail::ConstructAt(__detail::VoidifiedAddress(out), *first);
+    }
+    return out;
+}
+
+template <class I, class F> constexpr F uninitialized_move(I first, I last, F out)
+{
+    for (; first != last; ++first, (void)++out)
+    {
+        __detail::ConstructAt(__detail::VoidifiedAddress(out), ranges::iter_move(first));
+    }
+    return out;
+}
+
+template <class I, class Size, class F>
+constexpr pair<I, F> uninitialized_move_n(I first, Size count, F out)
+{
+    for (; count > 0; ++first, (void)++out, --count)
+    {
+        __detail::ConstructAt(__detail::VoidifiedAddress(out), ranges::iter_move(first));
+    }
+    return pair<I, F>(first, out);
+}
+
+template <class F, class T> constexpr void uninitialized_fill(F first, F last, const T& value)
+{
+    for (; first != last; ++first)
+    {
+        __detail::ConstructAt(__detail::VoidifiedAddress(first), value);
+    }
+}
+
+template <class F, class Size, class T>
+constexpr F uninitialized_fill_n(F first, Size count, const T& value)
+{
+    for (; count > 0; ++first, (void)--count)
+    {
+        __detail::ConstructAt(__detail::VoidifiedAddress(first), value);
+    }
+    return first;
+}
+
+template <class F> constexpr void uninitialized_value_construct(F first, F last)
+{
+    for (; first != last; ++first)
+    {
+        __detail::ConstructAt(__detail::VoidifiedAddress(first));
+    }
+}
+
+template <class F, class Size> constexpr F uninitialized_value_construct_n(F first, Size count)
+{
+    for (; count > 0; ++first, (void)--count)
+    {
+        __detail::ConstructAt(__detail::VoidifiedAddress(first));
+    }
+    return first;
+}
+
+// Default-initialization has no form constant evaluation accepts, so these two are not
+// constexpr.
+template <class F> void uninitialized_default_construct(F first, F last)
+{
+    using Value = remove_cvref_t<decltype(*first)>;
+    for (; first != last; ++first)
+    {
+        ::new (static_cast<void*>(__detail::VoidifiedAddress(first))) Value;
+    }
+}
+
+template <class F, class Size> F uninitialized_default_construct_n(F first, Size count)
+{
+    using Value = remove_cvref_t<decltype(*first)>;
+    for (; count > 0; ++first, (void)--count)
+    {
+        ::new (static_cast<void*>(__detail::VoidifiedAddress(first))) Value;
+    }
+    return first;
+}
+
+template <class F> constexpr void destroy(F first, F last)
+{
+    for (; first != last; ++first)
+    {
+        _FSTD::destroy_at(_FSTD::addressof(*first));
+    }
+}
+
+template <class F, class Size> constexpr F destroy_n(F first, Size count)
+{
+    for (; count > 0; ++first, (void)--count)
+    {
+        _FSTD::destroy_at(_FSTD::addressof(*first));
+    }
+    return first;
+}
+
+template <class T> struct default_delete
+{
+    constexpr default_delete() noexcept = default;
+
+    template <class U>
+        requires is_convertible_v<U*, T*>
+    constexpr default_delete(const default_delete<U>&) noexcept
+    {
+    }
+
+    constexpr void operator()(T* pointer) const
+    {
+        static_assert(!is_void_v<T>, "default_delete cannot delete through void*");
+        static_assert(sizeof(T) > 0, "default_delete needs a complete type");
+        delete pointer;
+    }
+};
+
+template <class T> struct default_delete<T[]>
+{
+    constexpr default_delete() noexcept = default;
+
+    template <class U>
+        requires is_convertible_v<U (*)[], T (*)[]>
+    constexpr default_delete(const default_delete<U[]>&) noexcept
+    {
+    }
+
+    template <class U>
+        requires is_convertible_v<U (*)[], T (*)[]>
+    constexpr void operator()(U* pointer) const
+    {
+        static_assert(sizeof(U) > 0, "default_delete needs a complete type");
+        delete[] pointer;
+    }
+};
+
+namespace __detail
+{
+template <class T, class Deleter> constexpr auto UniquePointerType()
+{
+    if constexpr (requires { typename remove_reference_t<Deleter>::pointer; })
+    {
+        return type_identity<typename remove_reference_t<Deleter>::pointer>{};
+    }
+    else
+    {
+        return type_identity<T*>{};
+    }
+}
+
+template <class Deleter>
+concept DefaultDeleter = is_default_constructible_v<Deleter> && !is_pointer_v<Deleter>;
+
+// A deleter held by reference converts only from exactly that type, a deleter held by value
+// from anything convertible.
+template <class Deleter, class Other>
+concept UniqueDeleterFrom = (is_reference_v<Deleter> && is_same_v<Other, Deleter>) ||
+                            (!is_reference_v<Deleter> && is_convertible_v<Other, Deleter>);
+} // namespace __detail
+
+template <class T, class Deleter = default_delete<T>> class unique_ptr
+{
+public:
+    using pointer = typename decltype(__detail::UniquePointerType<T, Deleter>())::type;
+    using element_type = T;
+    using deleter_type = Deleter;
+
+    constexpr unique_ptr() noexcept
+        requires __detail::DefaultDeleter<Deleter>
+        : m_pointer(), m_deleter()
+    {
+    }
+
+    constexpr unique_ptr(nullptr_t) noexcept
+        requires __detail::DefaultDeleter<Deleter>
+        : m_pointer(), m_deleter()
+    {
+    }
+
+    constexpr explicit unique_ptr(pointer value) noexcept
+        requires __detail::DefaultDeleter<Deleter>
+        : m_pointer(value), m_deleter()
+    {
+    }
+
+    // For a deleter held by reference, const Deleter& is that reference.
+    constexpr unique_ptr(pointer value, const Deleter& deleter) noexcept
+        requires is_constructible_v<Deleter, const Deleter&>
+        : m_pointer(value), m_deleter(deleter)
+    {
+    }
+
+    constexpr unique_ptr(pointer value, remove_reference_t<Deleter>&& deleter) noexcept
+        requires(!is_reference_v<Deleter>) && is_constructible_v<Deleter, Deleter&&>
+        : m_pointer(value), m_deleter(_FSTD::move(deleter))
+    {
+    }
+
+    unique_ptr(pointer, remove_reference_t<Deleter>&&)
+        requires is_reference_v<Deleter>
+    = delete;
+
+    constexpr unique_ptr(unique_ptr&& other) noexcept
+        requires is_move_constructible_v<Deleter>
+        : m_pointer(other.release()), m_deleter(_FSTD::forward<Deleter>(other.get_deleter()))
+    {
+    }
+
+    template <class U, class E>
+        requires is_convertible_v<typename unique_ptr<U, E>::pointer, pointer> &&
+                     (!is_array_v<U>) && __detail::UniqueDeleterFrom<Deleter, E>
+    constexpr unique_ptr(unique_ptr<U, E>&& other) noexcept
+        : m_pointer(other.release()), m_deleter(_FSTD::forward<E>(other.get_deleter()))
+    {
+    }
+
+    constexpr ~unique_ptr()
+    {
+        if (m_pointer != nullptr)
+        {
+            m_deleter(m_pointer);
+        }
+    }
+
+    constexpr unique_ptr& operator=(unique_ptr&& other) noexcept
+        requires is_move_assignable_v<Deleter>
+    {
+        reset(other.release());
+        m_deleter = _FSTD::forward<Deleter>(other.get_deleter());
+        return *this;
+    }
+
+    template <class U, class E>
+        requires is_convertible_v<typename unique_ptr<U, E>::pointer, pointer> &&
+                 (!is_array_v<U>) && is_assignable_v<Deleter&, E&&>
+    constexpr unique_ptr& operator=(unique_ptr<U, E>&& other) noexcept
+    {
+        reset(other.release());
+        m_deleter = _FSTD::forward<E>(other.get_deleter());
+        return *this;
+    }
+
+    constexpr unique_ptr& operator=(nullptr_t) noexcept
+    {
+        reset();
+        return *this;
+    }
+
+    constexpr add_lvalue_reference_t<T> operator*() const noexcept(noexcept(*declval<pointer>()))
+    {
+        return *m_pointer;
+    }
+
+    constexpr pointer operator->() const noexcept
+    {
+        return m_pointer;
+    }
+
+    constexpr pointer get() const noexcept
+    {
+        return m_pointer;
+    }
+
+    constexpr Deleter& get_deleter() noexcept
+    {
+        return m_deleter;
+    }
+
+    constexpr const Deleter& get_deleter() const noexcept
+    {
+        return m_deleter;
+    }
+
+    constexpr explicit operator bool() const noexcept
+    {
+        return m_pointer != nullptr;
+    }
+
+    constexpr pointer release() noexcept
+    {
+        return _FSTD::exchange(m_pointer, pointer());
+    }
+
+    constexpr void reset(pointer value = pointer()) noexcept
+    {
+        pointer old = _FSTD::exchange(m_pointer, value);
+        if (old != nullptr)
+        {
+            m_deleter(old);
+        }
+    }
+
+    constexpr void swap(unique_ptr& other) noexcept
+    {
+        using _FSTD::swap;
+        swap(m_pointer, other.m_pointer);
+        swap(m_deleter, other.m_deleter);
+    }
+
+private:
+    pointer m_pointer;
+    [[no_unique_address]] Deleter m_deleter;
+};
+
+template <class T, class Deleter> class unique_ptr<T[], Deleter>
+{
+public:
+    using pointer = typename decltype(__detail::UniquePointerType<T, Deleter>())::type;
+    using element_type = T;
+    using deleter_type = Deleter;
+
+private:
+    // A pointer to elements of a type that converts as arrays do, such as T* from const T*'s
+    // opposite, but never Derived* to Base*.
+    template <class U>
+    static constexpr bool AcceptsPointer =
+        is_same_v<U, pointer> || (is_same_v<pointer, element_type*> && is_pointer_v<U> &&
+                                  is_convertible_v<remove_pointer_t<U> (*)[], element_type (*)[]>);
+
+public:
+    constexpr unique_ptr() noexcept
+        requires __detail::DefaultDeleter<Deleter>
+        : m_pointer(), m_deleter()
+    {
+    }
+
+    constexpr unique_ptr(nullptr_t) noexcept
+        requires __detail::DefaultDeleter<Deleter>
+        : m_pointer(), m_deleter()
+    {
+    }
+
+    template <class U>
+        requires __detail::DefaultDeleter<Deleter> && AcceptsPointer<U>
+    constexpr explicit unique_ptr(U value) noexcept : m_pointer(value), m_deleter()
+    {
+    }
+
+    template <class U>
+        requires(AcceptsPointer<U> || is_same_v<U, nullptr_t>) &&
+                    is_constructible_v<Deleter, const Deleter&>
+    constexpr unique_ptr(U value, const Deleter& deleter) noexcept
+        : m_pointer(value), m_deleter(deleter)
+    {
+    }
+
+    template <class U>
+        requires(AcceptsPointer<U> || is_same_v<U, nullptr_t>) && (!is_reference_v<Deleter>) &&
+                    is_constructible_v<Deleter, Deleter&&>
+    constexpr unique_ptr(U value, remove_reference_t<Deleter>&& deleter) noexcept
+        : m_pointer(value), m_deleter(_FSTD::move(deleter))
+    {
+    }
+
+    template <class U>
+        requires is_reference_v<Deleter>
+    unique_ptr(U, remove_reference_t<Deleter>&&) = delete;
+
+    constexpr unique_ptr(unique_ptr&& other) noexcept
+        requires is_move_constructible_v<Deleter>
+        : m_pointer(other.release()), m_deleter(_FSTD::forward<Deleter>(other.get_deleter()))
+    {
+    }
+
+    template <class U, class E>
+        requires is_array_v<U> && is_same_v<pointer, element_type*> &&
+                     is_same_v<typename unique_ptr<U, E>::pointer,
+                               typename unique_ptr<U, E>::element_type*> &&
+                     is_convertible_v<typename unique_ptr<U, E>::element_type (*)[],
+                                      element_type (*)[]> &&
+                     __detail::UniqueDeleterFrom<Deleter, E>
+    constexpr unique_ptr(unique_ptr<U, E>&& other) noexcept
+        : m_pointer(other.release()), m_deleter(_FSTD::forward<E>(other.get_deleter()))
+    {
+    }
+
+    constexpr ~unique_ptr()
+    {
+        if (m_pointer != nullptr)
+        {
+            m_deleter(m_pointer);
+        }
+    }
+
+    constexpr unique_ptr& operator=(unique_ptr&& other) noexcept
+        requires is_move_assignable_v<Deleter>
+    {
+        reset(other.release());
+        m_deleter = _FSTD::forward<Deleter>(other.get_deleter());
+        return *this;
+    }
+
+    template <class U, class E>
+        requires is_array_v<U> && is_same_v<pointer, element_type*> &&
+                 is_same_v<typename unique_ptr<U, E>::pointer,
+                           typename unique_ptr<U, E>::element_type*> &&
+                 is_convertible_v<typename unique_ptr<U, E>::element_type (*)[],
+                                  element_type (*)[]> &&
+                 is_assignable_v<Deleter&, E&&>
+    constexpr unique_ptr& operator=(unique_ptr<U, E>&& other) noexcept
+    {
+        reset(other.release());
+        m_deleter = _FSTD::forward<E>(other.get_deleter());
+        return *this;
+    }
+
+    constexpr unique_ptr& operator=(nullptr_t) noexcept
+    {
+        reset();
+        return *this;
+    }
+
+    constexpr T& operator[](size_t index) const
+    {
+        return m_pointer[index];
+    }
+
+    constexpr pointer get() const noexcept
+    {
+        return m_pointer;
+    }
+
+    constexpr Deleter& get_deleter() noexcept
+    {
+        return m_deleter;
+    }
+
+    constexpr const Deleter& get_deleter() const noexcept
+    {
+        return m_deleter;
+    }
+
+    constexpr explicit operator bool() const noexcept
+    {
+        return m_pointer != nullptr;
+    }
+
+    constexpr pointer release() noexcept
+    {
+        return _FSTD::exchange(m_pointer, pointer());
+    }
+
+    template <class U>
+        requires AcceptsPointer<U>
+    constexpr void reset(U value) noexcept
+    {
+        pointer old = _FSTD::exchange(m_pointer, value);
+        if (old != nullptr)
+        {
+            m_deleter(old);
+        }
+    }
+
+    constexpr void reset(nullptr_t = nullptr) noexcept
+    {
+        reset(pointer());
+    }
+
+    constexpr void swap(unique_ptr& other) noexcept
+    {
+        using _FSTD::swap;
+        swap(m_pointer, other.m_pointer);
+        swap(m_deleter, other.m_deleter);
+    }
+
+private:
+    pointer m_pointer;
+    [[no_unique_address]] Deleter m_deleter;
+};
+
+template <class T, class... Args>
+    requires(!is_array_v<T>)
+constexpr unique_ptr<T> make_unique(Args&&... args)
+{
+    return unique_ptr<T>(new T(_FSTD::forward<Args>(args)...));
+}
+
+template <class T>
+    requires is_unbounded_array_v<T>
+constexpr unique_ptr<T> make_unique(size_t count)
+{
+    return unique_ptr<T>(new remove_extent_t<T>[count]());
+}
+
+template <class T, class... Args>
+    requires is_bounded_array_v<T>
+void make_unique(Args&&...) = delete;
+
+template <class T>
+    requires(!is_array_v<T>)
+constexpr unique_ptr<T> make_unique_for_overwrite()
+{
+    return unique_ptr<T>(new T);
+}
+
+template <class T>
+    requires is_unbounded_array_v<T>
+constexpr unique_ptr<T> make_unique_for_overwrite(size_t count)
+{
+    return unique_ptr<T>(new remove_extent_t<T>[count]);
+}
+
+template <class T, class... Args>
+    requires is_bounded_array_v<T>
+void make_unique_for_overwrite(Args&&...) = delete;
+
+template <class T, class Deleter>
+    requires is_swappable_v<Deleter>
+constexpr void swap(unique_ptr<T, Deleter>& left, unique_ptr<T, Deleter>& right) noexcept
+{
+    left.swap(right);
+}
+
+template <class T1, class D1, class T2, class D2>
+constexpr bool operator==(const unique_ptr<T1, D1>& left, const unique_ptr<T2, D2>& right)
+{
+    return left.get() == right.get();
+}
+
+template <class T1, class D1, class T2, class D2>
+constexpr bool operator<(const unique_ptr<T1, D1>& left, const unique_ptr<T2, D2>& right)
+{
+    using Common =
+        common_type_t<typename unique_ptr<T1, D1>::pointer, typename unique_ptr<T2, D2>::pointer>;
+    return less<Common>()(left.get(), right.get());
+}
+
+template <class T1, class D1, class T2, class D2>
+constexpr bool operator>(const unique_ptr<T1, D1>& left, const unique_ptr<T2, D2>& right)
+{
+    return right < left;
+}
+
+template <class T1, class D1, class T2, class D2>
+constexpr bool operator<=(const unique_ptr<T1, D1>& left, const unique_ptr<T2, D2>& right)
+{
+    return !(right < left);
+}
+
+template <class T1, class D1, class T2, class D2>
+constexpr bool operator>=(const unique_ptr<T1, D1>& left, const unique_ptr<T2, D2>& right)
+{
+    return !(left < right);
+}
+
+template <class T1, class D1, class T2, class D2>
+    requires three_way_comparable_with<typename unique_ptr<T1, D1>::pointer,
+                                       typename unique_ptr<T2, D2>::pointer>
+constexpr compare_three_way_result_t<typename unique_ptr<T1, D1>::pointer,
+                                     typename unique_ptr<T2, D2>::pointer>
+operator<=>(const unique_ptr<T1, D1>& left, const unique_ptr<T2, D2>& right)
+{
+    return compare_three_way()(left.get(), right.get());
+}
+
+template <class T, class D>
+constexpr bool operator==(const unique_ptr<T, D>& value, nullptr_t) noexcept
+{
+    return !value;
+}
+
+template <class T, class D> constexpr bool operator<(const unique_ptr<T, D>& value, nullptr_t)
+{
+    return less<typename unique_ptr<T, D>::pointer>()(value.get(), nullptr);
+}
+
+template <class T, class D> constexpr bool operator<(nullptr_t, const unique_ptr<T, D>& value)
+{
+    return less<typename unique_ptr<T, D>::pointer>()(nullptr, value.get());
+}
+
+template <class T, class D> constexpr bool operator>(const unique_ptr<T, D>& value, nullptr_t)
+{
+    return nullptr < value;
+}
+
+template <class T, class D> constexpr bool operator>(nullptr_t, const unique_ptr<T, D>& value)
+{
+    return value < nullptr;
+}
+
+template <class T, class D> constexpr bool operator<=(const unique_ptr<T, D>& value, nullptr_t)
+{
+    return !(nullptr < value);
+}
+
+template <class T, class D> constexpr bool operator<=(nullptr_t, const unique_ptr<T, D>& value)
+{
+    return !(value < nullptr);
+}
+
+template <class T, class D> constexpr bool operator>=(const unique_ptr<T, D>& value, nullptr_t)
+{
+    return !(value < nullptr);
+}
+
+template <class T, class D> constexpr bool operator>=(nullptr_t, const unique_ptr<T, D>& value)
+{
+    return !(nullptr < value);
+}
+
+template <class T, class D>
+    requires three_way_comparable<typename unique_ptr<T, D>::pointer>
+constexpr compare_three_way_result_t<typename unique_ptr<T, D>::pointer>
+operator<=>(const unique_ptr<T, D>& value, nullptr_t)
+{
+    return compare_three_way()(value.get(),
+                               static_cast<typename unique_ptr<T, D>::pointer>(nullptr));
+}
+
+template <class T, class D>
+    requires __detail::HashEnabled<typename unique_ptr<T, D>::pointer>
+struct hash<unique_ptr<T, D>>
+{
+    size_t operator()(const unique_ptr<T, D>& value) const
+    {
+        return hash<typename unique_ptr<T, D>::pointer>()(value.get());
+    }
+};
+
+template <class T> class shared_ptr;
+template <class T> class weak_ptr;
+template <class T> class enable_shared_from_this;
+
+namespace __detail
+{
+// A shared_ptr's control block. m_owners counts shared_ptrs; m_weak counts weak_ptrs plus one
+// for all the owners together, so the block outlives the object while any weak_ptr remains.
+class SharedCount
+{
+public:
+    SharedCount(const SharedCount&) = delete;
+    SharedCount& operator=(const SharedCount&) = delete;
+
+    void AddOwner() noexcept
+    {
+        __atomic_fetch_add(&m_owners, 1, __ATOMIC_RELAXED);
+    }
+
+    void ReleaseOwner() noexcept
+    {
+        if (__atomic_fetch_sub(&m_owners, 1, __ATOMIC_ACQ_REL) == 1)
+        {
+            DestroyObject();
+            ReleaseWeak();
+        }
+    }
+
+    // weak_ptr::lock: a new owner only while another still keeps the object alive.
+    bool TryAddOwner() noexcept
+    {
+        long owners = __atomic_load_n(&m_owners, __ATOMIC_RELAXED);
+        while (owners != 0)
+        {
+            if (__atomic_compare_exchange_n(&m_owners, &owners, owners + 1, true, __ATOMIC_ACQ_REL,
+                                            __ATOMIC_RELAXED))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void AddWeak() noexcept
+    {
+        __atomic_fetch_add(&m_weak, 1, __ATOMIC_RELAXED);
+    }
+
+    void ReleaseWeak() noexcept
+    {
+        if (__atomic_fetch_sub(&m_weak, 1, __ATOMIC_ACQ_REL) == 1)
+        {
+            DestroyBlock();
+        }
+    }
+
+    long Owners() const noexcept
+    {
+        return __atomic_load_n(&m_owners, __ATOMIC_RELAXED);
+    }
+
+    virtual void* FindDeleter(const void*) noexcept
+    {
+        return nullptr;
+    }
+
+protected:
+    SharedCount() = default;
+    ~SharedCount() = default;
+
+    virtual void DestroyObject() noexcept = 0;
+    virtual void DestroyBlock() noexcept = 0;
+
+private:
+    long m_owners = 1;
+    long m_weak = 1;
+};
+
+template <class Pointer, class Deleter> class SharedPointerCount final : public SharedCount
+{
+public:
+    SharedPointerCount(Pointer pointer, Deleter deleter) noexcept
+        : m_pointer(pointer), m_deleter(_FSTD::move(deleter))
+    {
+    }
+
+    void* FindDeleter(const void* type) noexcept override
+    {
+        return type == &TypeTag<Deleter> ? _FSTD::addressof(m_deleter) : nullptr;
+    }
+
+private:
+    void DestroyObject() noexcept override
+    {
+        m_deleter(m_pointer);
+    }
+
+    void DestroyBlock() noexcept override
+    {
+        delete this;
+    }
+
+    Pointer m_pointer;
+    [[no_unique_address]] Deleter m_deleter;
+};
+
+struct SharedInPlace
+{
+    explicit SharedInPlace() = default;
+};
+struct SharedForOverwrite
+{
+    explicit SharedForOverwrite() = default;
+};
+
+// make_shared's block, which holds the object itself, so one allocation serves both.
+template <class T> class SharedObjectCount final : public SharedCount
+{
+public:
+    template <class... Args>
+    explicit SharedObjectCount(SharedInPlace, Args&&... args)
+        : m_object(_FSTD::forward<Args>(args)...)
+    {
+    }
+
+    explicit SharedObjectCount(SharedForOverwrite)
+    {
+        ::new (static_cast<void*>(_FSTD::addressof(m_object))) remove_cv_t<T>;
+    }
+
+    ~SharedObjectCount() {}
+
+    T* Object() noexcept
+    {
+        return _FSTD::addressof(m_object);
+    }
+
+private:
+    void DestroyObject() noexcept override
+    {
+        _FSTD::destroy_at(_FSTD::addressof(m_object));
+    }
+
+    void DestroyBlock() noexcept override
+    {
+        delete this;
+    }
+
+    // In a union, so the block's destructor leaves the object to DestroyObject.
+    union
+    {
+        remove_cv_t<T> m_object;
+    };
+};
+
+struct SharedAdopt
+{
+    explicit SharedAdopt() = default;
+};
+
+// Y* is compatible with T*: it converts, or Y is U[N] and T is cv U[].
+template <class Y, class T>
+concept SharedCompatible =
+    is_convertible_v<Y*, T*> ||
+    (is_bounded_array_v<Y> && is_unbounded_array_v<T> &&
+     is_same_v<remove_cv_t<remove_extent_t<Y>>, remove_cv_t<remove_extent_t<T>>> &&
+     is_convertible_v<remove_extent_t<Y>*, remove_extent_t<T>*>);
+
+// The pointers shared_ptr<T> takes ownership of.
+template <class Y, class T>
+concept SharedConvertiblePointer =
+    (!is_array_v<T> && is_convertible_v<Y*, T*>) ||
+    (is_unbounded_array_v<T> && is_convertible_v<Y (*)[], T*>) ||
+    (is_bounded_array_v<T> && is_convertible_v<Y (*)[extent_v<T>], T*>);
+
+template <class Y>
+concept Deletable = requires(Y* pointer) { delete pointer; };
+template <class Y>
+concept ArrayDeletable = requires(Y* pointer) { delete[] pointer; };
+
+template <class X>
+const enable_shared_from_this<X>*
+SharedFromThisBase(const enable_shared_from_this<X>* base) noexcept
+{
+    return base;
+}
+} // namespace __detail
+
+template <class T> class shared_ptr
+{
+public:
+    using element_type = remove_extent_t<T>;
+    using weak_type = weak_ptr<T>;
+
+    constexpr shared_ptr() noexcept = default;
+    constexpr shared_ptr(nullptr_t) noexcept {}
+
+    template <class Y>
+        requires __detail::SharedConvertiblePointer<Y, T> &&
+                 (is_array_v<T> ? __detail::ArrayDeletable<Y> : __detail::Deletable<Y>)
+    explicit shared_ptr(Y* pointer)
+        : shared_ptr(pointer,
+                     conditional_t<is_array_v<T>, default_delete<Y[]>, default_delete<Y>>())
+    {
+    }
+
+    template <class Y, class D>
+        requires __detail::SharedConvertiblePointer<Y, T> && is_move_constructible_v<D> &&
+                     is_invocable_v<D&, Y*&>
+    shared_ptr(Y* pointer, D deleter)
+        : m_pointer(pointer),
+          m_count(new __detail::SharedPointerCount<Y*, D>(pointer, _FSTD::move(deleter)))
+    {
+        EnableSharedFromThis(pointer);
+    }
+
+    template <class D>
+        requires is_move_constructible_v<D> && is_invocable_v<D&, nullptr_t&>
+    shared_ptr(nullptr_t, D deleter)
+        : m_count(new __detail::SharedPointerCount<nullptr_t, D>(nullptr, _FSTD::move(deleter)))
+    {
+    }
+
+    // Aliasing: shares other's ownership but points elsewhere.
+    template <class Y>
+    shared_ptr(const shared_ptr<Y>& other, element_type* pointer) noexcept
+        : m_pointer(pointer), m_count(other.m_count)
+    {
+        AddOwner();
+    }
+
+    template <class Y>
+    shared_ptr(shared_ptr<Y>&& other, element_type* pointer) noexcept
+        : m_pointer(pointer), m_count(_FSTD::exchange(other.m_count, nullptr))
+    {
+        other.m_pointer = nullptr;
+    }
+
+    shared_ptr(const shared_ptr& other) noexcept
+        : m_pointer(other.m_pointer), m_count(other.m_count)
+    {
+        AddOwner();
+    }
+
+    template <class Y>
+        requires __detail::SharedCompatible<Y, T>
+    shared_ptr(const shared_ptr<Y>& other) noexcept
+        : m_pointer(other.m_pointer), m_count(other.m_count)
+    {
+        AddOwner();
+    }
+
+    shared_ptr(shared_ptr&& other) noexcept
+        : m_pointer(_FSTD::exchange(other.m_pointer, nullptr)),
+          m_count(_FSTD::exchange(other.m_count, nullptr))
+    {
+    }
+
+    template <class Y>
+        requires __detail::SharedCompatible<Y, T>
+    shared_ptr(shared_ptr<Y>&& other) noexcept
+        : m_pointer(_FSTD::exchange(other.m_pointer, nullptr)),
+          m_count(_FSTD::exchange(other.m_count, nullptr))
+    {
+    }
+
+    // The pointer is converted only once the object is known to live, since converting to a
+    // virtual base reads the object.
+    template <class Y>
+        requires __detail::SharedCompatible<Y, T>
+    explicit shared_ptr(const weak_ptr<Y>& other)
+    {
+        if (other.m_count == nullptr || !other.m_count->TryAddOwner())
+        {
+            __detail::LibraryAbort("bad_weak_ptr: shared_ptr from an expired weak_ptr");
+        }
+        m_count = other.m_count;
+        m_pointer = other.m_pointer;
+    }
+
+    template <class Y, class D>
+        requires __detail::SharedCompatible<Y, T> &&
+                 is_convertible_v<typename unique_ptr<Y, D>::pointer, element_type*>
+    shared_ptr(unique_ptr<Y, D>&& other)
+    {
+        using Pointer = typename unique_ptr<Y, D>::pointer;
+        using Deleter =
+            conditional_t<is_reference_v<D>, reference_wrapper<remove_reference_t<D>>, D>;
+        if (other.get() == nullptr)
+        {
+            return;
+        }
+        Pointer owned = other.get();
+        m_count = new __detail::SharedPointerCount<Pointer, Deleter>(
+            owned, Deleter(_FSTD::forward<D>(other.get_deleter())));
+        m_pointer = owned;
+        other.release();
+        if constexpr (is_pointer_v<Pointer>)
+        {
+            EnableSharedFromThis(owned);
+        }
+    }
+
+    // make_shared's: the block already holds the object.
+    shared_ptr(__detail::SharedAdopt, element_type* pointer, __detail::SharedCount* count) noexcept
+        : m_pointer(pointer), m_count(count)
+    {
+        EnableSharedFromThis(pointer);
+    }
+
+    ~shared_ptr()
+    {
+        if (m_count != nullptr)
+        {
+            m_count->ReleaseOwner();
+        }
+    }
+
+    shared_ptr& operator=(const shared_ptr& other) noexcept
+    {
+        shared_ptr(other).swap(*this);
+        return *this;
+    }
+
+    template <class Y>
+        requires __detail::SharedCompatible<Y, T>
+    shared_ptr& operator=(const shared_ptr<Y>& other) noexcept
+    {
+        shared_ptr(other).swap(*this);
+        return *this;
+    }
+
+    shared_ptr& operator=(shared_ptr&& other) noexcept
+    {
+        shared_ptr(_FSTD::move(other)).swap(*this);
+        return *this;
+    }
+
+    template <class Y>
+        requires __detail::SharedCompatible<Y, T>
+    shared_ptr& operator=(shared_ptr<Y>&& other) noexcept
+    {
+        shared_ptr(_FSTD::move(other)).swap(*this);
+        return *this;
+    }
+
+    template <class Y, class D>
+        requires is_constructible_v<shared_ptr, unique_ptr<Y, D>>
+    shared_ptr& operator=(unique_ptr<Y, D>&& other)
+    {
+        shared_ptr(_FSTD::move(other)).swap(*this);
+        return *this;
+    }
+
+    void swap(shared_ptr& other) noexcept
+    {
+        _FSTD::swap(m_pointer, other.m_pointer);
+        _FSTD::swap(m_count, other.m_count);
+    }
+
+    void reset() noexcept
+    {
+        shared_ptr().swap(*this);
+    }
+
+    template <class Y>
+        requires is_constructible_v<shared_ptr, Y*>
+    void reset(Y* pointer)
+    {
+        shared_ptr(pointer).swap(*this);
+    }
+
+    template <class Y, class D>
+        requires is_constructible_v<shared_ptr, Y*, D>
+    void reset(Y* pointer, D deleter)
+    {
+        shared_ptr(pointer, _FSTD::move(deleter)).swap(*this);
+    }
+
+    element_type* get() const noexcept
+    {
+        return m_pointer;
+    }
+
+    template <class Self = T>
+        requires(!is_array_v<Self> && !is_void_v<Self>)
+    Self& operator*() const noexcept
+    {
+        return *m_pointer;
+    }
+
+    template <class Self = T>
+        requires(!is_array_v<Self>)
+    element_type* operator->() const noexcept
+    {
+        return m_pointer;
+    }
+
+    template <class Self = T>
+        requires is_array_v<Self>
+    element_type& operator[](ptrdiff_t index) const
+    {
+        return m_pointer[index];
+    }
+
+    long use_count() const noexcept
+    {
+        return m_count != nullptr ? m_count->Owners() : 0;
+    }
+
+    explicit operator bool() const noexcept
+    {
+        return m_pointer != nullptr;
+    }
+
+    template <class U> bool owner_before(const shared_ptr<U>& other) const noexcept
+    {
+        return less<__detail::SharedCount*>()(m_count, other.m_count);
+    }
+
+    template <class U> bool owner_before(const weak_ptr<U>& other) const noexcept
+    {
+        return less<__detail::SharedCount*>()(m_count, other.m_count);
+    }
+
+    // get_deleter's way into the control block.
+    __detail::SharedCount* __control_block() const noexcept
+    {
+        return m_count;
+    }
+
+private:
+    template <class U> friend class shared_ptr;
+    template <class U> friend class weak_ptr;
+
+    void AddOwner() noexcept
+    {
+        if (m_count != nullptr)
+        {
+            m_count->AddOwner();
+        }
+    }
+
+    // An object that derives from enable_shared_from_this (once, publicly) learns its first
+    // owner.
+    template <class Y> void EnableSharedFromThis(Y* pointer) noexcept
+    {
+        if constexpr (requires { __detail::SharedFromThisBase(pointer); })
+        {
+            if (pointer == nullptr)
+            {
+                return;
+            }
+            const auto* base = __detail::SharedFromThisBase(pointer);
+            if (base->m_weak_this.expired())
+            {
+                base->m_weak_this =
+                    shared_ptr<remove_cv_t<Y>>(*this, const_cast<remove_cv_t<Y>*>(pointer));
+            }
+        }
+    }
+
+    element_type* m_pointer = nullptr;
+    __detail::SharedCount* m_count = nullptr;
+};
+
+template <class T> shared_ptr(weak_ptr<T>) -> shared_ptr<T>;
+template <class T, class D> shared_ptr(unique_ptr<T, D>) -> shared_ptr<T>;
+
+template <class T> class weak_ptr
+{
+public:
+    using element_type = remove_extent_t<T>;
+
+    constexpr weak_ptr() noexcept = default;
+
+    weak_ptr(const weak_ptr& other) noexcept : m_pointer(other.m_pointer), m_count(other.m_count)
+    {
+        AddWeak();
+    }
+
+    template <class Y>
+        requires __detail::SharedCompatible<Y, T>
+    weak_ptr(const shared_ptr<Y>& other) noexcept
+        : m_pointer(other.m_pointer), m_count(other.m_count)
+    {
+        AddWeak();
+    }
+
+    // From another weak_ptr type the object may be gone, and converting its pointer to a
+    // virtual base would read it, so the conversion goes through lock().
+    template <class Y>
+        requires __detail::SharedCompatible<Y, T>
+    weak_ptr(const weak_ptr<Y>& other) noexcept
+        : m_pointer(other.lock().get()), m_count(other.m_count)
+    {
+        AddWeak();
+    }
+
+    weak_ptr(weak_ptr&& other) noexcept
+        : m_pointer(_FSTD::exchange(other.m_pointer, nullptr)),
+          m_count(_FSTD::exchange(other.m_count, nullptr))
+    {
+    }
+
+    template <class Y>
+        requires __detail::SharedCompatible<Y, T>
+    weak_ptr(weak_ptr<Y>&& other) noexcept
+        : m_pointer(other.lock().get()), m_count(_FSTD::exchange(other.m_count, nullptr))
+    {
+        other.m_pointer = nullptr;
+    }
+
+    ~weak_ptr()
+    {
+        if (m_count != nullptr)
+        {
+            m_count->ReleaseWeak();
+        }
+    }
+
+    weak_ptr& operator=(const weak_ptr& other) noexcept
+    {
+        weak_ptr(other).swap(*this);
+        return *this;
+    }
+
+    template <class Y>
+        requires __detail::SharedCompatible<Y, T>
+    weak_ptr& operator=(const weak_ptr<Y>& other) noexcept
+    {
+        weak_ptr(other).swap(*this);
+        return *this;
+    }
+
+    template <class Y>
+        requires __detail::SharedCompatible<Y, T>
+    weak_ptr& operator=(const shared_ptr<Y>& other) noexcept
+    {
+        weak_ptr(other).swap(*this);
+        return *this;
+    }
+
+    weak_ptr& operator=(weak_ptr&& other) noexcept
+    {
+        weak_ptr(_FSTD::move(other)).swap(*this);
+        return *this;
+    }
+
+    template <class Y>
+        requires __detail::SharedCompatible<Y, T>
+    weak_ptr& operator=(weak_ptr<Y>&& other) noexcept
+    {
+        weak_ptr(_FSTD::move(other)).swap(*this);
+        return *this;
+    }
+
+    void swap(weak_ptr& other) noexcept
+    {
+        _FSTD::swap(m_pointer, other.m_pointer);
+        _FSTD::swap(m_count, other.m_count);
+    }
+
+    void reset() noexcept
+    {
+        weak_ptr().swap(*this);
+    }
+
+    long use_count() const noexcept
+    {
+        return m_count != nullptr ? m_count->Owners() : 0;
+    }
+
+    bool expired() const noexcept
+    {
+        return use_count() == 0;
+    }
+
+    shared_ptr<T> lock() const noexcept
+    {
+        shared_ptr<T> result;
+        if (m_count != nullptr && m_count->TryAddOwner())
+        {
+            result.m_pointer = m_pointer;
+            result.m_count = m_count;
+        }
+        return result;
+    }
+
+    template <class U> bool owner_before(const shared_ptr<U>& other) const noexcept
+    {
+        return less<__detail::SharedCount*>()(m_count, other.m_count);
+    }
+
+    template <class U> bool owner_before(const weak_ptr<U>& other) const noexcept
+    {
+        return less<__detail::SharedCount*>()(m_count, other.m_count);
+    }
+
+private:
+    template <class U> friend class shared_ptr;
+    template <class U> friend class weak_ptr;
+
+    void AddWeak() noexcept
+    {
+        if (m_count != nullptr)
+        {
+            m_count->AddWeak();
+        }
+    }
+
+    element_type* m_pointer = nullptr;
+    __detail::SharedCount* m_count = nullptr;
+};
+
+template <class T> weak_ptr(shared_ptr<T>) -> weak_ptr<T>;
+
+template <class T> class enable_shared_from_this
+{
+public:
+    shared_ptr<T> shared_from_this()
+    {
+        return shared_ptr<T>(m_weak_this);
+    }
+
+    shared_ptr<const T> shared_from_this() const
+    {
+        return shared_ptr<const T>(m_weak_this);
+    }
+
+    weak_ptr<T> weak_from_this() noexcept
+    {
+        return m_weak_this;
+    }
+
+    weak_ptr<const T> weak_from_this() const noexcept
+    {
+        return m_weak_this;
+    }
+
+protected:
+    constexpr enable_shared_from_this() noexcept {}
+    enable_shared_from_this(const enable_shared_from_this&) noexcept {}
+    enable_shared_from_this& operator=(const enable_shared_from_this&) noexcept
+    {
+        return *this;
+    }
+    ~enable_shared_from_this() = default;
+
+private:
+    template <class U> friend class shared_ptr;
+
+    mutable weak_ptr<T> m_weak_this;
+};
+
+template <class T, class... Args>
+    requires(!is_array_v<T>)
+shared_ptr<T> make_shared(Args&&... args)
+{
+    auto* block = new __detail::SharedObjectCount<T>(__detail::SharedInPlace{},
+                                                     _FSTD::forward<Args>(args)...);
+    return shared_ptr<T>(__detail::SharedAdopt{}, block->Object(), block);
+}
+
+template <class T>
+    requires(!is_array_v<T>)
+shared_ptr<T> make_shared_for_overwrite()
+{
+    auto* block = new __detail::SharedObjectCount<T>(__detail::SharedForOverwrite{});
+    return shared_ptr<T>(__detail::SharedAdopt{}, block->Object(), block);
+}
+
+template <class T, class U>
+bool operator==(const shared_ptr<T>& left, const shared_ptr<U>& right) noexcept
+{
+    return left.get() == right.get();
+}
+
+template <class T, class U>
+strong_ordering operator<=>(const shared_ptr<T>& left, const shared_ptr<U>& right) noexcept
+{
+    return compare_three_way()(left.get(), right.get());
+}
+
+template <class T> bool operator==(const shared_ptr<T>& value, nullptr_t) noexcept
+{
+    return !value;
+}
+
+template <class T> strong_ordering operator<=>(const shared_ptr<T>& value, nullptr_t) noexcept
+{
+    return compare_three_way()(value.get(),
+                               static_cast<typename shared_ptr<T>::element_type*>(nullptr));
+}
+
+template <class T> void swap(shared_ptr<T>& left, shared_ptr<T>& right) noexcept
+{
+    left.swap(right);
+}
+
+template <class T> void swap(weak_ptr<T>& left, weak_ptr<T>& right) noexcept
+{
+    left.swap(right);
+}
+
+template <class T, class U> shared_ptr<T> static_pointer_cast(const shared_ptr<U>& value) noexcept
+{
+    return shared_ptr<T>(value, static_cast<typename shared_ptr<T>::element_type*>(value.get()));
+}
+
+template <class T, class U> shared_ptr<T> static_pointer_cast(shared_ptr<U>&& value) noexcept
+{
+    auto* pointer = static_cast<typename shared_ptr<T>::element_type*>(value.get());
+    return shared_ptr<T>(_FSTD::move(value), pointer);
+}
+
+template <class T, class U> shared_ptr<T> const_pointer_cast(const shared_ptr<U>& value) noexcept
+{
+    return shared_ptr<T>(value, const_cast<typename shared_ptr<T>::element_type*>(value.get()));
+}
+
+template <class T, class U> shared_ptr<T> const_pointer_cast(shared_ptr<U>&& value) noexcept
+{
+    auto* pointer = const_cast<typename shared_ptr<T>::element_type*>(value.get());
+    return shared_ptr<T>(_FSTD::move(value), pointer);
+}
+
+template <class T, class U>
+shared_ptr<T> reinterpret_pointer_cast(const shared_ptr<U>& value) noexcept
+{
+    return shared_ptr<T>(value,
+                         reinterpret_cast<typename shared_ptr<T>::element_type*>(value.get()));
+}
+
+template <class T, class U> shared_ptr<T> reinterpret_pointer_cast(shared_ptr<U>&& value) noexcept
+{
+    auto* pointer = reinterpret_cast<typename shared_ptr<T>::element_type*>(value.get());
+    return shared_ptr<T>(_FSTD::move(value), pointer);
+}
+
+template <class D, class T> D* get_deleter(const shared_ptr<T>& value) noexcept
+{
+    __detail::SharedCount* block = value.__control_block();
+    return block != nullptr ? static_cast<D*>(block->FindDeleter(&__detail::TypeTag<D>)) : nullptr;
+}
+
+template <class T = void> struct owner_less;
+
+template <class T> struct owner_less<shared_ptr<T>>
+{
+    bool operator()(const shared_ptr<T>& left, const shared_ptr<T>& right) const noexcept
+    {
+        return left.owner_before(right);
+    }
+    bool operator()(const shared_ptr<T>& left, const weak_ptr<T>& right) const noexcept
+    {
+        return left.owner_before(right);
+    }
+    bool operator()(const weak_ptr<T>& left, const shared_ptr<T>& right) const noexcept
+    {
+        return left.owner_before(right);
+    }
+};
+
+template <class T> struct owner_less<weak_ptr<T>>
+{
+    bool operator()(const weak_ptr<T>& left, const weak_ptr<T>& right) const noexcept
+    {
+        return left.owner_before(right);
+    }
+    bool operator()(const shared_ptr<T>& left, const weak_ptr<T>& right) const noexcept
+    {
+        return left.owner_before(right);
+    }
+    bool operator()(const weak_ptr<T>& left, const shared_ptr<T>& right) const noexcept
+    {
+        return left.owner_before(right);
+    }
+};
+
+template <> struct owner_less<void>
+{
+    template <class T, class U>
+    bool operator()(const shared_ptr<T>& left, const shared_ptr<U>& right) const noexcept
+    {
+        return left.owner_before(right);
+    }
+    template <class T, class U>
+    bool operator()(const shared_ptr<T>& left, const weak_ptr<U>& right) const noexcept
+    {
+        return left.owner_before(right);
+    }
+    template <class T, class U>
+    bool operator()(const weak_ptr<T>& left, const shared_ptr<U>& right) const noexcept
+    {
+        return left.owner_before(right);
+    }
+    template <class T, class U>
+    bool operator()(const weak_ptr<T>& left, const weak_ptr<U>& right) const noexcept
+    {
+        return left.owner_before(right);
+    }
+    using is_transparent = void;
+};
+
+template <class T> struct hash<shared_ptr<T>>
+{
+    size_t operator()(const shared_ptr<T>& value) const noexcept
+    {
+        return hash<typename shared_ptr<T>::element_type*>()(value.get());
+    }
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

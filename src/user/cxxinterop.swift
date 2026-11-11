@@ -1,8 +1,9 @@
 import CxxInterop
 import Cxx
+import CxxStdlib
 
-// Calls C++ from cxx_interop.h, built by GCC, and libc++ types from cxx_interop_std.h, and
-// prints what each kind of C++ declaration does in Swift.
+// Calls C++ from cxx_interop.h, built by GCC with FeatherOS's C++ library, and prints what each
+// kind of C++ declaration and standard library type does in Swift.
 
 typealias Interop = FeatherOS.User.Interop
 
@@ -64,3 +65,14 @@ for value in Interop.Squares(3) {
 print("\(program): vector \(listed)of \(values.count), sum through a span \(total)")
 
 print("\(program): vowels in featheros \(Interop.CountVowels(std.string_view("featheros")))")
+
+let greeting = Interop.Greeting(std.string_view("swift"))
+var sentence: std.string = "a C++ string"
+sentence += std.string(" from Swift")
+print("\(program): string \(String(greeting)), \(Interop.CountWords(sentence)) words, " +
+    "equal \(greeting == std.string("hello, swift")), " +
+    "same hash \(greeting.hashValue == std.string("hello, swift").hashValue)")
+
+let ninety = std.chrono.seconds(Duration.seconds(90))
+print("\(program): chrono \(ninety.count()) seconds, " +
+    "\(Duration(std.chrono.milliseconds(1500)) == .milliseconds(1500))")

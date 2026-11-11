@@ -1,0 +1,333 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_QUEUE
+#define FEATHEROS_LIBCXX_QUEUE
+
+#include "__container_adaptor"
+#include "__featheros_config"
+#include "algorithm"
+#include "deque"
+#include "functional"
+#include "vector"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class T, class Container = deque<T>> class queue
+{
+public:
+    using value_type = typename Container::value_type;
+    using reference = typename Container::reference;
+    using const_reference = typename Container::const_reference;
+    using size_type = typename Container::size_type;
+    using container_type = Container;
+
+    queue()
+        requires is_default_constructible_v<Container>
+    = default;
+    explicit queue(const Container& container) : c(container) {}
+    explicit queue(Container&& container) : c(_FSTD::move(container)) {}
+    template <__detail::ClassicInput I> queue(I first, I last) : c(first, last) {}
+    template <__detail::ContainerCompatibleRange<T> R>
+    queue(from_range_t, R&& range)
+        : c(__detail::AdaptorFromRange<Container>(_FSTD::forward<R>(range)))
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    explicit queue(const Allocator& allocator) : c(allocator)
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    queue(const Container& container, const Allocator& allocator) : c(container, allocator)
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    queue(Container&& container, const Allocator& allocator) : c(_FSTD::move(container), allocator)
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    queue(const queue& other, const Allocator& allocator) : c(other.c, allocator)
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    queue(queue&& other, const Allocator& allocator) : c(_FSTD::move(other.c), allocator)
+    {
+    }
+    template <__detail::ClassicInput I, __detail::AdaptorAllocator<Container> Allocator>
+    queue(I first, I last, const Allocator& allocator) : c(first, last, allocator)
+    {
+    }
+
+    [[nodiscard]] bool empty() const
+    {
+        return c.empty();
+    }
+    size_type size() const
+    {
+        return c.size();
+    }
+    reference front()
+    {
+        return c.front();
+    }
+    const_reference front() const
+    {
+        return c.front();
+    }
+    reference back()
+    {
+        return c.back();
+    }
+    const_reference back() const
+    {
+        return c.back();
+    }
+    void push(const value_type& value)
+    {
+        c.push_back(value);
+    }
+    void push(value_type&& value)
+    {
+        c.push_back(_FSTD::move(value));
+    }
+    template <__detail::ContainerCompatibleRange<T> R> void push_range(R&& range)
+    {
+        __detail::AdaptorAppendRange(c, _FSTD::forward<R>(range));
+    }
+    template <class... Args> decltype(auto) emplace(Args&&... args)
+    {
+        return c.emplace_back(_FSTD::forward<Args>(args)...);
+    }
+    void pop()
+    {
+        c.pop_front();
+    }
+    void swap(queue& other) noexcept(is_nothrow_swappable_v<Container>)
+    {
+        using _FSTD::swap;
+        swap(c, other.c);
+    }
+
+    friend bool operator==(const queue& left, const queue& right)
+    {
+        return left.c == right.c;
+    }
+    friend bool operator<(const queue& left, const queue& right)
+    {
+        return left.c < right.c;
+    }
+    friend bool operator>(const queue& left, const queue& right)
+    {
+        return left.c > right.c;
+    }
+    friend bool operator<=(const queue& left, const queue& right)
+    {
+        return left.c <= right.c;
+    }
+    friend bool operator>=(const queue& left, const queue& right)
+    {
+        return left.c >= right.c;
+    }
+    // Deduced, so a container whose elements cannot be compared still makes a queue.
+    friend auto operator<=>(const queue& left, const queue& right)
+        requires three_way_comparable<Container>
+    {
+        return left.c <=> right.c;
+    }
+
+protected:
+    Container c;
+};
+
+template <class Container>
+    requires(!__detail::AllocatorLike<Container>)
+queue(Container) -> queue<typename Container::value_type, Container>;
+template <__detail::ClassicInput I> queue(I, I) -> queue<typename iterator_traits<I>::value_type>;
+template <ranges::input_range R> queue(from_range_t, R&&) -> queue<ranges::range_value_t<R>>;
+template <class Container, class Allocator>
+    requires(!__detail::AllocatorLike<Container> && uses_allocator_v<Container, Allocator>)
+queue(Container, Allocator) -> queue<typename Container::value_type, Container>;
+template <__detail::ClassicInput I, __detail::AllocatorLike Allocator>
+queue(I, I, Allocator) -> queue<typename iterator_traits<I>::value_type,
+                                deque<typename iterator_traits<I>::value_type, Allocator>>;
+
+template <class T, class Container>
+    requires is_swappable_v<Container>
+void swap(queue<T, Container>& left,
+          queue<T, Container>& right) noexcept(noexcept(left.swap(right)))
+{
+    left.swap(right);
+}
+
+template <class T, class Container, class Allocator>
+struct uses_allocator<queue<T, Container>, Allocator> : uses_allocator<Container, Allocator>::type
+{
+};
+
+template <class T, class Container = vector<T>,
+          class Compare = less<typename Container::value_type>>
+class priority_queue
+{
+public:
+    using value_type = typename Container::value_type;
+    using reference = typename Container::reference;
+    using const_reference = typename Container::const_reference;
+    using size_type = typename Container::size_type;
+    using container_type = Container;
+    using value_compare = Compare;
+
+    priority_queue()
+        requires(is_default_constructible_v<Container> && is_default_constructible_v<Compare>)
+    = default;
+    explicit priority_queue(const Compare& compare) : c(), comp(compare) {}
+    priority_queue(const Compare& compare, const Container& container) : c(container), comp(compare)
+    {
+        _FSTD::make_heap(c.begin(), c.end(), comp);
+    }
+    priority_queue(const Compare& compare, Container&& container)
+        : c(_FSTD::move(container)), comp(compare)
+    {
+        _FSTD::make_heap(c.begin(), c.end(), comp);
+    }
+    template <__detail::ClassicInput I>
+    priority_queue(I first, I last, const Compare& compare = Compare())
+        : c(first, last), comp(compare)
+    {
+        _FSTD::make_heap(c.begin(), c.end(), comp);
+    }
+    template <__detail::ClassicInput I>
+    priority_queue(I first, I last, const Compare& compare, const Container& container)
+        : c(container), comp(compare)
+    {
+        c.insert(c.end(), first, last);
+        _FSTD::make_heap(c.begin(), c.end(), comp);
+    }
+    template <__detail::ClassicInput I>
+    priority_queue(I first, I last, const Compare& compare, Container&& container)
+        : c(_FSTD::move(container)), comp(compare)
+    {
+        c.insert(c.end(), first, last);
+        _FSTD::make_heap(c.begin(), c.end(), comp);
+    }
+    template <__detail::ContainerCompatibleRange<T> R>
+    priority_queue(from_range_t, R&& range, const Compare& compare = Compare())
+        : c(__detail::AdaptorFromRange<Container>(_FSTD::forward<R>(range))), comp(compare)
+    {
+        _FSTD::make_heap(c.begin(), c.end(), comp);
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    explicit priority_queue(const Allocator& allocator) : c(allocator), comp()
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    priority_queue(const Compare& compare, const Allocator& allocator) : c(allocator), comp(compare)
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    priority_queue(const Compare& compare, const Container& container, const Allocator& allocator)
+        : c(container, allocator), comp(compare)
+    {
+        _FSTD::make_heap(c.begin(), c.end(), comp);
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    priority_queue(const Compare& compare, Container&& container, const Allocator& allocator)
+        : c(_FSTD::move(container), allocator), comp(compare)
+    {
+        _FSTD::make_heap(c.begin(), c.end(), comp);
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    priority_queue(const priority_queue& other, const Allocator& allocator)
+        : c(other.c, allocator), comp(other.comp)
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    priority_queue(priority_queue&& other, const Allocator& allocator)
+        : c(_FSTD::move(other.c), allocator), comp(_FSTD::move(other.comp))
+    {
+    }
+
+    [[nodiscard]] bool empty() const
+    {
+        return c.empty();
+    }
+    size_type size() const
+    {
+        return c.size();
+    }
+    const_reference top() const
+    {
+        return c.front();
+    }
+    void push(const value_type& value)
+    {
+        c.push_back(value);
+        _FSTD::push_heap(c.begin(), c.end(), comp);
+    }
+    void push(value_type&& value)
+    {
+        c.push_back(_FSTD::move(value));
+        _FSTD::push_heap(c.begin(), c.end(), comp);
+    }
+    template <__detail::ContainerCompatibleRange<T> R> void push_range(R&& range)
+    {
+        __detail::AdaptorAppendRange(c, _FSTD::forward<R>(range));
+        _FSTD::make_heap(c.begin(), c.end(), comp);
+    }
+    template <class... Args> void emplace(Args&&... args)
+    {
+        c.emplace_back(_FSTD::forward<Args>(args)...);
+        _FSTD::push_heap(c.begin(), c.end(), comp);
+    }
+    void pop()
+    {
+        _FSTD::pop_heap(c.begin(), c.end(), comp);
+        c.pop_back();
+    }
+    void swap(priority_queue& other) noexcept(is_nothrow_swappable_v<Container> &&
+                                              is_nothrow_swappable_v<Compare>)
+    {
+        using _FSTD::swap;
+        swap(c, other.c);
+        swap(comp, other.comp);
+    }
+
+protected:
+    Container c;
+    Compare comp;
+};
+
+template <class Compare, class Container>
+    requires(!__detail::AllocatorLike<Container> && !__detail::AllocatorLike<Compare>)
+priority_queue(Compare, Container)
+    -> priority_queue<typename Container::value_type, Container, Compare>;
+template <__detail::ClassicInput I, class Compare = less<typename iterator_traits<I>::value_type>,
+          class Container = vector<typename iterator_traits<I>::value_type>>
+    requires(!__detail::AllocatorLike<Compare> && !__detail::AllocatorLike<Container>)
+priority_queue(I, I, Compare = Compare(), Container = Container())
+    -> priority_queue<typename iterator_traits<I>::value_type, Container, Compare>;
+template <ranges::input_range R, class Compare = less<ranges::range_value_t<R>>>
+    requires(!__detail::AllocatorLike<Compare>)
+priority_queue(from_range_t, R&&, Compare = Compare())
+    -> priority_queue<ranges::range_value_t<R>, vector<ranges::range_value_t<R>>, Compare>;
+template <class Compare, class Container, class Allocator>
+    requires(!__detail::AllocatorLike<Container> && !__detail::AllocatorLike<Compare> &&
+             uses_allocator_v<Container, Allocator>)
+priority_queue(Compare, Container, Allocator)
+    -> priority_queue<typename Container::value_type, Container, Compare>;
+
+template <class T, class Container, class Compare>
+    requires(is_swappable_v<Container> && is_swappable_v<Compare>)
+void swap(priority_queue<T, Container, Compare>& left,
+          priority_queue<T, Container, Compare>& right) noexcept(noexcept(left.swap(right)))
+{
+    left.swap(right);
+}
+
+template <class T, class Container, class Compare, class Allocator>
+struct uses_allocator<priority_queue<T, Container, Compare>, Allocator>
+    : uses_allocator<Container, Allocator>::type
+{
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

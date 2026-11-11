@@ -1,0 +1,301 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_STOP_TOKEN
+#define FEATHEROS_LIBCXX_STOP_TOKEN
+
+#include "__featheros_config"
+#include "atomic"
+#include "concepts"
+#include "type_traits"
+#include "utility"
+
+#include <pthread.h>
+
+// A stop state is shared by its sources, tokens and registered callbacks, and freed with the last
+// of them. request_stop runs the callbacks in the requesting thread, newest first, without the
+// state's lock held, so a callback may register or remove others. A callback removed while it
+// runs in another thread waits for it to return, yielding until then (atomic waits come with
+// Part 4 step 3). The C++26 stoppable_token concepts are left out.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+
+struct StopCallbackBase
+{
+    explicit StopCallbackBase(void (*run)(StopCallbackBase*) noexcept) noexcept : m_run(run) {}
+
+    void (*m_run)(StopCallbackBase*) noexcept;
+    StopCallbackBase* m_next = nullptr;
+    // The pointer that points to this callback while it is registered, null otherwise.
+    StopCallbackBase** m_link = nullptr;
+    // Set by the destructor when the callback destroys itself while it runs.
+    bool* m_destroyed = nullptr;
+    atomic<bool> m_finished{false};
+};
+
+class StopState
+{
+public:
+    StopState() noexcept = default;
+    StopState(const StopState&) = delete;
+    StopState& operator=(const StopState&) = delete;
+
+    void AddReference() noexcept
+    {
+        m_references.fetch_add(1, memory_order_relaxed);
+    }
+    void Release() noexcept;
+    void AddSource() noexcept
+    {
+        m_sources.fetch_add(1, memory_order_relaxed);
+    }
+    void ReleaseSource() noexcept
+    {
+        m_sources.fetch_sub(1, memory_order_acq_rel);
+    }
+    bool StopRequested() const noexcept
+    {
+        return m_requested.load(memory_order_acquire);
+    }
+    bool StopPossible() const noexcept
+    {
+        return StopRequested() || m_sources.load(memory_order_acquire) != 0;
+    }
+    bool RequestStop() noexcept;
+    // false when stop was already requested: the caller then runs the callback itself.
+    bool AddCallback(StopCallbackBase* callback) noexcept;
+    void RemoveCallback(StopCallbackBase* callback) noexcept;
+
+private:
+    void Lock() noexcept;
+    void Unlock() noexcept;
+
+    atomic<unsigned> m_references{1};
+    atomic<unsigned> m_sources{1};
+    atomic<bool> m_requested{false};
+    atomic_flag m_lock;
+    StopCallbackBase* m_callbacks = nullptr;
+    StopCallbackBase* m_running = nullptr;
+    pthread_t m_requester{};
+};
+
+} // namespace __detail
+
+class stop_source;
+template <class Callback> class stop_callback;
+
+class stop_token
+{
+public:
+    stop_token() noexcept = default;
+    stop_token(const stop_token& other) noexcept : m_state(other.m_state)
+    {
+        if (m_state != nullptr)
+        {
+            m_state->AddReference();
+        }
+    }
+    stop_token(stop_token&& other) noexcept : m_state(_FSTD::exchange(other.m_state, nullptr)) {}
+    stop_token& operator=(const stop_token& other) noexcept
+    {
+        stop_token(other).swap(*this);
+        return *this;
+    }
+    stop_token& operator=(stop_token&& other) noexcept
+    {
+        stop_token(_FSTD::move(other)).swap(*this);
+        return *this;
+    }
+    ~stop_token()
+    {
+        if (m_state != nullptr)
+        {
+            m_state->Release();
+        }
+    }
+
+    void swap(stop_token& other) noexcept
+    {
+        _FSTD::swap(m_state, other.m_state);
+    }
+
+    [[nodiscard]] bool stop_requested() const noexcept
+    {
+        return m_state != nullptr && m_state->StopRequested();
+    }
+    [[nodiscard]] bool stop_possible() const noexcept
+    {
+        return m_state != nullptr && m_state->StopPossible();
+    }
+
+    [[nodiscard]] friend bool operator==(const stop_token& left, const stop_token& right) noexcept
+    {
+        return left.m_state == right.m_state;
+    }
+    friend void swap(stop_token& left, stop_token& right) noexcept
+    {
+        left.swap(right);
+    }
+
+private:
+    friend class stop_source;
+    template <class Callback> friend class stop_callback;
+
+    explicit stop_token(__detail::StopState* state) noexcept : m_state(state)
+    {
+        if (m_state != nullptr)
+        {
+            m_state->AddReference();
+        }
+    }
+
+    __detail::StopState* m_state = nullptr;
+};
+
+struct nostopstate_t
+{
+    explicit nostopstate_t() = default;
+};
+inline constexpr nostopstate_t nostopstate{};
+
+class stop_source
+{
+public:
+    stop_source() : m_state(new __detail::StopState) {}
+    explicit stop_source(nostopstate_t) noexcept {}
+    stop_source(const stop_source& other) noexcept : m_state(other.m_state)
+    {
+        if (m_state != nullptr)
+        {
+            m_state->AddReference();
+            m_state->AddSource();
+        }
+    }
+    stop_source(stop_source&& other) noexcept : m_state(_FSTD::exchange(other.m_state, nullptr)) {}
+    stop_source& operator=(const stop_source& other) noexcept
+    {
+        stop_source(other).swap(*this);
+        return *this;
+    }
+    stop_source& operator=(stop_source&& other) noexcept
+    {
+        stop_source(_FSTD::move(other)).swap(*this);
+        return *this;
+    }
+    ~stop_source()
+    {
+        if (m_state != nullptr)
+        {
+            m_state->ReleaseSource();
+            m_state->Release();
+        }
+    }
+
+    void swap(stop_source& other) noexcept
+    {
+        _FSTD::swap(m_state, other.m_state);
+    }
+
+    [[nodiscard]] stop_token get_token() const noexcept
+    {
+        return stop_token(m_state);
+    }
+    [[nodiscard]] bool stop_possible() const noexcept
+    {
+        return m_state != nullptr;
+    }
+    [[nodiscard]] bool stop_requested() const noexcept
+    {
+        return m_state != nullptr && m_state->StopRequested();
+    }
+    bool request_stop() noexcept
+    {
+        return m_state != nullptr && m_state->RequestStop();
+    }
+
+    [[nodiscard]] friend bool operator==(const stop_source& left, const stop_source& right) noexcept
+    {
+        return left.m_state == right.m_state;
+    }
+    friend void swap(stop_source& left, stop_source& right) noexcept
+    {
+        left.swap(right);
+    }
+
+private:
+    __detail::StopState* m_state = nullptr;
+};
+
+template <class Callback> class [[nodiscard]] stop_callback : private __detail::StopCallbackBase
+{
+    static_assert(invocable<Callback> && destructible<Callback>);
+
+public:
+    using callback_type = Callback;
+
+    template <class C>
+        requires constructible_from<Callback, C>
+    explicit stop_callback(const stop_token& token,
+                           C&& callback) noexcept(is_nothrow_constructible_v<Callback, C>)
+        : StopCallbackBase(&Run), m_callback(_FSTD::forward<C>(callback))
+    {
+        Register(token.m_state);
+    }
+
+    template <class C>
+        requires constructible_from<Callback, C>
+    explicit stop_callback(stop_token&& token,
+                           C&& callback) noexcept(is_nothrow_constructible_v<Callback, C>)
+        : StopCallbackBase(&Run), m_callback(_FSTD::forward<C>(callback))
+    {
+        Register(token.m_state);
+    }
+
+    ~stop_callback()
+    {
+        if (m_state != nullptr)
+        {
+            m_state->RemoveCallback(this);
+            m_state->Release();
+        }
+    }
+
+    stop_callback(const stop_callback&) = delete;
+    stop_callback(stop_callback&&) = delete;
+    stop_callback& operator=(const stop_callback&) = delete;
+    stop_callback& operator=(stop_callback&&) = delete;
+
+private:
+    static void Run(StopCallbackBase* base) noexcept
+    {
+        __detail::Invoke(_FSTD::forward<Callback>(static_cast<stop_callback*>(base)->m_callback));
+    }
+
+    void Register(__detail::StopState* state) noexcept
+    {
+        if (state == nullptr)
+        {
+            return;
+        }
+        if (state->AddCallback(this))
+        {
+            state->AddReference();
+            m_state = state;
+        }
+        else
+        {
+            Run(this);
+        }
+    }
+
+    Callback m_callback;
+    __detail::StopState* m_state = nullptr;
+};
+
+template <class Callback> stop_callback(stop_token, Callback) -> stop_callback<Callback>;
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

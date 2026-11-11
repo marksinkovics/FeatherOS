@@ -1,0 +1,251 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CONCEPTS
+#define FEATHEROS_LIBCXX_CONCEPTS
+
+#include "__featheros_config"
+#include "type_traits"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+template <class T, class U>
+concept SameHelper = is_same_v<T, U>;
+} // namespace __detail
+
+// Both directions, so that same_as<T, U> subsumes same_as<U, T>.
+template <class T, class U>
+concept same_as = __detail::SameHelper<T, U> && __detail::SameHelper<U, T>;
+
+template <class Derived, class Base>
+concept derived_from =
+    is_base_of_v<Base, Derived> && is_convertible_v<const volatile Derived*, const volatile Base*>;
+
+template <class From, class To>
+concept convertible_to =
+    is_convertible_v<From, To> && requires { static_cast<To>(declval<From>()); };
+
+template <class T, class U>
+concept common_reference_with =
+    same_as<common_reference_t<T, U>, common_reference_t<U, T>> &&
+    convertible_to<T, common_reference_t<T, U>> && convertible_to<U, common_reference_t<T, U>>;
+
+template <class T, class U>
+concept common_with =
+    same_as<common_type_t<T, U>, common_type_t<U, T>> &&
+    requires {
+        static_cast<common_type_t<T, U>>(declval<T>());
+        static_cast<common_type_t<T, U>>(declval<U>());
+    } && common_reference_with<add_lvalue_reference_t<const T>, add_lvalue_reference_t<const U>> &&
+    common_reference_with<
+        add_lvalue_reference_t<common_type_t<T, U>>,
+        common_reference_t<add_lvalue_reference_t<const T>, add_lvalue_reference_t<const U>>>;
+
+template <class T>
+concept integral = is_integral_v<T>;
+template <class T>
+concept signed_integral = integral<T> && is_signed_v<T>;
+template <class T>
+concept unsigned_integral = integral<T> && !signed_integral<T>;
+template <class T>
+concept floating_point = is_floating_point_v<T>;
+
+template <class Left, class Right>
+concept assignable_from =
+    is_lvalue_reference_v<Left> &&
+    common_reference_with<const remove_reference_t<Left>&, const remove_reference_t<Right>&> &&
+    requires(Left left, Right&& right) {
+        { left = _FSTD::forward<Right>(right) } -> same_as<Left>;
+    };
+
+template <class T>
+concept destructible = is_nothrow_destructible_v<T>;
+
+template <class T, class... Args>
+concept constructible_from = destructible<T> && is_constructible_v<T, Args...>;
+
+template <class T>
+concept default_initializable = constructible_from<T> && requires { T{}; } && requires { ::new T; };
+
+template <class T>
+concept move_constructible = constructible_from<T, T> && convertible_to<T, T>;
+
+template <class T>
+concept copy_constructible =
+    move_constructible<T> && constructible_from<T, T&> && convertible_to<T&, T> &&
+    constructible_from<T, const T&> && convertible_to<const T&, T> &&
+    constructible_from<T, const T> && convertible_to<const T, T>;
+
+// ranges::swap: an unqualified swap found by argument-dependent lookup, element by element for
+// arrays, or else by moving.
+namespace ranges::__swap
+{
+template <class T> void swap(T&, T&) = delete;
+
+template <class T>
+concept ClassOrEnum = is_class_v<T> || is_union_v<T> || is_enum_v<T>;
+
+template <class T, class U>
+concept UnqualifiedSwappableWith =
+    (ClassOrEnum<remove_cvref_t<T>> || ClassOrEnum<remove_cvref_t<U>>) &&
+    requires(T&& left, U&& right) { swap(_FSTD::forward<T>(left), _FSTD::forward<U>(right)); };
+
+struct Swap;
+
+template <class T, class U, size_t Size>
+concept SwappableArrays =
+    !UnqualifiedSwappableWith<T (&)[Size], U (&)[Size]> && extent_v<T> == extent_v<U> &&
+    requires(T (&left)[Size], U (&right)[Size], const Swap& swap) { swap(left[0], right[0]); };
+
+template <class T>
+concept Exchangeable =
+    !UnqualifiedSwappableWith<T&, T&> && is_move_constructible_v<T> && is_assignable_v<T&, T>;
+
+struct Swap
+{
+    template <class T, class U>
+        requires UnqualifiedSwappableWith<T, U>
+    constexpr void operator()(T&& left, U&& right) const
+        noexcept(noexcept(swap(_FSTD::forward<T>(left), _FSTD::forward<U>(right))))
+    {
+        swap(_FSTD::forward<T>(left), _FSTD::forward<U>(right));
+    }
+
+    template <class T, class U, size_t Size>
+        requires SwappableArrays<T, U, Size>
+    constexpr void operator()(T (&left)[Size], U (&right)[Size]) const
+        noexcept(noexcept((*this)(*left, *right)))
+    {
+        for (size_t index = 0; index < Size; ++index)
+        {
+            (*this)(left[index], right[index]);
+        }
+    }
+
+    template <Exchangeable T>
+    constexpr void operator()(T& left, T& right) const
+        noexcept(is_nothrow_move_constructible_v<T> && is_nothrow_move_assignable_v<T>)
+    {
+        T saved(_FSTD::move(left));
+        left = _FSTD::move(right);
+        right = _FSTD::move(saved);
+    }
+};
+} // namespace ranges::__swap
+
+namespace ranges
+{
+// The inline namespace keeps the object apart from swap functions that ranges' types may
+// declare as hidden friends.
+inline namespace __cpo
+{
+inline constexpr __swap::Swap swap{};
+} // namespace __cpo
+} // namespace ranges
+
+template <class T>
+concept swappable = requires(T& left, T& right) { ranges::swap(left, right); };
+
+template <class T, class U>
+concept swappable_with = common_reference_with<T, U> && requires(T&& left, U&& right) {
+    ranges::swap(_FSTD::forward<T>(left), _FSTD::forward<T>(left));
+    ranges::swap(_FSTD::forward<U>(right), _FSTD::forward<U>(right));
+    ranges::swap(_FSTD::forward<T>(left), _FSTD::forward<U>(right));
+    ranges::swap(_FSTD::forward<U>(right), _FSTD::forward<T>(left));
+};
+
+namespace __detail
+{
+template <class T>
+concept BooleanTestableImplementation = convertible_to<T, bool>;
+
+template <class T>
+concept BooleanTestable = BooleanTestableImplementation<T> && requires(T&& value) {
+    { !_FSTD::forward<T>(value) } -> BooleanTestableImplementation;
+};
+
+template <class T, class U>
+concept WeaklyEqualityComparableWith =
+    requires(const remove_reference_t<T>& left, const remove_reference_t<U>& right) {
+        { left == right } -> BooleanTestable;
+        { left != right } -> BooleanTestable;
+        { right == left } -> BooleanTestable;
+        { right != left } -> BooleanTestable;
+    };
+
+template <class T, class U>
+concept PartiallyOrderedWith =
+    requires(const remove_reference_t<T>& left, const remove_reference_t<U>& right) {
+        { left < right } -> BooleanTestable;
+        { left > right } -> BooleanTestable;
+        { left <= right } -> BooleanTestable;
+        { left >= right } -> BooleanTestable;
+        { right < left } -> BooleanTestable;
+        { right > left } -> BooleanTestable;
+        { right <= left } -> BooleanTestable;
+        { right >= left } -> BooleanTestable;
+    };
+
+template <class T, class U, class Common = common_reference_t<const T&, const U&>>
+concept ComparisonCommonTypeWith =
+    same_as<common_reference_t<const T&, const U&>, common_reference_t<const U&, const T&>> &&
+    convertible_to<const T&, const Common&> && convertible_to<const U&, const Common&>;
+} // namespace __detail
+
+template <class T>
+concept equality_comparable = __detail::WeaklyEqualityComparableWith<T, T>;
+
+template <class T, class U>
+concept equality_comparable_with =
+    equality_comparable<T> && equality_comparable<U> && __detail::ComparisonCommonTypeWith<T, U> &&
+    equality_comparable<
+        common_reference_t<const remove_reference_t<T>&, const remove_reference_t<U>&>> &&
+    __detail::WeaklyEqualityComparableWith<T, U>;
+
+template <class T>
+concept totally_ordered = equality_comparable<T> && __detail::PartiallyOrderedWith<T, T>;
+
+template <class T, class U>
+concept totally_ordered_with =
+    totally_ordered<T> && totally_ordered<U> && equality_comparable_with<T, U> &&
+    totally_ordered<
+        common_reference_t<const remove_reference_t<T>&, const remove_reference_t<U>&>> &&
+    __detail::PartiallyOrderedWith<T, U>;
+
+template <class T>
+concept movable = is_object_v<T> && move_constructible<T> && assignable_from<T&, T> && swappable<T>;
+
+template <class T>
+concept copyable = copy_constructible<T> && movable<T> && assignable_from<T&, T&> &&
+                   assignable_from<T&, const T&> && assignable_from<T&, const T>;
+
+template <class T>
+concept semiregular = copyable<T> && default_initializable<T>;
+
+template <class T>
+concept regular = semiregular<T> && equality_comparable<T>;
+
+template <class Callable, class... Args>
+concept invocable = is_invocable_v<Callable, Args...>;
+
+template <class Callable, class... Args>
+concept regular_invocable = invocable<Callable, Args...>;
+
+template <class Callable, class... Args>
+concept predicate = regular_invocable<Callable, Args...> &&
+                    __detail::BooleanTestable<invoke_result_t<Callable, Args...>>;
+
+template <class Relation, class T, class U>
+concept relation = predicate<Relation, T, T> && predicate<Relation, U, U> &&
+                   predicate<Relation, T, U> && predicate<Relation, U, T>;
+
+template <class Relation, class T, class U>
+concept equivalence_relation = relation<Relation, T, U>;
+
+template <class Relation, class T, class U>
+concept strict_weak_order = relation<Relation, T, U>;
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

@@ -28,6 +28,7 @@
 #include "kernel/arch/aarch64/interrupts.h"
 #endif
 
+#include <atomic>
 #include <stdint.h>
 
 extern "C" void FeatherOSMemoryTestWriteProtected(volatile uint8_t* address, uint8_t value);
@@ -848,24 +849,24 @@ constexpr uint64_t SmpStartTimeoutTicks = 200;
 
 constinit Sync::SpinLock smp_counter_lock;
 uint64_t smp_counter GUARDED_BY(smp_counter_lock) = 0;
-uint32_t smp_started_tasks = 0;
-uint32_t smp_concurrent_tasks = 0;
-uint32_t smp_cpus_seen = 0;
+std::atomic<uint32_t> smp_started_tasks = 0;
+std::atomic<uint32_t> smp_concurrent_tasks = 0;
+std::atomic<uint32_t> smp_cpus_seen = 0;
 
 uint64_t SmpTask(void*)
 {
-    __atomic_fetch_or(&smp_cpus_seen, 1U << Cpu::CurrentIndex(), __ATOMIC_RELAXED);
-    __atomic_fetch_add(&smp_started_tasks, 1U, __ATOMIC_ACQ_REL);
+    smp_cpus_seen.fetch_or(1U << Cpu::CurrentIndex(), std::memory_order_relaxed);
+    smp_started_tasks.fetch_add(1U, std::memory_order_acq_rel);
     // Preemption is off, so every task is running at once only if each has its own CPU.
     const uint64_t deadline = Time::TickCount() + SmpStartTimeoutTicks;
-    while (__atomic_load_n(&smp_started_tasks, __ATOMIC_ACQUIRE) < SmpTestTasks &&
+    while (smp_started_tasks.load(std::memory_order_acquire) < SmpTestTasks &&
            Time::TickCount() < deadline)
     {
         Sync::CpuRelax();
     }
-    if (__atomic_load_n(&smp_started_tasks, __ATOMIC_ACQUIRE) == SmpTestTasks)
+    if (smp_started_tasks.load(std::memory_order_acquire) == SmpTestTasks)
     {
-        __atomic_fetch_add(&smp_concurrent_tasks, 1U, __ATOMIC_RELAXED);
+        smp_concurrent_tasks.fetch_add(1U, std::memory_order_relaxed);
     }
     for (uint64_t iteration = 0; iteration < SmpCounterIterations; ++iteration)
     {
@@ -910,7 +911,7 @@ void RunSmpTests()
     uint32_t cpus_counted_busy = 0;
     for (uint32_t cpu = 0; cpu < Cpu::MaximumCpus; ++cpu)
     {
-        if ((smp_cpus_seen & (1U << cpu)) != 0)
+        if ((smp_cpus_seen.load(std::memory_order_relaxed) & (1U << cpu)) != 0)
         {
             ++cpus_used;
             cpus_counted_busy += Scheduler::BusyTickCount(cpu) > busy_before[cpu] ? 1 : 0;
@@ -921,8 +922,8 @@ void RunSmpTests()
         Sync::SpinLockGuard guard(smp_counter_lock);
         counted = smp_counter;
     }
-    if (smp_concurrent_tasks != SmpTestTasks || cpus_used != SmpTestTasks ||
-        counted != SmpTestTasks * SmpCounterIterations)
+    if (smp_concurrent_tasks.load(std::memory_order_relaxed) != SmpTestTasks ||
+        cpus_used != SmpTestTasks || counted != SmpTestTasks * SmpCounterIterations)
     {
         Panic("Tasks did not run concurrently on separate CPUs");
     }

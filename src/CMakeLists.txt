@@ -1,6 +1,7 @@
 set(KERNEL_BINARY "kernel.elf")
 set(SRCROOT ${PROJECT_SOURCE_DIR}/src)
 
+add_subdirectory(${SRCROOT}/libcxx)
 add_subdirectory(${SRCROOT}/kernel)
 add_subdirectory(${SRCROOT}/sample)
 
@@ -16,4 +17,5 @@ else ()
         -mcpu=generic -march=armv8-a -mno-outline-atomics -mcmodel=small)
 endif ()
 add_subdirectory(${SRCROOT}/libc)
+add_subdirectory(${SRCROOT}/libcxx/src)
 add_subdirectory(${SRCROOT}/user)

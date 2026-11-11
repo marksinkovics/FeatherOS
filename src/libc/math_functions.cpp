@@ -2,6 +2,7 @@
 
 #include "float_bits.h"
 
+#include <bit>
 #include <stdint.h>
 
 namespace FeatherOS::LibC::Math
@@ -816,9 +817,7 @@ constexpr int AlignedTop = 125;
 
 int HighestBit(Mantissa value)
 {
-    const auto high = static_cast<uint64_t>(value >> 64);
-    return high != 0 ? 127 - __builtin_clzll(high)
-                     : 63 - __builtin_clzll(static_cast<uint64_t>(value));
+    return std::bit_width(value) - 1;
 }
 
 // Bits shifted out are kept as one sticky bit, which still decides rounding: the lowest bit lies

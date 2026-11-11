@@ -1,0 +1,538 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_STRING_VIEW
+#define FEATHEROS_LIBCXX_STRING_VIEW
+
+#include "__char_traits"
+#include "__featheros_config"
+#include "__hash_base"
+#include "__iterator_base"
+#include "compare"
+#include "type_traits"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class CharT, class Traits = char_traits<CharT>> class basic_string_view
+{
+public:
+    using traits_type = Traits;
+    using value_type = CharT;
+    using pointer = CharT*;
+    using const_pointer = const CharT*;
+    using reference = CharT&;
+    using const_reference = const CharT&;
+    using const_iterator = const CharT*;
+    using iterator = const_iterator;
+    using const_reverse_iterator = _FSTD::reverse_iterator<const_iterator>;
+    using reverse_iterator = const_reverse_iterator;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+
+    static constexpr size_type npos = static_cast<size_type>(-1);
+
+    constexpr basic_string_view() noexcept = default;
+    constexpr basic_string_view(const basic_string_view&) noexcept = default;
+    constexpr basic_string_view& operator=(const basic_string_view&) noexcept = default;
+
+    constexpr basic_string_view(const CharT* text) : m_data(text), m_size(Traits::length(text)) {}
+    basic_string_view(nullptr_t) = delete;
+    constexpr basic_string_view(const CharT* text, size_type count) : m_data(text), m_size(count) {}
+
+    template <contiguous_iterator Iterator, sized_sentinel_for<Iterator> End>
+        requires same_as<iter_value_t<Iterator>, CharT> && (!is_convertible_v<End, size_type>)
+    constexpr basic_string_view(Iterator first, End last)
+        : m_data(_FSTD::to_address(first)), m_size(static_cast<size_type>(last - first))
+    {
+    }
+
+    template <class Range>
+        requires(!is_same_v<remove_cvref_t<Range>, basic_string_view>) &&
+                    ranges::contiguous_range<Range> && ranges::sized_range<Range> &&
+                    is_same_v<ranges::range_value_t<Range>, CharT> &&
+                    (!is_convertible_v<Range, const CharT*>) &&
+                    (!requires(remove_cvref_t<Range>& range) {
+                        range.operator basic_string_view();
+                    })
+    constexpr explicit basic_string_view(Range&& range)
+        : m_data(ranges::data(range)), m_size(static_cast<size_type>(ranges::size(range)))
+    {
+    }
+
+    constexpr const_iterator begin() const noexcept
+    {
+        return m_data;
+    }
+    constexpr const_iterator end() const noexcept
+    {
+        return m_data + m_size;
+    }
+    constexpr const_iterator cbegin() const noexcept
+    {
+        return begin();
+    }
+    constexpr const_iterator cend() const noexcept
+    {
+        return end();
+    }
+    constexpr const_reverse_iterator rbegin() const noexcept
+    {
+        return const_reverse_iterator(end());
+    }
+    constexpr const_reverse_iterator rend() const noexcept
+    {
+        return const_reverse_iterator(begin());
+    }
+    constexpr const_reverse_iterator crbegin() const noexcept
+    {
+        return rbegin();
+    }
+    constexpr const_reverse_iterator crend() const noexcept
+    {
+        return rend();
+    }
+
+    constexpr size_type size() const noexcept
+    {
+        return m_size;
+    }
+    constexpr size_type length() const noexcept
+    {
+        return m_size;
+    }
+    constexpr size_type max_size() const noexcept
+    {
+        return (npos - sizeof(size_type) - sizeof(void*)) / sizeof(CharT) / 4;
+    }
+    [[nodiscard]] constexpr bool empty() const noexcept
+    {
+        return m_size == 0;
+    }
+
+    constexpr const_reference operator[](size_type index) const
+    {
+        return m_data[index];
+    }
+    constexpr const_reference at(size_type index) const
+    {
+        if (index >= m_size)
+        {
+            __detail::LibraryAbort("basic_string_view::at: index out of range");
+        }
+        return m_data[index];
+    }
+    constexpr const_reference front() const
+    {
+        return m_data[0];
+    }
+    constexpr const_reference back() const
+    {
+        return m_data[m_size - 1];
+    }
+    constexpr const_pointer data() const noexcept
+    {
+        return m_data;
+    }
+
+    constexpr void remove_prefix(size_type count)
+    {
+        m_data += count;
+        m_size -= count;
+    }
+    constexpr void remove_suffix(size_type count)
+    {
+        m_size -= count;
+    }
+    constexpr void swap(basic_string_view& other) noexcept
+    {
+        basic_string_view saved = *this;
+        *this = other;
+        other = saved;
+    }
+
+    constexpr size_type copy(CharT* target, size_type count, size_type position = 0) const
+    {
+        CheckPosition(position, "basic_string_view::copy: position out of range");
+        size_type copied = Clamp(position, count);
+        Traits::copy(target, m_data + position, copied);
+        return copied;
+    }
+
+    constexpr basic_string_view substr(size_type position = 0, size_type count = npos) const
+    {
+        CheckPosition(position, "basic_string_view::substr: position out of range");
+        return basic_string_view(m_data + position, Clamp(position, count));
+    }
+
+    constexpr int compare(basic_string_view other) const noexcept
+    {
+        size_type shorter = m_size < other.m_size ? m_size : other.m_size;
+        int result = Traits::compare(m_data, other.m_data, shorter);
+        if (result != 0)
+        {
+            return result;
+        }
+        if (m_size == other.m_size)
+        {
+            return 0;
+        }
+        return m_size < other.m_size ? -1 : 1;
+    }
+    constexpr int compare(size_type position, size_type count, basic_string_view other) const
+    {
+        return substr(position, count).compare(other);
+    }
+    constexpr int compare(size_type position, size_type count, basic_string_view other,
+                          size_type other_position, size_type other_count) const
+    {
+        return substr(position, count).compare(other.substr(other_position, other_count));
+    }
+    constexpr int compare(const CharT* text) const
+    {
+        return compare(basic_string_view(text));
+    }
+    constexpr int compare(size_type position, size_type count, const CharT* text) const
+    {
+        return substr(position, count).compare(basic_string_view(text));
+    }
+    constexpr int compare(size_type position, size_type count, const CharT* text,
+                          size_type text_count) const
+    {
+        return substr(position, count).compare(basic_string_view(text, text_count));
+    }
+
+    constexpr bool starts_with(basic_string_view prefix) const noexcept
+    {
+        return m_size >= prefix.m_size &&
+               Traits::compare(m_data, prefix.m_data, prefix.m_size) == 0;
+    }
+    constexpr bool starts_with(CharT character) const noexcept
+    {
+        return !empty() && Traits::eq(front(), character);
+    }
+    constexpr bool starts_with(const CharT* prefix) const
+    {
+        return starts_with(basic_string_view(prefix));
+    }
+    constexpr bool ends_with(basic_string_view suffix) const noexcept
+    {
+        return m_size >= suffix.m_size && Traits::compare(m_data + (m_size - suffix.m_size),
+                                                          suffix.m_data, suffix.m_size) == 0;
+    }
+    constexpr bool ends_with(CharT character) const noexcept
+    {
+        return !empty() && Traits::eq(back(), character);
+    }
+    constexpr bool ends_with(const CharT* suffix) const
+    {
+        return ends_with(basic_string_view(suffix));
+    }
+    constexpr bool contains(basic_string_view text) const noexcept
+    {
+        return find(text) != npos;
+    }
+    constexpr bool contains(CharT character) const noexcept
+    {
+        return find(character) != npos;
+    }
+    constexpr bool contains(const CharT* text) const
+    {
+        return find(text) != npos;
+    }
+
+    constexpr size_type find(basic_string_view text, size_type position = 0) const noexcept
+    {
+        if (text.m_size > m_size || position > m_size - text.m_size)
+        {
+            return npos;
+        }
+        for (size_type index = position; index <= m_size - text.m_size; ++index)
+        {
+            if (Traits::compare(m_data + index, text.m_data, text.m_size) == 0)
+            {
+                return index;
+            }
+        }
+        return npos;
+    }
+    constexpr size_type find(CharT character, size_type position = 0) const noexcept
+    {
+        if (position >= m_size)
+        {
+            return npos;
+        }
+        const CharT* found = Traits::find(m_data + position, m_size - position, character);
+        return found == nullptr ? npos : static_cast<size_type>(found - m_data);
+    }
+    constexpr size_type find(const CharT* text, size_type position, size_type count) const
+    {
+        return find(basic_string_view(text, count), position);
+    }
+    constexpr size_type find(const CharT* text, size_type position = 0) const
+    {
+        return find(basic_string_view(text), position);
+    }
+
+    constexpr size_type rfind(basic_string_view text, size_type position = npos) const noexcept
+    {
+        if (text.m_size > m_size)
+        {
+            return npos;
+        }
+        size_type index = m_size - text.m_size;
+        if (position < index)
+        {
+            index = position;
+        }
+        for (;; --index)
+        {
+            if (Traits::compare(m_data + index, text.m_data, text.m_size) == 0)
+            {
+                return index;
+            }
+            if (index == 0)
+            {
+                return npos;
+            }
+        }
+    }
+    constexpr size_type rfind(CharT character, size_type position = npos) const noexcept
+    {
+        return rfind(basic_string_view(&character, 1), position);
+    }
+    constexpr size_type rfind(const CharT* text, size_type position, size_type count) const
+    {
+        return rfind(basic_string_view(text, count), position);
+    }
+    constexpr size_type rfind(const CharT* text, size_type position = npos) const
+    {
+        return rfind(basic_string_view(text), position);
+    }
+
+    constexpr size_type find_first_of(basic_string_view set, size_type position = 0) const noexcept
+    {
+        for (size_type index = position; index < m_size; ++index)
+        {
+            if (Traits::find(set.m_data, set.m_size, m_data[index]) != nullptr)
+            {
+                return index;
+            }
+        }
+        return npos;
+    }
+    constexpr size_type find_first_of(CharT character, size_type position = 0) const noexcept
+    {
+        return find(character, position);
+    }
+    constexpr size_type find_first_of(const CharT* set, size_type position, size_type count) const
+    {
+        return find_first_of(basic_string_view(set, count), position);
+    }
+    constexpr size_type find_first_of(const CharT* set, size_type position = 0) const
+    {
+        return find_first_of(basic_string_view(set), position);
+    }
+
+    constexpr size_type find_last_of(basic_string_view set,
+                                     size_type position = npos) const noexcept
+    {
+        for (size_type index = LastIndex(position); index != npos; --index)
+        {
+            if (Traits::find(set.m_data, set.m_size, m_data[index]) != nullptr)
+            {
+                return index;
+            }
+        }
+        return npos;
+    }
+    constexpr size_type find_last_of(CharT character, size_type position = npos) const noexcept
+    {
+        return rfind(character, position);
+    }
+    constexpr size_type find_last_of(const CharT* set, size_type position, size_type count) const
+    {
+        return find_last_of(basic_string_view(set, count), position);
+    }
+    constexpr size_type find_last_of(const CharT* set, size_type position = npos) const
+    {
+        return find_last_of(basic_string_view(set), position);
+    }
+
+    constexpr size_type find_first_not_of(basic_string_view set,
+                                          size_type position = 0) const noexcept
+    {
+        for (size_type index = position; index < m_size; ++index)
+        {
+            if (Traits::find(set.m_data, set.m_size, m_data[index]) == nullptr)
+            {
+                return index;
+            }
+        }
+        return npos;
+    }
+    constexpr size_type find_first_not_of(CharT character, size_type position = 0) const noexcept
+    {
+        return find_first_not_of(basic_string_view(&character, 1), position);
+    }
+    constexpr size_type find_first_not_of(const CharT* set, size_type position,
+                                          size_type count) const
+    {
+        return find_first_not_of(basic_string_view(set, count), position);
+    }
+    constexpr size_type find_first_not_of(const CharT* set, size_type position = 0) const
+    {
+        return find_first_not_of(basic_string_view(set), position);
+    }
+
+    constexpr size_type find_last_not_of(basic_string_view set,
+                                         size_type position = npos) const noexcept
+    {
+        for (size_type index = LastIndex(position); index != npos; --index)
+        {
+            if (Traits::find(set.m_data, set.m_size, m_data[index]) == nullptr)
+            {
+                return index;
+            }
+        }
+        return npos;
+    }
+    constexpr size_type find_last_not_of(CharT character, size_type position = npos) const noexcept
+    {
+        return find_last_not_of(basic_string_view(&character, 1), position);
+    }
+    constexpr size_type find_last_not_of(const CharT* set, size_type position,
+                                         size_type count) const
+    {
+        return find_last_not_of(basic_string_view(set, count), position);
+    }
+    constexpr size_type find_last_not_of(const CharT* set, size_type position = npos) const
+    {
+        return find_last_not_of(basic_string_view(set), position);
+    }
+
+private:
+    constexpr void CheckPosition(size_type position, const char* message) const
+    {
+        if (position > m_size)
+        {
+            __detail::LibraryAbort(message);
+        }
+    }
+    constexpr size_type Clamp(size_type position, size_type count) const noexcept
+    {
+        return count < m_size - position ? count : m_size - position;
+    }
+    // The last index a backward search starts from, or npos when there is none.
+    constexpr size_type LastIndex(size_type position) const noexcept
+    {
+        if (m_size == 0)
+        {
+            return npos;
+        }
+        return position < m_size - 1 ? position : m_size - 1;
+    }
+
+    const CharT* m_data = nullptr;
+    size_type m_size = 0;
+};
+
+template <contiguous_iterator Iterator, sized_sentinel_for<Iterator> End>
+basic_string_view(Iterator, End) -> basic_string_view<iter_value_t<Iterator>>;
+template <ranges::contiguous_range Range>
+basic_string_view(Range&&) -> basic_string_view<ranges::range_value_t<Range>>;
+
+// The type_identity side lets a string literal or a string compare with a view.
+template <class CharT, class Traits>
+constexpr bool operator==(basic_string_view<CharT, Traits> left,
+                          type_identity_t<basic_string_view<CharT, Traits>> right) noexcept
+{
+    return left.size() == right.size() && left.compare(right) == 0;
+}
+
+namespace __detail
+{
+template <class Traits> consteval auto StringComparisonCategory()
+{
+    if constexpr (requires { typename Traits::comparison_category; })
+    {
+        return type_identity<typename Traits::comparison_category>{};
+    }
+    else
+    {
+        return type_identity<weak_ordering>{};
+    }
+}
+} // namespace __detail
+
+template <class CharT, class Traits>
+constexpr auto operator<=>(basic_string_view<CharT, Traits> left,
+                           type_identity_t<basic_string_view<CharT, Traits>> right) noexcept
+{
+    using Category = typename decltype(__detail::StringComparisonCategory<Traits>())::type;
+    return static_cast<Category>(left.compare(right) <=> 0);
+}
+
+using string_view = basic_string_view<char>;
+using u8string_view = basic_string_view<char8_t>;
+using u16string_view = basic_string_view<char16_t>;
+using u32string_view = basic_string_view<char32_t>;
+using wstring_view = basic_string_view<wchar_t>;
+
+namespace ranges
+{
+template <class CharT, class Traits>
+inline constexpr bool enable_borrowed_range<basic_string_view<CharT, Traits>> = true;
+template <class CharT, class Traits>
+inline constexpr bool enable_view<basic_string_view<CharT, Traits>> = true;
+} // namespace ranges
+
+template <class CharT> struct hash<basic_string_view<CharT, char_traits<CharT>>>
+{
+    size_t operator()(basic_string_view<CharT, char_traits<CharT>> text) const noexcept
+    {
+        return __detail::HashCharacters(text.data(), text.size());
+    }
+};
+
+inline namespace literals
+{
+inline namespace string_view_literals
+{
+// A literal suffix without an underscore is reserved for the implementation, which this is.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wuser-defined-literals"
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wliteral-suffix"
+#endif
+constexpr string_view operator""sv(const char* text, size_t length) noexcept
+{
+    return string_view(text, length);
+}
+constexpr u8string_view operator""sv(const char8_t* text, size_t length) noexcept
+{
+    return u8string_view(text, length);
+}
+constexpr u16string_view operator""sv(const char16_t* text, size_t length) noexcept
+{
+    return u16string_view(text, length);
+}
+constexpr u32string_view operator""sv(const char32_t* text, size_t length) noexcept
+{
+    return u32string_view(text, length);
+}
+constexpr wstring_view operator""sv(const wchar_t* text, size_t length) noexcept
+{
+    return wstring_view(text, length);
+}
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
+} // namespace string_view_literals
+} // namespace literals
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

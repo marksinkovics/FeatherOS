@@ -1,0 +1,9 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CLIMITS
+#define FEATHEROS_LIBCXX_CLIMITS
+
+#include "__featheros_config"
+
+#include <limits.h>
+
+#endif

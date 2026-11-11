@@ -1,0 +1,100 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_NEW
+#define FEATHEROS_LIBCXX_NEW
+
+#include "__featheros_config"
+#include "type_traits"
+
+// Without exceptions there is no std::bad_alloc: the C library's operator new ends the program
+// when memory runs out, and the kernel's panics. new_handler is left out too.
+
+#if FEATHEROS_STD_IS_STD
+
+namespace std
+{
+// The compiler passes this to the aligned operator new.
+enum class align_val_t : size_t
+{
+};
+
+struct nothrow_t
+{
+    explicit nothrow_t() = default;
+};
+inline constexpr nothrow_t nothrow{};
+
+struct destroying_delete_t
+{
+    explicit destroying_delete_t() = default;
+};
+inline constexpr destroying_delete_t destroying_delete{};
+} // namespace std
+
+// The replaceable forms, which the C library (or the kernel, for the ones it uses) defines.
+[[nodiscard]] void* operator new(std::size_t size);
+[[nodiscard]] void* operator new(std::size_t size, std::align_val_t alignment);
+[[nodiscard]] void* operator new(std::size_t size, const std::nothrow_t&) noexcept;
+[[nodiscard]] void* operator new(std::size_t size, std::align_val_t alignment,
+                                 const std::nothrow_t&) noexcept;
+[[nodiscard]] void* operator new[](std::size_t size);
+[[nodiscard]] void* operator new[](std::size_t size, std::align_val_t alignment);
+[[nodiscard]] void* operator new[](std::size_t size, const std::nothrow_t&) noexcept;
+[[nodiscard]] void* operator new[](std::size_t size, std::align_val_t alignment,
+                                   const std::nothrow_t&) noexcept;
+void operator delete(void* pointer) noexcept;
+void operator delete(void* pointer, std::size_t size) noexcept;
+void operator delete(void* pointer, std::align_val_t alignment) noexcept;
+void operator delete(void* pointer, std::size_t size, std::align_val_t alignment) noexcept;
+void operator delete(void* pointer, const std::nothrow_t&) noexcept;
+void operator delete(void* pointer, std::align_val_t alignment, const std::nothrow_t&) noexcept;
+void operator delete[](void* pointer) noexcept;
+void operator delete[](void* pointer, std::size_t size) noexcept;
+void operator delete[](void* pointer, std::align_val_t alignment) noexcept;
+void operator delete[](void* pointer, std::size_t size, std::align_val_t alignment) noexcept;
+void operator delete[](void* pointer, const std::nothrow_t&) noexcept;
+void operator delete[](void* pointer, std::align_val_t alignment, const std::nothrow_t&) noexcept;
+
+// Placement forms, which construct in storage the caller already has.
+[[nodiscard]] inline void* operator new(std::size_t, void* storage) noexcept
+{
+    return storage;
+}
+
+[[nodiscard]] inline void* operator new[](std::size_t, void* storage) noexcept
+{
+    return storage;
+}
+
+inline void operator delete(void*, void*) noexcept {}
+
+inline void operator delete[](void*, void*) noexcept {}
+
+#else
+
+#include <new>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+using std::align_val_t;
+using std::destroying_delete;
+using std::destroying_delete_t;
+using std::nothrow;
+using std::nothrow_t;
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+template <class T> [[nodiscard]] constexpr T* launder(T* pointer) noexcept
+{
+    static_assert(!is_function_v<T> && !is_void_v<T>, "launder needs a pointer to an object");
+    return __builtin_launder(pointer);
+}
+
+// Both architectures have 64-byte cache lines.
+inline constexpr size_t hardware_destructive_interference_size = 64;
+inline constexpr size_t hardware_constructive_interference_size = 64;
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

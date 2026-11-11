@@ -1,0 +1,55 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_LATCH
+#define FEATHEROS_LIBCXX_LATCH
+
+#include "__featheros_config"
+#include "atomic"
+#include "limits"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+class latch
+{
+public:
+    static constexpr ptrdiff_t max() noexcept
+    {
+        return numeric_limits<ptrdiff_t>::max();
+    }
+
+    constexpr explicit latch(ptrdiff_t expected) noexcept : m_count(expected) {}
+    ~latch() = default;
+    latch(const latch&) = delete;
+    latch& operator=(const latch&) = delete;
+
+    void count_down(ptrdiff_t update = 1) noexcept
+    {
+        if (m_count.fetch_sub(update, memory_order::release) == update)
+        {
+            __detail::AtomicNotify(&m_count);
+        }
+    }
+
+    bool try_wait() const noexcept
+    {
+        return m_count.load(memory_order::acquire) == 0;
+    }
+
+    void wait() const noexcept
+    {
+        __detail::AtomicWaitUntil(&m_count, [this]() noexcept { return try_wait(); });
+    }
+
+    void arrive_and_wait(ptrdiff_t update = 1) noexcept
+    {
+        count_down(update);
+        wait();
+    }
+
+private:
+    atomic<ptrdiff_t> m_count;
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

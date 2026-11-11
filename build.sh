@@ -8,11 +8,9 @@ SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 ARCH="${ARCH:-}"
 BUILD_TYPE="${BUILD_TYPE:-Debug}"
 LIMINE_TAG="v8.7.0-binary"
-# The Swift concurrency runtime is built from these sources (src/user/swift_concurrency): the
-# Swift release the pinned toolchain came from, and libc++'s headers from the LLVM release its
-# clang is based on.
+# The Swift runtimes are built from the sources of the Swift release the pinned toolchain came
+# from (src/user/swift_concurrency, src/user/swift_runtime).
 SWIFT_SOURCE_TAG="swift-$(cat "$SCRIPT_DIR/.swift-version")-RELEASE"
-LIBCXX_TAG="llvmorg-21.1.8"
 PATH="$HOME/.local/bin:$PATH"
 export PATH
 
@@ -143,7 +141,6 @@ _swift_compiler() {
 # src/user/swift_concurrency/swift.patch, applied again from a clean tree whenever it changes.
 _fetch_swift_runtime_sources() {
     local swift="$SCRIPT_DIR/deps/swift"
-    local libcxx="$SCRIPT_DIR/deps/llvm-project"
     local string_processing="$SCRIPT_DIR/deps/swift-experimental-string-processing"
     local patch="$SCRIPT_DIR/src/user/swift_concurrency/swift.patch"
     local applied="$SCRIPT_DIR/deps/swift.patch.applied"
@@ -176,13 +173,6 @@ _fetch_swift_runtime_sources() {
         git -C "$string_processing" sparse-checkout set --no-cone /Sources/_CUnicode/ \
             /Sources/_RegexParser/ /Sources/_StringProcessing/ /Sources/RegexBuilder/
         git -C "$string_processing" checkout --quiet
-    fi
-    if [ ! -d "$libcxx/.git" ]; then
-        _print "Fetching libc++'s headers ($LIBCXX_TAG)"
-        git clone --branch="$LIBCXX_TAG" --depth=1 --filter=blob:none --no-checkout \
-            https://github.com/llvm/llvm-project.git "$libcxx"
-        git -C "$libcxx" sparse-checkout set --no-cone /libcxx/include/ /libcxx/vendor/llvm/
-        git -C "$libcxx" checkout --quiet
     fi
 }
 
@@ -329,7 +319,7 @@ clean_deps() {
 
     if [ -d "$SCRIPT_DIR/deps/swift" ] || [ -d "$SCRIPT_DIR/deps/llvm-project" ] \
         || [ -d "$SCRIPT_DIR/deps/swift-experimental-string-processing" ]; then
-        _print "Cleaning the Swift, string-processing and libc++ sources"
+        _print "Cleaning the Swift and string-processing sources"
         rm -rf "$SCRIPT_DIR/deps/swift" "$SCRIPT_DIR/deps/llvm-project" \
             "$SCRIPT_DIR/deps/swift-experimental-string-processing"
         rm -f "$SCRIPT_DIR/deps/swift.patch.applied"

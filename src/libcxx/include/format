@@ -1,0 +1,2027 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_FORMAT
+#define FEATHEROS_LIBCXX_FORMAT
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "concepts"
+#include "limits"
+#include "string"
+#include "string_view"
+#include "tuple"
+#include "type_traits"
+#include "utility"
+#include "variant"
+
+// Only char formatting. Output goes through __detail::FormatBuffer, a buffer that a sink drains,
+// so format_context has one iterator type and the formatting loop (__detail::VFormat) and the
+// standard types' formatting are compiled once into featheros_cxx (src/libcxx/src/format.cpp).
+// What would throw format_error calls LibraryAbort; in a format string checked at compile time
+// that is a call to a function that is not constexpr, so the program does not compile.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class T, class CharT = char> struct formatter
+{
+    formatter() = delete;
+    formatter(const formatter&) = delete;
+    formatter& operator=(const formatter&) = delete;
+};
+
+template <class CharT> class basic_format_parse_context;
+template <class Out, class CharT> class basic_format_context;
+template <class Context> class basic_format_arg;
+template <class Context> class basic_format_args;
+
+namespace __detail
+{
+
+[[noreturn]] constexpr void FormatError(const char* message)
+{
+    LibraryAbort(message);
+}
+
+enum class FormatArgKind : unsigned char
+{
+    None,
+    Bool,
+    Char,
+    Int,
+    Unsigned,
+    LongLong,
+    UnsignedLongLong,
+    Float,
+    Double,
+    LongDouble,
+    CString,
+    StringView,
+    Pointer,
+    Handle,
+};
+
+constexpr bool IsIntegerArgKind(FormatArgKind kind)
+{
+    return kind == FormatArgKind::Int || kind == FormatArgKind::Unsigned ||
+           kind == FormatArgKind::LongLong || kind == FormatArgKind::UnsignedLongLong;
+}
+
+// Characters wait here until the sink behind the buffer takes them.
+class FormatBuffer
+{
+public:
+    FormatBuffer(const FormatBuffer&) = delete;
+    FormatBuffer& operator=(const FormatBuffer&) = delete;
+
+    void Put(char character)
+    {
+        if (m_size == m_capacity)
+        {
+            Flush();
+        }
+        m_data[m_size++] = character;
+    }
+    void Write(const char* text, size_t length);
+    void Write(string_view text)
+    {
+        Write(text.data(), text.size());
+    }
+    // count copies of a fill character, which is 1 to 4 UTF-8 bytes.
+    void Fill(size_t count, const char* fill, size_t fill_size);
+    void Flush();
+
+protected:
+    using Drain = void (*)(FormatBuffer& buffer, const char* data, size_t size);
+
+    FormatBuffer(char* data, size_t capacity, Drain drain) noexcept
+        : m_data(data), m_capacity(capacity), m_drain(drain)
+    {
+    }
+    ~FormatBuffer() = default;
+
+private:
+    char* m_data;
+    size_t m_size = 0;
+    size_t m_capacity;
+    Drain m_drain;
+};
+
+class FormatIterator
+{
+public:
+    using iterator_category = output_iterator_tag;
+    using value_type = void;
+    using difference_type = ptrdiff_t;
+    using pointer = void;
+    using reference = void;
+
+    FormatIterator() noexcept = default;
+    explicit FormatIterator(FormatBuffer& buffer) noexcept : m_buffer(&buffer) {}
+
+    FormatIterator& operator=(char character)
+    {
+        m_buffer->Put(character);
+        return *this;
+    }
+    FormatIterator& operator*() noexcept
+    {
+        return *this;
+    }
+    FormatIterator& operator++() noexcept
+    {
+        return *this;
+    }
+    FormatIterator operator++(int) noexcept
+    {
+        return *this;
+    }
+
+    FormatBuffer& Buffer() const noexcept
+    {
+        return *m_buffer;
+    }
+
+private:
+    FormatBuffer* m_buffer = nullptr;
+};
+
+template <class Out> class FormatIteratorBuffer final : public FormatBuffer
+{
+public:
+    explicit FormatIteratorBuffer(Out out)
+        : FormatBuffer(m_storage, sizeof(m_storage), &DrainTo), m_out(_FSTD::move(out))
+    {
+    }
+
+    Out Finish()
+    {
+        Flush();
+        return _FSTD::move(m_out);
+    }
+
+private:
+    static void DrainTo(FormatBuffer& buffer, const char* data, size_t size)
+    {
+        auto& self = static_cast<FormatIteratorBuffer&>(buffer);
+        for (size_t index = 0; index != size; ++index)
+        {
+            *self.m_out = data[index];
+            ++self.m_out;
+        }
+    }
+
+    char m_storage[256];
+    Out m_out;
+};
+
+// format_to_n's sink: keeps the first limit characters and counts them all.
+template <class Out> class FormatLimitedBuffer final : public FormatBuffer
+{
+public:
+    FormatLimitedBuffer(Out out, iter_difference_t<Out> limit)
+        : FormatBuffer(m_storage, sizeof(m_storage), &DrainTo), m_out(_FSTD::move(out)),
+          m_left(limit > 0 ? static_cast<size_t>(limit) : 0)
+    {
+    }
+
+    Out Finish()
+    {
+        Flush();
+        return _FSTD::move(m_out);
+    }
+    size_t Total() const noexcept
+    {
+        return m_total;
+    }
+
+private:
+    static void DrainTo(FormatBuffer& buffer, const char* data, size_t size)
+    {
+        auto& self = static_cast<FormatLimitedBuffer&>(buffer);
+        const size_t kept = size < self.m_left ? size : self.m_left;
+        for (size_t index = 0; index != kept; ++index)
+        {
+            *self.m_out = data[index];
+            ++self.m_out;
+        }
+        self.m_left -= kept;
+        self.m_total += size;
+    }
+
+    char m_storage[256];
+    Out m_out;
+    size_t m_left;
+    size_t m_total = 0;
+};
+
+enum class FormatAlign : unsigned char
+{
+    Default,
+    Left,
+    Center,
+    Right,
+};
+
+enum class FormatSign : unsigned char
+{
+    Default,
+    Plus,
+    Minus,
+    Space,
+};
+
+// The parsed std-format-spec. A width or precision taken from an argument keeps the argument's
+// index until the formatter formats.
+struct FormatSpec
+{
+    char fill[4] = {' ', '\0', '\0', '\0'};
+    unsigned char fill_size = 1;
+    FormatAlign align = FormatAlign::Default;
+    FormatSign sign = FormatSign::Default;
+    bool alternate = false;
+    bool zero = false;
+    bool locale = false;
+    char type = '\0';
+    int width = 0;
+    // -1 when the spec gives none.
+    int precision = -1;
+    int width_argument = -1;
+    int precision_argument = -1;
+};
+
+struct FormatParseAccess;
+
+struct Utf8Decoded
+{
+    char32_t code_point;
+    // 0 when the bytes are not a valid UTF-8 sequence.
+    size_t length;
+};
+
+constexpr Utf8Decoded DecodeUtf8(const char* first, const char* last)
+{
+    const auto lead = static_cast<unsigned char>(*first);
+    if (lead < 0x80)
+    {
+        return {lead, 1};
+    }
+    size_t length = 0;
+    char32_t value = 0;
+    char32_t minimum = 0;
+    if (lead >= 0xC2 && lead <= 0xDF)
+    {
+        length = 2;
+        value = lead & 0x1Fu;
+        minimum = 0x80;
+    }
+    else if (lead >= 0xE0 && lead <= 0xEF)
+    {
+        length = 3;
+        value = lead & 0x0Fu;
+        minimum = 0x800;
+    }
+    else if (lead >= 0xF0 && lead <= 0xF4)
+    {
+        length = 4;
+        value = lead & 0x07u;
+        minimum = 0x10000;
+    }
+    else
+    {
+        return {0xFFFD, 0};
+    }
+    if (static_cast<size_t>(last - first) < length)
+    {
+        return {0xFFFD, 0};
+    }
+    for (size_t index = 1; index != length; ++index)
+    {
+        const auto next = static_cast<unsigned char>(first[index]);
+        if ((next & 0xC0u) != 0x80u)
+        {
+            return {0xFFFD, 0};
+        }
+        value = (value << 6) | (next & 0x3Fu);
+    }
+    if (value < minimum || value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF))
+    {
+        return {0xFFFD, 0};
+    }
+    return {value, length};
+}
+
+} // namespace __detail
+
+template <class CharT> class basic_format_parse_context
+{
+public:
+    using char_type = CharT;
+    using const_iterator = typename basic_string_view<CharT>::const_iterator;
+    using iterator = const_iterator;
+
+    constexpr explicit basic_format_parse_context(basic_string_view<CharT> format,
+                                                  size_t argument_count = 0) noexcept
+        : m_begin(format.begin()), m_end(format.end()), m_argument_count(argument_count)
+    {
+    }
+    basic_format_parse_context(const basic_format_parse_context&) = delete;
+    basic_format_parse_context& operator=(const basic_format_parse_context&) = delete;
+
+    constexpr const_iterator begin() const noexcept
+    {
+        return m_begin;
+    }
+    constexpr const_iterator end() const noexcept
+    {
+        return m_end;
+    }
+    constexpr void advance_to(const_iterator position)
+    {
+        m_begin = position;
+    }
+
+    constexpr size_t next_arg_id()
+    {
+        if (m_indexing == Indexing::Manual)
+        {
+            __detail::FormatError("format string mixes automatic and manual argument indexing");
+        }
+        m_indexing = Indexing::Automatic;
+        if consteval
+        {
+            if (m_next_id >= m_argument_count)
+            {
+                __detail::FormatError("format string refers to an argument that is not given");
+            }
+        }
+        return m_next_id++;
+    }
+
+    constexpr void check_arg_id(size_t id)
+    {
+        if (m_indexing == Indexing::Automatic)
+        {
+            __detail::FormatError("format string mixes automatic and manual argument indexing");
+        }
+        m_indexing = Indexing::Manual;
+        if consteval
+        {
+            if (id >= m_argument_count)
+            {
+                __detail::FormatError("format string refers to an argument that is not given");
+            }
+        }
+    }
+
+private:
+    friend struct __detail::FormatParseAccess;
+
+    enum class Indexing : unsigned char
+    {
+        Unknown,
+        Manual,
+        Automatic,
+    };
+
+    iterator m_begin;
+    iterator m_end;
+    Indexing m_indexing = Indexing::Unknown;
+    size_t m_next_id = 0;
+    size_t m_argument_count;
+    // Set only while a format string is checked at compile time.
+    const __detail::FormatArgKind* m_kinds = nullptr;
+};
+
+using format_parse_context = basic_format_parse_context<char>;
+
+namespace __detail
+{
+
+struct FormatParseAccess
+{
+    template <class CharT>
+    static constexpr void SetKinds(basic_format_parse_context<CharT>& context,
+                                   const FormatArgKind* kinds)
+    {
+        context.m_kinds = kinds;
+    }
+
+    template <class CharT>
+    static constexpr void CheckDynamicArgument(const basic_format_parse_context<CharT>& context,
+                                               size_t id)
+    {
+        if (context.m_kinds != nullptr && !IsIntegerArgKind(context.m_kinds[id]))
+        {
+            FormatError("a width or precision argument is not an integer");
+        }
+    }
+};
+
+struct FormatArgAccess;
+struct FormatContextAccess;
+
+} // namespace __detail
+
+template <class Context> class basic_format_arg
+{
+public:
+    using char_type = typename Context::char_type;
+
+    class handle
+    {
+    public:
+        void format(basic_format_parse_context<char_type>& parse_context, Context& context) const
+        {
+            m_format(parse_context, context, m_value);
+        }
+
+    private:
+        friend class basic_format_arg;
+        friend struct __detail::FormatArgAccess;
+
+        using Function = void (*)(basic_format_parse_context<char_type>&, Context&, const void*);
+
+        handle(const void* value, Function function) noexcept : m_value(value), m_format(function)
+        {
+        }
+
+        const void* m_value;
+        Function m_format;
+    };
+
+    basic_format_arg() noexcept : m_none(), m_kind(__detail::FormatArgKind::None) {}
+
+    explicit operator bool() const noexcept
+    {
+        return m_kind != __detail::FormatArgKind::None;
+    }
+
+private:
+    friend struct __detail::FormatArgAccess;
+    using Kind = __detail::FormatArgKind;
+
+    explicit basic_format_arg(bool value) noexcept : m_bool(value), m_kind(Kind::Bool) {}
+    explicit basic_format_arg(char_type value) noexcept : m_char(value), m_kind(Kind::Char) {}
+    explicit basic_format_arg(int value) noexcept : m_int(value), m_kind(Kind::Int) {}
+    explicit basic_format_arg(unsigned value) noexcept : m_unsigned(value), m_kind(Kind::Unsigned)
+    {
+    }
+    explicit basic_format_arg(long long value) noexcept : m_long_long(value), m_kind(Kind::LongLong)
+    {
+    }
+    explicit basic_format_arg(unsigned long long value) noexcept
+        : m_unsigned_long_long(value), m_kind(Kind::UnsignedLongLong)
+    {
+    }
+    explicit basic_format_arg(float value) noexcept : m_float(value), m_kind(Kind::Float) {}
+    explicit basic_format_arg(double value) noexcept : m_double(value), m_kind(Kind::Double) {}
+    explicit basic_format_arg(long double value) noexcept
+        : m_long_double(value), m_kind(Kind::LongDouble)
+    {
+    }
+    explicit basic_format_arg(const char_type* value) noexcept
+        : m_c_string(value), m_kind(Kind::CString)
+    {
+    }
+    explicit basic_format_arg(basic_string_view<char_type> value) noexcept
+        : m_string_view(value), m_kind(Kind::StringView)
+    {
+    }
+    explicit basic_format_arg(const void* value) noexcept : m_pointer(value), m_kind(Kind::Pointer)
+    {
+    }
+    explicit basic_format_arg(handle value) noexcept : m_handle(value), m_kind(Kind::Handle) {}
+
+    union
+    {
+        monostate m_none;
+        bool m_bool;
+        char_type m_char;
+        int m_int;
+        unsigned m_unsigned;
+        long long m_long_long;
+        unsigned long long m_unsigned_long_long;
+        float m_float;
+        double m_double;
+        long double m_long_double;
+        const char_type* m_c_string;
+        basic_string_view<char_type> m_string_view;
+        const void* m_pointer;
+        handle m_handle;
+    };
+    Kind m_kind;
+};
+
+namespace __detail
+{
+
+template <class Context, class... Args> struct FormatArgStore
+{
+    basic_format_arg<Context> args[sizeof...(Args) == 0 ? 1 : sizeof...(Args)];
+};
+
+} // namespace __detail
+
+template <class Context> class basic_format_args
+{
+public:
+    basic_format_args() noexcept = default;
+
+    template <class... Args>
+    basic_format_args(const __detail::FormatArgStore<Context, Args...>& store) noexcept
+        : m_size(sizeof...(Args)), m_data(store.args)
+    {
+    }
+
+    basic_format_arg<Context> get(size_t index) const noexcept
+    {
+        return index < m_size ? m_data[index] : basic_format_arg<Context>();
+    }
+
+private:
+    size_t m_size = 0;
+    const basic_format_arg<Context>* m_data = nullptr;
+};
+
+template <class Context, class... Args>
+basic_format_args(__detail::FormatArgStore<Context, Args...>) -> basic_format_args<Context>;
+
+template <class Out, class CharT> class basic_format_context
+{
+public:
+    using iterator = Out;
+    using char_type = CharT;
+    template <class T> using formatter_type = formatter<T, CharT>;
+
+    basic_format_arg<basic_format_context> arg(size_t id) const noexcept
+    {
+        return m_args.get(id);
+    }
+    iterator out()
+    {
+        return _FSTD::move(m_out);
+    }
+    void advance_to(iterator position)
+    {
+        m_out = _FSTD::move(position);
+    }
+
+private:
+    friend struct __detail::FormatContextAccess;
+
+    basic_format_context(Out out, basic_format_args<basic_format_context> args)
+        : m_args(args), m_out(_FSTD::move(out))
+    {
+    }
+
+    basic_format_args<basic_format_context> m_args;
+    Out m_out;
+};
+
+using format_context = basic_format_context<__detail::FormatIterator, char>;
+using format_args = basic_format_args<format_context>;
+
+namespace __detail
+{
+
+struct FormatContextAccess
+{
+    static format_context Make(FormatBuffer& buffer, format_args args)
+    {
+        return format_context(FormatIterator(buffer), args);
+    }
+    static format_args Args(const format_context& context)
+    {
+        return context.m_args;
+    }
+};
+
+struct FormatArgAccess
+{
+    template <class Context> static FormatArgKind Kind(const basic_format_arg<Context>& arg)
+    {
+        return arg.m_kind;
+    }
+
+    template <class Visitor, class Context>
+    static decltype(auto) Visit(Visitor&& visitor, basic_format_arg<Context>& arg)
+    {
+        switch (arg.m_kind)
+        {
+        case FormatArgKind::Bool:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_bool);
+        case FormatArgKind::Char:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_char);
+        case FormatArgKind::Int:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_int);
+        case FormatArgKind::Unsigned:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_unsigned);
+        case FormatArgKind::LongLong:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_long_long);
+        case FormatArgKind::UnsignedLongLong:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_unsigned_long_long);
+        case FormatArgKind::Float:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_float);
+        case FormatArgKind::Double:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_double);
+        case FormatArgKind::LongDouble:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_long_double);
+        case FormatArgKind::CString:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_c_string);
+        case FormatArgKind::StringView:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_string_view);
+        case FormatArgKind::Pointer:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_pointer);
+        case FormatArgKind::Handle:
+            return _FSTD::forward<Visitor>(visitor)(arg.m_handle);
+        case FormatArgKind::None:
+            break;
+        }
+        return _FSTD::forward<Visitor>(visitor)(arg.m_none);
+    }
+
+    template <class Context, class T> static basic_format_arg<Context> Make(T value) noexcept
+    {
+        return basic_format_arg<Context>(value);
+    }
+
+    template <class Context, class T> static basic_format_arg<Context> MakeHandle(T& value) noexcept
+    {
+        using Plain = remove_const_t<T>;
+        using Qualified =
+            conditional_t<requires(const formatter<Plain, typename Context::char_type>& f,
+                                   const Plain& v, Context& c) { f.format(v, c); },
+                          const Plain, Plain>;
+        const auto function = [](basic_format_parse_context<typename Context::char_type>& parse,
+                                 Context& context, const void* pointer)
+        {
+            typename Context::template formatter_type<Plain> formatter;
+            parse.advance_to(formatter.parse(parse));
+            auto& target = *const_cast<Qualified*>(static_cast<const Plain*>(pointer));
+            context.advance_to(formatter.format(target, context));
+        };
+        return basic_format_arg<Context>(
+            typename basic_format_arg<Context>::handle(__builtin_addressof(value), function));
+    }
+};
+
+} // namespace __detail
+
+template <class Visitor, class Context>
+decltype(auto) visit_format_arg(Visitor&& visitor, basic_format_arg<Context> arg)
+{
+    return __detail::FormatArgAccess::Visit(_FSTD::forward<Visitor>(visitor), arg);
+}
+
+// The format spec parser and the formatters' checks.
+namespace __detail
+{
+
+constexpr bool IsFormatDigit(char character)
+{
+    return character >= '0' && character <= '9';
+}
+
+constexpr int ParseFormatInteger(const char*& cursor, const char* end)
+{
+    long long value = 0;
+    for (; cursor != end && IsFormatDigit(*cursor); ++cursor)
+    {
+        value = value * 10 + (*cursor - '0');
+        if (value > numeric_limits<int>::max())
+        {
+            FormatError("a number in the format string is too large");
+        }
+    }
+    return static_cast<int>(value);
+}
+
+// arg-id: 0, or a positive integer without leading zeros.
+constexpr size_t ParseFormatArgumentId(const char*& cursor, const char* end)
+{
+    if (*cursor == '0')
+    {
+        ++cursor;
+        return 0;
+    }
+    return static_cast<size_t>(ParseFormatInteger(cursor, end));
+}
+
+template <class CharT>
+constexpr int ParseDynamicArgument(basic_format_parse_context<CharT>& context, const char*& cursor,
+                                   const char* end)
+{
+    size_t id = 0;
+    if (cursor != end && *cursor == '}')
+    {
+        id = context.next_arg_id();
+    }
+    else if (cursor != end && IsFormatDigit(*cursor))
+    {
+        id = ParseFormatArgumentId(cursor, end);
+        context.check_arg_id(id);
+    }
+    else
+    {
+        FormatError("invalid argument index for a width or precision");
+    }
+    if (cursor == end || *cursor != '}')
+    {
+        FormatError("a width or precision argument is missing its '}'");
+    }
+    ++cursor;
+    FormatParseAccess::CheckDynamicArgument(context, id);
+    return static_cast<int>(id);
+}
+
+constexpr FormatAlign FormatAlignOf(char character)
+{
+    switch (character)
+    {
+    case '<':
+        return FormatAlign::Left;
+    case '^':
+        return FormatAlign::Center;
+    case '>':
+        return FormatAlign::Right;
+    default:
+        return FormatAlign::Default;
+    }
+}
+
+// A fill is any UTF-8 character but '{' and '}'; in range and tuple specs ':' is not one either,
+// as it starts the elements' spec.
+constexpr void ParseFormatFillAndAlign(const char*& cursor, const char* end, FormatSpec& spec,
+                                       bool colon_is_fill)
+{
+    if (!colon_is_fill && *cursor == ':')
+    {
+        return;
+    }
+    const Utf8Decoded fill = DecodeUtf8(cursor, end);
+    if (fill.length != 0 && static_cast<size_t>(end - cursor) > fill.length &&
+        FormatAlignOf(cursor[fill.length]) != FormatAlign::Default)
+    {
+        if (*cursor == '{' || *cursor == '}')
+        {
+            FormatError("'{' and '}' cannot be fill characters");
+        }
+        for (size_t index = 0; index != fill.length; ++index)
+        {
+            spec.fill[index] = cursor[index];
+        }
+        spec.fill_size = static_cast<unsigned char>(fill.length);
+        spec.align = FormatAlignOf(cursor[fill.length]);
+        cursor += fill.length + 1;
+    }
+    else if (FormatAlignOf(*cursor) != FormatAlign::Default)
+    {
+        spec.align = FormatAlignOf(*cursor);
+        ++cursor;
+    }
+    else if (fill.length == 0 && cursor + 1 != end &&
+             FormatAlignOf(cursor[1]) != FormatAlign::Default)
+    {
+        FormatError("the fill character is not valid UTF-8");
+    }
+}
+
+template <class CharT>
+constexpr void ParseFormatWidth(basic_format_parse_context<CharT>& context, const char*& cursor,
+                                const char* end, FormatSpec& spec)
+{
+    if (cursor != end && *cursor == '0')
+    {
+        FormatError("a width cannot start with 0");
+    }
+    if (cursor != end && IsFormatDigit(*cursor))
+    {
+        spec.width = ParseFormatInteger(cursor, end);
+    }
+    else if (cursor != end && *cursor == '{')
+    {
+        ++cursor;
+        spec.width_argument = ParseDynamicArgument(context, cursor, end);
+    }
+}
+
+template <class CharT>
+constexpr void ParseFormatPrecision(basic_format_parse_context<CharT>& context, const char*& cursor,
+                                    const char* end, FormatSpec& spec)
+{
+    if (cursor == end || *cursor != '.')
+    {
+        return;
+    }
+    ++cursor;
+    if (cursor != end && IsFormatDigit(*cursor))
+    {
+        spec.precision = ParseFormatInteger(cursor, end);
+    }
+    else if (cursor != end && *cursor == '{')
+    {
+        ++cursor;
+        spec.precision_argument = ParseDynamicArgument(context, cursor, end);
+    }
+    else
+    {
+        FormatError("a precision is missing after '.'");
+    }
+}
+
+// [[fill]align][sign][#][0][width][.precision][L][type], up to the closing '}'.
+template <class CharT>
+constexpr const char* ParseFormatSpec(basic_format_parse_context<CharT>& context, FormatSpec& spec)
+{
+    static_assert(is_same_v<CharT, char>, "only char formatting is supported");
+    const char* cursor = context.begin();
+    const char* const end = context.end();
+    if (cursor == end || *cursor == '}')
+    {
+        return cursor;
+    }
+    ParseFormatFillAndAlign(cursor, end, spec, true);
+    if (cursor != end && (*cursor == '+' || *cursor == '-' || *cursor == ' '))
+    {
+        spec.sign = *cursor == '+'   ? FormatSign::Plus
+                    : *cursor == '-' ? FormatSign::Minus
+                                     : FormatSign::Space;
+        ++cursor;
+    }
+    if (cursor != end && *cursor == '#')
+    {
+        spec.alternate = true;
+        ++cursor;
+    }
+    if (cursor != end && *cursor == '0')
+    {
+        spec.zero = true;
+        ++cursor;
+    }
+    ParseFormatWidth(context, cursor, end, spec);
+    ParseFormatPrecision(context, cursor, end, spec);
+    if (cursor != end && *cursor == 'L')
+    {
+        spec.locale = true;
+        ++cursor;
+    }
+    if (cursor != end && *cursor != '}')
+    {
+        spec.type = *cursor++;
+    }
+    if (cursor != end && *cursor != '}')
+    {
+        FormatError("invalid format specification");
+    }
+    return cursor;
+}
+
+// The range and tuple spec: [[fill]align][width], then for a range [n][m|s|?s][:elements' spec]
+// and for a tuple [m|n]. type is '\0', 'm', 'n' (a tuple's), 's' or '?' (for ?s).
+struct CompositeSpec
+{
+    const char* end;
+    char type;
+    bool no_brackets;
+    bool element_spec;
+};
+
+template <class CharT>
+constexpr CompositeSpec ParseCompositeSpec(basic_format_parse_context<CharT>& context,
+                                           FormatSpec& spec, bool range)
+{
+    static_assert(is_same_v<CharT, char>, "only char formatting is supported");
+    const char* cursor = context.begin();
+    const char* const end = context.end();
+    CompositeSpec parsed = {cursor, '\0', false, false};
+    if (cursor == end || *cursor == '}')
+    {
+        return parsed;
+    }
+    ParseFormatFillAndAlign(cursor, end, spec, false);
+    ParseFormatWidth(context, cursor, end, spec);
+    if (range && cursor != end && *cursor == 'n')
+    {
+        parsed.no_brackets = true;
+        ++cursor;
+    }
+    if (cursor != end &&
+        (*cursor == 'm' || (range && *cursor == 's') || (!range && *cursor == 'n')))
+    {
+        parsed.type = *cursor++;
+    }
+    else if (range && cursor != end && *cursor == '?')
+    {
+        ++cursor;
+        if (cursor == end || *cursor != 's')
+        {
+            FormatError("'?' in a range's format specification must be followed by 's'");
+        }
+        parsed.type = '?';
+        ++cursor;
+    }
+    if (range && cursor != end && *cursor == ':')
+    {
+        parsed.element_spec = true;
+        ++cursor;
+    }
+    else if (cursor != end && *cursor != '}')
+    {
+        FormatError("invalid format specification");
+    }
+    parsed.end = cursor;
+    return parsed;
+}
+
+enum FormatOption : unsigned
+{
+    FormatAllowsSign = 1,
+    FormatAllowsAlternate = 2,
+    FormatAllowsZero = 4,
+    FormatAllowsPrecision = 8,
+    FormatAllowsLocale = 16,
+    FormatNumeric = FormatAllowsSign | FormatAllowsAlternate | FormatAllowsZero |
+        FormatAllowsLocale,
+};
+
+constexpr void CheckFormatSpec(const FormatSpec& spec, const char* types, unsigned options)
+{
+    if (spec.type != '\0')
+    {
+        bool known = false;
+        for (const char* type = types; *type != '\0'; ++type)
+        {
+            known = known || *type == spec.type;
+        }
+        if (!known)
+        {
+            FormatError("the format specification's type does not suit the argument");
+        }
+    }
+    if (spec.sign != FormatSign::Default && (options & FormatAllowsSign) == 0)
+    {
+        FormatError("the sign option does not suit the argument");
+    }
+    if (spec.alternate && (options & FormatAllowsAlternate) == 0)
+    {
+        FormatError("the '#' option does not suit the argument");
+    }
+    if (spec.zero && (options & FormatAllowsZero) == 0)
+    {
+        FormatError("the '0' option does not suit the argument");
+    }
+    if ((spec.precision >= 0 || spec.precision_argument >= 0) &&
+        (options & FormatAllowsPrecision) == 0)
+    {
+        FormatError("a precision does not suit the argument");
+    }
+    if (spec.locale && (options & FormatAllowsLocale) == 0)
+    {
+        FormatError("the 'L' option does not suit the argument");
+    }
+}
+
+constexpr bool IsIntegerPresentation(char type)
+{
+    return type == 'b' || type == 'B' || type == 'd' || type == 'o' || type == 'x' || type == 'X';
+}
+
+// The standard formatters' run-time half, in featheros_cxx. Each resolves a width or precision
+// taken from an argument first.
+void FormatIntegerValue(format_context& context, const FormatSpec& spec,
+                        unsigned long long magnitude, bool negative);
+void FormatCharValue(format_context& context, const FormatSpec& spec, char value);
+void FormatBoolValue(format_context& context, const FormatSpec& spec, bool value);
+void FormatStringValue(format_context& context, const FormatSpec& spec, string_view value);
+void FormatPointerValue(format_context& context, const FormatSpec& spec, const void* value);
+void FormatFloatValue(format_context& context, const FormatSpec& spec, float value);
+void FormatFloatValue(format_context& context, const FormatSpec& spec, double value);
+void FormatFloatValue(format_context& context, const FormatSpec& spec, long double value);
+
+// Padding needs the whole text first, so with a width body runs into a string.
+using FormatBody = void (*)(format_context& context, const void* state);
+void FormatPadded(format_context& context, const FormatSpec& spec, FormatBody body,
+                  const void* state);
+
+void VFormat(FormatBuffer& buffer, string_view pattern, format_args args);
+size_t VFormattedSize(string_view pattern, format_args args);
+
+template <class T>
+concept FormatStandardInteger =
+    is_same_v<T, signed char> || is_same_v<T, short> || is_same_v<T, int> || is_same_v<T, long> ||
+    is_same_v<T, long long> || is_same_v<T, unsigned char> || is_same_v<T, unsigned short> ||
+    is_same_v<T, unsigned> || is_same_v<T, unsigned long> || is_same_v<T, unsigned long long>;
+
+template <class T>
+concept FormatFloatingPoint =
+    is_same_v<T, float> || is_same_v<T, double> || is_same_v<T, long double>;
+
+class StringFormatterBase
+{
+public:
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        const char* end = ParseFormatSpec(context, m_spec);
+        CheckFormatSpec(m_spec, "s?", FormatAllowsPrecision);
+        return end;
+    }
+
+    constexpr void set_debug_format() noexcept
+    {
+        m_spec.type = '?';
+    }
+
+protected:
+    template <class FormatContext>
+    typename FormatContext::iterator FormatText(string_view text, FormatContext& context) const
+    {
+        FormatStringValue(context, m_spec, text);
+        return context.out();
+    }
+
+private:
+    FormatSpec m_spec;
+};
+
+class PointerFormatterBase
+{
+public:
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        const char* end = ParseFormatSpec(context, m_spec);
+        CheckFormatSpec(m_spec, "pP", FormatAllowsZero);
+        return end;
+    }
+
+protected:
+    template <class FormatContext>
+    typename FormatContext::iterator FormatPointer(const void* value, FormatContext& context) const
+    {
+        FormatPointerValue(context, m_spec, value);
+        return context.out();
+    }
+
+private:
+    FormatSpec m_spec;
+};
+
+} // namespace __detail
+
+template <> struct formatter<char, char>
+{
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        const char* end = __detail::ParseFormatSpec(context, m_spec);
+        __detail::CheckFormatSpec(m_spec, "bBcdoxX?",
+                                  __detail::IsIntegerPresentation(m_spec.type)
+                                      ? __detail::FormatNumeric
+                                      : __detail::FormatAllowsLocale);
+        return end;
+    }
+
+    constexpr void set_debug_format() noexcept
+    {
+        m_spec.type = '?';
+    }
+
+    template <class FormatContext>
+    typename FormatContext::iterator format(char value, FormatContext& context) const
+    {
+        __detail::FormatCharValue(context, m_spec, value);
+        return context.out();
+    }
+
+private:
+    __detail::FormatSpec m_spec;
+};
+
+template <> struct formatter<bool, char>
+{
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        const char* end = __detail::ParseFormatSpec(context, m_spec);
+        __detail::CheckFormatSpec(m_spec, "bBcdosxX",
+                                  __detail::IsIntegerPresentation(m_spec.type)
+                                      ? __detail::FormatNumeric
+                                      : __detail::FormatAllowsLocale);
+        return end;
+    }
+
+    template <class FormatContext>
+    typename FormatContext::iterator format(bool value, FormatContext& context) const
+    {
+        __detail::FormatBoolValue(context, m_spec, value);
+        return context.out();
+    }
+
+private:
+    __detail::FormatSpec m_spec;
+};
+
+template <__detail::FormatStandardInteger T> struct formatter<T, char>
+{
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        const char* end = __detail::ParseFormatSpec(context, m_spec);
+        __detail::CheckFormatSpec(m_spec, "bBcdoxX",
+                                  m_spec.type == 'c' ? __detail::FormatAllowsLocale
+                                                     : __detail::FormatNumeric);
+        return end;
+    }
+
+    template <class FormatContext>
+    typename FormatContext::iterator format(T value, FormatContext& context) const
+    {
+        if constexpr (is_signed_v<T>)
+        {
+            const auto bits = static_cast<unsigned long long>(static_cast<long long>(value));
+            __detail::FormatIntegerValue(context, m_spec, value < 0 ? 0ULL - bits : bits,
+                                         value < 0);
+        }
+        else
+        {
+            __detail::FormatIntegerValue(context, m_spec, value, false);
+        }
+        return context.out();
+    }
+
+private:
+    __detail::FormatSpec m_spec;
+};
+
+template <__detail::FormatFloatingPoint T> struct formatter<T, char>
+{
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        const char* end = __detail::ParseFormatSpec(context, m_spec);
+        __detail::CheckFormatSpec(m_spec, "aAeEfFgG",
+                                  __detail::FormatNumeric | __detail::FormatAllowsPrecision);
+        return end;
+    }
+
+    template <class FormatContext>
+    typename FormatContext::iterator format(T value, FormatContext& context) const
+    {
+        __detail::FormatFloatValue(context, m_spec, value);
+        return context.out();
+    }
+
+private:
+    __detail::FormatSpec m_spec;
+};
+
+template <> struct formatter<const char*, char> : __detail::StringFormatterBase
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const char* value, FormatContext& context) const
+    {
+        if (value == nullptr)
+        {
+            __detail::FormatError("format of a null string pointer");
+        }
+        return FormatText(value, context);
+    }
+};
+
+template <> struct formatter<char*, char> : formatter<const char*, char>
+{
+};
+
+template <size_t Size> struct formatter<char[Size], char> : __detail::StringFormatterBase
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const char (&value)[Size], FormatContext& context) const
+    {
+        size_t length = 0;
+        while (length != Size && value[length] != '\0')
+        {
+            ++length;
+        }
+        return FormatText(string_view(value, length), context);
+    }
+};
+
+template <class Traits, class Allocator>
+struct formatter<basic_string<char, Traits, Allocator>, char> : __detail::StringFormatterBase
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const basic_string<char, Traits, Allocator>& value,
+                                            FormatContext& context) const
+    {
+        return FormatText(string_view(value.data(), value.size()), context);
+    }
+};
+
+template <class Traits>
+struct formatter<basic_string_view<char, Traits>, char> : __detail::StringFormatterBase
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(basic_string_view<char, Traits> value,
+                                            FormatContext& context) const
+    {
+        return FormatText(string_view(value.data(), value.size()), context);
+    }
+};
+
+template <> struct formatter<const void*, char> : __detail::PointerFormatterBase
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const void* value, FormatContext& context) const
+    {
+        return FormatPointer(value, context);
+    }
+};
+
+template <> struct formatter<void*, char> : __detail::PointerFormatterBase
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(void* value, FormatContext& context) const
+    {
+        return FormatPointer(value, context);
+    }
+};
+
+template <> struct formatter<nullptr_t, char> : __detail::PointerFormatterBase
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(nullptr_t, FormatContext& context) const
+    {
+        return FormatPointer(nullptr, context);
+    }
+};
+
+namespace __detail
+{
+
+template <class T, class Context,
+          class Formatter = typename Context::template formatter_type<remove_const_t<T>>,
+          class ParseContext = basic_format_parse_context<typename Context::char_type>>
+concept FormattableWith =
+    semiregular<Formatter> && requires(Formatter& formatter, const Formatter& const_formatter,
+                                       T&& value, Context context, ParseContext parse_context) {
+        { formatter.parse(parse_context) } -> same_as<typename ParseContext::iterator>;
+        { const_formatter.format(value, context) } -> same_as<typename Context::iterator>;
+    };
+
+template <class T> struct IsBasicStringOrView : false_type
+{
+};
+template <class Traits, class Allocator>
+struct IsBasicStringOrView<basic_string<char, Traits, Allocator>> : true_type
+{
+};
+template <class Traits> struct IsBasicStringOrView<basic_string_view<char, Traits>> : true_type
+{
+};
+
+template <class Context, class T> constexpr FormatArgKind FormatArgKindOf()
+{
+    using Plain = remove_cvref_t<T>;
+    if constexpr (is_same_v<Plain, bool>)
+    {
+        return FormatArgKind::Bool;
+    }
+    else if constexpr (is_same_v<Plain, typename Context::char_type>)
+    {
+        return FormatArgKind::Char;
+    }
+    else if constexpr (FormatStandardInteger<Plain> && is_signed_v<Plain>)
+    {
+        return sizeof(Plain) <= sizeof(int) ? FormatArgKind::Int : FormatArgKind::LongLong;
+    }
+    else if constexpr (FormatStandardInteger<Plain>)
+    {
+        return sizeof(Plain) <= sizeof(unsigned) ? FormatArgKind::Unsigned
+                                                 : FormatArgKind::UnsignedLongLong;
+    }
+    else if constexpr (is_same_v<Plain, float>)
+    {
+        return FormatArgKind::Float;
+    }
+    else if constexpr (is_same_v<Plain, double>)
+    {
+        return FormatArgKind::Double;
+    }
+    else if constexpr (is_same_v<Plain, long double>)
+    {
+        return FormatArgKind::LongDouble;
+    }
+    else if constexpr (IsBasicStringOrView<Plain>::value || is_same_v<Plain, char*> ||
+                       is_same_v<Plain, const char*> ||
+                       (is_bounded_array_v<Plain> &&
+                        is_same_v<remove_extent_t<Plain>, typename Context::char_type>))
+    {
+        return is_pointer_v<Plain> ? FormatArgKind::CString : FormatArgKind::StringView;
+    }
+    else if constexpr (is_same_v<Plain, void*> || is_same_v<Plain, const void*> ||
+                       is_same_v<Plain, nullptr_t>)
+    {
+        return FormatArgKind::Pointer;
+    }
+    else
+    {
+        return FormatArgKind::Handle;
+    }
+}
+
+template <class Context, class T> basic_format_arg<Context> MakeFormatArg(T& value) noexcept
+{
+    static_assert(FormattableWith<T, Context>, "the argument's type has no usable formatter");
+    using Plain = remove_const_t<T>;
+    using CharT = typename Context::char_type;
+    constexpr FormatArgKind kind = FormatArgKindOf<Context, T>();
+    if constexpr (kind == FormatArgKind::Int)
+    {
+        return FormatArgAccess::Make<Context>(static_cast<int>(value));
+    }
+    else if constexpr (kind == FormatArgKind::LongLong)
+    {
+        return FormatArgAccess::Make<Context>(static_cast<long long>(value));
+    }
+    else if constexpr (kind == FormatArgKind::Unsigned)
+    {
+        return FormatArgAccess::Make<Context>(static_cast<unsigned>(value));
+    }
+    else if constexpr (kind == FormatArgKind::UnsignedLongLong)
+    {
+        return FormatArgAccess::Make<Context>(static_cast<unsigned long long>(value));
+    }
+    else if constexpr (kind == FormatArgKind::CString)
+    {
+        return FormatArgAccess::Make<Context>(static_cast<const CharT*>(value));
+    }
+    else if constexpr (kind == FormatArgKind::StringView && is_bounded_array_v<Plain>)
+    {
+        size_t length = 0;
+        while (length != extent_v<Plain> && value[length] != CharT())
+        {
+            ++length;
+        }
+        return FormatArgAccess::Make<Context>(basic_string_view<CharT>(value, length));
+    }
+    else if constexpr (kind == FormatArgKind::StringView)
+    {
+        return FormatArgAccess::Make<Context>(basic_string_view<CharT>(value.data(), value.size()));
+    }
+    else if constexpr (kind == FormatArgKind::Pointer)
+    {
+        return FormatArgAccess::Make<Context>(static_cast<const void*>(value));
+    }
+    else if constexpr (kind == FormatArgKind::Handle)
+    {
+        return FormatArgAccess::MakeHandle<Context>(value);
+    }
+    else
+    {
+        return FormatArgAccess::Make<Context>(static_cast<Plain>(value));
+    }
+}
+
+} // namespace __detail
+
+template <class Context = format_context, class... Args>
+__detail::FormatArgStore<Context, Args...> make_format_args(Args&... args)
+{
+    return {{__detail::MakeFormatArg<Context>(args)...}};
+}
+
+template <class T, class CharT>
+concept formattable =
+    __detail::FormattableWith<remove_reference_t<T>,
+                              basic_format_context<__detail::FormatIterator, CharT>>;
+
+enum class range_format
+{
+    disabled,
+    map,
+    set,
+    sequence,
+    string,
+    debug_string,
+};
+
+template <class R>
+constexpr range_format format_kind = []
+{
+    static_assert(!is_same_v<R, R>, "format_kind is only defined for input ranges");
+    return range_format::disabled;
+}();
+
+namespace __detail
+{
+
+template <class T> inline constexpr bool IsFormatPairLike = false;
+template <class First, class Second>
+inline constexpr bool IsFormatPairLike<pair<First, Second>> = true;
+template <class First, class Second>
+inline constexpr bool IsFormatPairLike<tuple<First, Second>> = true;
+
+template <class R> constexpr range_format DefaultFormatKind()
+{
+    using Element = remove_cvref_t<ranges::range_reference_t<R>>;
+    if constexpr (is_same_v<Element, R>)
+    {
+        return range_format::disabled;
+    }
+    else if constexpr (requires { typename R::key_type; })
+    {
+        if constexpr (requires { typename R::mapped_type; } && IsFormatPairLike<Element>)
+        {
+            return range_format::map;
+        }
+        else
+        {
+            return range_format::set;
+        }
+    }
+    else
+    {
+        return range_format::sequence;
+    }
+}
+
+template <class Formatter>
+constexpr void ParseElementFormatter(Formatter& formatter,
+                                     basic_format_parse_context<char>& context, bool debug)
+{
+    context.advance_to(formatter.parse(context));
+    if constexpr (requires { formatter.set_debug_format(); })
+    {
+        if (debug)
+        {
+            formatter.set_debug_format();
+        }
+    }
+}
+
+template <class R>
+void FormatTextRange(format_context& context, FormatSpec spec, R& range, bool debug)
+{
+    spec.type = debug ? '?' : '\0';
+    if constexpr (ranges::contiguous_range<R> && ranges::sized_range<R>)
+    {
+        FormatStringValue(context, spec, string_view(ranges::data(range), ranges::size(range)));
+    }
+    else
+    {
+        string text;
+        auto last = ranges::end(range);
+        for (auto cursor = ranges::begin(range); cursor != last; ++cursor)
+        {
+            text.push_back(*cursor);
+        }
+        FormatStringValue(context, spec, text);
+    }
+}
+
+} // namespace __detail
+
+template <ranges::input_range R>
+    requires same_as<R, remove_cvref_t<R>>
+constexpr range_format format_kind<R> = __detail::DefaultFormatKind<R>();
+
+template <class T, class CharT = char>
+    requires same_as<remove_cvref_t<T>, T> && formattable<T, CharT>
+class range_formatter
+{
+    static_assert(is_same_v<CharT, char>, "only char formatting is supported");
+
+public:
+    constexpr void set_separator(basic_string_view<CharT> separator) noexcept
+    {
+        m_separator = separator;
+    }
+    constexpr void set_brackets(basic_string_view<CharT> opening,
+                                basic_string_view<CharT> closing) noexcept
+    {
+        m_opening = opening;
+        m_closing = closing;
+    }
+    constexpr formatter<T, CharT>& underlying() noexcept
+    {
+        return m_underlying;
+    }
+    constexpr const formatter<T, CharT>& underlying() const noexcept
+    {
+        return m_underlying;
+    }
+
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        const __detail::CompositeSpec parsed = __detail::ParseCompositeSpec(context, m_spec, true);
+        m_type = parsed.type;
+        m_no_brackets = parsed.no_brackets;
+        if (m_type == 's' || m_type == '?')
+        {
+            if constexpr (!is_same_v<T, CharT>)
+            {
+                __detail::FormatError("only a range of characters can be formatted as a string");
+            }
+            if (m_no_brackets || parsed.element_spec)
+            {
+                __detail::FormatError("a range formatted as a string takes no 'n' or element spec");
+            }
+            return parsed.end;
+        }
+        if (m_type == 'm')
+        {
+            if constexpr (__detail::IsFormatPairLike<T>)
+            {
+                set_brackets("{", "}");
+                m_underlying.set_brackets({}, {});
+                m_underlying.set_separator(": ");
+            }
+            else
+            {
+                __detail::FormatError("'m' needs a range of pairs or two-element tuples");
+            }
+        }
+        context.advance_to(parsed.end);
+        __detail::ParseElementFormatter(m_underlying, context, !parsed.element_spec);
+        return context.begin();
+    }
+
+    template <ranges::input_range R, class FormatContext>
+        requires formattable<ranges::range_reference_t<R>, CharT> &&
+                 same_as<remove_cvref_t<ranges::range_reference_t<R>>, T>
+    typename FormatContext::iterator format(R&& range, FormatContext& context) const
+    {
+        if constexpr (is_same_v<T, CharT>)
+        {
+            if (m_type == 's' || m_type == '?')
+            {
+                __detail::FormatTextRange(context, m_spec, range, m_type == '?');
+                return context.out();
+            }
+        }
+        using Range = remove_reference_t<R>;
+        struct State
+        {
+            const range_formatter* self;
+            Range* range;
+        };
+        const State state = {this, __builtin_addressof(range)};
+        __detail::FormatPadded(
+            context, m_spec,
+            [](format_context& inner, const void* erased)
+            {
+                const auto& [self, elements] = *static_cast<const State*>(erased);
+                self->FormatElements(*elements, inner);
+            },
+            &state);
+        return context.out();
+    }
+
+private:
+    template <class R> void FormatElements(R& range, format_context& context) const
+    {
+        __detail::FormatBuffer& out = context.out().Buffer();
+        if (!m_no_brackets)
+        {
+            out.Write(m_opening);
+        }
+        bool first = true;
+        auto last = ranges::end(range);
+        for (auto cursor = ranges::begin(range); cursor != last; ++cursor)
+        {
+            if (!first)
+            {
+                out.Write(m_separator);
+            }
+            first = false;
+            context.advance_to(m_underlying.format(*cursor, context));
+        }
+        if (!m_no_brackets)
+        {
+            out.Write(m_closing);
+        }
+    }
+
+    formatter<T, CharT> m_underlying;
+    basic_string_view<CharT> m_separator = ", ";
+    basic_string_view<CharT> m_opening = "[";
+    basic_string_view<CharT> m_closing = "]";
+    __detail::FormatSpec m_spec;
+    char m_type = '\0';
+    bool m_no_brackets = false;
+};
+
+namespace __detail
+{
+
+template <class R, class CharT>
+concept ConstFormattableRange =
+    ranges::input_range<const R> && formattable<ranges::range_reference_t<const R>, CharT>;
+
+template <class R, class CharT>
+using FormatMaybeConst = conditional_t<ConstFormattableRange<R, CharT>, const R, R>;
+
+template <range_format Kind, class R, class CharT> class RangeDefaultFormatter;
+
+template <range_format Kind, class R, class CharT>
+    requires(Kind == range_format::sequence || Kind == range_format::map ||
+             Kind == range_format::set)
+class RangeDefaultFormatter<Kind, R, CharT>
+{
+    using Element = remove_cvref_t<ranges::range_reference_t<FormatMaybeConst<R, CharT>>>;
+    static_assert(Kind != range_format::map || IsFormatPairLike<Element>,
+                  "a map's elements must be pairs or two-element tuples");
+
+public:
+    constexpr RangeDefaultFormatter()
+    {
+        if constexpr (Kind == range_format::map)
+        {
+            m_underlying.set_brackets("{", "}");
+            m_underlying.underlying().set_brackets({}, {});
+            m_underlying.underlying().set_separator(": ");
+        }
+        else if constexpr (Kind == range_format::set)
+        {
+            m_underlying.set_brackets("{", "}");
+        }
+    }
+
+    constexpr void set_separator(basic_string_view<CharT> separator) noexcept
+        requires(Kind == range_format::sequence)
+    {
+        m_underlying.set_separator(separator);
+    }
+    constexpr void set_brackets(basic_string_view<CharT> opening,
+                                basic_string_view<CharT> closing) noexcept
+        requires(Kind == range_format::sequence)
+    {
+        m_underlying.set_brackets(opening, closing);
+    }
+
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        return m_underlying.parse(context);
+    }
+
+    template <class FormatContext>
+    typename FormatContext::iterator format(FormatMaybeConst<R, CharT>& range,
+                                            FormatContext& context) const
+    {
+        return m_underlying.format(range, context);
+    }
+
+private:
+    range_formatter<Element, CharT> m_underlying;
+};
+
+template <range_format Kind, class R, class CharT>
+    requires(Kind == range_format::string || Kind == range_format::debug_string)
+class RangeDefaultFormatter<Kind, R, CharT>
+{
+    static_assert(is_same_v<remove_cvref_t<ranges::range_reference_t<R>>, CharT>,
+                  "a range formatted as a string must have characters as its elements");
+
+public:
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        const char* end = ParseFormatSpec(context, m_spec);
+        CheckFormatSpec(m_spec, "s?", FormatAllowsPrecision);
+        if constexpr (Kind == range_format::debug_string)
+        {
+            m_spec.type = '?';
+        }
+        return end;
+    }
+
+    template <class FormatContext>
+    typename FormatContext::iterator format(FormatMaybeConst<R, CharT>& range,
+                                            FormatContext& context) const
+    {
+        FormatTextRange(context, m_spec, range, m_spec.type == '?');
+        return context.out();
+    }
+
+private:
+    FormatSpec m_spec;
+};
+
+template <class Tuple, class... Ts> class TupleFormatter
+{
+public:
+    constexpr void set_separator(string_view separator) noexcept
+    {
+        m_separator = separator;
+    }
+    constexpr void set_brackets(string_view opening, string_view closing) noexcept
+    {
+        m_opening = opening;
+        m_closing = closing;
+    }
+
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        const CompositeSpec parsed = ParseCompositeSpec(context, m_spec, false);
+        if (parsed.type == 'm')
+        {
+            if constexpr (sizeof...(Ts) == 2)
+            {
+                set_brackets({}, {});
+                set_separator(": ");
+            }
+            else
+            {
+                FormatError("'m' needs a pair or a two-element tuple");
+            }
+        }
+        else if (parsed.type == 'n')
+        {
+            set_brackets({}, {});
+        }
+        context.advance_to(parsed.end);
+        [&]<size_t... Index>(index_sequence<Index...>)
+        {
+            (ParseElementFormatter(_FSTD::get<Index>(m_underlying), context, true), ...);
+        }(index_sequence_for<Ts...>{});
+        return parsed.end;
+    }
+
+    template <class FormatContext>
+    typename FormatContext::iterator
+    format(conditional_t<(formattable<const Ts, char> && ...), const Tuple, Tuple>& elements,
+           FormatContext& context) const
+    {
+        using Elements = remove_reference_t<decltype(elements)>;
+        struct State
+        {
+            const TupleFormatter* self;
+            Elements* elements;
+        };
+        const State state = {this, __builtin_addressof(elements)};
+        FormatPadded(
+            context, m_spec,
+            [](format_context& inner, const void* erased)
+            {
+                const auto& [self, values] = *static_cast<const State*>(erased);
+                self->FormatElements(*values, inner, index_sequence_for<Ts...>{});
+            },
+            &state);
+        return context.out();
+    }
+
+private:
+    template <class Elements, size_t... Index>
+    void FormatElements(Elements& elements, format_context& context, index_sequence<Index...>) const
+    {
+        FormatBuffer& out = context.out().Buffer();
+        out.Write(m_opening);
+        (
+            [&]
+            {
+                if (Index != 0)
+                {
+                    out.Write(m_separator);
+                }
+                context.advance_to(
+                    _FSTD::get<Index>(m_underlying).format(_FSTD::get<Index>(elements), context));
+            }(),
+            ...);
+        out.Write(m_closing);
+    }
+
+    tuple<formatter<remove_cvref_t<Ts>, char>...> m_underlying;
+    string_view m_separator = ", ";
+    string_view m_opening = "(";
+    string_view m_closing = ")";
+    FormatSpec m_spec;
+};
+
+class BitReference;
+
+} // namespace __detail
+
+template <ranges::input_range R>
+    requires(format_kind<R> != range_format::disabled) &&
+            formattable<ranges::range_reference_t<R>, char>
+struct formatter<R, char> : __detail::RangeDefaultFormatter<format_kind<R>, R, char>
+{
+};
+
+template <class... Ts>
+    requires(formattable<Ts, char> && ...)
+struct formatter<tuple<Ts...>, char> : __detail::TupleFormatter<tuple<Ts...>, Ts...>
+{
+};
+
+template <class First, class Second>
+    requires formattable<First, char> && formattable<Second, char>
+struct formatter<pair<First, Second>, char>
+    : __detail::TupleFormatter<pair<First, Second>, First, Second>
+{
+};
+
+// vector<bool>::reference, which <vector> defines.
+template <class T>
+    requires is_same_v<T, __detail::BitReference>
+struct formatter<T, char> : formatter<bool, char>
+{
+    template <class FormatContext>
+    typename FormatContext::iterator format(const T& value, FormatContext& context) const
+    {
+        return formatter<bool, char>::format(static_cast<bool>(value), context);
+    }
+};
+
+namespace __detail
+{
+
+// The compile-time check: each replacement field's formatter parses its spec, as formatting
+// would.
+template <class T> constexpr void CheckFormatField(basic_format_parse_context<char>& context)
+{
+    formatter<T, char> checker;
+    context.advance_to(checker.parse(context));
+}
+
+template <class Handler>
+constexpr void ScanFormatString(basic_format_parse_context<char>& context, Handler& handler)
+{
+    const char* cursor = context.begin();
+    const char* const end = context.end();
+    const char* text = cursor;
+    while (cursor != end)
+    {
+        if (*cursor == '}')
+        {
+            ++cursor;
+            if (cursor == end || *cursor != '}')
+            {
+                FormatError("the format string has a '}' without a '{'");
+            }
+            handler.Text(text, cursor);
+            ++cursor;
+            text = cursor;
+            continue;
+        }
+        if (*cursor != '{')
+        {
+            ++cursor;
+            continue;
+        }
+        handler.Text(text, cursor);
+        ++cursor;
+        if (cursor == end)
+        {
+            FormatError("the format string ends inside a replacement field");
+        }
+        if (*cursor == '{')
+        {
+            text = cursor;
+            ++cursor;
+            continue;
+        }
+        size_t id = 0;
+        if (*cursor == '}' || *cursor == ':')
+        {
+            id = context.next_arg_id();
+        }
+        else if (IsFormatDigit(*cursor))
+        {
+            id = ParseFormatArgumentId(cursor, end);
+            context.check_arg_id(id);
+        }
+        else
+        {
+            FormatError("invalid argument index in the format string");
+        }
+        if (cursor != end && *cursor == ':')
+        {
+            ++cursor;
+        }
+        else if (cursor == end || *cursor != '}')
+        {
+            FormatError("a replacement field is missing its '}'");
+        }
+        context.advance_to(cursor);
+        handler.Field(id, context);
+        cursor = context.begin();
+        if (cursor == end || *cursor != '}')
+        {
+            FormatError("a replacement field is missing its '}'");
+        }
+        ++cursor;
+        text = cursor;
+    }
+    handler.Text(text, end);
+}
+
+template <class... Args> struct FormatChecker
+{
+    static constexpr FormatArgKind Kinds[sizeof...(Args) == 0 ? 1 : sizeof...(Args)] = {
+        FormatArgKindOf<format_context, Args>()...};
+    using Check = void (*)(basic_format_parse_context<char>&);
+    static constexpr Check Checks[sizeof...(Args) == 0 ? 1 : sizeof...(Args)] = {
+        &CheckFormatField<Args>...};
+
+    constexpr void Text(const char*, const char*) {}
+    constexpr void Field(size_t id, basic_format_parse_context<char>& context)
+    {
+        if constexpr (sizeof...(Args) == 0)
+        {
+            FormatError("format string refers to an argument that is not given");
+        }
+        else
+        {
+            Checks[id](context);
+        }
+    }
+};
+
+template <class... Args> constexpr void CheckFormatString(string_view format)
+{
+    basic_format_parse_context<char> context(format, sizeof...(Args));
+    FormatParseAccess::SetKinds(context, FormatChecker<Args...>::Kinds);
+    FormatChecker<Args...> checker;
+    ScanFormatString(context, checker);
+}
+
+} // namespace __detail
+
+template <class CharT, class... Args> struct basic_format_string
+{
+    template <class T>
+        requires convertible_to<const T&, basic_string_view<CharT>>
+    consteval basic_format_string(const T& text) : m_text(text)
+    {
+        __detail::CheckFormatString<remove_cvref_t<Args>...>(m_text);
+    }
+
+    constexpr basic_string_view<CharT> get() const noexcept
+    {
+        return m_text;
+    }
+
+private:
+    basic_string_view<CharT> m_text;
+};
+
+template <class... Args> using format_string = basic_format_string<char, type_identity_t<Args>...>;
+
+string vformat(string_view pattern, format_args args);
+
+template <class... Args> string format(format_string<Args...> pattern, Args&&... args)
+{
+    return vformat(pattern.get(), _FSTD::make_format_args(args...));
+}
+
+template <output_iterator<const char&> Out>
+Out vformat_to(Out out, string_view pattern, format_args args)
+{
+    if constexpr (is_same_v<Out, __detail::FormatIterator>)
+    {
+        __detail::VFormat(out.Buffer(), pattern, args);
+        return out;
+    }
+    else
+    {
+        __detail::FormatIteratorBuffer<Out> buffer(_FSTD::move(out));
+        __detail::VFormat(buffer, pattern, args);
+        return buffer.Finish();
+    }
+}
+
+template <output_iterator<const char&> Out, class... Args>
+Out format_to(Out out, format_string<Args...> pattern, Args&&... args)
+{
+    return _FSTD::vformat_to(_FSTD::move(out), pattern.get(), _FSTD::make_format_args(args...));
+}
+
+template <class Out> struct format_to_n_result
+{
+    Out out;
+    iter_difference_t<Out> size;
+};
+
+template <output_iterator<const char&> Out, class... Args>
+format_to_n_result<Out> format_to_n(Out out, iter_difference_t<Out> limit,
+                                    format_string<Args...> pattern, Args&&... args)
+{
+    __detail::FormatLimitedBuffer<Out> buffer(_FSTD::move(out), limit);
+    __detail::VFormat(buffer, pattern.get(), _FSTD::make_format_args(args...));
+    Out end = buffer.Finish();
+    return {_FSTD::move(end), static_cast<iter_difference_t<Out>>(buffer.Total())};
+}
+
+template <class... Args> size_t formatted_size(format_string<Args...> pattern, Args&&... args)
+{
+    return __detail::VFormattedSize(pattern.get(), _FSTD::make_format_args(args...));
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

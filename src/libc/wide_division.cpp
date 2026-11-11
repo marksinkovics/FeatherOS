@@ -1,5 +1,7 @@
 #include "libc/wide_division.h"
 
+#include <bit>
+
 namespace FeatherOS::LibC
 {
 
@@ -35,8 +37,8 @@ Wide DivideWide(Wide dividend, Wide divisor, Wide* remainder)
         return dividend;
     }
     constexpr int HalfBits = 64;
-    int bit = dividend.high != 0 ? 2 * HalfBits - 1 - __builtin_clzll(dividend.high)
-                                 : HalfBits - 1 - __builtin_clzll(dividend.low);
+    int bit = dividend.high != 0 ? HalfBits + std::bit_width(dividend.high) - 1
+                                 : std::bit_width(dividend.low) - 1;
     Wide quotient{.high = 0, .low = 0};
     Wide rest{.high = 0, .low = 0};
     for (; bit >= 0; --bit)

@@ -7,7 +7,6 @@ module HttpMessage {
 
 module CxxInterop {
     header "../cxx_interop.h"
-    header "../cxx_interop_std.h"
     requires cplusplus
     export *
 }

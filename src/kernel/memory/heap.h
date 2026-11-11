@@ -1,6 +1,7 @@
 #ifndef FEATHEROS_MEMORY_HEAP_H
 #define FEATHEROS_MEMORY_HEAP_H
 
+#include <new>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -23,12 +24,5 @@ extern "C"
     void* calloc(size_t count, size_t size);
     void free(void* pointer);
 }
-
-void* operator new(size_t size);
-void* operator new[](size_t size);
-void operator delete(void* pointer) noexcept;
-void operator delete[](void* pointer) noexcept;
-void operator delete(void* pointer, size_t size) noexcept;
-void operator delete[](void* pointer, size_t size) noexcept;
 
 #endif

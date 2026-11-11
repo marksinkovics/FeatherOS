@@ -1,0 +1,325 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_THREAD
+#define FEATHEROS_LIBCXX_THREAD
+
+#include "__featheros_config"
+#include "__hash_base"
+#include "__thread_support"
+#include "chrono"
+#include "compare"
+#include "format"
+#include "stop_token"
+#include "tuple"
+#include "type_traits"
+#include "utility"
+
+#include <pthread.h>
+
+// Over the C library's pthreads. What would throw system_error (a thread that cannot be created,
+// joining a thread that is not joinable, or itself) calls the library's abort hook, as does
+// destroying or assigning to a joinable thread, which the standard ends with terminate. A process
+// has at most 16 threads. thread::id has no operator<<, as there are no iostreams; its formatter
+// writes the pthread_t as a number.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+struct ThreadIdAccess;
+} // namespace __detail
+
+class thread
+{
+public:
+    class id
+    {
+    public:
+        id() noexcept = default;
+
+        friend bool operator==(id left, id right) noexcept
+        {
+            return left.Key() == right.Key();
+        }
+        friend strong_ordering operator<=>(id left, id right) noexcept
+        {
+            return left.Key() <=> right.Key();
+        }
+
+    private:
+        friend class thread;
+        friend struct __detail::ThreadIdAccess;
+        template <class> friend struct hash;
+
+        explicit id(pthread_t handle) noexcept : m_handle(handle) {}
+
+        // A pthread_t is an integer here and a pointer on some hosts; no thread has the zero one.
+        size_t Key() const noexcept
+        {
+            static_assert(sizeof(pthread_t) == sizeof(size_t));
+            return __builtin_bit_cast(size_t, m_handle);
+        }
+
+        pthread_t m_handle{};
+    };
+
+    using native_handle_type = pthread_t;
+
+    thread() noexcept = default;
+
+    template <class F, class... Args>
+        requires(!is_same_v<remove_cvref_t<F>, thread>)
+    explicit thread(F&& function, Args&&... arguments)
+    {
+        static_assert(is_constructible_v<decay_t<F>, F> &&
+                      (is_constructible_v<decay_t<Args>, Args> && ...));
+        static_assert(is_invocable_v<decay_t<F>, decay_t<Args>...>);
+        using State = tuple<decay_t<F>, decay_t<Args>...>;
+        m_id = Start(&Run<State>,
+                     new State(_FSTD::forward<F>(function), _FSTD::forward<Args>(arguments)...));
+    }
+
+    ~thread();
+    thread(const thread&) = delete;
+    thread& operator=(const thread&) = delete;
+    thread(thread&& other) noexcept : m_id(_FSTD::exchange(other.m_id, id())) {}
+    thread& operator=(thread&& other) noexcept;
+
+    void swap(thread& other) noexcept
+    {
+        _FSTD::swap(m_id, other.m_id);
+    }
+
+    [[nodiscard]] bool joinable() const noexcept
+    {
+        return m_id != id();
+    }
+    void join();
+    void detach();
+    [[nodiscard]] id get_id() const noexcept
+    {
+        return m_id;
+    }
+    [[nodiscard]] native_handle_type native_handle()
+    {
+        return m_id.m_handle;
+    }
+
+    [[nodiscard]] static unsigned int hardware_concurrency() noexcept;
+
+private:
+    template <class State> static void* Run(void* argument)
+    {
+        auto* state = static_cast<State*>(argument);
+        _FSTD::apply([](auto&... parts) { __detail::Invoke(_FSTD::move(parts)...); }, *state);
+        delete state;
+        return nullptr;
+    }
+
+    static id Start(void* (*run)(void*), void* state);
+
+    id m_id;
+};
+
+inline void swap(thread& left, thread& right) noexcept
+{
+    left.swap(right);
+}
+
+template <> struct hash<thread::id>
+{
+    size_t operator()(thread::id value) const noexcept
+    {
+        return value.Key();
+    }
+};
+
+namespace __detail
+{
+
+struct ThreadIdAccess
+{
+    static thread::id Current() noexcept
+    {
+        return thread::id(pthread_self());
+    }
+    static size_t Key(thread::id value) noexcept
+    {
+        return value.Key();
+    }
+};
+
+void Sleep(chrono::nanoseconds duration) noexcept;
+
+} // namespace __detail
+
+template <> struct formatter<thread::id, char>
+{
+    template <class ParseContext>
+    constexpr typename ParseContext::iterator parse(ParseContext& context)
+    {
+        const char* end = __detail::ParseFormatSpec(context, m_spec);
+        __detail::CheckFormatSpec(m_spec, "", 0);
+        return end;
+    }
+
+    template <class FormatContext>
+    typename FormatContext::iterator format(thread::id value, FormatContext& context) const
+    {
+        __detail::FormatIntegerValue(context, m_spec, __detail::ThreadIdAccess::Key(value), false);
+        return context.out();
+    }
+
+private:
+    __detail::FormatSpec m_spec;
+};
+
+namespace this_thread
+{
+
+[[nodiscard]] inline thread::id get_id() noexcept
+{
+    return __detail::ThreadIdAccess::Current();
+}
+
+void yield() noexcept;
+
+template <class Rep, class Period> void sleep_for(const chrono::duration<Rep, Period>& duration)
+{
+    if (duration > duration.zero())
+    {
+        __detail::Sleep(__detail::ClampedNanoseconds(duration));
+    }
+}
+
+template <class Clock, class Duration>
+void sleep_until(const chrono::time_point<Clock, Duration>& deadline)
+{
+    static_assert(chrono::is_clock_v<Clock>);
+    while (true)
+    {
+        const auto now = Clock::now();
+        if (deadline <= now)
+        {
+            return;
+        }
+        this_thread::sleep_for(deadline - now);
+    }
+}
+
+} // namespace this_thread
+
+// The function gets the thread's stop_token first when it can take one.
+class jthread
+{
+public:
+    using id = thread::id;
+    using native_handle_type = thread::native_handle_type;
+
+    jthread() noexcept : m_source(nostopstate) {}
+
+    template <class F, class... Args>
+        requires(!is_same_v<remove_cvref_t<F>, jthread>)
+    explicit jthread(F&& function, Args&&... arguments)
+        : m_thread(Start(m_source, _FSTD::forward<F>(function), _FSTD::forward<Args>(arguments)...))
+    {
+    }
+
+    ~jthread()
+    {
+        Stop();
+    }
+    jthread(const jthread&) = delete;
+    jthread& operator=(const jthread&) = delete;
+    jthread(jthread&&) noexcept = default;
+    jthread& operator=(jthread&& other) noexcept
+    {
+        if (this != &other)
+        {
+            Stop();
+            m_source = _FSTD::move(other.m_source);
+            m_thread = _FSTD::move(other.m_thread);
+        }
+        return *this;
+    }
+
+    void swap(jthread& other) noexcept
+    {
+        m_source.swap(other.m_source);
+        m_thread.swap(other.m_thread);
+    }
+    friend void swap(jthread& left, jthread& right) noexcept
+    {
+        left.swap(right);
+    }
+
+    [[nodiscard]] bool joinable() const noexcept
+    {
+        return m_thread.joinable();
+    }
+    void join()
+    {
+        m_thread.join();
+    }
+    void detach()
+    {
+        m_thread.detach();
+    }
+    [[nodiscard]] id get_id() const noexcept
+    {
+        return m_thread.get_id();
+    }
+    [[nodiscard]] native_handle_type native_handle()
+    {
+        return m_thread.native_handle();
+    }
+
+    [[nodiscard]] stop_source get_stop_source() noexcept
+    {
+        return m_source;
+    }
+    [[nodiscard]] stop_token get_stop_token() const noexcept
+    {
+        return m_source.get_token();
+    }
+    bool request_stop() noexcept
+    {
+        return m_source.request_stop();
+    }
+
+    [[nodiscard]] static unsigned int hardware_concurrency() noexcept
+    {
+        return thread::hardware_concurrency();
+    }
+
+private:
+    template <class F, class... Args>
+    static thread Start(const stop_source& source, F&& function, Args&&... arguments)
+    {
+        if constexpr (is_invocable_v<decay_t<F>, stop_token, decay_t<Args>...>)
+        {
+            return thread(_FSTD::forward<F>(function), source.get_token(),
+                          _FSTD::forward<Args>(arguments)...);
+        }
+        else
+        {
+            return thread(_FSTD::forward<F>(function), _FSTD::forward<Args>(arguments)...);
+        }
+    }
+
+    void Stop() noexcept
+    {
+        if (m_thread.joinable())
+        {
+            m_source.request_stop();
+            m_thread.join();
+        }
+    }
+
+    stop_source m_source;
+    thread m_thread;
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

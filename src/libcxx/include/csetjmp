@@ -1,0 +1,16 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CSETJMP
+#define FEATHEROS_LIBCXX_CSETJMP
+
+#include "__featheros_config"
+
+#include <setjmp.h>
+
+// setjmp stays in the global namespace, where the standard has it as a macro.
+namespace FEATHEROS_STD_NAMESPACE
+{
+using ::jmp_buf;
+using ::longjmp;
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

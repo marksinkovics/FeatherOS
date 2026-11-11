@@ -4,6 +4,7 @@
 #include "kernel/arch/interrupts.h"
 #include "user/thread_safety.h"
 
+#include <atomic>
 #include <stdint.h>
 
 namespace FeatherOS::Sync
@@ -29,9 +30,9 @@ public:
 
     void Lock() ACQUIRE() NO_THREAD_SAFETY_ANALYSIS
     {
-        while (__atomic_exchange_n(&locked, 1U, __ATOMIC_ACQUIRE) != 0)
+        while (locked.exchange(1U, std::memory_order_acquire) != 0)
         {
-            while (__atomic_load_n(&locked, __ATOMIC_RELAXED) != 0)
+            while (locked.load(std::memory_order_relaxed) != 0)
             {
                 CpuRelax();
             }
@@ -40,17 +41,17 @@ public:
 
     bool TryLock() TRY_ACQUIRE(true) NO_THREAD_SAFETY_ANALYSIS
     {
-        return __atomic_exchange_n(&locked, 1U, __ATOMIC_ACQUIRE) == 0;
+        return locked.exchange(1U, std::memory_order_acquire) == 0;
     }
 
     void Unlock() RELEASE() NO_THREAD_SAFETY_ANALYSIS
     {
-        __atomic_store_n(&locked, 0U, __ATOMIC_RELEASE);
+        locked.store(0U, std::memory_order_release);
     }
 
     bool IsLocked() const
     {
-        return __atomic_load_n(&locked, __ATOMIC_RELAXED) != 0;
+        return locked.load(std::memory_order_relaxed) != 0;
     }
 
     uint64_t LockIrqSave() ACQUIRE()
@@ -67,7 +68,7 @@ public:
     }
 
 private:
-    uint32_t locked = 0;
+    std::atomic<uint32_t> locked = 0;
 };
 
 class SCOPED_CAPABILITY SpinLockGuard

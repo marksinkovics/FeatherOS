@@ -120,7 +120,7 @@ The `PRI*` and `SCN*` format macros for every width, `least`, `fast`, `max` and 
 - **Errors:** overlong forms, surrogates, values past U+10FFFF and stray continuation bytes fail with `EILSEQ`.
 - **Surrogate pairs:** `mbrtoc16` returns a character past U+FFFF as a pair, the low half from the next call as `(size_t)-3`. `c16rtomb` writes nothing for a high surrogate, and the whole character for the low one that follows.
 
-libc++'s headers take `mbstate_t` from here.
+FeatherOS's `<cuchar>` and `<string>` take `mbstate_t` from here.
 
 ### `stdio.h`
 
@@ -164,7 +164,7 @@ There are no signals, so `sigsetjmp` and `siglongjmp` are not provided.
 
 ### `math.h`
 
-Every function exists for `double` and, with an `f` suffix, `float`:
+Every function exists for `double` and, with an `f` suffix, `float`, except `frexp`, `ldexp`, `scalbn` and `modf`, which are `double` only (`<cmath>`'s `float` overloads go through them):
 - **Exact, bit for bit the same as glibc:** `fabs copysign floor ceil trunc round rint nearbyint fmod remainder frexp ldexp scalbn modf fmin fmax sqrt fma`
 - **Within 1–3 units in the last place of glibc:** `exp exp2 log log2 log10 pow sin cos tan asin acos atan atan2 sinh cosh tanh hypot`
 
@@ -376,7 +376,7 @@ FeatherOS calls with no POSIX equivalent:
 
 ### C++ support
 
-The runtime hooks `__cxa_atexit`, `__cxa_guard_acquire`/`release`/`abort`, `__cxa_pure_virtual` and `__dso_handle` are provided. So are `operator new` and `operator delete`, in their plain, array, sized and aligned forms (`std::align_val_t`, defined here since there is no `<new>`). They are built on `malloc` and `posix_memalign`, and a failed `new` aborts; the `nothrow` forms are not provided yet. Programs are built with `-fno-exceptions -fno-rtti`, and there is no C++ standard library. For Swift programs that use libc++'s header-only types, the library also defines `std::__libcpp_verbose_abort`, which libc++'s compiled library would otherwise provide: it prints its message to standard error and aborts.
+The runtime hooks `__cxa_atexit`, `__cxa_guard_acquire`/`release`/`abort`, `__cxa_pure_virtual` and `__dso_handle` are provided. So are `operator new` and `operator delete`, in their plain, array, sized, aligned and `nothrow` forms (`std::align_val_t` from FeatherOS's `<new>`). They are built on `malloc` and `posix_memalign`; a failed `new` aborts and a failed `nothrow` one returns null. Programs are built with `-fno-exceptions -fno-rtti` against FeatherOS's own C++ standard library (see "C++ Standard Library" in `development.md`), whose abort hook `std::__detail::LibraryAbort` is defined here. The Swift runtimes are compiled over the same headers.
 
 ## Left out on purpose
 

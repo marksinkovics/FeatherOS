@@ -1,0 +1,296 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_LIMITS
+#define FEATHEROS_LIBCXX_LIMITS
+
+#include "__featheros_config"
+#include "type_traits"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+enum float_round_style
+{
+    round_indeterminate = -1,
+    round_toward_zero = 0,
+    round_to_nearest = 1,
+    round_toward_infinity = 2,
+    round_toward_neg_infinity = 3,
+};
+
+enum float_denorm_style
+{
+    denorm_indeterminate = -1,
+    denorm_absent = 0,
+    denorm_present = 1,
+};
+
+template <class T> class numeric_limits
+{
+public:
+    static constexpr bool is_specialized = false;
+    static constexpr T min() noexcept
+    {
+        return T();
+    }
+    static constexpr T max() noexcept
+    {
+        return T();
+    }
+    static constexpr T lowest() noexcept
+    {
+        return T();
+    }
+    static constexpr int digits = 0;
+    static constexpr int digits10 = 0;
+    static constexpr int max_digits10 = 0;
+    static constexpr bool is_signed = false;
+    static constexpr bool is_integer = false;
+    static constexpr bool is_exact = false;
+    static constexpr int radix = 0;
+    static constexpr T epsilon() noexcept
+    {
+        return T();
+    }
+    static constexpr T round_error() noexcept
+    {
+        return T();
+    }
+    static constexpr int min_exponent = 0;
+    static constexpr int min_exponent10 = 0;
+    static constexpr int max_exponent = 0;
+    static constexpr int max_exponent10 = 0;
+    static constexpr bool has_infinity = false;
+    static constexpr bool has_quiet_NaN = false;
+    static constexpr bool has_signaling_NaN = false;
+    static constexpr float_denorm_style has_denorm = denorm_absent;
+    static constexpr bool has_denorm_loss = false;
+    static constexpr T infinity() noexcept
+    {
+        return T();
+    }
+    static constexpr T quiet_NaN() noexcept
+    {
+        return T();
+    }
+    static constexpr T signaling_NaN() noexcept
+    {
+        return T();
+    }
+    static constexpr T denorm_min() noexcept
+    {
+        return T();
+    }
+    static constexpr bool is_iec559 = false;
+    static constexpr bool is_bounded = false;
+    static constexpr bool is_modulo = false;
+    static constexpr bool traps = false;
+    static constexpr bool tinyness_before = false;
+    static constexpr float_round_style round_style = round_toward_zero;
+};
+
+template <class T> class numeric_limits<const T> : public numeric_limits<T>
+{
+};
+template <class T> class numeric_limits<volatile T> : public numeric_limits<T>
+{
+};
+template <class T> class numeric_limits<const volatile T> : public numeric_limits<T>
+{
+};
+
+namespace __detail
+{
+template <class T> class IntegerLimits
+{
+    using Unsigned =
+        typename conditional_t<is_same_v<T, bool>, type_identity<bool>, make_unsigned<T>>::type;
+
+public:
+    static constexpr bool is_specialized = true;
+    static constexpr bool is_signed = T(-1) < T(0);
+    static constexpr int digits =
+        is_same_v<T, bool> ? 1 : static_cast<int>(sizeof(T) * 8) - (is_signed ? 1 : 0);
+    // digits times log10(2), rounded down; exact for every width up to 128 bits.
+    static constexpr int digits10 = digits * 301 / 1000;
+    static constexpr int max_digits10 = 0;
+    static constexpr T max() noexcept
+    {
+        if constexpr (is_same_v<T, bool>)
+        {
+            return true;
+        }
+        else
+        {
+            return static_cast<T>(static_cast<Unsigned>(~Unsigned(0)) >> (is_signed ? 1 : 0));
+        }
+    }
+    static constexpr T min() noexcept
+    {
+        if constexpr (is_signed)
+        {
+            return static_cast<T>(-max() - 1);
+        }
+        else
+        {
+            return T(0);
+        }
+    }
+    static constexpr T lowest() noexcept
+    {
+        return min();
+    }
+    static constexpr bool is_integer = true;
+    static constexpr bool is_exact = true;
+    static constexpr int radix = 2;
+    static constexpr T epsilon() noexcept
+    {
+        return T(0);
+    }
+    static constexpr T round_error() noexcept
+    {
+        return T(0);
+    }
+    static constexpr int min_exponent = 0;
+    static constexpr int min_exponent10 = 0;
+    static constexpr int max_exponent = 0;
+    static constexpr int max_exponent10 = 0;
+    static constexpr bool has_infinity = false;
+    static constexpr bool has_quiet_NaN = false;
+    static constexpr bool has_signaling_NaN = false;
+    static constexpr float_denorm_style has_denorm = denorm_absent;
+    static constexpr bool has_denorm_loss = false;
+    static constexpr T infinity() noexcept
+    {
+        return T(0);
+    }
+    static constexpr T quiet_NaN() noexcept
+    {
+        return T(0);
+    }
+    static constexpr T signaling_NaN() noexcept
+    {
+        return T(0);
+    }
+    static constexpr T denorm_min() noexcept
+    {
+        return T(0);
+    }
+    static constexpr bool is_iec559 = false;
+    static constexpr bool is_bounded = true;
+    static constexpr bool is_modulo = !is_signed && !is_same_v<T, bool>;
+    // x86-64 raises an exception for an integer division by zero; AArch64 returns zero.
+#if defined(__x86_64__)
+    static constexpr bool traps = !is_same_v<T, bool>;
+#else
+    static constexpr bool traps = false;
+#endif
+    static constexpr bool tinyness_before = false;
+    static constexpr float_round_style round_style = round_toward_zero;
+};
+} // namespace __detail
+
+#define FEATHEROS_LIBCXX_INTEGER_LIMITS(Type)                                                      \
+    template <> class numeric_limits<Type> : public __detail::IntegerLimits<Type>                  \
+    {                                                                                              \
+    };
+FEATHEROS_LIBCXX_INTEGER_LIMITS(bool)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(char)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(signed char)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(unsigned char)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(wchar_t)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(char8_t)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(char16_t)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(char32_t)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(short)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(unsigned short)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(int)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(unsigned int)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(long)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(unsigned long)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(long long)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(unsigned long long)
+#ifdef __SIZEOF_INT128__
+FEATHEROS_LIBCXX_INTEGER_LIMITS(__int128)
+FEATHEROS_LIBCXX_INTEGER_LIMITS(unsigned __int128)
+#endif
+#undef FEATHEROS_LIBCXX_INTEGER_LIMITS
+
+// The floating-point values come from the compiler's predefined macros, so they need no
+// arithmetic at run time (long double has none on AArch64).
+#define FEATHEROS_LIBCXX_FLOAT_LIMITS(Type, Prefix, Suffix)                                        \
+    template <> class numeric_limits<Type>                                                         \
+    {                                                                                              \
+    public:                                                                                        \
+        static constexpr bool is_specialized = true;                                               \
+        static constexpr Type min() noexcept                                                       \
+        {                                                                                          \
+            return Prefix##_MIN__;                                                                 \
+        }                                                                                          \
+        static constexpr Type max() noexcept                                                       \
+        {                                                                                          \
+            return Prefix##_MAX__;                                                                 \
+        }                                                                                          \
+        static constexpr Type lowest() noexcept                                                    \
+        {                                                                                          \
+            return -Prefix##_MAX__;                                                                \
+        }                                                                                          \
+        static constexpr int digits = Prefix##_MANT_DIG__;                                         \
+        static constexpr int digits10 = Prefix##_DIG__;                                            \
+        static constexpr int max_digits10 = 2 + digits * 643 / 2136;                               \
+        static constexpr bool is_signed = true;                                                    \
+        static constexpr bool is_integer = false;                                                  \
+        static constexpr bool is_exact = false;                                                    \
+        static constexpr int radix = __FLT_RADIX__;                                                \
+        static constexpr Type epsilon() noexcept                                                   \
+        {                                                                                          \
+            return Prefix##_EPSILON__;                                                             \
+        }                                                                                          \
+        static constexpr Type round_error() noexcept                                               \
+        {                                                                                          \
+            return 0.5##Suffix;                                                                    \
+        }                                                                                          \
+        static constexpr int min_exponent = Prefix##_MIN_EXP__;                                    \
+        static constexpr int min_exponent10 = Prefix##_MIN_10_EXP__;                               \
+        static constexpr int max_exponent = Prefix##_MAX_EXP__;                                    \
+        static constexpr int max_exponent10 = Prefix##_MAX_10_EXP__;                               \
+        static constexpr bool has_infinity = Prefix##_HAS_INFINITY__;                              \
+        static constexpr bool has_quiet_NaN = Prefix##_HAS_QUIET_NAN__;                            \
+        static constexpr bool has_signaling_NaN = has_quiet_NaN;                                   \
+        static constexpr float_denorm_style has_denorm =                                           \
+            Prefix##_HAS_DENORM__ ? denorm_present : denorm_absent;                                \
+        static constexpr bool has_denorm_loss = false;                                             \
+        static constexpr Type infinity() noexcept                                                  \
+        {                                                                                          \
+            return __builtin_huge_val##Suffix();                                                   \
+        }                                                                                          \
+        static constexpr Type quiet_NaN() noexcept                                                 \
+        {                                                                                          \
+            return __builtin_nan##Suffix("");                                                      \
+        }                                                                                          \
+        static constexpr Type signaling_NaN() noexcept                                             \
+        {                                                                                          \
+            return __builtin_nans##Suffix("");                                                     \
+        }                                                                                          \
+        static constexpr Type denorm_min() noexcept                                                \
+        {                                                                                          \
+            return Prefix##_DENORM_MIN__;                                                          \
+        }                                                                                          \
+        static constexpr bool is_iec559 =                                                          \
+            has_infinity && has_quiet_NaN && has_denorm == denorm_present;                         \
+        static constexpr bool is_bounded = true;                                                   \
+        static constexpr bool is_modulo = false;                                                   \
+        static constexpr bool traps = false;                                                       \
+        static constexpr bool tinyness_before = false;                                             \
+        static constexpr float_round_style round_style = round_to_nearest;                         \
+    };
+FEATHEROS_LIBCXX_FLOAT_LIMITS(float, __FLT, f)
+FEATHEROS_LIBCXX_FLOAT_LIMITS(double, __DBL, )
+// Clang rejects long double where x86-64 has no floating-point registers, as in the kernel.
+#if !defined(__x86_64__) || defined(__SSE__)
+FEATHEROS_LIBCXX_FLOAT_LIMITS(long double, __LDBL, l)
+#endif
+#undef FEATHEROS_LIBCXX_FLOAT_LIMITS
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

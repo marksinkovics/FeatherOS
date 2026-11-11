@@ -1,0 +1,54 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CSTDIO
+#define FEATHEROS_LIBCXX_CSTDIO
+
+#include "__featheros_config"
+
+#include <stdio.h>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+using ::clearerr;
+using ::fclose;
+using ::feof;
+using ::ferror;
+using ::fflush;
+using ::fgetc;
+using ::fgets;
+using ::FILE;
+using ::fopen;
+using ::fprintf;
+using ::fputc;
+using ::fputs;
+using ::fread;
+using ::fscanf;
+using ::fseek;
+using ::ftell;
+using ::fwrite;
+using ::getc;
+using ::getchar;
+using ::perror;
+using ::printf;
+using ::putc;
+using ::putchar;
+using ::puts;
+using ::remove;
+using ::rename;
+using ::rewind;
+using ::scanf;
+using ::setbuf;
+using ::setvbuf;
+using ::snprintf;
+using ::sprintf;
+using ::sscanf;
+using ::ungetc;
+using ::vfprintf;
+using ::vfscanf;
+using ::vprintf;
+using ::vscanf;
+using ::vsnprintf;
+using ::vsprintf;
+using ::vsscanf;
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

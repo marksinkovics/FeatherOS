@@ -1,0 +1,2255 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_ALGORITHM
+#define FEATHEROS_LIBCXX_ALGORITHM
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "__memory_base"
+#include "compare"
+#include "initializer_list"
+#include "new"
+#include "type_traits"
+#include "utility"
+
+// The classic algorithms of C++23, without execution policies. The ranges:: forms are left out.
+// stable_sort, stable_partition and inplace_merge use a temporary buffer when operator new
+// (nothrow) gives one, and work in place, more slowly, when it does not.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+struct Less
+{
+    template <class T, class U> constexpr bool operator()(T&& left, U&& right) const
+    {
+        return _FSTD::forward<T>(left) < _FSTD::forward<U>(right);
+    }
+};
+
+struct EqualTo
+{
+    template <class T, class U> constexpr bool operator()(T&& left, U&& right) const
+    {
+        return _FSTD::forward<T>(left) == _FSTD::forward<U>(right);
+    }
+};
+
+template <class I> using IterDifference = typename iterator_traits<I>::difference_type;
+template <class I> using IterValue = typename iterator_traits<I>::value_type;
+
+// Both ends pointers to the same trivially copyable type, so copying is a memmove.
+template <class In, class Out>
+concept TriviallyCopyablePointers =
+    is_pointer_v<In> && is_pointer_v<Out> &&
+    is_same_v<remove_const_t<remove_pointer_t<In>>, remove_pointer_t<Out>> &&
+    is_trivially_copyable_v<remove_pointer_t<Out>> && !is_volatile_v<remove_pointer_t<Out>>;
+} // namespace __detail
+
+// Non-modifying sequence operations.
+
+template <class I, class P> constexpr bool all_of(I first, I last, P predicate)
+{
+    for (; first != last; ++first)
+    {
+        if (!predicate(*first))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+template <class I, class P> constexpr bool any_of(I first, I last, P predicate)
+{
+    for (; first != last; ++first)
+    {
+        if (predicate(*first))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <class I, class P> constexpr bool none_of(I first, I last, P predicate)
+{
+    return !_FSTD::any_of(first, last, predicate);
+}
+
+template <class I, class F> constexpr F for_each(I first, I last, F function)
+{
+    for (; first != last; ++first)
+    {
+        function(*first);
+    }
+    return function;
+}
+
+template <class I, class Size, class F> constexpr I for_each_n(I first, Size count, F function)
+{
+    for (; count > 0; ++first, (void)--count)
+    {
+        function(*first);
+    }
+    return first;
+}
+
+template <class I, class T = __detail::IterValue<I>>
+constexpr I find(I first, I last, const T& value)
+{
+    for (; first != last; ++first)
+    {
+        if (*first == value)
+        {
+            return first;
+        }
+    }
+    return last;
+}
+
+template <class I, class P> constexpr I find_if(I first, I last, P predicate)
+{
+    for (; first != last; ++first)
+    {
+        if (predicate(*first))
+        {
+            return first;
+        }
+    }
+    return last;
+}
+
+template <class I, class P> constexpr I find_if_not(I first, I last, P predicate)
+{
+    for (; first != last; ++first)
+    {
+        if (!predicate(*first))
+        {
+            return first;
+        }
+    }
+    return last;
+}
+
+template <class I1, class I2, class P>
+constexpr I1 search(I1 first, I1 last, I2 pattern_first, I2 pattern_last, P predicate)
+{
+    for (;; ++first)
+    {
+        I1 candidate = first;
+        I2 pattern = pattern_first;
+        for (;; ++candidate, ++pattern)
+        {
+            if (pattern == pattern_last)
+            {
+                return first;
+            }
+            if (candidate == last)
+            {
+                return last;
+            }
+            if (!predicate(*candidate, *pattern))
+            {
+                break;
+            }
+        }
+    }
+}
+
+template <class I1, class I2>
+constexpr I1 search(I1 first, I1 last, I2 pattern_first, I2 pattern_last)
+{
+    return _FSTD::search(first, last, pattern_first, pattern_last, __detail::EqualTo());
+}
+
+template <class I, class Searcher> constexpr I search(I first, I last, const Searcher& searcher)
+{
+    return searcher(first, last).first;
+}
+
+template <class I, class Size, class T, class P>
+constexpr I search_n(I first, I last, Size count, const T& value, P predicate)
+{
+    if (count <= 0)
+    {
+        return first;
+    }
+    for (; first != last; ++first)
+    {
+        if (!predicate(*first, value))
+        {
+            continue;
+        }
+        I start = first;
+        Size matched = 1;
+        for (;;)
+        {
+            if (matched == count)
+            {
+                return start;
+            }
+            if (++first == last)
+            {
+                return last;
+            }
+            if (!predicate(*first, value))
+            {
+                break;
+            }
+            ++matched;
+        }
+    }
+    return last;
+}
+
+template <class I, class Size, class T = __detail::IterValue<I>>
+constexpr I search_n(I first, I last, Size count, const T& value)
+{
+    return _FSTD::search_n(first, last, count, value, __detail::EqualTo());
+}
+
+template <class I1, class I2, class P>
+constexpr I1 find_end(I1 first, I1 last, I2 pattern_first, I2 pattern_last, P predicate)
+{
+    if (pattern_first == pattern_last)
+    {
+        return last;
+    }
+    I1 result = last;
+    for (;;)
+    {
+        I1 found = _FSTD::search(first, last, pattern_first, pattern_last, predicate);
+        if (found == last)
+        {
+            return result;
+        }
+        result = found;
+        first = found;
+        ++first;
+    }
+}
+
+template <class I1, class I2>
+constexpr I1 find_end(I1 first, I1 last, I2 pattern_first, I2 pattern_last)
+{
+    return _FSTD::find_end(first, last, pattern_first, pattern_last, __detail::EqualTo());
+}
+
+template <class I1, class I2, class P>
+constexpr I1 find_first_of(I1 first, I1 last, I2 set_first, I2 set_last, P predicate)
+{
+    for (; first != last; ++first)
+    {
+        for (I2 candidate = set_first; candidate != set_last; ++candidate)
+        {
+            if (predicate(*first, *candidate))
+            {
+                return first;
+            }
+        }
+    }
+    return last;
+}
+
+template <class I1, class I2>
+constexpr I1 find_first_of(I1 first, I1 last, I2 set_first, I2 set_last)
+{
+    return _FSTD::find_first_of(first, last, set_first, set_last, __detail::EqualTo());
+}
+
+template <class I, class P> constexpr I adjacent_find(I first, I last, P predicate)
+{
+    if (first == last)
+    {
+        return last;
+    }
+    for (I next = first; ++next != last; first = next)
+    {
+        if (predicate(*first, *next))
+        {
+            return first;
+        }
+    }
+    return last;
+}
+
+template <class I> constexpr I adjacent_find(I first, I last)
+{
+    return _FSTD::adjacent_find(first, last, __detail::EqualTo());
+}
+
+template <class I, class P>
+constexpr __detail::IterDifference<I> count_if(I first, I last, P predicate)
+{
+    __detail::IterDifference<I> result = 0;
+    for (; first != last; ++first)
+    {
+        if (predicate(*first))
+        {
+            ++result;
+        }
+    }
+    return result;
+}
+
+template <class I, class T = __detail::IterValue<I>>
+constexpr __detail::IterDifference<I> count(I first, I last, const T& value)
+{
+    __detail::IterDifference<I> result = 0;
+    for (; first != last; ++first)
+    {
+        if (*first == value)
+        {
+            ++result;
+        }
+    }
+    return result;
+}
+
+template <class I1, class I2, class P>
+constexpr pair<I1, I2> mismatch(I1 first1, I1 last1, I2 first2, P predicate)
+{
+    for (; first1 != last1 && predicate(*first1, *first2); ++first1, (void)++first2)
+    {
+    }
+    return pair<I1, I2>(first1, first2);
+}
+
+template <class I1, class I2> constexpr pair<I1, I2> mismatch(I1 first1, I1 last1, I2 first2)
+{
+    return _FSTD::mismatch(first1, last1, first2, __detail::EqualTo());
+}
+
+template <class I1, class I2, class P>
+constexpr pair<I1, I2> mismatch(I1 first1, I1 last1, I2 first2, I2 last2, P predicate)
+{
+    for (; first1 != last1 && first2 != last2 && predicate(*first1, *first2);
+         ++first1, (void)++first2)
+    {
+    }
+    return pair<I1, I2>(first1, first2);
+}
+
+template <class I1, class I2>
+constexpr pair<I1, I2> mismatch(I1 first1, I1 last1, I2 first2, I2 last2)
+{
+    return _FSTD::mismatch(first1, last1, first2, last2, __detail::EqualTo());
+}
+
+template <class I1, class I2, class P>
+constexpr bool equal(I1 first1, I1 last1, I2 first2, P predicate)
+{
+    for (; first1 != last1; ++first1, (void)++first2)
+    {
+        if (!predicate(*first1, *first2))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+template <class I1, class I2> constexpr bool equal(I1 first1, I1 last1, I2 first2)
+{
+    return _FSTD::equal(first1, last1, first2, __detail::EqualTo());
+}
+
+template <class I1, class I2, class P>
+constexpr bool equal(I1 first1, I1 last1, I2 first2, I2 last2, P predicate)
+{
+    if constexpr (__detail::ClassicRandomAccess<I1> && __detail::ClassicRandomAccess<I2>)
+    {
+        if (last1 - first1 != last2 - first2)
+        {
+            return false;
+        }
+        return _FSTD::equal(first1, last1, first2, predicate);
+    }
+    else
+    {
+        for (; first1 != last1 && first2 != last2; ++first1, (void)++first2)
+        {
+            if (!predicate(*first1, *first2))
+            {
+                return false;
+            }
+        }
+        return first1 == last1 && first2 == last2;
+    }
+}
+
+template <class I1, class I2> constexpr bool equal(I1 first1, I1 last1, I2 first2, I2 last2)
+{
+    return _FSTD::equal(first1, last1, first2, last2, __detail::EqualTo());
+}
+
+template <class I1, class I2, class P>
+constexpr bool is_permutation(I1 first1, I1 last1, I2 first2, I2 last2, P predicate)
+{
+    auto [rest1, rest2] = _FSTD::mismatch(first1, last1, first2, last2, predicate);
+    if (_FSTD::distance(rest1, last1) != _FSTD::distance(rest2, last2))
+    {
+        return false;
+    }
+    for (I1 current = rest1; current != last1; ++current)
+    {
+        auto same = [&](auto&& other) { return predicate(*current, other); };
+        if (_FSTD::find_if(rest1, current, same) != current)
+        {
+            continue;
+        }
+        const auto in_second = _FSTD::count_if(rest2, last2, same);
+        if (in_second == 0 || _FSTD::count_if(current, last1, same) != in_second)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+template <class I1, class I2>
+constexpr bool is_permutation(I1 first1, I1 last1, I2 first2, I2 last2)
+{
+    return _FSTD::is_permutation(first1, last1, first2, last2, __detail::EqualTo());
+}
+
+template <class I1, class I2, class P>
+constexpr bool is_permutation(I1 first1, I1 last1, I2 first2, P predicate)
+{
+    return _FSTD::is_permutation(first1, last1, first2,
+                                 _FSTD::next(first2, _FSTD::distance(first1, last1)), predicate);
+}
+
+template <class I1, class I2> constexpr bool is_permutation(I1 first1, I1 last1, I2 first2)
+{
+    return _FSTD::is_permutation(first1, last1, first2, __detail::EqualTo());
+}
+
+// Modifying sequence operations.
+
+template <class I, class O> constexpr O copy(I first, I last, O out)
+{
+    if constexpr (__detail::TriviallyCopyablePointers<I, O>)
+    {
+        if (!__builtin_is_constant_evaluated())
+        {
+            const auto count = static_cast<size_t>(last - first);
+            if (count != 0)
+            {
+                __builtin_memmove(out, first, count * sizeof(*out));
+            }
+            return out + count;
+        }
+    }
+    for (; first != last; ++first, (void)++out)
+    {
+        *out = *first;
+    }
+    return out;
+}
+
+template <class I, class Size, class O> constexpr O copy_n(I first, Size count, O out)
+{
+    for (; count > 0; ++first, (void)++out, --count)
+    {
+        *out = *first;
+    }
+    return out;
+}
+
+template <class I, class O, class P> constexpr O copy_if(I first, I last, O out, P predicate)
+{
+    for (; first != last; ++first)
+    {
+        if (predicate(*first))
+        {
+            *out = *first;
+            ++out;
+        }
+    }
+    return out;
+}
+
+template <class B1, class B2> constexpr B2 copy_backward(B1 first, B1 last, B2 out_last)
+{
+    if constexpr (__detail::TriviallyCopyablePointers<B1, B2>)
+    {
+        if (!__builtin_is_constant_evaluated())
+        {
+            const auto count = static_cast<size_t>(last - first);
+            if (count != 0)
+            {
+                __builtin_memmove(out_last - count, first, count * sizeof(*out_last));
+            }
+            return out_last - count;
+        }
+    }
+    while (first != last)
+    {
+        *--out_last = *--last;
+    }
+    return out_last;
+}
+
+template <class I, class O> constexpr O move(I first, I last, O out)
+{
+    if constexpr (__detail::TriviallyCopyablePointers<I, O>)
+    {
+        return _FSTD::copy(first, last, out);
+    }
+    else
+    {
+        for (; first != last; ++first, (void)++out)
+        {
+            *out = _FSTD::move(*first);
+        }
+        return out;
+    }
+}
+
+template <class B1, class B2> constexpr B2 move_backward(B1 first, B1 last, B2 out_last)
+{
+    if constexpr (__detail::TriviallyCopyablePointers<B1, B2>)
+    {
+        return _FSTD::copy_backward(first, last, out_last);
+    }
+    else
+    {
+        while (first != last)
+        {
+            *--out_last = _FSTD::move(*--last);
+        }
+        return out_last;
+    }
+}
+
+template <class F, class T = __detail::IterValue<F>>
+constexpr void fill(F first, F last, const T& value)
+{
+    for (; first != last; ++first)
+    {
+        *first = value;
+    }
+}
+
+template <class O, class Size, class T = typename iterator_traits<O>::value_type>
+constexpr O fill_n(O first, Size count, const T& value)
+{
+    for (; count > 0; ++first, (void)--count)
+    {
+        *first = value;
+    }
+    return first;
+}
+
+template <class I, class O, class F> constexpr O transform(I first, I last, O out, F operation)
+{
+    for (; first != last; ++first, (void)++out)
+    {
+        *out = operation(*first);
+    }
+    return out;
+}
+
+template <class I1, class I2, class O, class F>
+constexpr O transform(I1 first1, I1 last1, I2 first2, O out, F operation)
+{
+    for (; first1 != last1; ++first1, (void)++first2, ++out)
+    {
+        *out = operation(*first1, *first2);
+    }
+    return out;
+}
+
+template <class F, class G> constexpr void generate(F first, F last, G generator)
+{
+    for (; first != last; ++first)
+    {
+        *first = generator();
+    }
+}
+
+template <class O, class Size, class G> constexpr O generate_n(O first, Size count, G generator)
+{
+    for (; count > 0; ++first, (void)--count)
+    {
+        *first = generator();
+    }
+    return first;
+}
+
+template <class F, class P> constexpr F remove_if(F first, F last, P predicate)
+{
+    first = _FSTD::find_if(first, last, predicate);
+    if (first == last)
+    {
+        return first;
+    }
+    for (F current = first; ++current != last;)
+    {
+        if (!predicate(*current))
+        {
+            *first = _FSTD::move(*current);
+            ++first;
+        }
+    }
+    return first;
+}
+
+template <class F, class T = __detail::IterValue<F>>
+constexpr F remove(F first, F last, const T& value)
+{
+    return _FSTD::remove_if(first, last,
+                            [&value](const auto& element) { return element == value; });
+}
+
+template <class I, class O, class P> constexpr O remove_copy_if(I first, I last, O out, P predicate)
+{
+    for (; first != last; ++first)
+    {
+        if (!predicate(*first))
+        {
+            *out = *first;
+            ++out;
+        }
+    }
+    return out;
+}
+
+template <class I, class O, class T = __detail::IterValue<I>>
+constexpr O remove_copy(I first, I last, O out, const T& value)
+{
+    return _FSTD::remove_copy_if(first, last, out,
+                                 [&value](const auto& element) { return element == value; });
+}
+
+template <class F, class P, class T = __detail::IterValue<F>>
+constexpr void replace_if(F first, F last, P predicate, const T& replacement)
+{
+    for (; first != last; ++first)
+    {
+        if (predicate(*first))
+        {
+            *first = replacement;
+        }
+    }
+}
+
+template <class F, class T = __detail::IterValue<F>>
+constexpr void replace(F first, F last, const T& old_value, const T& new_value)
+{
+    for (; first != last; ++first)
+    {
+        if (*first == old_value)
+        {
+            *first = new_value;
+        }
+    }
+}
+
+template <class I, class O, class P, class T = typename iterator_traits<O>::value_type>
+constexpr O replace_copy_if(I first, I last, O out, P predicate, const T& replacement)
+{
+    for (; first != last; ++first, (void)++out)
+    {
+        if (predicate(*first))
+        {
+            *out = replacement;
+        }
+        else
+        {
+            *out = *first;
+        }
+    }
+    return out;
+}
+
+template <class I, class O, class T>
+constexpr O replace_copy(I first, I last, O out, const T& old_value, const T& new_value)
+{
+    for (; first != last; ++first, (void)++out)
+    {
+        if (*first == old_value)
+        {
+            *out = new_value;
+        }
+        else
+        {
+            *out = *first;
+        }
+    }
+    return out;
+}
+
+template <class F1, class F2> constexpr void iter_swap(F1 left, F2 right)
+{
+    using _FSTD::swap;
+    swap(*left, *right);
+}
+
+template <class F1, class F2> constexpr F2 swap_ranges(F1 first1, F1 last1, F2 first2)
+{
+    for (; first1 != last1; ++first1, (void)++first2)
+    {
+        _FSTD::iter_swap(first1, first2);
+    }
+    return first2;
+}
+
+template <class B> constexpr void reverse(B first, B last)
+{
+    if constexpr (__detail::ClassicRandomAccess<B>)
+    {
+        if (first == last)
+        {
+            return;
+        }
+        for (--last; first < last; ++first, (void)--last)
+        {
+            _FSTD::iter_swap(first, last);
+        }
+    }
+    else
+    {
+        while (first != last && first != --last)
+        {
+            _FSTD::iter_swap(first, last);
+            ++first;
+        }
+    }
+}
+
+template <class B, class O> constexpr O reverse_copy(B first, B last, O out)
+{
+    while (first != last)
+    {
+        *out = *--last;
+        ++out;
+    }
+    return out;
+}
+
+// Swaps blocks forward, so it needs only forward iterators, and returns where *first went.
+template <class F> constexpr F rotate(F first, F middle, F last)
+{
+    if (first == middle)
+    {
+        return last;
+    }
+    if (middle == last)
+    {
+        return first;
+    }
+    F next = middle;
+    do
+    {
+        _FSTD::iter_swap(first, next);
+        ++first;
+        ++next;
+        if (first == middle)
+        {
+            middle = next;
+        }
+    } while (next != last);
+    F result = first;
+    next = middle;
+    while (next != last)
+    {
+        _FSTD::iter_swap(first, next);
+        ++first;
+        ++next;
+        if (first == middle)
+        {
+            middle = next;
+        }
+        else if (next == last)
+        {
+            next = middle;
+        }
+    }
+    return result;
+}
+
+template <class F, class O> constexpr O rotate_copy(F first, F middle, F last, O out)
+{
+    return _FSTD::copy(first, middle, _FSTD::copy(middle, last, out));
+}
+
+template <class F> constexpr F shift_left(F first, F last, __detail::IterDifference<F> count)
+{
+    if (count <= 0)
+    {
+        return last;
+    }
+    F middle = first;
+    for (; count > 0; --count, ++middle)
+    {
+        if (middle == last)
+        {
+            return first;
+        }
+    }
+    return _FSTD::move(middle, last, first);
+}
+
+template <class F> constexpr F shift_right(F first, F last, __detail::IterDifference<F> count)
+{
+    if (count <= 0)
+    {
+        return first;
+    }
+    if constexpr (__detail::ClassicBidirectional<F>)
+    {
+        F middle = last;
+        for (auto steps = count; steps > 0; --steps, --middle)
+        {
+            if (middle == first)
+            {
+                return last;
+            }
+        }
+        return _FSTD::move_backward(first, middle, last);
+    }
+    else
+    {
+        const auto length = _FSTD::distance(first, last);
+        if (count >= length)
+        {
+            return last;
+        }
+        _FSTD::rotate(first, _FSTD::next(first, length - count), last);
+        return _FSTD::next(first, count);
+    }
+}
+
+template <class F, class P> constexpr F unique(F first, F last, P predicate)
+{
+    first = _FSTD::adjacent_find(first, last, predicate);
+    if (first == last)
+    {
+        return last;
+    }
+    F current = first;
+    while (++current != last)
+    {
+        if (!predicate(*first, *current))
+        {
+            *++first = _FSTD::move(*current);
+        }
+    }
+    return ++first;
+}
+
+template <class F> constexpr F unique(F first, F last)
+{
+    return _FSTD::unique(first, last, __detail::EqualTo());
+}
+
+template <class I, class O, class P> constexpr O unique_copy(I first, I last, O out, P predicate)
+{
+    if (first == last)
+    {
+        return out;
+    }
+    if constexpr (__detail::ClassicForward<I>)
+    {
+        I kept = first;
+        *out = *first;
+        ++out;
+        while (++first != last)
+        {
+            if (!predicate(*kept, *first))
+            {
+                kept = first;
+                *out = *first;
+                ++out;
+            }
+        }
+    }
+    else
+    {
+        // An input iterator cannot be read twice, so the last value written is kept aside.
+        __detail::IterValue<I> kept = *first;
+        *out = kept;
+        ++out;
+        while (++first != last)
+        {
+            if (!predicate(kept, *first))
+            {
+                kept = *first;
+                *out = kept;
+                ++out;
+            }
+        }
+    }
+    return out;
+}
+
+template <class I, class O> constexpr O unique_copy(I first, I last, O out)
+{
+    return _FSTD::unique_copy(first, last, out, __detail::EqualTo());
+}
+
+namespace __detail
+{
+// A uniformly distributed number below bound from a uniform random bit generator, by rejection
+// and, where the generator's range is too narrow, by combining draws.
+template <class G> unsigned long long UniformBelow(G& generator, unsigned long long bound)
+{
+    using Bits = typename remove_reference_t<G>::result_type;
+    constexpr auto lowest = static_cast<unsigned long long>(remove_reference_t<G>::min());
+    constexpr auto span = static_cast<unsigned long long>(remove_reference_t<G>::max()) - lowest;
+    auto draw = [&generator]
+    { return static_cast<unsigned long long>(static_cast<Bits>(generator())) - lowest; };
+    if (bound - 1 <= span)
+    {
+        const unsigned long long rejected = (span % bound + 1) % bound;
+        for (;;)
+        {
+            const unsigned long long value = draw();
+            if (rejected == 0 || value <= span - rejected)
+            {
+                return value % bound;
+            }
+        }
+    }
+    const unsigned long long scale = span + 1;
+    for (;;)
+    {
+        const unsigned long long high = UniformBelow(generator, (bound - 1) / scale + 1) * scale;
+        const unsigned long long value = high + draw();
+        if (value >= high && value < bound)
+        {
+            return value;
+        }
+    }
+}
+} // namespace __detail
+
+template <class R, class G> void shuffle(R first, R last, G&& generator)
+{
+    const auto length = last - first;
+    for (decltype(last - first) index = length - 1; index > 0; --index)
+    {
+        const auto chosen = static_cast<decltype(last - first)>(
+            __detail::UniformBelow(generator, static_cast<unsigned long long>(index) + 1));
+        _FSTD::iter_swap(first + index, first + chosen);
+    }
+}
+
+template <class I, class O, class Distance, class G>
+O sample(I first, I last, O out, Distance count, G&& generator)
+{
+    if constexpr (__detail::ClassicForward<I>)
+    {
+        // Selection sampling keeps the chosen elements in order.
+        auto remaining = static_cast<unsigned long long>(_FSTD::distance(first, last));
+        auto wanted = count > 0 ? static_cast<unsigned long long>(count) : 0ULL;
+        for (; wanted != 0 && first != last; ++first, --remaining)
+        {
+            if (__detail::UniformBelow(generator, remaining) < wanted)
+            {
+                *out = *first;
+                ++out;
+                --wanted;
+            }
+        }
+        return out;
+    }
+    else
+    {
+        // Reservoir sampling, into an output that must allow random access.
+        Distance filled = 0;
+        for (; first != last && filled < count; ++first, (void)++filled)
+        {
+            out[filled] = *first;
+        }
+        for (auto seen = static_cast<unsigned long long>(filled); first != last; ++first, ++seen)
+        {
+            const auto chosen = __detail::UniformBelow(generator, seen + 1);
+            if (chosen < static_cast<unsigned long long>(count))
+            {
+                out[static_cast<Distance>(chosen)] = *first;
+            }
+        }
+        return out + filled;
+    }
+}
+
+// Partitioning.
+
+template <class I, class P> constexpr bool is_partitioned(I first, I last, P predicate)
+{
+    first = _FSTD::find_if_not(first, last, predicate);
+    return _FSTD::none_of(first, last, predicate);
+}
+
+template <class F, class P> constexpr F partition(F first, F last, P predicate)
+{
+    if constexpr (__detail::ClassicBidirectional<F>)
+    {
+        for (;;)
+        {
+            for (;; ++first)
+            {
+                if (first == last)
+                {
+                    return first;
+                }
+                if (!predicate(*first))
+                {
+                    break;
+                }
+            }
+            do
+            {
+                if (first == --last)
+                {
+                    return first;
+                }
+            } while (!predicate(*last));
+            _FSTD::iter_swap(first, last);
+            ++first;
+        }
+    }
+    else
+    {
+        first = _FSTD::find_if_not(first, last, predicate);
+        if (first == last)
+        {
+            return first;
+        }
+        for (F current = _FSTD::next(first); current != last; ++current)
+        {
+            if (predicate(*current))
+            {
+                _FSTD::iter_swap(current, first);
+                ++first;
+            }
+        }
+        return first;
+    }
+}
+
+template <class I, class O1, class O2, class P>
+constexpr pair<O1, O2> partition_copy(I first, I last, O1 out_true, O2 out_false, P predicate)
+{
+    for (; first != last; ++first)
+    {
+        if (predicate(*first))
+        {
+            *out_true = *first;
+            ++out_true;
+        }
+        else
+        {
+            *out_false = *first;
+            ++out_false;
+        }
+    }
+    return pair<O1, O2>(out_true, out_false);
+}
+
+template <class F, class P> constexpr F partition_point(F first, F last, P predicate)
+{
+    auto length = _FSTD::distance(first, last);
+    while (length > 0)
+    {
+        const auto half = length / 2;
+        F middle = _FSTD::next(first, half);
+        if (predicate(*middle))
+        {
+            first = ++middle;
+            length -= half + 1;
+        }
+        else
+        {
+            length = half;
+        }
+    }
+    return first;
+}
+
+namespace __detail
+{
+// Uninitialized storage for up to a requested number of T, or none when memory is short.
+template <class T> class TemporaryBuffer
+{
+public:
+    explicit TemporaryBuffer(ptrdiff_t wanted) noexcept
+    {
+        if (wanted <= 0)
+        {
+            return;
+        }
+        const auto bytes = static_cast<size_t>(wanted) * sizeof(T);
+        if constexpr (alignof(T) > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
+        {
+            m_data = static_cast<T*>(::operator new(bytes, align_val_t(alignof(T)), nothrow));
+        }
+        else
+        {
+            m_data = static_cast<T*>(::operator new(bytes, nothrow));
+        }
+        if (m_data != nullptr)
+        {
+            m_capacity = wanted;
+        }
+    }
+
+    TemporaryBuffer(const TemporaryBuffer&) = delete;
+    TemporaryBuffer& operator=(const TemporaryBuffer&) = delete;
+
+    ~TemporaryBuffer()
+    {
+        if constexpr (alignof(T) > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
+        {
+            ::operator delete(m_data, align_val_t(alignof(T)), nothrow);
+        }
+        else
+        {
+            ::operator delete(m_data, nothrow);
+        }
+    }
+
+    T* Data() const noexcept
+    {
+        return m_data;
+    }
+    ptrdiff_t Capacity() const noexcept
+    {
+        return m_capacity;
+    }
+
+private:
+    T* m_data = nullptr;
+    ptrdiff_t m_capacity = 0;
+};
+
+template <class B, class P, class T>
+B StablePartitionWithBuffer(B first, B last, P& predicate, T* buffer)
+{
+    T* rejected = buffer;
+    B kept = first;
+    for (; first != last; ++first)
+    {
+        if (predicate(*first))
+        {
+            *kept = _FSTD::move(*first);
+            ++kept;
+        }
+        else
+        {
+            ::new (static_cast<void*>(rejected)) T(_FSTD::move(*first));
+            ++rejected;
+        }
+    }
+    B out = kept;
+    for (T* element = buffer; element != rejected; ++element, (void)++out)
+    {
+        *out = _FSTD::move(*element);
+        _FSTD::destroy_at(element);
+    }
+    return kept;
+}
+
+template <class F, class P, class Distance>
+F StablePartitionInPlace(F first, F last, P& predicate, Distance length)
+{
+    if (length == 1)
+    {
+        return predicate(*first) ? last : first;
+    }
+    F middle = _FSTD::next(first, length / 2);
+    F left = StablePartitionInPlace(first, middle, predicate, length / 2);
+    F right = StablePartitionInPlace(middle, last, predicate, length - length / 2);
+    return _FSTD::rotate(left, middle, right);
+}
+} // namespace __detail
+
+template <class B, class P> B stable_partition(B first, B last, P predicate)
+{
+    first = _FSTD::find_if_not(first, last, predicate);
+    if (first == last)
+    {
+        return first;
+    }
+    const auto length = _FSTD::distance(first, last);
+    __detail::TemporaryBuffer<__detail::IterValue<B>> buffer(length);
+    if (buffer.Capacity() >= length)
+    {
+        return __detail::StablePartitionWithBuffer(first, last, predicate, buffer.Data());
+    }
+    return __detail::StablePartitionInPlace(first, last, predicate, length);
+}
+
+// Binary search on partitioned ranges.
+
+template <class F, class T, class C>
+constexpr F lower_bound(F first, F last, const T& value, C compare)
+{
+    return _FSTD::partition_point(first, last,
+                                  [&](const auto& element) { return compare(element, value); });
+}
+
+template <class F, class T = __detail::IterValue<F>>
+constexpr F lower_bound(F first, F last, const T& value)
+{
+    return _FSTD::lower_bound(first, last, value, __detail::Less());
+}
+
+template <class F, class T, class C>
+constexpr F upper_bound(F first, F last, const T& value, C compare)
+{
+    return _FSTD::partition_point(first, last,
+                                  [&](const auto& element) { return !compare(value, element); });
+}
+
+template <class F, class T = __detail::IterValue<F>>
+constexpr F upper_bound(F first, F last, const T& value)
+{
+    return _FSTD::upper_bound(first, last, value, __detail::Less());
+}
+
+template <class F, class T, class C>
+constexpr pair<F, F> equal_range(F first, F last, const T& value, C compare)
+{
+    return pair<F, F>(_FSTD::lower_bound(first, last, value, compare),
+                      _FSTD::upper_bound(first, last, value, compare));
+}
+
+template <class F, class T = __detail::IterValue<F>>
+constexpr pair<F, F> equal_range(F first, F last, const T& value)
+{
+    return _FSTD::equal_range(first, last, value, __detail::Less());
+}
+
+template <class F, class T, class C>
+constexpr bool binary_search(F first, F last, const T& value, C compare)
+{
+    first = _FSTD::lower_bound(first, last, value, compare);
+    return first != last && !compare(value, *first);
+}
+
+template <class F, class T = __detail::IterValue<F>>
+constexpr bool binary_search(F first, F last, const T& value)
+{
+    return _FSTD::binary_search(first, last, value, __detail::Less());
+}
+
+// Heaps: a max-heap by compare, rooted at first.
+
+namespace __detail
+{
+template <class R, class C>
+constexpr void SiftDown(R first, IterDifference<R> length, IterDifference<R> hole, C& compare)
+{
+    IterValue<R> value = _FSTD::move(first[hole]);
+    for (;;)
+    {
+        IterDifference<R> child = 2 * hole + 1;
+        if (child >= length)
+        {
+            break;
+        }
+        if (child + 1 < length && compare(first[child], first[child + 1]))
+        {
+            ++child;
+        }
+        if (!compare(value, first[child]))
+        {
+            break;
+        }
+        first[hole] = _FSTD::move(first[child]);
+        hole = child;
+    }
+    first[hole] = _FSTD::move(value);
+}
+
+template <class R, class C> constexpr void SiftUp(R first, IterDifference<R> hole, C& compare)
+{
+    IterValue<R> value = _FSTD::move(first[hole]);
+    while (hole > 0)
+    {
+        const IterDifference<R> parent = (hole - 1) / 2;
+        if (!compare(first[parent], value))
+        {
+            break;
+        }
+        first[hole] = _FSTD::move(first[parent]);
+        hole = parent;
+    }
+    first[hole] = _FSTD::move(value);
+}
+
+template <class R, class C> constexpr void PopHeap(R first, R last, C& compare)
+{
+    const auto length = last - first;
+    if (length > 1)
+    {
+        _FSTD::iter_swap(first, last - 1);
+        SiftDown(first, length - 1, IterDifference<R>(0), compare);
+    }
+}
+
+template <class R, class C> constexpr void MakeHeap(R first, R last, C& compare)
+{
+    const auto length = last - first;
+    for (auto parent = length / 2; parent > 0;)
+    {
+        --parent;
+        SiftDown(first, length, parent, compare);
+    }
+}
+
+template <class R, class C> constexpr void SortHeap(R first, R last, C& compare)
+{
+    for (; last - first > 1; --last)
+    {
+        PopHeap(first, last, compare);
+    }
+}
+} // namespace __detail
+
+template <class R, class C> constexpr void push_heap(R first, R last, C compare)
+{
+    if (last - first > 1)
+    {
+        __detail::SiftUp(first, (last - first) - 1, compare);
+    }
+}
+
+template <class R> constexpr void push_heap(R first, R last)
+{
+    _FSTD::push_heap(first, last, __detail::Less());
+}
+
+template <class R, class C> constexpr void pop_heap(R first, R last, C compare)
+{
+    __detail::PopHeap(first, last, compare);
+}
+
+template <class R> constexpr void pop_heap(R first, R last)
+{
+    _FSTD::pop_heap(first, last, __detail::Less());
+}
+
+template <class R, class C> constexpr void make_heap(R first, R last, C compare)
+{
+    __detail::MakeHeap(first, last, compare);
+}
+
+template <class R> constexpr void make_heap(R first, R last)
+{
+    _FSTD::make_heap(first, last, __detail::Less());
+}
+
+template <class R, class C> constexpr void sort_heap(R first, R last, C compare)
+{
+    __detail::SortHeap(first, last, compare);
+}
+
+template <class R> constexpr void sort_heap(R first, R last)
+{
+    _FSTD::sort_heap(first, last, __detail::Less());
+}
+
+template <class R, class C> constexpr R is_heap_until(R first, R last, C compare)
+{
+    const auto length = last - first;
+    for (decltype(last - first) child = 1; child < length; ++child)
+    {
+        if (compare(first[(child - 1) / 2], first[child]))
+        {
+            return first + child;
+        }
+    }
+    return last;
+}
+
+template <class R> constexpr R is_heap_until(R first, R last)
+{
+    return _FSTD::is_heap_until(first, last, __detail::Less());
+}
+
+template <class R, class C> constexpr bool is_heap(R first, R last, C compare)
+{
+    return _FSTD::is_heap_until(first, last, compare) == last;
+}
+
+template <class R> constexpr bool is_heap(R first, R last)
+{
+    return _FSTD::is_heap_until(first, last) == last;
+}
+
+// Sorting.
+
+template <class F, class C> constexpr F is_sorted_until(F first, F last, C compare)
+{
+    if (first == last)
+    {
+        return last;
+    }
+    for (F next = first; ++next != last; first = next)
+    {
+        if (compare(*next, *first))
+        {
+            return next;
+        }
+    }
+    return last;
+}
+
+template <class F> constexpr F is_sorted_until(F first, F last)
+{
+    return _FSTD::is_sorted_until(first, last, __detail::Less());
+}
+
+template <class F, class C> constexpr bool is_sorted(F first, F last, C compare)
+{
+    return _FSTD::is_sorted_until(first, last, compare) == last;
+}
+
+template <class F> constexpr bool is_sorted(F first, F last)
+{
+    return _FSTD::is_sorted_until(first, last) == last;
+}
+
+namespace __detail
+{
+inline constexpr ptrdiff_t InsertionSortLimit = 16;
+
+// Stable, so stable_sort uses it for short runs too.
+template <class B, class C> constexpr void InsertionSort(B first, B last, C& compare)
+{
+    if (first == last)
+    {
+        return;
+    }
+    for (B current = _FSTD::next(first); current != last; ++current)
+    {
+        IterValue<B> value = _FSTD::move(*current);
+        B hole = current;
+        if (compare(value, *first))
+        {
+            _FSTD::move_backward(first, current, _FSTD::next(current));
+            hole = first;
+        }
+        else
+        {
+            for (B before = _FSTD::prev(hole); compare(value, *before); --before)
+            {
+                *hole = _FSTD::move(*before);
+                hole = before;
+            }
+        }
+        *hole = _FSTD::move(value);
+    }
+}
+
+template <class R, class C> constexpr void MoveMedianToFirst(R result, R a, R b, R c, C& compare)
+{
+    if (compare(*a, *b))
+    {
+        if (compare(*b, *c))
+        {
+            _FSTD::iter_swap(result, b);
+        }
+        else if (compare(*a, *c))
+        {
+            _FSTD::iter_swap(result, c);
+        }
+        else
+        {
+            _FSTD::iter_swap(result, a);
+        }
+    }
+    else if (compare(*a, *c))
+    {
+        _FSTD::iter_swap(result, a);
+    }
+    else if (compare(*b, *c))
+    {
+        _FSTD::iter_swap(result, c);
+    }
+    else
+    {
+        _FSTD::iter_swap(result, b);
+    }
+}
+
+// Hoare partition around *first, the median of three, so the scans need no bounds checks: the
+// other two candidates stop them.
+template <class R, class C> constexpr R PartitionAroundMedian(R first, R last, C& compare)
+{
+    R middle = first + (last - first) / 2;
+    MoveMedianToFirst(first, first + 1, middle, last - 1, compare);
+    R left = first + 1;
+    R right = last;
+    for (;;)
+    {
+        while (compare(*left, *first))
+        {
+            ++left;
+        }
+        --right;
+        while (compare(*first, *right))
+        {
+            --right;
+        }
+        if (!(left < right))
+        {
+            return left;
+        }
+        _FSTD::iter_swap(left, right);
+        ++left;
+    }
+}
+
+template <class R> constexpr IterDifference<R> IntroDepth(R first, R last)
+{
+    IterDifference<R> depth = 0;
+    for (auto length = last - first; length > 1; length /= 2)
+    {
+        depth += 2;
+    }
+    return depth;
+}
+
+// Quicksort that switches to heapsort when it recurses too deep, leaving short runs for one
+// insertion sort at the end.
+template <class R, class C>
+constexpr void IntroSort(R first, R last, IterDifference<R> depth, C& compare)
+{
+    while (last - first > InsertionSortLimit)
+    {
+        if (depth == 0)
+        {
+            MakeHeap(first, last, compare);
+            SortHeap(first, last, compare);
+            return;
+        }
+        --depth;
+        R cut = PartitionAroundMedian(first, last, compare);
+        IntroSort(cut, last, depth, compare);
+        last = cut;
+    }
+}
+
+template <class R, class C>
+constexpr void IntroSelect(R first, R nth, R last, IterDifference<R> depth, C& compare)
+{
+    while (last - first > 3)
+    {
+        if (depth == 0)
+        {
+            // Heap selection: the smallest nth - first + 1 elements, then the largest of them.
+            R end = nth + 1;
+            MakeHeap(first, end, compare);
+            for (R current = end; current != last; ++current)
+            {
+                if (compare(*current, *first))
+                {
+                    _FSTD::iter_swap(current, first);
+                    SiftDown(first, end - first, IterDifference<R>(0), compare);
+                }
+            }
+            _FSTD::iter_swap(first, nth);
+            return;
+        }
+        --depth;
+        R cut = PartitionAroundMedian(first, last, compare);
+        if (cut <= nth)
+        {
+            first = cut;
+        }
+        else
+        {
+            last = cut;
+        }
+    }
+    InsertionSort(first, last, compare);
+}
+} // namespace __detail
+
+template <class R, class C> constexpr void sort(R first, R last, C compare)
+{
+    if (last - first < 2)
+    {
+        return;
+    }
+    __detail::IntroSort(first, last, __detail::IntroDepth(first, last), compare);
+    __detail::InsertionSort(first, last, compare);
+}
+
+template <class R> constexpr void sort(R first, R last)
+{
+    _FSTD::sort(first, last, __detail::Less());
+}
+
+template <class R, class C> constexpr void partial_sort(R first, R middle, R last, C compare)
+{
+    if (first == middle)
+    {
+        return;
+    }
+    __detail::MakeHeap(first, middle, compare);
+    for (R current = middle; current != last; ++current)
+    {
+        if (compare(*current, *first))
+        {
+            _FSTD::iter_swap(current, first);
+            __detail::SiftDown(first, middle - first, __detail::IterDifference<R>(0), compare);
+        }
+    }
+    __detail::SortHeap(first, middle, compare);
+}
+
+template <class R> constexpr void partial_sort(R first, R middle, R last)
+{
+    _FSTD::partial_sort(first, middle, last, __detail::Less());
+}
+
+template <class I, class R, class C>
+constexpr R partial_sort_copy(I first, I last, R out_first, R out_last, C compare)
+{
+    R out = out_first;
+    for (; first != last && out != out_last; ++first, (void)++out)
+    {
+        *out = *first;
+    }
+    if (out == out_first)
+    {
+        return out;
+    }
+    __detail::MakeHeap(out_first, out, compare);
+    for (; first != last; ++first)
+    {
+        if (compare(*first, *out_first))
+        {
+            *out_first = *first;
+            __detail::SiftDown(out_first, out - out_first, __detail::IterDifference<R>(0), compare);
+        }
+    }
+    __detail::SortHeap(out_first, out, compare);
+    return out;
+}
+
+template <class I, class R> constexpr R partial_sort_copy(I first, I last, R out_first, R out_last)
+{
+    return _FSTD::partial_sort_copy(first, last, out_first, out_last, __detail::Less());
+}
+
+template <class R, class C> constexpr void nth_element(R first, R nth, R last, C compare)
+{
+    if (first == last || nth == last)
+    {
+        return;
+    }
+    __detail::IntroSelect(first, nth, last, __detail::IntroDepth(first, last), compare);
+}
+
+template <class R> constexpr void nth_element(R first, R nth, R last)
+{
+    _FSTD::nth_element(first, nth, last, __detail::Less());
+}
+
+// Merging.
+
+template <class I1, class I2, class O, class C>
+constexpr O merge(I1 first1, I1 last1, I2 first2, I2 last2, O out, C compare)
+{
+    for (; first1 != last1; ++out)
+    {
+        if (first2 == last2)
+        {
+            return _FSTD::copy(first1, last1, out);
+        }
+        if (compare(*first2, *first1))
+        {
+            *out = *first2;
+            ++first2;
+        }
+        else
+        {
+            *out = *first1;
+            ++first1;
+        }
+    }
+    return _FSTD::copy(first2, last2, out);
+}
+
+template <class I1, class I2, class O>
+constexpr O merge(I1 first1, I1 last1, I2 first2, I2 last2, O out)
+{
+    return _FSTD::merge(first1, last1, first2, last2, out, __detail::Less());
+}
+
+namespace __detail
+{
+// Moves the first run into the buffer, then merges both runs forward into place; equal
+// elements come from the first run first, which keeps the merge stable.
+template <class B, class C, class T>
+void MergeWithBuffer(B first, B middle, B last, C& compare, T* buffer)
+{
+    T* buffered = buffer;
+    for (B current = first; current != middle; ++current, (void)++buffered)
+    {
+        ::new (static_cast<void*>(buffered)) T(_FSTD::move(*current));
+    }
+    T* next = buffer;
+    B out = first;
+    for (; next != buffered && middle != last; ++out)
+    {
+        if (compare(*middle, *next))
+        {
+            *out = _FSTD::move(*middle);
+            ++middle;
+        }
+        else
+        {
+            *out = _FSTD::move(*next);
+            ++next;
+        }
+    }
+    for (; next != buffered; ++next, (void)++out)
+    {
+        *out = _FSTD::move(*next);
+    }
+    for (T* element = buffer; element != buffered; ++element)
+    {
+        _FSTD::destroy_at(element);
+    }
+}
+
+template <class B, class C>
+void MergeInPlace(B first, B middle, B last, IterDifference<B> length1, IterDifference<B> length2,
+                  C& compare)
+{
+    if (length1 == 0 || length2 == 0)
+    {
+        return;
+    }
+    if (length1 + length2 == 2)
+    {
+        if (compare(*middle, *first))
+        {
+            _FSTD::iter_swap(first, middle);
+        }
+        return;
+    }
+    B cut1 = first;
+    B cut2 = middle;
+    IterDifference<B> length11 = 0;
+    IterDifference<B> length22 = 0;
+    if (length1 > length2)
+    {
+        length11 = length1 / 2;
+        _FSTD::advance(cut1, length11);
+        cut2 = _FSTD::lower_bound(middle, last, *cut1, compare);
+        length22 = _FSTD::distance(middle, cut2);
+    }
+    else
+    {
+        length22 = length2 / 2;
+        _FSTD::advance(cut2, length22);
+        cut1 = _FSTD::upper_bound(first, middle, *cut2, compare);
+        length11 = _FSTD::distance(first, cut1);
+    }
+    B new_middle = _FSTD::rotate(cut1, middle, cut2);
+    MergeInPlace(first, cut1, new_middle, length11, length22, compare);
+    MergeInPlace(new_middle, cut2, last, length1 - length11, length2 - length22, compare);
+}
+
+template <class R, class C, class T>
+void MergeSort(R first, R last, C& compare, T* buffer, ptrdiff_t capacity)
+{
+    const auto length = last - first;
+    if (length <= InsertionSortLimit)
+    {
+        InsertionSort(first, last, compare);
+        return;
+    }
+    R middle = first + length / 2;
+    MergeSort(first, middle, compare, buffer, capacity);
+    MergeSort(middle, last, compare, buffer, capacity);
+    if (!compare(*middle, *(middle - 1)))
+    {
+        return;
+    }
+    if (middle - first <= capacity)
+    {
+        MergeWithBuffer(first, middle, last, compare, buffer);
+    }
+    else
+    {
+        MergeInPlace(first, middle, last, middle - first, last - middle, compare);
+    }
+}
+} // namespace __detail
+
+template <class B, class C> void inplace_merge(B first, B middle, B last, C compare)
+{
+    const auto length1 = _FSTD::distance(first, middle);
+    const auto length2 = _FSTD::distance(middle, last);
+    __detail::TemporaryBuffer<__detail::IterValue<B>> buffer(length1);
+    if (buffer.Capacity() >= length1)
+    {
+        __detail::MergeWithBuffer(first, middle, last, compare, buffer.Data());
+    }
+    else
+    {
+        __detail::MergeInPlace(first, middle, last, length1, length2, compare);
+    }
+}
+
+template <class B> void inplace_merge(B first, B middle, B last)
+{
+    _FSTD::inplace_merge(first, middle, last, __detail::Less());
+}
+
+template <class R, class C> void stable_sort(R first, R last, C compare)
+{
+    const auto length = last - first;
+    if (length < 2)
+    {
+        return;
+    }
+    __detail::TemporaryBuffer<__detail::IterValue<R>> buffer(
+        length > __detail::InsertionSortLimit ? (length + 1) / 2 : 0);
+    __detail::MergeSort(first, last, compare, buffer.Data(), buffer.Capacity());
+}
+
+template <class R> void stable_sort(R first, R last)
+{
+    _FSTD::stable_sort(first, last, __detail::Less());
+}
+
+// Set operations on sorted ranges.
+
+template <class I1, class I2, class C>
+constexpr bool includes(I1 first1, I1 last1, I2 first2, I2 last2, C compare)
+{
+    for (; first2 != last2; ++first1)
+    {
+        if (first1 == last1 || compare(*first2, *first1))
+        {
+            return false;
+        }
+        if (!compare(*first1, *first2))
+        {
+            ++first2;
+        }
+    }
+    return true;
+}
+
+template <class I1, class I2> constexpr bool includes(I1 first1, I1 last1, I2 first2, I2 last2)
+{
+    return _FSTD::includes(first1, last1, first2, last2, __detail::Less());
+}
+
+template <class I1, class I2, class O, class C>
+constexpr O set_union(I1 first1, I1 last1, I2 first2, I2 last2, O out, C compare)
+{
+    for (; first1 != last1; ++out)
+    {
+        if (first2 == last2)
+        {
+            return _FSTD::copy(first1, last1, out);
+        }
+        if (compare(*first2, *first1))
+        {
+            *out = *first2;
+            ++first2;
+        }
+        else
+        {
+            *out = *first1;
+            if (!compare(*first1, *first2))
+            {
+                ++first2;
+            }
+            ++first1;
+        }
+    }
+    return _FSTD::copy(first2, last2, out);
+}
+
+template <class I1, class I2, class O>
+constexpr O set_union(I1 first1, I1 last1, I2 first2, I2 last2, O out)
+{
+    return _FSTD::set_union(first1, last1, first2, last2, out, __detail::Less());
+}
+
+template <class I1, class I2, class O, class C>
+constexpr O set_intersection(I1 first1, I1 last1, I2 first2, I2 last2, O out, C compare)
+{
+    while (first1 != last1 && first2 != last2)
+    {
+        if (compare(*first1, *first2))
+        {
+            ++first1;
+        }
+        else
+        {
+            if (!compare(*first2, *first1))
+            {
+                *out = *first1;
+                ++out;
+                ++first1;
+            }
+            ++first2;
+        }
+    }
+    return out;
+}
+
+template <class I1, class I2, class O>
+constexpr O set_intersection(I1 first1, I1 last1, I2 first2, I2 last2, O out)
+{
+    return _FSTD::set_intersection(first1, last1, first2, last2, out, __detail::Less());
+}
+
+template <class I1, class I2, class O, class C>
+constexpr O set_difference(I1 first1, I1 last1, I2 first2, I2 last2, O out, C compare)
+{
+    while (first1 != last1)
+    {
+        if (first2 == last2)
+        {
+            return _FSTD::copy(first1, last1, out);
+        }
+        if (compare(*first1, *first2))
+        {
+            *out = *first1;
+            ++out;
+            ++first1;
+        }
+        else
+        {
+            if (!compare(*first2, *first1))
+            {
+                ++first1;
+            }
+            ++first2;
+        }
+    }
+    return out;
+}
+
+template <class I1, class I2, class O>
+constexpr O set_difference(I1 first1, I1 last1, I2 first2, I2 last2, O out)
+{
+    return _FSTD::set_difference(first1, last1, first2, last2, out, __detail::Less());
+}
+
+template <class I1, class I2, class O, class C>
+constexpr O set_symmetric_difference(I1 first1, I1 last1, I2 first2, I2 last2, O out, C compare)
+{
+    while (first1 != last1)
+    {
+        if (first2 == last2)
+        {
+            return _FSTD::copy(first1, last1, out);
+        }
+        if (compare(*first1, *first2))
+        {
+            *out = *first1;
+            ++out;
+            ++first1;
+        }
+        else
+        {
+            if (compare(*first2, *first1))
+            {
+                *out = *first2;
+                ++out;
+            }
+            else
+            {
+                ++first1;
+            }
+            ++first2;
+        }
+    }
+    return _FSTD::copy(first2, last2, out);
+}
+
+template <class I1, class I2, class O>
+constexpr O set_symmetric_difference(I1 first1, I1 last1, I2 first2, I2 last2, O out)
+{
+    return _FSTD::set_symmetric_difference(first1, last1, first2, last2, out, __detail::Less());
+}
+
+// Minimum and maximum.
+
+template <class T, class C> constexpr const T& min(const T& left, const T& right, C compare)
+{
+    return compare(right, left) ? right : left;
+}
+
+template <class T> constexpr const T& min(const T& left, const T& right)
+{
+    return right < left ? right : left;
+}
+
+template <class T, class C> constexpr const T& max(const T& left, const T& right, C compare)
+{
+    return compare(left, right) ? right : left;
+}
+
+template <class T> constexpr const T& max(const T& left, const T& right)
+{
+    return left < right ? right : left;
+}
+
+template <class F, class C> constexpr F min_element(F first, F last, C compare)
+{
+    if (first == last)
+    {
+        return last;
+    }
+    F smallest = first;
+    while (++first != last)
+    {
+        if (compare(*first, *smallest))
+        {
+            smallest = first;
+        }
+    }
+    return smallest;
+}
+
+template <class F> constexpr F min_element(F first, F last)
+{
+    return _FSTD::min_element(first, last, __detail::Less());
+}
+
+template <class F, class C> constexpr F max_element(F first, F last, C compare)
+{
+    if (first == last)
+    {
+        return last;
+    }
+    F largest = first;
+    while (++first != last)
+    {
+        if (compare(*largest, *first))
+        {
+            largest = first;
+        }
+    }
+    return largest;
+}
+
+template <class F> constexpr F max_element(F first, F last)
+{
+    return _FSTD::max_element(first, last, __detail::Less());
+}
+
+// The first smallest and the last largest, as the standard asks.
+template <class F, class C> constexpr pair<F, F> minmax_element(F first, F last, C compare)
+{
+    F smallest = first;
+    F largest = first;
+    if (first == last)
+    {
+        return pair<F, F>(smallest, largest);
+    }
+    while (++first != last)
+    {
+        if (compare(*first, *smallest))
+        {
+            smallest = first;
+        }
+        else if (!compare(*first, *largest))
+        {
+            largest = first;
+        }
+    }
+    return pair<F, F>(smallest, largest);
+}
+
+template <class F> constexpr pair<F, F> minmax_element(F first, F last)
+{
+    return _FSTD::minmax_element(first, last, __detail::Less());
+}
+
+template <class T, class C> constexpr T min(initializer_list<T> values, C compare)
+{
+    return *_FSTD::min_element(values.begin(), values.end(), compare);
+}
+
+template <class T> constexpr T min(initializer_list<T> values)
+{
+    return *_FSTD::min_element(values.begin(), values.end());
+}
+
+template <class T, class C> constexpr T max(initializer_list<T> values, C compare)
+{
+    return *_FSTD::max_element(values.begin(), values.end(), compare);
+}
+
+template <class T> constexpr T max(initializer_list<T> values)
+{
+    return *_FSTD::max_element(values.begin(), values.end());
+}
+
+template <class T, class C>
+constexpr pair<const T&, const T&> minmax(const T& left, const T& right, C compare)
+{
+    return compare(right, left) ? pair<const T&, const T&>(right, left)
+                                : pair<const T&, const T&>(left, right);
+}
+
+template <class T> constexpr pair<const T&, const T&> minmax(const T& left, const T& right)
+{
+    return _FSTD::minmax(left, right, __detail::Less());
+}
+
+template <class T, class C> constexpr pair<T, T> minmax(initializer_list<T> values, C compare)
+{
+    auto [smallest, largest] = _FSTD::minmax_element(values.begin(), values.end(), compare);
+    return pair<T, T>(*smallest, *largest);
+}
+
+template <class T> constexpr pair<T, T> minmax(initializer_list<T> values)
+{
+    return _FSTD::minmax(values, __detail::Less());
+}
+
+template <class T, class C>
+constexpr const T& clamp(const T& value, const T& low, const T& high, C compare)
+{
+    if (compare(value, low))
+    {
+        return low;
+    }
+    return compare(high, value) ? high : value;
+}
+
+template <class T> constexpr const T& clamp(const T& value, const T& low, const T& high)
+{
+    return _FSTD::clamp(value, low, high, __detail::Less());
+}
+
+// Comparison and permutations.
+
+template <class I1, class I2, class C>
+constexpr bool lexicographical_compare(I1 first1, I1 last1, I2 first2, I2 last2, C compare)
+{
+    for (; first2 != last2; ++first1, (void)++first2)
+    {
+        if (first1 == last1 || compare(*first1, *first2))
+        {
+            return true;
+        }
+        if (compare(*first2, *first1))
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+template <class I1, class I2>
+constexpr bool lexicographical_compare(I1 first1, I1 last1, I2 first2, I2 last2)
+{
+    return _FSTD::lexicographical_compare(first1, last1, first2, last2, __detail::Less());
+}
+
+template <class I1, class I2, class C>
+constexpr auto lexicographical_compare_three_way(I1 first1, I1 last1, I2 first2, I2 last2,
+                                                 C compare) -> decltype(compare(*first1, *first2))
+{
+    for (; first1 != last1 && first2 != last2; ++first1, (void)++first2)
+    {
+        if (auto order = compare(*first1, *first2); order != 0)
+        {
+            return order;
+        }
+    }
+    return first1 != last1   ? strong_ordering::greater
+           : first2 != last2 ? strong_ordering::less
+                             : strong_ordering::equal;
+}
+
+template <class I1, class I2>
+constexpr auto lexicographical_compare_three_way(I1 first1, I1 last1, I2 first2, I2 last2)
+{
+    return _FSTD::lexicographical_compare_three_way(first1, last1, first2, last2,
+                                                    compare_three_way());
+}
+
+template <class B, class C> constexpr bool next_permutation(B first, B last, C compare)
+{
+    B current = last;
+    if (first == last || first == --current)
+    {
+        return false;
+    }
+    for (;;)
+    {
+        B after = current;
+        if (compare(*--current, *after))
+        {
+            B swap_with = last;
+            while (!compare(*current, *--swap_with))
+            {
+            }
+            _FSTD::iter_swap(current, swap_with);
+            _FSTD::reverse(after, last);
+            return true;
+        }
+        if (current == first)
+        {
+            _FSTD::reverse(first, last);
+            return false;
+        }
+    }
+}
+
+template <class B> constexpr bool next_permutation(B first, B last)
+{
+    return _FSTD::next_permutation(first, last, __detail::Less());
+}
+
+template <class B, class C> constexpr bool prev_permutation(B first, B last, C compare)
+{
+    B current = last;
+    if (first == last || first == --current)
+    {
+        return false;
+    }
+    for (;;)
+    {
+        B after = current;
+        if (compare(*after, *--current))
+        {
+            B swap_with = last;
+            while (!compare(*--swap_with, *current))
+            {
+            }
+            _FSTD::iter_swap(current, swap_with);
+            _FSTD::reverse(after, last);
+            return true;
+        }
+        if (current == first)
+        {
+            _FSTD::reverse(first, last);
+            return false;
+        }
+    }
+}
+
+template <class B> constexpr bool prev_permutation(B first, B last)
+{
+    return _FSTD::prev_permutation(first, last, __detail::Less());
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

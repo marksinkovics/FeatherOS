@@ -128,3 +128,4 @@ if (FEATHEROS_KERNEL_TESTS)
 endif ()
 
 target_sources(${KERNEL_BINARY} PRIVATE ${SRC})
+target_link_libraries(${KERNEL_BINARY} PRIVATE featheros_cxx_headers)

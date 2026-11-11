@@ -1,0 +1,307 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_ARRAY
+#define FEATHEROS_LIBCXX_ARRAY
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "compare"
+#include "initializer_list"
+#include "type_traits"
+#include "utility"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+template <class T, size_t Size> struct ArrayStorage
+{
+    using type = T[Size];
+    static constexpr T* Data(type& elements) noexcept
+    {
+        return elements;
+    }
+    static constexpr const T* Data(const type& elements) noexcept
+    {
+        return elements;
+    }
+};
+
+// A zero-size array still needs a member to stay an aggregate, but has no elements to point to.
+template <class T> struct ArrayStorage<T, 0>
+{
+    struct type
+    {
+    };
+    static constexpr T* Data(const type&) noexcept
+    {
+        return nullptr;
+    }
+};
+
+template <class Iterator>
+constexpr auto LexicographicalThreeWay(Iterator left, Iterator left_end, Iterator right,
+                                       Iterator right_end)
+    -> decltype(synth_three_way(*left, *right))
+{
+    for (; left != left_end && right != right_end; ++left, ++right)
+    {
+        if (auto order = synth_three_way(*left, *right); order != 0)
+        {
+            return order;
+        }
+    }
+    if (left != left_end)
+    {
+        return strong_ordering::greater;
+    }
+    return right != right_end ? strong_ordering::less : strong_ordering::equal;
+}
+} // namespace __detail
+
+template <class T, size_t Size> struct array
+{
+    using value_type = T;
+    using pointer = T*;
+    using const_pointer = const T*;
+    using reference = T&;
+    using const_reference = const T&;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+    using iterator = T*;
+    using const_iterator = const T*;
+    using reverse_iterator = _FSTD::reverse_iterator<iterator>;
+    using const_reverse_iterator = _FSTD::reverse_iterator<const_iterator>;
+
+    // Public so that array stays an aggregate; nothing else should name it.
+    typename __detail::ArrayStorage<T, Size>::type __elements;
+
+    constexpr void fill(const T& value)
+    {
+        for (auto& element : *this)
+        {
+            element = value;
+        }
+    }
+
+    constexpr void swap(array& other) noexcept(is_nothrow_swappable_v<T>)
+    {
+        using _FSTD::swap;
+        for (size_t index = 0; index < Size; ++index)
+        {
+            swap((*this)[index], other[index]);
+        }
+    }
+
+    constexpr iterator begin() noexcept
+    {
+        return data();
+    }
+    constexpr const_iterator begin() const noexcept
+    {
+        return data();
+    }
+    constexpr iterator end() noexcept
+    {
+        return data() + Size;
+    }
+    constexpr const_iterator end() const noexcept
+    {
+        return data() + Size;
+    }
+    constexpr reverse_iterator rbegin() noexcept
+    {
+        return reverse_iterator(end());
+    }
+    constexpr const_reverse_iterator rbegin() const noexcept
+    {
+        return const_reverse_iterator(end());
+    }
+    constexpr reverse_iterator rend() noexcept
+    {
+        return reverse_iterator(begin());
+    }
+    constexpr const_reverse_iterator rend() const noexcept
+    {
+        return const_reverse_iterator(begin());
+    }
+    constexpr const_iterator cbegin() const noexcept
+    {
+        return begin();
+    }
+    constexpr const_iterator cend() const noexcept
+    {
+        return end();
+    }
+    constexpr const_reverse_iterator crbegin() const noexcept
+    {
+        return rbegin();
+    }
+    constexpr const_reverse_iterator crend() const noexcept
+    {
+        return rend();
+    }
+
+    [[nodiscard]] constexpr bool empty() const noexcept
+    {
+        return Size == 0;
+    }
+    constexpr size_type size() const noexcept
+    {
+        return Size;
+    }
+    constexpr size_type max_size() const noexcept
+    {
+        return Size;
+    }
+
+    constexpr reference operator[](size_type index)
+    {
+        return data()[index];
+    }
+    constexpr const_reference operator[](size_type index) const
+    {
+        return data()[index];
+    }
+    constexpr reference at(size_type index)
+    {
+        if (index >= Size)
+        {
+            __detail::LibraryAbort("array::at: index out of range");
+        }
+        return data()[index];
+    }
+    constexpr const_reference at(size_type index) const
+    {
+        if (index >= Size)
+        {
+            __detail::LibraryAbort("array::at: index out of range");
+        }
+        return data()[index];
+    }
+    constexpr reference front()
+    {
+        return data()[0];
+    }
+    constexpr const_reference front() const
+    {
+        return data()[0];
+    }
+    constexpr reference back()
+    {
+        return data()[Size - 1];
+    }
+    constexpr const_reference back() const
+    {
+        return data()[Size - 1];
+    }
+
+    constexpr T* data() noexcept
+    {
+        return __detail::ArrayStorage<T, Size>::Data(__elements);
+    }
+    constexpr const T* data() const noexcept
+    {
+        return __detail::ArrayStorage<T, Size>::Data(__elements);
+    }
+};
+
+template <class T, class... U>
+    requires(is_same_v<T, U> && ...)
+array(T, U...) -> array<T, 1 + sizeof...(U)>;
+
+template <class T, size_t Size>
+constexpr bool operator==(const array<T, Size>& left, const array<T, Size>& right)
+{
+    for (size_t index = 0; index < Size; ++index)
+    {
+        if (!(left[index] == right[index]))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+template <class T, size_t Size>
+constexpr __detail::SynthThreeWayResult<T> operator<=>(const array<T, Size>& left,
+                                                       const array<T, Size>& right)
+{
+    return __detail::LexicographicalThreeWay(left.begin(), left.end(), right.begin(), right.end());
+}
+
+template <class T, size_t Size>
+    requires(Size == 0 || is_swappable_v<T>)
+constexpr void swap(array<T, Size>& left,
+                    array<T, Size>& right) noexcept(noexcept(left.swap(right)))
+{
+    left.swap(right);
+}
+
+namespace __detail
+{
+template <class T, size_t Size, size_t... Index>
+constexpr array<remove_cv_t<T>, Size> ToArray(T (&elements)[Size], index_sequence<Index...>)
+{
+    return {{elements[Index]...}};
+}
+template <class T, size_t Size, size_t... Index>
+constexpr array<remove_cv_t<T>, Size> ToArray(T (&&elements)[Size], index_sequence<Index...>)
+{
+    return {{_FSTD::move(elements[Index])...}};
+}
+} // namespace __detail
+
+template <class T, size_t Size>
+    requires(!is_array_v<T>) && is_constructible_v<T, T&>
+constexpr array<remove_cv_t<T>, Size> to_array(T (&elements)[Size])
+{
+    return __detail::ToArray(elements, make_index_sequence<Size>{});
+}
+
+template <class T, size_t Size>
+    requires(!is_array_v<T>) && is_move_constructible_v<T>
+constexpr array<remove_cv_t<T>, Size> to_array(T (&&elements)[Size])
+{
+    return __detail::ToArray(_FSTD::move(elements), make_index_sequence<Size>{});
+}
+
+template <class T, size_t Size> struct tuple_size<array<T, Size>> : integral_constant<size_t, Size>
+{
+};
+
+template <size_t Index, class T, size_t Size> struct tuple_element<Index, array<T, Size>>
+{
+    static_assert(Index < Size, "array index out of bounds");
+    using type = T;
+};
+
+template <size_t Index, class T, size_t Size> constexpr T& get(array<T, Size>& value) noexcept
+{
+    static_assert(Index < Size, "array index out of bounds");
+    return value[Index];
+}
+
+template <size_t Index, class T, size_t Size> constexpr T&& get(array<T, Size>&& value) noexcept
+{
+    static_assert(Index < Size, "array index out of bounds");
+    return _FSTD::move(value[Index]);
+}
+
+template <size_t Index, class T, size_t Size>
+constexpr const T& get(const array<T, Size>& value) noexcept
+{
+    static_assert(Index < Size, "array index out of bounds");
+    return value[Index];
+}
+
+template <size_t Index, class T, size_t Size>
+constexpr const T&& get(const array<T, Size>&& value) noexcept
+{
+    static_assert(Index < Size, "array index out of bounds");
+    return _FSTD::move(value[Index]);
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

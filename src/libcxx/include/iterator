@@ -1,0 +1,456 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_ITERATOR
+#define FEATHEROS_LIBCXX_ITERATOR
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "__memory_base"
+#include "compare"
+#include "concepts"
+#include "type_traits"
+
+// No stream iterators (there are no iostreams), counted_iterator, common_iterator,
+// ranges::iter_swap or the indirect callable concepts, which wait for the ranges algorithms.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+struct default_sentinel_t
+{
+};
+inline constexpr default_sentinel_t default_sentinel{};
+
+struct unreachable_sentinel_t
+{
+    template <weakly_incrementable I>
+    friend constexpr bool operator==(unreachable_sentinel_t, const I&) noexcept
+    {
+        return false;
+    }
+};
+inline constexpr unreachable_sentinel_t unreachable_sentinel{};
+
+template <class Container> class back_insert_iterator
+{
+public:
+    using iterator_category = output_iterator_tag;
+    using value_type = void;
+    using difference_type = ptrdiff_t;
+    using pointer = void;
+    using reference = void;
+    using container_type = Container;
+
+    constexpr explicit back_insert_iterator(Container& target) : container(_FSTD::addressof(target))
+    {
+    }
+
+    constexpr back_insert_iterator& operator=(const typename Container::value_type& value)
+    {
+        container->push_back(value);
+        return *this;
+    }
+
+    constexpr back_insert_iterator& operator=(typename Container::value_type&& value)
+    {
+        container->push_back(_FSTD::move(value));
+        return *this;
+    }
+
+    constexpr back_insert_iterator& operator*()
+    {
+        return *this;
+    }
+    constexpr back_insert_iterator& operator++()
+    {
+        return *this;
+    }
+    constexpr back_insert_iterator operator++(int)
+    {
+        return *this;
+    }
+
+protected:
+    Container* container;
+};
+
+template <class Container>
+constexpr back_insert_iterator<Container> back_inserter(Container& target)
+{
+    return back_insert_iterator<Container>(target);
+}
+
+template <class Container> class front_insert_iterator
+{
+public:
+    using iterator_category = output_iterator_tag;
+    using value_type = void;
+    using difference_type = ptrdiff_t;
+    using pointer = void;
+    using reference = void;
+    using container_type = Container;
+
+    constexpr explicit front_insert_iterator(Container& target)
+        : container(_FSTD::addressof(target))
+    {
+    }
+
+    constexpr front_insert_iterator& operator=(const typename Container::value_type& value)
+    {
+        container->push_front(value);
+        return *this;
+    }
+
+    constexpr front_insert_iterator& operator=(typename Container::value_type&& value)
+    {
+        container->push_front(_FSTD::move(value));
+        return *this;
+    }
+
+    constexpr front_insert_iterator& operator*()
+    {
+        return *this;
+    }
+    constexpr front_insert_iterator& operator++()
+    {
+        return *this;
+    }
+    constexpr front_insert_iterator operator++(int)
+    {
+        return *this;
+    }
+
+protected:
+    Container* container;
+};
+
+template <class Container>
+constexpr front_insert_iterator<Container> front_inserter(Container& target)
+{
+    return front_insert_iterator<Container>(target);
+}
+
+template <class Container> class insert_iterator
+{
+public:
+    using iterator_category = output_iterator_tag;
+    using value_type = void;
+    using difference_type = ptrdiff_t;
+    using pointer = void;
+    using reference = void;
+    using container_type = Container;
+
+    constexpr insert_iterator(Container& target, ranges::iterator_t<Container> position)
+        : container(_FSTD::addressof(target)), iter(_FSTD::move(position))
+    {
+    }
+
+    constexpr insert_iterator& operator=(const typename Container::value_type& value)
+    {
+        iter = container->insert(iter, value);
+        ++iter;
+        return *this;
+    }
+
+    constexpr insert_iterator& operator=(typename Container::value_type&& value)
+    {
+        iter = container->insert(iter, _FSTD::move(value));
+        ++iter;
+        return *this;
+    }
+
+    constexpr insert_iterator& operator*()
+    {
+        return *this;
+    }
+    constexpr insert_iterator& operator++()
+    {
+        return *this;
+    }
+    constexpr insert_iterator& operator++(int)
+    {
+        return *this;
+    }
+
+protected:
+    Container* container;
+    ranges::iterator_t<Container> iter;
+};
+
+template <class Container>
+constexpr insert_iterator<Container> inserter(Container& target,
+                                              ranges::iterator_t<Container> position)
+{
+    return insert_iterator<Container>(target, _FSTD::move(position));
+}
+
+template <semiregular S> class move_sentinel
+{
+public:
+    constexpr move_sentinel() = default;
+    constexpr explicit move_sentinel(S sentinel) : m_last(_FSTD::move(sentinel)) {}
+
+    template <class S2>
+        requires convertible_to<const S2&, S>
+    constexpr move_sentinel(const move_sentinel<S2>& other) : m_last(other.base())
+    {
+    }
+
+    template <class S2>
+        requires assignable_from<S&, const S2&>
+    constexpr move_sentinel& operator=(const move_sentinel<S2>& other)
+    {
+        m_last = other.base();
+        return *this;
+    }
+
+    constexpr S base() const
+    {
+        return m_last;
+    }
+
+private:
+    S m_last = S();
+};
+
+namespace __detail
+{
+template <class I> struct MoveIteratorCategory
+{
+};
+template <class I>
+    requires requires { typename iterator_traits<I>::iterator_category; }
+struct MoveIteratorCategory<I>
+{
+    using iterator_category = conditional_t<
+        derived_from<typename iterator_traits<I>::iterator_category, random_access_iterator_tag>,
+        random_access_iterator_tag, typename iterator_traits<I>::iterator_category>;
+};
+
+template <class I> constexpr auto MoveIteratorConcept()
+{
+    if constexpr (random_access_iterator<I>)
+    {
+        return random_access_iterator_tag{};
+    }
+    else if constexpr (bidirectional_iterator<I>)
+    {
+        return bidirectional_iterator_tag{};
+    }
+    else if constexpr (forward_iterator<I>)
+    {
+        return forward_iterator_tag{};
+    }
+    else
+    {
+        return input_iterator_tag{};
+    }
+}
+} // namespace __detail
+
+template <class I> class move_iterator : public __detail::MoveIteratorCategory<I>
+{
+public:
+    using iterator_type = I;
+    using iterator_concept = decltype(__detail::MoveIteratorConcept<I>());
+    using value_type = iter_value_t<I>;
+    using difference_type = iter_difference_t<I>;
+    using pointer = I;
+    using reference = iter_rvalue_reference_t<I>;
+
+    constexpr move_iterator() = default;
+    constexpr explicit move_iterator(I iterator) : m_current(_FSTD::move(iterator)) {}
+
+    template <class U>
+        requires(!is_same_v<U, I>) && convertible_to<const U&, I>
+    constexpr move_iterator(const move_iterator<U>& other) : m_current(other.base())
+    {
+    }
+
+    template <class U>
+        requires(!is_same_v<U, I>) && convertible_to<const U&, I> && assignable_from<I&, const U&>
+    constexpr move_iterator& operator=(const move_iterator<U>& other)
+    {
+        m_current = other.base();
+        return *this;
+    }
+
+    constexpr const I& base() const& noexcept
+    {
+        return m_current;
+    }
+    constexpr I base() &&
+    {
+        return _FSTD::move(m_current);
+    }
+
+    constexpr reference operator*() const
+    {
+        return ranges::iter_move(m_current);
+    }
+
+    constexpr reference operator[](difference_type count) const
+    {
+        return ranges::iter_move(m_current + count);
+    }
+
+    constexpr move_iterator& operator++()
+    {
+        ++m_current;
+        return *this;
+    }
+
+    constexpr auto operator++(int)
+    {
+        if constexpr (forward_iterator<I>)
+        {
+            move_iterator previous = *this;
+            ++m_current;
+            return previous;
+        }
+        else
+        {
+            ++m_current;
+        }
+    }
+
+    constexpr move_iterator& operator--()
+    {
+        --m_current;
+        return *this;
+    }
+    constexpr move_iterator operator--(int)
+    {
+        move_iterator previous = *this;
+        --m_current;
+        return previous;
+    }
+
+    constexpr move_iterator operator+(difference_type count) const
+    {
+        return move_iterator(m_current + count);
+    }
+    constexpr move_iterator& operator+=(difference_type count)
+    {
+        m_current += count;
+        return *this;
+    }
+    constexpr move_iterator operator-(difference_type count) const
+    {
+        return move_iterator(m_current - count);
+    }
+    constexpr move_iterator& operator-=(difference_type count)
+    {
+        m_current -= count;
+        return *this;
+    }
+
+    template <sentinel_for<I> S>
+    friend constexpr bool operator==(const move_iterator& iterator, const move_sentinel<S>& last)
+    {
+        return iterator.base() == last.base();
+    }
+
+    template <sized_sentinel_for<I> S>
+    friend constexpr iter_difference_t<I> operator-(const move_sentinel<S>& last,
+                                                    const move_iterator& iterator)
+    {
+        return last.base() - iterator.base();
+    }
+
+    template <sized_sentinel_for<I> S>
+    friend constexpr iter_difference_t<I> operator-(const move_iterator& iterator,
+                                                    const move_sentinel<S>& last)
+    {
+        return iterator.base() - last.base();
+    }
+
+    friend constexpr iter_rvalue_reference_t<I> iter_move(const move_iterator& iterator) noexcept(
+        noexcept(ranges::iter_move(iterator.m_current)))
+    {
+        return ranges::iter_move(iterator.m_current);
+    }
+
+private:
+    I m_current = I();
+};
+
+template <class I1, class I2>
+    requires requires(const I1& left, const I2& right) {
+        { left == right } -> convertible_to<bool>;
+    }
+constexpr bool operator==(const move_iterator<I1>& left, const move_iterator<I2>& right)
+{
+    return left.base() == right.base();
+}
+
+template <class I1, class I2>
+    requires requires(const I1& left, const I2& right) {
+        { left < right } -> convertible_to<bool>;
+    }
+constexpr bool operator<(const move_iterator<I1>& left, const move_iterator<I2>& right)
+{
+    return left.base() < right.base();
+}
+
+template <class I1, class I2>
+    requires requires(const I1& left, const I2& right) {
+        { right < left } -> convertible_to<bool>;
+    }
+constexpr bool operator>(const move_iterator<I1>& left, const move_iterator<I2>& right)
+{
+    return right < left;
+}
+
+template <class I1, class I2>
+    requires requires(const I1& left, const I2& right) {
+        { right < left } -> convertible_to<bool>;
+    }
+constexpr bool operator<=(const move_iterator<I1>& left, const move_iterator<I2>& right)
+{
+    return !(right < left);
+}
+
+template <class I1, class I2>
+    requires requires(const I1& left, const I2& right) {
+        { left < right } -> convertible_to<bool>;
+    }
+constexpr bool operator>=(const move_iterator<I1>& left, const move_iterator<I2>& right)
+{
+    return !(left < right);
+}
+
+template <class I1, three_way_comparable_with<I1> I2>
+constexpr compare_three_way_result_t<I1, I2> operator<=>(const move_iterator<I1>& left,
+                                                         const move_iterator<I2>& right)
+{
+    return left.base() <=> right.base();
+}
+
+template <class I1, class I2>
+constexpr auto operator-(const move_iterator<I1>& left, const move_iterator<I2>& right)
+    -> decltype(left.base() - right.base())
+{
+    return left.base() - right.base();
+}
+
+template <class I>
+    requires requires(const I& iterator, iter_difference_t<I> count) {
+        { iterator + count } -> same_as<I>;
+    }
+constexpr move_iterator<I> operator+(iter_difference_t<I> count, const move_iterator<I>& iterator)
+{
+    return iterator + count;
+}
+
+template <class I> constexpr move_iterator<I> make_move_iterator(I iterator)
+{
+    return move_iterator<I>(_FSTD::move(iterator));
+}
+
+template <class I1, class I2>
+    requires(!sized_sentinel_for<I1, I2>)
+inline constexpr bool disable_sized_sentinel_for<move_iterator<I1>, move_iterator<I2>> = true;
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

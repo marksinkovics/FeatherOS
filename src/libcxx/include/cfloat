@@ -1,0 +1,9 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CFLOAT
+#define FEATHEROS_LIBCXX_CFLOAT
+
+#include "__featheros_config"
+
+#include <float.h>
+
+#endif

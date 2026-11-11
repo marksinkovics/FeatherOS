@@ -1,0 +1,354 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_NUMERIC
+#define FEATHEROS_LIBCXX_NUMERIC
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "limits"
+#include "type_traits"
+#include "utility"
+
+// Without execution policies; the reductions run in order. No saturating arithmetic (C++26)
+// and no ranges::iota.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+struct Plus
+{
+    template <class T, class U> constexpr auto operator()(T&& left, U&& right) const
+    {
+        return _FSTD::forward<T>(left) + _FSTD::forward<U>(right);
+    }
+};
+
+struct Multiplies
+{
+    template <class T, class U> constexpr auto operator()(T&& left, U&& right) const
+    {
+        return _FSTD::forward<T>(left) * _FSTD::forward<U>(right);
+    }
+};
+} // namespace __detail
+
+template <class F, class T> constexpr void iota(F first, F last, T value)
+{
+    for (; first != last; ++first, (void)++value)
+    {
+        *first = value;
+    }
+}
+
+template <class I, class T, class Op> constexpr T accumulate(I first, I last, T init, Op operation)
+{
+    for (; first != last; ++first)
+    {
+        init = operation(_FSTD::move(init), *first);
+    }
+    return init;
+}
+
+template <class I, class T> constexpr T accumulate(I first, I last, T init)
+{
+    for (; first != last; ++first)
+    {
+        init = _FSTD::move(init) + *first;
+    }
+    return init;
+}
+
+template <class I, class T, class Op> constexpr T reduce(I first, I last, T init, Op operation)
+{
+    for (; first != last; ++first)
+    {
+        init = operation(_FSTD::move(init), *first);
+    }
+    return init;
+}
+
+template <class I, class T> constexpr T reduce(I first, I last, T init)
+{
+    return _FSTD::reduce(first, last, _FSTD::move(init), __detail::Plus());
+}
+
+template <class I> constexpr typename iterator_traits<I>::value_type reduce(I first, I last)
+{
+    return _FSTD::reduce(first, last, typename iterator_traits<I>::value_type{});
+}
+
+template <class I, class T, class Reduce, class Transform>
+constexpr T transform_reduce(I first, I last, T init, Reduce reduce, Transform transform)
+{
+    for (; first != last; ++first)
+    {
+        init = reduce(_FSTD::move(init), transform(*first));
+    }
+    return init;
+}
+
+template <class I1, class I2, class T, class Reduce, class Transform>
+constexpr T transform_reduce(I1 first1, I1 last1, I2 first2, T init, Reduce reduce,
+                             Transform transform)
+{
+    for (; first1 != last1; ++first1, (void)++first2)
+    {
+        init = reduce(_FSTD::move(init), transform(*first1, *first2));
+    }
+    return init;
+}
+
+template <class I1, class I2, class T>
+constexpr T transform_reduce(I1 first1, I1 last1, I2 first2, T init)
+{
+    return _FSTD::transform_reduce(first1, last1, first2, _FSTD::move(init), __detail::Plus(),
+                                   __detail::Multiplies());
+}
+
+template <class I1, class I2, class T, class Add, class Multiply>
+constexpr T inner_product(I1 first1, I1 last1, I2 first2, T init, Add add, Multiply multiply)
+{
+    for (; first1 != last1; ++first1, (void)++first2)
+    {
+        init = add(_FSTD::move(init), multiply(*first1, *first2));
+    }
+    return init;
+}
+
+template <class I1, class I2, class T>
+constexpr T inner_product(I1 first1, I1 last1, I2 first2, T init)
+{
+    for (; first1 != last1; ++first1, (void)++first2)
+    {
+        init = _FSTD::move(init) + *first1 * *first2;
+    }
+    return init;
+}
+
+template <class I, class O, class Op>
+constexpr O adjacent_difference(I first, I last, O out, Op operation)
+{
+    if (first == last)
+    {
+        return out;
+    }
+    typename iterator_traits<I>::value_type previous = *first;
+    *out = previous;
+    while (++first != last)
+    {
+        typename iterator_traits<I>::value_type current = *first;
+        *++out = operation(current, _FSTD::move(previous));
+        previous = _FSTD::move(current);
+    }
+    return ++out;
+}
+
+template <class I, class O> constexpr O adjacent_difference(I first, I last, O out)
+{
+    return _FSTD::adjacent_difference(first, last, out, [](auto& current, auto&& previous)
+                                      { return current - previous; });
+}
+
+template <class I, class O, class Op> constexpr O partial_sum(I first, I last, O out, Op operation)
+{
+    if (first == last)
+    {
+        return out;
+    }
+    typename iterator_traits<I>::value_type sum = *first;
+    *out = sum;
+    while (++first != last)
+    {
+        sum = operation(_FSTD::move(sum), *first);
+        *++out = sum;
+    }
+    return ++out;
+}
+
+template <class I, class O> constexpr O partial_sum(I first, I last, O out)
+{
+    return _FSTD::partial_sum(first, last, out, __detail::Plus());
+}
+
+template <class I, class O, class Op, class T>
+constexpr O inclusive_scan(I first, I last, O out, Op operation, T init)
+{
+    for (; first != last; ++first, (void)++out)
+    {
+        init = operation(_FSTD::move(init), *first);
+        *out = init;
+    }
+    return out;
+}
+
+template <class I, class O, class Op>
+constexpr O inclusive_scan(I first, I last, O out, Op operation)
+{
+    if (first == last)
+    {
+        return out;
+    }
+    typename iterator_traits<I>::value_type init = *first;
+    *out = init;
+    return _FSTD::inclusive_scan(++first, last, ++out, operation, _FSTD::move(init));
+}
+
+template <class I, class O> constexpr O inclusive_scan(I first, I last, O out)
+{
+    return _FSTD::inclusive_scan(first, last, out, __detail::Plus());
+}
+
+template <class I, class O, class T, class Op>
+constexpr O exclusive_scan(I first, I last, O out, T init, Op operation)
+{
+    for (; first != last; ++first, (void)++out)
+    {
+        T next = operation(init, *first);
+        *out = _FSTD::move(init);
+        init = _FSTD::move(next);
+    }
+    return out;
+}
+
+template <class I, class O, class T> constexpr O exclusive_scan(I first, I last, O out, T init)
+{
+    return _FSTD::exclusive_scan(first, last, out, _FSTD::move(init), __detail::Plus());
+}
+
+template <class I, class O, class Reduce, class Transform, class T>
+constexpr O transform_inclusive_scan(I first, I last, O out, Reduce reduce, Transform transform,
+                                     T init)
+{
+    for (; first != last; ++first, (void)++out)
+    {
+        init = reduce(_FSTD::move(init), transform(*first));
+        *out = init;
+    }
+    return out;
+}
+
+template <class I, class O, class Reduce, class Transform>
+constexpr O transform_inclusive_scan(I first, I last, O out, Reduce reduce, Transform transform)
+{
+    if (first == last)
+    {
+        return out;
+    }
+    auto init = transform(*first);
+    *out = init;
+    return _FSTD::transform_inclusive_scan(++first, last, ++out, reduce, transform,
+                                           _FSTD::move(init));
+}
+
+template <class I, class O, class T, class Reduce, class Transform>
+constexpr O transform_exclusive_scan(I first, I last, O out, T init, Reduce reduce,
+                                     Transform transform)
+{
+    for (; first != last; ++first, (void)++out)
+    {
+        T next = reduce(init, transform(*first));
+        *out = _FSTD::move(init);
+        init = _FSTD::move(next);
+    }
+    return out;
+}
+
+namespace __detail
+{
+template <class T> constexpr make_unsigned_t<T> AbsoluteValue(T value)
+{
+    using Unsigned = make_unsigned_t<T>;
+    if constexpr (is_signed_v<T>)
+    {
+        return value < 0 ? static_cast<Unsigned>(Unsigned(0) - static_cast<Unsigned>(value))
+                         : static_cast<Unsigned>(value);
+    }
+    else
+    {
+        return value;
+    }
+}
+
+template <class T>
+concept GcdInteger = is_integral_v<T> && !is_same_v<remove_cv_t<T>, bool>;
+} // namespace __detail
+
+template <__detail::GcdInteger M, __detail::GcdInteger N>
+constexpr common_type_t<M, N> gcd(M m, N n)
+{
+    using Common = common_type_t<M, N>;
+    using Unsigned = make_unsigned_t<Common>;
+    Unsigned left = __detail::AbsoluteValue(static_cast<Common>(m));
+    Unsigned right = __detail::AbsoluteValue(static_cast<Common>(n));
+    while (right != 0)
+    {
+        const Unsigned remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    return static_cast<Common>(left);
+}
+
+template <__detail::GcdInteger M, __detail::GcdInteger N>
+constexpr common_type_t<M, N> lcm(M m, N n)
+{
+    using Common = common_type_t<M, N>;
+    if (m == 0 || n == 0)
+    {
+        return 0;
+    }
+    using Unsigned = make_unsigned_t<Common>;
+    const Unsigned left = __detail::AbsoluteValue(static_cast<Common>(m));
+    const Unsigned right = __detail::AbsoluteValue(static_cast<Common>(n));
+    return static_cast<Common>(left / static_cast<Unsigned>(_FSTD::gcd(m, n)) * right);
+}
+
+// Rounds towards the first argument and cannot overflow.
+template <class T>
+    requires is_arithmetic_v<T> && (!is_same_v<remove_cv_t<T>, bool>)
+constexpr T midpoint(T first, T second) noexcept
+{
+    if constexpr (is_integral_v<T>)
+    {
+        using Unsigned = make_unsigned_t<T>;
+        const Unsigned low = static_cast<Unsigned>(first);
+        const Unsigned high = static_cast<Unsigned>(second);
+        if (first > second)
+        {
+            return static_cast<T>(low - static_cast<Unsigned>((low - high) / 2));
+        }
+        return static_cast<T>(low + static_cast<Unsigned>((high - low) / 2));
+    }
+    else
+    {
+        constexpr T lowest = numeric_limits<T>::min() * 2;
+        constexpr T highest = numeric_limits<T>::max() / 2;
+        const T first_size = first < 0 ? -first : first;
+        const T second_size = second < 0 ? -second : second;
+        if (first_size <= highest && second_size <= highest)
+        {
+            return (first + second) / 2;
+        }
+        if (first_size < lowest)
+        {
+            return first + second / 2;
+        }
+        if (second_size < lowest)
+        {
+            return first / 2 + second;
+        }
+        return first / 2 + second / 2;
+    }
+}
+
+template <class T>
+    requires is_object_v<T> && (sizeof(T) > 0)
+constexpr T* midpoint(T* first, T* second)
+{
+    return first + (second - first) / 2;
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

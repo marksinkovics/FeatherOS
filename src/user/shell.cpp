@@ -879,7 +879,7 @@ int main(int argc, char** argv)
             puts("Commands: calc [expression], date, echo <words...>, fanout <n>, "
                  "aslr, hardening, memtest [overflow|exhaust], primes <workers> [limit], "
                  "sleep <seconds>, threads <threads> [limit], upper, uptime, filetest, fptest, "
-                 "libctest, ls, cat <file>, write [-a] "
+                 "libctest, cxxtest, ls, cat <file>, write [-a] "
                  "<file> <text>, "
                  "rm <file>, cp <source> <target>, mv <source> <target>, touch <file>, head, tail, "
                  "wc, grep <text>, sort, "

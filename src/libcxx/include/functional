@@ -1,0 +1,761 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_FUNCTIONAL
+#define FEATHEROS_LIBCXX_FUNCTIONAL
+
+#include "__featheros_config"
+#include "__hash_base"
+#include "__memory_base"
+#include "compare"
+#include "concepts"
+#include "new"
+#include "tuple"
+#include "type_traits"
+#include "utility"
+
+// No std::bind or its placeholders, no move_only_function, no searchers, and function has no
+// target_type, which needs RTTI. Calling an empty function calls the library's abort hook
+// instead of throwing bad_function_call.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class Callable, class... Args>
+    requires is_invocable_v<Callable, Args...>
+constexpr invoke_result_t<Callable, Args...>
+invoke(Callable&& callable, Args&&... args) noexcept(is_nothrow_invocable_v<Callable, Args...>)
+{
+    return __detail::Invoke(_FSTD::forward<Callable>(callable), _FSTD::forward<Args>(args)...);
+}
+
+template <class Result, class Callable, class... Args>
+    requires is_invocable_r_v<Result, Callable, Args...>
+constexpr Result
+invoke_r(Callable&& callable,
+         Args&&... args) noexcept(is_nothrow_invocable_r_v<Result, Callable, Args...>)
+{
+    if constexpr (is_void_v<Result>)
+    {
+        __detail::Invoke(_FSTD::forward<Callable>(callable), _FSTD::forward<Args>(args)...);
+    }
+    else
+    {
+        return __detail::Invoke(_FSTD::forward<Callable>(callable), _FSTD::forward<Args>(args)...);
+    }
+}
+
+namespace __detail
+{
+template <class T> constexpr T& BindReference(T& value) noexcept
+{
+    return value;
+}
+template <class T> void BindReference(T&&) = delete;
+} // namespace __detail
+
+template <class T> class reference_wrapper
+{
+public:
+    using type = T;
+
+    template <class U>
+        requires requires { __detail::BindReference<T>(declval<U>()); } &&
+                 (!is_same_v<remove_cvref_t<U>, reference_wrapper>)
+    constexpr reference_wrapper(U&& value) noexcept(
+        noexcept(__detail::BindReference<T>(declval<U>())))
+        : m_pointer(_FSTD::addressof(__detail::BindReference<T>(_FSTD::forward<U>(value))))
+    {
+    }
+
+    constexpr reference_wrapper(const reference_wrapper&) noexcept = default;
+    constexpr reference_wrapper& operator=(const reference_wrapper&) noexcept = default;
+
+    constexpr operator T&() const noexcept
+    {
+        return *m_pointer;
+    }
+    constexpr T& get() const noexcept
+    {
+        return *m_pointer;
+    }
+
+    template <class... Args>
+    constexpr invoke_result_t<T&, Args...> operator()(Args&&... args) const
+        noexcept(is_nothrow_invocable_v<T&, Args...>)
+    {
+        return __detail::Invoke(get(), _FSTD::forward<Args>(args)...);
+    }
+
+private:
+    T* m_pointer;
+};
+
+template <class T> reference_wrapper(T&) -> reference_wrapper<T>;
+
+template <class T> constexpr reference_wrapper<T> ref(T& value) noexcept
+{
+    return reference_wrapper<T>(value);
+}
+template <class T> constexpr reference_wrapper<T> ref(reference_wrapper<T> value) noexcept
+{
+    return value;
+}
+template <class T> void ref(const T&&) = delete;
+
+template <class T> constexpr reference_wrapper<const T> cref(const T& value) noexcept
+{
+    return reference_wrapper<const T>(value);
+}
+template <class T> constexpr reference_wrapper<const T> cref(reference_wrapper<T> value) noexcept
+{
+    return value.get();
+}
+template <class T> void cref(const T&&) = delete;
+
+template <class T, class U, template <class> class TQualifiers, template <class> class UQualifiers>
+    requires requires { typename common_reference_t<T&, UQualifiers<U>>; } &&
+             is_convertible_v<reference_wrapper<T>, common_reference_t<T&, UQualifiers<U>>>
+struct basic_common_reference<reference_wrapper<T>, U, TQualifiers, UQualifiers>
+{
+    using type = common_reference_t<T&, UQualifiers<U>>;
+};
+
+template <class T, class U, template <class> class TQualifiers, template <class> class UQualifiers>
+    requires requires { typename common_reference_t<TQualifiers<T>, U&>; } &&
+             is_convertible_v<reference_wrapper<U>, common_reference_t<TQualifiers<T>, U&>> &&
+             (!__detail::IsReferenceWrapper<T>::value)
+struct basic_common_reference<T, reference_wrapper<U>, TQualifiers, UQualifiers>
+{
+    using type = common_reference_t<TQualifiers<T>, U&>;
+};
+
+// The operator function objects. The typed ones return T (or bool), so bit_not<unsigned char>
+// does not promote; the void forms deduce their operands and are transparent.
+#define FEATHEROS_BINARY_FUNCTION_OBJECT(name, op, Result)                                         \
+    template <class T = void> struct name                                                          \
+    {                                                                                              \
+        constexpr Result operator()(const T& left, const T& right) const                           \
+        {                                                                                          \
+            return left op right;                                                                  \
+        }                                                                                          \
+    };                                                                                             \
+    template <> struct name<void>                                                                  \
+    {                                                                                              \
+        template <class T, class U>                                                                \
+        constexpr auto operator()(T&& left, U&& right) const                                       \
+            noexcept(noexcept(_FSTD::forward<T>(left) op _FSTD::forward<U>(right)))                \
+                -> decltype(_FSTD::forward<T>(left) op _FSTD::forward<U>(right))                   \
+        {                                                                                          \
+            return _FSTD::forward<T>(left) op _FSTD::forward<U>(right);                            \
+        }                                                                                          \
+        using is_transparent = void;                                                               \
+    };
+
+FEATHEROS_BINARY_FUNCTION_OBJECT(plus, +, T)
+FEATHEROS_BINARY_FUNCTION_OBJECT(minus, -, T)
+FEATHEROS_BINARY_FUNCTION_OBJECT(multiplies, *, T)
+FEATHEROS_BINARY_FUNCTION_OBJECT(divides, /, T)
+FEATHEROS_BINARY_FUNCTION_OBJECT(modulus, %, T)
+FEATHEROS_BINARY_FUNCTION_OBJECT(equal_to, ==, bool)
+FEATHEROS_BINARY_FUNCTION_OBJECT(not_equal_to, !=, bool)
+FEATHEROS_BINARY_FUNCTION_OBJECT(greater, >, bool)
+FEATHEROS_BINARY_FUNCTION_OBJECT(less, <, bool)
+FEATHEROS_BINARY_FUNCTION_OBJECT(greater_equal, >=, bool)
+FEATHEROS_BINARY_FUNCTION_OBJECT(less_equal, <=, bool)
+FEATHEROS_BINARY_FUNCTION_OBJECT(logical_and, &&, bool)
+FEATHEROS_BINARY_FUNCTION_OBJECT(logical_or, ||, bool)
+FEATHEROS_BINARY_FUNCTION_OBJECT(bit_and, &, T)
+FEATHEROS_BINARY_FUNCTION_OBJECT(bit_or, |, T)
+FEATHEROS_BINARY_FUNCTION_OBJECT(bit_xor, ^, T)
+
+#undef FEATHEROS_BINARY_FUNCTION_OBJECT
+
+#define FEATHEROS_UNARY_FUNCTION_OBJECT(name, op, Result)                                          \
+    template <class T = void> struct name                                                          \
+    {                                                                                              \
+        constexpr Result operator()(const T& value) const                                          \
+        {                                                                                          \
+            return op value;                                                                       \
+        }                                                                                          \
+    };                                                                                             \
+    template <> struct name<void>                                                                  \
+    {                                                                                              \
+        template <class T>                                                                         \
+        constexpr auto operator()(T&& value) const noexcept(noexcept(op _FSTD::forward<T>(value))) \
+            -> decltype(op _FSTD::forward<T>(value))                                               \
+        {                                                                                          \
+            return op _FSTD::forward<T>(value);                                                    \
+        }                                                                                          \
+        using is_transparent = void;                                                               \
+    };
+
+FEATHEROS_UNARY_FUNCTION_OBJECT(negate, -, T)
+FEATHEROS_UNARY_FUNCTION_OBJECT(logical_not, !, bool)
+FEATHEROS_UNARY_FUNCTION_OBJECT(bit_not, ~, T)
+
+#undef FEATHEROS_UNARY_FUNCTION_OBJECT
+
+struct identity
+{
+    template <class T> [[nodiscard]] constexpr T&& operator()(T&& value) const noexcept
+    {
+        return _FSTD::forward<T>(value);
+    }
+    using is_transparent = void;
+};
+
+// The constrained comparisons of ranges' algorithms. less, greater and their kin compare
+// pointers by address order, which the built-in < already does in GCC and Clang.
+namespace ranges
+{
+struct equal_to
+{
+    template <class T, class U>
+        requires equality_comparable_with<T, U>
+    constexpr bool operator()(T&& left, U&& right) const
+        noexcept(noexcept(bool(_FSTD::forward<T>(left) == _FSTD::forward<U>(right))))
+    {
+        return _FSTD::forward<T>(left) == _FSTD::forward<U>(right);
+    }
+    using is_transparent = void;
+};
+
+struct not_equal_to
+{
+    template <class T, class U>
+        requires equality_comparable_with<T, U>
+    constexpr bool operator()(T&& left, U&& right) const
+        noexcept(noexcept(bool(_FSTD::forward<T>(left) == _FSTD::forward<U>(right))))
+    {
+        return !(_FSTD::forward<T>(left) == _FSTD::forward<U>(right));
+    }
+    using is_transparent = void;
+};
+
+struct less
+{
+    template <class T, class U>
+        requires totally_ordered_with<T, U>
+    constexpr bool operator()(T&& left, U&& right) const
+        noexcept(noexcept(bool(_FSTD::forward<T>(left) < _FSTD::forward<U>(right))))
+    {
+        return _FSTD::forward<T>(left) < _FSTD::forward<U>(right);
+    }
+    using is_transparent = void;
+};
+
+struct greater
+{
+    template <class T, class U>
+        requires totally_ordered_with<T, U>
+    constexpr bool operator()(T&& left, U&& right) const
+        noexcept(noexcept(bool(_FSTD::forward<U>(right) < _FSTD::forward<T>(left))))
+    {
+        return _FSTD::forward<U>(right) < _FSTD::forward<T>(left);
+    }
+    using is_transparent = void;
+};
+
+struct greater_equal
+{
+    template <class T, class U>
+        requires totally_ordered_with<T, U>
+    constexpr bool operator()(T&& left, U&& right) const
+        noexcept(noexcept(bool(_FSTD::forward<T>(left) < _FSTD::forward<U>(right))))
+    {
+        return !(_FSTD::forward<T>(left) < _FSTD::forward<U>(right));
+    }
+    using is_transparent = void;
+};
+
+struct less_equal
+{
+    template <class T, class U>
+        requires totally_ordered_with<T, U>
+    constexpr bool operator()(T&& left, U&& right) const
+        noexcept(noexcept(bool(_FSTD::forward<U>(right) < _FSTD::forward<T>(left))))
+    {
+        return !(_FSTD::forward<U>(right) < _FSTD::forward<T>(left));
+    }
+    using is_transparent = void;
+};
+} // namespace ranges
+
+namespace __detail
+{
+template <class Member> class MemberFunction
+{
+public:
+    constexpr explicit MemberFunction(Member member) noexcept : m_member(member) {}
+
+    template <class... Args>
+    constexpr invoke_result_t<const Member&, Args...> operator()(Args&&... args) const
+        noexcept(is_nothrow_invocable_v<const Member&, Args...>)
+    {
+        return __detail::Invoke(m_member, _FSTD::forward<Args>(args)...);
+    }
+
+private:
+    Member m_member;
+};
+} // namespace __detail
+
+template <class Result, class Class>
+constexpr __detail::MemberFunction<Result Class::*> mem_fn(Result Class::* member) noexcept
+{
+    return __detail::MemberFunction<Result Class::*>(member);
+}
+
+namespace __detail
+{
+struct WrapCallable
+{
+    explicit WrapCallable() = default;
+};
+
+// The perfect forwarding call wrapper of not_fn, bind_front and bind_back. Each call operator
+// passes the stored callable and arguments on with the wrapper's own constness and value
+// category, and where that call is ill-formed it is deleted, so an rvalue wrapper does not
+// fall back to the const lvalue overload.
+template <class Operation, class... State> class ForwardingWrapper
+{
+public:
+    template <class... T>
+    constexpr explicit ForwardingWrapper(WrapCallable, T&&... state)
+        : m_state(_FSTD::forward<T>(state)...)
+    {
+    }
+
+#define FEATHEROS_FORWARDING_CALL(qualifiers, cast)                                                \
+    template <class... Args>                                                                       \
+        requires requires {                                                                        \
+            Operation::Call(declval<tuple<State...> qualifiers>(), declval<Args>()...);            \
+        }                                                                                          \
+    constexpr decltype(auto) operator()(Args&&... args) qualifiers noexcept(                       \
+        noexcept(Operation::Call(declval<tuple<State...> qualifiers>(), declval<Args>()...)))      \
+    {                                                                                              \
+        return Operation::Call(cast(m_state), _FSTD::forward<Args>(args)...);                      \
+    }                                                                                              \
+    template <class... Args>                                                                       \
+        requires(!requires {                                                                       \
+                    Operation::Call(declval<tuple<State...> qualifiers>(), declval<Args>()...);    \
+                })                                                                                 \
+    void operator()(Args&&...) qualifiers = delete;
+
+    FEATHEROS_FORWARDING_CALL(&, )
+    FEATHEROS_FORWARDING_CALL(const&, )
+    FEATHEROS_FORWARDING_CALL(&&, _FSTD::move)
+    FEATHEROS_FORWARDING_CALL(const&&, _FSTD::move)
+
+#undef FEATHEROS_FORWARDING_CALL
+
+private:
+    tuple<State...> m_state;
+};
+
+struct NotCall
+{
+    template <class State, class... Args>
+    static constexpr auto Call(State&& state, Args&&... args) noexcept(noexcept(!__detail::Invoke(
+        _FSTD::get<0>(_FSTD::forward<State>(state)), _FSTD::forward<Args>(args)...)))
+        -> decltype(!__detail::Invoke(_FSTD::get<0>(_FSTD::forward<State>(state)),
+                                      _FSTD::forward<Args>(args)...))
+    {
+        return !__detail::Invoke(_FSTD::get<0>(_FSTD::forward<State>(state)),
+                                 _FSTD::forward<Args>(args)...);
+    }
+};
+
+template <class Indices> struct BindFrontCall;
+template <size_t... Index> struct BindFrontCall<index_sequence<Index...>>
+{
+    template <class State, class... Args>
+    static constexpr auto Call(State&& state, Args&&... args) noexcept(noexcept(__detail::Invoke(
+        _FSTD::get<0>(_FSTD::forward<State>(state)),
+        _FSTD::get<Index + 1>(_FSTD::forward<State>(state))..., _FSTD::forward<Args>(args)...)))
+        -> decltype(__detail::Invoke(_FSTD::get<0>(_FSTD::forward<State>(state)),
+                                     _FSTD::get<Index + 1>(_FSTD::forward<State>(state))...,
+                                     _FSTD::forward<Args>(args)...))
+    {
+        return __detail::Invoke(_FSTD::get<0>(_FSTD::forward<State>(state)),
+                                _FSTD::get<Index + 1>(_FSTD::forward<State>(state))...,
+                                _FSTD::forward<Args>(args)...);
+    }
+};
+
+template <class Indices> struct BindBackCall;
+template <size_t... Index> struct BindBackCall<index_sequence<Index...>>
+{
+    template <class State, class... Args>
+    static constexpr auto Call(State&& state, Args&&... args) noexcept(noexcept(
+        __detail::Invoke(_FSTD::get<0>(_FSTD::forward<State>(state)), _FSTD::forward<Args>(args)...,
+                         _FSTD::get<Index + 1>(_FSTD::forward<State>(state))...)))
+        -> decltype(__detail::Invoke(_FSTD::get<0>(_FSTD::forward<State>(state)),
+                                     _FSTD::forward<Args>(args)...,
+                                     _FSTD::get<Index + 1>(_FSTD::forward<State>(state))...))
+    {
+        return __detail::Invoke(_FSTD::get<0>(_FSTD::forward<State>(state)),
+                                _FSTD::forward<Args>(args)...,
+                                _FSTD::get<Index + 1>(_FSTD::forward<State>(state))...);
+    }
+};
+
+template <class T>
+concept DecayCopyable = is_constructible_v<decay_t<T>, T> && is_move_constructible_v<decay_t<T>>;
+} // namespace __detail
+
+template <__detail::DecayCopyable F> constexpr auto not_fn(F&& callable)
+{
+    return __detail::ForwardingWrapper<__detail::NotCall, decay_t<F>>(__detail::WrapCallable{},
+                                                                      _FSTD::forward<F>(callable));
+}
+
+template <__detail::DecayCopyable F, __detail::DecayCopyable... Args>
+constexpr auto bind_front(F&& callable, Args&&... args)
+{
+    return __detail::ForwardingWrapper<__detail::BindFrontCall<index_sequence_for<Args...>>,
+                                       decay_t<F>, decay_t<Args>...>(
+        __detail::WrapCallable{}, _FSTD::forward<F>(callable), _FSTD::forward<Args>(args)...);
+}
+
+template <__detail::DecayCopyable F, __detail::DecayCopyable... Args>
+constexpr auto bind_back(F&& callable, Args&&... args)
+{
+    return __detail::ForwardingWrapper<__detail::BindBackCall<index_sequence_for<Args...>>,
+                                       decay_t<F>, decay_t<Args>...>(
+        __detail::WrapCallable{}, _FSTD::forward<F>(callable), _FSTD::forward<Args>(args)...);
+}
+
+template <class Signature> class function;
+
+namespace __detail
+{
+template <class T> struct IsFunctionWrapper : false_type
+{
+};
+template <class Signature> struct IsFunctionWrapper<function<Signature>> : true_type
+{
+};
+
+template <class T> constexpr bool IsNullCallable(const T& callable) noexcept
+{
+    if constexpr (is_pointer_v<T> || is_member_pointer_v<T>)
+    {
+        return callable == nullptr;
+    }
+    else if constexpr (IsFunctionWrapper<T>::value)
+    {
+        return !callable;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+// Callables up to three pointers in size live inside the function, so function pointers,
+// reference_wrappers and lambdas capturing a few references do not allocate.
+union FunctionStorage
+{
+    void* pointer;
+    alignas(void*) unsigned char buffer[3 * sizeof(void*)];
+};
+
+template <class T>
+inline constexpr bool StoredInPlace =
+    sizeof(T) <= sizeof(FunctionStorage) && alignof(T) <= alignof(FunctionStorage) &&
+    is_nothrow_move_constructible_v<T>;
+
+template <class T> T* StoredCallable(FunctionStorage& storage) noexcept
+{
+    if constexpr (StoredInPlace<T>)
+    {
+        return _FSTD::launder(reinterpret_cast<T*>(storage.buffer));
+    }
+    else
+    {
+        return static_cast<T*>(storage.pointer);
+    }
+}
+
+template <class T> const T* StoredCallable(const FunctionStorage& storage) noexcept
+{
+    if constexpr (StoredInPlace<T>)
+    {
+        return _FSTD::launder(reinterpret_cast<const T*>(storage.buffer));
+    }
+    else
+    {
+        return static_cast<const T*>(storage.pointer);
+    }
+}
+
+template <class Result, class... Args> struct FunctionOperations
+{
+    Result (*call)(FunctionStorage&, Args&&...);
+    void (*copy)(const FunctionStorage& source, FunctionStorage& target);
+    // Moves the callable out of source and ends its lifetime there.
+    void (*move)(FunctionStorage& source, FunctionStorage& target) noexcept;
+    void (*destroy)(FunctionStorage&) noexcept;
+    const void* type;
+};
+
+template <class T, class Result, class... Args> struct FunctionOperationsFor
+{
+    static Result Call(FunctionStorage& storage, Args&&... args)
+    {
+        return _FSTD::invoke_r<Result>(*StoredCallable<T>(storage), _FSTD::forward<Args>(args)...);
+    }
+
+    static void Copy(const FunctionStorage& source, FunctionStorage& target)
+    {
+        if constexpr (StoredInPlace<T>)
+        {
+            ::new (static_cast<void*>(target.buffer)) T(*StoredCallable<T>(source));
+        }
+        else
+        {
+            target.pointer = new T(*StoredCallable<T>(source));
+        }
+    }
+
+    static void Move(FunctionStorage& source, FunctionStorage& target) noexcept
+    {
+        if constexpr (StoredInPlace<T>)
+        {
+            T* callable = StoredCallable<T>(source);
+            ::new (static_cast<void*>(target.buffer)) T(_FSTD::move(*callable));
+            _FSTD::destroy_at(callable);
+        }
+        else
+        {
+            target.pointer = source.pointer;
+        }
+    }
+
+    static void Destroy(FunctionStorage& storage) noexcept
+    {
+        if constexpr (StoredInPlace<T>)
+        {
+            _FSTD::destroy_at(StoredCallable<T>(storage));
+        }
+        else
+        {
+            delete StoredCallable<T>(storage);
+        }
+    }
+
+    static constexpr FunctionOperations<Result, Args...> Table = {&Call, &Copy, &Move, &Destroy,
+                                                                  &TypeTag<T>};
+};
+} // namespace __detail
+
+template <class Result, class... Args> class function<Result(Args...)>
+{
+    template <class F>
+    static constexpr bool Accepts =
+        !is_same_v<remove_cvref_t<F>, function> && is_copy_constructible_v<decay_t<F>> &&
+        is_invocable_r_v<Result, decay_t<F>&, Args...>;
+
+public:
+    using result_type = Result;
+
+    function() noexcept = default;
+    function(nullptr_t) noexcept {}
+
+    function(const function& other)
+    {
+        if (other.m_operations != nullptr)
+        {
+            other.m_operations->copy(other.m_storage, m_storage);
+            m_operations = other.m_operations;
+        }
+    }
+
+    function(function&& other) noexcept
+    {
+        TakeFrom(other);
+    }
+
+    template <class F>
+        requires Accepts<F>
+    function(F&& callable)
+    {
+        using T = decay_t<F>;
+        if (__detail::IsNullCallable<T>(callable))
+        {
+            return;
+        }
+        if constexpr (__detail::StoredInPlace<T>)
+        {
+            ::new (static_cast<void*>(m_storage.buffer)) T(_FSTD::forward<F>(callable));
+        }
+        else
+        {
+            m_storage.pointer = new T(_FSTD::forward<F>(callable));
+        }
+        m_operations = &__detail::FunctionOperationsFor<T, Result, Args...>::Table;
+    }
+
+    ~function()
+    {
+        Reset();
+    }
+
+    function& operator=(const function& other)
+    {
+        function(other).swap(*this);
+        return *this;
+    }
+
+    function& operator=(function&& other) noexcept
+    {
+        if (this != &other)
+        {
+            Reset();
+            TakeFrom(other);
+        }
+        return *this;
+    }
+
+    function& operator=(nullptr_t) noexcept
+    {
+        Reset();
+        return *this;
+    }
+
+    template <class F>
+        requires Accepts<F>
+    function& operator=(F&& callable)
+    {
+        function(_FSTD::forward<F>(callable)).swap(*this);
+        return *this;
+    }
+
+    template <class F> function& operator=(reference_wrapper<F> callable) noexcept
+    {
+        function(callable).swap(*this);
+        return *this;
+    }
+
+    void swap(function& other) noexcept
+    {
+        if (this == &other)
+        {
+            return;
+        }
+        function moved(_FSTD::move(other));
+        other.TakeFrom(*this);
+        TakeFrom(moved);
+    }
+
+    explicit operator bool() const noexcept
+    {
+        return m_operations != nullptr;
+    }
+
+    Result operator()(Args... args) const
+    {
+        if (m_operations == nullptr)
+        {
+            __detail::LibraryAbort("bad_function_call: an empty std::function was called");
+        }
+        return m_operations->call(m_storage, _FSTD::forward<Args>(args)...);
+    }
+
+    template <class T> T* target() noexcept
+    {
+        return Holds<T>() ? __detail::StoredCallable<T>(m_storage) : nullptr;
+    }
+
+    template <class T> const T* target() const noexcept
+    {
+        return Holds<T>() ? __detail::StoredCallable<T>(m_storage) : nullptr;
+    }
+
+private:
+    template <class T> bool Holds() const noexcept
+    {
+        return m_operations != nullptr && m_operations->type == &__detail::TypeTag<T>;
+    }
+
+    // Only into an empty function.
+    void TakeFrom(function& other) noexcept
+    {
+        if (other.m_operations != nullptr)
+        {
+            other.m_operations->move(other.m_storage, m_storage);
+            m_operations = _FSTD::exchange(other.m_operations, nullptr);
+        }
+    }
+
+    void Reset() noexcept
+    {
+        if (m_operations != nullptr)
+        {
+            m_operations->destroy(m_storage);
+            m_operations = nullptr;
+        }
+    }
+
+    // Mutable because the standard calls a non-const callable through a const function.
+    mutable __detail::FunctionStorage m_storage{};
+    const __detail::FunctionOperations<Result, Args...>* m_operations = nullptr;
+};
+
+namespace __detail
+{
+// The call signature of a class's operator(), for function's deduction guide.
+template <class T> struct CallSignature
+{
+};
+template <class Result, class... Args> struct CallSignature<Result (*)(Args...)>
+{
+    using type = Result(Args...);
+};
+template <class Result, class... Args> struct CallSignature<Result (*)(Args...) noexcept>
+{
+    using type = Result(Args...);
+};
+
+#define FEATHEROS_CALL_SIGNATURE(qualifiers)                                                       \
+    template <class Result, class Class, class... Args>                                            \
+    struct CallSignature<Result (Class::*)(Args...) qualifiers>                                    \
+    {                                                                                              \
+        using type = Result(Args...);                                                              \
+    };
+#define FEATHEROS_CALL_SIGNATURES(cv)                                                              \
+    FEATHEROS_CALL_SIGNATURE(cv)                                                                   \
+    FEATHEROS_CALL_SIGNATURE(cv&)                                                                  \
+    FEATHEROS_CALL_SIGNATURE(cv&&)                                                                 \
+    FEATHEROS_CALL_SIGNATURE(cv noexcept)                                                          \
+    FEATHEROS_CALL_SIGNATURE(cv& noexcept)                                                         \
+    FEATHEROS_CALL_SIGNATURE(cv&& noexcept)
+
+FEATHEROS_CALL_SIGNATURES()
+FEATHEROS_CALL_SIGNATURES(const)
+FEATHEROS_CALL_SIGNATURES(volatile)
+FEATHEROS_CALL_SIGNATURES(const volatile)
+
+#undef FEATHEROS_CALL_SIGNATURES
+#undef FEATHEROS_CALL_SIGNATURE
+} // namespace __detail
+
+template <class Result, class... Args> function(Result (*)(Args...)) -> function<Result(Args...)>;
+template <class F>
+function(F) -> function<typename __detail::CallSignature<decltype(&F::operator())>::type>;
+
+template <class Result, class... Args>
+bool operator==(const function<Result(Args...)>& callable, nullptr_t) noexcept
+{
+    return !callable;
+}
+
+template <class Result, class... Args>
+void swap(function<Result(Args...)>& left, function<Result(Args...)>& right) noexcept
+{
+    left.swap(right);
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

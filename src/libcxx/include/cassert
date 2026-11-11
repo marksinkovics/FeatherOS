@@ -1,0 +1,5 @@
+// -*- C++ -*-
+// No include guard: like <assert.h>, each inclusion redefines assert by the current NDEBUG.
+#include "__featheros_config"
+
+#include <assert.h>

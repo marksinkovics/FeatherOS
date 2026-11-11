@@ -1,6 +1,7 @@
 #ifndef TERM_H
 #define TERM_H
 
+#include <atomic>
 #include <stdint.h>
 
 #include "kernel/config.h"
@@ -114,7 +115,7 @@ private:
     uint32_t m_fg_color = FeatherOS::Color::FGColor;
     uint32_t m_rows = 0;
     uint32_t m_columns = 0;
-    uint64_t m_output_count = 0;
+    std::atomic<uint64_t> m_output_count = 0;
     uint32_t m_row_offset = 0;
     uint32_t m_column_offset = 0;
 

@@ -1,0 +1,127 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_POINTER_ITERATOR
+#define FEATHEROS_LIBCXX_POINTER_ITERATOR
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "compare"
+#include "type_traits"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+// The iterator of vector and string: a pointer wrapped in a class so that each container's
+// iterators are a type of their own. Owner keeps two containers' iterators apart, and the
+// iterator converts to the const one of the same owner.
+template <class T, class Owner> class PointerIterator
+{
+public:
+    using iterator_concept = contiguous_iterator_tag;
+    using iterator_category = random_access_iterator_tag;
+    using value_type = remove_cv_t<T>;
+    using difference_type = ptrdiff_t;
+    using pointer = T*;
+    using reference = T&;
+
+    constexpr PointerIterator() noexcept = default;
+    constexpr explicit PointerIterator(T* location) noexcept : m_pointer(location) {}
+
+    template <class U>
+        requires(!is_same_v<U, T>) && is_convertible_v<U*, T*>
+    constexpr PointerIterator(const PointerIterator<U, Owner>& other) noexcept
+        : m_pointer(other.base())
+    {
+    }
+
+    constexpr T* base() const noexcept
+    {
+        return m_pointer;
+    }
+
+    constexpr T& operator*() const noexcept
+    {
+        return *m_pointer;
+    }
+    constexpr T* operator->() const noexcept
+    {
+        return m_pointer;
+    }
+    constexpr T& operator[](difference_type count) const noexcept
+    {
+        return m_pointer[count];
+    }
+
+    constexpr PointerIterator& operator++() noexcept
+    {
+        ++m_pointer;
+        return *this;
+    }
+    constexpr PointerIterator operator++(int) noexcept
+    {
+        return PointerIterator(m_pointer++);
+    }
+    constexpr PointerIterator& operator--() noexcept
+    {
+        --m_pointer;
+        return *this;
+    }
+    constexpr PointerIterator operator--(int) noexcept
+    {
+        return PointerIterator(m_pointer--);
+    }
+
+    constexpr PointerIterator& operator+=(difference_type count) noexcept
+    {
+        m_pointer += count;
+        return *this;
+    }
+    constexpr PointerIterator& operator-=(difference_type count) noexcept
+    {
+        m_pointer -= count;
+        return *this;
+    }
+    constexpr PointerIterator operator+(difference_type count) const noexcept
+    {
+        return PointerIterator(m_pointer + count);
+    }
+    constexpr PointerIterator operator-(difference_type count) const noexcept
+    {
+        return PointerIterator(m_pointer - count);
+    }
+    friend constexpr PointerIterator operator+(difference_type count,
+                                               const PointerIterator& iterator) noexcept
+    {
+        return PointerIterator(iterator.m_pointer + count);
+    }
+
+private:
+    T* m_pointer = nullptr;
+};
+
+template <class T, class U, class Owner>
+constexpr bool operator==(const PointerIterator<T, Owner>& left,
+                          const PointerIterator<U, Owner>& right) noexcept
+{
+    return left.base() == right.base();
+}
+
+template <class T, class U, class Owner>
+constexpr strong_ordering operator<=>(const PointerIterator<T, Owner>& left,
+                                      const PointerIterator<U, Owner>& right) noexcept
+{
+    return left.base() <=> right.base();
+}
+
+template <class T, class U, class Owner>
+constexpr ptrdiff_t operator-(const PointerIterator<T, Owner>& left,
+                              const PointerIterator<U, Owner>& right) noexcept
+{
+    return left.base() - right.base();
+}
+} // namespace __detail
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

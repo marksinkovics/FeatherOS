@@ -1,0 +1,157 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_STACK
+#define FEATHEROS_LIBCXX_STACK
+
+#include "__container_adaptor"
+#include "__featheros_config"
+#include "deque"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class T, class Container = deque<T>> class stack
+{
+public:
+    using value_type = typename Container::value_type;
+    using reference = typename Container::reference;
+    using const_reference = typename Container::const_reference;
+    using size_type = typename Container::size_type;
+    using container_type = Container;
+
+    stack()
+        requires is_default_constructible_v<Container>
+    = default;
+    explicit stack(const Container& container) : c(container) {}
+    explicit stack(Container&& container) : c(_FSTD::move(container)) {}
+    template <__detail::ClassicInput I> stack(I first, I last) : c(first, last) {}
+    template <__detail::ContainerCompatibleRange<T> R>
+    stack(from_range_t, R&& range)
+        : c(__detail::AdaptorFromRange<Container>(_FSTD::forward<R>(range)))
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    explicit stack(const Allocator& allocator) : c(allocator)
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    stack(const Container& container, const Allocator& allocator) : c(container, allocator)
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    stack(Container&& container, const Allocator& allocator) : c(_FSTD::move(container), allocator)
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    stack(const stack& other, const Allocator& allocator) : c(other.c, allocator)
+    {
+    }
+    template <__detail::AdaptorAllocator<Container> Allocator>
+    stack(stack&& other, const Allocator& allocator) : c(_FSTD::move(other.c), allocator)
+    {
+    }
+    template <__detail::ClassicInput I, __detail::AdaptorAllocator<Container> Allocator>
+    stack(I first, I last, const Allocator& allocator) : c(first, last, allocator)
+    {
+    }
+
+    [[nodiscard]] bool empty() const
+    {
+        return c.empty();
+    }
+    size_type size() const
+    {
+        return c.size();
+    }
+    reference top()
+    {
+        return c.back();
+    }
+    const_reference top() const
+    {
+        return c.back();
+    }
+    void push(const value_type& value)
+    {
+        c.push_back(value);
+    }
+    void push(value_type&& value)
+    {
+        c.push_back(_FSTD::move(value));
+    }
+    template <__detail::ContainerCompatibleRange<T> R> void push_range(R&& range)
+    {
+        __detail::AdaptorAppendRange(c, _FSTD::forward<R>(range));
+    }
+    template <class... Args> decltype(auto) emplace(Args&&... args)
+    {
+        return c.emplace_back(_FSTD::forward<Args>(args)...);
+    }
+    void pop()
+    {
+        c.pop_back();
+    }
+    void swap(stack& other) noexcept(is_nothrow_swappable_v<Container>)
+    {
+        using _FSTD::swap;
+        swap(c, other.c);
+    }
+
+    friend bool operator==(const stack& left, const stack& right)
+    {
+        return left.c == right.c;
+    }
+    friend bool operator<(const stack& left, const stack& right)
+    {
+        return left.c < right.c;
+    }
+    friend bool operator>(const stack& left, const stack& right)
+    {
+        return left.c > right.c;
+    }
+    friend bool operator<=(const stack& left, const stack& right)
+    {
+        return left.c <= right.c;
+    }
+    friend bool operator>=(const stack& left, const stack& right)
+    {
+        return left.c >= right.c;
+    }
+    // Deduced, so a container whose elements cannot be compared still makes a stack.
+    friend auto operator<=>(const stack& left, const stack& right)
+        requires three_way_comparable<Container>
+    {
+        return left.c <=> right.c;
+    }
+
+protected:
+    Container c;
+};
+
+template <class Container>
+    requires(!__detail::AllocatorLike<Container>)
+stack(Container) -> stack<typename Container::value_type, Container>;
+template <__detail::ClassicInput I> stack(I, I) -> stack<typename iterator_traits<I>::value_type>;
+template <ranges::input_range R> stack(from_range_t, R&&) -> stack<ranges::range_value_t<R>>;
+template <class Container, class Allocator>
+    requires(!__detail::AllocatorLike<Container> && uses_allocator_v<Container, Allocator>)
+stack(Container, Allocator) -> stack<typename Container::value_type, Container>;
+template <__detail::ClassicInput I, __detail::AllocatorLike Allocator>
+stack(I, I, Allocator) -> stack<typename iterator_traits<I>::value_type,
+                                deque<typename iterator_traits<I>::value_type, Allocator>>;
+
+template <class T, class Container>
+    requires is_swappable_v<Container>
+void swap(stack<T, Container>& left,
+          stack<T, Container>& right) noexcept(noexcept(left.swap(right)))
+{
+    left.swap(right);
+}
+
+template <class T, class Container, class Allocator>
+struct uses_allocator<stack<T, Container>, Allocator> : uses_allocator<Container, Allocator>::type
+{
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

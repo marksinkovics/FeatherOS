@@ -1,0 +1,221 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_NODE_HANDLE
+#define FEATHEROS_LIBCXX_NODE_HANDLE
+
+// The node_type of the associative and unordered containers: a node taken out of one container,
+// to be put into another of the same node type without copying or moving its value.
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "__memory_base"
+#include "memory"
+#include "optional"
+#include "type_traits"
+#include "utility"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+namespace __detail
+{
+
+// The nodes of both families hold their value in an anonymous union member named value, so the
+// value's lifetime is the container's to manage.
+template <class Node, class Allocator> struct NodeOperations
+{
+    using NodeAllocator = typename allocator_traits<Allocator>::template rebind_alloc<Node>;
+    using NodeTraits = allocator_traits<NodeAllocator>;
+
+    template <class... Args> static Node* Create(NodeAllocator& allocator, Args&&... args)
+    {
+        Node* const node = NodeTraits::allocate(allocator, 1);
+        __detail::ConstructAt(node);
+        NodeTraits::construct(allocator, _FSTD::addressof(node->value),
+                              _FSTD::forward<Args>(args)...);
+        return node;
+    }
+
+    static void Destroy(NodeAllocator& allocator, Node* node) noexcept
+    {
+        NodeTraits::destroy(allocator, _FSTD::addressof(node->value));
+        _FSTD::destroy_at(node);
+        NodeTraits::deallocate(allocator, node, 1);
+    }
+};
+
+template <class Value, bool IsMap> struct NodeHandleTypes
+{
+    using value_type = Value;
+};
+
+template <class Value> struct NodeHandleTypes<Value, true>
+{
+    using key_type = remove_const_t<typename Value::first_type>;
+    using mapped_type = typename Value::second_type;
+};
+
+template <class Node, class Allocator, bool IsMap>
+class NodeHandle : public NodeHandleTypes<remove_cvref_t<decltype(declval<Node&>().value)>, IsMap>
+{
+    using Value = remove_cvref_t<decltype(declval<Node&>().value)>;
+    using Operations = NodeOperations<Node, Allocator>;
+
+public:
+    using allocator_type = Allocator;
+
+    constexpr NodeHandle() noexcept = default;
+
+    NodeHandle(NodeHandle&& other) noexcept
+        : m_node(_FSTD::exchange(other.m_node, nullptr)),
+          m_allocator(_FSTD::move(other.m_allocator))
+    {
+        other.m_allocator.reset();
+    }
+
+    NodeHandle& operator=(NodeHandle&& other) noexcept
+    {
+        if (this == &other)
+        {
+            return *this;
+        }
+        Release();
+        m_node = _FSTD::exchange(other.m_node, nullptr);
+        if (allocator_traits<Allocator>::propagate_on_container_move_assignment::value ||
+            !m_allocator.has_value())
+        {
+            m_allocator = _FSTD::move(other.m_allocator);
+        }
+        other.m_allocator.reset();
+        return *this;
+    }
+
+    ~NodeHandle()
+    {
+        Release();
+    }
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return m_node == nullptr;
+    }
+    explicit operator bool() const noexcept
+    {
+        return m_node != nullptr;
+    }
+    allocator_type get_allocator() const
+    {
+        return *m_allocator;
+    }
+
+    Value& value() const
+        requires(!IsMap)
+    {
+        return m_node->value;
+    }
+    // The node's key is const in the container; out of it, it may change, as the standard says.
+    auto& key() const
+        requires IsMap
+    {
+        return const_cast<remove_const_t<typename Value::first_type>&>(m_node->value.first);
+    }
+    auto& mapped() const
+        requires IsMap
+    {
+        return m_node->value.second;
+    }
+
+    void swap(NodeHandle& other) noexcept(
+        allocator_traits<Allocator>::propagate_on_container_swap::value ||
+        allocator_traits<Allocator>::is_always_equal::value)
+    {
+        _FSTD::swap(m_node, other.m_node);
+        if (allocator_traits<Allocator>::propagate_on_container_swap::value ||
+            !m_allocator.has_value() || !other.m_allocator.has_value())
+        {
+            _FSTD::swap(m_allocator, other.m_allocator);
+        }
+    }
+    friend void swap(NodeHandle& left, NodeHandle& right) noexcept(noexcept(left.swap(right)))
+    {
+        left.swap(right);
+    }
+
+    // For the containers.
+    NodeHandle(Node* node, const Allocator& allocator) : m_node(node), m_allocator(allocator) {}
+    Node* Take() noexcept
+    {
+        m_allocator.reset();
+        return _FSTD::exchange(m_node, nullptr);
+    }
+    Node* Peek() const noexcept
+    {
+        return m_node;
+    }
+
+private:
+    Node* m_node = nullptr;
+    optional<Allocator> m_allocator;
+
+    void Release() noexcept
+    {
+        if (m_node != nullptr)
+        {
+            typename Operations::NodeAllocator allocator(*m_allocator);
+            Operations::Destroy(allocator, m_node);
+            m_node = nullptr;
+        }
+        m_allocator.reset();
+    }
+};
+
+// How the trees and hash tables find a value's key.
+template <class Key> struct SetKey
+{
+    using Type = Key;
+    static const Key& Get(const Key& value) noexcept
+    {
+        return value;
+    }
+};
+
+template <class Key, class T> struct MapKey
+{
+    using Type = Key;
+    static const Key& Get(const pair<const Key, T>& value) noexcept
+    {
+        return value.first;
+    }
+};
+
+// The deduction guides' helpers: the key and mapped types of a range of pairs, and what tells
+// an allocator from a comparator or hash.
+template <class I> using IterKey = remove_const_t<tuple_element_t<0, iter_value_t<I>>>;
+template <class I> using IterMapped = tuple_element_t<1, iter_value_t<I>>;
+template <class I> using IterToAllocated = pair<const IterKey<I>, IterMapped<I>>;
+template <class R> using RangeKey = remove_const_t<typename ranges::range_value_t<R>::first_type>;
+template <class R> using RangeMapped = typename ranges::range_value_t<R>::second_type;
+template <class R> using RangeToAllocated = pair<const RangeKey<R>, RangeMapped<R>>;
+
+template <class A>
+concept AllocatorLike = requires(A& allocator) {
+    typename A::value_type;
+    allocator.allocate(size_t{});
+};
+
+// An emplace argument that brings its key along, so no node is built for a key already there.
+template <class P, class Key>
+concept PairWithKey = requires {
+    typename remove_cvref_t<P>::first_type;
+    typename remove_cvref_t<P>::second_type;
+} && is_same_v<remove_cvref_t<typename remove_cvref_t<P>::first_type>, Key>;
+
+template <class Iterator, class NodeType> struct InsertReturnType
+{
+    Iterator position;
+    bool inserted;
+    NodeType node;
+};
+
+} // namespace __detail
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

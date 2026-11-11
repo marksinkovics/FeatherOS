@@ -1,3 +1,4 @@
+#include <bit>
 #include <errno.h>
 #include <math.h>
 #include <stddef.h>
@@ -259,7 +260,7 @@ int HighestBit(const Wide256& value)
     {
         if (value.words[word] != 0)
         {
-            return word * WordBits + WordBits - 1 - __builtin_clzll(value.words[word]);
+            return word * WordBits + std::bit_width(value.words[word]) - 1;
         }
     }
     return -1;
@@ -373,7 +374,7 @@ Decoded Decode(long double value)
                     .exponent = (biased == 0 ? 1 : biased) - ExponentBias - (MantissaBits - 1)};
     if (mantissa != 0)
     {
-        const int shift = __builtin_clzll(mantissa);
+        const int shift = std::countl_zero(mantissa);
         decoded.mantissa <<= shift;
         decoded.exponent -= shift;
     }

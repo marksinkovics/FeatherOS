@@ -1,0 +1,246 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CONDITION_VARIABLE
+#define FEATHEROS_LIBCXX_CONDITION_VARIABLE
+
+#include "__featheros_config"
+#include "__thread_support"
+#include "chrono"
+#include "memory"
+#include "mutex"
+#include "stop_token"
+#include "utility"
+
+// condition_variable is a pthread condition variable on the steady clock. A deadline on another
+// clock becomes the steady deadline as far away and is checked against its own clock after the
+// wait, as libc++ does without pthread_cond_clockwait. The C library's timed waits count whole
+// milliseconds.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+enum class cv_status
+{
+    no_timeout,
+    timeout,
+};
+
+class condition_variable_any;
+
+class condition_variable
+{
+public:
+    condition_variable() = default;
+    condition_variable(const condition_variable&) = delete;
+    condition_variable& operator=(const condition_variable&) = delete;
+
+    void notify_one() noexcept
+    {
+        m_condition.NotifyOne();
+    }
+    void notify_all() noexcept
+    {
+        m_condition.NotifyAll();
+    }
+
+    void wait(unique_lock<mutex>& lock);
+    template <class Predicate> void wait(unique_lock<mutex>& lock, Predicate predicate)
+    {
+        while (!predicate())
+        {
+            wait(lock);
+        }
+    }
+
+    template <class Clock, class Duration>
+    cv_status wait_until(unique_lock<mutex>& lock,
+                         const chrono::time_point<Clock, Duration>& deadline)
+    {
+        static_assert(chrono::is_clock_v<Clock>);
+        WaitUntil(lock, __detail::SteadyDeadline(deadline));
+        return Clock::now() < deadline ? cv_status::no_timeout : cv_status::timeout;
+    }
+    template <class Clock, class Duration, class Predicate>
+    bool wait_until(unique_lock<mutex>& lock, const chrono::time_point<Clock, Duration>& deadline,
+                    Predicate predicate)
+    {
+        while (!predicate())
+        {
+            if (wait_until(lock, deadline) == cv_status::timeout)
+            {
+                return predicate();
+            }
+        }
+        return true;
+    }
+    template <class Rep, class Period>
+    cv_status wait_for(unique_lock<mutex>& lock, const chrono::duration<Rep, Period>& timeout)
+    {
+        return wait_until(lock, __detail::SteadyDeadlineAfter(timeout));
+    }
+    template <class Rep, class Period, class Predicate>
+    bool wait_for(unique_lock<mutex>& lock, const chrono::duration<Rep, Period>& timeout,
+                  Predicate predicate)
+    {
+        return wait_until(lock, __detail::SteadyDeadlineAfter(timeout), _FSTD::move(predicate));
+    }
+
+    using native_handle_type = pthread_cond_t*;
+    [[nodiscard]] native_handle_type native_handle()
+    {
+        return m_condition.Handle();
+    }
+
+private:
+    friend class condition_variable_any;
+
+    void WaitUntil(unique_lock<mutex>& lock, chrono::steady_clock::time_point deadline);
+
+    __detail::Condition m_condition;
+};
+
+// The calling thread keeps the lock until it ends, then unlocks it and notifies every waiter.
+// thread_local objects constructed after the call are destroyed first, those before it later.
+void notify_all_at_thread_exit(condition_variable& condition, unique_lock<mutex> lock);
+
+// Waits with any lock: under an internal mutex, which notify takes before notifying, so a
+// notification cannot slip between unlocking the caller's lock and waiting. The internal mutex is
+// shared with the waiters, so the object can be destroyed once they have all been notified, even
+// before they have woken.
+class condition_variable_any
+{
+public:
+    condition_variable_any();
+    condition_variable_any(const condition_variable_any&) = delete;
+    condition_variable_any& operator=(const condition_variable_any&) = delete;
+
+    void notify_one() noexcept;
+    void notify_all() noexcept;
+
+    template <class Lock> void wait(Lock& lock)
+    {
+        Wait(lock, nullptr, nullptr);
+    }
+    template <class Lock, class Predicate> void wait(Lock& lock, Predicate predicate)
+    {
+        while (!predicate())
+        {
+            wait(lock);
+        }
+    }
+
+    template <class Lock, class Clock, class Duration>
+    cv_status wait_until(Lock& lock, const chrono::time_point<Clock, Duration>& deadline)
+    {
+        static_assert(chrono::is_clock_v<Clock>);
+        const chrono::steady_clock::time_point steady = __detail::SteadyDeadline(deadline);
+        Wait(lock, nullptr, &steady);
+        return Clock::now() < deadline ? cv_status::no_timeout : cv_status::timeout;
+    }
+    template <class Lock, class Clock, class Duration, class Predicate>
+    bool wait_until(Lock& lock, const chrono::time_point<Clock, Duration>& deadline,
+                    Predicate predicate)
+    {
+        while (!predicate())
+        {
+            if (wait_until(lock, deadline) == cv_status::timeout)
+            {
+                return predicate();
+            }
+        }
+        return true;
+    }
+    template <class Lock, class Rep, class Period>
+    cv_status wait_for(Lock& lock, const chrono::duration<Rep, Period>& timeout)
+    {
+        return wait_until(lock, __detail::SteadyDeadlineAfter(timeout));
+    }
+    template <class Lock, class Rep, class Period, class Predicate>
+    bool wait_for(Lock& lock, const chrono::duration<Rep, Period>& timeout, Predicate predicate)
+    {
+        return wait_until(lock, __detail::SteadyDeadlineAfter(timeout), _FSTD::move(predicate));
+    }
+
+    // The interruptible waits: a stop request wakes them, and they return predicate().
+    template <class Lock, class Predicate>
+    bool wait(Lock& lock, stop_token token, Predicate predicate)
+    {
+        if (token.stop_requested())
+        {
+            return predicate();
+        }
+        const stop_callback wake(token, [this] { notify_all(); });
+        while (!token.stop_requested())
+        {
+            if (predicate())
+            {
+                return true;
+            }
+            Wait(lock, &token, nullptr);
+        }
+        return predicate();
+    }
+    template <class Lock, class Clock, class Duration, class Predicate>
+    bool wait_until(Lock& lock, stop_token token,
+                    const chrono::time_point<Clock, Duration>& deadline, Predicate predicate)
+    {
+        static_assert(chrono::is_clock_v<Clock>);
+        if (token.stop_requested())
+        {
+            return predicate();
+        }
+        const stop_callback wake(token, [this] { notify_all(); });
+        while (!token.stop_requested())
+        {
+            if (predicate())
+            {
+                return true;
+            }
+            const chrono::steady_clock::time_point steady = __detail::SteadyDeadline(deadline);
+            Wait(lock, &token, &steady);
+            if (Clock::now() >= deadline)
+            {
+                return predicate();
+            }
+        }
+        return predicate();
+    }
+    template <class Lock, class Rep, class Period, class Predicate>
+    bool wait_for(Lock& lock, stop_token token, const chrono::duration<Rep, Period>& timeout,
+                  Predicate predicate)
+    {
+        return wait_until(lock, _FSTD::move(token), __detail::SteadyDeadlineAfter(timeout),
+                          _FSTD::move(predicate));
+    }
+
+private:
+    // Does not wait when token has a stop request: the request's notify_all takes the internal
+    // mutex, so it cannot come between this check and the wait.
+    template <class Lock>
+    void Wait(Lock& lock, const stop_token* token, const chrono::steady_clock::time_point* deadline)
+    {
+        const shared_ptr<mutex> internal = m_mutex;
+        unique_lock<mutex> internal_lock(*internal);
+        if (token != nullptr && token->stop_requested())
+        {
+            return;
+        }
+        lock.unlock();
+        if (deadline == nullptr)
+        {
+            m_condition.wait(internal_lock);
+        }
+        else
+        {
+            m_condition.WaitUntil(internal_lock, *deadline);
+        }
+        internal_lock.unlock();
+        lock.lock();
+    }
+
+    shared_ptr<mutex> m_mutex;
+    condition_variable m_condition;
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

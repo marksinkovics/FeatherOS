@@ -1,0 +1,38 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_EXCEPTION
+#define FEATHEROS_LIBCXX_EXCEPTION
+
+// Programs build without exceptions, so this is only the base class and terminate; there is no
+// exception_ptr, nested_exception or throw_with_nested.
+
+#include "__featheros_config"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+class exception
+{
+public:
+    exception() noexcept = default;
+    exception(const exception&) noexcept = default;
+    exception& operator=(const exception&) noexcept = default;
+    virtual ~exception();
+    [[nodiscard]] virtual const char* what() const noexcept;
+};
+
+class bad_exception : public exception
+{
+public:
+    ~bad_exception() override;
+    [[nodiscard]] const char* what() const noexcept override;
+};
+
+using terminate_handler = void (*)();
+terminate_handler get_terminate() noexcept;
+terminate_handler set_terminate(terminate_handler handler) noexcept;
+[[noreturn]] void terminate() noexcept;
+[[nodiscard]] int uncaught_exceptions() noexcept;
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

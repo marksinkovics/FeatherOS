@@ -1,0 +1,91 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CSTDDEF
+#define FEATHEROS_LIBCXX_CSTDDEF
+
+#include "__featheros_config"
+#include "type_traits"
+
+#include <stddef.h>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+using ::max_align_t;
+
+enum class byte : unsigned char
+{
+};
+
+template <class Integer>
+    requires is_integral_v<Integer>
+constexpr byte operator<<(byte value, Integer shift) noexcept
+{
+    return static_cast<byte>(static_cast<unsigned int>(value) << shift);
+}
+
+template <class Integer>
+    requires is_integral_v<Integer>
+constexpr byte operator>>(byte value, Integer shift) noexcept
+{
+    return static_cast<byte>(static_cast<unsigned int>(value) >> shift);
+}
+
+template <class Integer>
+    requires is_integral_v<Integer>
+constexpr byte& operator<<=(byte& value, Integer shift) noexcept
+{
+    return value = value << shift;
+}
+
+template <class Integer>
+    requires is_integral_v<Integer>
+constexpr byte& operator>>=(byte& value, Integer shift) noexcept
+{
+    return value = value >> shift;
+}
+
+constexpr byte operator|(byte left, byte right) noexcept
+{
+    return static_cast<byte>(static_cast<unsigned int>(left) | static_cast<unsigned int>(right));
+}
+
+constexpr byte operator&(byte left, byte right) noexcept
+{
+    return static_cast<byte>(static_cast<unsigned int>(left) & static_cast<unsigned int>(right));
+}
+
+constexpr byte operator^(byte left, byte right) noexcept
+{
+    return static_cast<byte>(static_cast<unsigned int>(left) ^ static_cast<unsigned int>(right));
+}
+
+constexpr byte operator~(byte value) noexcept
+{
+    return static_cast<byte>(~static_cast<unsigned int>(value));
+}
+
+constexpr byte& operator|=(byte& left, byte right) noexcept
+{
+    return left = left | right;
+}
+
+constexpr byte& operator&=(byte& left, byte right) noexcept
+{
+    return left = left & right;
+}
+
+constexpr byte& operator^=(byte& left, byte right) noexcept
+{
+    return left = left ^ right;
+}
+
+template <class Integer>
+    requires is_integral_v<Integer>
+constexpr Integer to_integer(byte value) noexcept
+{
+    return static_cast<Integer>(value);
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

@@ -1,10 +1,10 @@
 #include "libc/exit_handlers.h"
 #include "libc/lock.h"
 
-#include <stdarg.h>
+#include <new>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 // The hooks the C++ compiler expects from its runtime (the Itanium C++ ABI, which both
@@ -98,6 +98,16 @@ extern "C" void __cxa_pure_virtual()
     abort();
 }
 
+// What the C++ library would throw, such as optional::value() on an empty optional.
+void std::__detail::LibraryAbort(const char* message) noexcept
+{
+    constexpr char Prefix[] = "C++ library: ";
+    write(STDERR_FILENO, Prefix, sizeof(Prefix) - 1);
+    write(STDERR_FILENO, message, strlen(message));
+    write(STDERR_FILENO, "\n", 1);
+    abort();
+}
+
 // With exceptions disabled, a failed allocation cannot throw std::bad_alloc, so it ends the
 // program instead of returning nullptr to code that does not check.
 namespace
@@ -116,14 +126,6 @@ void* CheckAllocation(void* pointer)
 
 } // namespace
 
-// <new> declares it; there is no C++ standard library, so the type is defined here.
-namespace std
-{
-enum class align_val_t : size_t // NOLINT(bugprone-std-namespace-modification)
-{
-};
-} // namespace std
-
 void* operator new(size_t size)
 {
     return CheckAllocation(malloc(size == 0 ? 1 : size));
@@ -132,6 +134,26 @@ void* operator new(size_t size)
 void* operator new[](size_t size)
 {
     return operator new(size);
+}
+
+void* operator new(size_t size, const std::nothrow_t&) noexcept
+{
+    return malloc(size == 0 ? 1 : size);
+}
+
+void* operator new[](size_t size, const std::nothrow_t&) noexcept
+{
+    return malloc(size == 0 ? 1 : size);
+}
+
+void operator delete(void* pointer, const std::nothrow_t&) noexcept
+{
+    free(pointer);
+}
+
+void operator delete[](void* pointer, const std::nothrow_t&) noexcept
+{
+    free(pointer);
 }
 
 void operator delete(void* pointer) noexcept
@@ -155,7 +177,7 @@ void operator delete[](void* pointer, size_t) noexcept
     free(pointer);
 }
 
-// The forms for types aligned beyond what malloc guarantees, which libc++'s containers call.
+// The forms for types aligned beyond what malloc guarantees, which the containers call.
 void* operator new(size_t size, std::align_val_t alignment)
 {
     void* pointer = nullptr;
@@ -166,6 +188,28 @@ void* operator new(size_t size, std::align_val_t alignment)
 void* operator new[](size_t size, std::align_val_t alignment)
 {
     return operator new(size, alignment);
+}
+
+void* operator new(size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept
+{
+    void* pointer = nullptr;
+    posix_memalign(&pointer, static_cast<size_t>(alignment), size == 0 ? 1 : size);
+    return pointer;
+}
+
+void* operator new[](size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept
+{
+    return operator new(size, alignment, std::nothrow);
+}
+
+void operator delete(void* pointer, std::align_val_t, const std::nothrow_t&) noexcept
+{
+    free(pointer);
+}
+
+void operator delete[](void* pointer, std::align_val_t, const std::nothrow_t&) noexcept
+{
+    free(pointer);
 }
 
 void operator delete(void* pointer, std::align_val_t) noexcept
@@ -187,17 +231,3 @@ void operator delete[](void* pointer, size_t, std::align_val_t) noexcept
 {
     free(pointer);
 }
-
-// libc++'s headers call this where they would throw or a check fails. Its compiled library
-// would provide it, and Swift programs use only the headers.
-namespace std::inline __1 // NOLINT(bugprone-std-namespace-modification)
-{
-[[noreturn]] void __libcpp_verbose_abort(const char* format, ...) noexcept
-{
-    va_list arguments;
-    va_start(arguments, format);
-    vfprintf(stderr, format, arguments);
-    va_end(arguments);
-    abort();
-}
-} // namespace std::inline __1

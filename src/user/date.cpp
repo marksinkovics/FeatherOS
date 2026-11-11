@@ -1,5 +1,7 @@
 #include "command_line.h"
 
+#include <chrono>
+#include <print>
 #include <stdio.h>
 #include <time.h>
 
@@ -14,13 +16,11 @@ int main(int argc, char** argv)
         return 0;
     }
     const time_t now = time(nullptr);
-    char text[32];
-    if (now == static_cast<time_t>(-1) ||
-        strftime(text, sizeof(text), "%Y-%m-%d %H:%M:%S UTC", gmtime(&now)) == 0)
+    if (now == static_cast<time_t>(-1))
     {
         puts("date: clock unavailable");
         return 1;
     }
-    puts(text);
+    std::println("{:%F %T %Z}", std::chrono::sys_seconds(std::chrono::seconds(now)));
     return 0;
 }

@@ -17,21 +17,21 @@ repos:
         entry: bash tools/quality.sh check clang-format
         language: system
         pass_filenames: false
-        files: ^(src/.*\.(c|cpp|h|hpp)|\.clang-format)$
+        files: ^(src/.*\.(c|cpp|h|hpp)|src/libcxx/include/.*|\.clang-format)$
         verbose: true
       - id: clang-tidy-x86_64
         name: clang-tidy x86_64
         entry: bash tools/quality.sh check clang-tidy-x86_64 --
         language: system
         require_serial: true
-        files: ^(src/.*\.(c|cpp|h|hpp)|\.clang-tidy|.*CMakeLists\.txt|.*\.cmake)$
+        files: ^(src/.*\.(c|cpp|h|hpp)|src/libcxx/include/.*|\.clang-tidy|.*CMakeLists\.txt|.*\.cmake)$
         verbose: true
       - id: clang-tidy-aarch64
         name: clang-tidy aarch64
         entry: bash tools/quality.sh check clang-tidy-aarch64 --
         language: system
         require_serial: true
-        files: ^(src/.*\.(c|cpp|h|hpp)|\.clang-tidy|.*CMakeLists\.txt|.*\.cmake)$
+        files: ^(src/.*\.(c|cpp|h|hpp)|src/libcxx/include/.*|\.clang-tidy|.*CMakeLists\.txt|.*\.cmake)$
         verbose: true
       - id: ruff-check
         name: Ruff check

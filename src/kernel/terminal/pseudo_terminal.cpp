@@ -4,6 +4,8 @@
 #include "kernel/terminal/terminal.h"
 #include "user/syscall_abi.h"
 
+#include <atomic>
+
 namespace FeatherOS::PseudoTerminals
 {
 namespace
@@ -22,13 +24,13 @@ struct Pair
     // Its read end is the master. Each slave descriptor holds a write end, so the master reads
     // end of file once they are all closed; until the first slave opens, the pair holds one.
     Pipes::Pipe* output = nullptr;
-    uint64_t output_count = 0;
+    std::atomic<uint64_t> output_count = 0;
     uint32_t slaves GUARDED_BY(pairs_lock) = 0;
     bool in_use GUARDED_BY(pairs_lock) = false;
     bool master_open GUARDED_BY(pairs_lock) = false;
     bool locked GUARDED_BY(pairs_lock) = false;
     bool slave_opened GUARDED_BY(pairs_lock) = false;
-    bool at_row_start = true;
+    std::atomic<bool> at_row_start = true;
 };
 
 namespace
@@ -47,9 +49,9 @@ void Record(Pair* pair, const char* text, size_t length)
     {
         return;
     }
-    __atomic_add_fetch(&pair->output_count, length, __ATOMIC_RELAXED);
+    pair->output_count.fetch_add(length, std::memory_order_relaxed);
     const char last = text[length - 1];
-    __atomic_store_n(&pair->at_row_start, last == '\n' || last == '\r', __ATOMIC_RELAXED);
+    pair->at_row_start.store(last == '\n' || last == '\r', std::memory_order_relaxed);
 }
 
 // The terminal reaches its device only while it is not hung up, so the master is open and the
@@ -101,13 +103,13 @@ void DeviceResetModes(void* context)
 
 uint64_t DeviceOutputCount(void* context)
 {
-    return __atomic_load_n(&Owner(context)->output_count, __ATOMIC_RELAXED);
+    return Owner(context)->output_count.load(std::memory_order_relaxed);
 }
 
 void DeviceStartFreshRow(void* context)
 {
     Pair* pair = Owner(context);
-    if (!__atomic_load_n(&pair->at_row_start, __ATOMIC_RELAXED))
+    if (!pair->at_row_start.load(std::memory_order_relaxed))
     {
         WriteWithoutWaiting(pair, "\n", 1);
     }
@@ -154,13 +156,13 @@ void Claim(Pair* pair, Pipes::Pipe* output) REQUIRES(pairs_lock)
     };
     pair->terminal.Reset(&pair->device);
     pair->output = output;
-    pair->output_count = 0;
+    pair->output_count.store(0, std::memory_order_relaxed);
     pair->slaves = 0;
     pair->in_use = true;
     pair->master_open = true;
     pair->locked = true;
     pair->slave_opened = false;
-    pair->at_row_start = true;
+    pair->at_row_start.store(true, std::memory_order_relaxed);
 }
 
 } // namespace

@@ -1,0 +1,578 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_UTILITY
+#define FEATHEROS_LIBCXX_UTILITY
+
+#include "__featheros_config"
+#include "compare"
+#include "concepts"
+#include "initializer_list"
+#include "limits"
+#include "type_traits"
+
+// move, forward, declval and swap are in <type_traits>, which needs them first.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class T, class U> [[nodiscard]] constexpr auto&& forward_like(U&& value) noexcept
+{
+    constexpr bool adds_const = is_const_v<remove_reference_t<T>>;
+    if constexpr (is_lvalue_reference_v<T&&>)
+    {
+        if constexpr (adds_const)
+        {
+            return static_cast<const remove_reference_t<U>&>(value);
+        }
+        else
+        {
+            return static_cast<remove_reference_t<U>&>(value);
+        }
+    }
+    else
+    {
+        if constexpr (adds_const)
+        {
+            return static_cast<const remove_reference_t<U>&&>(value);
+        }
+        else
+        {
+            return static_cast<remove_reference_t<U>&&>(value);
+        }
+    }
+}
+
+template <class T>
+[[nodiscard]] constexpr conditional_t<
+    !is_nothrow_move_constructible_v<T> && is_copy_constructible_v<T>, const T&, T&&>
+move_if_noexcept(T& value) noexcept
+{
+    return _FSTD::move(value);
+}
+
+template <class T> [[nodiscard]] constexpr add_const_t<T>& as_const(T& value) noexcept
+{
+    return value;
+}
+template <class T> void as_const(const T&&) = delete;
+
+template <class T, class U = T>
+constexpr T exchange(T& target, U&& replacement) noexcept(is_nothrow_move_constructible_v<T> &&
+                                                          is_nothrow_assignable_v<T&, U>)
+{
+    T previous = _FSTD::move(target);
+    target = _FSTD::forward<U>(replacement);
+    return previous;
+}
+
+template <class Enum>
+[[nodiscard]] constexpr underlying_type_t<Enum> to_underlying(Enum value) noexcept
+{
+    return static_cast<underlying_type_t<Enum>>(value);
+}
+
+[[noreturn]] inline void unreachable()
+{
+    __builtin_unreachable();
+}
+
+// Integer comparisons that compare values, not converted bit patterns, across signedness.
+namespace __detail
+{
+template <class T>
+concept StandardInteger =
+    is_integral_v<T> && !is_same_v<remove_cv_t<T>, bool> && !is_same_v<remove_cv_t<T>, char> &&
+    !is_same_v<remove_cv_t<T>, wchar_t> && !is_same_v<remove_cv_t<T>, char8_t> &&
+    !is_same_v<remove_cv_t<T>, char16_t> && !is_same_v<remove_cv_t<T>, char32_t>;
+} // namespace __detail
+
+template <__detail::StandardInteger T, __detail::StandardInteger U>
+constexpr bool cmp_equal(T left, U right) noexcept
+{
+    if constexpr (is_signed_v<T> == is_signed_v<U>)
+    {
+        return left == right;
+    }
+    else if constexpr (is_signed_v<T>)
+    {
+        return left >= 0 && make_unsigned_t<T>(left) == right;
+    }
+    else
+    {
+        return right >= 0 && make_unsigned_t<U>(right) == left;
+    }
+}
+
+template <__detail::StandardInteger T, __detail::StandardInteger U>
+constexpr bool cmp_not_equal(T left, U right) noexcept
+{
+    return !cmp_equal(left, right);
+}
+
+template <__detail::StandardInteger T, __detail::StandardInteger U>
+constexpr bool cmp_less(T left, U right) noexcept
+{
+    if constexpr (is_signed_v<T> == is_signed_v<U>)
+    {
+        return left < right;
+    }
+    else if constexpr (is_signed_v<T>)
+    {
+        return left < 0 || make_unsigned_t<T>(left) < right;
+    }
+    else
+    {
+        return right >= 0 && left < make_unsigned_t<U>(right);
+    }
+}
+
+template <__detail::StandardInteger T, __detail::StandardInteger U>
+constexpr bool cmp_greater(T left, U right) noexcept
+{
+    return cmp_less(right, left);
+}
+
+template <__detail::StandardInteger T, __detail::StandardInteger U>
+constexpr bool cmp_less_equal(T left, U right) noexcept
+{
+    return !cmp_less(right, left);
+}
+
+template <__detail::StandardInteger T, __detail::StandardInteger U>
+constexpr bool cmp_greater_equal(T left, U right) noexcept
+{
+    return !cmp_less(left, right);
+}
+
+template <__detail::StandardInteger Result, __detail::StandardInteger T>
+constexpr bool in_range(T value) noexcept
+{
+    return cmp_greater_equal(value, numeric_limits<Result>::min()) &&
+           cmp_less_equal(value, numeric_limits<Result>::max());
+}
+
+template <class T, T... Values> struct integer_sequence
+{
+    using value_type = T;
+    static constexpr size_t size() noexcept
+    {
+        return sizeof...(Values);
+    }
+};
+
+// Clang and GCC each have a builtin that builds the sequence without recursion.
+#if __has_builtin(__make_integer_seq)
+template <class T, T Count>
+using make_integer_sequence = __make_integer_seq<integer_sequence, T, Count>;
+#else
+template <class T, T Count>
+using make_integer_sequence = integer_sequence<T, __integer_pack(Count)...>;
+#endif
+
+template <size_t... Values> using index_sequence = integer_sequence<size_t, Values...>;
+template <size_t Count> using make_index_sequence = make_integer_sequence<size_t, Count>;
+template <class... T> using index_sequence_for = make_index_sequence<sizeof...(T)>;
+
+// Pack helpers for tuple and variant.
+namespace __detail
+{
+#if __has_builtin(__type_pack_element)
+// Wrapped, since GCC rejects the builtin itself in a function signature.
+template <size_t Index, class... T> struct PackElementOf
+{
+    using type = __type_pack_element<Index, T...>;
+};
+template <size_t Index, class... T> using PackElement = typename PackElementOf<Index, T...>::type;
+#else
+template <size_t Index, class T> struct IndexedType
+{
+    using type = T;
+};
+template <class Indices, class... T> struct IndexedTypes;
+template <size_t... Index, class... T>
+struct IndexedTypes<index_sequence<Index...>, T...> : IndexedType<Index, T>...
+{
+};
+template <size_t Index, class T> IndexedType<Index, T> SelectIndexed(const IndexedType<Index, T>&);
+template <size_t Index, class... T>
+using PackElement =
+    typename decltype(SelectIndexed<Index>(IndexedTypes<index_sequence_for<T...>, T...>{}))::type;
+#endif
+
+template <class T, class... Types>
+inline constexpr size_t PackCount = (size_t{is_same_v<T, Types>} + ... + 0);
+
+// The index of T's first occurrence, or sizeof...(Types) when it does not occur.
+template <class T, class... Types> consteval size_t PackIndex()
+{
+    constexpr bool matches[] = {is_same_v<T, Types>..., true};
+    size_t index = 0;
+    while (!matches[index])
+    {
+        ++index;
+    }
+    return index;
+}
+} // namespace __detail
+
+struct piecewise_construct_t
+{
+    explicit piecewise_construct_t() = default;
+};
+inline constexpr piecewise_construct_t piecewise_construct{};
+
+struct in_place_t
+{
+    explicit in_place_t() = default;
+};
+inline constexpr in_place_t in_place{};
+
+template <class T> struct in_place_type_t
+{
+    explicit in_place_type_t() = default;
+};
+template <class T> inline constexpr in_place_type_t<T> in_place_type{};
+
+template <size_t Index> struct in_place_index_t
+{
+    explicit in_place_index_t() = default;
+};
+template <size_t Index> inline constexpr in_place_index_t<Index> in_place_index{};
+
+// The tuple protocol, which structured bindings use: <tuple> and <array> add their types.
+template <class T> struct tuple_size;
+template <class T>
+    requires requires { tuple_size<T>::value; }
+struct tuple_size<const T> : integral_constant<size_t, tuple_size<T>::value>
+{
+};
+template <class T> inline constexpr size_t tuple_size_v = tuple_size<T>::value;
+
+template <size_t Index, class T> struct tuple_element;
+template <size_t Index, class T> struct tuple_element<Index, const T>
+{
+    using type = add_const_t<typename tuple_element<Index, T>::type>;
+};
+template <size_t Index, class T> using tuple_element_t = typename tuple_element<Index, T>::type;
+
+namespace __detail
+{
+template <class T> void CopyListInitialize(const T&);
+
+// Whether T{} works as an implicit conversion, which makes pair's default constructor implicit.
+template <class T>
+concept ImplicitlyDefaultConstructible = requires { CopyListInitialize<T>({}); };
+} // namespace __detail
+
+namespace __detail
+{
+// The converts-from-any-cvref of [optional.ctor], which expected shares.
+template <class T, class W>
+concept ConvertsFromAnyCvref =
+    is_constructible_v<T, W&> || is_convertible_v<W&, T> || is_constructible_v<T, W> ||
+    is_convertible_v<W, T> || is_constructible_v<T, const W&> || is_convertible_v<const W&, T> ||
+    is_constructible_v<T, const W> || is_convertible_v<const W, T>;
+} // namespace __detail
+
+// <tuple> defines these; pair's piecewise constructor needs them declared before it.
+template <class... T> class tuple;
+template <size_t Index, class... T>
+constexpr tuple_element_t<Index, tuple<T...>>& get(tuple<T...>& value) noexcept;
+
+template <class First, class Second> struct pair
+{
+    using first_type = First;
+    using second_type = Second;
+
+    First first;
+    Second second;
+
+    explicit(!__detail::ImplicitlyDefaultConstructible<First> ||
+             !__detail::ImplicitlyDefaultConstructible<Second>) constexpr pair()
+        requires is_default_constructible_v<First> && is_default_constructible_v<Second>
+        : first(), second()
+    {
+    }
+
+    explicit(!is_convertible_v<const First&, First> ||
+             !is_convertible_v<const Second&, Second>) constexpr pair(const First& first_value,
+                                                                      const Second& second_value)
+        requires is_copy_constructible_v<First> && is_copy_constructible_v<Second>
+        : first(first_value), second(second_value)
+    {
+    }
+
+    template <class U1 = First, class U2 = Second>
+        requires is_constructible_v<First, U1> && is_constructible_v<Second, U2>
+    explicit(!is_convertible_v<U1, First> ||
+             !is_convertible_v<U2, Second>) constexpr pair(U1&& first_value, U2&& second_value)
+        : first(_FSTD::forward<U1>(first_value)), second(_FSTD::forward<U2>(second_value))
+    {
+    }
+
+    template <class U1, class U2>
+        requires is_constructible_v<First, U1&> && is_constructible_v<Second, U2&>
+    explicit(!is_convertible_v<U1&, First> ||
+             !is_convertible_v<U2&, Second>) constexpr pair(pair<U1, U2>& other)
+        : first(other.first), second(other.second)
+    {
+    }
+
+    template <class U1, class U2>
+        requires is_constructible_v<First, const U1&> && is_constructible_v<Second, const U2&>
+    explicit(!is_convertible_v<const U1&, First> ||
+             !is_convertible_v<const U2&, Second>) constexpr pair(const pair<U1, U2>& other)
+        : first(other.first), second(other.second)
+    {
+    }
+
+    template <class U1, class U2>
+        requires is_constructible_v<First, U1> && is_constructible_v<Second, U2>
+    explicit(!is_convertible_v<U1, First> ||
+             !is_convertible_v<U2, Second>) constexpr pair(pair<U1, U2>&& other)
+        : first(_FSTD::forward<U1>(other.first)), second(_FSTD::forward<U2>(other.second))
+    {
+    }
+
+    template <class U1, class U2>
+        requires is_constructible_v<First, const U1> && is_constructible_v<Second, const U2>
+    explicit(!is_convertible_v<const U1, First> ||
+             !is_convertible_v<const U2, Second>) constexpr pair(const pair<U1, U2>&& other)
+        : first(_FSTD::forward<const U1>(other.first)),
+          second(_FSTD::forward<const U2>(other.second))
+    {
+    }
+
+    template <class... Args1, class... Args2>
+        requires is_constructible_v<First, Args1...> && is_constructible_v<Second, Args2...>
+    constexpr pair(piecewise_construct_t, tuple<Args1...> first_args, tuple<Args2...> second_args)
+        : pair(first_args, second_args, index_sequence_for<Args1...>{},
+               index_sequence_for<Args2...>{})
+    {
+    }
+
+    pair(const pair&) = default;
+    pair(pair&&) = default;
+
+    // Assignment goes through the members, so a pair of references assigns what they refer to.
+    constexpr pair& operator=(const pair& other)
+        requires is_copy_assignable_v<First> && is_copy_assignable_v<Second>
+    {
+        first = other.first;
+        second = other.second;
+        return *this;
+    }
+
+    constexpr pair& operator=(pair&& other) noexcept(is_nothrow_move_assignable_v<First> &&
+                                                     is_nothrow_move_assignable_v<Second>)
+        requires is_move_assignable_v<First> && is_move_assignable_v<Second>
+    {
+        first = _FSTD::forward<First>(other.first);
+        second = _FSTD::forward<Second>(other.second);
+        return *this;
+    }
+
+    template <class U1, class U2>
+        requires is_assignable_v<First&, const U1&> && is_assignable_v<Second&, const U2&>
+    constexpr pair& operator=(const pair<U1, U2>& other)
+    {
+        first = other.first;
+        second = other.second;
+        return *this;
+    }
+
+    template <class U1, class U2>
+        requires is_assignable_v<First&, U1> && is_assignable_v<Second&, U2>
+    constexpr pair& operator=(pair<U1, U2>&& other)
+    {
+        first = _FSTD::forward<U1>(other.first);
+        second = _FSTD::forward<U2>(other.second);
+        return *this;
+    }
+
+    constexpr void swap(pair& other) noexcept(is_nothrow_swappable_v<First> &&
+                                              is_nothrow_swappable_v<Second>)
+        requires is_swappable_v<First> && is_swappable_v<Second>
+    {
+        using _FSTD::swap;
+        swap(first, other.first);
+        swap(second, other.second);
+    }
+
+private:
+    template <class... Args1, class... Args2, size_t... Index1, size_t... Index2>
+    constexpr pair(tuple<Args1...>& first_args, tuple<Args2...>& second_args,
+                   index_sequence<Index1...>, index_sequence<Index2...>)
+        : first(_FSTD::forward<Args1>(_FSTD::get<Index1>(first_args))...),
+          second(_FSTD::forward<Args2>(_FSTD::get<Index2>(second_args))...)
+    {
+    }
+};
+
+template <class First, class Second> pair(First, Second) -> pair<First, Second>;
+
+template <class T1, class T2, class U1, class U2>
+constexpr bool operator==(const pair<T1, T2>& left, const pair<U1, U2>& right)
+    requires requires {
+        { left.first == right.first } -> __detail::BooleanTestable;
+        { left.second == right.second } -> __detail::BooleanTestable;
+    }
+{
+    return left.first == right.first && left.second == right.second;
+}
+
+template <class T1, class T2, class U1, class U2>
+constexpr common_comparison_category_t<__detail::SynthThreeWayResult<T1, U1>,
+                                       __detail::SynthThreeWayResult<T2, U2>>
+operator<=>(const pair<T1, T2>& left, const pair<U1, U2>& right)
+{
+    if (auto order = __detail::synth_three_way(left.first, right.first); order != 0)
+    {
+        return order;
+    }
+    return __detail::synth_three_way(left.second, right.second);
+}
+
+template <class T1, class T2>
+    requires is_swappable_v<T1> && is_swappable_v<T2>
+constexpr void swap(pair<T1, T2>& left, pair<T1, T2>& right) noexcept(noexcept(left.swap(right)))
+{
+    left.swap(right);
+}
+
+template <class T1, class T2>
+constexpr pair<unwrap_ref_decay_t<T1>, unwrap_ref_decay_t<T2>> make_pair(T1&& first, T2&& second)
+{
+    return pair<unwrap_ref_decay_t<T1>, unwrap_ref_decay_t<T2>>(_FSTD::forward<T1>(first),
+                                                                _FSTD::forward<T2>(second));
+}
+
+template <class T1, class T2, class U1, class U2, template <class> class TQualifiers,
+          template <class> class UQualifiers>
+    requires requires {
+        typename pair<common_reference_t<TQualifiers<T1>, UQualifiers<U1>>,
+                      common_reference_t<TQualifiers<T2>, UQualifiers<U2>>>;
+    }
+struct basic_common_reference<pair<T1, T2>, pair<U1, U2>, TQualifiers, UQualifiers>
+{
+    using type = pair<common_reference_t<TQualifiers<T1>, UQualifiers<U1>>,
+                      common_reference_t<TQualifiers<T2>, UQualifiers<U2>>>;
+};
+
+template <class T1, class T2, class U1, class U2>
+    requires requires { typename pair<common_type_t<T1, U1>, common_type_t<T2, U2>>; }
+struct common_type<pair<T1, T2>, pair<U1, U2>>
+{
+    using type = pair<common_type_t<T1, U1>, common_type_t<T2, U2>>;
+};
+
+template <class T1, class T2> struct tuple_size<pair<T1, T2>> : integral_constant<size_t, 2>
+{
+};
+template <class T1, class T2> struct tuple_element<0, pair<T1, T2>>
+{
+    using type = T1;
+};
+template <class T1, class T2> struct tuple_element<1, pair<T1, T2>>
+{
+    using type = T2;
+};
+
+namespace __detail
+{
+template <size_t Index, class Pair> constexpr auto&& PairElement(Pair&& value) noexcept
+{
+    if constexpr (Index == 0)
+    {
+        return _FSTD::forward<Pair>(value).first;
+    }
+    else
+    {
+        return _FSTD::forward<Pair>(value).second;
+    }
+}
+} // namespace __detail
+
+template <size_t Index, class T1, class T2>
+constexpr tuple_element_t<Index, pair<T1, T2>>& get(pair<T1, T2>& value) noexcept
+{
+    return __detail::PairElement<Index>(value);
+}
+
+template <size_t Index, class T1, class T2>
+constexpr const tuple_element_t<Index, pair<T1, T2>>& get(const pair<T1, T2>& value) noexcept
+{
+    return __detail::PairElement<Index>(value);
+}
+
+template <size_t Index, class T1, class T2>
+constexpr tuple_element_t<Index, pair<T1, T2>>&& get(pair<T1, T2>&& value) noexcept
+{
+    return static_cast<tuple_element_t<Index, pair<T1, T2>>&&>(__detail::PairElement<Index>(value));
+}
+
+template <size_t Index, class T1, class T2>
+constexpr const tuple_element_t<Index, pair<T1, T2>>&& get(const pair<T1, T2>&& value) noexcept
+{
+    return static_cast<const tuple_element_t<Index, pair<T1, T2>>&&>(
+        __detail::PairElement<Index>(value));
+}
+
+template <class T, class U>
+constexpr T& get(pair<T, U>& value) noexcept
+    requires(!is_same_v<T, U>)
+{
+    return value.first;
+}
+
+template <class T, class U>
+constexpr const T& get(const pair<T, U>& value) noexcept
+    requires(!is_same_v<T, U>)
+{
+    return value.first;
+}
+
+template <class T, class U>
+constexpr T&& get(pair<T, U>&& value) noexcept
+    requires(!is_same_v<T, U>)
+{
+    return static_cast<T&&>(value.first);
+}
+
+template <class T, class U>
+constexpr const T&& get(const pair<T, U>&& value) noexcept
+    requires(!is_same_v<T, U>)
+{
+    return static_cast<const T&&>(value.first);
+}
+
+template <class T, class U>
+constexpr T& get(pair<U, T>& value) noexcept
+    requires(!is_same_v<T, U>)
+{
+    return value.second;
+}
+
+template <class T, class U>
+constexpr const T& get(const pair<U, T>& value) noexcept
+    requires(!is_same_v<T, U>)
+{
+    return value.second;
+}
+
+template <class T, class U>
+constexpr T&& get(pair<U, T>&& value) noexcept
+    requires(!is_same_v<T, U>)
+{
+    return static_cast<T&&>(value.second);
+}
+
+template <class T, class U>
+constexpr const T&& get(const pair<U, T>&& value) noexcept
+    requires(!is_same_v<T, U>)
+{
+    return static_cast<const T&&>(value.second);
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

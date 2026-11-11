@@ -1,0 +1,37 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CONFIG
+#define FEATHEROS_LIBCXX_CONFIG
+
+#if !defined(__cplusplus) || __cplusplus < 202002L
+#error "FeatherOS's C++ standard library needs C++20 or later"
+#endif
+
+// Host tests build the headers in a namespace of their own, next to the host's library. Types
+// the compiler itself names (std::initializer_list, the <=> ordering types, std::align_val_t)
+// then come from the host's library.
+#ifndef FEATHEROS_STD_NAMESPACE
+#define FEATHEROS_STD_NAMESPACE std
+#define FEATHEROS_STD_IS_STD 1
+#else
+#define FEATHEROS_STD_IS_STD 0
+#endif
+
+#define _FSTD ::FEATHEROS_STD_NAMESPACE
+
+// Every header includes this one, so these three need no C header, which the kernel lacks for
+// some of the wrappers.
+namespace FEATHEROS_STD_NAMESPACE
+{
+using size_t = decltype(sizeof(0));
+using ptrdiff_t = decltype(static_cast<int*>(nullptr) - static_cast<int*>(nullptr));
+using nullptr_t = decltype(nullptr);
+
+namespace __detail
+{
+// What would throw without -fno-exceptions (optional::value() when empty, array::at() out of
+// range) calls this instead. The C library prints the message and aborts, the kernel panics.
+[[noreturn]] void LibraryAbort(const char* message) noexcept;
+} // namespace __detail
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

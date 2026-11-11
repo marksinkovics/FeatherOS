@@ -2,6 +2,7 @@
 #include "libc/lock.h"
 #include "user/syscall.h"
 
+#include <atomic>
 #include <stddef.h>
 #include <stdint.h>
 #include <signal.h>
@@ -28,7 +29,7 @@ constinit FeatherOS::LibC::Lock handlers_lock;
 ExitHandler handlers[MaximumExitHandlers] GUARDED_BY(handlers_lock);
 size_t handler_count GUARDED_BY(handlers_lock) = 0;
 void (*exit_flush)() = nullptr;
-void (*key_destructors)() = nullptr;
+std::atomic<void (*)()> key_destructors = nullptr;
 
 // thread_local objects with destructors, newest first, for the thread that built them.
 struct ThreadExitHandler
@@ -71,12 +72,12 @@ void SetExitFlush(void (*flush)())
 
 void SetKeyDestructors(void (*run)())
 {
-    __atomic_store_n(&key_destructors, run, __ATOMIC_RELEASE);
+    key_destructors.store(run, std::memory_order_release);
 }
 
 void RunKeyDestructors()
 {
-    void (*run)() = __atomic_load_n(&key_destructors, __ATOMIC_ACQUIRE);
+    void (*run)() = key_destructors.load(std::memory_order_acquire);
     if (run != nullptr)
     {
         run();

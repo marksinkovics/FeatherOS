@@ -13,6 +13,7 @@
 #include "kernel/sync/spinlock.h"
 
 #include <limine.h>
+#include <atomic>
 
 namespace FeatherOS::Smp
 {
@@ -26,24 +27,24 @@ constexpr uint64_t IpiTimeoutTicks = 10;
 constexpr uint64_t CpuTimerTicks = 3;
 constexpr uint64_t CpuTimerTimeoutTicks = 50;
 
-uint32_t online_cpu_count = 1;
-uint32_t ipi_counts[Cpu::MaximumCpus] = {};
-bool halt_requested = false;
-uint32_t halted_cpus = 0;
+std::atomic<uint32_t> online_cpu_count = 1;
+std::atomic<uint32_t> ipi_counts[Cpu::MaximumCpus] = {};
+std::atomic<bool> halt_requested = false;
+std::atomic<uint32_t> halted_cpus = 0;
 constexpr uint64_t HaltSpinLimit = 100000000;
 
 void OnIpi()
 {
-    if (__atomic_load_n(&halt_requested, __ATOMIC_ACQUIRE))
+    if (halt_requested.load(std::memory_order_acquire))
     {
-        __atomic_fetch_add(&halted_cpus, 1U, __ATOMIC_RELEASE);
+        halted_cpus.fetch_add(1U, std::memory_order_release);
         Arch::Interrupts::SaveAndDisable();
         for (;;)
         {
             Arch::Interrupts::WaitForInterrupt();
         }
     }
-    __atomic_fetch_add(&ipi_counts[Cpu::CurrentIndex()], 1U, __ATOMIC_RELAXED);
+    ipi_counts[Cpu::CurrentIndex()].fetch_add(1U, std::memory_order_relaxed);
 }
 
 [[noreturn]] void SecondaryCpuEntry(limine_smp_info* info)
@@ -68,7 +69,7 @@ void OnIpi()
         Panic("Secondary CPU timer did not start");
     }
     Serial::Write(message);
-    __atomic_fetch_add(&online_cpu_count, 1U, __ATOMIC_RELEASE);
+    online_cpu_count.fetch_add(1U, std::memory_order_release);
     Scheduler::RunSecondaryCpu();
 }
 
@@ -78,12 +79,12 @@ void VerifyIpisAndTimers(uint32_t cpu_count)
     {
         Arch::Interrupts::SendIpi(cpu_index);
         const uint64_t deadline = Time::TickCount() + IpiTimeoutTicks;
-        while (__atomic_load_n(&ipi_counts[cpu_index], __ATOMIC_RELAXED) == 0 &&
+        while (ipi_counts[cpu_index].load(std::memory_order_relaxed) == 0 &&
                Time::TickCount() < deadline)
         {
             Sync::CpuRelax();
         }
-        if (__atomic_load_n(&ipi_counts[cpu_index], __ATOMIC_RELAXED) == 0)
+        if (ipi_counts[cpu_index].load(std::memory_order_relaxed) == 0)
         {
             Panic("A secondary CPU did not receive its IPI");
         }
@@ -139,7 +140,7 @@ uint32_t StartSecondaryCpus(limine_smp_response* response)
         }
         cpu->extra_argument = cpu_count++;
         // Release ordering publishes extra_argument before the CPU sees its entry point.
-        __atomic_store_n(&cpu->goto_address, &SecondaryCpuEntry, __ATOMIC_RELEASE);
+        std::atomic_ref(cpu->goto_address).store(&SecondaryCpuEntry, std::memory_order_release);
     }
 
     for (uint64_t spin = 0; spin < StartupSpinLimit && OnlineCpuCount() < cpu_count; ++spin)
@@ -156,14 +157,14 @@ uint32_t StartSecondaryCpus(limine_smp_response* response)
 
 uint32_t OnlineCpuCount()
 {
-    return __atomic_load_n(&online_cpu_count, __ATOMIC_ACQUIRE);
+    return online_cpu_count.load(std::memory_order_acquire);
 }
 
 bool StopOtherCpus()
 {
     const uint32_t self = Cpu::CurrentIndex();
     const uint32_t others = OnlineCpuCount() - 1;
-    __atomic_store_n(&halt_requested, true, __ATOMIC_RELEASE);
+    halt_requested.store(true, std::memory_order_release);
     for (uint32_t cpu = 0; cpu < OnlineCpuCount(); ++cpu)
     {
         if (cpu != self)
@@ -173,7 +174,7 @@ bool StopOtherCpus()
     }
     for (uint64_t spin = 0; spin < HaltSpinLimit; ++spin)
     {
-        if (__atomic_load_n(&halted_cpus, __ATOMIC_ACQUIRE) == others)
+        if (halted_cpus.load(std::memory_order_acquire) == others)
         {
             return true;
         }

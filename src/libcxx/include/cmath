@@ -1,0 +1,407 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CMATH
+#define FEATHEROS_LIBCXX_CMATH
+
+#include "__featheros_config"
+#include "cstdlib"
+#include "type_traits"
+
+#include <math.h>
+
+// The C macros become the overloaded functions below.
+#undef fpclassify
+#undef isfinite
+#undef isinf
+#undef isnan
+#undef isnormal
+#undef signbit
+#undef isgreater
+#undef isgreaterequal
+#undef isless
+#undef islessequal
+#undef islessgreater
+#undef isunordered
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+// FLT_EVAL_METHOD is 0 on both targets.
+using float_t = float;
+using double_t = double;
+
+// The double forms are wrappers rather than using-declarations, since a host's <math.h> may
+// already declare the float and long double overloads in the global namespace.
+namespace __detail
+{
+// [cmath.syn]: integer arguments are taken as double, and mixed arguments as the widest type.
+template <class... T>
+using MathPromoted = conditional_t<
+    (is_same_v<T, long double> || ...), long double,
+    conditional_t<((is_same_v<T, double> || is_integral_v<T>) || ...), double, float>>;
+
+// Arguments that the exact overloads do not take: an integer, or floating-point types that
+// differ. Equal floating-point types without an overload (long double where the C library has no
+// l function) must stay an ambiguity rather than recurse.
+template <class... T>
+inline constexpr bool MathNeedsPromotion =
+    ((is_arithmetic_v<T> && ...) && !(is_floating_point_v<T> && ...)) ||
+    ((is_floating_point_v<T> && ...) && !(is_same_v<MathPromoted<T...>, T> && ...));
+} // namespace __detail
+
+#define __FEATHEROS_CMATH_GENERIC_1(name)                                                          \
+    template <class T>                                                                             \
+        requires is_integral_v<T>                                                                  \
+    inline double name(T x)                                                                        \
+    {                                                                                              \
+        return ::name(static_cast<double>(x));                                                     \
+    }
+#define __FEATHEROS_CMATH_GENERIC_2(name)                                                          \
+    template <class A, class B>                                                                    \
+        requires __detail::MathNeedsPromotion<A, B>                                                \
+    inline __detail::MathPromoted<A, B> name(A x, B y)                                             \
+    {                                                                                              \
+        using P = __detail::MathPromoted<A, B>;                                                    \
+        return _FSTD::name(static_cast<P>(x), static_cast<P>(y));                                  \
+    }
+#define __FEATHEROS_CMATH_FLOAT_1(name)                                                            \
+    using ::name##f;                                                                               \
+    inline double name(double x)                                                                   \
+    {                                                                                              \
+        return ::name(x);                                                                          \
+    }                                                                                              \
+    inline float name(float x)                                                                     \
+    {                                                                                              \
+        return ::name##f(x);                                                                       \
+    }                                                                                              \
+    __FEATHEROS_CMATH_GENERIC_1(name)
+#define __FEATHEROS_CMATH_FLOAT_2(name)                                                            \
+    using ::name##f;                                                                               \
+    inline double name(double x, double y)                                                         \
+    {                                                                                              \
+        return ::name(x, y);                                                                       \
+    }                                                                                              \
+    inline float name(float x, float y)                                                            \
+    {                                                                                              \
+        return ::name##f(x, y);                                                                    \
+    }                                                                                              \
+    __FEATHEROS_CMATH_GENERIC_2(name)
+
+#if defined(__x86_64__)
+#define __FEATHEROS_CMATH_LONG_1(name)                                                             \
+    using ::name##l;                                                                               \
+    inline long double name(long double x)                                                         \
+    {                                                                                              \
+        return ::name##l(x);                                                                       \
+    }
+#define __FEATHEROS_CMATH_LONG_2(name)                                                             \
+    using ::name##l;                                                                               \
+    inline long double name(long double x, long double y)                                          \
+    {                                                                                              \
+        return ::name##l(x, y);                                                                    \
+    }
+#else
+#define __FEATHEROS_CMATH_LONG_1(name)
+#define __FEATHEROS_CMATH_LONG_2(name)
+#endif
+
+__FEATHEROS_CMATH_FLOAT_1(fabs)
+__FEATHEROS_CMATH_LONG_1(fabs)
+__FEATHEROS_CMATH_FLOAT_1(floor)
+__FEATHEROS_CMATH_LONG_1(floor)
+__FEATHEROS_CMATH_FLOAT_1(ceil)
+__FEATHEROS_CMATH_LONG_1(ceil)
+__FEATHEROS_CMATH_FLOAT_1(trunc)
+__FEATHEROS_CMATH_LONG_1(trunc)
+__FEATHEROS_CMATH_FLOAT_1(round)
+__FEATHEROS_CMATH_LONG_1(round)
+__FEATHEROS_CMATH_FLOAT_1(rint)
+__FEATHEROS_CMATH_LONG_1(rint)
+__FEATHEROS_CMATH_FLOAT_1(nearbyint)
+__FEATHEROS_CMATH_LONG_1(nearbyint)
+__FEATHEROS_CMATH_FLOAT_1(sqrt)
+__FEATHEROS_CMATH_LONG_1(sqrt)
+__FEATHEROS_CMATH_FLOAT_1(exp)
+__FEATHEROS_CMATH_LONG_1(exp)
+__FEATHEROS_CMATH_FLOAT_1(exp2)
+__FEATHEROS_CMATH_LONG_1(exp2)
+__FEATHEROS_CMATH_FLOAT_1(log)
+__FEATHEROS_CMATH_LONG_1(log)
+__FEATHEROS_CMATH_FLOAT_1(log2)
+__FEATHEROS_CMATH_LONG_1(log2)
+__FEATHEROS_CMATH_FLOAT_1(log10)
+__FEATHEROS_CMATH_LONG_1(log10)
+__FEATHEROS_CMATH_FLOAT_1(sin)
+__FEATHEROS_CMATH_LONG_1(sin)
+__FEATHEROS_CMATH_FLOAT_1(cos)
+__FEATHEROS_CMATH_LONG_1(cos)
+__FEATHEROS_CMATH_FLOAT_1(tan)
+__FEATHEROS_CMATH_FLOAT_1(asin)
+__FEATHEROS_CMATH_FLOAT_1(acos)
+__FEATHEROS_CMATH_FLOAT_1(atan)
+__FEATHEROS_CMATH_FLOAT_1(sinh)
+__FEATHEROS_CMATH_FLOAT_1(cosh)
+__FEATHEROS_CMATH_FLOAT_1(tanh)
+
+__FEATHEROS_CMATH_FLOAT_2(copysign)
+__FEATHEROS_CMATH_LONG_2(copysign)
+__FEATHEROS_CMATH_FLOAT_2(fmod)
+__FEATHEROS_CMATH_LONG_2(fmod)
+__FEATHEROS_CMATH_FLOAT_2(remainder)
+__FEATHEROS_CMATH_LONG_2(remainder)
+__FEATHEROS_CMATH_FLOAT_2(fmin)
+__FEATHEROS_CMATH_FLOAT_2(fmax)
+__FEATHEROS_CMATH_FLOAT_2(hypot)
+__FEATHEROS_CMATH_FLOAT_2(pow)
+__FEATHEROS_CMATH_FLOAT_2(atan2)
+
+#undef __FEATHEROS_CMATH_GENERIC_1
+#undef __FEATHEROS_CMATH_GENERIC_2
+#undef __FEATHEROS_CMATH_FLOAT_1
+#undef __FEATHEROS_CMATH_FLOAT_2
+#undef __FEATHEROS_CMATH_LONG_1
+#undef __FEATHEROS_CMATH_LONG_2
+
+using ::fmaf;
+inline double fma(double x, double y, double z)
+{
+    return ::fma(x, y, z);
+}
+inline float fma(float x, float y, float z)
+{
+    return ::fmaf(x, y, z);
+}
+#if defined(__x86_64__)
+using ::fmal;
+inline long double fma(long double x, long double y, long double z)
+{
+    return ::fmal(x, y, z);
+}
+#endif
+template <class A, class B, class C>
+    requires __detail::MathNeedsPromotion<A, B, C>
+inline __detail::MathPromoted<A, B, C> fma(A x, B y, C z)
+{
+    using P = __detail::MathPromoted<A, B, C>;
+    return _FSTD::fma(static_cast<P>(x), static_cast<P>(y), static_cast<P>(z));
+}
+
+// The C library has no float forms of these; through double they are exact.
+inline double frexp(double x, int* exponent)
+{
+    return ::frexp(x, exponent);
+}
+inline double ldexp(double x, int exponent)
+{
+    return ::ldexp(x, exponent);
+}
+inline double scalbn(double x, int exponent)
+{
+    return ::scalbn(x, exponent);
+}
+inline double modf(double x, double* integer)
+{
+    return ::modf(x, integer);
+}
+inline float frexp(float x, int* exponent)
+{
+    return static_cast<float>(::frexp(x, exponent));
+}
+inline float ldexp(float x, int exponent)
+{
+    return static_cast<float>(::ldexp(x, exponent));
+}
+inline float scalbn(float x, int exponent)
+{
+    return static_cast<float>(::scalbn(x, exponent));
+}
+inline float modf(float x, float* integer)
+{
+    double whole = 0;
+    const auto fraction = static_cast<float>(::modf(x, &whole));
+    *integer = static_cast<float>(whole);
+    return fraction;
+}
+template <class T>
+    requires is_integral_v<T>
+inline double frexp(T x, int* exponent)
+{
+    return ::frexp(static_cast<double>(x), exponent);
+}
+template <class T>
+    requires is_integral_v<T>
+inline double ldexp(T x, int exponent)
+{
+    return ::ldexp(static_cast<double>(x), exponent);
+}
+template <class T>
+    requires is_integral_v<T>
+inline double scalbn(T x, int exponent)
+{
+    return ::scalbn(static_cast<double>(x), exponent);
+}
+
+template <class A, class B, class C>
+    requires(is_arithmetic_v<A> && is_arithmetic_v<B> && is_arithmetic_v<C>)
+inline __detail::MathPromoted<A, B, C> hypot(A x, B y, C z)
+{
+    using P = __detail::MathPromoted<A, B, C>;
+    const P a = _FSTD::fabs(static_cast<P>(x));
+    const P b = _FSTD::fabs(static_cast<P>(y));
+    const P c = _FSTD::fabs(static_cast<P>(z));
+    const P largest = a > b ? (a > c ? a : c) : (b > c ? b : c);
+    if (largest == P(0) || __builtin_isinf(largest))
+    {
+        return largest;
+    }
+    // Scaled by the largest, so the squares neither overflow nor vanish.
+    const P sa = a / largest;
+    const P sb = b / largest;
+    const P sc = c / largest;
+    return largest * _FSTD::sqrt(sa * sa + sb * sb + sc * sc);
+}
+
+// [c.math.lerp]: exact at both ends, monotonic, and lerp(a, a, t) is a.
+template <class T>
+    requires is_floating_point_v<T>
+constexpr T lerp(T a, T b, T t) noexcept
+{
+    if ((a <= 0 && b >= 0) || (a >= 0 && b <= 0))
+    {
+        return t * b + (1 - t) * a;
+    }
+    if (t == 1)
+    {
+        return b;
+    }
+    const T x = a + t * (b - a);
+    if ((t > 1) == (b > a))
+    {
+        return b < x ? x : b;
+    }
+    return x < b ? x : b;
+}
+template <class A, class B, class C>
+    requires __detail::MathNeedsPromotion<A, B, C>
+constexpr __detail::MathPromoted<A, B, C> lerp(A a, B b, C t) noexcept
+{
+    using P = __detail::MathPromoted<A, B, C>;
+    return _FSTD::lerp(static_cast<P>(a), static_cast<P>(b), static_cast<P>(t));
+}
+
+template <class T>
+    requires is_arithmetic_v<T>
+constexpr int fpclassify(T x) noexcept
+{
+    if constexpr (is_integral_v<T>)
+    {
+        return x == 0 ? FP_ZERO : FP_NORMAL;
+    }
+    else
+    {
+        return __builtin_fpclassify(FP_NAN, FP_INFINITE, FP_NORMAL, FP_SUBNORMAL, FP_ZERO, x);
+    }
+}
+
+template <class T>
+    requires is_arithmetic_v<T>
+constexpr bool isfinite(T x) noexcept
+{
+    if constexpr (is_integral_v<T>)
+    {
+        return true;
+    }
+    else
+    {
+        return __builtin_isfinite(x);
+    }
+}
+
+template <class T>
+    requires is_arithmetic_v<T>
+constexpr bool isinf(T x) noexcept
+{
+    if constexpr (is_integral_v<T>)
+    {
+        return false;
+    }
+    else
+    {
+        return __builtin_isinf(x);
+    }
+}
+
+template <class T>
+    requires is_arithmetic_v<T>
+constexpr bool isnan(T x) noexcept
+{
+    if constexpr (is_integral_v<T>)
+    {
+        return false;
+    }
+    else
+    {
+        return __builtin_isnan(x);
+    }
+}
+
+template <class T>
+    requires is_arithmetic_v<T>
+constexpr bool isnormal(T x) noexcept
+{
+    if constexpr (is_integral_v<T>)
+    {
+        return x != 0;
+    }
+    else
+    {
+        return __builtin_isnormal(x);
+    }
+}
+
+template <class T>
+    requires is_arithmetic_v<T>
+constexpr bool signbit(T x) noexcept
+{
+    if constexpr (is_integral_v<T>)
+    {
+        return x < 0;
+    }
+    else
+    {
+        return __builtin_signbit(x);
+    }
+}
+
+#define __FEATHEROS_CMATH_COMPARISON(name)                                                         \
+    template <class A, class B>                                                                    \
+        requires(is_arithmetic_v<A> && is_arithmetic_v<B>)                                         \
+    constexpr bool name(A x, B y) noexcept                                                         \
+    {                                                                                              \
+        using P = __detail::MathPromoted<A, B>;                                                    \
+        return __builtin_##name(static_cast<P>(x), static_cast<P>(y));                             \
+    }
+__FEATHEROS_CMATH_COMPARISON(isgreater)
+__FEATHEROS_CMATH_COMPARISON(isgreaterequal)
+__FEATHEROS_CMATH_COMPARISON(isless)
+__FEATHEROS_CMATH_COMPARISON(islessequal)
+__FEATHEROS_CMATH_COMPARISON(islessgreater)
+__FEATHEROS_CMATH_COMPARISON(isunordered)
+#undef __FEATHEROS_CMATH_COMPARISON
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#if FEATHEROS_STD_IS_STD
+// C code after <cmath> still calls these unqualified, as it would the macros.
+using std::fpclassify;
+using std::isfinite;
+using std::isgreater;
+using std::isgreaterequal;
+using std::isinf;
+using std::isless;
+using std::islessequal;
+using std::islessgreater;
+using std::isnan;
+using std::isnormal;
+using std::isunordered;
+using std::signbit;
+#endif
+
+#endif

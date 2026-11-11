@@ -2,6 +2,8 @@
 
 #include "kernel/arch/serial.h"
 
+#include <new>
+
 namespace FeatherOS
 {
 
@@ -26,3 +28,9 @@ __attribute__((noreturn)) void Panic(const char* reason)
 }
 
 } // namespace FeatherOS
+
+// The C++ library's headers call this where they would throw.
+void std::__detail::LibraryAbort(const char* message) noexcept
+{
+    FeatherOS::Panic(message);
+}

@@ -1,0 +1,190 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_MEMORY_BASE
+#define FEATHEROS_LIBCXX_MEMORY_BASE
+
+// The parts of <memory> that optional, span, tuple, function and the iterator concepts need
+// before <memory>.
+
+#include "__featheros_config"
+#include "new"
+#include "type_traits"
+
+#if !FEATHEROS_STD_IS_STD
+// Constant evaluation allows placement new only through a function named std::construct_at, so
+// the headers built under another name use the host's.
+#include <memory>
+#endif
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class T> [[nodiscard]] constexpr T* addressof(T& value) noexcept
+{
+    return __builtin_addressof(value);
+}
+template <class T> const T* addressof(const T&&) = delete;
+
+template <class T, class... Args>
+    requires requires { ::new (static_cast<void*>(nullptr)) T(declval<Args>()...); }
+constexpr T* construct_at(T* location,
+                          Args&&... args) noexcept(is_nothrow_constructible_v<T, Args...>)
+{
+    return ::new (static_cast<void*>(location)) T(_FSTD::forward<Args>(args)...);
+}
+
+template <class T> constexpr void destroy_at(T* location) noexcept
+{
+    if constexpr (is_array_v<T>)
+    {
+        for (auto& element : *location)
+        {
+            _FSTD::destroy_at(_FSTD::addressof(element));
+        }
+    }
+    else
+    {
+        location->~T();
+    }
+}
+
+namespace __detail
+{
+template <class T, class... Args>
+constexpr T* ConstructAt(T* location,
+                         Args&&... args) noexcept(is_nothrow_constructible_v<T, Args...>)
+{
+#if FEATHEROS_STD_IS_STD
+    return _FSTD::construct_at(location, _FSTD::forward<Args>(args)...);
+#else
+    return ::std::construct_at(location, _FSTD::forward<Args>(args)...);
+#endif
+}
+
+template <class T> struct PointerElement
+{
+};
+template <class T>
+    requires requires { typename T::element_type; }
+struct PointerElement<T>
+{
+    using type = typename T::element_type;
+};
+template <template <class, class...> class Pointer, class T, class... Rest>
+    requires(!requires { typename Pointer<T, Rest...>::element_type; })
+struct PointerElement<Pointer<T, Rest...>>
+{
+    using type = T;
+};
+
+template <class T, class U> struct PointerRebind
+{
+};
+template <class T, class U>
+    requires requires { typename T::template rebind<U>; }
+struct PointerRebind<T, U>
+{
+    using type = typename T::template rebind<U>;
+};
+template <template <class, class...> class Pointer, class T, class... Rest, class U>
+    requires(!requires { typename Pointer<T, Rest...>::template rebind<U>; })
+struct PointerRebind<Pointer<T, Rest...>, U>
+{
+    using type = Pointer<U, Rest...>;
+};
+
+template <class T> struct PointerDifference
+{
+    using type = ptrdiff_t;
+};
+template <class T>
+    requires requires { typename T::difference_type; }
+struct PointerDifference<T>
+{
+    using type = typename T::difference_type;
+};
+
+template <class Pointer, class = void> struct PointerTraitsBase
+{
+};
+template <class Pointer>
+struct PointerTraitsBase<Pointer, void_t<typename PointerElement<Pointer>::type>>
+{
+    using pointer = Pointer;
+    using element_type = typename PointerElement<Pointer>::type;
+    using difference_type = typename PointerDifference<Pointer>::type;
+    template <class U> using rebind = typename PointerRebind<Pointer, U>::type;
+
+    static constexpr pointer
+    pointer_to(conditional_t<is_void_v<element_type>, char, element_type>& value)
+        requires requires { Pointer::pointer_to(value); }
+    {
+        return Pointer::pointer_to(value);
+    }
+};
+} // namespace __detail
+
+template <class Pointer> struct pointer_traits : __detail::PointerTraitsBase<Pointer>
+{
+};
+
+template <class T> struct pointer_traits<T*>
+{
+    using pointer = T*;
+    using element_type = T;
+    using difference_type = ptrdiff_t;
+    template <class U> using rebind = U*;
+
+    static constexpr pointer pointer_to(conditional_t<is_void_v<T>, char, T>& value) noexcept
+        requires(!is_void_v<T>)
+    {
+        return _FSTD::addressof(value);
+    }
+};
+
+struct allocator_arg_t
+{
+    explicit allocator_arg_t() = default;
+};
+inline constexpr allocator_arg_t allocator_arg{};
+
+template <class T, class Alloc> struct uses_allocator : false_type
+{
+};
+template <class T, class Alloc>
+    requires requires { typename T::allocator_type; }
+struct uses_allocator<T, Alloc> : bool_constant<is_convertible_v<Alloc, typename T::allocator_type>>
+{
+};
+template <class T, class Alloc>
+inline constexpr bool uses_allocator_v = uses_allocator<T, Alloc>::value;
+
+namespace __detail
+{
+// Without RTTI, a variable's address names a type: function::target and get_deleter compare
+// these instead of type_info.
+template <class T> inline constexpr char TypeTag = 0;
+} // namespace __detail
+
+template <class T> constexpr T* to_address(T* pointer) noexcept
+{
+    static_assert(!is_function_v<T>, "to_address needs a pointer to an object");
+    return pointer;
+}
+
+template <class Pointer>
+    requires(!is_pointer_v<Pointer>)
+constexpr auto to_address(const Pointer& pointer) noexcept
+{
+    if constexpr (requires { pointer_traits<Pointer>::to_address(pointer); })
+    {
+        return pointer_traits<Pointer>::to_address(pointer);
+    }
+    else
+    {
+        return _FSTD::to_address(pointer.operator->());
+    }
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

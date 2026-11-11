@@ -65,18 +65,21 @@ elapsed_since() {
     awk -v start="$1" -v end="$(now)" 'BEGIN { printf "%.1fs", end - start }'
 }
 
-format_sources() {
+# The C and C++ sources, including the C++ standard library's headers, which have no extension.
+cxx_sources() {
     find "$REPO_ROOT/src" -type f \
-        \( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
-        -print0 | xargs -0 clang-format -i
+        \( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \
+        -o -path "$REPO_ROOT/src/libcxx/include/*" \) -print0
+}
+
+format_sources() {
+    cxx_sources | xargs -0 clang-format -i
     ruff format "$REPO_ROOT/tools" "$REPO_ROOT/tests"
     shfmt -w -i 4 -ci -bn "${SHELL_FILES[@]}"
 }
 
 check_clang_format() {
-    find "$REPO_ROOT/src" -type f \
-        \( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
-        -print0 | xargs -0 clang-format --dry-run --Werror
+    cxx_sources | xargs -0 clang-format --dry-run --Werror
 }
 
 # Each clang-tidy run compiles its file, so files are checked in parallel.
@@ -119,7 +122,9 @@ affected_tidy_sources() {
     local file deps changed=""
     for file in "$@"; do
         case "$file" in
-            src/*.c | src/*.cpp | src/*.h | src/*.hpp) changed+="$REPO_ROOT/$file"$'\n' ;;
+            src/*.c | src/*.cpp | src/*.h | src/*.hpp | src/libcxx/include/*)
+                changed+="$REPO_ROOT/$file"$'\n'
+                ;;
             *)
                 tidy_sources "$arch" | tr '\0' '\n'
                 return

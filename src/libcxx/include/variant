@@ -1,0 +1,794 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_VARIANT
+#define FEATHEROS_LIBCXX_VARIANT
+
+#include "__featheros_config"
+#include "__hash_base"
+#include "__memory_base"
+#include "compare"
+#include "concepts"
+#include "initializer_list"
+#include "type_traits"
+#include "utility"
+
+// Without exceptions there is no bad_variant_access: get with the wrong alternative calls the
+// library's abort hook. Nothing can fail between destroying the old alternative and
+// constructing the new one, so a variant is never valueless_by_exception.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class... Types> class variant;
+
+template <class T> struct variant_size;
+template <class T> struct variant_size<const T> : variant_size<T>
+{
+};
+template <class... Types>
+struct variant_size<variant<Types...>> : integral_constant<size_t, sizeof...(Types)>
+{
+};
+template <class T> inline constexpr size_t variant_size_v = variant_size<T>::value;
+
+template <size_t Index, class T> struct variant_alternative;
+template <size_t Index, class T> struct variant_alternative<Index, const T>
+{
+    using type = add_const_t<typename variant_alternative<Index, T>::type>;
+};
+template <size_t Index, class... Types> struct variant_alternative<Index, variant<Types...>>
+{
+    static_assert(Index < sizeof...(Types), "variant index out of bounds");
+    using type = __detail::PackElement<Index, Types...>;
+};
+template <size_t Index, class T>
+using variant_alternative_t = typename variant_alternative<Index, T>::type;
+
+inline constexpr size_t variant_npos = static_cast<size_t>(-1);
+
+struct monostate
+{
+};
+constexpr bool operator==(monostate, monostate) noexcept
+{
+    return true;
+}
+constexpr strong_ordering operator<=>(monostate, monostate) noexcept
+{
+    return strong_ordering::equal;
+}
+
+namespace __detail
+{
+struct VariantEmpty
+{
+    explicit VariantEmpty() = default;
+};
+
+// The alternatives, as a union nested one level per alternative. Each level is constructed
+// whole with in_place_index, which keeps constant evaluation happy about the active member.
+template <class... Types> union VariantUnion
+{
+    constexpr explicit VariantUnion(VariantEmpty) noexcept {}
+};
+
+template <class First, class... Rest> union VariantUnion<First, Rest...>
+{
+    char __empty;
+    First __first;
+    VariantUnion<Rest...> __rest;
+
+    constexpr explicit VariantUnion(VariantEmpty) noexcept : __empty() {}
+
+    template <class... Args>
+    constexpr explicit VariantUnion(in_place_index_t<0>, Args&&... args)
+        : __first(_FSTD::forward<Args>(args)...)
+    {
+    }
+
+    template <size_t Index, class... Args>
+    constexpr explicit VariantUnion(in_place_index_t<Index>, Args&&... args)
+        : __rest(in_place_index<Index - 1>, _FSTD::forward<Args>(args)...)
+    {
+    }
+
+    VariantUnion(const VariantUnion&) = default;
+    VariantUnion(VariantUnion&&) = default;
+    VariantUnion& operator=(const VariantUnion&) = default;
+    VariantUnion& operator=(VariantUnion&&) = default;
+
+    constexpr ~VariantUnion()
+        requires is_trivially_destructible_v<First> && (is_trivially_destructible_v<Rest> && ...)
+    = default;
+    constexpr ~VariantUnion() {}
+};
+
+template <size_t Index, class Union> constexpr auto&& UnionGet(Union&& storage) noexcept
+{
+    if constexpr (Index == 0)
+    {
+        return _FSTD::forward<Union>(storage).__first;
+    }
+    else
+    {
+        return __detail::UnionGet<Index - 1>(_FSTD::forward<Union>(storage).__rest);
+    }
+}
+
+template <size_t Count>
+using VariantIndex = conditional_t<(Count < 255), unsigned char, unsigned short>;
+
+// Calls function(integral_constant<size_t, I>{}) for the I that index names, through a table
+// built at compile time.
+template <class Result, class F, size_t Index> constexpr Result DispatchAt(F&& function)
+{
+    return _FSTD::forward<F>(function)(integral_constant<size_t, Index>{});
+}
+
+template <class Result, class F, class Indices> struct DispatchTable;
+template <class Result, class F, size_t... Index>
+struct DispatchTable<Result, F, index_sequence<Index...>>
+{
+    static constexpr Result (*entries[])(F&&) = {&DispatchAt<Result, F, Index>...};
+};
+
+template <size_t Count, class Result, class F> constexpr Result Dispatch(size_t index, F&& function)
+{
+    return DispatchTable<Result, F, make_index_sequence<Count>>::entries[index](
+        _FSTD::forward<F>(function));
+}
+
+// FUN of the converting constructor: one overload per alternative that T converts to without
+// narrowing, so overload resolution picks the alternative.
+template <class T> void NarrowingCheck(T (&&)[1]);
+
+template <size_t Index, class Alternative> struct VariantOverload
+{
+    template <class T>
+        requires requires { NarrowingCheck<Alternative>({declval<T>()}); }
+    auto operator()(Alternative, T&&) const -> integral_constant<size_t, Index>;
+};
+
+template <class Indices, class... Types> struct VariantOverloads;
+template <size_t... Index, class... Types>
+struct VariantOverloads<index_sequence<Index...>, Types...> : VariantOverload<Index, Types>...
+{
+    using VariantOverload<Index, Types>::operator()...;
+};
+
+template <class T, class... Types>
+using VariantAcceptedIndex = decltype(VariantOverloads<index_sequence_for<Types...>, Types...>{}(
+    declval<T>(), declval<T>()));
+
+template <class T> inline constexpr bool IsInPlaceTag = false;
+template <class T> inline constexpr bool IsInPlaceTag<in_place_type_t<T>> = true;
+template <size_t Index> inline constexpr bool IsInPlaceTag<in_place_index_t<Index>> = true;
+
+template <class T> inline constexpr bool IsVariant = false;
+template <class... Types> inline constexpr bool IsVariant<variant<Types...>> = true;
+} // namespace __detail
+
+template <class... Types> class variant
+{
+    static_assert(sizeof...(Types) > 0, "variant needs at least one alternative");
+    static_assert(((is_object_v<Types> && !is_array_v<Types>) && ...),
+                  "variant's alternatives must be object types other than arrays");
+
+    using IndexType = __detail::VariantIndex<sizeof...(Types)>;
+    static constexpr IndexType EmptyIndex = static_cast<IndexType>(-1);
+
+    template <size_t Index> using Alternative = __detail::PackElement<Index, Types...>;
+    template <class T> static constexpr size_t IndexOf = __detail::PackIndex<T, Types...>();
+    template <class T> static constexpr bool OccursOnce = __detail::PackCount<T, Types...> == 1;
+
+public:
+    __detail::VariantUnion<Types...> __storage;
+    IndexType __index;
+
+    constexpr variant() noexcept(is_nothrow_default_constructible_v<Alternative<0>>)
+        requires is_default_constructible_v<Alternative<0>>
+        : __storage(in_place_index<0>), __index(0)
+    {
+    }
+
+    constexpr variant(const variant&)
+        requires(is_trivially_copy_constructible_v<Types> && ...)
+    = default;
+    constexpr variant(const variant& other)
+        requires(is_copy_constructible_v<Types> && ...) &&
+                    (!(is_trivially_copy_constructible_v<Types> && ...))
+        : __storage(__detail::VariantEmpty{}), __index(EmptyIndex)
+    {
+        ConstructFrom(other);
+    }
+
+    constexpr variant(variant&&)
+        requires(is_trivially_move_constructible_v<Types> && ...)
+    = default;
+    constexpr variant(variant&& other) noexcept((is_nothrow_move_constructible_v<Types> && ...))
+        requires(is_move_constructible_v<Types> && ...) &&
+                    (!(is_trivially_move_constructible_v<Types> && ...))
+        : __storage(__detail::VariantEmpty{}), __index(EmptyIndex)
+    {
+        ConstructFrom(_FSTD::move(other));
+    }
+
+    template <class T, size_t Index = __detail::VariantAcceptedIndex<T, Types...>::value>
+        requires(!is_same_v<remove_cvref_t<T>, variant>) &&
+                    (!__detail::IsInPlaceTag<remove_cvref_t<T>>) &&
+                    is_constructible_v<Alternative<Index>, T>
+    constexpr variant(T&& value) noexcept(is_nothrow_constructible_v<Alternative<Index>, T>)
+        : __storage(in_place_index<Index>, _FSTD::forward<T>(value)), __index(Index)
+    {
+    }
+
+    template <class T, class... Args>
+        requires OccursOnce<T> && is_constructible_v<T, Args...>
+    constexpr explicit variant(in_place_type_t<T>, Args&&... args)
+        : __storage(in_place_index<IndexOf<T>>, _FSTD::forward<Args>(args)...), __index(IndexOf<T>)
+    {
+    }
+
+    template <class T, class U, class... Args>
+        requires OccursOnce<T> && is_constructible_v<T, initializer_list<U>&, Args...>
+    constexpr explicit variant(in_place_type_t<T>, initializer_list<U> list, Args&&... args)
+        : __storage(in_place_index<IndexOf<T>>, list, _FSTD::forward<Args>(args)...),
+          __index(IndexOf<T>)
+    {
+    }
+
+    template <size_t Index, class... Args>
+        requires(Index < sizeof...(Types)) && is_constructible_v<Alternative<Index>, Args...>
+    constexpr explicit variant(in_place_index_t<Index>, Args&&... args)
+        : __storage(in_place_index<Index>, _FSTD::forward<Args>(args)...), __index(Index)
+    {
+    }
+
+    template <size_t Index, class U, class... Args>
+        requires(Index < sizeof...(Types)) &&
+                    is_constructible_v<Alternative<Index>, initializer_list<U>&, Args...>
+    constexpr explicit variant(in_place_index_t<Index>, initializer_list<U> list, Args&&... args)
+        : __storage(in_place_index<Index>, list, _FSTD::forward<Args>(args)...), __index(Index)
+    {
+    }
+
+    constexpr ~variant()
+        requires(is_trivially_destructible_v<Types> && ...)
+    = default;
+    constexpr ~variant()
+    {
+        Destroy();
+    }
+
+    constexpr variant& operator=(const variant&)
+        requires((is_trivially_copy_constructible_v<Types> &&
+                  is_trivially_copy_assignable_v<Types> && is_trivially_destructible_v<Types>) &&
+                 ...)
+    = default;
+    constexpr variant& operator=(const variant& other)
+        requires((is_copy_constructible_v<Types> && is_copy_assignable_v<Types>) && ...) &&
+                (!((is_trivially_copy_constructible_v<Types> &&
+                    is_trivially_copy_assignable_v<Types> && is_trivially_destructible_v<Types>) &&
+                   ...))
+    {
+        AssignFrom(other);
+        return *this;
+    }
+
+    constexpr variant& operator=(variant&&)
+        requires((is_trivially_move_constructible_v<Types> &&
+                  is_trivially_move_assignable_v<Types> && is_trivially_destructible_v<Types>) &&
+                 ...)
+    = default;
+    constexpr variant& operator=(variant&& other) noexcept(
+        ((is_nothrow_move_constructible_v<Types> && is_nothrow_move_assignable_v<Types>) && ...))
+        requires((is_move_constructible_v<Types> && is_move_assignable_v<Types>) && ...) &&
+                (!((is_trivially_move_constructible_v<Types> &&
+                    is_trivially_move_assignable_v<Types> && is_trivially_destructible_v<Types>) &&
+                   ...))
+    {
+        AssignFrom(_FSTD::move(other));
+        return *this;
+    }
+
+    template <class T, size_t Index = __detail::VariantAcceptedIndex<T, Types...>::value>
+        requires(!is_same_v<remove_cvref_t<T>, variant>) &&
+                is_assignable_v<Alternative<Index>&, T> && is_constructible_v<Alternative<Index>, T>
+    constexpr variant&
+    operator=(T&& value) noexcept(is_nothrow_assignable_v<Alternative<Index>&, T> &&
+                                  is_nothrow_constructible_v<Alternative<Index>, T>)
+    {
+        if (__index == Index)
+        {
+            __detail::UnionGet<Index>(__storage) = _FSTD::forward<T>(value);
+        }
+        else
+        {
+            emplace<Index>(_FSTD::forward<T>(value));
+        }
+        return *this;
+    }
+
+    template <class T, class... Args>
+        requires OccursOnce<T> && is_constructible_v<T, Args...>
+    constexpr T& emplace(Args&&... args)
+    {
+        return emplace<IndexOf<T>>(_FSTD::forward<Args>(args)...);
+    }
+
+    template <class T, class U, class... Args>
+        requires OccursOnce<T> && is_constructible_v<T, initializer_list<U>&, Args...>
+    constexpr T& emplace(initializer_list<U> list, Args&&... args)
+    {
+        return emplace<IndexOf<T>>(list, _FSTD::forward<Args>(args)...);
+    }
+
+    template <size_t Index, class... Args>
+        requires(Index < sizeof...(Types)) && is_constructible_v<Alternative<Index>, Args...>
+    constexpr Alternative<Index>& emplace(Args&&... args)
+    {
+        Destroy();
+        __detail::ConstructAt(_FSTD::addressof(__storage), in_place_index<Index>,
+                              _FSTD::forward<Args>(args)...);
+        __index = Index;
+        return __detail::UnionGet<Index>(__storage);
+    }
+
+    template <size_t Index, class U, class... Args>
+        requires(Index < sizeof...(Types)) &&
+                is_constructible_v<Alternative<Index>, initializer_list<U>&, Args...>
+    constexpr Alternative<Index>& emplace(initializer_list<U> list, Args&&... args)
+    {
+        return emplace<Index>(list, _FSTD::forward<Args>(args)...);
+    }
+
+    constexpr bool valueless_by_exception() const noexcept
+    {
+        return __index == EmptyIndex;
+    }
+
+    constexpr size_t index() const noexcept
+    {
+        return __index == EmptyIndex ? variant_npos : __index;
+    }
+
+    constexpr void swap(variant& other) noexcept(
+        ((is_nothrow_move_constructible_v<Types> && is_nothrow_swappable_v<Types>) && ...))
+    {
+        if (__index == other.__index)
+        {
+            if (!valueless_by_exception())
+            {
+                __detail::Dispatch<sizeof...(Types), void>(
+                    __index,
+                    [&]<size_t Index>(integral_constant<size_t, Index>)
+                    {
+                        using _FSTD::swap;
+                        swap(__detail::UnionGet<Index>(__storage),
+                             __detail::UnionGet<Index>(other.__storage));
+                    });
+            }
+            return;
+        }
+        variant moved(_FSTD::move(other));
+        other.Destroy();
+        other.ConstructFrom(_FSTD::move(*this));
+        Destroy();
+        ConstructFrom(_FSTD::move(moved));
+    }
+
+private:
+    constexpr void Destroy() noexcept
+    {
+        if constexpr (!(is_trivially_destructible_v<Types> && ...))
+        {
+            if (!valueless_by_exception())
+            {
+                __detail::Dispatch<sizeof...(Types), void>(
+                    __index, [this]<size_t Index>(integral_constant<size_t, Index>)
+                    { _FSTD::destroy_at(_FSTD::addressof(__detail::UnionGet<Index>(__storage))); });
+            }
+        }
+        __index = EmptyIndex;
+    }
+
+    template <class Other> constexpr void ConstructFrom(Other&& other)
+    {
+        if (!other.valueless_by_exception())
+        {
+            __detail::Dispatch<sizeof...(Types), void>(
+                other.__index,
+                [&]<size_t Index>(integral_constant<size_t, Index>)
+                {
+                    emplace<Index>(
+                        __detail::UnionGet<Index>(_FSTD::forward<Other>(other).__storage));
+                });
+        }
+    }
+
+    template <class Other> constexpr void AssignFrom(Other&& other)
+    {
+        if (other.valueless_by_exception())
+        {
+            Destroy();
+        }
+        else if (__index == other.__index)
+        {
+            __detail::Dispatch<sizeof...(Types), void>(
+                __index,
+                [&]<size_t Index>(integral_constant<size_t, Index>)
+                {
+                    __detail::UnionGet<Index>(__storage) =
+                        __detail::UnionGet<Index>(_FSTD::forward<Other>(other).__storage);
+                });
+        }
+        else
+        {
+            ConstructFrom(_FSTD::forward<Other>(other));
+        }
+    }
+};
+
+template <class T, class... Types>
+    requires(__detail::PackCount<T, Types...> == 1)
+constexpr bool holds_alternative(const variant<Types...>& value) noexcept
+{
+    return value.index() == __detail::PackIndex<T, Types...>();
+}
+
+namespace __detail
+{
+template <size_t Index, class Variant> constexpr auto&& VariantGet(Variant&& value)
+{
+    if (value.index() != Index)
+    {
+        LibraryAbort("variant: get of an alternative the variant does not hold");
+    }
+    return __detail::UnionGet<Index>(_FSTD::forward<Variant>(value).__storage);
+}
+} // namespace __detail
+
+template <size_t Index, class... Types>
+constexpr variant_alternative_t<Index, variant<Types...>>& get(variant<Types...>& value)
+{
+    return __detail::VariantGet<Index>(value);
+}
+
+template <size_t Index, class... Types>
+constexpr variant_alternative_t<Index, variant<Types...>>&& get(variant<Types...>&& value)
+{
+    return _FSTD::move(__detail::VariantGet<Index>(value));
+}
+
+template <size_t Index, class... Types>
+constexpr const variant_alternative_t<Index, variant<Types...>>& get(const variant<Types...>& value)
+{
+    return __detail::VariantGet<Index>(value);
+}
+
+template <size_t Index, class... Types>
+constexpr const variant_alternative_t<Index, variant<Types...>>&&
+get(const variant<Types...>&& value)
+{
+    return _FSTD::move(__detail::VariantGet<Index>(value));
+}
+
+template <class T, class... Types>
+    requires(__detail::PackCount<T, Types...> == 1)
+constexpr T& get(variant<Types...>& value)
+{
+    return _FSTD::get<__detail::PackIndex<T, Types...>()>(value);
+}
+
+template <class T, class... Types>
+    requires(__detail::PackCount<T, Types...> == 1)
+constexpr T&& get(variant<Types...>&& value)
+{
+    return _FSTD::get<__detail::PackIndex<T, Types...>()>(_FSTD::move(value));
+}
+
+template <class T, class... Types>
+    requires(__detail::PackCount<T, Types...> == 1)
+constexpr const T& get(const variant<Types...>& value)
+{
+    return _FSTD::get<__detail::PackIndex<T, Types...>()>(value);
+}
+
+template <class T, class... Types>
+    requires(__detail::PackCount<T, Types...> == 1)
+constexpr const T&& get(const variant<Types...>&& value)
+{
+    return _FSTD::get<__detail::PackIndex<T, Types...>()>(_FSTD::move(value));
+}
+
+template <size_t Index, class... Types>
+constexpr add_pointer_t<variant_alternative_t<Index, variant<Types...>>>
+get_if(variant<Types...>* value) noexcept
+{
+    if (value == nullptr || value->index() != Index)
+    {
+        return nullptr;
+    }
+    return _FSTD::addressof(__detail::UnionGet<Index>(value->__storage));
+}
+
+template <size_t Index, class... Types>
+constexpr add_pointer_t<const variant_alternative_t<Index, variant<Types...>>>
+get_if(const variant<Types...>* value) noexcept
+{
+    if (value == nullptr || value->index() != Index)
+    {
+        return nullptr;
+    }
+    return _FSTD::addressof(__detail::UnionGet<Index>(value->__storage));
+}
+
+template <class T, class... Types>
+    requires(__detail::PackCount<T, Types...> == 1)
+constexpr add_pointer_t<T> get_if(variant<Types...>* value) noexcept
+{
+    return _FSTD::get_if<__detail::PackIndex<T, Types...>()>(value);
+}
+
+template <class T, class... Types>
+    requires(__detail::PackCount<T, Types...> == 1)
+constexpr add_pointer_t<const T> get_if(const variant<Types...>* value) noexcept
+{
+    return _FSTD::get_if<__detail::PackIndex<T, Types...>()>(value);
+}
+
+namespace __detail
+{
+// Compares two variants that hold the same alternative with Compare, else by index.
+template <class Result, class Compare, class... Types>
+constexpr Result VariantCompare(const variant<Types...>& left, const variant<Types...>& right,
+                                Compare compare)
+{
+    return __detail::Dispatch<sizeof...(Types), Result>(
+        left.index(),
+        [&]<size_t Index>(integral_constant<size_t, Index>) -> Result
+        {
+            return compare(__detail::UnionGet<Index>(left.__storage),
+                           __detail::UnionGet<Index>(right.__storage));
+        });
+}
+} // namespace __detail
+
+template <class... Types>
+constexpr bool operator==(const variant<Types...>& left, const variant<Types...>& right)
+{
+    if (left.index() != right.index())
+    {
+        return false;
+    }
+    if (left.valueless_by_exception())
+    {
+        return true;
+    }
+    return __detail::VariantCompare<bool>(
+        left, right, [](const auto& first, const auto& second) -> bool { return first == second; });
+}
+
+template <class... Types>
+constexpr bool operator!=(const variant<Types...>& left, const variant<Types...>& right)
+{
+    if (left.index() != right.index())
+    {
+        return true;
+    }
+    if (left.valueless_by_exception())
+    {
+        return false;
+    }
+    return __detail::VariantCompare<bool>(
+        left, right, [](const auto& first, const auto& second) -> bool { return first != second; });
+}
+
+template <class... Types>
+constexpr bool operator<(const variant<Types...>& left, const variant<Types...>& right)
+{
+    if (right.valueless_by_exception())
+    {
+        return false;
+    }
+    if (left.valueless_by_exception())
+    {
+        return true;
+    }
+    if (left.index() != right.index())
+    {
+        return left.index() < right.index();
+    }
+    return __detail::VariantCompare<bool>(
+        left, right, [](const auto& first, const auto& second) -> bool { return first < second; });
+}
+
+template <class... Types>
+constexpr bool operator>(const variant<Types...>& left, const variant<Types...>& right)
+{
+    return right < left;
+}
+
+template <class... Types>
+constexpr bool operator<=(const variant<Types...>& left, const variant<Types...>& right)
+{
+    if (left.valueless_by_exception())
+    {
+        return true;
+    }
+    if (right.valueless_by_exception())
+    {
+        return false;
+    }
+    if (left.index() != right.index())
+    {
+        return left.index() < right.index();
+    }
+    return __detail::VariantCompare<bool>(
+        left, right, [](const auto& first, const auto& second) -> bool { return first <= second; });
+}
+
+template <class... Types>
+constexpr bool operator>=(const variant<Types...>& left, const variant<Types...>& right)
+{
+    return right <= left;
+}
+
+template <class... Types>
+    requires(three_way_comparable<Types> && ...)
+constexpr common_comparison_category_t<compare_three_way_result_t<Types>...>
+operator<=>(const variant<Types...>& left, const variant<Types...>& right)
+{
+    using Result = common_comparison_category_t<compare_three_way_result_t<Types>...>;
+    if (left.valueless_by_exception() && right.valueless_by_exception())
+    {
+        return strong_ordering::equal;
+    }
+    if (left.valueless_by_exception())
+    {
+        return strong_ordering::less;
+    }
+    if (right.valueless_by_exception())
+    {
+        return strong_ordering::greater;
+    }
+    if (left.index() != right.index())
+    {
+        return left.index() <=> right.index();
+    }
+    return __detail::VariantCompare<Result>(left, right,
+                                            [](const auto& first, const auto& second) -> Result
+                                            { return first <=> second; });
+}
+
+template <class... Types>
+    requires((is_move_constructible_v<Types> && is_swappable_v<Types>) && ...)
+constexpr void swap(variant<Types...>& left,
+                    variant<Types...>& right) noexcept(noexcept(left.swap(right)))
+{
+    left.swap(right);
+}
+
+namespace __detail
+{
+// The as-variant of [variant.visit], so classes derived from a variant can be visited.
+template <class... Types> constexpr variant<Types...>& AsVariant(variant<Types...>& value) noexcept
+{
+    return value;
+}
+template <class... Types>
+constexpr const variant<Types...>& AsVariant(const variant<Types...>& value) noexcept
+{
+    return value;
+}
+template <class... Types>
+constexpr variant<Types...>&& AsVariant(variant<Types...>&& value) noexcept
+{
+    return _FSTD::move(value);
+}
+template <class... Types>
+constexpr const variant<Types...>&& AsVariant(const variant<Types...>&& value) noexcept
+{
+    return _FSTD::move(value);
+}
+
+template <class T>
+concept Visitable = requires(T&& value) { __detail::AsVariant(_FSTD::forward<T>(value)); };
+
+template <class T> using AsVariantType = decltype(__detail::AsVariant(declval<T>()));
+
+template <class Result, bool Exact, class F, class... Args>
+constexpr Result InvokeAs(F&& function, Args&&... args)
+{
+    if constexpr (Exact)
+    {
+        static_assert(is_same_v<decltype(__detail::Invoke(_FSTD::forward<F>(function),
+                                                          _FSTD::forward<Args>(args)...)),
+                                Result>,
+                      "visit's function must return the same type for every alternative");
+    }
+    if constexpr (is_void_v<Result>)
+    {
+        static_cast<void>(
+            __detail::Invoke(_FSTD::forward<F>(function), _FSTD::forward<Args>(args)...));
+    }
+    else
+    {
+        return __detail::Invoke(_FSTD::forward<F>(function), _FSTD::forward<Args>(args)...);
+    }
+}
+
+// Picks each variant's alternative in turn, binding the ones chosen so far into the function;
+// the innermost call has them all.
+template <class Result, bool Exact, class F> constexpr Result VisitVariants(F&& function)
+{
+    return __detail::InvokeAs<Result, Exact>(_FSTD::forward<F>(function));
+}
+
+template <class Result, bool Exact, class F, class First, class... Rest>
+constexpr Result VisitVariants(F&& function, First&& first, Rest&&... rest)
+{
+    if (first.valueless_by_exception())
+    {
+        LibraryAbort("variant: visit of a valueless variant");
+    }
+    return __detail::Dispatch<variant_size_v<remove_cvref_t<First>>, Result>(
+        first.index(),
+        [&]<size_t Index>(integral_constant<size_t, Index>) -> Result
+        {
+            return __detail::VisitVariants<Result, false>(
+                [&](auto&&... chosen) -> Result
+                {
+                    return __detail::InvokeAs<Result, Exact>(
+                        _FSTD::forward<F>(function),
+                        __detail::UnionGet<Index>(_FSTD::forward<First>(first).__storage),
+                        _FSTD::forward<decltype(chosen)>(chosen)...);
+                },
+                _FSTD::forward<Rest>(rest)...);
+        });
+}
+} // namespace __detail
+
+template <class Visitor, __detail::Visitable... Variants>
+constexpr decltype(auto) visit(Visitor&& visitor, Variants&&... variants)
+{
+    using Result =
+        decltype(__detail::Invoke(_FSTD::forward<Visitor>(visitor),
+                                  _FSTD::get<0>(declval<__detail::AsVariantType<Variants>>())...));
+    return __detail::VisitVariants<Result, true>(
+        _FSTD::forward<Visitor>(visitor),
+        __detail::AsVariant(_FSTD::forward<Variants>(variants))...);
+}
+
+template <class Result, class Visitor, __detail::Visitable... Variants>
+constexpr Result visit(Visitor&& visitor, Variants&&... variants)
+{
+    return __detail::VisitVariants<Result, false>(
+        _FSTD::forward<Visitor>(visitor),
+        __detail::AsVariant(_FSTD::forward<Variants>(variants))...);
+}
+
+template <> struct hash<monostate>
+{
+    size_t operator()(monostate) const noexcept
+    {
+        return static_cast<size_t>(0x6d6f6e6f73746174ULL);
+    }
+};
+
+template <class... Types>
+    requires(__detail::HashEnabled<remove_const_t<Types>> && ...)
+struct hash<variant<Types...>>
+{
+    size_t operator()(const variant<Types...>& value) const
+    {
+        return __detail::HashCombine(
+            value.index(),
+            _FSTD::visit([](const auto& alternative)
+                         { return hash<remove_cvref_t<decltype(alternative)>>()(alternative); },
+                         value));
+    }
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

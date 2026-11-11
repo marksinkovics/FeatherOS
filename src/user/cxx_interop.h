@@ -2,7 +2,15 @@
 #define FEATHEROS_USER_CXX_INTEROP_H
 
 // The C++ that cxxinterop, a Swift program, calls to check which C++ features Swift can use.
-// Built by GCC like other user code, so Swift reaches it through the Itanium C++ ABI alone.
+// Built by GCC like other user code, so Swift reaches it through the Itanium C++ ABI alone, and
+// the standard library types cross over because GCC and Swift's Clang read the same headers.
+
+#include <cstddef>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
 
 // The annotations of the toolchain's <swift/bridging>, which only Swift's Clang understands.
 #if __has_attribute(swift_attr)
@@ -125,6 +133,16 @@ private:
     int m_references;
     int m_value;
 };
+
+using IntSpan = std::span<const int>;
+using IntVector = std::vector<int>;
+
+std::optional<int> Half(int value);
+IntVector Squares(int count);
+int Sum(IntSpan values);
+int CountVowels(std::string_view text);
+std::string Greeting(std::string_view name);
+std::size_t CountWords(const std::string& text);
 
 } // namespace FeatherOS::User::Interop
 

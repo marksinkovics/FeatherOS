@@ -1,0 +1,1192 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_EXPECTED
+#define FEATHEROS_LIBCXX_EXPECTED
+
+#include "__featheros_config"
+#include "__memory_base"
+#include "concepts"
+#include "initializer_list"
+#include "type_traits"
+#include "utility"
+
+// Without exceptions there is no bad_expected_access: value() on an error calls the library's
+// abort hook. For the same reason assignment and emplace do not need a nothrow move: no
+// constructor can fail after the old contents are destroyed, so nothing has to be restored.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class E> class unexpected;
+template <class T, class E> class expected;
+
+struct unexpect_t
+{
+    explicit unexpect_t() = default;
+};
+inline constexpr unexpect_t unexpect{};
+
+namespace __detail
+{
+template <class T> inline constexpr bool IsUnexpected = false;
+template <class E> inline constexpr bool IsUnexpected<unexpected<E>> = true;
+
+template <class T> inline constexpr bool IsExpected = false;
+template <class T, class E> inline constexpr bool IsExpected<expected<T, E>> = true;
+
+template <class E>
+concept ValidUnexpectedError =
+    is_object_v<E> && !is_array_v<E> && !IsUnexpected<E> && !is_const_v<E> && !is_volatile_v<E>;
+
+// Lets transform and transform_error construct their result in place from what the function
+// returns, so it need not be movable.
+struct ExpectedValueFromInvoke
+{
+    explicit ExpectedValueFromInvoke() = default;
+};
+struct ExpectedErrorFromInvoke
+{
+    explicit ExpectedErrorFromInvoke() = default;
+};
+} // namespace __detail
+
+template <class E> class unexpected
+{
+    static_assert(__detail::ValidUnexpectedError<E>,
+                  "unexpected needs a non-array, non-const object type that is not unexpected");
+
+public:
+    constexpr unexpected(const unexpected&) = default;
+    constexpr unexpected(unexpected&&) = default;
+
+    template <class Error = E>
+        requires(!is_same_v<remove_cvref_t<Error>, unexpected>) &&
+                (!is_same_v<remove_cvref_t<Error>, in_place_t>) && is_constructible_v<E, Error>
+    constexpr explicit unexpected(Error&& error) : m_error(_FSTD::forward<Error>(error))
+    {
+    }
+
+    template <class... Args>
+        requires is_constructible_v<E, Args...>
+    constexpr explicit unexpected(in_place_t, Args&&... args)
+        : m_error(_FSTD::forward<Args>(args)...)
+    {
+    }
+
+    template <class U, class... Args>
+        requires is_constructible_v<E, initializer_list<U>&, Args...>
+    constexpr explicit unexpected(in_place_t, initializer_list<U> list, Args&&... args)
+        : m_error(list, _FSTD::forward<Args>(args)...)
+    {
+    }
+
+    constexpr unexpected& operator=(const unexpected&) = default;
+    constexpr unexpected& operator=(unexpected&&) = default;
+
+    constexpr const E& error() const& noexcept
+    {
+        return m_error;
+    }
+    constexpr E& error() & noexcept
+    {
+        return m_error;
+    }
+    constexpr const E&& error() const&& noexcept
+    {
+        return _FSTD::move(m_error);
+    }
+    constexpr E&& error() && noexcept
+    {
+        return _FSTD::move(m_error);
+    }
+
+    constexpr void swap(unexpected& other) noexcept(is_nothrow_swappable_v<E>)
+    {
+        static_assert(is_swappable_v<E>, "unexpected::swap needs a swappable error");
+        using _FSTD::swap;
+        swap(m_error, other.m_error);
+    }
+
+    template <class E2>
+    friend constexpr bool operator==(const unexpected& left, const unexpected<E2>& right)
+    {
+        return left.error() == right.error();
+    }
+
+    friend constexpr void swap(unexpected& left,
+                               unexpected& right) noexcept(noexcept(left.swap(right)))
+        requires is_swappable_v<E>
+    {
+        left.swap(right);
+    }
+
+private:
+    E m_error;
+};
+
+template <class E> unexpected(E) -> unexpected<E>;
+
+template <class T, class E> class expected
+{
+    static_assert(!is_reference_v<T> && !is_function_v<T> && !is_array_v<T> &&
+                      !is_same_v<remove_cv_t<T>, in_place_t> &&
+                      !is_same_v<remove_cv_t<T>, unexpect_t> &&
+                      !__detail::IsUnexpected<remove_cv_t<T>>,
+                  "expected's value type must be an object type other than the tag types");
+    static_assert(__detail::ValidUnexpectedError<E>,
+                  "expected's error type must be a valid unexpected error type");
+
+    template <class U, class G> friend class expected;
+
+    template <class U, class G, class UF, class GF>
+    static constexpr bool ConstructibleFrom =
+        is_constructible_v<T, UF> && is_constructible_v<E, GF> &&
+        (is_same_v<remove_cv_t<T>, bool> || !__detail::ConvertsFromAnyCvref<T, expected<U, G>>) &&
+        !is_constructible_v<unexpected<E>, expected<U, G>&> &&
+        !is_constructible_v<unexpected<E>, expected<U, G>> &&
+        !is_constructible_v<unexpected<E>, const expected<U, G>&> &&
+        !is_constructible_v<unexpected<E>, const expected<U, G>>;
+
+public:
+    using value_type = T;
+    using error_type = E;
+    using unexpected_type = unexpected<E>;
+    template <class U> using rebind = expected<U, error_type>;
+
+    constexpr expected()
+        requires is_default_constructible_v<T>
+        : m_value(), m_has_value(true)
+    {
+    }
+
+    constexpr expected(const expected&)
+        requires is_trivially_copy_constructible_v<T> && is_trivially_copy_constructible_v<E>
+    = default;
+    constexpr expected(const expected& other)
+        requires is_copy_constructible_v<T> && is_copy_constructible_v<E> &&
+                 (!(is_trivially_copy_constructible_v<T> && is_trivially_copy_constructible_v<E>))
+        : m_has_value(other.m_has_value)
+    {
+        ConstructFrom(other);
+    }
+
+    constexpr expected(expected&&)
+        requires is_trivially_move_constructible_v<T> && is_trivially_move_constructible_v<E>
+    = default;
+    constexpr expected(expected&& other) noexcept(is_nothrow_move_constructible_v<T> &&
+                                                  is_nothrow_move_constructible_v<E>)
+        requires is_move_constructible_v<T> && is_move_constructible_v<E> &&
+                 (!(is_trivially_move_constructible_v<T> && is_trivially_move_constructible_v<E>))
+        : m_has_value(other.m_has_value)
+    {
+        ConstructFrom(_FSTD::move(other));
+    }
+
+    template <class U, class G>
+        requires ConstructibleFrom<U, G, const U&, const G&>
+    constexpr explicit(!is_convertible_v<const U&, T> || !is_convertible_v<const G&, E>)
+        expected(const expected<U, G>& other)
+        : m_has_value(other.m_has_value)
+    {
+        ConstructFrom(other);
+    }
+
+    template <class U, class G>
+        requires ConstructibleFrom<U, G, U, G>
+    constexpr explicit(!is_convertible_v<U, T> || !is_convertible_v<G, E>)
+        expected(expected<U, G>&& other)
+        : m_has_value(other.m_has_value)
+    {
+        ConstructFrom(_FSTD::move(other));
+    }
+
+    template <class U = remove_cv_t<T>>
+        requires(!is_same_v<remove_cvref_t<U>, in_place_t>) &&
+                    (!is_same_v<remove_cvref_t<U>, unexpect_t>) &&
+                    (!is_same_v<remove_cvref_t<U>, expected>) &&
+                    (!__detail::IsUnexpected<remove_cvref_t<U>>) && is_constructible_v<T, U> &&
+                    (!is_same_v<remove_cv_t<T>, bool> || !__detail::IsExpected<remove_cvref_t<U>>)
+    constexpr explicit(!is_convertible_v<U, T>) expected(U&& value)
+        : m_value(_FSTD::forward<U>(value)), m_has_value(true)
+    {
+    }
+
+    template <class G>
+        requires is_constructible_v<E, const G&>
+    constexpr explicit(!is_convertible_v<const G&, E>) expected(const unexpected<G>& error)
+        : m_error(error.error()), m_has_value(false)
+    {
+    }
+
+    template <class G>
+        requires is_constructible_v<E, G>
+    constexpr explicit(!is_convertible_v<G, E>) expected(unexpected<G>&& error)
+        : m_error(_FSTD::move(error).error()), m_has_value(false)
+    {
+    }
+
+    template <class... Args>
+        requires is_constructible_v<T, Args...>
+    constexpr explicit expected(in_place_t, Args&&... args)
+        : m_value(_FSTD::forward<Args>(args)...), m_has_value(true)
+    {
+    }
+
+    template <class U, class... Args>
+        requires is_constructible_v<T, initializer_list<U>&, Args...>
+    constexpr explicit expected(in_place_t, initializer_list<U> list, Args&&... args)
+        : m_value(list, _FSTD::forward<Args>(args)...), m_has_value(true)
+    {
+    }
+
+    template <class... Args>
+        requires is_constructible_v<E, Args...>
+    constexpr explicit expected(unexpect_t, Args&&... args)
+        : m_error(_FSTD::forward<Args>(args)...), m_has_value(false)
+    {
+    }
+
+    template <class U, class... Args>
+        requires is_constructible_v<E, initializer_list<U>&, Args...>
+    constexpr explicit expected(unexpect_t, initializer_list<U> list, Args&&... args)
+        : m_error(list, _FSTD::forward<Args>(args)...), m_has_value(false)
+    {
+    }
+
+    constexpr ~expected()
+        requires is_trivially_destructible_v<T> && is_trivially_destructible_v<E>
+    = default;
+    constexpr ~expected()
+    {
+        Destroy();
+    }
+
+    constexpr expected& operator=(const expected&)
+        requires is_trivially_copy_constructible_v<T> && is_trivially_copy_assignable_v<T> &&
+                     is_trivially_destructible_v<T> && is_trivially_copy_constructible_v<E> &&
+                     is_trivially_copy_assignable_v<E> && is_trivially_destructible_v<E>
+    = default;
+    constexpr expected& operator=(const expected& other)
+        requires is_copy_assignable_v<T> && is_copy_constructible_v<T> && is_copy_assignable_v<E> &&
+                 is_copy_constructible_v<E> &&
+                 (!(is_trivially_copy_constructible_v<T> && is_trivially_copy_assignable_v<T> &&
+                    is_trivially_destructible_v<T> && is_trivially_copy_constructible_v<E> &&
+                    is_trivially_copy_assignable_v<E> && is_trivially_destructible_v<E>))
+    {
+        AssignFrom(other);
+        return *this;
+    }
+
+    constexpr expected& operator=(expected&&)
+        requires is_trivially_move_constructible_v<T> && is_trivially_move_assignable_v<T> &&
+                     is_trivially_destructible_v<T> && is_trivially_move_constructible_v<E> &&
+                     is_trivially_move_assignable_v<E> && is_trivially_destructible_v<E>
+    = default;
+    constexpr expected& operator=(expected&& other) noexcept(is_nothrow_move_assignable_v<T> &&
+                                                             is_nothrow_move_constructible_v<T> &&
+                                                             is_nothrow_move_assignable_v<E> &&
+                                                             is_nothrow_move_constructible_v<E>)
+        requires is_move_assignable_v<T> && is_move_constructible_v<T> && is_move_assignable_v<E> &&
+                 is_move_constructible_v<E> &&
+                 (!(is_trivially_move_constructible_v<T> && is_trivially_move_assignable_v<T> &&
+                    is_trivially_destructible_v<T> && is_trivially_move_constructible_v<E> &&
+                    is_trivially_move_assignable_v<E> && is_trivially_destructible_v<E>))
+    {
+        AssignFrom(_FSTD::move(other));
+        return *this;
+    }
+
+    template <class U = remove_cv_t<T>>
+        requires(!is_same_v<expected, remove_cvref_t<U>>) &&
+                (!__detail::IsUnexpected<remove_cvref_t<U>>) && is_constructible_v<T, U> &&
+                is_assignable_v<T&, U>
+    constexpr expected& operator=(U&& value)
+    {
+        if (m_has_value)
+        {
+            m_value = _FSTD::forward<U>(value);
+        }
+        else
+        {
+            Destroy();
+            ConstructValue(_FSTD::forward<U>(value));
+        }
+        return *this;
+    }
+
+    template <class G>
+        requires is_constructible_v<E, const G&> && is_assignable_v<E&, const G&>
+    constexpr expected& operator=(const unexpected<G>& error)
+    {
+        AssignError(error.error());
+        return *this;
+    }
+
+    template <class G>
+        requires is_constructible_v<E, G> && is_assignable_v<E&, G>
+    constexpr expected& operator=(unexpected<G>&& error)
+    {
+        AssignError(_FSTD::move(error).error());
+        return *this;
+    }
+
+    template <class... Args>
+        requires is_constructible_v<T, Args...>
+    constexpr T& emplace(Args&&... args) noexcept(is_nothrow_constructible_v<T, Args...>)
+    {
+        Destroy();
+        ConstructValue(_FSTD::forward<Args>(args)...);
+        return m_value;
+    }
+
+    template <class U, class... Args>
+        requires is_constructible_v<T, initializer_list<U>&, Args...>
+    constexpr T&
+    emplace(initializer_list<U> list,
+            Args&&... args) noexcept(is_nothrow_constructible_v<T, initializer_list<U>&, Args...>)
+    {
+        Destroy();
+        ConstructValue(list, _FSTD::forward<Args>(args)...);
+        return m_value;
+    }
+
+    constexpr void swap(expected& other) noexcept(is_nothrow_move_constructible_v<T> &&
+                                                  is_nothrow_swappable_v<T> &&
+                                                  is_nothrow_move_constructible_v<E> &&
+                                                  is_nothrow_swappable_v<E>)
+        requires is_swappable_v<T> && is_swappable_v<E> && is_move_constructible_v<T> &&
+                 is_move_constructible_v<E>
+    {
+        using _FSTD::swap;
+        if (m_has_value && other.m_has_value)
+        {
+            swap(m_value, other.m_value);
+        }
+        else if (!m_has_value && !other.m_has_value)
+        {
+            swap(m_error, other.m_error);
+        }
+        else if (m_has_value)
+        {
+            SwapValueWithError(other);
+        }
+        else
+        {
+            other.SwapValueWithError(*this);
+        }
+    }
+
+    friend constexpr void swap(expected& left, expected& right) noexcept(noexcept(left.swap(right)))
+        requires requires { left.swap(right); }
+    {
+        left.swap(right);
+    }
+
+    constexpr const T* operator->() const noexcept
+    {
+        return _FSTD::addressof(m_value);
+    }
+    constexpr T* operator->() noexcept
+    {
+        return _FSTD::addressof(m_value);
+    }
+    constexpr const T& operator*() const& noexcept
+    {
+        return m_value;
+    }
+    constexpr T& operator*() & noexcept
+    {
+        return m_value;
+    }
+    constexpr const T&& operator*() const&& noexcept
+    {
+        return _FSTD::move(m_value);
+    }
+    constexpr T&& operator*() && noexcept
+    {
+        return _FSTD::move(m_value);
+    }
+
+    constexpr explicit operator bool() const noexcept
+    {
+        return m_has_value;
+    }
+    constexpr bool has_value() const noexcept
+    {
+        return m_has_value;
+    }
+
+    constexpr const T& value() const&
+    {
+        CheckValue();
+        return m_value;
+    }
+    constexpr T& value() &
+    {
+        CheckValue();
+        return m_value;
+    }
+    constexpr const T&& value() const&&
+    {
+        CheckValue();
+        return _FSTD::move(m_value);
+    }
+    constexpr T&& value() &&
+    {
+        CheckValue();
+        return _FSTD::move(m_value);
+    }
+
+    constexpr const E& error() const& noexcept
+    {
+        return m_error;
+    }
+    constexpr E& error() & noexcept
+    {
+        return m_error;
+    }
+    constexpr const E&& error() const&& noexcept
+    {
+        return _FSTD::move(m_error);
+    }
+    constexpr E&& error() && noexcept
+    {
+        return _FSTD::move(m_error);
+    }
+
+    template <class U = remove_cv_t<T>> constexpr T value_or(U&& fallback) const&
+    {
+        static_assert(is_copy_constructible_v<T> && is_convertible_v<U, T>,
+                      "value_or needs a copyable T and a convertible fallback");
+        return m_has_value ? m_value : static_cast<T>(_FSTD::forward<U>(fallback));
+    }
+    template <class U = remove_cv_t<T>> constexpr T value_or(U&& fallback) &&
+    {
+        static_assert(is_move_constructible_v<T> && is_convertible_v<U, T>,
+                      "value_or needs a movable T and a convertible fallback");
+        return m_has_value ? _FSTD::move(m_value) : static_cast<T>(_FSTD::forward<U>(fallback));
+    }
+
+    template <class G = E> constexpr E error_or(G&& fallback) const&
+    {
+        static_assert(is_copy_constructible_v<E> && is_convertible_v<G, E>,
+                      "error_or needs a copyable E and a convertible fallback");
+        return m_has_value ? static_cast<E>(_FSTD::forward<G>(fallback)) : m_error;
+    }
+    template <class G = E> constexpr E error_or(G&& fallback) &&
+    {
+        static_assert(is_move_constructible_v<E> && is_convertible_v<G, E>,
+                      "error_or needs a movable E and a convertible fallback");
+        return m_has_value ? static_cast<E>(_FSTD::forward<G>(fallback)) : _FSTD::move(m_error);
+    }
+
+    template <class F> constexpr auto and_then(F&& function) &
+    {
+        return AndThen(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto and_then(F&& function) const&
+    {
+        return AndThen(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto and_then(F&& function) &&
+    {
+        return AndThen(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto and_then(F&& function) const&&
+    {
+        return AndThen(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+
+    template <class F> constexpr auto or_else(F&& function) &
+    {
+        return OrElse(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto or_else(F&& function) const&
+    {
+        return OrElse(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto or_else(F&& function) &&
+    {
+        return OrElse(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto or_else(F&& function) const&&
+    {
+        return OrElse(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+
+    template <class F> constexpr auto transform(F&& function) &
+    {
+        return Transform(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform(F&& function) const&
+    {
+        return Transform(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform(F&& function) &&
+    {
+        return Transform(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform(F&& function) const&&
+    {
+        return Transform(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+
+    template <class F> constexpr auto transform_error(F&& function) &
+    {
+        return TransformError(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform_error(F&& function) const&
+    {
+        return TransformError(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform_error(F&& function) &&
+    {
+        return TransformError(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform_error(F&& function) const&&
+    {
+        return TransformError(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+
+    template <class T2, class E2>
+        requires(!is_void_v<T2>)
+    friend constexpr bool operator==(const expected& left, const expected<T2, E2>& right)
+    {
+        if (left.has_value() != right.has_value())
+        {
+            return false;
+        }
+        return left.has_value() ? static_cast<bool>(*left == *right)
+                                : static_cast<bool>(left.error() == right.error());
+    }
+
+    template <class T2>
+        requires(!__detail::IsExpected<T2>)
+    friend constexpr bool operator==(const expected& left, const T2& right)
+    {
+        return left.has_value() && static_cast<bool>(*left == right);
+    }
+
+    template <class E2>
+    friend constexpr bool operator==(const expected& left, const unexpected<E2>& right)
+    {
+        return !left.has_value() && static_cast<bool>(left.error() == right.error());
+    }
+
+private:
+    template <class F, class... Argument>
+    constexpr expected(__detail::ExpectedValueFromInvoke, F&& function, Argument&&... argument)
+        : m_value(
+              __detail::Invoke(_FSTD::forward<F>(function), _FSTD::forward<Argument>(argument)...)),
+          m_has_value(true)
+    {
+    }
+
+    template <class F, class Argument>
+    constexpr expected(__detail::ExpectedErrorFromInvoke, F&& function, Argument&& argument)
+        : m_error(
+              __detail::Invoke(_FSTD::forward<F>(function), _FSTD::forward<Argument>(argument))),
+          m_has_value(false)
+    {
+    }
+
+    template <class... Args> constexpr void ConstructValue(Args&&... args)
+    {
+        __detail::ConstructAt(_FSTD::addressof(m_value), _FSTD::forward<Args>(args)...);
+        m_has_value = true;
+    }
+
+    template <class... Args> constexpr void ConstructError(Args&&... args)
+    {
+        __detail::ConstructAt(_FSTD::addressof(m_error), _FSTD::forward<Args>(args)...);
+        m_has_value = false;
+    }
+
+    constexpr void Destroy() noexcept
+    {
+        if (m_has_value)
+        {
+            if constexpr (!is_trivially_destructible_v<T>)
+            {
+                m_value.~T();
+            }
+        }
+        else
+        {
+            if constexpr (!is_trivially_destructible_v<E>)
+            {
+                m_error.~E();
+            }
+        }
+    }
+
+    template <class Other> constexpr void ConstructFrom(Other&& other)
+    {
+        if (other.m_has_value)
+        {
+            ConstructValue(_FSTD::forward<Other>(other).m_value);
+        }
+        else
+        {
+            ConstructError(_FSTD::forward<Other>(other).m_error);
+        }
+    }
+
+    template <class Other> constexpr void AssignFrom(Other&& other)
+    {
+        if (m_has_value && other.m_has_value)
+        {
+            m_value = _FSTD::forward<Other>(other).m_value;
+        }
+        else if (!m_has_value && !other.m_has_value)
+        {
+            m_error = _FSTD::forward<Other>(other).m_error;
+        }
+        else
+        {
+            Destroy();
+            ConstructFrom(_FSTD::forward<Other>(other));
+        }
+    }
+
+    template <class Error> constexpr void AssignError(Error&& error)
+    {
+        if (m_has_value)
+        {
+            Destroy();
+            ConstructError(_FSTD::forward<Error>(error));
+        }
+        else
+        {
+            m_error = _FSTD::forward<Error>(error);
+        }
+    }
+
+    constexpr void SwapValueWithError(expected& with_error)
+    {
+        E error(_FSTD::move(with_error.m_error));
+        with_error.Destroy();
+        with_error.ConstructValue(_FSTD::move(m_value));
+        Destroy();
+        ConstructError(_FSTD::move(error));
+    }
+
+    constexpr void CheckValue() const
+    {
+        if (!m_has_value)
+        {
+            __detail::LibraryAbort("expected::value: the expected holds an error");
+        }
+    }
+
+    template <class Self, class F> static constexpr auto AndThen(Self&& self, F&& function)
+    {
+        using Result = remove_cvref_t<invoke_result_t<F, decltype(*_FSTD::forward<Self>(self))>>;
+        static_assert(__detail::IsExpected<Result>, "and_then's function must return an expected");
+        static_assert(is_same_v<typename Result::error_type, E>,
+                      "and_then's function must return an expected of the same error type");
+        if (self.has_value())
+        {
+            return __detail::Invoke(_FSTD::forward<F>(function), *_FSTD::forward<Self>(self));
+        }
+        return Result(unexpect, _FSTD::forward<Self>(self).error());
+    }
+
+    template <class Self, class F> static constexpr auto OrElse(Self&& self, F&& function)
+    {
+        using Result =
+            remove_cvref_t<invoke_result_t<F, decltype(_FSTD::forward<Self>(self).error())>>;
+        static_assert(__detail::IsExpected<Result>, "or_else's function must return an expected");
+        static_assert(is_same_v<typename Result::value_type, T>,
+                      "or_else's function must return an expected of the same value type");
+        if (self.has_value())
+        {
+            return Result(in_place, *_FSTD::forward<Self>(self));
+        }
+        return __detail::Invoke(_FSTD::forward<F>(function), _FSTD::forward<Self>(self).error());
+    }
+
+    template <class Self, class F> static constexpr auto Transform(Self&& self, F&& function)
+    {
+        using U = remove_cv_t<invoke_result_t<F, decltype(*_FSTD::forward<Self>(self))>>;
+        using Result = expected<U, E>;
+        if (!self.has_value())
+        {
+            return Result(unexpect, _FSTD::forward<Self>(self).error());
+        }
+        if constexpr (is_void_v<U>)
+        {
+            __detail::Invoke(_FSTD::forward<F>(function), *_FSTD::forward<Self>(self));
+            return Result();
+        }
+        else
+        {
+            return Result(__detail::ExpectedValueFromInvoke{}, _FSTD::forward<F>(function),
+                          *_FSTD::forward<Self>(self));
+        }
+    }
+
+    template <class Self, class F> static constexpr auto TransformError(Self&& self, F&& function)
+    {
+        using G = remove_cv_t<invoke_result_t<F, decltype(_FSTD::forward<Self>(self).error())>>;
+        using Result = expected<T, G>;
+        if (self.has_value())
+        {
+            return Result(in_place, *_FSTD::forward<Self>(self));
+        }
+        return Result(__detail::ExpectedErrorFromInvoke{}, _FSTD::forward<F>(function),
+                      _FSTD::forward<Self>(self).error());
+    }
+
+    union
+    {
+        remove_cv_t<T> m_value;
+        E m_error;
+    };
+    bool m_has_value;
+};
+
+template <class T, class E>
+    requires is_void_v<T>
+class expected<T, E>
+{
+    static_assert(__detail::ValidUnexpectedError<E>,
+                  "expected's error type must be a valid unexpected error type");
+
+    template <class U, class G> friend class expected;
+
+public:
+    using value_type = T;
+    using error_type = E;
+    using unexpected_type = unexpected<E>;
+    template <class U> using rebind = expected<U, error_type>;
+
+    constexpr expected() noexcept : m_empty(), m_has_value(true) {}
+
+    constexpr expected(const expected&)
+        requires is_trivially_copy_constructible_v<E>
+    = default;
+    constexpr expected(const expected& other)
+        requires is_copy_constructible_v<E> && (!is_trivially_copy_constructible_v<E>)
+        : m_empty(), m_has_value(true)
+    {
+        ConstructFrom(other);
+    }
+
+    constexpr expected(expected&&)
+        requires is_trivially_move_constructible_v<E>
+    = default;
+    constexpr expected(expected&& other) noexcept(is_nothrow_move_constructible_v<E>)
+        requires is_move_constructible_v<E> && (!is_trivially_move_constructible_v<E>)
+        : m_empty(), m_has_value(true)
+    {
+        ConstructFrom(_FSTD::move(other));
+    }
+
+    template <class U, class G>
+        requires is_void_v<U> && is_constructible_v<E, const G&> &&
+                     (!is_constructible_v<unexpected<E>, expected<U, G>&>) &&
+                     (!is_constructible_v<unexpected<E>, expected<U, G>>) &&
+                     (!is_constructible_v<unexpected<E>, const expected<U, G>&>) &&
+                     (!is_constructible_v<unexpected<E>, const expected<U, G>>)
+    constexpr explicit(!is_convertible_v<const G&, E>) expected(const expected<U, G>& other)
+        : m_empty(), m_has_value(true)
+    {
+        ConstructFrom(other);
+    }
+
+    template <class U, class G>
+        requires is_void_v<U> && is_constructible_v<E, G> &&
+                     (!is_constructible_v<unexpected<E>, expected<U, G>&>) &&
+                     (!is_constructible_v<unexpected<E>, expected<U, G>>) &&
+                     (!is_constructible_v<unexpected<E>, const expected<U, G>&>) &&
+                     (!is_constructible_v<unexpected<E>, const expected<U, G>>)
+    constexpr explicit(!is_convertible_v<G, E>) expected(expected<U, G>&& other)
+        : m_empty(), m_has_value(true)
+    {
+        ConstructFrom(_FSTD::move(other));
+    }
+
+    template <class G>
+        requires is_constructible_v<E, const G&>
+    constexpr explicit(!is_convertible_v<const G&, E>) expected(const unexpected<G>& error)
+        : m_error(error.error()), m_has_value(false)
+    {
+    }
+
+    template <class G>
+        requires is_constructible_v<E, G>
+    constexpr explicit(!is_convertible_v<G, E>) expected(unexpected<G>&& error)
+        : m_error(_FSTD::move(error).error()), m_has_value(false)
+    {
+    }
+
+    constexpr explicit expected(in_place_t) noexcept : m_empty(), m_has_value(true) {}
+
+    template <class... Args>
+        requires is_constructible_v<E, Args...>
+    constexpr explicit expected(unexpect_t, Args&&... args)
+        : m_error(_FSTD::forward<Args>(args)...), m_has_value(false)
+    {
+    }
+
+    template <class U, class... Args>
+        requires is_constructible_v<E, initializer_list<U>&, Args...>
+    constexpr explicit expected(unexpect_t, initializer_list<U> list, Args&&... args)
+        : m_error(list, _FSTD::forward<Args>(args)...), m_has_value(false)
+    {
+    }
+
+    constexpr ~expected()
+        requires is_trivially_destructible_v<E>
+    = default;
+    constexpr ~expected()
+    {
+        Destroy();
+    }
+
+    constexpr expected& operator=(const expected&)
+        requires is_trivially_copy_constructible_v<E> && is_trivially_copy_assignable_v<E> &&
+                     is_trivially_destructible_v<E>
+    = default;
+    constexpr expected& operator=(const expected& other)
+        requires is_copy_assignable_v<E> && is_copy_constructible_v<E> &&
+                 (!(is_trivially_copy_constructible_v<E> && is_trivially_copy_assignable_v<E> &&
+                    is_trivially_destructible_v<E>))
+    {
+        AssignFrom(other);
+        return *this;
+    }
+
+    constexpr expected& operator=(expected&&)
+        requires is_trivially_move_constructible_v<E> && is_trivially_move_assignable_v<E> &&
+                     is_trivially_destructible_v<E>
+    = default;
+    constexpr expected& operator=(expected&& other) noexcept(is_nothrow_move_constructible_v<E> &&
+                                                             is_nothrow_move_assignable_v<E>)
+        requires is_move_assignable_v<E> && is_move_constructible_v<E> &&
+                 (!(is_trivially_move_constructible_v<E> && is_trivially_move_assignable_v<E> &&
+                    is_trivially_destructible_v<E>))
+    {
+        AssignFrom(_FSTD::move(other));
+        return *this;
+    }
+
+    template <class G>
+        requires is_constructible_v<E, const G&> && is_assignable_v<E&, const G&>
+    constexpr expected& operator=(const unexpected<G>& error)
+    {
+        AssignError(error.error());
+        return *this;
+    }
+
+    template <class G>
+        requires is_constructible_v<E, G> && is_assignable_v<E&, G>
+    constexpr expected& operator=(unexpected<G>&& error)
+    {
+        AssignError(_FSTD::move(error).error());
+        return *this;
+    }
+
+    constexpr void emplace() noexcept
+    {
+        Destroy();
+        m_has_value = true;
+    }
+
+    constexpr void swap(expected& other) noexcept(is_nothrow_move_constructible_v<E> &&
+                                                  is_nothrow_swappable_v<E>)
+        requires is_swappable_v<E> && is_move_constructible_v<E>
+    {
+        if (m_has_value && other.m_has_value)
+        {
+            return;
+        }
+        if (!m_has_value && !other.m_has_value)
+        {
+            using _FSTD::swap;
+            swap(m_error, other.m_error);
+            return;
+        }
+        expected& with_error = m_has_value ? other : *this;
+        expected& with_value = m_has_value ? *this : other;
+        with_value.ConstructError(_FSTD::move(with_error.m_error));
+        with_error.Destroy();
+        with_error.m_has_value = true;
+    }
+
+    friend constexpr void swap(expected& left, expected& right) noexcept(noexcept(left.swap(right)))
+        requires requires { left.swap(right); }
+    {
+        left.swap(right);
+    }
+
+    constexpr explicit operator bool() const noexcept
+    {
+        return m_has_value;
+    }
+    constexpr bool has_value() const noexcept
+    {
+        return m_has_value;
+    }
+
+    constexpr void operator*() const noexcept {}
+
+    constexpr void value() const&
+    {
+        CheckValue();
+    }
+    constexpr void value() &&
+    {
+        CheckValue();
+    }
+
+    constexpr const E& error() const& noexcept
+    {
+        return m_error;
+    }
+    constexpr E& error() & noexcept
+    {
+        return m_error;
+    }
+    constexpr const E&& error() const&& noexcept
+    {
+        return _FSTD::move(m_error);
+    }
+    constexpr E&& error() && noexcept
+    {
+        return _FSTD::move(m_error);
+    }
+
+    template <class G = E> constexpr E error_or(G&& fallback) const&
+    {
+        static_assert(is_copy_constructible_v<E> && is_convertible_v<G, E>,
+                      "error_or needs a copyable E and a convertible fallback");
+        return m_has_value ? static_cast<E>(_FSTD::forward<G>(fallback)) : m_error;
+    }
+    template <class G = E> constexpr E error_or(G&& fallback) &&
+    {
+        static_assert(is_move_constructible_v<E> && is_convertible_v<G, E>,
+                      "error_or needs a movable E and a convertible fallback");
+        return m_has_value ? static_cast<E>(_FSTD::forward<G>(fallback)) : _FSTD::move(m_error);
+    }
+
+    template <class F> constexpr auto and_then(F&& function) &
+    {
+        return AndThen(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto and_then(F&& function) const&
+    {
+        return AndThen(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto and_then(F&& function) &&
+    {
+        return AndThen(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto and_then(F&& function) const&&
+    {
+        return AndThen(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+
+    template <class F> constexpr auto or_else(F&& function) &
+    {
+        return OrElse(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto or_else(F&& function) const&
+    {
+        return OrElse(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto or_else(F&& function) &&
+    {
+        return OrElse(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto or_else(F&& function) const&&
+    {
+        return OrElse(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+
+    template <class F> constexpr auto transform(F&& function) &
+    {
+        return Transform(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform(F&& function) const&
+    {
+        return Transform(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform(F&& function) &&
+    {
+        return Transform(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform(F&& function) const&&
+    {
+        return Transform(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+
+    template <class F> constexpr auto transform_error(F&& function) &
+    {
+        return TransformError(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform_error(F&& function) const&
+    {
+        return TransformError(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform_error(F&& function) &&
+    {
+        return TransformError(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform_error(F&& function) const&&
+    {
+        return TransformError(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+
+    template <class T2, class E2>
+        requires is_void_v<T2>
+    friend constexpr bool operator==(const expected& left, const expected<T2, E2>& right)
+    {
+        if (left.has_value() != right.has_value())
+        {
+            return false;
+        }
+        return left.has_value() || static_cast<bool>(left.error() == right.error());
+    }
+
+    template <class E2>
+    friend constexpr bool operator==(const expected& left, const unexpected<E2>& right)
+    {
+        return !left.has_value() && static_cast<bool>(left.error() == right.error());
+    }
+
+private:
+    template <class F, class Argument>
+    constexpr expected(__detail::ExpectedErrorFromInvoke, F&& function, Argument&& argument)
+        : m_error(
+              __detail::Invoke(_FSTD::forward<F>(function), _FSTD::forward<Argument>(argument))),
+          m_has_value(false)
+    {
+    }
+
+    template <class... Args> constexpr void ConstructError(Args&&... args)
+    {
+        __detail::ConstructAt(_FSTD::addressof(m_error), _FSTD::forward<Args>(args)...);
+        m_has_value = false;
+    }
+
+    constexpr void Destroy() noexcept
+    {
+        if constexpr (!is_trivially_destructible_v<E>)
+        {
+            if (!m_has_value)
+            {
+                m_error.~E();
+            }
+        }
+    }
+
+    template <class Other> constexpr void ConstructFrom(Other&& other)
+    {
+        if (!other.m_has_value)
+        {
+            ConstructError(_FSTD::forward<Other>(other).m_error);
+        }
+    }
+
+    template <class Other> constexpr void AssignFrom(Other&& other)
+    {
+        if (!m_has_value && !other.m_has_value)
+        {
+            m_error = _FSTD::forward<Other>(other).m_error;
+            return;
+        }
+        Destroy();
+        m_has_value = true;
+        ConstructFrom(_FSTD::forward<Other>(other));
+    }
+
+    template <class Error> constexpr void AssignError(Error&& error)
+    {
+        if (m_has_value)
+        {
+            ConstructError(_FSTD::forward<Error>(error));
+        }
+        else
+        {
+            m_error = _FSTD::forward<Error>(error);
+        }
+    }
+
+    constexpr void CheckValue() const
+    {
+        if (!m_has_value)
+        {
+            __detail::LibraryAbort("expected::value: the expected holds an error");
+        }
+    }
+
+    template <class Self, class F> static constexpr auto AndThen(Self&& self, F&& function)
+    {
+        using Result = remove_cvref_t<invoke_result_t<F>>;
+        static_assert(__detail::IsExpected<Result>, "and_then's function must return an expected");
+        static_assert(is_same_v<typename Result::error_type, E>,
+                      "and_then's function must return an expected of the same error type");
+        if (self.has_value())
+        {
+            return __detail::Invoke(_FSTD::forward<F>(function));
+        }
+        return Result(unexpect, _FSTD::forward<Self>(self).error());
+    }
+
+    template <class Self, class F> static constexpr auto OrElse(Self&& self, F&& function)
+    {
+        using Result =
+            remove_cvref_t<invoke_result_t<F, decltype(_FSTD::forward<Self>(self).error())>>;
+        static_assert(__detail::IsExpected<Result>, "or_else's function must return an expected");
+        static_assert(is_void_v<typename Result::value_type>,
+                      "or_else's function must return an expected of void");
+        if (self.has_value())
+        {
+            return Result();
+        }
+        return __detail::Invoke(_FSTD::forward<F>(function), _FSTD::forward<Self>(self).error());
+    }
+
+    template <class Self, class F> static constexpr auto Transform(Self&& self, F&& function)
+    {
+        using U = remove_cv_t<invoke_result_t<F>>;
+        using Result = expected<U, E>;
+        if (!self.has_value())
+        {
+            return Result(unexpect, _FSTD::forward<Self>(self).error());
+        }
+        if constexpr (is_void_v<U>)
+        {
+            __detail::Invoke(_FSTD::forward<F>(function));
+            return Result();
+        }
+        else
+        {
+            return Result(__detail::ExpectedValueFromInvoke{}, _FSTD::forward<F>(function));
+        }
+    }
+
+    template <class Self, class F> static constexpr auto TransformError(Self&& self, F&& function)
+    {
+        using G = remove_cv_t<invoke_result_t<F, decltype(_FSTD::forward<Self>(self).error())>>;
+        using Result = expected<T, G>;
+        if (self.has_value())
+        {
+            return Result();
+        }
+        return Result(__detail::ExpectedErrorFromInvoke{}, _FSTD::forward<F>(function),
+                      _FSTD::forward<Self>(self).error());
+    }
+
+    union
+    {
+        char m_empty;
+        E m_error;
+    };
+    bool m_has_value;
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

@@ -1,0 +1,769 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_TREE
+#define FEATHEROS_LIBCXX_TREE
+
+// The red-black tree behind map, multimap, set and multiset. The rebalancing and the stepping
+// from node to node do not depend on the value type, so they are compiled once in featheros_cxx
+// (tree.cpp).
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "__memory_base"
+#include "__node_handle"
+#include "memory"
+#include "type_traits"
+#include "utility"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+namespace __detail
+{
+
+// The tree's header is a node of its own inside the container: its parent is the root, its left
+// the leftmost node and its right the rightmost, and it is end(). It is red, which tells it from
+// the root, the only other node that is its parent's parent.
+struct TreeNodeBase
+{
+    TreeNodeBase* parent;
+    TreeNodeBase* left;
+    TreeNodeBase* right;
+    bool black;
+};
+
+TreeNodeBase* TreeIncrement(const TreeNodeBase* node) noexcept;
+TreeNodeBase* TreeDecrement(const TreeNodeBase* node) noexcept;
+void TreeInsertAndRebalance(bool insert_left, TreeNodeBase* node, TreeNodeBase* parent,
+                            TreeNodeBase& header) noexcept;
+// Unlinks node from the tree, whose header is header, and rebalances it.
+void TreeRebalanceForErase(TreeNodeBase* node, TreeNodeBase& header) noexcept;
+
+template <class Value> struct TreeNode : TreeNodeBase
+{
+    union
+    {
+        Value value;
+    };
+    TreeNode() noexcept : TreeNodeBase() {}
+    TreeNode(const TreeNode&) = delete;
+    TreeNode& operator=(const TreeNode&) = delete;
+    ~TreeNode() {}
+};
+
+template <class Value, bool IsConst> class TreeIterator
+{
+public:
+    using iterator_category = bidirectional_iterator_tag;
+    using value_type = Value;
+    using difference_type = ptrdiff_t;
+    using pointer = conditional_t<IsConst, const Value*, Value*>;
+    using reference = conditional_t<IsConst, const Value&, Value&>;
+
+    TreeIterator() noexcept = default;
+    explicit TreeIterator(const TreeNodeBase* node) noexcept
+        : m_node(const_cast<TreeNodeBase*>(node))
+    {
+    }
+    template <bool OtherConst>
+        requires(IsConst && !OtherConst)
+    TreeIterator(const TreeIterator<Value, OtherConst>& other) noexcept : m_node(other.base())
+    {
+    }
+
+    TreeNodeBase* base() const noexcept
+    {
+        return m_node;
+    }
+
+    reference operator*() const noexcept
+    {
+        return static_cast<TreeNode<Value>*>(m_node)->value;
+    }
+    pointer operator->() const noexcept
+    {
+        return _FSTD::addressof(static_cast<TreeNode<Value>*>(m_node)->value);
+    }
+
+    TreeIterator& operator++() noexcept
+    {
+        m_node = TreeIncrement(m_node);
+        return *this;
+    }
+    TreeIterator operator++(int) noexcept
+    {
+        TreeIterator previous = *this;
+        m_node = TreeIncrement(m_node);
+        return previous;
+    }
+    TreeIterator& operator--() noexcept
+    {
+        m_node = TreeDecrement(m_node);
+        return *this;
+    }
+    TreeIterator operator--(int) noexcept
+    {
+        TreeIterator previous = *this;
+        m_node = TreeDecrement(m_node);
+        return previous;
+    }
+
+private:
+    TreeNodeBase* m_node = nullptr;
+};
+
+template <class Value, bool LeftConst, bool RightConst>
+bool operator==(const TreeIterator<Value, LeftConst>& left,
+                const TreeIterator<Value, RightConst>& right) noexcept
+{
+    return left.base() == right.base();
+}
+
+template <class Compare>
+concept TransparentCompare = requires { typename Compare::is_transparent; };
+
+// Where a new node goes: below parent, on its left or right, or nowhere, because existing
+// already holds the key.
+struct TreeInsertPosition
+{
+    TreeNodeBase* parent;
+    bool left;
+    TreeNodeBase* existing;
+};
+
+template <class Value, class KeyOf, class Compare, class Allocator> class Tree
+{
+    template <class, class, class, class> friend class Tree;
+
+    using Key = typename KeyOf::Type;
+    using Base = TreeNodeBase;
+
+public:
+    using Node = TreeNode<Value>;
+    using Operations = NodeOperations<Node, Allocator>;
+    using NodeAllocator = typename Operations::NodeAllocator;
+    using NodeTraits = typename Operations::NodeTraits;
+    using iterator = TreeIterator<Value, false>;
+    using const_iterator = TreeIterator<Value, true>;
+
+    Tree(const Compare& compare, const Allocator& allocator)
+        : m_compare(compare), m_allocator(allocator)
+    {
+        Reset();
+    }
+
+    Tree(const Tree& other, const Allocator& allocator)
+        : m_compare(other.m_compare), m_allocator(allocator)
+    {
+        Reset();
+        CopyFrom(other, [](const Value& value) -> const Value& { return value; });
+    }
+
+    Tree(Tree&& other) noexcept
+        : m_compare(_FSTD::move(other.m_compare)), m_allocator(_FSTD::move(other.m_allocator))
+    {
+        Reset();
+        Steal(other);
+    }
+
+    Tree(Tree&& other, const Allocator& allocator)
+        : m_compare(other.m_compare), m_allocator(allocator)
+    {
+        Reset();
+        if (NodeTraits::is_always_equal::value || m_allocator == other.m_allocator)
+        {
+            Steal(other);
+        }
+        else
+        {
+            CopyFrom(other, [](Value& value) -> Value&& { return _FSTD::move(value); });
+        }
+    }
+
+    Tree(const Tree&) = delete;
+    Tree& operator=(const Tree&) = delete;
+
+    ~Tree()
+    {
+        Clear();
+    }
+
+    void CopyAssign(const Tree& other)
+    {
+        if (this == &other)
+        {
+            return;
+        }
+        Clear();
+        if constexpr (NodeTraits::propagate_on_container_copy_assignment::value)
+        {
+            m_allocator = other.m_allocator;
+        }
+        m_compare = other.m_compare;
+        CopyFrom(other, [](const Value& value) -> const Value& { return value; });
+    }
+
+    void
+    MoveAssign(Tree& other) noexcept(NodeTraits::propagate_on_container_move_assignment::value ||
+                                     NodeTraits::is_always_equal::value)
+    {
+        if (this == &other)
+        {
+            return;
+        }
+        Clear();
+        m_compare = other.m_compare;
+        if constexpr (NodeTraits::propagate_on_container_move_assignment::value)
+        {
+            m_allocator = _FSTD::move(other.m_allocator);
+            Steal(other);
+        }
+        else
+        {
+            if (NodeTraits::is_always_equal::value || m_allocator == other.m_allocator)
+            {
+                Steal(other);
+            }
+            else
+            {
+                CopyFrom(other, [](Value& value) -> Value&& { return _FSTD::move(value); });
+                other.Clear();
+            }
+        }
+    }
+
+    void Swap(Tree& other) noexcept(NodeTraits::is_always_equal::value &&
+                                    is_nothrow_swappable_v<Compare>)
+    {
+        using _FSTD::swap;
+        swap(m_compare, other.m_compare);
+        if constexpr (NodeTraits::propagate_on_container_swap::value)
+        {
+            swap(m_allocator, other.m_allocator);
+        }
+        swap(m_header.parent, other.m_header.parent);
+        swap(m_header.left, other.m_header.left);
+        swap(m_header.right, other.m_header.right);
+        swap(m_size, other.m_size);
+        FixHeader();
+        other.FixHeader();
+    }
+
+    Allocator GetAllocator() const noexcept
+    {
+        return Allocator(m_allocator);
+    }
+    const Compare& KeyCompare() const noexcept
+    {
+        return m_compare;
+    }
+
+    iterator Begin() const noexcept
+    {
+        return iterator(m_header.left);
+    }
+    iterator End() const noexcept
+    {
+        return iterator(&m_header);
+    }
+    size_t Size() const noexcept
+    {
+        return m_size;
+    }
+    size_t MaxSize() const noexcept
+    {
+        return NodeTraits::max_size(m_allocator);
+    }
+
+    void Clear() noexcept
+    {
+        DestroySubtree(m_header.parent);
+        Reset();
+    }
+
+    template <class K> iterator LowerBound(const K& key) const
+    {
+        const Base* result = &m_header;
+        for (const Base* node = m_header.parent; node != nullptr;)
+        {
+            if (!m_compare(KeyOf::Get(ValueOf(node)), key))
+            {
+                result = node;
+                node = node->left;
+            }
+            else
+            {
+                node = node->right;
+            }
+        }
+        return iterator(result);
+    }
+
+    template <class K> iterator UpperBound(const K& key) const
+    {
+        const Base* result = &m_header;
+        for (const Base* node = m_header.parent; node != nullptr;)
+        {
+            if (m_compare(key, KeyOf::Get(ValueOf(node))))
+            {
+                result = node;
+                node = node->left;
+            }
+            else
+            {
+                node = node->right;
+            }
+        }
+        return iterator(result);
+    }
+
+    template <class K> iterator Find(const K& key) const
+    {
+        const iterator found = LowerBound(key);
+        if (found.base() == &m_header || m_compare(key, KeyOf::Get(*found)))
+        {
+            return End();
+        }
+        return found;
+    }
+
+    template <class K> pair<iterator, iterator> EqualRange(const K& key) const
+    {
+        return {LowerBound(key), UpperBound(key)};
+    }
+
+    template <class K> size_t CountUnique(const K& key) const
+    {
+        return Find(key) == End() ? 0 : 1;
+    }
+
+    template <class K> size_t CountMulti(const K& key) const
+    {
+        const auto [first, last] = EqualRange(key);
+        return static_cast<size_t>(_FSTD::distance(first, last));
+    }
+
+    // Inserts a node built from args unless key is already there; key must be the key the
+    // node's value will have.
+    template <class K, class... Args>
+    pair<iterator, bool> EmplaceUniqueKey(const K& key, Args&&... args)
+    {
+        const TreeInsertPosition position = UniquePosition(key);
+        if (position.existing != nullptr)
+        {
+            return {iterator(position.existing), false};
+        }
+        return {Link(Create(_FSTD::forward<Args>(args)...), position), true};
+    }
+
+    template <class... Args> pair<iterator, bool> EmplaceUnique(Args&&... args)
+    {
+        Node* const node = Create(_FSTD::forward<Args>(args)...);
+        const TreeInsertPosition position = UniquePosition(KeyOf::Get(node->value));
+        if (position.existing != nullptr)
+        {
+            Destroy(node);
+            return {iterator(position.existing), false};
+        }
+        return {Link(node, position), true};
+    }
+
+    template <class K, class... Args>
+    iterator EmplaceHintUniqueKey(const_iterator hint, const K& key, Args&&... args)
+    {
+        const TreeInsertPosition position = HintUniquePosition(hint, key);
+        if (position.existing != nullptr)
+        {
+            return iterator(position.existing);
+        }
+        return Link(Create(_FSTD::forward<Args>(args)...), position);
+    }
+
+    template <class... Args> iterator EmplaceHintUnique(const_iterator hint, Args&&... args)
+    {
+        Node* const node = Create(_FSTD::forward<Args>(args)...);
+        const TreeInsertPosition position = HintUniquePosition(hint, KeyOf::Get(node->value));
+        if (position.existing != nullptr)
+        {
+            Destroy(node);
+            return iterator(position.existing);
+        }
+        return Link(node, position);
+    }
+
+    template <class... Args> iterator EmplaceMulti(Args&&... args)
+    {
+        Node* const node = Create(_FSTD::forward<Args>(args)...);
+        return Link(node, MultiPosition(KeyOf::Get(node->value)));
+    }
+
+    template <class... Args> iterator EmplaceHintMulti(const_iterator hint, Args&&... args)
+    {
+        Node* const node = Create(_FSTD::forward<Args>(args)...);
+        return Link(node, HintMultiPosition(hint, KeyOf::Get(node->value)));
+    }
+
+    // node_type's inserts. The node is the container's only once it is linked.
+    pair<iterator, bool> InsertNodeUnique(Node* node)
+    {
+        const TreeInsertPosition position = UniquePosition(KeyOf::Get(node->value));
+        if (position.existing != nullptr)
+        {
+            return {iterator(position.existing), false};
+        }
+        return {Link(node, position), true};
+    }
+
+    pair<iterator, bool> InsertNodeHintUnique(const_iterator hint, Node* node)
+    {
+        const TreeInsertPosition position = HintUniquePosition(hint, KeyOf::Get(node->value));
+        if (position.existing != nullptr)
+        {
+            return {iterator(position.existing), false};
+        }
+        return {Link(node, position), true};
+    }
+
+    iterator InsertNodeMulti(Node* node)
+    {
+        return Link(node, MultiPosition(KeyOf::Get(node->value)));
+    }
+
+    iterator InsertNodeHintMulti(const_iterator hint, Node* node)
+    {
+        return Link(node, HintMultiPosition(hint, KeyOf::Get(node->value)));
+    }
+
+    Node* Extract(const_iterator position) noexcept
+    {
+        Base* const node = position.base();
+        TreeRebalanceForErase(node, m_header);
+        --m_size;
+        return static_cast<Node*>(node);
+    }
+
+    iterator Erase(const_iterator position) noexcept
+    {
+        const iterator next(TreeIncrement(position.base()));
+        Destroy(Extract(position));
+        return next;
+    }
+
+    iterator Erase(const_iterator first, const_iterator last) noexcept
+    {
+        if (first.base() == m_header.left && last.base() == &m_header)
+        {
+            Clear();
+            return End();
+        }
+        while (first != last)
+        {
+            first = Erase(first);
+        }
+        return iterator(last.base());
+    }
+
+    template <class K> size_t EraseKey(const K& key)
+    {
+        const auto [first, last] = EqualRange(key);
+        const size_t before = m_size;
+        Erase(first, last);
+        return before - m_size;
+    }
+
+    template <class C> void MergeUnique(Tree<Value, KeyOf, C, Allocator>& source)
+    {
+        for (Base* node = source.m_header.left; node != &source.m_header;)
+        {
+            Base* const next = TreeIncrement(node);
+            const TreeInsertPosition position = UniquePosition(KeyOf::Get(ValueOf(node)));
+            if (position.existing == nullptr)
+            {
+                Link(source.Extract(const_iterator(node)), position);
+            }
+            node = next;
+        }
+    }
+
+    template <class C> void MergeMulti(Tree<Value, KeyOf, C, Allocator>& source)
+    {
+        for (Base* node = source.m_header.left; node != &source.m_header;)
+        {
+            Base* const next = TreeIncrement(node);
+            const TreeInsertPosition position = MultiPosition(KeyOf::Get(ValueOf(node)));
+            Link(source.Extract(const_iterator(node)), position);
+            node = next;
+        }
+    }
+
+    NodeAllocator& NodeAllocatorReference() noexcept
+    {
+        return m_allocator;
+    }
+
+private:
+    Base m_header;
+    size_t m_size = 0;
+    [[no_unique_address]] Compare m_compare;
+    [[no_unique_address]] NodeAllocator m_allocator;
+
+    static const Value& ValueOf(const Base* node) noexcept
+    {
+        return static_cast<const Node*>(node)->value;
+    }
+
+    void Reset() noexcept
+    {
+        m_header.parent = nullptr;
+        m_header.left = &m_header;
+        m_header.right = &m_header;
+        m_header.black = false;
+        m_size = 0;
+    }
+
+    // After the header's fields came from another tree, the root must point back at this one.
+    void FixHeader() noexcept
+    {
+        if (m_header.parent == nullptr)
+        {
+            m_header.left = &m_header;
+            m_header.right = &m_header;
+        }
+        else
+        {
+            m_header.parent->parent = &m_header;
+        }
+    }
+
+    void Steal(Tree& other) noexcept
+    {
+        m_header.parent = other.m_header.parent;
+        m_header.left = other.m_header.left;
+        m_header.right = other.m_header.right;
+        m_size = other.m_size;
+        FixHeader();
+        other.Reset();
+    }
+
+    template <class... Args> Node* Create(Args&&... args)
+    {
+        return Operations::Create(m_allocator, _FSTD::forward<Args>(args)...);
+    }
+
+    void Destroy(Node* node) noexcept
+    {
+        Operations::Destroy(m_allocator, node);
+    }
+
+    void DestroySubtree(Base* node) noexcept
+    {
+        while (node != nullptr)
+        {
+            DestroySubtree(node->right);
+            Base* const left = node->left;
+            Destroy(static_cast<Node*>(node));
+            node = left;
+        }
+    }
+
+    // Copies the other tree's shape and colours, so nothing needs rebalancing.
+    template <class Get> Base* CopySubtree(const Base* source, Base* parent, Get& get)
+    {
+        Node* const top = Create(get(static_cast<Node*>(const_cast<Base*>(source))->value));
+        top->parent = parent;
+        top->black = source->black;
+        top->left = nullptr;
+        top->right = source->right != nullptr ? CopySubtree(source->right, top, get) : nullptr;
+        Base* attach = top;
+        for (source = source->left; source != nullptr; source = source->left)
+        {
+            Node* const node = Create(get(static_cast<Node*>(const_cast<Base*>(source))->value));
+            node->parent = attach;
+            node->black = source->black;
+            node->left = nullptr;
+            node->right =
+                source->right != nullptr ? CopySubtree(source->right, node, get) : nullptr;
+            attach->left = node;
+            attach = node;
+        }
+        return top;
+    }
+
+    template <class OtherTree, class Get> void CopyFrom(OtherTree& other, Get get)
+    {
+        if (other.m_header.parent == nullptr)
+        {
+            return;
+        }
+        Base* const root = CopySubtree(other.m_header.parent, &m_header, get);
+        m_header.parent = root;
+        Base* leftmost = root;
+        while (leftmost->left != nullptr)
+        {
+            leftmost = leftmost->left;
+        }
+        Base* rightmost = root;
+        while (rightmost->right != nullptr)
+        {
+            rightmost = rightmost->right;
+        }
+        m_header.left = leftmost;
+        m_header.right = rightmost;
+        m_size = other.m_size;
+    }
+
+    iterator Link(Node* node, const TreeInsertPosition& position) noexcept
+    {
+        TreeInsertAndRebalance(position.left, node, position.parent, m_header);
+        ++m_size;
+        return iterator(node);
+    }
+
+    bool Less(const Base* node, const auto& key) const
+    {
+        return m_compare(KeyOf::Get(ValueOf(node)), key);
+    }
+    bool Greater(const Base* node, const auto& key) const
+    {
+        return m_compare(key, KeyOf::Get(ValueOf(node)));
+    }
+
+    template <class K> TreeInsertPosition UniquePosition(const K& key)
+    {
+        Base* parent = &m_header;
+        bool left = true;
+        for (Base* node = m_header.parent; node != nullptr;)
+        {
+            parent = node;
+            left = Greater(node, key);
+            node = left ? node->left : node->right;
+        }
+        Base* before = parent;
+        if (left)
+        {
+            if (before == m_header.left)
+            {
+                return {parent, true, nullptr};
+            }
+            before = TreeDecrement(before);
+        }
+        if (Less(before, key))
+        {
+            return {parent, parent == &m_header || left, nullptr};
+        }
+        return {nullptr, false, before};
+    }
+
+    // After the keys equal to key, as insert without a hint must.
+    template <class K> TreeInsertPosition MultiPosition(const K& key)
+    {
+        Base* parent = &m_header;
+        bool left = true;
+        for (Base* node = m_header.parent; node != nullptr;)
+        {
+            parent = node;
+            left = Greater(node, key);
+            node = left ? node->left : node->right;
+        }
+        return {parent, parent == &m_header || left, nullptr};
+    }
+
+    // Before the keys equal to key.
+    template <class K> TreeInsertPosition MultiLowPosition(const K& key)
+    {
+        Base* parent = &m_header;
+        bool left = true;
+        for (Base* node = m_header.parent; node != nullptr;)
+        {
+            parent = node;
+            left = !Less(node, key);
+            node = left ? node->left : node->right;
+        }
+        return {parent, parent == &m_header || left, nullptr};
+    }
+
+    // Constant time when the key belongs just before the hint.
+    template <class K> TreeInsertPosition HintUniquePosition(const_iterator hint, const K& key)
+    {
+        Base* const position = hint.base();
+        if (position == &m_header)
+        {
+            if (m_size != 0 && Less(m_header.right, key))
+            {
+                return {m_header.right, false, nullptr};
+            }
+            return UniquePosition(key);
+        }
+        if (Greater(position, key))
+        {
+            if (position == m_header.left)
+            {
+                return {position, true, nullptr};
+            }
+            Base* const before = TreeDecrement(position);
+            if (Less(before, key))
+            {
+                return before->right == nullptr ? TreeInsertPosition{before, false, nullptr}
+                                                : TreeInsertPosition{position, true, nullptr};
+            }
+            return UniquePosition(key);
+        }
+        if (Less(position, key))
+        {
+            if (position == m_header.right)
+            {
+                return {position, false, nullptr};
+            }
+            Base* const after = TreeIncrement(position);
+            if (Greater(after, key))
+            {
+                return position->right == nullptr ? TreeInsertPosition{position, false, nullptr}
+                                                  : TreeInsertPosition{after, true, nullptr};
+            }
+            return UniquePosition(key);
+        }
+        return {nullptr, false, position};
+    }
+
+    // As close as possible to just before the hint.
+    template <class K> TreeInsertPosition HintMultiPosition(const_iterator hint, const K& key)
+    {
+        Base* const position = hint.base();
+        if (position == &m_header)
+        {
+            if (m_size != 0 && !Greater(m_header.right, key))
+            {
+                return {m_header.right, false, nullptr};
+            }
+            return MultiPosition(key);
+        }
+        if (!Less(position, key))
+        {
+            if (position == m_header.left)
+            {
+                return {position, true, nullptr};
+            }
+            Base* const before = TreeDecrement(position);
+            if (!Greater(before, key))
+            {
+                return before->right == nullptr ? TreeInsertPosition{before, false, nullptr}
+                                                : TreeInsertPosition{position, true, nullptr};
+            }
+            return MultiPosition(key);
+        }
+        if (position == m_header.right)
+        {
+            return {position, false, nullptr};
+        }
+        Base* const after = TreeIncrement(position);
+        if (!Less(after, key))
+        {
+            return position->right == nullptr ? TreeInsertPosition{position, false, nullptr}
+                                              : TreeInsertPosition{after, true, nullptr};
+        }
+        return MultiLowPosition(key);
+    }
+};
+
+} // namespace __detail
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

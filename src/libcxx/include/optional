@@ -1,0 +1,687 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_OPTIONAL
+#define FEATHEROS_LIBCXX_OPTIONAL
+
+#include "__featheros_config"
+#include "__hash_base"
+#include "__memory_base"
+#include "compare"
+#include "concepts"
+#include "initializer_list"
+#include "type_traits"
+#include "utility"
+
+// Without exceptions there is no bad_optional_access: value() on an empty optional calls the
+// library's abort hook.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+struct nullopt_t
+{
+    struct __Tag
+    {
+        explicit __Tag() = default;
+    };
+    constexpr explicit nullopt_t(__Tag) noexcept {}
+};
+inline constexpr nullopt_t nullopt{nullopt_t::__Tag{}};
+
+template <class T> class optional;
+
+namespace __detail
+{
+template <class T> struct IsOptional : false_type
+{
+};
+template <class T> struct IsOptional<optional<T>> : true_type
+{
+};
+
+template <class T, class W>
+concept AssignableFromAnyCvref = is_assignable_v<T&, W&> || is_assignable_v<T&, const W&> ||
+                                 is_assignable_v<T&, W> || is_assignable_v<T&, const W>;
+
+// Lets transform construct its result in place from what the function returns.
+struct OptionalFromInvoke
+{
+    explicit OptionalFromInvoke() = default;
+};
+} // namespace __detail
+
+template <class T> class optional
+{
+    static_assert(!is_reference_v<T> && !is_array_v<T> && is_object_v<T> && !is_function_v<T>,
+                  "optional needs an object type");
+    static_assert(!is_same_v<remove_cv_t<T>, in_place_t> && !is_same_v<remove_cv_t<T>, nullopt_t>,
+                  "optional of in_place_t or nullopt_t");
+
+    template <class U> friend class optional;
+
+public:
+    using value_type = T;
+
+    constexpr optional() noexcept : m_empty(), m_engaged(false) {}
+    constexpr optional(nullopt_t) noexcept : m_empty(), m_engaged(false) {}
+
+    constexpr optional(const optional&)
+        requires is_trivially_copy_constructible_v<T>
+    = default;
+    constexpr optional(const optional& other)
+        requires is_copy_constructible_v<T> && (!is_trivially_copy_constructible_v<T>)
+        : m_empty(), m_engaged(false)
+    {
+        if (other.m_engaged)
+        {
+            Construct(other.m_value);
+        }
+    }
+
+    constexpr optional(optional&&)
+        requires is_trivially_move_constructible_v<T>
+    = default;
+    constexpr optional(optional&& other) noexcept(is_nothrow_move_constructible_v<T>)
+        requires is_move_constructible_v<T> && (!is_trivially_move_constructible_v<T>)
+        : m_empty(), m_engaged(false)
+    {
+        if (other.m_engaged)
+        {
+            Construct(_FSTD::move(other.m_value));
+        }
+    }
+
+    template <class... Args>
+        requires is_constructible_v<T, Args...>
+    constexpr explicit optional(in_place_t, Args&&... args)
+        : m_value(_FSTD::forward<Args>(args)...), m_engaged(true)
+    {
+    }
+
+    template <class U, class... Args>
+        requires is_constructible_v<T, initializer_list<U>&, Args...>
+    constexpr explicit optional(in_place_t, initializer_list<U> list, Args&&... args)
+        : m_value(list, _FSTD::forward<Args>(args)...), m_engaged(true)
+    {
+    }
+
+    template <class U = remove_cv_t<T>>
+        requires is_constructible_v<T, U> && (!is_same_v<remove_cvref_t<U>, in_place_t>) &&
+                     (!is_same_v<remove_cvref_t<U>, optional>) &&
+                     (!is_same_v<remove_cv_t<T>, bool> ||
+                      !__detail::IsOptional<remove_cvref_t<U>>::value)
+    constexpr explicit(!is_convertible_v<U, T>) optional(U&& value)
+        : m_value(_FSTD::forward<U>(value)), m_engaged(true)
+    {
+    }
+
+    template <class U>
+        requires is_constructible_v<T, const U&> &&
+                     (is_same_v<remove_cv_t<T>, bool> ||
+                      !__detail::ConvertsFromAnyCvref<T, optional<U>>)
+    constexpr explicit(!is_convertible_v<const U&, T>) optional(const optional<U>& other)
+        : m_empty(), m_engaged(false)
+    {
+        if (other.has_value())
+        {
+            Construct(*other);
+        }
+    }
+
+    template <class U>
+        requires is_constructible_v<T, U> && (is_same_v<remove_cv_t<T>, bool> ||
+                                              !__detail::ConvertsFromAnyCvref<T, optional<U>>)
+    constexpr explicit(!is_convertible_v<U, T>) optional(optional<U>&& other)
+        : m_empty(), m_engaged(false)
+    {
+        if (other.has_value())
+        {
+            Construct(_FSTD::move(*other));
+        }
+    }
+
+    constexpr ~optional()
+        requires is_trivially_destructible_v<T>
+    = default;
+    constexpr ~optional()
+    {
+        reset();
+    }
+
+    constexpr optional& operator=(nullopt_t) noexcept
+    {
+        reset();
+        return *this;
+    }
+
+    constexpr optional& operator=(const optional&)
+        requires is_trivially_copy_constructible_v<T> && is_trivially_copy_assignable_v<T> &&
+                     is_trivially_destructible_v<T>
+    = default;
+    constexpr optional& operator=(const optional& other)
+        requires is_copy_constructible_v<T> && is_copy_assignable_v<T> &&
+                 (!(is_trivially_copy_constructible_v<T> && is_trivially_copy_assignable_v<T> &&
+                    is_trivially_destructible_v<T>))
+    {
+        AssignFrom(other);
+        return *this;
+    }
+
+    constexpr optional& operator=(optional&&)
+        requires is_trivially_move_constructible_v<T> && is_trivially_move_assignable_v<T> &&
+                     is_trivially_destructible_v<T>
+    = default;
+    constexpr optional& operator=(optional&& other) noexcept(is_nothrow_move_assignable_v<T> &&
+                                                             is_nothrow_move_constructible_v<T>)
+        requires is_move_constructible_v<T> && is_move_assignable_v<T> &&
+                 (!(is_trivially_move_constructible_v<T> && is_trivially_move_assignable_v<T> &&
+                    is_trivially_destructible_v<T>))
+    {
+        AssignFrom(_FSTD::move(other));
+        return *this;
+    }
+
+    template <class U = remove_cv_t<T>>
+        requires(!is_same_v<remove_cvref_t<U>, optional>) && is_constructible_v<T, U> &&
+                is_assignable_v<T&, U> && (!is_scalar_v<T> || !is_same_v<decay_t<U>, T>)
+    constexpr optional& operator=(U&& value)
+    {
+        if (m_engaged)
+        {
+            m_value = _FSTD::forward<U>(value);
+        }
+        else
+        {
+            Construct(_FSTD::forward<U>(value));
+        }
+        return *this;
+    }
+
+    template <class U>
+        requires(!__detail::ConvertsFromAnyCvref<T, optional<U>>) &&
+                (!__detail::AssignableFromAnyCvref<T, optional<U>>) &&
+                is_constructible_v<T, const U&> && is_assignable_v<T&, const U&>
+    constexpr optional& operator=(const optional<U>& other)
+    {
+        AssignFrom(other);
+        return *this;
+    }
+
+    template <class U>
+        requires(!__detail::ConvertsFromAnyCvref<T, optional<U>>) &&
+                (!__detail::AssignableFromAnyCvref<T, optional<U>>) && is_constructible_v<T, U> &&
+                is_assignable_v<T&, U>
+    constexpr optional& operator=(optional<U>&& other)
+    {
+        AssignFrom(_FSTD::move(other));
+        return *this;
+    }
+
+    template <class... Args>
+        requires is_constructible_v<T, Args...>
+    constexpr T& emplace(Args&&... args)
+    {
+        reset();
+        Construct(_FSTD::forward<Args>(args)...);
+        return m_value;
+    }
+
+    template <class U, class... Args>
+        requires is_constructible_v<T, initializer_list<U>&, Args...>
+    constexpr T& emplace(initializer_list<U> list, Args&&... args)
+    {
+        reset();
+        Construct(list, _FSTD::forward<Args>(args)...);
+        return m_value;
+    }
+
+    constexpr void swap(optional& other) noexcept(is_nothrow_move_constructible_v<T> &&
+                                                  is_nothrow_swappable_v<T>)
+        requires is_move_constructible_v<T> && is_swappable_v<T>
+    {
+        if (m_engaged && other.m_engaged)
+        {
+            using _FSTD::swap;
+            swap(m_value, other.m_value);
+        }
+        else if (m_engaged)
+        {
+            other.Construct(_FSTD::move(m_value));
+            reset();
+        }
+        else if (other.m_engaged)
+        {
+            Construct(_FSTD::move(other.m_value));
+            other.reset();
+        }
+    }
+
+    constexpr const T* operator->() const noexcept
+    {
+        return _FSTD::addressof(m_value);
+    }
+    constexpr T* operator->() noexcept
+    {
+        return _FSTD::addressof(m_value);
+    }
+    constexpr const T& operator*() const& noexcept
+    {
+        return m_value;
+    }
+    constexpr T& operator*() & noexcept
+    {
+        return m_value;
+    }
+    constexpr T&& operator*() && noexcept
+    {
+        return _FSTD::move(m_value);
+    }
+    constexpr const T&& operator*() const&& noexcept
+    {
+        return _FSTD::move(m_value);
+    }
+
+    constexpr explicit operator bool() const noexcept
+    {
+        return m_engaged;
+    }
+    constexpr bool has_value() const noexcept
+    {
+        return m_engaged;
+    }
+
+    constexpr const T& value() const&
+    {
+        CheckEngaged();
+        return m_value;
+    }
+    constexpr T& value() &
+    {
+        CheckEngaged();
+        return m_value;
+    }
+    constexpr T&& value() &&
+    {
+        CheckEngaged();
+        return _FSTD::move(m_value);
+    }
+    constexpr const T&& value() const&&
+    {
+        CheckEngaged();
+        return _FSTD::move(m_value);
+    }
+
+    template <class U = remove_cv_t<T>> constexpr remove_cv_t<T> value_or(U&& fallback) const&
+    {
+        static_assert(is_copy_constructible_v<T> && is_convertible_v<U&&, T>,
+                      "value_or needs a copyable T and a convertible fallback");
+        return m_engaged ? m_value : static_cast<remove_cv_t<T>>(_FSTD::forward<U>(fallback));
+    }
+    template <class U = remove_cv_t<T>> constexpr remove_cv_t<T> value_or(U&& fallback) &&
+    {
+        static_assert(is_move_constructible_v<T> && is_convertible_v<U&&, T>,
+                      "value_or needs a movable T and a convertible fallback");
+        return m_engaged ? _FSTD::move(m_value)
+                         : static_cast<remove_cv_t<T>>(_FSTD::forward<U>(fallback));
+    }
+
+    template <class F> constexpr auto and_then(F&& function) &
+    {
+        return AndThen(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto and_then(F&& function) const&
+    {
+        return AndThen(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto and_then(F&& function) &&
+    {
+        return AndThen(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto and_then(F&& function) const&&
+    {
+        return AndThen(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+
+    template <class F> constexpr auto transform(F&& function) &
+    {
+        return Transform(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform(F&& function) const&
+    {
+        return Transform(*this, _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform(F&& function) &&
+    {
+        return Transform(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+    template <class F> constexpr auto transform(F&& function) const&&
+    {
+        return Transform(_FSTD::move(*this), _FSTD::forward<F>(function));
+    }
+
+    template <class F>
+        requires invocable<F> && copy_constructible<T>
+    constexpr optional or_else(F&& function) const&
+    {
+        static_assert(is_same_v<remove_cvref_t<invoke_result_t<F>>, optional>,
+                      "or_else's function must return the same optional type");
+        return m_engaged ? *this : _FSTD::forward<F>(function)();
+    }
+    template <class F>
+        requires invocable<F> && move_constructible<T>
+    constexpr optional or_else(F&& function) &&
+    {
+        static_assert(is_same_v<remove_cvref_t<invoke_result_t<F>>, optional>,
+                      "or_else's function must return the same optional type");
+        return m_engaged ? _FSTD::move(*this) : _FSTD::forward<F>(function)();
+    }
+
+    constexpr void reset() noexcept
+    {
+        if (m_engaged)
+        {
+            if constexpr (!is_trivially_destructible_v<T>)
+            {
+                m_value.~T();
+            }
+            m_engaged = false;
+        }
+    }
+
+private:
+    template <class F, class Argument>
+    constexpr optional(__detail::OptionalFromInvoke, F&& function, Argument&& argument)
+        : m_value(
+              __detail::Invoke(_FSTD::forward<F>(function), _FSTD::forward<Argument>(argument))),
+          m_engaged(true)
+    {
+    }
+
+    template <class... Args> constexpr void Construct(Args&&... args)
+    {
+        __detail::ConstructAt(_FSTD::addressof(m_value), _FSTD::forward<Args>(args)...);
+        m_engaged = true;
+    }
+
+    template <class Other> constexpr void AssignFrom(Other&& other)
+    {
+        if (!other.has_value())
+        {
+            reset();
+        }
+        else if (m_engaged)
+        {
+            m_value = *_FSTD::forward<Other>(other);
+        }
+        else
+        {
+            Construct(*_FSTD::forward<Other>(other));
+        }
+    }
+
+    constexpr void CheckEngaged() const
+    {
+        if (!m_engaged)
+        {
+            __detail::LibraryAbort("optional::value: the optional is empty");
+        }
+    }
+
+    template <class Self, class F> static constexpr auto AndThen(Self&& self, F&& function)
+    {
+        using Result = remove_cvref_t<invoke_result_t<F, decltype(*_FSTD::forward<Self>(self))>>;
+        static_assert(__detail::IsOptional<Result>::value,
+                      "and_then's function must return an optional");
+        if (self.has_value())
+        {
+            return __detail::Invoke(_FSTD::forward<F>(function), *_FSTD::forward<Self>(self));
+        }
+        return Result();
+    }
+
+    template <class Self, class F> static constexpr auto Transform(Self&& self, F&& function)
+    {
+        using Result = remove_cv_t<invoke_result_t<F, decltype(*_FSTD::forward<Self>(self))>>;
+        static_assert(!is_array_v<Result> && !is_same_v<Result, in_place_t> &&
+                          !is_same_v<Result, nullopt_t> && is_object_v<Result>,
+                      "transform's function must return an object type");
+        if (self.has_value())
+        {
+            return optional<Result>(__detail::OptionalFromInvoke{}, _FSTD::forward<F>(function),
+                                    *_FSTD::forward<Self>(self));
+        }
+        return optional<Result>();
+    }
+
+    union
+    {
+        char m_empty;
+        remove_cv_t<T> m_value;
+    };
+    bool m_engaged;
+};
+
+template <class T> optional(T) -> optional<T>;
+
+template <class T, class U>
+    requires requires(const T& left, const U& right) {
+        { left == right } -> convertible_to<bool>;
+    }
+constexpr bool operator==(const optional<T>& left, const optional<U>& right)
+{
+    if (left.has_value() != right.has_value())
+    {
+        return false;
+    }
+    return !left.has_value() || *left == *right;
+}
+
+template <class T, class U>
+    requires requires(const T& left, const U& right) {
+        { left != right } -> convertible_to<bool>;
+    }
+constexpr bool operator!=(const optional<T>& left, const optional<U>& right)
+{
+    if (left.has_value() != right.has_value())
+    {
+        return true;
+    }
+    return left.has_value() && *left != *right;
+}
+
+template <class T, class U>
+    requires requires(const T& left, const U& right) {
+        { left < right } -> convertible_to<bool>;
+    }
+constexpr bool operator<(const optional<T>& left, const optional<U>& right)
+{
+    return right.has_value() && (!left.has_value() || *left < *right);
+}
+
+template <class T, class U>
+    requires requires(const T& left, const U& right) {
+        { left > right } -> convertible_to<bool>;
+    }
+constexpr bool operator>(const optional<T>& left, const optional<U>& right)
+{
+    return left.has_value() && (!right.has_value() || *left > *right);
+}
+
+template <class T, class U>
+    requires requires(const T& left, const U& right) {
+        { left <= right } -> convertible_to<bool>;
+    }
+constexpr bool operator<=(const optional<T>& left, const optional<U>& right)
+{
+    return !left.has_value() || (right.has_value() && *left <= *right);
+}
+
+template <class T, class U>
+    requires requires(const T& left, const U& right) {
+        { left >= right } -> convertible_to<bool>;
+    }
+constexpr bool operator>=(const optional<T>& left, const optional<U>& right)
+{
+    return !right.has_value() || (left.has_value() && *left >= *right);
+}
+
+template <class T, three_way_comparable_with<T> U>
+constexpr compare_three_way_result_t<T, U> operator<=>(const optional<T>& left,
+                                                       const optional<U>& right)
+{
+    if (left.has_value() && right.has_value())
+    {
+        return *left <=> *right;
+    }
+    return left.has_value() <=> right.has_value();
+}
+
+template <class T> constexpr bool operator==(const optional<T>& value, nullopt_t) noexcept
+{
+    return !value.has_value();
+}
+
+template <class T>
+constexpr strong_ordering operator<=>(const optional<T>& value, nullopt_t) noexcept
+{
+    return value.has_value() <=> false;
+}
+
+// Against a value, which must not be an optional itself.
+template <class T, class U>
+    requires(!__detail::IsOptional<U>::value) && requires(const T& left, const U& right) {
+        { left == right } -> convertible_to<bool>;
+    }
+constexpr bool operator==(const optional<T>& left, const U& right)
+{
+    return left.has_value() && *left == right;
+}
+template <class T, class U>
+    requires(!__detail::IsOptional<T>::value) && requires(const T& left, const U& right) {
+        { left == right } -> convertible_to<bool>;
+    }
+constexpr bool operator==(const T& left, const optional<U>& right)
+{
+    return right.has_value() && left == *right;
+}
+template <class T, class U>
+    requires(!__detail::IsOptional<U>::value) && requires(const T& left, const U& right) {
+        { left != right } -> convertible_to<bool>;
+    }
+constexpr bool operator!=(const optional<T>& left, const U& right)
+{
+    return !left.has_value() || *left != right;
+}
+template <class T, class U>
+    requires(!__detail::IsOptional<T>::value) && requires(const T& left, const U& right) {
+        { left != right } -> convertible_to<bool>;
+    }
+constexpr bool operator!=(const T& left, const optional<U>& right)
+{
+    return !right.has_value() || left != *right;
+}
+template <class T, class U>
+    requires(!__detail::IsOptional<U>::value) && requires(const T& left, const U& right) {
+        { left < right } -> convertible_to<bool>;
+    }
+constexpr bool operator<(const optional<T>& left, const U& right)
+{
+    return !left.has_value() || *left < right;
+}
+template <class T, class U>
+    requires(!__detail::IsOptional<T>::value) && requires(const T& left, const U& right) {
+        { left < right } -> convertible_to<bool>;
+    }
+constexpr bool operator<(const T& left, const optional<U>& right)
+{
+    return right.has_value() && left < *right;
+}
+template <class T, class U>
+    requires(!__detail::IsOptional<U>::value) && requires(const T& left, const U& right) {
+        { left > right } -> convertible_to<bool>;
+    }
+constexpr bool operator>(const optional<T>& left, const U& right)
+{
+    return left.has_value() && *left > right;
+}
+template <class T, class U>
+    requires(!__detail::IsOptional<T>::value) && requires(const T& left, const U& right) {
+        { left > right } -> convertible_to<bool>;
+    }
+constexpr bool operator>(const T& left, const optional<U>& right)
+{
+    return !right.has_value() || left > *right;
+}
+template <class T, class U>
+    requires(!__detail::IsOptional<U>::value) && requires(const T& left, const U& right) {
+        { left <= right } -> convertible_to<bool>;
+    }
+constexpr bool operator<=(const optional<T>& left, const U& right)
+{
+    return !left.has_value() || *left <= right;
+}
+template <class T, class U>
+    requires(!__detail::IsOptional<T>::value) && requires(const T& left, const U& right) {
+        { left <= right } -> convertible_to<bool>;
+    }
+constexpr bool operator<=(const T& left, const optional<U>& right)
+{
+    return right.has_value() && left <= *right;
+}
+template <class T, class U>
+    requires(!__detail::IsOptional<U>::value) && requires(const T& left, const U& right) {
+        { left >= right } -> convertible_to<bool>;
+    }
+constexpr bool operator>=(const optional<T>& left, const U& right)
+{
+    return left.has_value() && *left >= right;
+}
+template <class T, class U>
+    requires(!__detail::IsOptional<T>::value) && requires(const T& left, const U& right) {
+        { left >= right } -> convertible_to<bool>;
+    }
+constexpr bool operator>=(const T& left, const optional<U>& right)
+{
+    return !right.has_value() || left >= *right;
+}
+
+template <class T, class U>
+    requires(!__detail::IsOptional<U>::value) && three_way_comparable_with<T, U>
+constexpr compare_three_way_result_t<T, U> operator<=>(const optional<T>& left, const U& right)
+{
+    return left.has_value() ? *left <=> right : strong_ordering::less;
+}
+
+template <class T>
+    requires is_move_constructible_v<T> && is_swappable_v<T>
+constexpr void swap(optional<T>& left, optional<T>& right) noexcept(noexcept(left.swap(right)))
+{
+    left.swap(right);
+}
+
+template <class T> constexpr optional<decay_t<T>> make_optional(T&& value)
+{
+    return optional<decay_t<T>>(_FSTD::forward<T>(value));
+}
+template <class T, class... Args> constexpr optional<T> make_optional(Args&&... args)
+{
+    return optional<T>(in_place, _FSTD::forward<Args>(args)...);
+}
+template <class T, class U, class... Args>
+constexpr optional<T> make_optional(initializer_list<U> list, Args&&... args)
+{
+    return optional<T>(in_place, list, _FSTD::forward<Args>(args)...);
+}
+
+template <class T>
+    requires __detail::HashEnabled<remove_const_t<T>>
+struct hash<optional<T>>
+{
+    size_t operator()(const optional<T>& value) const
+    {
+        return value.has_value() ? hash<remove_const_t<T>>()(*value) : 0;
+    }
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

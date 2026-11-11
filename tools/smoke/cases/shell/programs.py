@@ -4,12 +4,16 @@ import re
 from smoke.cases.shell.part import Part
 from smoke.script import Lines
 
+# Runtime checks in cxxtest, the same on both architectures.
+CXXTEST_CHECKS = 195
 # Covers argv, foreground input in a child, and nonzero exit statuses.
 PROGRAMS_INPUT = (
     b"echo hello   feather os\nupper\nmixed Case\ndate\nuptime\nfanout 6\n"
     b'date --help\nprimes -h\nfiletest\nlibctest one "two words"\n'
     # libctest reads these at its "> " prompts: read(), fgets(), scanf().
     b"typed into stdin\nread by fgets\n42 answer\nenv\n"
+    # The C++ standard library's headers, then the help and an error.
+    b"cxxtest\ncxxtest -h\ncxxtest extra\n"
 )
 EXPECTED_PROGRAMS_OUTPUT = (
     "usage: date",
@@ -37,6 +41,8 @@ EXPECTED_PROGRAMS_OUTPUT = (
     "upper> ",
     "MIXED CASE",
     "fanout: 6 children exited",
+    f"cxxtest: {CXXTEST_CHECKS} checks passed",
+    "usage: cxxtest",
 )
 # libctest checks the x87 long double functions only on x86-64.
 LIBCTEST_CHECKS = {"x86_64": 529, "aarch64": 517}

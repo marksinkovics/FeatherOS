@@ -1,0 +1,460 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_COMPARE
+#define FEATHEROS_LIBCXX_COMPARE
+
+#include "__featheros_config"
+#include "concepts"
+#include "type_traits"
+
+#if FEATHEROS_STD_IS_STD
+
+namespace std
+{
+namespace __detail
+{
+// The values the ordering types hold. Unordered is 2 rather than negative, so that "<= 0" is a
+// single comparison.
+enum class Order : signed char
+{
+    Less = -1,
+    Equivalent = 0,
+    Greater = 1,
+    Unordered = 2,
+};
+
+// The parameter type of comparisons with a literal 0: consteval accepts only a constant null
+// pointer, which 0 converts to.
+struct ZeroLiteral
+{
+    consteval ZeroLiteral(ZeroLiteral*) noexcept {}
+};
+} // namespace __detail
+
+// The compiler names these as the results of the built-in <=>. Each holds an Order; the named
+// values are defined after the classes, which are incomplete inside their own bodies.
+class partial_ordering
+{
+public:
+    static const partial_ordering less;
+    static const partial_ordering equivalent;
+    static const partial_ordering greater;
+    static const partial_ordering unordered;
+
+    friend constexpr bool operator==(partial_ordering, partial_ordering) noexcept = default;
+    friend constexpr bool operator==(partial_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return value.m_order == __detail::Order::Equivalent;
+    }
+    friend constexpr bool operator<(partial_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return value.m_order == __detail::Order::Less;
+    }
+    friend constexpr bool operator>(partial_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return value.m_order == __detail::Order::Greater;
+    }
+    friend constexpr bool operator<=(partial_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return static_cast<signed char>(value.m_order) <= 0;
+    }
+    friend constexpr bool operator>=(partial_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return value.m_order == __detail::Order::Equivalent ||
+               value.m_order == __detail::Order::Greater;
+    }
+    friend constexpr bool operator<(__detail::ZeroLiteral, partial_ordering value) noexcept
+    {
+        return value.m_order == __detail::Order::Greater;
+    }
+    friend constexpr bool operator>(__detail::ZeroLiteral, partial_ordering value) noexcept
+    {
+        return value.m_order == __detail::Order::Less;
+    }
+    friend constexpr bool operator<=(__detail::ZeroLiteral, partial_ordering value) noexcept
+    {
+        return value >= 0;
+    }
+    friend constexpr bool operator>=(__detail::ZeroLiteral, partial_ordering value) noexcept
+    {
+        return value <= 0;
+    }
+    friend constexpr partial_ordering operator<=>(partial_ordering value,
+                                                  __detail::ZeroLiteral) noexcept
+    {
+        return value;
+    }
+    friend constexpr partial_ordering operator<=>(__detail::ZeroLiteral,
+                                                  partial_ordering value) noexcept
+    {
+        if (value.m_order == __detail::Order::Unordered)
+        {
+            return value;
+        }
+        return partial_ordering(
+            static_cast<__detail::Order>(-static_cast<signed char>(value.m_order)));
+    }
+
+private:
+    friend class weak_ordering;
+    friend class strong_ordering;
+
+    constexpr explicit partial_ordering(__detail::Order order) noexcept : m_order(order) {}
+
+    __detail::Order m_order;
+};
+
+inline constexpr partial_ordering partial_ordering::less(__detail::Order::Less);
+inline constexpr partial_ordering partial_ordering::equivalent(__detail::Order::Equivalent);
+inline constexpr partial_ordering partial_ordering::greater(__detail::Order::Greater);
+inline constexpr partial_ordering partial_ordering::unordered(__detail::Order::Unordered);
+
+class weak_ordering
+{
+public:
+    static const weak_ordering less;
+    static const weak_ordering equivalent;
+    static const weak_ordering greater;
+
+    constexpr operator partial_ordering() const noexcept
+    {
+        return partial_ordering(m_order);
+    }
+
+    friend constexpr bool operator==(weak_ordering, weak_ordering) noexcept = default;
+    friend constexpr bool operator==(weak_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return value.m_order == __detail::Order::Equivalent;
+    }
+    friend constexpr bool operator<(weak_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return static_cast<signed char>(value.m_order) < 0;
+    }
+    friend constexpr bool operator>(weak_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return static_cast<signed char>(value.m_order) > 0;
+    }
+    friend constexpr bool operator<=(weak_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return static_cast<signed char>(value.m_order) <= 0;
+    }
+    friend constexpr bool operator>=(weak_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return static_cast<signed char>(value.m_order) >= 0;
+    }
+    friend constexpr bool operator<(__detail::ZeroLiteral, weak_ordering value) noexcept
+    {
+        return static_cast<signed char>(value.m_order) > 0;
+    }
+    friend constexpr bool operator>(__detail::ZeroLiteral, weak_ordering value) noexcept
+    {
+        return static_cast<signed char>(value.m_order) < 0;
+    }
+    friend constexpr bool operator<=(__detail::ZeroLiteral, weak_ordering value) noexcept
+    {
+        return static_cast<signed char>(value.m_order) >= 0;
+    }
+    friend constexpr bool operator>=(__detail::ZeroLiteral, weak_ordering value) noexcept
+    {
+        return static_cast<signed char>(value.m_order) <= 0;
+    }
+    friend constexpr weak_ordering operator<=>(weak_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return value;
+    }
+    friend constexpr weak_ordering operator<=>(__detail::ZeroLiteral, weak_ordering value) noexcept
+    {
+        return weak_ordering(
+            static_cast<__detail::Order>(-static_cast<signed char>(value.m_order)));
+    }
+
+private:
+    friend class strong_ordering;
+
+    constexpr explicit weak_ordering(__detail::Order order) noexcept : m_order(order) {}
+
+    __detail::Order m_order;
+};
+
+inline constexpr weak_ordering weak_ordering::less(__detail::Order::Less);
+inline constexpr weak_ordering weak_ordering::equivalent(__detail::Order::Equivalent);
+inline constexpr weak_ordering weak_ordering::greater(__detail::Order::Greater);
+
+class strong_ordering
+{
+public:
+    static const strong_ordering less;
+    static const strong_ordering equal;
+    static const strong_ordering equivalent;
+    static const strong_ordering greater;
+
+    constexpr operator partial_ordering() const noexcept
+    {
+        return partial_ordering(m_order);
+    }
+    constexpr operator weak_ordering() const noexcept
+    {
+        return weak_ordering(m_order);
+    }
+
+    friend constexpr bool operator==(strong_ordering, strong_ordering) noexcept = default;
+    friend constexpr bool operator==(strong_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return value.m_order == __detail::Order::Equivalent;
+    }
+    friend constexpr bool operator<(strong_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return static_cast<signed char>(value.m_order) < 0;
+    }
+    friend constexpr bool operator>(strong_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return static_cast<signed char>(value.m_order) > 0;
+    }
+    friend constexpr bool operator<=(strong_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return static_cast<signed char>(value.m_order) <= 0;
+    }
+    friend constexpr bool operator>=(strong_ordering value, __detail::ZeroLiteral) noexcept
+    {
+        return static_cast<signed char>(value.m_order) >= 0;
+    }
+    friend constexpr bool operator<(__detail::ZeroLiteral, strong_ordering value) noexcept
+    {
+        return static_cast<signed char>(value.m_order) > 0;
+    }
+    friend constexpr bool operator>(__detail::ZeroLiteral, strong_ordering value) noexcept
+    {
+        return static_cast<signed char>(value.m_order) < 0;
+    }
+    friend constexpr bool operator<=(__detail::ZeroLiteral, strong_ordering value) noexcept
+    {
+        return static_cast<signed char>(value.m_order) >= 0;
+    }
+    friend constexpr bool operator>=(__detail::ZeroLiteral, strong_ordering value) noexcept
+    {
+        return static_cast<signed char>(value.m_order) <= 0;
+    }
+    friend constexpr strong_ordering operator<=>(strong_ordering value,
+                                                 __detail::ZeroLiteral) noexcept
+    {
+        return value;
+    }
+    friend constexpr strong_ordering operator<=>(__detail::ZeroLiteral,
+                                                 strong_ordering value) noexcept
+    {
+        return strong_ordering(
+            static_cast<__detail::Order>(-static_cast<signed char>(value.m_order)));
+    }
+
+private:
+    constexpr explicit strong_ordering(__detail::Order order) noexcept : m_order(order) {}
+
+    __detail::Order m_order;
+};
+
+inline constexpr strong_ordering strong_ordering::less(__detail::Order::Less);
+inline constexpr strong_ordering strong_ordering::equal(__detail::Order::Equivalent);
+inline constexpr strong_ordering strong_ordering::equivalent(__detail::Order::Equivalent);
+inline constexpr strong_ordering strong_ordering::greater(__detail::Order::Greater);
+} // namespace std
+
+#else
+
+#include <compare>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+using std::partial_ordering;
+using std::strong_ordering;
+using std::weak_ordering;
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+constexpr bool is_eq(partial_ordering order) noexcept
+{
+    return order == 0;
+}
+
+constexpr bool is_neq(partial_ordering order) noexcept
+{
+    return order != 0;
+}
+
+constexpr bool is_lt(partial_ordering order) noexcept
+{
+    return order < 0;
+}
+
+constexpr bool is_lteq(partial_ordering order) noexcept
+{
+    return order <= 0;
+}
+
+constexpr bool is_gt(partial_ordering order) noexcept
+{
+    return order > 0;
+}
+
+constexpr bool is_gteq(partial_ordering order) noexcept
+{
+    return order >= 0;
+}
+
+namespace __detail
+{
+// Strongest first; the common category is the weakest of a list, and void if any is not one.
+enum class ComparisonCategory : unsigned char
+{
+    Strong,
+    Weak,
+    Partial,
+    None,
+};
+
+template <class T> constexpr ComparisonCategory CategoryOf()
+{
+    if constexpr (is_same_v<T, strong_ordering>)
+    {
+        return ComparisonCategory::Strong;
+    }
+    else if constexpr (is_same_v<T, weak_ordering>)
+    {
+        return ComparisonCategory::Weak;
+    }
+    else if constexpr (is_same_v<T, partial_ordering>)
+    {
+        return ComparisonCategory::Partial;
+    }
+    else
+    {
+        return ComparisonCategory::None;
+    }
+}
+
+template <class... T> constexpr ComparisonCategory CommonCategory()
+{
+    ComparisonCategory common = ComparisonCategory::Strong;
+    ((common = CategoryOf<T>() > common ? CategoryOf<T>() : common), ...);
+    return common;
+}
+
+template <ComparisonCategory Category> struct CategoryType
+{
+    using type = void;
+};
+template <> struct CategoryType<ComparisonCategory::Strong>
+{
+    using type = strong_ordering;
+};
+template <> struct CategoryType<ComparisonCategory::Weak>
+{
+    using type = weak_ordering;
+};
+template <> struct CategoryType<ComparisonCategory::Partial>
+{
+    using type = partial_ordering;
+};
+} // namespace __detail
+
+template <class... T> struct common_comparison_category
+{
+    using type = typename __detail::CategoryType<__detail::CommonCategory<T...>()>::type;
+};
+template <class... T>
+using common_comparison_category_t = typename common_comparison_category<T...>::type;
+
+namespace __detail
+{
+template <class T, class Category>
+concept ComparesAs = same_as<common_comparison_category_t<T, Category>, Category>;
+} // namespace __detail
+
+template <class T, class Category = partial_ordering>
+concept three_way_comparable =
+    __detail::WeaklyEqualityComparableWith<T, T> && __detail::PartiallyOrderedWith<T, T> &&
+    requires(const remove_reference_t<T>& left, const remove_reference_t<T>& right) {
+        { left <=> right } -> __detail::ComparesAs<Category>;
+    };
+
+template <class T, class U, class Category = partial_ordering>
+concept three_way_comparable_with =
+    three_way_comparable<T, Category> && three_way_comparable<U, Category> &&
+    __detail::ComparisonCommonTypeWith<T, U> &&
+    three_way_comparable<
+        common_reference_t<const remove_reference_t<T>&, const remove_reference_t<U>&>, Category> &&
+    __detail::WeaklyEqualityComparableWith<T, U> && __detail::PartiallyOrderedWith<T, U> &&
+    requires(const remove_reference_t<T>& left, const remove_reference_t<U>& right) {
+        { left <=> right } -> __detail::ComparesAs<Category>;
+        { right <=> left } -> __detail::ComparesAs<Category>;
+    };
+
+template <class T, class U = T> struct compare_three_way_result
+{
+};
+template <class T, class U>
+    requires requires(const remove_reference_t<T>& left, const remove_reference_t<U>& right) {
+        left <=> right;
+    }
+struct compare_three_way_result<T, U>
+{
+    using type = decltype(declval<const remove_reference_t<T>&>() <=>
+                          declval<const remove_reference_t<U>&>());
+};
+template <class T, class U = T>
+using compare_three_way_result_t = typename compare_three_way_result<T, U>::type;
+
+struct compare_three_way
+{
+    template <class T, class U>
+        requires three_way_comparable_with<T, U>
+    constexpr auto operator()(T&& left, U&& right) const
+    {
+        return _FSTD::forward<T>(left) <=> _FSTD::forward<U>(right);
+    }
+
+    using is_transparent = void;
+};
+
+namespace __detail
+{
+// The synth-three-way of [expos.only.entity], which pair and the containers compare with: <=>
+// where it exists, otherwise a weak ordering from <.
+struct SynthThreeWay
+{
+    template <class T, class U>
+    constexpr auto operator()(const T& left, const U& right) const
+        requires requires {
+            { left < right } -> BooleanTestable;
+            { right < left } -> BooleanTestable;
+        }
+    {
+        if constexpr (three_way_comparable_with<T, U>)
+        {
+            return left <=> right;
+        }
+        else
+        {
+            if (left < right)
+            {
+                return weak_ordering::less;
+            }
+            if (right < left)
+            {
+                return weak_ordering::greater;
+            }
+            return weak_ordering::equivalent;
+        }
+    }
+};
+inline constexpr SynthThreeWay synth_three_way{};
+
+template <class T, class U = T>
+using SynthThreeWayResult = decltype(synth_three_way(declval<T&>(), declval<U&>()));
+} // namespace __detail
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

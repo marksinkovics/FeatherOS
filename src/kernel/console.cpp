@@ -17,6 +17,8 @@
 #include "kernel/time/wall_clock.h"
 #include "user/calendar.h"
 
+#include <atomic>
+
 namespace FeatherOS::Console
 {
 namespace
@@ -39,7 +41,7 @@ constinit Sync::SpinLock status_lock;
 constinit Scheduler::WaitQueue status_waiters;
 bool status_changed GUARDED_BY(status_lock) = false;
 // Set once at boot, then read without the lock.
-bool status_running = false;
+std::atomic<bool> status_running = false;
 
 Screen& ScreenOf(void* context)
 {
@@ -301,7 +303,7 @@ void Initialize(Term* terms)
     {
         Panic("Could not start the status bar task");
     }
-    __atomic_store_n(&status_running, true, __ATOMIC_RELEASE);
+    status_running.store(true, std::memory_order_release);
 }
 
 void Show(uint32_t console)
@@ -337,7 +339,7 @@ uint32_t Shown()
 
 void NotifyStatusChanged()
 {
-    if (!__atomic_load_n(&status_running, __ATOMIC_ACQUIRE))
+    if (!status_running.load(std::memory_order_acquire))
     {
         return;
     }

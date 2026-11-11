@@ -22,7 +22,7 @@ fi
 
 relative="${file#"$REPO_ROOT"/}"
 case "$relative" in
-    src/*.c | src/*.cpp | src/*.h | src/*.hpp)
+    src/*.c | src/*.cpp | src/*.h | src/*.hpp | src/libcxx/include/*)
         clang-format -i "$file" 2>/dev/null
         ;;
     tools/*.py | tests/*.py)

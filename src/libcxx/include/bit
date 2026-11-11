@@ -1,0 +1,232 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_BIT
+#define FEATHEROS_LIBCXX_BIT
+
+#include "__featheros_config"
+#include "limits"
+#include "type_traits"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class To, class From>
+    requires(sizeof(To) == sizeof(From)) && is_trivially_copyable_v<To> &&
+            is_trivially_copyable_v<From>
+[[nodiscard]] constexpr To bit_cast(const From& value) noexcept
+{
+    return __builtin_bit_cast(To, value);
+}
+
+namespace __detail
+{
+// The bit operations take the unsigned integer types only: not bool or the character types.
+template <class T>
+concept UnsignedInteger =
+    is_integral_v<T> && is_unsigned_v<T> && !is_same_v<remove_cv_t<T>, bool> &&
+    !is_same_v<remove_cv_t<T>, char> && !is_same_v<remove_cv_t<T>, wchar_t> &&
+    !is_same_v<remove_cv_t<T>, char8_t> && !is_same_v<remove_cv_t<T>, char16_t> &&
+    !is_same_v<remove_cv_t<T>, char32_t>;
+
+template <class T> constexpr int Digits = numeric_limits<T>::digits;
+} // namespace __detail
+
+template <class T>
+    requires is_integral_v<T>
+[[nodiscard]] constexpr T byteswap(T value) noexcept
+{
+    if constexpr (sizeof(T) == 1)
+    {
+        return value;
+    }
+    else if constexpr (sizeof(T) == 2)
+    {
+        return static_cast<T>(__builtin_bswap16(static_cast<unsigned short>(value)));
+    }
+    else if constexpr (sizeof(T) == 4)
+    {
+        return static_cast<T>(__builtin_bswap32(static_cast<unsigned int>(value)));
+    }
+    else if constexpr (sizeof(T) == 8)
+    {
+        return static_cast<T>(__builtin_bswap64(static_cast<unsigned long long>(value)));
+    }
+    else
+    {
+        static_assert(sizeof(T) == 16, "byteswap takes integers of 1 to 16 bytes");
+        using Unsigned = make_unsigned_t<T>;
+        const auto bits = static_cast<Unsigned>(value);
+        const Unsigned low = __builtin_bswap64(static_cast<unsigned long long>(bits));
+        const Unsigned high = __builtin_bswap64(static_cast<unsigned long long>(bits >> 64));
+        return static_cast<T>((low << 64) | high);
+    }
+}
+
+// The builtins are undefined for zero, which these functions define.
+template <__detail::UnsignedInteger T> [[nodiscard]] constexpr int countl_zero(T value) noexcept
+{
+    constexpr int digits = __detail::Digits<T>;
+    if (value == 0)
+    {
+        return digits;
+    }
+    if constexpr (digits <= 32)
+    {
+        return __builtin_clz(static_cast<unsigned int>(value)) - (32 - digits);
+    }
+    else if constexpr (digits <= 64)
+    {
+        return __builtin_clzll(static_cast<unsigned long long>(value)) - (64 - digits);
+    }
+    else
+    {
+        const auto high = static_cast<unsigned long long>(value >> 64);
+        if (high != 0)
+        {
+            return __builtin_clzll(high);
+        }
+        return 64 + __builtin_clzll(static_cast<unsigned long long>(value));
+    }
+}
+
+template <__detail::UnsignedInteger T> [[nodiscard]] constexpr int countr_zero(T value) noexcept
+{
+    constexpr int digits = __detail::Digits<T>;
+    if (value == 0)
+    {
+        return digits;
+    }
+    if constexpr (digits <= 32)
+    {
+        return __builtin_ctz(static_cast<unsigned int>(value));
+    }
+    else if constexpr (digits <= 64)
+    {
+        return __builtin_ctzll(static_cast<unsigned long long>(value));
+    }
+    else
+    {
+        const auto low = static_cast<unsigned long long>(value);
+        if (low != 0)
+        {
+            return __builtin_ctzll(low);
+        }
+        return 64 + __builtin_ctzll(static_cast<unsigned long long>(value >> 64));
+    }
+}
+
+template <__detail::UnsignedInteger T> [[nodiscard]] constexpr int countl_one(T value) noexcept
+{
+    return countl_zero(static_cast<T>(~value));
+}
+
+template <__detail::UnsignedInteger T> [[nodiscard]] constexpr int countr_one(T value) noexcept
+{
+    return countr_zero(static_cast<T>(~value));
+}
+
+namespace __detail
+{
+// GCC calls libgcc's __popcountdi2 when the target has no instruction for it (x86-64 without
+// POPCNT, AArch64 without SIMD as in the kernel), and nothing here links libgcc. Clang expands
+// the builtin inline instead.
+constexpr int Popcount64(unsigned long long value) noexcept
+{
+#if defined(__clang__) || defined(__POPCNT__) || defined(__ARM_NEON)
+    return __builtin_popcountll(value);
+#else
+    value -= (value >> 1) & 0x5555'5555'5555'5555ULL;
+    value = (value & 0x3333'3333'3333'3333ULL) + ((value >> 2) & 0x3333'3333'3333'3333ULL);
+    value = (value + (value >> 4)) & 0x0F0F'0F0F'0F0F'0F0FULL;
+    return static_cast<int>((value * 0x0101'0101'0101'0101ULL) >> 56);
+#endif
+}
+} // namespace __detail
+
+template <__detail::UnsignedInteger T> [[nodiscard]] constexpr int popcount(T value) noexcept
+{
+    if constexpr (__detail::Digits<T> <= 64)
+    {
+        return __detail::Popcount64(static_cast<unsigned long long>(value));
+    }
+    else
+    {
+        return __detail::Popcount64(static_cast<unsigned long long>(value)) +
+               __detail::Popcount64(static_cast<unsigned long long>(value >> 64));
+    }
+}
+
+template <__detail::UnsignedInteger T> [[nodiscard]] constexpr T rotl(T value, int count) noexcept
+{
+    constexpr int digits = __detail::Digits<T>;
+    const int shift = count % digits;
+    if (shift == 0)
+    {
+        return value;
+    }
+    if (shift > 0)
+    {
+        return static_cast<T>((value << shift) | (value >> (digits - shift)));
+    }
+    return static_cast<T>((value >> -shift) | (value << (digits + shift)));
+}
+
+template <__detail::UnsignedInteger T> [[nodiscard]] constexpr T rotr(T value, int count) noexcept
+{
+    constexpr int digits = __detail::Digits<T>;
+    const int shift = count % digits;
+    if (shift == 0)
+    {
+        return value;
+    }
+    if (shift > 0)
+    {
+        return static_cast<T>((value >> shift) | (value << (digits - shift)));
+    }
+    return static_cast<T>((value << -shift) | (value >> (digits + shift)));
+}
+
+template <__detail::UnsignedInteger T> [[nodiscard]] constexpr bool has_single_bit(T value) noexcept
+{
+    return value != 0 && (value & (value - 1)) == 0;
+}
+
+template <__detail::UnsignedInteger T> [[nodiscard]] constexpr int bit_width(T value) noexcept
+{
+    return __detail::Digits<T> - countl_zero(value);
+}
+
+template <__detail::UnsignedInteger T> [[nodiscard]] constexpr T bit_floor(T value) noexcept
+{
+    if (value == 0)
+    {
+        return 0;
+    }
+    return static_cast<T>(T(1) << (bit_width(value) - 1));
+}
+
+// Undefined when the result does not fit in T; a constant expression rejects that case.
+template <__detail::UnsignedInteger T> [[nodiscard]] constexpr T bit_ceil(T value) noexcept
+{
+    if (value <= 1)
+    {
+        return T(1);
+    }
+    const int width = bit_width(static_cast<T>(value - 1));
+    if (is_constant_evaluated() && width >= __detail::Digits<T>)
+    {
+        __builtin_unreachable();
+    }
+    // Shifts in int for types narrower than int, which the result then truncates.
+    return static_cast<T>(T(1) << width);
+}
+
+enum class endian
+{
+    little = __ORDER_LITTLE_ENDIAN__,
+    big = __ORDER_BIG_ENDIAN__,
+    native = __BYTE_ORDER__,
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

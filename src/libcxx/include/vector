@@ -1,0 +1,1809 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_VECTOR
+#define FEATHEROS_LIBCXX_VECTOR
+
+#include "__featheros_config"
+#include "__hash_base"
+#include "__iterator_base"
+#include "__memory_base"
+#include "__pointer_iterator"
+#include "algorithm"
+#include "compare"
+#include "initializer_list"
+#include "iterator"
+#include "limits"
+#include "memory"
+#include "type_traits"
+#include "utility"
+
+// Left out: allocators whose pointer is not a plain pointer, pmr::vector and formatting
+// vector<bool>. A size past max_size() (length_error) and at() out of range (out_of_range) call
+// the library's abort hook. Without exceptions nothing rolls back, but growing still copies the
+// elements whose move constructor could throw, as move_if_noexcept says.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class T, class Allocator = allocator<T>> class vector
+{
+    using Traits = allocator_traits<Allocator>;
+
+public:
+    using value_type = T;
+    using allocator_type = Allocator;
+    using pointer = typename Traits::pointer;
+    using const_pointer = typename Traits::const_pointer;
+    using reference = T&;
+    using const_reference = const T&;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+    using iterator = __detail::PointerIterator<T, vector>;
+    using const_iterator = __detail::PointerIterator<const T, vector>;
+    using reverse_iterator = _FSTD::reverse_iterator<iterator>;
+    using const_reverse_iterator = _FSTD::reverse_iterator<const_iterator>;
+
+    static_assert(is_same_v<typename Allocator::value_type, T>,
+                  "vector's allocator must allocate its value_type");
+    static_assert(is_pointer_v<typename allocator_traits<Allocator>::pointer>,
+                  "vector needs an allocator whose pointer is a plain pointer");
+
+    constexpr vector() noexcept(noexcept(Allocator())) : vector(Allocator()) {}
+    constexpr explicit vector(const Allocator& allocator) noexcept : m_allocator(allocator) {}
+
+    constexpr explicit vector(size_type count, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        if (count != 0)
+        {
+            AllocateExactly(count);
+            ConstructAtEnd(count);
+        }
+    }
+
+    constexpr vector(size_type count, const T& value, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        if (count != 0)
+        {
+            AllocateExactly(count);
+            ConstructAtEnd(count, value);
+        }
+    }
+
+    template <__detail::ClassicInput I>
+    constexpr vector(I first, I last, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        if constexpr (__detail::ClassicForward<I>)
+        {
+            ConstructFrom(first, last, static_cast<size_type>(_FSTD::distance(first, last)));
+        }
+        else
+        {
+            for (; first != last; ++first)
+            {
+                emplace_back(*first);
+            }
+        }
+    }
+
+    template <__detail::ContainerCompatibleRange<T> R>
+    constexpr vector(from_range_t, R&& range, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        append_range(_FSTD::forward<R>(range));
+    }
+
+    constexpr vector(const vector& other)
+        : m_allocator(Traits::select_on_container_copy_construction(other.m_allocator))
+    {
+        ConstructFrom(other.m_begin, other.m_end, other.size());
+    }
+
+    constexpr vector(vector&& other) noexcept : m_allocator(_FSTD::move(other.m_allocator))
+    {
+        Steal(other);
+    }
+
+    constexpr vector(const vector& other, const type_identity_t<Allocator>& allocator)
+        : m_allocator(allocator)
+    {
+        ConstructFrom(other.m_begin, other.m_end, other.size());
+    }
+
+    constexpr vector(vector&& other, const type_identity_t<Allocator>& allocator)
+        : m_allocator(allocator)
+    {
+        if (Traits::is_always_equal::value || m_allocator == other.m_allocator)
+        {
+            Steal(other);
+        }
+        else
+        {
+            ConstructFrom(_FSTD::move_iterator<T*>(other.m_begin),
+                          _FSTD::move_iterator<T*>(other.m_end), other.size());
+        }
+    }
+
+    constexpr vector(initializer_list<T> values, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        ConstructFrom(values.begin(), values.end(), values.size());
+    }
+
+    constexpr ~vector()
+    {
+        Deallocate();
+    }
+
+    constexpr vector& operator=(const vector& other)
+    {
+        if (this == &other)
+        {
+            return *this;
+        }
+        if constexpr (Traits::propagate_on_container_copy_assignment::value)
+        {
+            if (!Traits::is_always_equal::value && m_allocator != other.m_allocator)
+            {
+                Deallocate();
+            }
+            m_allocator = other.m_allocator;
+        }
+        assign(other.m_begin, other.m_end);
+        return *this;
+    }
+
+    constexpr vector&
+    operator=(vector&& other) noexcept(Traits::propagate_on_container_move_assignment::value ||
+                                       Traits::is_always_equal::value)
+    {
+        if (this == &other)
+        {
+            return *this;
+        }
+        if constexpr (Traits::propagate_on_container_move_assignment::value)
+        {
+            Deallocate();
+            m_allocator = _FSTD::move(other.m_allocator);
+            Steal(other);
+        }
+        else
+        {
+            if (Traits::is_always_equal::value || m_allocator == other.m_allocator)
+            {
+                Deallocate();
+                Steal(other);
+            }
+            else
+            {
+                assign(_FSTD::move_iterator<T*>(other.m_begin),
+                       _FSTD::move_iterator<T*>(other.m_end));
+            }
+        }
+        return *this;
+    }
+
+    constexpr vector& operator=(initializer_list<T> values)
+    {
+        assign(values.begin(), values.end());
+        return *this;
+    }
+
+    template <__detail::ClassicInput I> constexpr void assign(I first, I last)
+    {
+        if constexpr (__detail::ClassicForward<I>)
+        {
+            AssignCounted(first, last, static_cast<size_type>(_FSTD::distance(first, last)));
+        }
+        else
+        {
+            AssignInput(first, last);
+        }
+    }
+
+    template <__detail::ContainerCompatibleRange<T> R> constexpr void assign_range(R&& range)
+    {
+        if constexpr (ranges::forward_range<R> || ranges::sized_range<R>)
+        {
+            AssignCounted(ranges::begin(range), ranges::end(range), __detail::RangeLength(range));
+        }
+        else
+        {
+            AssignInput(ranges::begin(range), ranges::end(range));
+        }
+    }
+
+    constexpr void assign(size_type count, const T& value)
+    {
+        if (count > capacity())
+        {
+            Deallocate();
+            AllocateExactly(count);
+            ConstructAtEnd(count, value);
+            return;
+        }
+        const size_type kept = _FSTD::min(count, size());
+        _FSTD::fill_n(m_begin, kept, value);
+        if (count > kept)
+        {
+            ConstructAtEnd(count - kept, value);
+        }
+        else
+        {
+            DestroyFrom(m_begin + count);
+        }
+    }
+
+    constexpr void assign(initializer_list<T> values)
+    {
+        assign(values.begin(), values.end());
+    }
+
+    constexpr allocator_type get_allocator() const noexcept
+    {
+        return m_allocator;
+    }
+
+    constexpr iterator begin() noexcept
+    {
+        return iterator(m_begin);
+    }
+    constexpr const_iterator begin() const noexcept
+    {
+        return const_iterator(m_begin);
+    }
+    constexpr iterator end() noexcept
+    {
+        return iterator(m_end);
+    }
+    constexpr const_iterator end() const noexcept
+    {
+        return const_iterator(m_end);
+    }
+    constexpr reverse_iterator rbegin() noexcept
+    {
+        return reverse_iterator(end());
+    }
+    constexpr const_reverse_iterator rbegin() const noexcept
+    {
+        return const_reverse_iterator(end());
+    }
+    constexpr reverse_iterator rend() noexcept
+    {
+        return reverse_iterator(begin());
+    }
+    constexpr const_reverse_iterator rend() const noexcept
+    {
+        return const_reverse_iterator(begin());
+    }
+    constexpr const_iterator cbegin() const noexcept
+    {
+        return begin();
+    }
+    constexpr const_iterator cend() const noexcept
+    {
+        return end();
+    }
+    constexpr const_reverse_iterator crbegin() const noexcept
+    {
+        return rbegin();
+    }
+    constexpr const_reverse_iterator crend() const noexcept
+    {
+        return rend();
+    }
+
+    [[nodiscard]] constexpr bool empty() const noexcept
+    {
+        return m_begin == m_end;
+    }
+    constexpr size_type size() const noexcept
+    {
+        return static_cast<size_type>(m_end - m_begin);
+    }
+    constexpr size_type max_size() const noexcept
+    {
+        return _FSTD::min<size_type>(Traits::max_size(m_allocator),
+                                     numeric_limits<difference_type>::max());
+    }
+    constexpr size_type capacity() const noexcept
+    {
+        return static_cast<size_type>(m_capacity_end - m_begin);
+    }
+
+    constexpr void resize(size_type count)
+    {
+        const size_type current = size();
+        if (count <= current)
+        {
+            DestroyFrom(m_begin + count);
+        }
+        else if (count <= capacity())
+        {
+            ConstructAtEnd(count - current);
+        }
+        else
+        {
+            ReallocateInsert(GrownCapacity(count), m_end, count - current,
+                             [&](T* gap)
+                             {
+                                 for (size_type index = 0; index != count - current; ++index)
+                                 {
+                                     Traits::construct(m_allocator, gap + index);
+                                 }
+                             });
+        }
+    }
+
+    constexpr void resize(size_type count, const T& value)
+    {
+        const size_type current = size();
+        if (count <= current)
+        {
+            DestroyFrom(m_begin + count);
+        }
+        else if (count <= capacity())
+        {
+            ConstructAtEnd(count - current, value);
+        }
+        else
+        {
+            // The new elements are built before the old ones move, so value may be one of them.
+            ReallocateInsert(GrownCapacity(count), m_end, count - current,
+                             [&](T* gap)
+                             {
+                                 for (size_type index = 0; index != count - current; ++index)
+                                 {
+                                     Traits::construct(m_allocator, gap + index, value);
+                                 }
+                             });
+        }
+    }
+
+    constexpr void reserve(size_type count)
+    {
+        if (count <= capacity())
+        {
+            return;
+        }
+        if (count > max_size())
+        {
+            __detail::LibraryAbort("vector::reserve: the size exceeds max_size()");
+        }
+        ReallocateInsert(count, m_end, 0, [](T*) {});
+    }
+
+    constexpr void shrink_to_fit()
+    {
+        if (m_end == m_capacity_end)
+        {
+            return;
+        }
+        if (m_begin == m_end)
+        {
+            Deallocate();
+            return;
+        }
+        T* const storage = Traits::allocate(m_allocator, size());
+        const size_type count = size();
+        Relocate(m_begin, m_end, storage);
+        Traits::deallocate(m_allocator, m_begin, capacity());
+        m_begin = storage;
+        m_end = storage + count;
+        m_capacity_end = m_end;
+    }
+
+    constexpr reference operator[](size_type index)
+    {
+        return m_begin[index];
+    }
+    constexpr const_reference operator[](size_type index) const
+    {
+        return m_begin[index];
+    }
+    constexpr reference at(size_type index)
+    {
+        CheckIndex(index);
+        return m_begin[index];
+    }
+    constexpr const_reference at(size_type index) const
+    {
+        CheckIndex(index);
+        return m_begin[index];
+    }
+    constexpr reference front()
+    {
+        return *m_begin;
+    }
+    constexpr const_reference front() const
+    {
+        return *m_begin;
+    }
+    constexpr reference back()
+    {
+        return m_end[-1];
+    }
+    constexpr const_reference back() const
+    {
+        return m_end[-1];
+    }
+
+    constexpr T* data() noexcept
+    {
+        return m_begin;
+    }
+    constexpr const T* data() const noexcept
+    {
+        return m_begin;
+    }
+
+    template <class... Args> constexpr reference emplace_back(Args&&... args)
+    {
+        if (m_end != m_capacity_end)
+        {
+            Traits::construct(m_allocator, m_end, _FSTD::forward<Args>(args)...);
+            ++m_end;
+            return m_end[-1];
+        }
+        return *ReallocateInsert(
+            GrownCapacity(size() + 1), m_end, 1,
+            [&](T* gap) { Traits::construct(m_allocator, gap, _FSTD::forward<Args>(args)...); });
+    }
+
+    constexpr void push_back(const T& value)
+    {
+        emplace_back(value);
+    }
+    constexpr void push_back(T&& value)
+    {
+        emplace_back(_FSTD::move(value));
+    }
+
+    template <__detail::ContainerCompatibleRange<T> R> constexpr void append_range(R&& range)
+    {
+        if constexpr (ranges::forward_range<R> || ranges::sized_range<R>)
+        {
+            InsertCounted(m_end, ranges::begin(range), ranges::end(range),
+                          __detail::RangeLength(range));
+        }
+        else
+        {
+            for (auto iterator = ranges::begin(range), last = ranges::end(range); iterator != last;
+                 ++iterator)
+            {
+                emplace_back(*iterator);
+            }
+        }
+    }
+
+    constexpr void pop_back()
+    {
+        DestroyFrom(m_end - 1);
+    }
+
+    template <class... Args> constexpr iterator emplace(const_iterator position, Args&&... args)
+    {
+        T* const at = Mutable(position);
+        if (m_end == m_capacity_end)
+        {
+            return iterator(ReallocateInsert(
+                GrownCapacity(size() + 1), at, 1, [&](T* gap)
+                { Traits::construct(m_allocator, gap, _FSTD::forward<Args>(args)...); }));
+        }
+        if (at == m_end)
+        {
+            Traits::construct(m_allocator, m_end, _FSTD::forward<Args>(args)...);
+            ++m_end;
+            return iterator(at);
+        }
+        // Built first, since the arguments may refer to the elements about to move.
+        T temporary(_FSTD::forward<Args>(args)...);
+        Traits::construct(m_allocator, m_end, _FSTD::move(m_end[-1]));
+        ++m_end;
+        _FSTD::move_backward(at, m_end - 2, m_end - 1);
+        *at = _FSTD::move(temporary);
+        return iterator(at);
+    }
+
+    constexpr iterator insert(const_iterator position, const T& value)
+    {
+        return emplace(position, value);
+    }
+    constexpr iterator insert(const_iterator position, T&& value)
+    {
+        return emplace(position, _FSTD::move(value));
+    }
+
+    constexpr iterator insert(const_iterator position, size_type count, const T& value)
+    {
+        T* const at = Mutable(position);
+        if (count == 0)
+        {
+            return iterator(at);
+        }
+        if (count > static_cast<size_type>(m_capacity_end - m_end))
+        {
+            return iterator(ReallocateInsert(GrownCapacity(size() + count), at, count,
+                                             [&](T* gap)
+                                             {
+                                                 for (size_type index = 0; index != count; ++index)
+                                                 {
+                                                     Traits::construct(m_allocator, gap + index,
+                                                                       value);
+                                                 }
+                                             }));
+        }
+        // A copy, since value may be an element about to move.
+        const T copy(value);
+        T* const old_end = m_end;
+        const auto tail = static_cast<size_type>(old_end - at);
+        if (count <= tail)
+        {
+            ConstructMovedAtEnd(old_end - count, old_end);
+            _FSTD::move_backward(at, old_end - count, old_end);
+            _FSTD::fill_n(at, count, copy);
+        }
+        else
+        {
+            ConstructAtEnd(count - tail, copy);
+            ConstructMovedAtEnd(at, old_end);
+            _FSTD::fill(at, old_end, copy);
+        }
+        return iterator(at);
+    }
+
+    template <__detail::ClassicInput I>
+    constexpr iterator insert(const_iterator position, I first, I last)
+    {
+        T* const at = Mutable(position);
+        if constexpr (__detail::ClassicForward<I>)
+        {
+            return iterator(InsertCounted(at, first, last,
+                                          static_cast<size_type>(_FSTD::distance(first, last))));
+        }
+        else
+        {
+            return iterator(InsertInput(at, first, last));
+        }
+    }
+
+    template <__detail::ContainerCompatibleRange<T> R>
+    constexpr iterator insert_range(const_iterator position, R&& range)
+    {
+        T* const at = Mutable(position);
+        if constexpr (ranges::forward_range<R> || ranges::sized_range<R>)
+        {
+            return iterator(InsertCounted(at, ranges::begin(range), ranges::end(range),
+                                          __detail::RangeLength(range)));
+        }
+        else
+        {
+            return iterator(InsertInput(at, ranges::begin(range), ranges::end(range)));
+        }
+    }
+
+    constexpr iterator insert(const_iterator position, initializer_list<T> values)
+    {
+        return iterator(
+            InsertCounted(Mutable(position), values.begin(), values.end(), values.size()));
+    }
+
+    constexpr iterator erase(const_iterator position)
+    {
+        T* const at = Mutable(position);
+        DestroyFrom(_FSTD::move(at + 1, m_end, at));
+        return iterator(at);
+    }
+
+    constexpr iterator erase(const_iterator first, const_iterator last)
+    {
+        T* const from = Mutable(first);
+        if (first != last)
+        {
+            DestroyFrom(_FSTD::move(Mutable(last), m_end, from));
+        }
+        return iterator(from);
+    }
+
+    constexpr void swap(vector& other) noexcept(Traits::propagate_on_container_swap::value ||
+                                                Traits::is_always_equal::value)
+    {
+        _FSTD::swap(m_begin, other.m_begin);
+        _FSTD::swap(m_end, other.m_end);
+        _FSTD::swap(m_capacity_end, other.m_capacity_end);
+        if constexpr (Traits::propagate_on_container_swap::value)
+        {
+            using _FSTD::swap;
+            swap(m_allocator, other.m_allocator);
+        }
+    }
+
+    constexpr void clear() noexcept
+    {
+        DestroyFrom(m_begin);
+    }
+
+private:
+    T* m_begin = nullptr;
+    T* m_end = nullptr;
+    T* m_capacity_end = nullptr;
+    [[no_unique_address]] Allocator m_allocator;
+
+    // A function rather than a constant, so that T may still be incomplete where vector<T> is
+    // named, as in a struct holding a vector of itself.
+    static constexpr bool CopiesBytes()
+    {
+        return is_trivially_copyable_v<T> && !is_volatile_v<T> &&
+               !requires(Allocator& allocator, T* location) {
+                   allocator.construct(location, declval<T&&>());
+               } && !requires(Allocator& allocator, T* location) { allocator.destroy(location); };
+    }
+
+    template <class I, class S> static constexpr bool CopiesBytesFrom()
+    {
+        if constexpr (contiguous_iterator<I> && sized_sentinel_for<S, I>)
+        {
+            return CopiesBytes() && is_same_v<iter_value_t<I>, T>;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    constexpr T* Mutable(const_iterator position) noexcept
+    {
+        return m_begin + (position - cbegin());
+    }
+
+    constexpr void CheckIndex(size_type index) const
+    {
+        if (index >= size())
+        {
+            __detail::LibraryAbort("vector::at: the index is out of range");
+        }
+    }
+
+    constexpr size_type GrownCapacity(size_type needed) const
+    {
+        const size_type maximum = max_size();
+        if (needed > maximum)
+        {
+            __detail::LibraryAbort("vector: the size exceeds max_size()");
+        }
+        const size_type current = capacity();
+        if (current >= maximum / 2)
+        {
+            return maximum;
+        }
+        return _FSTD::max(2 * current, needed);
+    }
+
+    // Only on a vector without storage.
+    constexpr void AllocateExactly(size_type count)
+    {
+        if (count > max_size())
+        {
+            __detail::LibraryAbort("vector: the size exceeds max_size()");
+        }
+        auto [storage, allocated] = Traits::allocate_at_least(m_allocator, count);
+        m_begin = storage;
+        m_end = storage;
+        m_capacity_end = storage + allocated;
+    }
+
+    constexpr void Deallocate() noexcept
+    {
+        if (m_begin != nullptr)
+        {
+            DestroyFrom(m_begin);
+            Traits::deallocate(m_allocator, m_begin, capacity());
+            m_begin = nullptr;
+            m_end = nullptr;
+            m_capacity_end = nullptr;
+        }
+    }
+
+    constexpr void Steal(vector& other) noexcept
+    {
+        m_begin = _FSTD::exchange(other.m_begin, nullptr);
+        m_end = _FSTD::exchange(other.m_end, nullptr);
+        m_capacity_end = _FSTD::exchange(other.m_capacity_end, nullptr);
+    }
+
+    constexpr void DestroyFrom(T* new_end) noexcept
+    {
+        while (m_end != new_end)
+        {
+            Traits::destroy(m_allocator, --m_end);
+        }
+    }
+
+    constexpr void ConstructAtEnd(size_type count)
+    {
+        for (; count != 0; --count, ++m_end)
+        {
+            Traits::construct(m_allocator, m_end);
+        }
+    }
+
+    constexpr void ConstructAtEnd(size_type count, const T& value)
+    {
+        for (; count != 0; --count, ++m_end)
+        {
+            Traits::construct(m_allocator, m_end, value);
+        }
+    }
+
+    template <class I, class S> constexpr T* ConstructCopies(T* out, I first, S last)
+    {
+        if constexpr (CopiesBytesFrom<I, S>())
+        {
+            if (!__builtin_is_constant_evaluated())
+            {
+                const auto count = static_cast<size_type>(last - first);
+                if (count != 0)
+                {
+                    __builtin_memcpy(out, _FSTD::to_address(first), count * sizeof(T));
+                }
+                return out + count;
+            }
+        }
+        for (; first != last; ++first, (void)++out)
+        {
+            Traits::construct(m_allocator, out, *first);
+        }
+        return out;
+    }
+
+    template <class I, class S> constexpr void ConstructAtEnd(I first, S last)
+    {
+        m_end = ConstructCopies(m_end, first, last);
+    }
+
+    constexpr void ConstructMovedAtEnd(T* first, T* last)
+    {
+        for (; first != last; ++first, (void)++m_end)
+        {
+            Traits::construct(m_allocator, m_end, _FSTD::move(*first));
+        }
+    }
+
+    template <class I, class S> constexpr void ConstructFrom(I first, S last, size_type count)
+    {
+        if (count != 0)
+        {
+            AllocateExactly(count);
+            ConstructAtEnd(first, last);
+        }
+    }
+
+    // Moves [first, last) into the uninitialized memory at out and destroys the originals.
+    constexpr void Relocate(T* first, T* last, T* out)
+    {
+        if constexpr (CopiesBytes())
+        {
+            if (!__builtin_is_constant_evaluated())
+            {
+                if (first != last)
+                {
+                    __builtin_memcpy(out, first, static_cast<size_t>(last - first) * sizeof(T));
+                }
+                return;
+            }
+        }
+        for (T* source = first; source != last; ++source, (void)++out)
+        {
+            Traits::construct(m_allocator, out, _FSTD::move_if_noexcept(*source));
+        }
+        for (; first != last; ++first)
+        {
+            Traits::destroy(m_allocator, first);
+        }
+    }
+
+    // Moves to new storage of new_capacity with a gap of count elements at position, which
+    // construct fills before the old elements move. Returns the gap.
+    template <class Construct>
+    constexpr T* ReallocateInsert(size_type new_capacity, T* position, size_type count,
+                                  Construct construct)
+    {
+        auto [storage, allocated] = Traits::allocate_at_least(m_allocator, new_capacity);
+        const size_type old_size = size();
+        T* const gap = storage + (position - m_begin);
+        construct(gap);
+        Relocate(m_begin, position, storage);
+        Relocate(position, m_end, gap + count);
+        if (m_begin != nullptr)
+        {
+            Traits::deallocate(m_allocator, m_begin, capacity());
+        }
+        m_begin = storage;
+        m_end = storage + old_size + count;
+        m_capacity_end = storage + allocated;
+        return gap;
+    }
+
+    template <class I, class S> constexpr void CopyAssign(I first, S last, T* out)
+    {
+        if constexpr (is_same_v<I, S>)
+        {
+            _FSTD::copy(first, last, out);
+        }
+        else
+        {
+            for (; first != last; ++first, (void)++out)
+            {
+                *out = *first;
+            }
+        }
+    }
+
+    template <class I, class S> constexpr void AssignCounted(I first, S last, size_type count)
+    {
+        if (count > capacity())
+        {
+            Deallocate();
+            ConstructFrom(first, last, count);
+            return;
+        }
+        if (count > size())
+        {
+            I middle = _FSTD::next(first, static_cast<difference_type>(size()));
+            CopyAssign(first, middle, m_begin);
+            ConstructAtEnd(middle, last);
+        }
+        else
+        {
+            CopyAssign(first, last, m_begin);
+            DestroyFrom(m_begin + count);
+        }
+    }
+
+    template <class I, class S> constexpr void AssignInput(I first, S last)
+    {
+        T* out = m_begin;
+        for (; first != last && out != m_end; ++first, (void)++out)
+        {
+            *out = *first;
+        }
+        if (out != m_end)
+        {
+            DestroyFrom(out);
+            return;
+        }
+        for (; first != last; ++first)
+        {
+            emplace_back(*first);
+        }
+    }
+
+    // [first, last) is not in this vector, so no element can alias it.
+    template <class I, class S> constexpr T* InsertCounted(T* at, I first, S last, size_type count)
+    {
+        if (count == 0)
+        {
+            return at;
+        }
+        if (count > static_cast<size_type>(m_capacity_end - m_end))
+        {
+            return ReallocateInsert(GrownCapacity(size() + count), at, count,
+                                    [&](T* gap) { ConstructCopies(gap, first, last); });
+        }
+        T* const old_end = m_end;
+        const auto tail = static_cast<size_type>(old_end - at);
+        if (count <= tail)
+        {
+            ConstructMovedAtEnd(old_end - count, old_end);
+            _FSTD::move_backward(at, old_end - count, old_end);
+            CopyAssign(first, last, at);
+        }
+        else
+        {
+            I middle = _FSTD::next(first, static_cast<difference_type>(tail));
+            ConstructAtEnd(middle, last);
+            ConstructMovedAtEnd(at, old_end);
+            CopyAssign(first, middle, at);
+        }
+        return at;
+    }
+
+    // A single pass: append, then rotate into place.
+    template <class I, class S> constexpr T* InsertInput(T* at, I first, S last)
+    {
+        const auto offset = at - m_begin;
+        const auto old_size = static_cast<difference_type>(size());
+        for (; first != last; ++first)
+        {
+            emplace_back(*first);
+        }
+        _FSTD::rotate(m_begin + offset, m_begin + old_size, m_end);
+        return m_begin + offset;
+    }
+};
+
+template <__detail::ClassicInput I,
+          class Allocator = allocator<typename iterator_traits<I>::value_type>>
+vector(I, I, Allocator = Allocator()) -> vector<typename iterator_traits<I>::value_type, Allocator>;
+
+template <ranges::input_range R, class Allocator = allocator<ranges::range_value_t<R>>>
+vector(from_range_t, R&&, Allocator = Allocator()) -> vector<ranges::range_value_t<R>, Allocator>;
+
+namespace __detail
+{
+using BitWord = size_t;
+inline constexpr size_t BitsPerWord = numeric_limits<BitWord>::digits;
+
+constexpr size_t WordsFor(size_t bits) noexcept
+{
+    return (bits + BitsPerWord - 1) / BitsPerWord;
+}
+
+template <bool IsConst> class BitIterator;
+
+class BitReference
+{
+public:
+    constexpr BitReference(const BitReference&) = default;
+    constexpr ~BitReference() = default;
+
+    constexpr operator bool() const noexcept
+    {
+        return (*m_word & m_mask) != 0;
+    }
+
+    constexpr BitReference& operator=(bool value) noexcept
+    {
+        Set(value);
+        return *this;
+    }
+    constexpr BitReference& operator=(const BitReference& other) noexcept
+    {
+        Set(static_cast<bool>(other));
+        return *this;
+    }
+    // C++23's assignment through a const proxy, which indirectly_writable asks for.
+    constexpr const BitReference& operator=(bool value) const noexcept
+    {
+        Set(value);
+        return *this;
+    }
+
+    constexpr bool operator~() const noexcept
+    {
+        return !static_cast<bool>(*this);
+    }
+    constexpr void flip() const noexcept
+    {
+        *m_word ^= m_mask;
+    }
+
+    friend constexpr void swap(BitReference left, BitReference right) noexcept
+    {
+        const bool value = left;
+        left = static_cast<bool>(right);
+        right = value;
+    }
+    friend constexpr void swap(BitReference left, bool& right) noexcept
+    {
+        const bool value = left;
+        left = right;
+        right = value;
+    }
+    friend constexpr void swap(bool& left, BitReference right) noexcept
+    {
+        swap(right, left);
+    }
+
+private:
+    template <bool> friend class BitIterator;
+
+    BitWord* m_word;
+    BitWord m_mask;
+
+    constexpr BitReference(BitWord* word, BitWord mask) noexcept : m_word(word), m_mask(mask) {}
+
+    constexpr void Set(bool value) const noexcept
+    {
+        if (value)
+        {
+            *m_word |= m_mask;
+        }
+        else
+        {
+            *m_word &= ~m_mask;
+        }
+    }
+};
+
+template <bool IsConst> class BitIterator
+{
+    using Word = conditional_t<IsConst, const BitWord, BitWord>;
+
+public:
+    using iterator_category = random_access_iterator_tag;
+    using value_type = bool;
+    using difference_type = ptrdiff_t;
+    using pointer = void;
+    using reference = conditional_t<IsConst, bool, BitReference>;
+
+    constexpr BitIterator() noexcept = default;
+    constexpr BitIterator(Word* word, size_t bit) noexcept
+        : m_word(word), m_bit(static_cast<unsigned>(bit))
+    {
+    }
+    template <bool OtherConst>
+        requires(IsConst && !OtherConst)
+    constexpr BitIterator(const BitIterator<OtherConst>& other) noexcept
+        : m_word(other.m_word), m_bit(other.m_bit)
+    {
+    }
+
+    constexpr reference operator*() const noexcept
+    {
+        if constexpr (IsConst)
+        {
+            return ((*m_word >> m_bit) & 1) != 0;
+        }
+        else
+        {
+            return BitReference(m_word, BitWord(1) << m_bit);
+        }
+    }
+    constexpr reference operator[](difference_type count) const noexcept
+    {
+        return *(*this + count);
+    }
+
+    constexpr BitIterator& operator++() noexcept
+    {
+        if (++m_bit == BitsPerWord)
+        {
+            m_bit = 0;
+            ++m_word;
+        }
+        return *this;
+    }
+    constexpr BitIterator operator++(int) noexcept
+    {
+        BitIterator previous = *this;
+        ++*this;
+        return previous;
+    }
+    constexpr BitIterator& operator--() noexcept
+    {
+        if (m_bit == 0)
+        {
+            m_bit = static_cast<unsigned>(BitsPerWord - 1);
+            --m_word;
+        }
+        else
+        {
+            --m_bit;
+        }
+        return *this;
+    }
+    constexpr BitIterator operator--(int) noexcept
+    {
+        BitIterator previous = *this;
+        --*this;
+        return previous;
+    }
+
+    constexpr BitIterator& operator+=(difference_type count) noexcept
+    {
+        constexpr auto Bits = static_cast<difference_type>(BitsPerWord);
+        const difference_type position = static_cast<difference_type>(m_bit) + count;
+        const difference_type words =
+            position >= 0 ? position / Bits : -((Bits - 1 - position) / Bits);
+        m_word += words;
+        m_bit = static_cast<unsigned>(position - words * Bits);
+        return *this;
+    }
+    constexpr BitIterator& operator-=(difference_type count) noexcept
+    {
+        return *this += -count;
+    }
+    constexpr BitIterator operator+(difference_type count) const noexcept
+    {
+        BitIterator result = *this;
+        return result += count;
+    }
+    constexpr BitIterator operator-(difference_type count) const noexcept
+    {
+        BitIterator result = *this;
+        return result -= count;
+    }
+    friend constexpr BitIterator operator+(difference_type count,
+                                           const BitIterator& iterator) noexcept
+    {
+        return iterator + count;
+    }
+    friend constexpr difference_type operator-(const BitIterator& left,
+                                               const BitIterator& right) noexcept
+    {
+        return (left.m_word - right.m_word) * static_cast<difference_type>(BitsPerWord) +
+               static_cast<difference_type>(left.m_bit) - static_cast<difference_type>(right.m_bit);
+    }
+
+    friend constexpr bool operator==(const BitIterator& left, const BitIterator& right) noexcept
+    {
+        return left.m_word == right.m_word && left.m_bit == right.m_bit;
+    }
+    friend constexpr strong_ordering operator<=>(const BitIterator& left,
+                                                 const BitIterator& right) noexcept
+    {
+        if (auto order = left.m_word <=> right.m_word; order != 0)
+        {
+            return order;
+        }
+        return left.m_bit <=> right.m_bit;
+    }
+
+private:
+    template <bool> friend class BitIterator;
+
+    Word* m_word = nullptr;
+    unsigned m_bit = 0;
+};
+} // namespace __detail
+
+// One bit per element, in words of size_t; the bits past size() hold anything.
+template <class Allocator> class vector<bool, Allocator>
+{
+    using WordAllocator =
+        typename allocator_traits<Allocator>::template rebind_alloc<__detail::BitWord>;
+    using WordTraits = allocator_traits<WordAllocator>;
+    using Word = __detail::BitWord;
+    static constexpr size_t Bits = __detail::BitsPerWord;
+
+public:
+    using value_type = bool;
+    using allocator_type = Allocator;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+    using reference = __detail::BitReference;
+    using const_reference = bool;
+    using iterator = __detail::BitIterator<false>;
+    using const_iterator = __detail::BitIterator<true>;
+    using pointer = iterator;
+    using const_pointer = const_iterator;
+    using reverse_iterator = _FSTD::reverse_iterator<iterator>;
+    using const_reverse_iterator = _FSTD::reverse_iterator<const_iterator>;
+
+    static_assert(is_pointer_v<typename WordTraits::pointer>,
+                  "vector<bool> needs an allocator whose pointer is a plain pointer");
+
+    constexpr vector() noexcept(noexcept(Allocator())) : vector(Allocator()) {}
+    constexpr explicit vector(const Allocator& allocator) noexcept : m_allocator(allocator) {}
+
+    constexpr explicit vector(size_type count, const Allocator& allocator = Allocator())
+        : vector(count, false, allocator)
+    {
+    }
+
+    constexpr vector(size_type count, const bool& value, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        if (count != 0)
+        {
+            Reallocate(count);
+            m_size = count;
+            FillBits(0, count, value);
+        }
+    }
+
+    template <__detail::ClassicInput I>
+    constexpr vector(I first, I last, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        insert(end(), first, last);
+    }
+
+    template <__detail::ContainerCompatibleRange<bool> R>
+    constexpr vector(from_range_t, R&& range, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        append_range(_FSTD::forward<R>(range));
+    }
+
+    constexpr vector(const vector& other)
+        : m_allocator(WordTraits::select_on_container_copy_construction(other.m_allocator))
+    {
+        CopyFrom(other);
+    }
+
+    constexpr vector(vector&& other) noexcept : m_allocator(_FSTD::move(other.m_allocator))
+    {
+        Steal(other);
+    }
+
+    constexpr vector(const vector& other, const type_identity_t<Allocator>& allocator)
+        : m_allocator(allocator)
+    {
+        CopyFrom(other);
+    }
+
+    constexpr vector(vector&& other, const type_identity_t<Allocator>& allocator)
+        : m_allocator(allocator)
+    {
+        if (WordTraits::is_always_equal::value || m_allocator == other.m_allocator)
+        {
+            Steal(other);
+        }
+        else
+        {
+            CopyFrom(other);
+        }
+    }
+
+    constexpr vector(initializer_list<bool> values, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        insert(end(), values.begin(), values.end());
+    }
+
+    constexpr ~vector()
+    {
+        Deallocate();
+    }
+
+    constexpr vector& operator=(const vector& other)
+    {
+        if (this == &other)
+        {
+            return *this;
+        }
+        if constexpr (WordTraits::propagate_on_container_copy_assignment::value)
+        {
+            if (!WordTraits::is_always_equal::value && m_allocator != other.m_allocator)
+            {
+                Deallocate();
+            }
+            m_allocator = other.m_allocator;
+        }
+        m_size = 0;
+        CopyFrom(other);
+        return *this;
+    }
+
+    constexpr vector&
+    operator=(vector&& other) noexcept(WordTraits::propagate_on_container_move_assignment::value ||
+                                       WordTraits::is_always_equal::value)
+    {
+        if (this == &other)
+        {
+            return *this;
+        }
+        if constexpr (WordTraits::propagate_on_container_move_assignment::value)
+        {
+            Deallocate();
+            m_allocator = _FSTD::move(other.m_allocator);
+            Steal(other);
+        }
+        else
+        {
+            if (WordTraits::is_always_equal::value || m_allocator == other.m_allocator)
+            {
+                Deallocate();
+                Steal(other);
+            }
+            else
+            {
+                m_size = 0;
+                CopyFrom(other);
+            }
+        }
+        return *this;
+    }
+
+    constexpr vector& operator=(initializer_list<bool> values)
+    {
+        assign(values.begin(), values.end());
+        return *this;
+    }
+
+    template <__detail::ClassicInput I> constexpr void assign(I first, I last)
+    {
+        clear();
+        insert(end(), first, last);
+    }
+
+    template <__detail::ContainerCompatibleRange<bool> R> constexpr void assign_range(R&& range)
+    {
+        clear();
+        append_range(_FSTD::forward<R>(range));
+    }
+
+    constexpr void assign(size_type count, const bool& value)
+    {
+        clear();
+        insert(end(), count, value);
+    }
+
+    constexpr void assign(initializer_list<bool> values)
+    {
+        assign(values.begin(), values.end());
+    }
+
+    constexpr allocator_type get_allocator() const noexcept
+    {
+        return allocator_type(m_allocator);
+    }
+
+    constexpr iterator begin() noexcept
+    {
+        return iterator(m_words, 0);
+    }
+    constexpr const_iterator begin() const noexcept
+    {
+        return const_iterator(m_words, 0);
+    }
+    constexpr iterator end() noexcept
+    {
+        return begin() + static_cast<difference_type>(m_size);
+    }
+    constexpr const_iterator end() const noexcept
+    {
+        return begin() + static_cast<difference_type>(m_size);
+    }
+    constexpr reverse_iterator rbegin() noexcept
+    {
+        return reverse_iterator(end());
+    }
+    constexpr const_reverse_iterator rbegin() const noexcept
+    {
+        return const_reverse_iterator(end());
+    }
+    constexpr reverse_iterator rend() noexcept
+    {
+        return reverse_iterator(begin());
+    }
+    constexpr const_reverse_iterator rend() const noexcept
+    {
+        return const_reverse_iterator(begin());
+    }
+    constexpr const_iterator cbegin() const noexcept
+    {
+        return begin();
+    }
+    constexpr const_iterator cend() const noexcept
+    {
+        return end();
+    }
+    constexpr const_reverse_iterator crbegin() const noexcept
+    {
+        return rbegin();
+    }
+    constexpr const_reverse_iterator crend() const noexcept
+    {
+        return rend();
+    }
+
+    [[nodiscard]] constexpr bool empty() const noexcept
+    {
+        return m_size == 0;
+    }
+    constexpr size_type size() const noexcept
+    {
+        return m_size;
+    }
+    constexpr size_type max_size() const noexcept
+    {
+        const size_type words = WordTraits::max_size(m_allocator);
+        const auto limit = static_cast<size_type>(numeric_limits<difference_type>::max());
+        return words > limit / Bits ? limit : words * Bits;
+    }
+    constexpr size_type capacity() const noexcept
+    {
+        return m_capacity_words * Bits;
+    }
+
+    constexpr void resize(size_type count, bool value = false)
+    {
+        if (count > m_size)
+        {
+            insert(end(), count - m_size, value);
+        }
+        else
+        {
+            m_size = count;
+        }
+    }
+
+    constexpr void reserve(size_type count)
+    {
+        if (count > max_size())
+        {
+            __detail::LibraryAbort("vector<bool>::reserve: the size exceeds max_size()");
+        }
+        if (count > capacity())
+        {
+            Reallocate(count);
+        }
+    }
+
+    constexpr void shrink_to_fit()
+    {
+        if (__detail::WordsFor(m_size) == m_capacity_words)
+        {
+            return;
+        }
+        if (m_size == 0)
+        {
+            Deallocate();
+        }
+        else
+        {
+            Reallocate(m_size);
+        }
+    }
+
+    constexpr reference operator[](size_type index)
+    {
+        return begin()[static_cast<difference_type>(index)];
+    }
+    constexpr const_reference operator[](size_type index) const
+    {
+        return begin()[static_cast<difference_type>(index)];
+    }
+    constexpr reference at(size_type index)
+    {
+        CheckIndex(index);
+        return (*this)[index];
+    }
+    constexpr const_reference at(size_type index) const
+    {
+        CheckIndex(index);
+        return (*this)[index];
+    }
+    constexpr reference front()
+    {
+        return *begin();
+    }
+    constexpr const_reference front() const
+    {
+        return *begin();
+    }
+    constexpr reference back()
+    {
+        return *(end() - 1);
+    }
+    constexpr const_reference back() const
+    {
+        return *(end() - 1);
+    }
+
+    template <class... Args> constexpr reference emplace_back(Args&&... args)
+    {
+        push_back(bool(_FSTD::forward<Args>(args)...));
+        return back();
+    }
+
+    constexpr void push_back(const bool& value)
+    {
+        if (m_size == capacity())
+        {
+            Reallocate(GrownCapacity(m_size + 1));
+        }
+        ++m_size;
+        back() = value;
+    }
+
+    template <__detail::ContainerCompatibleRange<bool> R> constexpr void append_range(R&& range)
+    {
+        insert_range(end(), _FSTD::forward<R>(range));
+    }
+
+    constexpr void pop_back()
+    {
+        --m_size;
+    }
+
+    template <class... Args> constexpr iterator emplace(const_iterator position, Args&&... args)
+    {
+        return insert(position, bool(_FSTD::forward<Args>(args)...));
+    }
+
+    constexpr iterator insert(const_iterator position, const bool& value)
+    {
+        return insert(position, size_type(1), value);
+    }
+
+    constexpr iterator insert(const_iterator position, size_type count, const bool& value)
+    {
+        const size_type at = Offset(position);
+        OpenGap(at, count);
+        FillBits(at, at + count, value);
+        return begin() + static_cast<difference_type>(at);
+    }
+
+    template <__detail::ClassicInput I>
+    constexpr iterator insert(const_iterator position, I first, I last)
+    {
+        if constexpr (__detail::ClassicForward<I>)
+        {
+            return InsertCounted(Offset(position), first, last,
+                                 static_cast<size_type>(_FSTD::distance(first, last)));
+        }
+        else
+        {
+            return InsertInput(Offset(position), first, last);
+        }
+    }
+
+    template <__detail::ContainerCompatibleRange<bool> R>
+    constexpr iterator insert_range(const_iterator position, R&& range)
+    {
+        if constexpr (ranges::forward_range<R> || ranges::sized_range<R>)
+        {
+            return InsertCounted(Offset(position), ranges::begin(range), ranges::end(range),
+                                 __detail::RangeLength(range));
+        }
+        else
+        {
+            return InsertInput(Offset(position), ranges::begin(range), ranges::end(range));
+        }
+    }
+
+    constexpr iterator insert(const_iterator position, initializer_list<bool> values)
+    {
+        return InsertCounted(Offset(position), values.begin(), values.end(), values.size());
+    }
+
+    constexpr iterator erase(const_iterator position)
+    {
+        return erase(position, position + 1);
+    }
+
+    constexpr iterator erase(const_iterator first, const_iterator last)
+    {
+        const size_type from = Offset(first);
+        const size_type to = Offset(last);
+        _FSTD::copy(begin() + static_cast<difference_type>(to), end(),
+                    begin() + static_cast<difference_type>(from));
+        m_size -= to - from;
+        return begin() + static_cast<difference_type>(from);
+    }
+
+    constexpr void swap(vector& other) noexcept(WordTraits::propagate_on_container_swap::value ||
+                                                WordTraits::is_always_equal::value)
+    {
+        _FSTD::swap(m_words, other.m_words);
+        _FSTD::swap(m_size, other.m_size);
+        _FSTD::swap(m_capacity_words, other.m_capacity_words);
+        if constexpr (WordTraits::propagate_on_container_swap::value)
+        {
+            using _FSTD::swap;
+            swap(m_allocator, other.m_allocator);
+        }
+    }
+
+    static constexpr void swap(reference left, reference right) noexcept
+    {
+        const bool value = left;
+        left = static_cast<bool>(right);
+        right = value;
+    }
+
+    constexpr void flip() noexcept
+    {
+        for (size_type index = 0; index != __detail::WordsFor(m_size); ++index)
+        {
+            m_words[index] = ~m_words[index];
+        }
+    }
+
+    constexpr void clear() noexcept
+    {
+        m_size = 0;
+    }
+
+private:
+    friend struct hash<vector>;
+
+    Word* m_words = nullptr;
+    size_type m_size = 0;
+    size_type m_capacity_words = 0;
+    [[no_unique_address]] WordAllocator m_allocator;
+
+    constexpr size_type Offset(const_iterator position) const noexcept
+    {
+        return static_cast<size_type>(position - cbegin());
+    }
+
+    constexpr void CheckIndex(size_type index) const
+    {
+        if (index >= m_size)
+        {
+            __detail::LibraryAbort("vector<bool>::at: the index is out of range");
+        }
+    }
+
+    constexpr size_type GrownCapacity(size_type needed) const
+    {
+        const size_type maximum = max_size();
+        if (needed > maximum)
+        {
+            __detail::LibraryAbort("vector<bool>: the size exceeds max_size()");
+        }
+        const size_type current = capacity();
+        if (current >= maximum / 2)
+        {
+            return maximum;
+        }
+        return _FSTD::max(2 * current, needed);
+    }
+
+    // Every word is constructed when allocated, so constant evaluation may read and mask it.
+    constexpr void Reallocate(size_type bits)
+    {
+        const size_type words = __detail::WordsFor(bits);
+        auto [storage, allocated] = WordTraits::allocate_at_least(m_allocator, words);
+        const size_type kept = __detail::WordsFor(m_size);
+        for (size_type index = 0; index != allocated; ++index)
+        {
+            WordTraits::construct(m_allocator, storage + index, index < kept ? m_words[index] : 0);
+        }
+        if (m_words != nullptr)
+        {
+            WordTraits::deallocate(m_allocator, m_words, m_capacity_words);
+        }
+        m_words = storage;
+        m_capacity_words = allocated;
+    }
+
+    constexpr void Deallocate() noexcept
+    {
+        if (m_words != nullptr)
+        {
+            WordTraits::deallocate(m_allocator, m_words, m_capacity_words);
+            m_words = nullptr;
+            m_size = 0;
+            m_capacity_words = 0;
+        }
+    }
+
+    constexpr void Steal(vector& other) noexcept
+    {
+        m_words = _FSTD::exchange(other.m_words, nullptr);
+        m_size = _FSTD::exchange(other.m_size, 0);
+        m_capacity_words = _FSTD::exchange(other.m_capacity_words, 0);
+    }
+
+    // Into a vector of size 0.
+    constexpr void CopyFrom(const vector& other)
+    {
+        if (other.m_size > capacity())
+        {
+            Deallocate();
+            Reallocate(other.m_size);
+        }
+        for (size_type index = 0; index != __detail::WordsFor(other.m_size); ++index)
+        {
+            m_words[index] = other.m_words[index];
+        }
+        m_size = other.m_size;
+    }
+
+    constexpr void FillBits(size_type first, size_type last, bool value)
+    {
+        const Word all = value ? ~Word(0) : Word(0);
+        while (first != last && first % Bits != 0)
+        {
+            (*this)[first++] = value;
+        }
+        for (; last - first >= Bits; first += Bits)
+        {
+            m_words[first / Bits] = all;
+        }
+        for (; first != last; ++first)
+        {
+            (*this)[first] = value;
+        }
+    }
+
+    // Grows by count and moves the bits from at on up by count.
+    constexpr void OpenGap(size_type at, size_type count)
+    {
+        if (count > capacity() - m_size)
+        {
+            Reallocate(GrownCapacity(m_size + count));
+        }
+        const size_type old_size = m_size;
+        m_size += count;
+        _FSTD::copy_backward(begin() + static_cast<difference_type>(at),
+                             begin() + static_cast<difference_type>(old_size), end());
+    }
+
+    template <class I, class S>
+    constexpr iterator InsertCounted(size_type at, I first, S last, size_type count)
+    {
+        OpenGap(at, count);
+        iterator out = begin() + static_cast<difference_type>(at);
+        for (; first != last; ++first, (void)++out)
+        {
+            *out = static_cast<bool>(*first);
+        }
+        return begin() + static_cast<difference_type>(at);
+    }
+
+    template <class I, class S> constexpr iterator InsertInput(size_type at, I first, S last)
+    {
+        const size_type old_size = m_size;
+        for (; first != last; ++first)
+        {
+            push_back(static_cast<bool>(*first));
+        }
+        _FSTD::rotate(begin() + static_cast<difference_type>(at),
+                      begin() + static_cast<difference_type>(old_size), end());
+        return begin() + static_cast<difference_type>(at);
+    }
+};
+
+template <class Allocator> struct hash<vector<bool, Allocator>>
+{
+    constexpr size_t operator()(const vector<bool, Allocator>& bits) const noexcept
+    {
+        constexpr size_t Bits = __detail::BitsPerWord;
+        size_t result = bits.m_size;
+        for (size_t index = 0; index != bits.m_size / Bits; ++index)
+        {
+            result = __detail::HashCombine(result, bits.m_words[index]);
+        }
+        if (bits.m_size % Bits != 0)
+        {
+            const auto mask = (__detail::BitWord(1) << (bits.m_size % Bits)) - 1;
+            result = __detail::HashCombine(result, bits.m_words[bits.m_size / Bits] & mask);
+        }
+        return result;
+    }
+};
+
+template <class T, class Allocator>
+constexpr bool operator==(const vector<T, Allocator>& left, const vector<T, Allocator>& right)
+{
+    return left.size() == right.size() && _FSTD::equal(left.begin(), left.end(), right.begin());
+}
+
+template <class T, class Allocator>
+constexpr __detail::SynthThreeWayResult<T> operator<=>(const vector<T, Allocator>& left,
+                                                       const vector<T, Allocator>& right)
+{
+    return _FSTD::lexicographical_compare_three_way(left.begin(), left.end(), right.begin(),
+                                                    right.end(), __detail::synth_three_way);
+}
+
+template <class T, class Allocator>
+constexpr void swap(vector<T, Allocator>& left,
+                    vector<T, Allocator>& right) noexcept(noexcept(left.swap(right)))
+{
+    left.swap(right);
+}
+
+template <class T, class Allocator, class U = T>
+constexpr typename vector<T, Allocator>::size_type erase(vector<T, Allocator>& container,
+                                                         const U& value)
+{
+    const auto end = container.end();
+    const auto kept = _FSTD::remove(container.begin(), end, value);
+    const auto removed = static_cast<typename vector<T, Allocator>::size_type>(end - kept);
+    container.erase(kept, end);
+    return removed;
+}
+
+template <class T, class Allocator, class Predicate>
+constexpr typename vector<T, Allocator>::size_type erase_if(vector<T, Allocator>& container,
+                                                            Predicate predicate)
+{
+    const auto end = container.end();
+    const auto kept = _FSTD::remove_if(container.begin(), end, predicate);
+    const auto removed = static_cast<typename vector<T, Allocator>::size_type>(end - kept);
+    container.erase(kept, end);
+    return removed;
+}
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

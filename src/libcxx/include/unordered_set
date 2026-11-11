@@ -1,0 +1,287 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_UNORDERED_SET
+#define FEATHEROS_LIBCXX_UNORDERED_SET
+
+#include "__featheros_config"
+#include "__hash_base"
+#include "__hash_table"
+#include "__iterator_base"
+#include "__node_handle"
+#include "algorithm"
+#include "functional"
+#include "initializer_list"
+#include "iterator"
+#include "memory"
+#include "type_traits"
+#include "utility"
+
+// Left out: pmr::unordered_set and pmr::unordered_multiset, and C++26's heterogeneous insert.
+// iterator and const_iterator are the same type, as are the local iterators. A
+// default-constructed container has no buckets (bucket_count() is 0) until its first insert.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class Key, class Hash = hash<Key>, class Pred = equal_to<Key>,
+          class Allocator = allocator<Key>>
+class unordered_set;
+template <class Key, class Hash = hash<Key>, class Pred = equal_to<Key>,
+          class Allocator = allocator<Key>>
+class unordered_multiset;
+
+#define FEATHEROS_UNORDERED_SET_TYPES(C)                                                           \
+    template <class, class, class, class> friend class unordered_set;                              \
+    template <class, class, class, class> friend class unordered_multiset;                         \
+    using Table = __detail::HashTable<Key, __detail::SetKey<Key>, Hash, Pred, Allocator>;          \
+                                                                                                   \
+public:                                                                                            \
+    using key_type = Key;                                                                          \
+    using value_type = Key;                                                                        \
+    using hasher = Hash;                                                                           \
+    using key_equal = Pred;                                                                        \
+    using allocator_type = Allocator;                                                              \
+    using pointer = typename allocator_traits<Allocator>::pointer;                                 \
+    using const_pointer = typename allocator_traits<Allocator>::const_pointer;                     \
+    using reference = value_type&;                                                                 \
+    using const_reference = const value_type&;                                                     \
+    using size_type = size_t;                                                                      \
+    using difference_type = ptrdiff_t;                                                             \
+    using iterator = typename Table::const_iterator;                                               \
+    using const_iterator = typename Table::const_iterator;                                         \
+    using local_iterator = typename Table::const_local_iterator;                                   \
+    using const_local_iterator = typename Table::const_local_iterator;                             \
+    using node_type = __detail::NodeHandle<typename Table::Node, Allocator, false>;                \
+                                                                                                   \
+    static_assert(is_same_v<typename Allocator::value_type, value_type>,                           \
+                  #C "'s allocator must allocate its value_type");                                 \
+                                                                                                   \
+    FEATHEROS_HASH_CONTAINER_COMMON(C)
+
+template <class Key, class Hash, class Pred, class Allocator> class unordered_set
+{
+    FEATHEROS_UNORDERED_SET_TYPES(unordered_set)
+
+    using insert_return_type = __detail::InsertReturnType<iterator, node_type>;
+
+    template <class... Args> pair<iterator, bool> emplace(Args&&... args)
+    {
+        if constexpr (sizeof...(Args) == 1 && (is_same_v<remove_cvref_t<Args>, Key> && ...))
+        {
+            return m_table.EmplaceUniqueKey(args..., _FSTD::forward<Args>(args)...);
+        }
+        else
+        {
+            return m_table.EmplaceUnique(_FSTD::forward<Args>(args)...);
+        }
+    }
+    template <class... Args> iterator emplace_hint(const_iterator, Args&&... args)
+    {
+        return emplace(_FSTD::forward<Args>(args)...).first;
+    }
+
+    pair<iterator, bool> insert(const value_type& value)
+    {
+        return m_table.EmplaceUniqueKey(value, value);
+    }
+    pair<iterator, bool> insert(value_type&& value)
+    {
+        return m_table.EmplaceUniqueKey(value, _FSTD::move(value));
+    }
+    iterator insert(const_iterator, const value_type& value)
+    {
+        return insert(value).first;
+    }
+    iterator insert(const_iterator, value_type&& value)
+    {
+        return insert(_FSTD::move(value)).first;
+    }
+
+    insert_return_type insert(node_type&& node)
+    {
+        if (node.empty())
+        {
+            return {end(), false, node_type()};
+        }
+        const auto [position, inserted] = m_table.InsertNodeUnique(node.Peek());
+        if (inserted)
+        {
+            node.Take();
+            return {position, true, node_type()};
+        }
+        return {position, false, _FSTD::move(node)};
+    }
+    iterator insert(const_iterator, node_type&& node)
+    {
+        return insert(_FSTD::move(node)).position;
+    }
+
+    template <class H, class P> void merge(unordered_set<Key, H, P, Allocator>& source)
+    {
+        m_table.MergeUnique(source.m_table);
+    }
+    template <class H, class P> void merge(unordered_set<Key, H, P, Allocator>&& source)
+    {
+        m_table.MergeUnique(source.m_table);
+    }
+    template <class H, class P> void merge(unordered_multiset<Key, H, P, Allocator>& source)
+    {
+        m_table.MergeUnique(source.m_table);
+    }
+    template <class H, class P> void merge(unordered_multiset<Key, H, P, Allocator>&& source)
+    {
+        m_table.MergeUnique(source.m_table);
+    }
+};
+
+template <class Key, class Hash, class Pred, class Allocator> class unordered_multiset
+{
+    FEATHEROS_UNORDERED_SET_TYPES(unordered_multiset)
+
+    template <class... Args> iterator emplace(Args&&... args)
+    {
+        return m_table.EmplaceMulti(const_iterator(), _FSTD::forward<Args>(args)...);
+    }
+    template <class... Args> iterator emplace_hint(const_iterator hint, Args&&... args)
+    {
+        return m_table.EmplaceMulti(hint, _FSTD::forward<Args>(args)...);
+    }
+
+    iterator insert(const value_type& value)
+    {
+        return emplace(value);
+    }
+    iterator insert(value_type&& value)
+    {
+        return emplace(_FSTD::move(value));
+    }
+    iterator insert(const_iterator hint, const value_type& value)
+    {
+        return emplace_hint(hint, value);
+    }
+    iterator insert(const_iterator hint, value_type&& value)
+    {
+        return emplace_hint(hint, _FSTD::move(value));
+    }
+
+    iterator insert(node_type&& node)
+    {
+        if (node.empty())
+        {
+            return end();
+        }
+        return m_table.InsertNodeMulti(node.Take());
+    }
+    iterator insert(const_iterator hint, node_type&& node)
+    {
+        if (node.empty())
+        {
+            return end();
+        }
+        return m_table.InsertNodeMulti(node.Take(), hint);
+    }
+
+    template <class H, class P> void merge(unordered_multiset<Key, H, P, Allocator>& source)
+    {
+        m_table.MergeMulti(source.m_table);
+    }
+    template <class H, class P> void merge(unordered_multiset<Key, H, P, Allocator>&& source)
+    {
+        m_table.MergeMulti(source.m_table);
+    }
+    template <class H, class P> void merge(unordered_set<Key, H, P, Allocator>& source)
+    {
+        m_table.MergeMulti(source.m_table);
+    }
+    template <class H, class P> void merge(unordered_set<Key, H, P, Allocator>&& source)
+    {
+        m_table.MergeMulti(source.m_table);
+    }
+};
+
+#undef FEATHEROS_UNORDERED_SET_TYPES
+
+#define FEATHEROS_UNORDERED_SET_FREE_FUNCTIONS(C, Unique)                                          \
+    template <class Key, class Hash, class Pred, class Allocator>                                  \
+    bool operator==(const C<Key, Hash, Pred, Allocator>& left,                                     \
+                    const C<Key, Hash, Pred, Allocator>& right)                                    \
+    {                                                                                              \
+        return __detail::HashContainersEqual<Unique, __detail::SetKey<Key>>(left, right);          \
+    }                                                                                              \
+    template <class Key, class Hash, class Pred, class Allocator>                                  \
+    void swap(C<Key, Hash, Pred, Allocator>& left,                                                 \
+              C<Key, Hash, Pred, Allocator>& right) noexcept(noexcept(left.swap(right)))           \
+    {                                                                                              \
+        left.swap(right);                                                                          \
+    }                                                                                              \
+    template <class Key, class Hash, class Pred, class Allocator, class Predicate>                 \
+    typename C<Key, Hash, Pred, Allocator>::size_type erase_if(                                    \
+        C<Key, Hash, Pred, Allocator>& container, Predicate predicate)                             \
+    {                                                                                              \
+        const auto before = container.size();                                                      \
+        for (auto position = container.begin(); position != container.end();)                      \
+        {                                                                                          \
+            if (predicate(*position))                                                              \
+            {                                                                                      \
+                position = container.erase(position);                                              \
+            }                                                                                      \
+            else                                                                                   \
+            {                                                                                      \
+                ++position;                                                                        \
+            }                                                                                      \
+        }                                                                                          \
+        return before - container.size();                                                          \
+    }                                                                                              \
+                                                                                                   \
+    template <__detail::ClassicInput I, class Hash = hash<iter_value_t<I>>,                        \
+              class Pred = equal_to<iter_value_t<I>>,                                              \
+              class Allocator = allocator<iter_value_t<I>>>                                        \
+        requires __detail::HashGuide<Hash, Pred, Allocator>                                        \
+    C(I, I, size_t = 0, Hash = Hash(), Pred = Pred(), Allocator = Allocator())                     \
+        -> C<iter_value_t<I>, Hash, Pred, Allocator>;                                              \
+    template <ranges::input_range R, class Hash = hash<ranges::range_value_t<R>>,                  \
+              class Pred = equal_to<ranges::range_value_t<R>>,                                     \
+              class Allocator = allocator<ranges::range_value_t<R>>>                               \
+        requires __detail::HashGuide<Hash, Pred, Allocator>                                        \
+    C(from_range_t, R&&, size_t = 0, Hash = Hash(), Pred = Pred(), Allocator = Allocator())        \
+        -> C<ranges::range_value_t<R>, Hash, Pred, Allocator>;                                     \
+    template <class Key, class Hash = hash<Key>, class Pred = equal_to<Key>,                       \
+              class Allocator = allocator<Key>>                                                    \
+        requires __detail::HashGuide<Hash, Pred, Allocator>                                        \
+    C(initializer_list<Key>, size_t = 0, Hash = Hash(), Pred = Pred(), Allocator = Allocator())    \
+        -> C<Key, Hash, Pred, Allocator>;                                                          \
+    template <__detail::ClassicInput I, class Allocator>                                           \
+        requires __detail::AllocatorLike<Allocator>                                                \
+    C(I, I, size_t, Allocator)                                                                     \
+        -> C<iter_value_t<I>, hash<iter_value_t<I>>, equal_to<iter_value_t<I>>, Allocator>;        \
+    template <__detail::ClassicInput I, class Hash, class Allocator>                               \
+        requires __detail::HashGuide<Hash, equal_to<iter_value_t<I>>, Allocator>                   \
+    C(I, I, size_t, Hash, Allocator)                                                               \
+        -> C<iter_value_t<I>, Hash, equal_to<iter_value_t<I>>, Allocator>;                         \
+    template <ranges::input_range R, class Allocator>                                              \
+        requires __detail::AllocatorLike<Allocator>                                                \
+    C(from_range_t, R&&, size_t, Allocator)                                                        \
+        -> C<ranges::range_value_t<R>, hash<ranges::range_value_t<R>>,                             \
+             equal_to<ranges::range_value_t<R>>, Allocator>;                                       \
+    template <ranges::input_range R, class Allocator>                                              \
+        requires __detail::AllocatorLike<Allocator>                                                \
+    C(from_range_t, R&&, Allocator) -> C<ranges::range_value_t<R>, hash<ranges::range_value_t<R>>, \
+                                         equal_to<ranges::range_value_t<R>>, Allocator>;           \
+    template <ranges::input_range R, class Hash, class Allocator>                                  \
+        requires __detail::HashGuide<Hash, equal_to<ranges::range_value_t<R>>, Allocator>          \
+    C(from_range_t, R&&, size_t, Hash, Allocator)                                                  \
+        -> C<ranges::range_value_t<R>, Hash, equal_to<ranges::range_value_t<R>>, Allocator>;       \
+    template <class Key, class Allocator>                                                          \
+        requires __detail::AllocatorLike<Allocator>                                                \
+    C(initializer_list<Key>, size_t, Allocator) -> C<Key, hash<Key>, equal_to<Key>, Allocator>;    \
+    template <class Key, class Hash, class Allocator>                                              \
+        requires __detail::HashGuide<Hash, equal_to<Key>, Allocator>                               \
+    C(initializer_list<Key>, size_t, Hash, Allocator) -> C<Key, Hash, equal_to<Key>, Allocator>;
+
+FEATHEROS_UNORDERED_SET_FREE_FUNCTIONS(unordered_set, true)
+FEATHEROS_UNORDERED_SET_FREE_FUNCTIONS(unordered_multiset, false)
+
+#undef FEATHEROS_UNORDERED_SET_FREE_FUNCTIONS
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

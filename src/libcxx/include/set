@@ -1,0 +1,553 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_SET
+#define FEATHEROS_LIBCXX_SET
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "__node_handle"
+#include "__tree"
+#include "algorithm"
+#include "compare"
+#include "functional"
+#include "initializer_list"
+#include "iterator"
+#include "memory"
+#include "type_traits"
+#include "utility"
+
+// Left out: pmr::set and pmr::multiset, and C++26's heterogeneous insert. iterator and
+// const_iterator are the same type, so the erase overloads taking either are one.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+template <class Key, class Compare = less<Key>, class Allocator = allocator<Key>> class set;
+template <class Key, class Compare = less<Key>, class Allocator = allocator<Key>> class multiset;
+
+// The members both sets share; Unique tells set from multiset.
+#define FEATHEROS_SET_COMMON(Set)                                                                  \
+    template <class, class, class> friend class set;                                               \
+    template <class, class, class> friend class multiset;                                          \
+    using Tree = __detail::Tree<Key, __detail::SetKey<Key>, Compare, Allocator>;                   \
+                                                                                                   \
+public:                                                                                            \
+    using key_type = Key;                                                                          \
+    using value_type = Key;                                                                        \
+    using key_compare = Compare;                                                                   \
+    using value_compare = Compare;                                                                 \
+    using allocator_type = Allocator;                                                              \
+    using pointer = typename allocator_traits<Allocator>::pointer;                                 \
+    using const_pointer = typename allocator_traits<Allocator>::const_pointer;                     \
+    using reference = value_type&;                                                                 \
+    using const_reference = const value_type&;                                                     \
+    using size_type = size_t;                                                                      \
+    using difference_type = ptrdiff_t;                                                             \
+    using iterator = typename Tree::const_iterator;                                                \
+    using const_iterator = typename Tree::const_iterator;                                          \
+    using reverse_iterator = _FSTD::reverse_iterator<iterator>;                                    \
+    using const_reverse_iterator = _FSTD::reverse_iterator<const_iterator>;                        \
+    using node_type = __detail::NodeHandle<typename Tree::Node, Allocator, false>;                 \
+                                                                                                   \
+    static_assert(is_same_v<typename Allocator::value_type, value_type>,                           \
+                  #Set "'s allocator must allocate its value_type");                               \
+                                                                                                   \
+    Set() : Set(Compare()) {}                                                                      \
+    explicit Set(const Compare& compare, const Allocator& allocator = Allocator())                 \
+        : m_tree(compare, allocator)                                                               \
+    {                                                                                              \
+    }                                                                                              \
+    explicit Set(const Allocator& allocator) : m_tree(Compare(), allocator) {}                     \
+    template <__detail::ClassicInput I>                                                            \
+    Set(I first, I last, const Compare& compare = Compare(),                                       \
+        const Allocator& allocator = Allocator())                                                  \
+        : m_tree(compare, allocator)                                                               \
+    {                                                                                              \
+        insert(first, last);                                                                       \
+    }                                                                                              \
+    template <__detail::ClassicInput I>                                                            \
+    Set(I first, I last, const Allocator& allocator) : Set(first, last, Compare(), allocator)      \
+    {                                                                                              \
+    }                                                                                              \
+    template <__detail::ContainerCompatibleRange<Key> R>                                           \
+    Set(from_range_t, R&& range, const Compare& compare = Compare(),                               \
+        const Allocator& allocator = Allocator())                                                  \
+        : m_tree(compare, allocator)                                                               \
+    {                                                                                              \
+        insert_range(_FSTD::forward<R>(range));                                                    \
+    }                                                                                              \
+    template <__detail::ContainerCompatibleRange<Key> R>                                           \
+    Set(from_range_t, R&& range, const Allocator& allocator)                                       \
+        : Set(from_range, _FSTD::forward<R>(range), Compare(), allocator)                          \
+    {                                                                                              \
+    }                                                                                              \
+    Set(const Set& other)                                                                          \
+        : m_tree(other.m_tree, allocator_traits<Allocator>::select_on_container_copy_construction( \
+                                   other.get_allocator()))                                         \
+    {                                                                                              \
+    }                                                                                              \
+    Set(Set&& other) noexcept : m_tree(_FSTD::move(other.m_tree)) {}                               \
+    Set(const Set& other, const type_identity_t<Allocator>& allocator)                             \
+        : m_tree(other.m_tree, allocator)                                                          \
+    {                                                                                              \
+    }                                                                                              \
+    Set(Set&& other, const type_identity_t<Allocator>& allocator)                                  \
+        : m_tree(_FSTD::move(other.m_tree), allocator)                                             \
+    {                                                                                              \
+    }                                                                                              \
+    Set(initializer_list<value_type> values, const Compare& compare = Compare(),                   \
+        const Allocator& allocator = Allocator())                                                  \
+        : m_tree(compare, allocator)                                                               \
+    {                                                                                              \
+        insert(values.begin(), values.end());                                                      \
+    }                                                                                              \
+    Set(initializer_list<value_type> values, const Allocator& allocator)                           \
+        : Set(values, Compare(), allocator)                                                        \
+    {                                                                                              \
+    }                                                                                              \
+    ~Set() = default;                                                                              \
+                                                                                                   \
+    Set& operator=(const Set& other)                                                               \
+    {                                                                                              \
+        m_tree.CopyAssign(other.m_tree);                                                           \
+        return *this;                                                                              \
+    }                                                                                              \
+    Set& operator=(Set&& other) noexcept(                                                          \
+        noexcept(declval<Tree&>().MoveAssign(declval<Tree&>())) &&                                 \
+        is_nothrow_move_assignable_v<Compare>)                                                     \
+    {                                                                                              \
+        m_tree.MoveAssign(other.m_tree);                                                           \
+        return *this;                                                                              \
+    }                                                                                              \
+    Set& operator=(initializer_list<value_type> values)                                            \
+    {                                                                                              \
+        clear();                                                                                   \
+        insert(values.begin(), values.end());                                                      \
+        return *this;                                                                              \
+    }                                                                                              \
+                                                                                                   \
+    allocator_type get_allocator() const noexcept                                                  \
+    {                                                                                              \
+        return m_tree.GetAllocator();                                                              \
+    }                                                                                              \
+    iterator begin() const noexcept                                                                \
+    {                                                                                              \
+        return m_tree.Begin();                                                                     \
+    }                                                                                              \
+    iterator end() const noexcept                                                                  \
+    {                                                                                              \
+        return m_tree.End();                                                                       \
+    }                                                                                              \
+    reverse_iterator rbegin() const noexcept                                                       \
+    {                                                                                              \
+        return reverse_iterator(end());                                                            \
+    }                                                                                              \
+    reverse_iterator rend() const noexcept                                                         \
+    {                                                                                              \
+        return reverse_iterator(begin());                                                          \
+    }                                                                                              \
+    const_iterator cbegin() const noexcept                                                         \
+    {                                                                                              \
+        return begin();                                                                            \
+    }                                                                                              \
+    const_iterator cend() const noexcept                                                           \
+    {                                                                                              \
+        return end();                                                                              \
+    }                                                                                              \
+    const_reverse_iterator crbegin() const noexcept                                                \
+    {                                                                                              \
+        return rbegin();                                                                           \
+    }                                                                                              \
+    const_reverse_iterator crend() const noexcept                                                  \
+    {                                                                                              \
+        return rend();                                                                             \
+    }                                                                                              \
+                                                                                                   \
+    [[nodiscard]] bool empty() const noexcept                                                      \
+    {                                                                                              \
+        return m_tree.Size() == 0;                                                                 \
+    }                                                                                              \
+    size_type size() const noexcept                                                                \
+    {                                                                                              \
+        return m_tree.Size();                                                                      \
+    }                                                                                              \
+    size_type max_size() const noexcept                                                            \
+    {                                                                                              \
+        return m_tree.MaxSize();                                                                   \
+    }                                                                                              \
+                                                                                                   \
+    template <__detail::ClassicInput I> void insert(I first, I last)                               \
+    {                                                                                              \
+        for (; first != last; ++first)                                                             \
+        {                                                                                          \
+            emplace_hint(end(), *first);                                                           \
+        }                                                                                          \
+    }                                                                                              \
+    void insert(initializer_list<value_type> values)                                               \
+    {                                                                                              \
+        insert(values.begin(), values.end());                                                      \
+    }                                                                                              \
+    template <__detail::ContainerCompatibleRange<value_type> R> void insert_range(R&& range)       \
+    {                                                                                              \
+        for (auto&& value : range)                                                                 \
+        {                                                                                          \
+            emplace_hint(end(), _FSTD::forward<decltype(value)>(value));                           \
+        }                                                                                          \
+    }                                                                                              \
+                                                                                                   \
+    iterator erase(const_iterator position)                                                        \
+    {                                                                                              \
+        return m_tree.Erase(position);                                                             \
+    }                                                                                              \
+    size_type erase(const key_type& key)                                                           \
+    {                                                                                              \
+        return m_tree.EraseKey(key);                                                               \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentCompare<Compare> && (!is_convertible_v<K&&, iterator>)       \
+    size_type erase(K&& key)                                                                       \
+    {                                                                                              \
+        return m_tree.EraseKey(key);                                                               \
+    }                                                                                              \
+    iterator erase(const_iterator first, const_iterator last)                                      \
+    {                                                                                              \
+        return m_tree.Erase(first, last);                                                          \
+    }                                                                                              \
+                                                                                                   \
+    node_type extract(const_iterator position)                                                     \
+    {                                                                                              \
+        return node_type(m_tree.Extract(position), get_allocator());                               \
+    }                                                                                              \
+    node_type extract(const key_type& key)                                                         \
+    {                                                                                              \
+        const iterator position = find(key);                                                       \
+        return position == end() ? node_type() : extract(position);                                \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentCompare<Compare> && (!is_convertible_v<K&&, iterator>)       \
+    node_type extract(K&& key)                                                                     \
+    {                                                                                              \
+        const iterator position = find(key);                                                       \
+        return position == end() ? node_type() : extract(position);                                \
+    }                                                                                              \
+                                                                                                   \
+    void swap(Set& other) noexcept(noexcept(declval<Tree&>().Swap(declval<Tree&>())))              \
+    {                                                                                              \
+        m_tree.Swap(other.m_tree);                                                                 \
+    }                                                                                              \
+    void clear() noexcept                                                                          \
+    {                                                                                              \
+        m_tree.Clear();                                                                            \
+    }                                                                                              \
+                                                                                                   \
+    key_compare key_comp() const                                                                   \
+    {                                                                                              \
+        return m_tree.KeyCompare();                                                                \
+    }                                                                                              \
+    value_compare value_comp() const                                                               \
+    {                                                                                              \
+        return m_tree.KeyCompare();                                                                \
+    }                                                                                              \
+                                                                                                   \
+    iterator find(const key_type& key) const                                                       \
+    {                                                                                              \
+        return m_tree.Find(key);                                                                   \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentCompare<Compare>                                             \
+    iterator find(const K& key) const                                                              \
+    {                                                                                              \
+        return m_tree.Find(key);                                                                   \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentCompare<Compare>                                             \
+    size_type count(const K& key) const                                                            \
+    {                                                                                              \
+        return m_tree.CountMulti(key);                                                             \
+    }                                                                                              \
+    bool contains(const key_type& key) const                                                       \
+    {                                                                                              \
+        return find(key) != end();                                                                 \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentCompare<Compare>                                             \
+    bool contains(const K& key) const                                                              \
+    {                                                                                              \
+        return find(key) != end();                                                                 \
+    }                                                                                              \
+    iterator lower_bound(const key_type& key) const                                                \
+    {                                                                                              \
+        return m_tree.LowerBound(key);                                                             \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentCompare<Compare>                                             \
+    iterator lower_bound(const K& key) const                                                       \
+    {                                                                                              \
+        return m_tree.LowerBound(key);                                                             \
+    }                                                                                              \
+    iterator upper_bound(const key_type& key) const                                                \
+    {                                                                                              \
+        return m_tree.UpperBound(key);                                                             \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentCompare<Compare>                                             \
+    iterator upper_bound(const K& key) const                                                       \
+    {                                                                                              \
+        return m_tree.UpperBound(key);                                                             \
+    }                                                                                              \
+    pair<iterator, iterator> equal_range(const key_type& key) const                                \
+    {                                                                                              \
+        return m_tree.EqualRange(key);                                                             \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentCompare<Compare>                                             \
+    pair<iterator, iterator> equal_range(const K& key) const                                       \
+    {                                                                                              \
+        return m_tree.EqualRange(key);                                                             \
+    }                                                                                              \
+                                                                                                   \
+private:                                                                                           \
+    Tree m_tree;                                                                                   \
+                                                                                                   \
+public:
+
+template <class Key, class Compare, class Allocator> class set
+{
+    FEATHEROS_SET_COMMON(set)
+
+    using insert_return_type = __detail::InsertReturnType<iterator, node_type>;
+
+    template <class... Args> pair<iterator, bool> emplace(Args&&... args)
+    {
+        if constexpr (sizeof...(Args) == 1 && (is_same_v<remove_cvref_t<Args>, Key> && ...))
+        {
+            return m_tree.EmplaceUniqueKey(args..., _FSTD::forward<Args>(args)...);
+        }
+        else
+        {
+            return m_tree.EmplaceUnique(_FSTD::forward<Args>(args)...);
+        }
+    }
+    template <class... Args> iterator emplace_hint(const_iterator hint, Args&&... args)
+    {
+        if constexpr (sizeof...(Args) == 1 && (is_same_v<remove_cvref_t<Args>, Key> && ...))
+        {
+            return m_tree.EmplaceHintUniqueKey(hint, args..., _FSTD::forward<Args>(args)...);
+        }
+        else
+        {
+            return m_tree.EmplaceHintUnique(hint, _FSTD::forward<Args>(args)...);
+        }
+    }
+
+    pair<iterator, bool> insert(const value_type& value)
+    {
+        return m_tree.EmplaceUniqueKey(value, value);
+    }
+    pair<iterator, bool> insert(value_type&& value)
+    {
+        return m_tree.EmplaceUniqueKey(value, _FSTD::move(value));
+    }
+    iterator insert(const_iterator hint, const value_type& value)
+    {
+        return m_tree.EmplaceHintUniqueKey(hint, value, value);
+    }
+    iterator insert(const_iterator hint, value_type&& value)
+    {
+        return m_tree.EmplaceHintUniqueKey(hint, value, _FSTD::move(value));
+    }
+    insert_return_type insert(node_type&& node)
+    {
+        if (node.empty())
+        {
+            return {end(), false, node_type()};
+        }
+        const auto [position, inserted] = m_tree.InsertNodeUnique(node.Peek());
+        if (inserted)
+        {
+            node.Take();
+            return {position, true, node_type()};
+        }
+        return {position, false, _FSTD::move(node)};
+    }
+    iterator insert(const_iterator hint, node_type&& node)
+    {
+        if (node.empty())
+        {
+            return end();
+        }
+        const auto [position, inserted] = m_tree.InsertNodeHintUnique(hint, node.Peek());
+        if (inserted)
+        {
+            node.Take();
+        }
+        return position;
+    }
+
+    size_type count(const key_type& key) const
+    {
+        return m_tree.CountUnique(key);
+    }
+
+    template <class C> void merge(set<Key, C, Allocator>& source)
+    {
+        m_tree.MergeUnique(source.m_tree);
+    }
+    template <class C> void merge(set<Key, C, Allocator>&& source)
+    {
+        m_tree.MergeUnique(source.m_tree);
+    }
+    template <class C> void merge(multiset<Key, C, Allocator>& source)
+    {
+        m_tree.MergeUnique(source.m_tree);
+    }
+    template <class C> void merge(multiset<Key, C, Allocator>&& source)
+    {
+        m_tree.MergeUnique(source.m_tree);
+    }
+};
+
+template <class Key, class Compare, class Allocator> class multiset
+{
+    FEATHEROS_SET_COMMON(multiset)
+
+    template <class... Args> iterator emplace(Args&&... args)
+    {
+        return m_tree.EmplaceMulti(_FSTD::forward<Args>(args)...);
+    }
+    template <class... Args> iterator emplace_hint(const_iterator hint, Args&&... args)
+    {
+        return m_tree.EmplaceHintMulti(hint, _FSTD::forward<Args>(args)...);
+    }
+
+    iterator insert(const value_type& value)
+    {
+        return emplace(value);
+    }
+    iterator insert(value_type&& value)
+    {
+        return emplace(_FSTD::move(value));
+    }
+    iterator insert(const_iterator hint, const value_type& value)
+    {
+        return emplace_hint(hint, value);
+    }
+    iterator insert(const_iterator hint, value_type&& value)
+    {
+        return emplace_hint(hint, _FSTD::move(value));
+    }
+
+    iterator insert(node_type&& node)
+    {
+        if (node.empty())
+        {
+            return end();
+        }
+        return m_tree.InsertNodeMulti(node.Take());
+    }
+    iterator insert(const_iterator hint, node_type&& node)
+    {
+        if (node.empty())
+        {
+            return end();
+        }
+        return m_tree.InsertNodeHintMulti(hint, node.Take());
+    }
+
+    size_type count(const key_type& key) const
+    {
+        return m_tree.CountMulti(key);
+    }
+
+    template <class C> void merge(multiset<Key, C, Allocator>& source)
+    {
+        m_tree.MergeMulti(source.m_tree);
+    }
+    template <class C> void merge(multiset<Key, C, Allocator>&& source)
+    {
+        m_tree.MergeMulti(source.m_tree);
+    }
+    template <class C> void merge(set<Key, C, Allocator>& source)
+    {
+        m_tree.MergeMulti(source.m_tree);
+    }
+    template <class C> void merge(set<Key, C, Allocator>&& source)
+    {
+        m_tree.MergeMulti(source.m_tree);
+    }
+};
+
+#undef FEATHEROS_SET_COMMON
+
+#define FEATHEROS_SET_FREE_FUNCTIONS(Set)                                                          \
+    template <class Key, class Compare, class Allocator>                                           \
+    bool operator==(const Set<Key, Compare, Allocator>& left,                                      \
+                    const Set<Key, Compare, Allocator>& right)                                     \
+    {                                                                                              \
+        return left.size() == right.size() &&                                                      \
+               _FSTD::equal(left.begin(), left.end(), right.begin());                              \
+    }                                                                                              \
+    template <class Key, class Compare, class Allocator>                                           \
+    __detail::SynthThreeWayResult<Key> operator<=>(const Set<Key, Compare, Allocator>& left,       \
+                                                   const Set<Key, Compare, Allocator>& right)      \
+    {                                                                                              \
+        return _FSTD::lexicographical_compare_three_way(left.begin(), left.end(), right.begin(),   \
+                                                        right.end(), __detail::synth_three_way);   \
+    }                                                                                              \
+    template <class Key, class Compare, class Allocator>                                           \
+    void swap(Set<Key, Compare, Allocator>& left,                                                  \
+              Set<Key, Compare, Allocator>& right) noexcept(noexcept(left.swap(right)))            \
+    {                                                                                              \
+        left.swap(right);                                                                          \
+    }                                                                                              \
+    template <class Key, class Compare, class Allocator, class Predicate>                          \
+    typename Set<Key, Compare, Allocator>::size_type erase_if(                                     \
+        Set<Key, Compare, Allocator>& container, Predicate predicate)                              \
+    {                                                                                              \
+        const auto before = container.size();                                                      \
+        for (auto position = container.begin(); position != container.end();)                      \
+        {                                                                                          \
+            if (predicate(*position))                                                              \
+            {                                                                                      \
+                position = container.erase(position);                                              \
+            }                                                                                      \
+            else                                                                                   \
+            {                                                                                      \
+                ++position;                                                                        \
+            }                                                                                      \
+        }                                                                                          \
+        return before - container.size();                                                          \
+    }                                                                                              \
+                                                                                                   \
+    template <__detail::ClassicInput I, class Compare = less<iter_value_t<I>>,                     \
+              class Allocator = allocator<iter_value_t<I>>>                                        \
+        requires(!__detail::AllocatorLike<Compare>) && __detail::AllocatorLike<Allocator>          \
+    Set(I, I, Compare = Compare(), Allocator = Allocator())                                        \
+        -> Set<iter_value_t<I>, Compare, Allocator>;                                               \
+    template <ranges::input_range R, class Compare = less<ranges::range_value_t<R>>,               \
+              class Allocator = allocator<ranges::range_value_t<R>>>                               \
+        requires(!__detail::AllocatorLike<Compare>) && __detail::AllocatorLike<Allocator>          \
+    Set(from_range_t, R&&, Compare = Compare(), Allocator = Allocator())                           \
+        -> Set<ranges::range_value_t<R>, Compare, Allocator>;                                      \
+    template <class Key, class Compare = less<Key>, class Allocator = allocator<Key>>              \
+        requires(!__detail::AllocatorLike<Compare>) && __detail::AllocatorLike<Allocator>          \
+    Set(initializer_list<Key>, Compare = Compare(), Allocator = Allocator())                       \
+        -> Set<Key, Compare, Allocator>;                                                           \
+    template <__detail::ClassicInput I, class Allocator>                                           \
+        requires __detail::AllocatorLike<Allocator>                                                \
+    Set(I, I, Allocator) -> Set<iter_value_t<I>, less<iter_value_t<I>>, Allocator>;                \
+    template <ranges::input_range R, class Allocator>                                              \
+        requires __detail::AllocatorLike<Allocator>                                                \
+    Set(from_range_t, R&&, Allocator)                                                              \
+        -> Set<ranges::range_value_t<R>, less<ranges::range_value_t<R>>, Allocator>;               \
+    template <class Key, class Allocator>                                                          \
+        requires __detail::AllocatorLike<Allocator>                                                \
+    Set(initializer_list<Key>, Allocator) -> Set<Key, less<Key>, Allocator>;
+
+FEATHEROS_SET_FREE_FUNCTIONS(set)
+FEATHEROS_SET_FREE_FUNCTIONS(multiset)
+
+#undef FEATHEROS_SET_FREE_FUNCTIONS
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

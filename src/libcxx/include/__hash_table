@@ -1,0 +1,1296 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_HASH_TABLE
+#define FEATHEROS_LIBCXX_HASH_TABLE
+
+// The hash table behind unordered_map, unordered_multimap, unordered_set and
+// unordered_multiset. Every node is on one singly linked list, each bucket's nodes next to each
+// other, and a bucket holds the node before its first one (for the first bucket on the list,
+// the table's own m_before_begin), so a node can be unlinked and a bucket entered at its start
+// without a second pointer per node. Iterators are node pointers and end() is null, so moving a
+// table keeps its iterators valid. Bucket counts are powers of two, and a node's bucket is the
+// top bits of its hash times 2^64 / phi (Fibonacci hashing), so integers, which hash to
+// themselves, spread over the buckets. Each node keeps its hash.
+
+#include "__featheros_config"
+#include "__iterator_base"
+#include "__memory_base"
+#include "__node_handle"
+#include "algorithm"
+#include "limits"
+#include "memory"
+#include "type_traits"
+#include "utility"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+namespace __detail
+{
+
+struct HashNodeBase
+{
+    HashNodeBase* next;
+};
+
+template <class Value> struct HashNode : HashNodeBase
+{
+    size_t hash;
+    union
+    {
+        Value value;
+    };
+    HashNode() noexcept : HashNodeBase(), hash(0) {}
+    HashNode(const HashNode&) = delete;
+    HashNode& operator=(const HashNode&) = delete;
+    ~HashNode() {}
+};
+
+inline size_t HashBucket(size_t hash, unsigned bits) noexcept
+{
+    constexpr size_t Multiplier =
+        sizeof(size_t) == 8 ? static_cast<size_t>(0x9e3779b97f4a7c15ULL) : 0x9e3779b9U;
+    return bits == 0 ? 0 : (hash * Multiplier) >> (numeric_limits<size_t>::digits - bits);
+}
+
+template <class Value, bool IsConst> class HashIterator
+{
+public:
+    using iterator_category = forward_iterator_tag;
+    using value_type = Value;
+    using difference_type = ptrdiff_t;
+    using pointer = conditional_t<IsConst, const Value*, Value*>;
+    using reference = conditional_t<IsConst, const Value&, Value&>;
+
+    HashIterator() noexcept = default;
+    explicit HashIterator(const HashNodeBase* node) noexcept
+        : m_node(const_cast<HashNodeBase*>(node))
+    {
+    }
+    template <bool OtherConst>
+        requires(IsConst && !OtherConst)
+    HashIterator(const HashIterator<Value, OtherConst>& other) noexcept : m_node(other.base())
+    {
+    }
+
+    HashNodeBase* base() const noexcept
+    {
+        return m_node;
+    }
+
+    reference operator*() const noexcept
+    {
+        return static_cast<HashNode<Value>*>(m_node)->value;
+    }
+    pointer operator->() const noexcept
+    {
+        return _FSTD::addressof(static_cast<HashNode<Value>*>(m_node)->value);
+    }
+    HashIterator& operator++() noexcept
+    {
+        m_node = m_node->next;
+        return *this;
+    }
+    HashIterator operator++(int) noexcept
+    {
+        HashIterator previous = *this;
+        m_node = m_node->next;
+        return previous;
+    }
+
+private:
+    HashNodeBase* m_node = nullptr;
+};
+
+template <class Value, bool LeftConst, bool RightConst>
+bool operator==(const HashIterator<Value, LeftConst>& left,
+                const HashIterator<Value, RightConst>& right) noexcept
+{
+    return left.base() == right.base();
+}
+
+// Walks one bucket: it ends where the list leaves the bucket.
+template <class Value, bool IsConst> class HashLocalIterator
+{
+public:
+    using iterator_category = forward_iterator_tag;
+    using value_type = Value;
+    using difference_type = ptrdiff_t;
+    using pointer = conditional_t<IsConst, const Value*, Value*>;
+    using reference = conditional_t<IsConst, const Value&, Value&>;
+
+    HashLocalIterator() noexcept = default;
+    HashLocalIterator(const HashNodeBase* node, size_t bucket, unsigned bits) noexcept
+        : m_node(const_cast<HashNodeBase*>(node)), m_bucket(bucket), m_bits(bits)
+    {
+    }
+    template <bool OtherConst>
+        requires(IsConst && !OtherConst)
+    HashLocalIterator(const HashLocalIterator<Value, OtherConst>& other) noexcept
+        : m_node(other.base()), m_bucket(other.Bucket()), m_bits(other.Bits())
+    {
+    }
+
+    HashNodeBase* base() const noexcept
+    {
+        return m_node;
+    }
+    size_t Bucket() const noexcept
+    {
+        return m_bucket;
+    }
+    unsigned Bits() const noexcept
+    {
+        return m_bits;
+    }
+
+    reference operator*() const noexcept
+    {
+        return static_cast<HashNode<Value>*>(m_node)->value;
+    }
+    pointer operator->() const noexcept
+    {
+        return _FSTD::addressof(static_cast<HashNode<Value>*>(m_node)->value);
+    }
+    HashLocalIterator& operator++() noexcept
+    {
+        m_node = m_node->next;
+        if (m_node != nullptr &&
+            HashBucket(static_cast<HashNode<Value>*>(m_node)->hash, m_bits) != m_bucket)
+        {
+            m_node = nullptr;
+        }
+        return *this;
+    }
+    HashLocalIterator operator++(int) noexcept
+    {
+        HashLocalIterator previous = *this;
+        ++*this;
+        return previous;
+    }
+
+private:
+    HashNodeBase* m_node = nullptr;
+    size_t m_bucket = 0;
+    unsigned m_bits = 0;
+};
+
+template <class Value, bool LeftConst, bool RightConst>
+bool operator==(const HashLocalIterator<Value, LeftConst>& left,
+                const HashLocalIterator<Value, RightConst>& right) noexcept
+{
+    return left.base() == right.base();
+}
+
+template <class Hash, class Equal>
+concept TransparentHash =
+    requires { typename Hash::is_transparent; } && requires { typename Equal::is_transparent; };
+
+template <class Hash, class Pred, class Allocator>
+concept HashGuide = !is_integral_v<Hash> && !AllocatorLike<Hash> && !AllocatorLike<Pred> &&
+                    AllocatorLike<Allocator>;
+
+template <class Value, class KeyOf, class Hash, class Equal, class Allocator> class HashTable
+{
+    template <class, class, class, class, class> friend class HashTable;
+
+    using Base = HashNodeBase;
+    using BucketAllocator = typename allocator_traits<Allocator>::template rebind_alloc<Base*>;
+    using BucketTraits = allocator_traits<BucketAllocator>;
+
+public:
+    using Node = HashNode<Value>;
+    using Operations = NodeOperations<Node, Allocator>;
+    using NodeAllocator = typename Operations::NodeAllocator;
+    using NodeTraits = typename Operations::NodeTraits;
+    using iterator = HashIterator<Value, false>;
+    using const_iterator = HashIterator<Value, true>;
+    using local_iterator = HashLocalIterator<Value, false>;
+    using const_local_iterator = HashLocalIterator<Value, true>;
+
+    HashTable(size_t buckets, const Hash& hash, const Equal& equal, const Allocator& allocator)
+        : m_hash(hash), m_equal(equal), m_allocator(allocator)
+    {
+        if (buckets != 0)
+        {
+            Rehash(buckets);
+        }
+    }
+
+    HashTable(const HashTable& other, const Allocator& allocator)
+        : m_max_load_factor(other.m_max_load_factor), m_hash(other.m_hash), m_equal(other.m_equal),
+          m_allocator(allocator)
+    {
+        CopyFrom(other, [](const Value& value) -> const Value& { return value; });
+    }
+
+    HashTable(HashTable&& other) noexcept
+        : m_max_load_factor(other.m_max_load_factor), m_hash(_FSTD::move(other.m_hash)),
+          m_equal(_FSTD::move(other.m_equal)), m_allocator(_FSTD::move(other.m_allocator))
+    {
+        Steal(other);
+    }
+
+    HashTable(HashTable&& other, const Allocator& allocator)
+        : m_max_load_factor(other.m_max_load_factor), m_hash(other.m_hash), m_equal(other.m_equal),
+          m_allocator(allocator)
+    {
+        if (NodeTraits::is_always_equal::value || m_allocator == other.m_allocator)
+        {
+            Steal(other);
+        }
+        else
+        {
+            CopyFrom(other, [](Value& value) -> Value&& { return _FSTD::move(value); });
+        }
+    }
+
+    HashTable(const HashTable&) = delete;
+    HashTable& operator=(const HashTable&) = delete;
+
+    ~HashTable()
+    {
+        Clear();
+        DeallocateBuckets();
+    }
+
+    void CopyAssign(const HashTable& other)
+    {
+        if (this == &other)
+        {
+            return;
+        }
+        Clear();
+        if constexpr (NodeTraits::propagate_on_container_copy_assignment::value)
+        {
+            if (!NodeTraits::is_always_equal::value && m_allocator != other.m_allocator)
+            {
+                DeallocateBuckets();
+            }
+            m_allocator = other.m_allocator;
+        }
+        m_hash = other.m_hash;
+        m_equal = other.m_equal;
+        m_max_load_factor = other.m_max_load_factor;
+        CopyFrom(other, [](const Value& value) -> const Value& { return value; });
+    }
+
+    void MoveAssign(HashTable& other) noexcept(
+        NodeTraits::propagate_on_container_move_assignment::value ||
+        NodeTraits::is_always_equal::value)
+    {
+        if (this == &other)
+        {
+            return;
+        }
+        Clear();
+        m_hash = other.m_hash;
+        m_equal = other.m_equal;
+        m_max_load_factor = other.m_max_load_factor;
+        if (NodeTraits::propagate_on_container_move_assignment::value ||
+            NodeTraits::is_always_equal::value || m_allocator == other.m_allocator)
+        {
+            DeallocateBuckets();
+            if constexpr (NodeTraits::propagate_on_container_move_assignment::value)
+            {
+                m_allocator = _FSTD::move(other.m_allocator);
+            }
+            Steal(other);
+        }
+        else
+        {
+            CopyFrom(other, [](Value& value) -> Value&& { return _FSTD::move(value); });
+            other.Clear();
+        }
+    }
+
+    void Swap(HashTable& other) noexcept(NodeTraits::is_always_equal::value &&
+                                         is_nothrow_swappable_v<Hash> &&
+                                         is_nothrow_swappable_v<Equal>)
+    {
+        using _FSTD::swap;
+        swap(m_hash, other.m_hash);
+        swap(m_equal, other.m_equal);
+        if constexpr (NodeTraits::propagate_on_container_swap::value)
+        {
+            swap(m_allocator, other.m_allocator);
+        }
+        swap(m_before_begin.next, other.m_before_begin.next);
+        swap(m_buckets, other.m_buckets);
+        swap(m_bucket_count, other.m_bucket_count);
+        swap(m_bucket_bits, other.m_bucket_bits);
+        swap(m_size, other.m_size);
+        swap(m_max_load_factor, other.m_max_load_factor);
+        FixFirstBucket();
+        other.FixFirstBucket();
+    }
+
+    Allocator GetAllocator() const noexcept
+    {
+        return Allocator(m_allocator);
+    }
+    const Hash& HashFunction() const noexcept
+    {
+        return m_hash;
+    }
+    const Equal& KeyEqual() const noexcept
+    {
+        return m_equal;
+    }
+
+    iterator Begin() const noexcept
+    {
+        return iterator(m_before_begin.next);
+    }
+    static iterator End() noexcept
+    {
+        return iterator(nullptr);
+    }
+    size_t Size() const noexcept
+    {
+        return m_size;
+    }
+    size_t MaxSize() const noexcept
+    {
+        return NodeTraits::max_size(m_allocator);
+    }
+
+    void Clear() noexcept
+    {
+        for (Base* node = m_before_begin.next; node != nullptr;)
+        {
+            Base* const next = node->next;
+            Operations::Destroy(m_allocator, static_cast<Node*>(node));
+            node = next;
+        }
+        m_before_begin.next = nullptr;
+        for (size_t index = 0; index != m_bucket_count; ++index)
+        {
+            m_buckets[index] = nullptr;
+        }
+        m_size = 0;
+    }
+
+    template <class K> iterator Find(const K& key) const
+    {
+        if (m_size == 0)
+        {
+            return End();
+        }
+        const size_t hash = m_hash(key);
+        const Base* const before = FindBefore(key, hash, Bucket(hash));
+        return iterator(before == nullptr ? nullptr : before->next);
+    }
+
+    template <class K> pair<iterator, iterator> EqualRange(const K& key) const
+    {
+        const iterator first = Find(key);
+        if (first == End())
+        {
+            return {first, first};
+        }
+        Base* last = first.base()->next;
+        while (last != nullptr && Matches(last, key))
+        {
+            last = last->next;
+        }
+        return {first, iterator(last)};
+    }
+
+    template <class K> size_t Count(const K& key) const
+    {
+        const auto [first, last] = EqualRange(key);
+        size_t count = 0;
+        for (Base* node = first.base(); node != last.base(); node = node->next)
+        {
+            ++count;
+        }
+        return count;
+    }
+
+    template <class K, class... Args>
+    pair<iterator, bool> EmplaceUniqueKey(const K& key, Args&&... args)
+    {
+        const size_t hash = m_hash(key);
+        if (m_size != 0)
+        {
+            const Base* const before = FindBefore(key, hash, Bucket(hash));
+            if (before != nullptr)
+            {
+                return {iterator(before->next), false};
+            }
+        }
+        Node* const node = Operations::Create(m_allocator, _FSTD::forward<Args>(args)...);
+        node->hash = hash;
+        return {LinkUnique(node), true};
+    }
+
+    template <class... Args> pair<iterator, bool> EmplaceUnique(Args&&... args)
+    {
+        Node* const node = Operations::Create(m_allocator, _FSTD::forward<Args>(args)...);
+        return InsertNodeUnique(node, true);
+    }
+
+    template <class... Args> iterator EmplaceMulti(const_iterator hint, Args&&... args)
+    {
+        Node* const node = Operations::Create(m_allocator, _FSTD::forward<Args>(args)...);
+        node->hash = m_hash(KeyOf::Get(node->value));
+        return LinkMulti(node, hint);
+    }
+
+    // node_type's inserts. With destroy_duplicate, a node whose key is there is destroyed;
+    // otherwise it stays the caller's.
+    pair<iterator, bool> InsertNodeUnique(Node* node, bool destroy_duplicate = false)
+    {
+        const auto& key = KeyOf::Get(node->value);
+        const size_t hash = m_hash(key);
+        if (m_size != 0)
+        {
+            const Base* const before = FindBefore(key, hash, Bucket(hash));
+            if (before != nullptr)
+            {
+                if (destroy_duplicate)
+                {
+                    Operations::Destroy(m_allocator, node);
+                }
+                return {iterator(before->next), false};
+            }
+        }
+        node->hash = hash;
+        return {LinkUnique(node), true};
+    }
+
+    iterator InsertNodeMulti(Node* node, const_iterator hint = const_iterator())
+    {
+        node->hash = m_hash(KeyOf::Get(node->value));
+        return LinkMulti(node, hint);
+    }
+
+    Node* Extract(const_iterator position) noexcept
+    {
+        Base* const node = position.base();
+        const size_t bucket = BucketOf(node);
+        Base* before = m_buckets[bucket];
+        while (before->next != node)
+        {
+            before = before->next;
+        }
+        Unlink(before, bucket);
+        return static_cast<Node*>(node);
+    }
+
+    iterator Erase(const_iterator position) noexcept
+    {
+        Base* const next = position.base()->next;
+        Operations::Destroy(m_allocator, Extract(position));
+        return iterator(next);
+    }
+
+    iterator Erase(const_iterator first, const_iterator last) noexcept
+    {
+        while (first != last)
+        {
+            first = Erase(first);
+        }
+        return iterator(last.base());
+    }
+
+    template <class K> size_t EraseKey(const K& key)
+    {
+        if (m_size == 0)
+        {
+            return 0;
+        }
+        const size_t hash = m_hash(key);
+        const size_t bucket = Bucket(hash);
+        Base* const before = FindBefore(key, hash, bucket);
+        if (before == nullptr)
+        {
+            return 0;
+        }
+        size_t erased = 0;
+        do
+        {
+            Base* const node = before->next;
+            Unlink(before, bucket);
+            Operations::Destroy(m_allocator, static_cast<Node*>(node));
+            ++erased;
+        } while (before->next != nullptr && Matches(before->next, key));
+        return erased;
+    }
+
+    template <class H, class E> void MergeUnique(HashTable<Value, KeyOf, H, E, Allocator>& source)
+    {
+        for (Base* node = source.m_before_begin.next; node != nullptr;)
+        {
+            Base* const next = node->next;
+            const auto& key = KeyOf::Get(static_cast<Node*>(node)->value);
+            const size_t hash = m_hash(key);
+            if (m_size == 0 || FindBefore(key, hash, Bucket(hash)) == nullptr)
+            {
+                Node* const taken = source.Extract(
+                    typename HashTable<Value, KeyOf, H, E, Allocator>::const_iterator(node));
+                taken->hash = hash;
+                LinkUnique(taken);
+            }
+            node = next;
+        }
+    }
+
+    template <class H, class E> void MergeMulti(HashTable<Value, KeyOf, H, E, Allocator>& source)
+    {
+        for (Base* node = source.m_before_begin.next; node != nullptr;)
+        {
+            Base* const next = node->next;
+            InsertNodeMulti(source.Extract(
+                typename HashTable<Value, KeyOf, H, E, Allocator>::const_iterator(node)));
+            node = next;
+        }
+    }
+
+    // The bucket interface.
+    size_t BucketCount() const noexcept
+    {
+        return m_bucket_count;
+    }
+    size_t MaxBucketCount() const noexcept
+    {
+        return size_t(1) << (numeric_limits<size_t>::digits - 2);
+    }
+    template <class K> size_t BucketOfKey(const K& key) const
+    {
+        return Bucket(m_hash(key));
+    }
+    size_t BucketSize(size_t bucket) const noexcept
+    {
+        size_t count = 0;
+        for (auto position = BucketBegin(bucket); position.base() != nullptr; ++position)
+        {
+            ++count;
+        }
+        return count;
+    }
+    local_iterator BucketBegin(size_t bucket) const noexcept
+    {
+        const Base* const before = bucket < m_bucket_count ? m_buckets[bucket] : nullptr;
+        return local_iterator(before == nullptr ? nullptr : before->next, bucket, m_bucket_bits);
+    }
+    local_iterator BucketEnd(size_t bucket) const noexcept
+    {
+        return local_iterator(nullptr, bucket, m_bucket_bits);
+    }
+
+    float LoadFactor() const noexcept
+    {
+        return m_bucket_count == 0
+                   ? 0.0f
+                   : static_cast<float>(m_size) / static_cast<float>(m_bucket_count);
+    }
+    float MaxLoadFactor() const noexcept
+    {
+        return m_max_load_factor;
+    }
+    void SetMaxLoadFactor(float factor)
+    {
+        if (factor > 0.0f)
+        {
+            m_max_load_factor = factor;
+            if (BucketsFor(m_size) > m_bucket_count)
+            {
+                Rehash(BucketsFor(m_size));
+            }
+        }
+    }
+
+    // At least count buckets and enough for the load factor; fewer than now when that allows.
+    void Rehash(size_t count)
+    {
+        count = _FSTD::max(count, BucketsFor(m_size));
+        if (count == 0)
+        {
+            if (m_size == 0)
+            {
+                DeallocateBuckets();
+            }
+            return;
+        }
+        unsigned bits = 0;
+        while ((size_t(1) << bits) < count)
+        {
+            ++bits;
+        }
+        if ((size_t(1) << bits) == m_bucket_count)
+        {
+            return;
+        }
+        Relink(bits);
+    }
+
+    void Reserve(size_t count)
+    {
+        Rehash(BucketsFor(count));
+    }
+
+private:
+    Base m_before_begin{nullptr};
+    Base** m_buckets = nullptr;
+    size_t m_bucket_count = 0;
+    unsigned m_bucket_bits = 0;
+    size_t m_size = 0;
+    float m_max_load_factor = 1.0f;
+    [[no_unique_address]] Hash m_hash;
+    [[no_unique_address]] Equal m_equal;
+    [[no_unique_address]] NodeAllocator m_allocator;
+
+    static const Value& ValueOf(const Base* node) noexcept
+    {
+        return static_cast<const Node*>(node)->value;
+    }
+    static size_t HashOf(const Base* node) noexcept
+    {
+        return static_cast<const Node*>(node)->hash;
+    }
+    size_t Bucket(size_t hash) const noexcept
+    {
+        return HashBucket(hash, m_bucket_bits);
+    }
+    size_t BucketOf(const Base* node) const noexcept
+    {
+        return Bucket(HashOf(node));
+    }
+    template <class K> bool Matches(const Base* node, const K& key) const
+    {
+        return m_equal(KeyOf::Get(ValueOf(node)), key);
+    }
+
+    // The number of buckets that holds count elements within the maximum load factor.
+    size_t BucketsFor(size_t count) const noexcept
+    {
+        if (count == 0)
+        {
+            return 0;
+        }
+        const float exact = static_cast<float>(count) / m_max_load_factor;
+        if (!(exact < static_cast<float>(MaxBucketCount())))
+        {
+            return MaxBucketCount();
+        }
+        auto buckets = static_cast<size_t>(exact);
+        if (static_cast<float>(buckets) < exact)
+        {
+            ++buckets;
+        }
+        return buckets;
+    }
+
+    // The node before the first one in bucket whose key equals key, or null.
+    template <class K> Base* FindBefore(const K& key, size_t hash, size_t bucket) const
+    {
+        Base* before = m_buckets[bucket];
+        if (before == nullptr)
+        {
+            return nullptr;
+        }
+        for (Base* node = before->next;; before = node, node = node->next)
+        {
+            if (HashOf(node) == hash && Matches(node, key))
+            {
+                return before;
+            }
+            if (node->next == nullptr || BucketOf(node->next) != bucket)
+            {
+                return nullptr;
+            }
+        }
+    }
+
+    void AllocateBuckets(unsigned bits)
+    {
+        BucketAllocator allocator(m_allocator);
+        const size_t count = size_t(1) << bits;
+        m_buckets = BucketTraits::allocate(allocator, count);
+        for (size_t index = 0; index != count; ++index)
+        {
+            m_buckets[index] = nullptr;
+        }
+        m_bucket_count = count;
+        m_bucket_bits = bits;
+    }
+
+    void DeallocateBuckets() noexcept
+    {
+        if (m_buckets != nullptr)
+        {
+            BucketAllocator allocator(m_allocator);
+            BucketTraits::deallocate(allocator, m_buckets, m_bucket_count);
+            m_buckets = nullptr;
+            m_bucket_count = 0;
+            m_bucket_bits = 0;
+        }
+    }
+
+    void FixFirstBucket() noexcept
+    {
+        if (m_before_begin.next != nullptr)
+        {
+            m_buckets[BucketOf(m_before_begin.next)] = &m_before_begin;
+        }
+    }
+
+    void Steal(HashTable& other) noexcept
+    {
+        m_before_begin.next = _FSTD::exchange(other.m_before_begin.next, nullptr);
+        m_buckets = _FSTD::exchange(other.m_buckets, nullptr);
+        m_bucket_count = _FSTD::exchange(other.m_bucket_count, 0);
+        m_bucket_bits = _FSTD::exchange(other.m_bucket_bits, 0);
+        m_size = _FSTD::exchange(other.m_size, 0);
+        FixFirstBucket();
+    }
+
+    // Keeps the other table's order, so equal keys stay together and in order.
+    template <class Get> void CopyFrom(auto& other, Get get)
+    {
+        if (other.m_size == 0)
+        {
+            return;
+        }
+        if (m_bucket_count != other.m_bucket_count)
+        {
+            DeallocateBuckets();
+            AllocateBuckets(other.m_bucket_bits);
+        }
+        Base* last = &m_before_begin;
+        for (Base* source = other.m_before_begin.next; source != nullptr; source = source->next)
+        {
+            Node* const node =
+                Operations::Create(m_allocator, get(static_cast<Node*>(source)->value));
+            node->hash = HashOf(source);
+            node->next = nullptr;
+            const size_t bucket = BucketOf(node);
+            if (m_buckets[bucket] == nullptr)
+            {
+                m_buckets[bucket] = last;
+            }
+            last->next = node;
+            last = node;
+        }
+        m_size = other.m_size;
+    }
+
+    // Grows before an insert takes the table past its load factor.
+    void ReserveOneMore()
+    {
+        const size_t needed = BucketsFor(m_size + 1);
+        if (needed > m_bucket_count)
+        {
+            Rehash(_FSTD::max(needed, 2 * m_bucket_count));
+        }
+    }
+
+    void LinkAtBucketStart(Base* node, size_t bucket) noexcept
+    {
+        if (m_buckets[bucket] != nullptr)
+        {
+            node->next = m_buckets[bucket]->next;
+            m_buckets[bucket]->next = node;
+            return;
+        }
+        node->next = m_before_begin.next;
+        m_before_begin.next = node;
+        if (node->next != nullptr)
+        {
+            m_buckets[BucketOf(node->next)] = node;
+        }
+        m_buckets[bucket] = &m_before_begin;
+    }
+
+    void LinkAfter(Base* node, Base* after, size_t bucket) noexcept
+    {
+        node->next = after->next;
+        after->next = node;
+        if (node->next != nullptr && BucketOf(node->next) != bucket)
+        {
+            m_buckets[BucketOf(node->next)] = node;
+        }
+    }
+
+    iterator LinkUnique(Node* node)
+    {
+        ReserveOneMore();
+        LinkAtBucketStart(node, BucketOf(node));
+        ++m_size;
+        return iterator(node);
+    }
+
+    // Next to an equal key if there is one, before the first of them, or after the hint when it
+    // is equal, so equal keys stay together.
+    iterator LinkMulti(Node* node, const_iterator hint)
+    {
+        ReserveOneMore();
+        const size_t bucket = BucketOf(node);
+        const auto& key = KeyOf::Get(node->value);
+        if (hint.base() != nullptr && HashOf(hint.base()) == node->hash &&
+            Matches(hint.base(), key))
+        {
+            LinkAfter(node, hint.base(), bucket);
+        }
+        else if (Base* const before = FindBefore(key, node->hash, bucket); before != nullptr)
+        {
+            node->next = before->next;
+            before->next = node;
+        }
+        else
+        {
+            LinkAtBucketStart(node, bucket);
+        }
+        ++m_size;
+        return iterator(node);
+    }
+
+    // Takes before->next, which is in bucket, off the list.
+    void Unlink(Base* before, size_t bucket) noexcept
+    {
+        Base* const node = before->next;
+        Base* const next = node->next;
+        if (m_buckets[bucket] == before)
+        {
+            if (next == nullptr || BucketOf(next) != bucket)
+            {
+                if (next != nullptr)
+                {
+                    m_buckets[BucketOf(next)] = before;
+                }
+                m_buckets[bucket] = nullptr;
+            }
+        }
+        else if (next != nullptr && BucketOf(next) != bucket)
+        {
+            m_buckets[BucketOf(next)] = before;
+        }
+        before->next = next;
+        --m_size;
+    }
+
+    // Moves every node into 2^bits new buckets, in the list's order, so runs of nodes that land
+    // in one bucket (equal keys among them) keep their order.
+    void Relink(unsigned bits)
+    {
+        Base* node = m_before_begin.next;
+        DeallocateBuckets();
+        AllocateBuckets(bits);
+        m_before_begin.next = nullptr;
+        Base* previous = nullptr;
+        size_t previous_bucket = 0;
+        while (node != nullptr)
+        {
+            Base* const next = node->next;
+            const size_t bucket = BucketOf(node);
+            if (previous != nullptr && bucket == previous_bucket)
+            {
+                LinkAfter(node, previous, bucket);
+            }
+            else
+            {
+                LinkAtBucketStart(node, bucket);
+            }
+            previous = node;
+            previous_bucket = bucket;
+            node = next;
+        }
+    }
+};
+
+// operator== of the unordered containers: every group of equal keys on the left is a
+// permutation of the one on the right.
+template <bool Unique, class KeyOf, class Container>
+bool HashContainersEqual(const Container& left, const Container& right)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+    for (auto position = left.begin(); position != left.end();)
+    {
+        if constexpr (Unique)
+        {
+            const auto found = right.find(KeyOf::Get(*position));
+            if (found == right.end() || !(*found == *position))
+            {
+                return false;
+            }
+            ++position;
+        }
+        else
+        {
+            const auto [left_first, left_last] = left.equal_range(KeyOf::Get(*position));
+            const auto [right_first, right_last] = right.equal_range(KeyOf::Get(*position));
+            if (!_FSTD::is_permutation(left_first, left_last, right_first, right_last))
+            {
+                return false;
+            }
+            position = left_last;
+        }
+    }
+    return true;
+}
+
+} // namespace __detail
+} // namespace FEATHEROS_STD_NAMESPACE
+
+// The members the four unordered containers share, after each has named its Table, iterator,
+// const_iterator, local iterators and node_type.
+#define FEATHEROS_HASH_CONTAINER_COMMON(C)                                                         \
+public:                                                                                            \
+    C() : C(size_type(0)) {}                                                                       \
+    explicit C(size_type buckets, const hasher& hash = hasher(),                                   \
+               const key_equal& equal = key_equal(),                                               \
+               const allocator_type& allocator = allocator_type())                                 \
+        : m_table(buckets, hash, equal, allocator)                                                 \
+    {                                                                                              \
+    }                                                                                              \
+    C(size_type buckets, const allocator_type& allocator)                                          \
+        : C(buckets, hasher(), key_equal(), allocator)                                             \
+    {                                                                                              \
+    }                                                                                              \
+    C(size_type buckets, const hasher& hash, const allocator_type& allocator)                      \
+        : C(buckets, hash, key_equal(), allocator)                                                 \
+    {                                                                                              \
+    }                                                                                              \
+    explicit C(const allocator_type& allocator) : m_table(0, hasher(), key_equal(), allocator) {}  \
+    template <__detail::ClassicInput I>                                                            \
+    C(I first, I last, size_type buckets = 0, const hasher& hash = hasher(),                       \
+      const key_equal& equal = key_equal(), const allocator_type& allocator = allocator_type())    \
+        : m_table(buckets, hash, equal, allocator)                                                 \
+    {                                                                                              \
+        insert(first, last);                                                                       \
+    }                                                                                              \
+    template <__detail::ClassicInput I>                                                            \
+    C(I first, I last, size_type buckets, const allocator_type& allocator)                         \
+        : C(first, last, buckets, hasher(), key_equal(), allocator)                                \
+    {                                                                                              \
+    }                                                                                              \
+    template <__detail::ClassicInput I>                                                            \
+    C(I first, I last, size_type buckets, const hasher& hash, const allocator_type& allocator)     \
+        : C(first, last, buckets, hash, key_equal(), allocator)                                    \
+    {                                                                                              \
+    }                                                                                              \
+    template <__detail::ContainerCompatibleRange<value_type> R>                                    \
+    C(from_range_t, R&& range, size_type buckets = 0, const hasher& hash = hasher(),               \
+      const key_equal& equal = key_equal(), const allocator_type& allocator = allocator_type())    \
+        : m_table(buckets, hash, equal, allocator)                                                 \
+    {                                                                                              \
+        insert_range(_FSTD::forward<R>(range));                                                    \
+    }                                                                                              \
+    template <__detail::ContainerCompatibleRange<value_type> R>                                    \
+    C(from_range_t, R&& range, size_type buckets, const allocator_type& allocator)                 \
+        : C(from_range, _FSTD::forward<R>(range), buckets, hasher(), key_equal(), allocator)       \
+    {                                                                                              \
+    }                                                                                              \
+    template <__detail::ContainerCompatibleRange<value_type> R>                                    \
+    C(from_range_t, R&& range, size_type buckets, const hasher& hash,                              \
+      const allocator_type& allocator)                                                             \
+        : C(from_range, _FSTD::forward<R>(range), buckets, hash, key_equal(), allocator)           \
+    {                                                                                              \
+    }                                                                                              \
+    C(const C& other)                                                                              \
+        : m_table(other.m_table,                                                                   \
+                  allocator_traits<Allocator>::select_on_container_copy_construction(              \
+                      other.get_allocator()))                                                      \
+    {                                                                                              \
+    }                                                                                              \
+    C(C&& other) noexcept : m_table(_FSTD::move(other.m_table)) {}                                 \
+    C(const C& other, const type_identity_t<Allocator>& allocator)                                 \
+        : m_table(other.m_table, allocator)                                                        \
+    {                                                                                              \
+    }                                                                                              \
+    C(C&& other, const type_identity_t<Allocator>& allocator)                                      \
+        : m_table(_FSTD::move(other.m_table), allocator)                                           \
+    {                                                                                              \
+    }                                                                                              \
+    C(initializer_list<value_type> values, size_type buckets = 0, const hasher& hash = hasher(),   \
+      const key_equal& equal = key_equal(), const allocator_type& allocator = allocator_type())    \
+        : m_table(buckets, hash, equal, allocator)                                                 \
+    {                                                                                              \
+        insert(values.begin(), values.end());                                                      \
+    }                                                                                              \
+    C(initializer_list<value_type> values, size_type buckets, const allocator_type& allocator)     \
+        : C(values, buckets, hasher(), key_equal(), allocator)                                     \
+    {                                                                                              \
+    }                                                                                              \
+    C(initializer_list<value_type> values, size_type buckets, const hasher& hash,                  \
+      const allocator_type& allocator)                                                             \
+        : C(values, buckets, hash, key_equal(), allocator)                                         \
+    {                                                                                              \
+    }                                                                                              \
+    ~C() = default;                                                                                \
+                                                                                                   \
+    C& operator=(const C& other)                                                                   \
+    {                                                                                              \
+        m_table.CopyAssign(other.m_table);                                                         \
+        return *this;                                                                              \
+    }                                                                                              \
+    C& operator=(C&& other) noexcept(noexcept(declval<Table&>().MoveAssign(declval<Table&>())) &&  \
+                                     is_nothrow_move_assignable_v<Hash> &&                         \
+                                     is_nothrow_move_assignable_v<Pred>)                           \
+    {                                                                                              \
+        m_table.MoveAssign(other.m_table);                                                         \
+        return *this;                                                                              \
+    }                                                                                              \
+    C& operator=(initializer_list<value_type> values)                                              \
+    {                                                                                              \
+        clear();                                                                                   \
+        insert(values.begin(), values.end());                                                      \
+        return *this;                                                                              \
+    }                                                                                              \
+                                                                                                   \
+    allocator_type get_allocator() const noexcept                                                  \
+    {                                                                                              \
+        return m_table.GetAllocator();                                                             \
+    }                                                                                              \
+                                                                                                   \
+    iterator begin() noexcept                                                                      \
+    {                                                                                              \
+        return m_table.Begin();                                                                    \
+    }                                                                                              \
+    const_iterator begin() const noexcept                                                          \
+    {                                                                                              \
+        return m_table.Begin();                                                                    \
+    }                                                                                              \
+    iterator end() noexcept                                                                        \
+    {                                                                                              \
+        return m_table.End();                                                                      \
+    }                                                                                              \
+    const_iterator end() const noexcept                                                            \
+    {                                                                                              \
+        return m_table.End();                                                                      \
+    }                                                                                              \
+    const_iterator cbegin() const noexcept                                                         \
+    {                                                                                              \
+        return m_table.Begin();                                                                    \
+    }                                                                                              \
+    const_iterator cend() const noexcept                                                           \
+    {                                                                                              \
+        return m_table.End();                                                                      \
+    }                                                                                              \
+                                                                                                   \
+    [[nodiscard]] bool empty() const noexcept                                                      \
+    {                                                                                              \
+        return m_table.Size() == 0;                                                                \
+    }                                                                                              \
+    size_type size() const noexcept                                                                \
+    {                                                                                              \
+        return m_table.Size();                                                                     \
+    }                                                                                              \
+    size_type max_size() const noexcept                                                            \
+    {                                                                                              \
+        return m_table.MaxSize();                                                                  \
+    }                                                                                              \
+                                                                                                   \
+    template <__detail::ClassicInput I> void insert(I first, I last)                               \
+    {                                                                                              \
+        for (; first != last; ++first)                                                             \
+        {                                                                                          \
+            emplace(*first);                                                                       \
+        }                                                                                          \
+    }                                                                                              \
+    void insert(initializer_list<value_type> values)                                               \
+    {                                                                                              \
+        insert(values.begin(), values.end());                                                      \
+    }                                                                                              \
+    template <__detail::ContainerCompatibleRange<value_type> R> void insert_range(R&& range)       \
+    {                                                                                              \
+        for (auto&& value : range)                                                                 \
+        {                                                                                          \
+            emplace(_FSTD::forward<decltype(value)>(value));                                       \
+        }                                                                                          \
+    }                                                                                              \
+                                                                                                   \
+    iterator erase(const_iterator position)                                                        \
+    {                                                                                              \
+        return m_table.Erase(position);                                                            \
+    }                                                                                              \
+    iterator erase(const_iterator first, const_iterator last)                                      \
+    {                                                                                              \
+        return m_table.Erase(first, last);                                                         \
+    }                                                                                              \
+    size_type erase(const key_type& key)                                                           \
+    {                                                                                              \
+        return m_table.EraseKey(key);                                                              \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentHash<Hash, Pred> && (!is_convertible_v<K&&, iterator>) &&    \
+                 (!is_convertible_v<K&&, const_iterator>)                                          \
+    size_type erase(K&& key)                                                                       \
+    {                                                                                              \
+        return m_table.EraseKey(key);                                                              \
+    }                                                                                              \
+                                                                                                   \
+    node_type extract(const_iterator position)                                                     \
+    {                                                                                              \
+        return node_type(m_table.Extract(position), get_allocator());                              \
+    }                                                                                              \
+    node_type extract(const key_type& key)                                                         \
+    {                                                                                              \
+        const const_iterator position = find(key);                                                 \
+        return position == end() ? node_type() : extract(position);                                \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentHash<Hash, Pred> && (!is_convertible_v<K&&, iterator>) &&    \
+                 (!is_convertible_v<K&&, const_iterator>)                                          \
+    node_type extract(K&& key)                                                                     \
+    {                                                                                              \
+        const const_iterator position = find(key);                                                 \
+        return position == end() ? node_type() : extract(position);                                \
+    }                                                                                              \
+                                                                                                   \
+    void swap(C& other) noexcept(noexcept(declval<Table&>().Swap(declval<Table&>())))              \
+    {                                                                                              \
+        m_table.Swap(other.m_table);                                                               \
+    }                                                                                              \
+    void clear() noexcept                                                                          \
+    {                                                                                              \
+        m_table.Clear();                                                                           \
+    }                                                                                              \
+                                                                                                   \
+    hasher hash_function() const                                                                   \
+    {                                                                                              \
+        return m_table.HashFunction();                                                             \
+    }                                                                                              \
+    key_equal key_eq() const                                                                       \
+    {                                                                                              \
+        return m_table.KeyEqual();                                                                 \
+    }                                                                                              \
+                                                                                                   \
+    iterator find(const key_type& key)                                                             \
+    {                                                                                              \
+        return m_table.Find(key);                                                                  \
+    }                                                                                              \
+    const_iterator find(const key_type& key) const                                                 \
+    {                                                                                              \
+        return m_table.Find(key);                                                                  \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentHash<Hash, Pred>                                             \
+    iterator find(const K& key)                                                                    \
+    {                                                                                              \
+        return m_table.Find(key);                                                                  \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentHash<Hash, Pred>                                             \
+    const_iterator find(const K& key) const                                                        \
+    {                                                                                              \
+        return m_table.Find(key);                                                                  \
+    }                                                                                              \
+    size_type count(const key_type& key) const                                                     \
+    {                                                                                              \
+        return m_table.Count(key);                                                                 \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentHash<Hash, Pred>                                             \
+    size_type count(const K& key) const                                                            \
+    {                                                                                              \
+        return m_table.Count(key);                                                                 \
+    }                                                                                              \
+    bool contains(const key_type& key) const                                                       \
+    {                                                                                              \
+        return m_table.Find(key) != m_table.End();                                                 \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentHash<Hash, Pred>                                             \
+    bool contains(const K& key) const                                                              \
+    {                                                                                              \
+        return m_table.Find(key) != m_table.End();                                                 \
+    }                                                                                              \
+    pair<iterator, iterator> equal_range(const key_type& key)                                      \
+    {                                                                                              \
+        return m_table.EqualRange(key);                                                            \
+    }                                                                                              \
+    pair<const_iterator, const_iterator> equal_range(const key_type& key) const                    \
+    {                                                                                              \
+        return m_table.EqualRange(key);                                                            \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentHash<Hash, Pred>                                             \
+    pair<iterator, iterator> equal_range(const K& key)                                             \
+    {                                                                                              \
+        return m_table.EqualRange(key);                                                            \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentHash<Hash, Pred>                                             \
+    pair<const_iterator, const_iterator> equal_range(const K& key) const                           \
+    {                                                                                              \
+        return m_table.EqualRange(key);                                                            \
+    }                                                                                              \
+                                                                                                   \
+    size_type bucket_count() const noexcept                                                        \
+    {                                                                                              \
+        return m_table.BucketCount();                                                              \
+    }                                                                                              \
+    size_type max_bucket_count() const noexcept                                                    \
+    {                                                                                              \
+        return m_table.MaxBucketCount();                                                           \
+    }                                                                                              \
+    size_type bucket_size(size_type bucket) const                                                  \
+    {                                                                                              \
+        return m_table.BucketSize(bucket);                                                         \
+    }                                                                                              \
+    size_type bucket(const key_type& key) const                                                    \
+    {                                                                                              \
+        return m_table.BucketOfKey(key);                                                           \
+    }                                                                                              \
+    template <class K>                                                                             \
+        requires __detail::TransparentHash<Hash, Pred>                                             \
+    size_type bucket(const K& key) const                                                           \
+    {                                                                                              \
+        return m_table.BucketOfKey(key);                                                           \
+    }                                                                                              \
+    local_iterator begin(size_type bucket)                                                         \
+    {                                                                                              \
+        return m_table.BucketBegin(bucket);                                                        \
+    }                                                                                              \
+    const_local_iterator begin(size_type bucket) const                                             \
+    {                                                                                              \
+        return m_table.BucketBegin(bucket);                                                        \
+    }                                                                                              \
+    local_iterator end(size_type bucket)                                                           \
+    {                                                                                              \
+        return m_table.BucketEnd(bucket);                                                          \
+    }                                                                                              \
+    const_local_iterator end(size_type bucket) const                                               \
+    {                                                                                              \
+        return m_table.BucketEnd(bucket);                                                          \
+    }                                                                                              \
+    const_local_iterator cbegin(size_type bucket) const                                            \
+    {                                                                                              \
+        return m_table.BucketBegin(bucket);                                                        \
+    }                                                                                              \
+    const_local_iterator cend(size_type bucket) const                                              \
+    {                                                                                              \
+        return m_table.BucketEnd(bucket);                                                          \
+    }                                                                                              \
+                                                                                                   \
+    float load_factor() const noexcept                                                             \
+    {                                                                                              \
+        return m_table.LoadFactor();                                                               \
+    }                                                                                              \
+    float max_load_factor() const noexcept                                                         \
+    {                                                                                              \
+        return m_table.MaxLoadFactor();                                                            \
+    }                                                                                              \
+    void max_load_factor(float factor)                                                             \
+    {                                                                                              \
+        m_table.SetMaxLoadFactor(factor);                                                          \
+    }                                                                                              \
+    void rehash(size_type buckets)                                                                 \
+    {                                                                                              \
+        m_table.Rehash(buckets);                                                                   \
+    }                                                                                              \
+    void reserve(size_type count)                                                                  \
+    {                                                                                              \
+        m_table.Reserve(count);                                                                    \
+    }                                                                                              \
+                                                                                                   \
+private:                                                                                           \
+    Table m_table;                                                                                 \
+                                                                                                   \
+public:
+
+#endif

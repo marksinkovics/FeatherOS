@@ -14,6 +14,8 @@
 #include "kernel/sync/spinlock.h"
 #include "kernel/time/timer.h"
 
+#include <atomic>
+
 namespace FeatherOS::Network
 {
 namespace
@@ -21,7 +23,7 @@ namespace
 
 constexpr uint8_t DefaultHopLimit = 64;
 
-uint16_t next_identification = 1;
+std::atomic<uint16_t> next_identification = 1;
 constinit Sync::SpinLock icmp_error_lock;
 IcmpErrorLimit icmp_error_limit GUARDED_BY(icmp_error_lock) = {.tokens = IcmpErrorBurst,
                                                                .refilled_at_ms = 0};
@@ -86,7 +88,7 @@ void ReplyIpv4(const Ipv4Packet& request, const MacAddress* source_mac, uint8_t*
     };
     uint8_t packet[MaximumIpv4PacketSize];
     const size_t packet_length = BuildIpv4Packet(
-        packet, fields, __atomic_fetch_add(&next_identification, 1, __ATOMIC_RELAXED));
+        packet, fields, next_identification.fetch_add(1, std::memory_order_relaxed));
     if (packet_length != 0)
     {
         SendFrame(*source_mac, EtherTypeIpv4, packet, packet_length);
@@ -365,7 +367,7 @@ SendStatus SendIpv4(const IpAddress& destination, uint8_t protocol, uint8_t* pay
                  checksum_offset);
     uint8_t packet[MaximumIpv4PacketSize];
     const size_t packet_length = BuildIpv4Packet(
-        packet, fields, __atomic_fetch_add(&next_identification, 1, __ATOMIC_RELAXED));
+        packet, fields, next_identification.fetch_add(1, std::memory_order_relaxed));
     if (IsLocalAddress(destination))
     {
         HandleIpv4(fields, nullptr, packet);

@@ -1,0 +1,169 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_HASH_BASE
+#define FEATHEROS_LIBCXX_HASH_BASE
+
+// hash for the built-in types, which <optional>, <variant>, <string_view> and <memory> extend
+// before <functional>.
+
+#include "__featheros_config"
+#include "type_traits"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+// A hash the standard leaves disabled: nothing can construct, copy or call it, which is how
+// is_default_constructible_v<hash<T>> tells the enabled ones apart.
+struct DisabledHash
+{
+    DisabledHash() = delete;
+    DisabledHash(const DisabledHash&) = delete;
+    DisabledHash& operator=(const DisabledHash&) = delete;
+};
+
+template <class T> struct EnumHash
+{
+    size_t operator()(T value) const noexcept
+    {
+        return static_cast<size_t>(static_cast<underlying_type_t<T>>(value));
+    }
+};
+
+// FNV-1a over each character's bytes, low byte first, so the result does not depend on the
+// byte order. A string and a string_view of the same characters hash alike.
+template <class CharT> constexpr size_t HashCharacters(const CharT* text, size_t length) noexcept
+{
+    using Unsigned = make_unsigned_t<CharT>;
+    unsigned long long result = 14695981039346656037ULL;
+    for (size_t index = 0; index != length; ++index)
+    {
+        const auto value = static_cast<Unsigned>(text[index]);
+        for (size_t byte = 0; byte != sizeof(CharT); ++byte)
+        {
+            result ^= static_cast<unsigned char>(value >> (8 * byte));
+            result *= 1099511628211ULL;
+        }
+    }
+    return static_cast<size_t>(result);
+}
+
+constexpr size_t HashCombine(size_t seed, size_t value) noexcept
+{
+    return seed ^ (value + static_cast<size_t>(0x9e3779b97f4a7c15ULL) + (seed << 6) + (seed >> 2));
+}
+} // namespace __detail
+
+template <class T>
+struct hash : conditional_t<is_enum_v<T>, __detail::EnumHash<T>, __detail::DisabledHash>
+{
+};
+
+namespace __detail
+{
+template <class T>
+concept HashEnabled = is_default_constructible_v<hash<T>>;
+} // namespace __detail
+
+#define FEATHEROS_INTEGER_HASH(Type)                                                               \
+    template <> struct hash<Type>                                                                  \
+    {                                                                                              \
+        size_t operator()(Type value) const noexcept                                               \
+        {                                                                                          \
+            return static_cast<size_t>(value);                                                     \
+        }                                                                                          \
+    };
+
+FEATHEROS_INTEGER_HASH(bool)
+FEATHEROS_INTEGER_HASH(char)
+FEATHEROS_INTEGER_HASH(signed char)
+FEATHEROS_INTEGER_HASH(unsigned char)
+FEATHEROS_INTEGER_HASH(char8_t)
+FEATHEROS_INTEGER_HASH(char16_t)
+FEATHEROS_INTEGER_HASH(char32_t)
+FEATHEROS_INTEGER_HASH(wchar_t)
+FEATHEROS_INTEGER_HASH(short)
+FEATHEROS_INTEGER_HASH(unsigned short)
+FEATHEROS_INTEGER_HASH(int)
+FEATHEROS_INTEGER_HASH(unsigned int)
+FEATHEROS_INTEGER_HASH(long)
+FEATHEROS_INTEGER_HASH(unsigned long)
+FEATHEROS_INTEGER_HASH(long long)
+FEATHEROS_INTEGER_HASH(unsigned long long)
+
+#undef FEATHEROS_INTEGER_HASH
+
+// Floating-point values hash their bits, with both zeros as 0 since they compare equal. Bits
+// rather than comparisons, because long double has no arithmetic on AArch64.
+template <> struct hash<float>
+{
+    size_t operator()(float value) const noexcept
+    {
+        const auto bits = __builtin_bit_cast(__UINT32_TYPE__, value);
+        return (bits << 1) == 0 ? 0 : static_cast<size_t>(bits);
+    }
+};
+
+template <> struct hash<double>
+{
+    size_t operator()(double value) const noexcept
+    {
+        const auto bits = __builtin_bit_cast(__UINT64_TYPE__, value);
+        return (bits << 1) == 0 ? 0 : static_cast<size_t>(bits);
+    }
+};
+
+// Clang rejects long double where x86-64 has no floating-point registers, as in the kernel.
+#if !defined(__x86_64__) || defined(__SSE__)
+template <> struct hash<long double>
+{
+    size_t operator()(long double value) const noexcept
+    {
+#if __SIZEOF_LONG_DOUBLE__ == __SIZEOF_DOUBLE__
+        return hash<double>()(__builtin_bit_cast(double, value));
+#else
+        static_assert(sizeof(long double) == 16, "long double is 8 or 16 bytes");
+        struct Words
+        {
+            __UINT64_TYPE__ low;
+            __UINT64_TYPE__ high;
+        };
+        auto words = __builtin_bit_cast(Words, value);
+#if __LDBL_MANT_DIG__ == 64
+        // x87's 80-bit format: the low 16 bits of the upper word are the sign and exponent, the
+        // other 48 are padding.
+        words.high &= 0xffff;
+        const bool zero = words.low == 0 && (words.high & 0x7fff) == 0;
+#else
+        const bool zero = words.low == 0 && (words.high << 1) == 0;
+#endif
+        if (zero)
+        {
+            return 0;
+        }
+        return __detail::HashCombine(static_cast<size_t>(words.low),
+                                     static_cast<size_t>(words.high));
+#endif
+    }
+};
+#endif
+
+template <class T> struct hash<T*>
+{
+    size_t operator()(T* pointer) const noexcept
+    {
+        return reinterpret_cast<size_t>(pointer);
+    }
+};
+
+template <> struct hash<nullptr_t>
+{
+    size_t operator()(nullptr_t) const noexcept
+    {
+        return 0;
+    }
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

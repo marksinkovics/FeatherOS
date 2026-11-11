@@ -1,0 +1,91 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CSTDLIB
+#define FEATHEROS_LIBCXX_CSTDLIB
+
+#include "__featheros_config"
+
+#include <stdlib.h>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+using ::_Exit;
+using ::abort;
+using ::atexit;
+using ::atof;
+using ::atoi;
+using ::atol;
+using ::atoll;
+using ::bsearch;
+using ::calloc;
+using ::div_t;
+using ::exit;
+using ::free;
+using ::getenv;
+using ::labs;
+using ::ldiv;
+using ::ldiv_t;
+using ::llabs;
+using ::lldiv;
+using ::lldiv_t;
+using ::malloc;
+using ::qsort;
+using ::rand;
+using ::realloc;
+using ::srand;
+using ::strtod;
+using ::strtof;
+using ::strtol;
+using ::strtold;
+using ::strtoll;
+using ::strtoul;
+using ::strtoull;
+
+// The overloads C++ adds. They are defined rather than brought in with using, since a host's
+// <stdlib.h> may already add some of them to the global namespace.
+inline int abs(int value)
+{
+    return ::abs(value);
+}
+
+inline long abs(long value)
+{
+    return ::labs(value);
+}
+
+inline long long abs(long long value)
+{
+    return ::llabs(value);
+}
+
+inline float abs(float value)
+{
+    return __builtin_fabsf(value);
+}
+
+inline double abs(double value)
+{
+    return __builtin_fabs(value);
+}
+
+inline long double abs(long double value)
+{
+    return __builtin_fabsl(value);
+}
+
+inline div_t div(int numerator, int denominator)
+{
+    return ::div(numerator, denominator);
+}
+
+inline ldiv_t div(long numerator, long denominator)
+{
+    return ::ldiv(numerator, denominator);
+}
+
+inline lldiv_t div(long long numerator, long long denominator)
+{
+    return ::lldiv(numerator, denominator);
+}
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

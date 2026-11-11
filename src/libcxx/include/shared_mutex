@@ -1,0 +1,297 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_SHARED_MUTEX
+#define FEATHEROS_LIBCXX_SHARED_MUTEX
+
+#include "__featheros_config"
+#include "__thread_support"
+#include "chrono"
+#include "mutex"
+#include "utility"
+
+#include <pthread.h>
+
+// The C library has no pthread_rwlock, so both mutexes are a pthread mutex, a state word and two
+// condition variables (libstdc++'s design without one). A writer first closes the gate to new
+// readers, then waits for the readers inside to leave, so writers are not starved.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+
+class SharedMutexBase
+{
+public:
+    SharedMutexBase() = default;
+    SharedMutexBase(const SharedMutexBase&) = delete;
+    SharedMutexBase& operator=(const SharedMutexBase&) = delete;
+
+    void Lock() noexcept;
+    bool TryLock() noexcept;
+    bool TryLockUntil(chrono::steady_clock::time_point deadline) noexcept;
+    void Unlock() noexcept;
+    void LockShared() noexcept;
+    bool TryLockShared() noexcept;
+    bool TryLockSharedUntil(chrono::steady_clock::time_point deadline) noexcept;
+    void UnlockShared() noexcept;
+
+private:
+    static constexpr unsigned WriterEntered = 1U << 31;
+    static constexpr unsigned MaxReaders = ~WriterEntered;
+
+    pthread_mutex_t m_mutex = PTHREAD_MUTEX_INITIALIZER;
+    // Writers wait here for the gate, readers for room below MaxReaders.
+    Condition m_gate;
+    // A writer that has entered waits here for the readers to leave.
+    Condition m_readers_left;
+    // WriterEntered, plus the number of readers holding the lock.
+    unsigned m_state = 0;
+};
+
+} // namespace __detail
+
+class FEATHEROS_CAPABILITY shared_mutex
+{
+public:
+    shared_mutex() = default;
+    shared_mutex(const shared_mutex&) = delete;
+    shared_mutex& operator=(const shared_mutex&) = delete;
+
+    void lock() FEATHEROS_ACQUIRE()
+    {
+        m_base.Lock();
+    }
+    [[nodiscard]] bool try_lock() FEATHEROS_TRY_ACQUIRE(true)
+    {
+        return m_base.TryLock();
+    }
+    void unlock() FEATHEROS_RELEASE()
+    {
+        m_base.Unlock();
+    }
+    void lock_shared() FEATHEROS_ACQUIRE_SHARED()
+    {
+        m_base.LockShared();
+    }
+    [[nodiscard]] bool try_lock_shared() FEATHEROS_TRY_ACQUIRE_SHARED(true)
+    {
+        return m_base.TryLockShared();
+    }
+    void unlock_shared() FEATHEROS_RELEASE_SHARED()
+    {
+        m_base.UnlockShared();
+    }
+
+private:
+    __detail::SharedMutexBase m_base;
+};
+
+class FEATHEROS_CAPABILITY shared_timed_mutex
+{
+public:
+    shared_timed_mutex() = default;
+    shared_timed_mutex(const shared_timed_mutex&) = delete;
+    shared_timed_mutex& operator=(const shared_timed_mutex&) = delete;
+
+    void lock() FEATHEROS_ACQUIRE()
+    {
+        m_base.Lock();
+    }
+    [[nodiscard]] bool try_lock() FEATHEROS_TRY_ACQUIRE(true)
+    {
+        return m_base.TryLock();
+    }
+    template <class Rep, class Period>
+    [[nodiscard]] bool try_lock_for(const chrono::duration<Rep, Period>& timeout)
+        FEATHEROS_TRY_ACQUIRE(true)
+    {
+        return m_base.TryLockUntil(__detail::SteadyDeadlineAfter(timeout));
+    }
+    template <class Clock, class Duration>
+    [[nodiscard]] bool try_lock_until(const chrono::time_point<Clock, Duration>& deadline)
+        FEATHEROS_TRY_ACQUIRE(true)
+    {
+        static_assert(chrono::is_clock_v<Clock>);
+        while (!m_base.TryLockUntil(__detail::SteadyDeadline(deadline)))
+        {
+            if (Clock::now() >= deadline)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    void unlock() FEATHEROS_RELEASE()
+    {
+        m_base.Unlock();
+    }
+
+    void lock_shared() FEATHEROS_ACQUIRE_SHARED()
+    {
+        m_base.LockShared();
+    }
+    [[nodiscard]] bool try_lock_shared() FEATHEROS_TRY_ACQUIRE_SHARED(true)
+    {
+        return m_base.TryLockShared();
+    }
+    template <class Rep, class Period>
+    [[nodiscard]] bool try_lock_shared_for(const chrono::duration<Rep, Period>& timeout)
+        FEATHEROS_TRY_ACQUIRE_SHARED(true)
+    {
+        return m_base.TryLockSharedUntil(__detail::SteadyDeadlineAfter(timeout));
+    }
+    template <class Clock, class Duration>
+    [[nodiscard]] bool try_lock_shared_until(const chrono::time_point<Clock, Duration>& deadline)
+        FEATHEROS_TRY_ACQUIRE_SHARED(true)
+    {
+        static_assert(chrono::is_clock_v<Clock>);
+        while (!m_base.TryLockSharedUntil(__detail::SteadyDeadline(deadline)))
+        {
+            if (Clock::now() >= deadline)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    void unlock_shared() FEATHEROS_RELEASE_SHARED()
+    {
+        m_base.UnlockShared();
+    }
+
+private:
+    __detail::SharedMutexBase m_base;
+};
+
+template <class Mutex> class [[nodiscard]] shared_lock
+{
+public:
+    using mutex_type = Mutex;
+
+    shared_lock() noexcept = default;
+    explicit shared_lock(mutex_type& mutex) : m_mutex(&mutex)
+    {
+        m_mutex->lock_shared();
+        m_owns = true;
+    }
+    shared_lock(mutex_type& mutex, defer_lock_t) noexcept : m_mutex(&mutex) {}
+    shared_lock(mutex_type& mutex, try_to_lock_t) : m_mutex(&mutex), m_owns(mutex.try_lock_shared())
+    {
+    }
+    shared_lock(mutex_type& mutex, adopt_lock_t) : m_mutex(&mutex), m_owns(true) {}
+    template <class Clock, class Duration>
+    shared_lock(mutex_type& mutex, const chrono::time_point<Clock, Duration>& deadline)
+        : m_mutex(&mutex), m_owns(mutex.try_lock_shared_until(deadline))
+    {
+    }
+    template <class Rep, class Period>
+    shared_lock(mutex_type& mutex, const chrono::duration<Rep, Period>& timeout)
+        : m_mutex(&mutex), m_owns(mutex.try_lock_shared_for(timeout))
+    {
+    }
+    ~shared_lock()
+    {
+        if (m_owns)
+        {
+            m_mutex->unlock_shared();
+        }
+    }
+    shared_lock(const shared_lock&) = delete;
+    shared_lock& operator=(const shared_lock&) = delete;
+    shared_lock(shared_lock&& other) noexcept
+        : m_mutex(_FSTD::exchange(other.m_mutex, nullptr)),
+          m_owns(_FSTD::exchange(other.m_owns, false))
+    {
+    }
+    shared_lock& operator=(shared_lock&& other) noexcept
+    {
+        shared_lock(_FSTD::move(other)).swap(*this);
+        return *this;
+    }
+
+    void lock()
+    {
+        CheckLockable();
+        m_mutex->lock_shared();
+        m_owns = true;
+    }
+    [[nodiscard]] bool try_lock()
+    {
+        CheckLockable();
+        m_owns = m_mutex->try_lock_shared();
+        return m_owns;
+    }
+    template <class Rep, class Period>
+    [[nodiscard]] bool try_lock_for(const chrono::duration<Rep, Period>& timeout)
+    {
+        CheckLockable();
+        m_owns = m_mutex->try_lock_shared_for(timeout);
+        return m_owns;
+    }
+    template <class Clock, class Duration>
+    [[nodiscard]] bool try_lock_until(const chrono::time_point<Clock, Duration>& deadline)
+    {
+        CheckLockable();
+        m_owns = m_mutex->try_lock_shared_until(deadline);
+        return m_owns;
+    }
+    void unlock()
+    {
+        if (!m_owns)
+        {
+            __detail::LibraryAbort("shared_lock::unlock: not locked");
+        }
+        m_mutex->unlock_shared();
+        m_owns = false;
+    }
+
+    void swap(shared_lock& other) noexcept
+    {
+        _FSTD::swap(m_mutex, other.m_mutex);
+        _FSTD::swap(m_owns, other.m_owns);
+    }
+    mutex_type* release() noexcept
+    {
+        m_owns = false;
+        return _FSTD::exchange(m_mutex, nullptr);
+    }
+
+    [[nodiscard]] bool owns_lock() const noexcept
+    {
+        return m_owns;
+    }
+    explicit operator bool() const noexcept
+    {
+        return m_owns;
+    }
+    [[nodiscard]] mutex_type* mutex() const noexcept
+    {
+        return m_mutex;
+    }
+
+    friend void swap(shared_lock& left, shared_lock& right) noexcept
+    {
+        left.swap(right);
+    }
+
+private:
+    void CheckLockable() const
+    {
+        if (m_mutex == nullptr)
+        {
+            __detail::LibraryAbort("shared_lock: no mutex");
+        }
+        if (m_owns)
+        {
+            __detail::LibraryAbort("shared_lock: already locked");
+        }
+    }
+
+    mutex_type* m_mutex = nullptr;
+    bool m_owns = false;
+};
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

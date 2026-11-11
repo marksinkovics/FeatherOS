@@ -1,0 +1,104 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_SEMAPHORE
+#define FEATHEROS_LIBCXX_SEMAPHORE
+
+#include "__featheros_config"
+#include "__thread_support"
+#include "atomic"
+#include "chrono"
+#include "limits"
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+
+inline int64_t AtomicDeadline(chrono::steady_clock::time_point deadline) noexcept
+{
+    return deadline == chrono::steady_clock::time_point::max()
+               ? AtomicWaitForever
+               : static_cast<int64_t>(deadline.time_since_epoch().count());
+}
+
+} // namespace __detail
+
+template <ptrdiff_t LeastMaxValue = numeric_limits<ptrdiff_t>::max()> class counting_semaphore
+{
+    static_assert(LeastMaxValue >= 0, "a semaphore's maximum cannot be negative");
+
+public:
+    static constexpr ptrdiff_t max() noexcept
+    {
+        return LeastMaxValue;
+    }
+
+    constexpr explicit counting_semaphore(ptrdiff_t desired) noexcept : m_count(desired) {}
+    ~counting_semaphore() = default;
+    counting_semaphore(const counting_semaphore&) = delete;
+    counting_semaphore& operator=(const counting_semaphore&) = delete;
+
+    void release(ptrdiff_t update = 1) noexcept
+    {
+        m_count.fetch_add(update, memory_order::release);
+        __detail::AtomicNotify(&m_count);
+    }
+
+    void acquire() noexcept
+    {
+        __detail::AtomicWaitUntil(&m_count, [this]() noexcept { return try_acquire(); });
+    }
+
+    bool try_acquire() noexcept
+    {
+        ptrdiff_t current = m_count.load(memory_order::relaxed);
+        while (current > 0)
+        {
+            if (m_count.compare_exchange_weak(current, current - 1, memory_order::acquire,
+                                              memory_order::relaxed))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    template <class Rep, class Period>
+    bool try_acquire_for(const chrono::duration<Rep, Period>& rel_time) noexcept
+    {
+        return AcquireBefore(__detail::SteadyDeadlineAfter(rel_time));
+    }
+
+    // A deadline on another clock is waited for on the steady clock and then checked on its own.
+    template <class Clock, class Duration>
+    bool try_acquire_until(const chrono::time_point<Clock, Duration>& abs_time) noexcept
+    {
+        while (true)
+        {
+            if (AcquireBefore(__detail::SteadyDeadline(abs_time)))
+            {
+                return true;
+            }
+            if (Clock::now() >= abs_time)
+            {
+                return false;
+            }
+        }
+    }
+
+private:
+    bool AcquireBefore(chrono::steady_clock::time_point deadline) noexcept
+    {
+        return __detail::AtomicWaitUntil(
+            &m_count, [this]() noexcept { return try_acquire(); },
+            __detail::AtomicDeadline(deadline));
+    }
+
+    atomic<ptrdiff_t> m_count;
+};
+
+using binary_semaphore = counting_semaphore<1>;
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

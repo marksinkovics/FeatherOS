@@ -1,0 +1,16 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_CSIGNAL
+#define FEATHEROS_LIBCXX_CSIGNAL
+
+#include "__featheros_config"
+
+#include <signal.h>
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+using ::raise;
+using ::sig_atomic_t;
+using ::signal;
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

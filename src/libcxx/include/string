@@ -1,0 +1,1636 @@
+// -*- C++ -*-
+#ifndef FEATHEROS_LIBCXX_STRING
+#define FEATHEROS_LIBCXX_STRING
+
+#include "__char_traits"
+#include "__featheros_config"
+#include "__hash_base"
+#include "__iterator_base"
+#include "__memory_base"
+#include "__pointer_iterator"
+#include "compare"
+#include "initializer_list"
+#include "iterator"
+#include "limits"
+#include "memory"
+#include "string_view"
+#include "type_traits"
+#include "utility"
+
+// Left out: iostreams (operator<<, operator>>, getline), pmr strings, to_wstring and allocators
+// whose pointer is not a plain pointer. Where the standard throws (a position past the end, a
+// size past max_size(), stoi of text that is not a number) the library's abort hook runs.
+
+namespace FEATHEROS_STD_NAMESPACE
+{
+
+namespace __detail
+{
+template <class T, class CharT, class Traits>
+concept StringViewLike = is_convertible_v<const T&, basic_string_view<CharT, Traits>> &&
+                         !is_convertible_v<const T&, const CharT*>;
+} // namespace __detail
+
+template <class CharT, class Traits = char_traits<CharT>, class Allocator = allocator<CharT>>
+class basic_string
+{
+    using AllocatorTraits = allocator_traits<Allocator>;
+    using View = basic_string_view<CharT, Traits>;
+
+public:
+    using traits_type = Traits;
+    using value_type = CharT;
+    using allocator_type = Allocator;
+    using size_type = size_t;
+    using difference_type = ptrdiff_t;
+    using reference = CharT&;
+    using const_reference = const CharT&;
+    using pointer = typename AllocatorTraits::pointer;
+    using const_pointer = typename AllocatorTraits::const_pointer;
+    using iterator = __detail::PointerIterator<CharT, basic_string>;
+    using const_iterator = __detail::PointerIterator<const CharT, basic_string>;
+    using reverse_iterator = _FSTD::reverse_iterator<iterator>;
+    using const_reverse_iterator = _FSTD::reverse_iterator<const_iterator>;
+
+    static constexpr size_type npos = static_cast<size_type>(-1);
+
+    static_assert(is_same_v<CharT, typename Traits::char_type>,
+                  "basic_string's traits must be for its character type");
+    static_assert(is_same_v<typename Allocator::value_type, CharT>,
+                  "basic_string's allocator must allocate its character type");
+    static_assert(is_pointer_v<typename allocator_traits<Allocator>::pointer>,
+                  "basic_string needs an allocator whose pointer is a plain pointer");
+
+    constexpr basic_string() noexcept(noexcept(Allocator())) : basic_string(Allocator()) {}
+    constexpr explicit basic_string(const Allocator& allocator) noexcept : m_allocator(allocator) {}
+
+    // Swift imports no default arguments, so its CxxStdlib overlay needs the forms without an
+    // allocator as constructors of their own, as libc++ has them.
+    constexpr basic_string(size_type count, CharT character)
+        : basic_string(count, character, Allocator())
+    {
+    }
+    constexpr basic_string(size_type count, CharT character, const Allocator& allocator)
+        : m_allocator(allocator)
+    {
+        InitFill(count, character);
+    }
+
+    constexpr basic_string(const basic_string& other, size_type position,
+                           const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        other.CheckPosition(position);
+        Init(other.Data() + position, other.m_size - position);
+    }
+
+    constexpr basic_string(const basic_string& other, size_type position, size_type count,
+                           const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        other.CheckPosition(position);
+        Init(other.Data() + position, other.Clamp(position, count));
+    }
+
+    constexpr basic_string(basic_string&& other, size_type position,
+                           const Allocator& allocator = Allocator())
+        : basic_string(_FSTD::move(other), position, npos, allocator)
+    {
+    }
+
+    constexpr basic_string(basic_string&& other, size_type position, size_type count,
+                           const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        other.CheckPosition(position);
+        const size_type length = other.Clamp(position, count);
+        if (AllocatorTraits::is_always_equal::value || m_allocator == other.m_allocator)
+        {
+            Steal(other);
+            erase(position + length);
+            erase(0, position);
+        }
+        else
+        {
+            Init(other.Data() + position, length);
+        }
+    }
+
+    constexpr basic_string(const CharT* text, size_type count)
+        : basic_string(text, count, Allocator())
+    {
+    }
+    constexpr basic_string(const CharT* text, size_type count, const Allocator& allocator)
+        : m_allocator(allocator)
+    {
+        Init(text, count);
+    }
+
+    constexpr basic_string(const CharT* text) : basic_string(text, Allocator()) {}
+    constexpr basic_string(const CharT* text, const Allocator& allocator) : m_allocator(allocator)
+    {
+        Init(text, Traits::length(text));
+    }
+
+    basic_string(nullptr_t) = delete;
+
+    template <__detail::ClassicInput I>
+    constexpr basic_string(I first, I last, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        if constexpr (__detail::ClassicForward<I>)
+        {
+            InitCounted(first, static_cast<size_type>(_FSTD::distance(first, last)));
+        }
+        else
+        {
+            for (; first != last; ++first)
+            {
+                push_back(static_cast<CharT>(*first));
+            }
+        }
+    }
+
+    template <__detail::ContainerCompatibleRange<CharT> R>
+    constexpr basic_string(from_range_t, R&& range, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        if constexpr (ranges::forward_range<R> || ranges::sized_range<R>)
+        {
+            InitCounted(ranges::begin(range), __detail::RangeLength(range));
+        }
+        else
+        {
+            for (auto iterator = ranges::begin(range), last = ranges::end(range); iterator != last;
+                 ++iterator)
+            {
+                push_back(static_cast<CharT>(*iterator));
+            }
+        }
+    }
+
+    constexpr basic_string(initializer_list<CharT> characters,
+                           const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        Init(characters.begin(), characters.size());
+    }
+
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr explicit basic_string(const T& text, const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        const View view = text;
+        Init(view.data(), view.size());
+    }
+
+    template <class T>
+        requires is_convertible_v<const T&, basic_string_view<CharT, Traits>>
+    constexpr basic_string(const T& text, size_type position, size_type count,
+                           const Allocator& allocator = Allocator())
+        : m_allocator(allocator)
+    {
+        const View view = View(text).substr(position, count);
+        Init(view.data(), view.size());
+    }
+
+    constexpr basic_string(const basic_string& other)
+        : m_allocator(AllocatorTraits::select_on_container_copy_construction(other.m_allocator))
+    {
+        Init(other.Data(), other.m_size);
+    }
+
+    constexpr basic_string(basic_string&& other) noexcept
+        : m_allocator(_FSTD::move(other.m_allocator))
+    {
+        Steal(other);
+    }
+
+    constexpr basic_string(const basic_string& other, const type_identity_t<Allocator>& allocator)
+        : m_allocator(allocator)
+    {
+        Init(other.Data(), other.m_size);
+    }
+
+    constexpr basic_string(basic_string&& other, const type_identity_t<Allocator>& allocator)
+        : m_allocator(allocator)
+    {
+        if (AllocatorTraits::is_always_equal::value || m_allocator == other.m_allocator)
+        {
+            Steal(other);
+        }
+        else
+        {
+            Init(other.Data(), other.m_size);
+        }
+    }
+
+    constexpr ~basic_string()
+    {
+        FreeHeap();
+    }
+
+    constexpr basic_string& operator=(const basic_string& other)
+    {
+        if (this == &other)
+        {
+            return *this;
+        }
+        if constexpr (AllocatorTraits::propagate_on_container_copy_assignment::value)
+        {
+            if (!AllocatorTraits::is_always_equal::value && m_allocator != other.m_allocator)
+            {
+                MakeEmptyLocal();
+            }
+            m_allocator = other.m_allocator;
+        }
+        return assign(other.Data(), other.m_size);
+    }
+
+    constexpr basic_string& operator=(basic_string&& other) noexcept(
+        AllocatorTraits::propagate_on_container_move_assignment::value ||
+        AllocatorTraits::is_always_equal::value)
+    {
+        if (this == &other)
+        {
+            return *this;
+        }
+        if constexpr (AllocatorTraits::propagate_on_container_move_assignment::value)
+        {
+            MakeEmptyLocal();
+            m_allocator = _FSTD::move(other.m_allocator);
+            Steal(other);
+        }
+        else
+        {
+            if (AllocatorTraits::is_always_equal::value || m_allocator == other.m_allocator)
+            {
+                MakeEmptyLocal();
+                Steal(other);
+            }
+            else
+            {
+                assign(other.Data(), other.m_size);
+            }
+        }
+        return *this;
+    }
+
+    constexpr basic_string& operator=(const CharT* text)
+    {
+        return assign(text, Traits::length(text));
+    }
+    constexpr basic_string& operator=(CharT character)
+    {
+        return assign(1, character);
+    }
+    constexpr basic_string& operator=(initializer_list<CharT> characters)
+    {
+        return assign(characters.begin(), characters.size());
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr basic_string& operator=(const T& text)
+    {
+        const View view = text;
+        return assign(view.data(), view.size());
+    }
+    basic_string& operator=(nullptr_t) = delete;
+
+    constexpr basic_string& assign(size_type count, CharT character)
+    {
+        return ReplaceFill(0, m_size, count, character);
+    }
+    constexpr basic_string& assign(const basic_string& other)
+    {
+        return *this = other;
+    }
+    constexpr basic_string& assign(const basic_string& other, size_type position,
+                                   size_type count = npos)
+    {
+        other.CheckPosition(position);
+        return assign(other.Data() + position, other.Clamp(position, count));
+    }
+    constexpr basic_string& assign(basic_string&& other) noexcept(
+        AllocatorTraits::propagate_on_container_move_assignment::value ||
+        AllocatorTraits::is_always_equal::value)
+    {
+        return *this = _FSTD::move(other);
+    }
+    constexpr basic_string& assign(const CharT* text, size_type count)
+    {
+        return ReplaceText(0, m_size, text, count);
+    }
+    constexpr basic_string& assign(const CharT* text)
+    {
+        return assign(text, Traits::length(text));
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr basic_string& assign(const T& text)
+    {
+        const View view = text;
+        return assign(view.data(), view.size());
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr basic_string& assign(const T& text, size_type position, size_type count = npos)
+    {
+        const View view = View(text).substr(position, count);
+        return assign(view.data(), view.size());
+    }
+    template <__detail::ClassicInput I> constexpr basic_string& assign(I first, I last)
+    {
+        return ReplaceIterators(0, m_size, first, last);
+    }
+    constexpr basic_string& assign(initializer_list<CharT> characters)
+    {
+        return assign(characters.begin(), characters.size());
+    }
+    template <__detail::ContainerCompatibleRange<CharT> R>
+    constexpr basic_string& assign_range(R&& range)
+    {
+        return ReplaceRange(0, m_size, _FSTD::forward<R>(range));
+    }
+
+    constexpr allocator_type get_allocator() const noexcept
+    {
+        return m_allocator;
+    }
+
+    constexpr reference at(size_type index)
+    {
+        CheckIndex(index);
+        return Data()[index];
+    }
+    constexpr const_reference at(size_type index) const
+    {
+        CheckIndex(index);
+        return Data()[index];
+    }
+    constexpr reference operator[](size_type index)
+    {
+        return Data()[index];
+    }
+    constexpr const_reference operator[](size_type index) const
+    {
+        return Data()[index];
+    }
+    constexpr reference front()
+    {
+        return Data()[0];
+    }
+    constexpr const_reference front() const
+    {
+        return Data()[0];
+    }
+    constexpr reference back()
+    {
+        return Data()[m_size - 1];
+    }
+    constexpr const_reference back() const
+    {
+        return Data()[m_size - 1];
+    }
+    constexpr CharT* data() noexcept
+    {
+        return Data();
+    }
+    constexpr const CharT* data() const noexcept
+    {
+        return Data();
+    }
+    constexpr const CharT* c_str() const noexcept
+    {
+        return Data();
+    }
+    constexpr operator basic_string_view<CharT, Traits>() const noexcept
+    {
+        return View(Data(), m_size);
+    }
+
+    constexpr iterator begin() noexcept
+    {
+        return iterator(Data());
+    }
+    constexpr const_iterator begin() const noexcept
+    {
+        return const_iterator(Data());
+    }
+    constexpr const_iterator cbegin() const noexcept
+    {
+        return begin();
+    }
+    constexpr iterator end() noexcept
+    {
+        return iterator(Data() + m_size);
+    }
+    constexpr const_iterator end() const noexcept
+    {
+        return const_iterator(Data() + m_size);
+    }
+    constexpr const_iterator cend() const noexcept
+    {
+        return end();
+    }
+    constexpr reverse_iterator rbegin() noexcept
+    {
+        return reverse_iterator(end());
+    }
+    constexpr const_reverse_iterator rbegin() const noexcept
+    {
+        return const_reverse_iterator(end());
+    }
+    constexpr const_reverse_iterator crbegin() const noexcept
+    {
+        return rbegin();
+    }
+    constexpr reverse_iterator rend() noexcept
+    {
+        return reverse_iterator(begin());
+    }
+    constexpr const_reverse_iterator rend() const noexcept
+    {
+        return const_reverse_iterator(begin());
+    }
+    constexpr const_reverse_iterator crend() const noexcept
+    {
+        return rend();
+    }
+
+    [[nodiscard]] constexpr bool empty() const noexcept
+    {
+        return m_size == 0;
+    }
+    constexpr size_type size() const noexcept
+    {
+        return m_size;
+    }
+    constexpr size_type length() const noexcept
+    {
+        return m_size;
+    }
+    constexpr size_type max_size() const noexcept
+    {
+        const size_type allocator_limit = AllocatorTraits::max_size(m_allocator);
+        const auto difference_limit =
+            static_cast<size_type>(numeric_limits<difference_type>::max());
+        // One character is the terminator.
+        return (allocator_limit < difference_limit ? allocator_limit : difference_limit) - 1;
+    }
+    constexpr size_type capacity() const noexcept
+    {
+        return m_capacity;
+    }
+
+    constexpr void reserve(size_type new_capacity)
+    {
+        if (new_capacity > m_capacity)
+        {
+            if (new_capacity > max_size())
+            {
+                LengthError();
+            }
+            MoveTo(new_capacity);
+        }
+    }
+
+    constexpr void shrink_to_fit()
+    {
+        if (!IsLocal() && m_capacity > m_size)
+        {
+            MoveTo(m_size);
+        }
+    }
+
+    constexpr void clear() noexcept
+    {
+        SetSize(0);
+    }
+
+    constexpr basic_string& insert(size_type index, size_type count, CharT character)
+    {
+        CheckPosition(index);
+        return ReplaceFill(index, 0, count, character);
+    }
+    constexpr basic_string& insert(size_type index, const CharT* text)
+    {
+        return insert(index, text, Traits::length(text));
+    }
+    constexpr basic_string& insert(size_type index, const CharT* text, size_type count)
+    {
+        CheckPosition(index);
+        return ReplaceText(index, 0, text, count);
+    }
+    constexpr basic_string& insert(size_type index, const basic_string& other)
+    {
+        return insert(index, other.Data(), other.m_size);
+    }
+    constexpr basic_string& insert(size_type index, const basic_string& other,
+                                   size_type other_index, size_type count = npos)
+    {
+        other.CheckPosition(other_index);
+        return insert(index, other.Data() + other_index, other.Clamp(other_index, count));
+    }
+    constexpr iterator insert(const_iterator position, CharT character)
+    {
+        return insert(position, 1, character);
+    }
+    constexpr iterator insert(const_iterator position, size_type count, CharT character)
+    {
+        const size_type index = IndexOf(position);
+        ReplaceFill(index, 0, count, character);
+        return begin() + static_cast<difference_type>(index);
+    }
+    template <__detail::ClassicInput I>
+    constexpr iterator insert(const_iterator position, I first, I last)
+    {
+        const size_type index = IndexOf(position);
+        ReplaceIterators(index, 0, first, last);
+        return begin() + static_cast<difference_type>(index);
+    }
+    constexpr iterator insert(const_iterator position, initializer_list<CharT> characters)
+    {
+        const size_type index = IndexOf(position);
+        ReplaceText(index, 0, characters.begin(), characters.size());
+        return begin() + static_cast<difference_type>(index);
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr basic_string& insert(size_type index, const T& text)
+    {
+        const View view = text;
+        return insert(index, view.data(), view.size());
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr basic_string& insert(size_type index, const T& text, size_type text_index,
+                                   size_type count = npos)
+    {
+        const View view = View(text).substr(text_index, count);
+        return insert(index, view.data(), view.size());
+    }
+    template <__detail::ContainerCompatibleRange<CharT> R>
+    constexpr iterator insert_range(const_iterator position, R&& range)
+    {
+        const size_type index = IndexOf(position);
+        ReplaceRange(index, 0, _FSTD::forward<R>(range));
+        return begin() + static_cast<difference_type>(index);
+    }
+
+    constexpr basic_string& erase(size_type index = 0, size_type count = npos)
+    {
+        CheckPosition(index);
+        const size_type removed = Clamp(index, count);
+        if (removed != 0)
+        {
+            CharT* const data = Data();
+            Traits::move(data + index, data + index + removed, m_size - index - removed);
+            SetSize(m_size - removed);
+        }
+        return *this;
+    }
+    constexpr iterator erase(const_iterator position)
+    {
+        const size_type index = IndexOf(position);
+        erase(index, 1);
+        return begin() + static_cast<difference_type>(index);
+    }
+    constexpr iterator erase(const_iterator first, const_iterator last)
+    {
+        const size_type index = IndexOf(first);
+        erase(index, static_cast<size_type>(last - first));
+        return begin() + static_cast<difference_type>(index);
+    }
+
+    constexpr void push_back(CharT character)
+    {
+        if (m_size < m_capacity)
+        {
+            CharT* const data = Data();
+            Traits::assign(data[m_size], character);
+            ++m_size;
+            Traits::assign(data[m_size], CharT());
+            return;
+        }
+        ReplaceFill(m_size, 0, 1, character);
+    }
+
+    constexpr void pop_back()
+    {
+        SetSize(m_size - 1);
+    }
+
+    constexpr basic_string& append(size_type count, CharT character)
+    {
+        return ReplaceFill(m_size, 0, count, character);
+    }
+    constexpr basic_string& append(const basic_string& other)
+    {
+        return append(other.Data(), other.m_size);
+    }
+    constexpr basic_string& append(const basic_string& other, size_type position,
+                                   size_type count = npos)
+    {
+        other.CheckPosition(position);
+        return append(other.Data() + position, other.Clamp(position, count));
+    }
+    constexpr basic_string& append(const CharT* text, size_type count)
+    {
+        return ReplaceText(m_size, 0, text, count);
+    }
+    constexpr basic_string& append(const CharT* text)
+    {
+        return append(text, Traits::length(text));
+    }
+    template <__detail::ClassicInput I> constexpr basic_string& append(I first, I last)
+    {
+        return ReplaceIterators(m_size, 0, first, last);
+    }
+    constexpr basic_string& append(initializer_list<CharT> characters)
+    {
+        return append(characters.begin(), characters.size());
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr basic_string& append(const T& text)
+    {
+        const View view = text;
+        return append(view.data(), view.size());
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr basic_string& append(const T& text, size_type position, size_type count = npos)
+    {
+        const View view = View(text).substr(position, count);
+        return append(view.data(), view.size());
+    }
+    template <__detail::ContainerCompatibleRange<CharT> R>
+    constexpr basic_string& append_range(R&& range)
+    {
+        return ReplaceRange(m_size, 0, _FSTD::forward<R>(range));
+    }
+
+    constexpr basic_string& operator+=(const basic_string& other)
+    {
+        return append(other);
+    }
+    constexpr basic_string& operator+=(CharT character)
+    {
+        push_back(character);
+        return *this;
+    }
+    constexpr basic_string& operator+=(const CharT* text)
+    {
+        return append(text);
+    }
+    constexpr basic_string& operator+=(initializer_list<CharT> characters)
+    {
+        return append(characters);
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr basic_string& operator+=(const T& text)
+    {
+        return append(text);
+    }
+
+    constexpr basic_string& replace(size_type position, size_type count, const basic_string& other)
+    {
+        return replace(position, count, other.Data(), other.m_size);
+    }
+    constexpr basic_string& replace(const_iterator first, const_iterator last,
+                                    const basic_string& other)
+    {
+        return ReplaceText(IndexOf(first), static_cast<size_type>(last - first), other.Data(),
+                           other.m_size);
+    }
+    constexpr basic_string& replace(size_type position, size_type count, const basic_string& other,
+                                    size_type other_position, size_type other_count = npos)
+    {
+        other.CheckPosition(other_position);
+        return replace(position, count, other.Data() + other_position,
+                       other.Clamp(other_position, other_count));
+    }
+    constexpr basic_string& replace(size_type position, size_type count, const CharT* text,
+                                    size_type text_count)
+    {
+        CheckPosition(position);
+        return ReplaceText(position, Clamp(position, count), text, text_count);
+    }
+    constexpr basic_string& replace(const_iterator first, const_iterator last, const CharT* text,
+                                    size_type text_count)
+    {
+        return ReplaceText(IndexOf(first), static_cast<size_type>(last - first), text, text_count);
+    }
+    constexpr basic_string& replace(size_type position, size_type count, const CharT* text)
+    {
+        return replace(position, count, text, Traits::length(text));
+    }
+    constexpr basic_string& replace(const_iterator first, const_iterator last, const CharT* text)
+    {
+        return replace(first, last, text, Traits::length(text));
+    }
+    constexpr basic_string& replace(size_type position, size_type count, size_type fill_count,
+                                    CharT character)
+    {
+        CheckPosition(position);
+        return ReplaceFill(position, Clamp(position, count), fill_count, character);
+    }
+    constexpr basic_string& replace(const_iterator first, const_iterator last, size_type fill_count,
+                                    CharT character)
+    {
+        return ReplaceFill(IndexOf(first), static_cast<size_type>(last - first), fill_count,
+                           character);
+    }
+    template <__detail::ClassicInput I>
+    constexpr basic_string& replace(const_iterator first, const_iterator last, I first_input,
+                                    I last_input)
+    {
+        return ReplaceIterators(IndexOf(first), static_cast<size_type>(last - first), first_input,
+                                last_input);
+    }
+    constexpr basic_string& replace(const_iterator first, const_iterator last,
+                                    initializer_list<CharT> characters)
+    {
+        return replace(first, last, characters.begin(), characters.size());
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr basic_string& replace(size_type position, size_type count, const T& text)
+    {
+        const View view = text;
+        return replace(position, count, view.data(), view.size());
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr basic_string& replace(const_iterator first, const_iterator last, const T& text)
+    {
+        const View view = text;
+        return replace(first, last, view.data(), view.size());
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr basic_string& replace(size_type position, size_type count, const T& text,
+                                    size_type text_position, size_type text_count = npos)
+    {
+        const View view = View(text).substr(text_position, text_count);
+        return replace(position, count, view.data(), view.size());
+    }
+    template <__detail::ContainerCompatibleRange<CharT> R>
+    constexpr basic_string& replace_with_range(const_iterator first, const_iterator last, R&& range)
+    {
+        return ReplaceRange(IndexOf(first), static_cast<size_type>(last - first),
+                            _FSTD::forward<R>(range));
+    }
+
+    constexpr size_type copy(CharT* target, size_type count, size_type position = 0) const
+    {
+        CheckPosition(position);
+        const size_type copied = Clamp(position, count);
+        Traits::copy(target, Data() + position, copied);
+        return copied;
+    }
+
+    constexpr void resize(size_type count)
+    {
+        resize(count, CharT());
+    }
+    constexpr void resize(size_type count, CharT character)
+    {
+        if (count > m_size)
+        {
+            append(count - m_size, character);
+        }
+        else
+        {
+            SetSize(count);
+        }
+    }
+
+    // operation gets the buffer and count and returns the new size; the characters past the
+    // old size up to count are whatever they were, so it must write them before reading.
+    template <class Operation>
+    constexpr void resize_and_overwrite(size_type count, Operation operation)
+    {
+        reserve(count);
+        const auto new_size = static_cast<size_type>(_FSTD::move(operation)(Data(), count));
+        SetSize(new_size);
+    }
+
+    constexpr void
+    swap(basic_string& other) noexcept(AllocatorTraits::propagate_on_container_swap::value ||
+                                       AllocatorTraits::is_always_equal::value)
+    {
+        _FSTD::swap(m_storage, other.m_storage);
+        _FSTD::swap(m_size, other.m_size);
+        _FSTD::swap(m_capacity, other.m_capacity);
+        if constexpr (AllocatorTraits::propagate_on_container_swap::value)
+        {
+            using _FSTD::swap;
+            swap(m_allocator, other.m_allocator);
+        }
+    }
+
+    constexpr size_type find(const basic_string& other, size_type position = 0) const noexcept
+    {
+        return View(*this).find(View(other), position);
+    }
+    constexpr size_type find(const CharT* text, size_type position, size_type count) const
+    {
+        return View(*this).find(text, position, count);
+    }
+    constexpr size_type find(const CharT* text, size_type position = 0) const
+    {
+        return View(*this).find(text, position);
+    }
+    constexpr size_type find(CharT character, size_type position = 0) const noexcept
+    {
+        return View(*this).find(character, position);
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr size_type find(const T& text, size_type position = 0) const
+        noexcept(is_nothrow_convertible_v<const T&, View>)
+    {
+        return View(*this).find(View(text), position);
+    }
+
+    constexpr size_type rfind(const basic_string& other, size_type position = npos) const noexcept
+    {
+        return View(*this).rfind(View(other), position);
+    }
+    constexpr size_type rfind(const CharT* text, size_type position, size_type count) const
+    {
+        return View(*this).rfind(text, position, count);
+    }
+    constexpr size_type rfind(const CharT* text, size_type position = npos) const
+    {
+        return View(*this).rfind(text, position);
+    }
+    constexpr size_type rfind(CharT character, size_type position = npos) const noexcept
+    {
+        return View(*this).rfind(character, position);
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr size_type rfind(const T& text, size_type position = npos) const
+        noexcept(is_nothrow_convertible_v<const T&, View>)
+    {
+        return View(*this).rfind(View(text), position);
+    }
+
+    constexpr size_type find_first_of(const basic_string& set,
+                                      size_type position = 0) const noexcept
+    {
+        return View(*this).find_first_of(View(set), position);
+    }
+    constexpr size_type find_first_of(const CharT* set, size_type position, size_type count) const
+    {
+        return View(*this).find_first_of(set, position, count);
+    }
+    constexpr size_type find_first_of(const CharT* set, size_type position = 0) const
+    {
+        return View(*this).find_first_of(set, position);
+    }
+    constexpr size_type find_first_of(CharT character, size_type position = 0) const noexcept
+    {
+        return View(*this).find_first_of(character, position);
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr size_type find_first_of(const T& set, size_type position = 0) const
+        noexcept(is_nothrow_convertible_v<const T&, View>)
+    {
+        return View(*this).find_first_of(View(set), position);
+    }
+
+    constexpr size_type find_last_of(const basic_string& set,
+                                     size_type position = npos) const noexcept
+    {
+        return View(*this).find_last_of(View(set), position);
+    }
+    constexpr size_type find_last_of(const CharT* set, size_type position, size_type count) const
+    {
+        return View(*this).find_last_of(set, position, count);
+    }
+    constexpr size_type find_last_of(const CharT* set, size_type position = npos) const
+    {
+        return View(*this).find_last_of(set, position);
+    }
+    constexpr size_type find_last_of(CharT character, size_type position = npos) const noexcept
+    {
+        return View(*this).find_last_of(character, position);
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr size_type find_last_of(const T& set, size_type position = npos) const
+        noexcept(is_nothrow_convertible_v<const T&, View>)
+    {
+        return View(*this).find_last_of(View(set), position);
+    }
+
+    constexpr size_type find_first_not_of(const basic_string& set,
+                                          size_type position = 0) const noexcept
+    {
+        return View(*this).find_first_not_of(View(set), position);
+    }
+    constexpr size_type find_first_not_of(const CharT* set, size_type position,
+                                          size_type count) const
+    {
+        return View(*this).find_first_not_of(set, position, count);
+    }
+    constexpr size_type find_first_not_of(const CharT* set, size_type position = 0) const
+    {
+        return View(*this).find_first_not_of(set, position);
+    }
+    constexpr size_type find_first_not_of(CharT character, size_type position = 0) const noexcept
+    {
+        return View(*this).find_first_not_of(character, position);
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr size_type find_first_not_of(const T& set, size_type position = 0) const
+        noexcept(is_nothrow_convertible_v<const T&, View>)
+    {
+        return View(*this).find_first_not_of(View(set), position);
+    }
+
+    constexpr size_type find_last_not_of(const basic_string& set,
+                                         size_type position = npos) const noexcept
+    {
+        return View(*this).find_last_not_of(View(set), position);
+    }
+    constexpr size_type find_last_not_of(const CharT* set, size_type position,
+                                         size_type count) const
+    {
+        return View(*this).find_last_not_of(set, position, count);
+    }
+    constexpr size_type find_last_not_of(const CharT* set, size_type position = npos) const
+    {
+        return View(*this).find_last_not_of(set, position);
+    }
+    constexpr size_type find_last_not_of(CharT character, size_type position = npos) const noexcept
+    {
+        return View(*this).find_last_not_of(character, position);
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr size_type find_last_not_of(const T& set, size_type position = npos) const
+        noexcept(is_nothrow_convertible_v<const T&, View>)
+    {
+        return View(*this).find_last_not_of(View(set), position);
+    }
+
+    constexpr int compare(const basic_string& other) const noexcept
+    {
+        return View(*this).compare(View(other));
+    }
+    constexpr int compare(size_type position, size_type count, const basic_string& other) const
+    {
+        return View(*this).compare(position, count, View(other));
+    }
+    constexpr int compare(size_type position, size_type count, const basic_string& other,
+                          size_type other_position, size_type other_count = npos) const
+    {
+        return View(*this).compare(position, count, View(other), other_position, other_count);
+    }
+    constexpr int compare(const CharT* text) const
+    {
+        return View(*this).compare(text);
+    }
+    constexpr int compare(size_type position, size_type count, const CharT* text) const
+    {
+        return View(*this).compare(position, count, text);
+    }
+    constexpr int compare(size_type position, size_type count, const CharT* text,
+                          size_type text_count) const
+    {
+        return View(*this).compare(position, count, text, text_count);
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr int compare(const T& text) const noexcept(is_nothrow_convertible_v<const T&, View>)
+    {
+        return View(*this).compare(View(text));
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr int compare(size_type position, size_type count, const T& text) const
+    {
+        return View(*this).compare(position, count, View(text));
+    }
+    template <__detail::StringViewLike<CharT, Traits> T>
+    constexpr int compare(size_type position, size_type count, const T& text,
+                          size_type text_position, size_type text_count = npos) const
+    {
+        return View(*this).compare(position, count, View(text), text_position, text_count);
+    }
+
+    constexpr bool starts_with(basic_string_view<CharT, Traits> prefix) const noexcept
+    {
+        return View(*this).starts_with(prefix);
+    }
+    constexpr bool starts_with(CharT character) const noexcept
+    {
+        return View(*this).starts_with(character);
+    }
+    constexpr bool starts_with(const CharT* prefix) const
+    {
+        return View(*this).starts_with(prefix);
+    }
+    constexpr bool ends_with(basic_string_view<CharT, Traits> suffix) const noexcept
+    {
+        return View(*this).ends_with(suffix);
+    }
+    constexpr bool ends_with(CharT character) const noexcept
+    {
+        return View(*this).ends_with(character);
+    }
+    constexpr bool ends_with(const CharT* suffix) const
+    {
+        return View(*this).ends_with(suffix);
+    }
+    constexpr bool contains(basic_string_view<CharT, Traits> text) const noexcept
+    {
+        return View(*this).contains(text);
+    }
+    constexpr bool contains(CharT character) const noexcept
+    {
+        return View(*this).contains(character);
+    }
+    constexpr bool contains(const CharT* text) const
+    {
+        return View(*this).contains(text);
+    }
+
+    constexpr basic_string substr(size_type position = 0, size_type count = npos) const&
+    {
+        return basic_string(*this, position, count);
+    }
+    constexpr basic_string substr(size_type position = 0, size_type count = npos) &&
+    {
+        return basic_string(_FSTD::move(*this), position, count);
+    }
+
+private:
+    // Up to LocalCapacity characters and the terminator live inside the object; longer strings
+    // live on the heap. A capacity of exactly LocalCapacity marks the local form, since a heap
+    // block is only ever allocated for more. No member points into the object itself, so
+    // strings move by copying their bytes and constant evaluation can keep either form.
+    static constexpr size_type LocalCapacity =
+        (16 / sizeof(CharT) > 1 ? 16 / sizeof(CharT) : 2) - 1;
+
+    union Storage
+    {
+        constexpr Storage() noexcept : local{} {}
+        constexpr explicit Storage(CharT* block) noexcept : heap(block) {}
+
+        CharT local[LocalCapacity + 1];
+        CharT* heap;
+    };
+
+    Storage m_storage;
+    size_type m_size = 0;
+    size_type m_capacity = LocalCapacity;
+    [[no_unique_address]] Allocator m_allocator;
+
+    constexpr bool IsLocal() const noexcept
+    {
+        return m_capacity == LocalCapacity;
+    }
+
+    constexpr CharT* Data() noexcept
+    {
+        return IsLocal() ? m_storage.local : m_storage.heap;
+    }
+
+    constexpr const CharT* Data() const noexcept
+    {
+        return IsLocal() ? m_storage.local : m_storage.heap;
+    }
+
+    constexpr void SetSize(size_type size) noexcept
+    {
+        m_size = size;
+        Traits::assign(Data()[size], CharT());
+    }
+
+    [[noreturn]] static void LengthError()
+    {
+        __detail::LibraryAbort("basic_string: the length exceeds max_size()");
+    }
+
+    constexpr void CheckIndex(size_type index) const
+    {
+        if (index >= m_size)
+        {
+            __detail::LibraryAbort("basic_string::at: the index is out of range");
+        }
+    }
+
+    constexpr void CheckPosition(size_type position) const
+    {
+        if (position > m_size)
+        {
+            __detail::LibraryAbort("basic_string: the position is out of range");
+        }
+    }
+
+    constexpr size_type Clamp(size_type position, size_type count) const noexcept
+    {
+        const size_type available = m_size - position;
+        return count < available ? count : available;
+    }
+
+    constexpr size_type IndexOf(const_iterator position) const noexcept
+    {
+        return static_cast<size_type>(position - cbegin());
+    }
+
+    // True if text may point into this string, which then must not move before it is read.
+    // Constant evaluation cannot order unrelated pointers, so it always says yes there.
+    constexpr bool MayAlias(const CharT* text) const noexcept
+    {
+        if (__builtin_is_constant_evaluated())
+        {
+            return true;
+        }
+        const CharT* const data = Data();
+        return !(text < data) && !(data + m_size < text);
+    }
+
+    // Returns a block for at least capacity characters and the terminator, and how many
+    // characters it holds besides the terminator, which is always more than LocalCapacity.
+    constexpr allocation_result<CharT*> AllocateCharacters(size_type capacity)
+    {
+        auto [block, count] = AllocatorTraits::allocate_at_least(m_allocator, capacity + 1);
+        if (__builtin_is_constant_evaluated())
+        {
+            for (size_type index = 0; index != count; ++index)
+            {
+                __detail::ConstructAt(block + index);
+            }
+        }
+        return {block, count - 1};
+    }
+
+    constexpr void FreeHeap() noexcept
+    {
+        if (!IsLocal())
+        {
+            AllocatorTraits::deallocate(m_allocator, m_storage.heap, m_capacity + 1);
+        }
+    }
+
+    constexpr void MakeEmptyLocal() noexcept
+    {
+        FreeHeap();
+        __detail::ConstructAt(&m_storage);
+        m_size = 0;
+        m_capacity = LocalCapacity;
+    }
+
+    // Leaves other empty and local. The allocators are the caller's business.
+    constexpr void Steal(basic_string& other) noexcept
+    {
+        m_storage = other.m_storage;
+        m_size = other.m_size;
+        m_capacity = other.m_capacity;
+        __detail::ConstructAt(&other.m_storage);
+        other.m_size = 0;
+        other.m_capacity = LocalCapacity;
+    }
+
+    // Only on an empty local string: room for size characters.
+    constexpr CharT* PrepareEmpty(size_type size)
+    {
+        if (size > LocalCapacity)
+        {
+            if (size > max_size())
+            {
+                LengthError();
+            }
+            auto [block, capacity] = AllocateCharacters(size);
+            __detail::ConstructAt(&m_storage, block);
+            m_capacity = capacity;
+        }
+        return Data();
+    }
+
+    constexpr void Init(const CharT* text, size_type count)
+    {
+        Traits::copy(PrepareEmpty(count), text, count);
+        SetSize(count);
+    }
+
+    constexpr void InitFill(size_type count, CharT character)
+    {
+        Traits::assign(PrepareEmpty(count), count, character);
+        SetSize(count);
+    }
+
+    template <class I> constexpr void InitCounted(I first, size_type count)
+    {
+        CharT* out = PrepareEmpty(count);
+        for (size_type index = 0; index != count; ++index, (void)++first)
+        {
+            Traits::assign(out[index], static_cast<CharT>(*first));
+        }
+        SetSize(count);
+    }
+
+    constexpr size_type GrownCapacity(size_type needed) const
+    {
+        const size_type maximum = max_size();
+        if (needed > maximum)
+        {
+            LengthError();
+        }
+        if (needed <= m_capacity)
+        {
+            return m_capacity;
+        }
+        if (m_capacity >= maximum / 2)
+        {
+            return maximum;
+        }
+        return 2 * m_capacity > needed ? 2 * m_capacity : needed;
+    }
+
+    // Builds the new contents, size characters, with fill before the old storage goes away, so
+    // fill may read the old contents. A capacity of at most LocalCapacity means local storage.
+    template <class Fill> constexpr void Rebuild(size_type size, size_type capacity, Fill fill)
+    {
+        if (capacity <= LocalCapacity)
+        {
+            CharT buffer[LocalCapacity + 1]{};
+            fill(buffer);
+            FreeHeap();
+            __detail::ConstructAt(&m_storage);
+            m_capacity = LocalCapacity;
+            Traits::copy(m_storage.local, buffer, size);
+        }
+        else
+        {
+            auto [block, allocated] = AllocateCharacters(capacity);
+            fill(block);
+            FreeHeap();
+            __detail::ConstructAt(&m_storage, block);
+            m_capacity = allocated;
+        }
+        SetSize(size);
+    }
+
+    constexpr void MoveTo(size_type capacity)
+    {
+        const CharT* const old = Data();
+        const size_type size = m_size;
+        Rebuild(size, capacity, [&](CharT* out) { Traits::copy(out, old, size); });
+    }
+
+    // The one primitive behind insert, replace, append and assign: removed characters at
+    // position become count characters that write puts in place. may_alias says the written
+    // characters may come from this string, which then is rebuilt rather than shifted in place,
+    // unless they only go to the end.
+    template <class Write>
+    constexpr basic_string& Splice(size_type position, size_type removed, size_type count,
+                                   bool may_alias, Write write)
+    {
+        const size_type old_size = m_size;
+        const size_type kept = old_size - removed;
+        if (count > max_size() - kept)
+        {
+            LengthError();
+        }
+        const size_type new_size = kept + count;
+        const size_type tail = old_size - position - removed;
+        const bool shift_in_place = !may_alias || (tail == 0 && removed == 0);
+        if (new_size <= m_capacity && shift_in_place)
+        {
+            CharT* const data = Data();
+            if (count != removed && tail != 0)
+            {
+                Traits::move(data + position + count, data + position + removed, tail);
+            }
+            write(data + position);
+            SetSize(new_size);
+            return *this;
+        }
+        const CharT* const old = Data();
+        Rebuild(new_size, GrownCapacity(new_size),
+                [&](CharT* out)
+                {
+                    Traits::copy(out, old, position);
+                    write(out + position);
+                    Traits::copy(out + position + count, old + position + removed, tail);
+                });
+        return *this;
+    }
+
+    constexpr basic_string& ReplaceText(size_type position, size_type removed, const CharT* text,
+                                        size_type count)
+    {
+        return Splice(position, removed, count, count != 0 && MayAlias(text),
+                      [&](CharT* out) { Traits::copy(out, text, count); });
+    }
+
+    constexpr basic_string& ReplaceFill(size_type position, size_type removed, size_type count,
+                                        CharT character)
+    {
+        return Splice(position, removed, count, false,
+                      [&](CharT* out) { Traits::assign(out, count, character); });
+    }
+
+    // Iterators may point into this string, so anything but a pointer is copied first.
+    template <class I, class S>
+    constexpr basic_string& ReplaceIterators(size_type position, size_type removed, I first, S last)
+    {
+        if constexpr (contiguous_iterator<I> && sized_sentinel_for<S, I> &&
+                      is_same_v<iter_value_t<I>, CharT>)
+        {
+            return ReplaceText(position, removed, _FSTD::to_address(first),
+                               static_cast<size_type>(last - first));
+        }
+        else
+        {
+            basic_string copy(m_allocator);
+            for (; first != last; ++first)
+            {
+                copy.push_back(static_cast<CharT>(*first));
+            }
+            return ReplaceText(position, removed, copy.Data(), copy.m_size);
+        }
+    }
+
+    template <class R>
+    constexpr basic_string& ReplaceRange(size_type position, size_type removed, R&& range)
+    {
+        return ReplaceIterators(position, removed, ranges::begin(range), ranges::end(range));
+    }
+};
+
+template <__detail::ClassicInput I,
+          class Allocator = allocator<typename iterator_traits<I>::value_type>>
+basic_string(I, I, Allocator = Allocator())
+    -> basic_string<typename iterator_traits<I>::value_type,
+                    char_traits<typename iterator_traits<I>::value_type>, Allocator>;
+
+template <ranges::input_range R, class Allocator = allocator<ranges::range_value_t<R>>>
+basic_string(from_range_t, R&&, Allocator = Allocator())
+    -> basic_string<ranges::range_value_t<R>, char_traits<ranges::range_value_t<R>>, Allocator>;
+
+template <class CharT, class Traits, class Allocator = allocator<CharT>>
+explicit basic_string(basic_string_view<CharT, Traits>, const Allocator& = Allocator())
+    -> basic_string<CharT, Traits, Allocator>;
+
+template <class CharT, class Traits, class Allocator = allocator<CharT>>
+basic_string(basic_string_view<CharT, Traits>,
+             typename basic_string<CharT, Traits, Allocator>::size_type,
+             typename basic_string<CharT, Traits, Allocator>::size_type,
+             const Allocator& = Allocator()) -> basic_string<CharT, Traits, Allocator>;
+
+namespace __detail
+{
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+ConcatenateStrings(const Allocator& allocator, const CharT* left, size_t left_count,
+                   const CharT* right, size_t right_count)
+{
+    basic_string<CharT, Traits, Allocator> result(allocator);
+    result.reserve(left_count + right_count);
+    result.append(left, left_count);
+    result.append(right, right_count);
+    return result;
+}
+
+template <class String> constexpr auto CopyAllocator(const String& text)
+{
+    return allocator_traits<typename String::allocator_type>::select_on_container_copy_construction(
+        text.get_allocator());
+}
+} // namespace __detail
+
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(const basic_string<CharT, Traits, Allocator>& left,
+          const basic_string<CharT, Traits, Allocator>& right)
+{
+    return __detail::ConcatenateStrings<CharT, Traits>(__detail::CopyAllocator(left), left.data(),
+                                                       left.size(), right.data(), right.size());
+}
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(const basic_string<CharT, Traits, Allocator>& left, const CharT* right)
+{
+    return __detail::ConcatenateStrings<CharT, Traits>(__detail::CopyAllocator(left), left.data(),
+                                                       left.size(), right, Traits::length(right));
+}
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(const basic_string<CharT, Traits, Allocator>& left, CharT right)
+{
+    return __detail::ConcatenateStrings<CharT, Traits>(__detail::CopyAllocator(left), left.data(),
+                                                       left.size(), &right, 1);
+}
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(const CharT* left, const basic_string<CharT, Traits, Allocator>& right)
+{
+    return __detail::ConcatenateStrings<CharT, Traits>(
+        __detail::CopyAllocator(right), left, Traits::length(left), right.data(), right.size());
+}
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(CharT left, const basic_string<CharT, Traits, Allocator>& right)
+{
+    return __detail::ConcatenateStrings<CharT, Traits>(__detail::CopyAllocator(right), &left, 1,
+                                                       right.data(), right.size());
+}
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(basic_string<CharT, Traits, Allocator>&& left,
+          basic_string<CharT, Traits, Allocator>&& right)
+{
+    // Reuses whichever operand already has the room, as the standard suggests.
+    if (left.size() + right.size() > left.capacity() &&
+        left.size() + right.size() <= right.capacity() &&
+        left.get_allocator() == right.get_allocator())
+    {
+        return _FSTD::move(right.insert(0, left));
+    }
+    return _FSTD::move(left.append(right));
+}
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(basic_string<CharT, Traits, Allocator>&& left,
+          const basic_string<CharT, Traits, Allocator>& right)
+{
+    return _FSTD::move(left.append(right));
+}
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(basic_string<CharT, Traits, Allocator>&& left, const CharT* right)
+{
+    return _FSTD::move(left.append(right));
+}
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(basic_string<CharT, Traits, Allocator>&& left, CharT right)
+{
+    left.push_back(right);
+    return _FSTD::move(left);
+}
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(const basic_string<CharT, Traits, Allocator>& left,
+          basic_string<CharT, Traits, Allocator>&& right)
+{
+    return _FSTD::move(right.insert(0, left));
+}
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(const CharT* left, basic_string<CharT, Traits, Allocator>&& right)
+{
+    return _FSTD::move(right.insert(0, left));
+}
+template <class CharT, class Traits, class Allocator>
+constexpr basic_string<CharT, Traits, Allocator>
+operator+(CharT left, basic_string<CharT, Traits, Allocator>&& right)
+{
+    right.insert(right.begin(), left);
+    return _FSTD::move(right);
+}
+
+template <class CharT, class Traits, class Allocator>
+constexpr bool operator==(const basic_string<CharT, Traits, Allocator>& left,
+                          const basic_string<CharT, Traits, Allocator>& right) noexcept
+{
+    return left.size() == right.size() &&
+           Traits::compare(left.data(), right.data(), left.size()) == 0;
+}
+template <class CharT, class Traits, class Allocator>
+constexpr bool operator==(const basic_string<CharT, Traits, Allocator>& left, const CharT* right)
+{
+    return basic_string_view<CharT, Traits>(left) == basic_string_view<CharT, Traits>(right);
+}
+template <class CharT, class Traits, class Allocator>
+constexpr auto operator<=>(const basic_string<CharT, Traits, Allocator>& left,
+                           const basic_string<CharT, Traits, Allocator>& right) noexcept
+{
+    return basic_string_view<CharT, Traits>(left) <=> basic_string_view<CharT, Traits>(right);
+}
+template <class CharT, class Traits, class Allocator>
+constexpr auto operator<=>(const basic_string<CharT, Traits, Allocator>& left, const CharT* right)
+{
+    return basic_string_view<CharT, Traits>(left) <=> basic_string_view<CharT, Traits>(right);
+}
+
+template <class CharT, class Traits, class Allocator>
+constexpr void
+swap(basic_string<CharT, Traits, Allocator>& left,
+     basic_string<CharT, Traits, Allocator>& right) noexcept(noexcept(left.swap(right)))
+{
+    left.swap(right);
+}
+
+template <class CharT, class Traits, class Allocator, class U>
+constexpr typename basic_string<CharT, Traits, Allocator>::size_type
+erase(basic_string<CharT, Traits, Allocator>& text, const U& value)
+{
+    const auto old_size = text.size();
+    auto out = text.begin();
+    for (auto in = text.begin(), last = text.end(); in != last; ++in)
+    {
+        if (!(*in == value))
+        {
+            *out = *in;
+            ++out;
+        }
+    }
+    text.erase(out, text.end());
+    return old_size - text.size();
+}
+
+template <class CharT, class Traits, class Allocator, class Predicate>
+constexpr typename basic_string<CharT, Traits, Allocator>::size_type
+erase_if(basic_string<CharT, Traits, Allocator>& text, Predicate predicate)
+{
+    const auto old_size = text.size();
+    auto out = text.begin();
+    for (auto in = text.begin(), last = text.end(); in != last; ++in)
+    {
+        if (!predicate(*in))
+        {
+            *out = *in;
+            ++out;
+        }
+    }
+    text.erase(out, text.end());
+    return old_size - text.size();
+}
+
+using string = basic_string<char>;
+using u8string = basic_string<char8_t>;
+using u16string = basic_string<char16_t>;
+using u32string = basic_string<char32_t>;
+using wstring = basic_string<wchar_t>;
+
+// The rest of these are compiled into featheros_cxx.
+int stoi(const string& text, size_t* end = nullptr, int base = 10);
+long stol(const string& text, size_t* end = nullptr, int base = 10);
+long long stoll(const string& text, size_t* end = nullptr, int base = 10);
+unsigned long stoul(const string& text, size_t* end = nullptr, int base = 10);
+unsigned long long stoull(const string& text, size_t* end = nullptr, int base = 10);
+float stof(const string& text, size_t* end = nullptr);
+double stod(const string& text, size_t* end = nullptr);
+long double stold(const string& text, size_t* end = nullptr);
+
+string to_string(int value);
+string to_string(unsigned value);
+string to_string(long value);
+string to_string(unsigned long value);
+string to_string(long long value);
+string to_string(unsigned long long value);
+string to_string(float value);
+string to_string(double value);
+string to_string(long double value);
+
+template <class CharT, class Allocator>
+    requires(is_same_v<CharT, char> || is_same_v<CharT, char8_t> || is_same_v<CharT, char16_t> ||
+             is_same_v<CharT, char32_t> || is_same_v<CharT, wchar_t>)
+struct hash<basic_string<CharT, char_traits<CharT>, Allocator>>
+{
+    size_t operator()(const basic_string<CharT, char_traits<CharT>, Allocator>& text) const noexcept
+    {
+        return __detail::HashCharacters(text.data(), text.size());
+    }
+};
+
+inline namespace literals
+{
+inline namespace string_literals
+{
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wuser-defined-literals"
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wliteral-suffix"
+#endif
+constexpr string operator""s(const char* text, size_t length)
+{
+    return string(text, length);
+}
+constexpr u8string operator""s(const char8_t* text, size_t length)
+{
+    return u8string(text, length);
+}
+constexpr u16string operator""s(const char16_t* text, size_t length)
+{
+    return u16string(text, length);
+}
+constexpr u32string operator""s(const char32_t* text, size_t length)
+{
+    return u32string(text, length);
+}
+constexpr wstring operator""s(const wchar_t* text, size_t length)
+{
+    return wstring(text, length);
+}
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
+} // namespace string_literals
+} // namespace literals
+
+// Every member of std::string is compiled once, into featheros_cxx, rather than into each
+// program that uses it.
+extern template class basic_string<char>;
+
+} // namespace FEATHEROS_STD_NAMESPACE
+
+#endif

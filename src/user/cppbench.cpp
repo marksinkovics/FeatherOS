@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <utility>
+#include <vector>
 
 // The workloads of swiftbench (src/user/swiftbench), ported line by line, so their check values
 // match: life's Grid and json's parser become C++ classes over the same steps.
@@ -39,105 +41,6 @@ enum Workload : unsigned char
     LibrarySort,
     Json,
     WorkloadCount,
-};
-
-template <typename T> T&& Move(T& value)
-{
-    return static_cast<T&&>(value);
-}
-
-// A growable array, as there is no std::vector. Without placement new, growing default-constructs
-// the larger array and moves the elements over.
-template <typename T> class Vector
-{
-public:
-    Vector() = default;
-    Vector(const Vector&) = delete;
-    Vector& operator=(const Vector&) = delete;
-
-    Vector(Vector&& other) noexcept
-        : m_data(other.m_data), m_size(other.m_size), m_capacity(other.m_capacity)
-    {
-        other.m_data = nullptr;
-        other.m_size = 0;
-        other.m_capacity = 0;
-    }
-
-    Vector& operator=(Vector&& other) noexcept
-    {
-        if (this != &other)
-        {
-            delete[] m_data;
-            m_data = other.m_data;
-            m_size = other.m_size;
-            m_capacity = other.m_capacity;
-            other.m_data = nullptr;
-            other.m_size = 0;
-            other.m_capacity = 0;
-        }
-        return *this;
-    }
-
-    ~Vector()
-    {
-        delete[] m_data;
-    }
-
-    size_t Size() const
-    {
-        return m_size;
-    }
-
-    T& operator[](size_t index)
-    {
-        return m_data[index];
-    }
-
-    const T& operator[](size_t index) const
-    {
-        return m_data[index];
-    }
-
-    void Append(T value)
-    {
-        Reserve(m_size + 1);
-        m_data[m_size++] = Move(value);
-    }
-
-    void Append(const T* values, size_t count)
-    {
-        Reserve(m_size + count);
-        for (size_t index = 0; index < count; ++index)
-        {
-            m_data[m_size++] = values[index];
-        }
-    }
-
-private:
-    T* m_data = nullptr;
-    size_t m_size = 0;
-    size_t m_capacity = 0;
-
-    void Reserve(size_t needed)
-    {
-        if (needed <= m_capacity)
-        {
-            return;
-        }
-        size_t grown = m_capacity == 0 ? 4 : m_capacity * 2;
-        while (grown < needed)
-        {
-            grown *= 2;
-        }
-        T* larger = new T[grown];
-        for (size_t index = 0; index < m_size; ++index)
-        {
-            larger[index] = Move(m_data[index]);
-        }
-        delete[] m_data;
-        m_data = larger;
-        m_capacity = grown;
-    }
 };
 
 class SplitMix
@@ -414,46 +317,30 @@ struct JsonValue
 {
     JsonKind kind = JsonKind::Null;
     bool truth = false;
-    Vector<uint8_t> text;
-    Vector<JsonValue> elements;
-    Vector<JsonMember> members;
+    std::vector<uint8_t> text;
+    std::vector<JsonValue> elements;
+    std::vector<JsonMember> members;
 };
 
 struct JsonMember
 {
-    Vector<uint8_t> key;
+    std::vector<uint8_t> key;
     JsonValue value;
 };
 
-bool SameBytes(const Vector<uint8_t>& left, const Vector<uint8_t>& right)
-{
-    if (left.Size() != right.Size())
-    {
-        return false;
-    }
-    for (size_t index = 0; index < left.Size(); ++index)
-    {
-        if (left[index] != right[index])
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
 // A repeated key keeps its first place and its last value. json switches to a dictionary past 8
 // members, which the benchmark's objects never have, so the port only searches in order.
-void AddMember(Vector<JsonMember>* members, JsonMember member)
+void AddMember(std::vector<JsonMember>* members, JsonMember member)
 {
-    for (size_t index = 0; index < members->Size(); ++index)
+    for (size_t index = 0; index < members->size(); ++index)
     {
-        if (SameBytes((*members)[index].key, member.key))
+        if ((*members)[index].key == member.key)
         {
-            (*members)[index].value = Move(member.value);
+            (*members)[index].value = std::move(member.value);
             return;
         }
     }
-    members->Append(Move(member));
+    members->push_back(std::move(member));
 }
 
 bool IsDigit(int byte)
@@ -476,29 +363,29 @@ int HexDigitValue(int byte)
     return byte >= 0 && lower >= 'a' && lower <= 'f' ? lower - 'a' + 10 : -1;
 }
 
-void AppendUtf8(uint32_t scalar, Vector<uint8_t>* text)
+void AppendUtf8(uint32_t scalar, std::vector<uint8_t>* text)
 {
     if (scalar < 0x80)
     {
-        text->Append(static_cast<uint8_t>(scalar));
+        text->push_back(static_cast<uint8_t>(scalar));
     }
     else if (scalar < 0x800)
     {
-        text->Append(static_cast<uint8_t>(0xc0 | scalar >> 6));
-        text->Append(static_cast<uint8_t>(0x80 | (scalar & 0x3f)));
+        text->push_back(static_cast<uint8_t>(0xc0 | scalar >> 6));
+        text->push_back(static_cast<uint8_t>(0x80 | (scalar & 0x3f)));
     }
     else if (scalar < 0x10000)
     {
-        text->Append(static_cast<uint8_t>(0xe0 | scalar >> 12));
-        text->Append(static_cast<uint8_t>(0x80 | (scalar >> 6 & 0x3f)));
-        text->Append(static_cast<uint8_t>(0x80 | (scalar & 0x3f)));
+        text->push_back(static_cast<uint8_t>(0xe0 | scalar >> 12));
+        text->push_back(static_cast<uint8_t>(0x80 | (scalar >> 6 & 0x3f)));
+        text->push_back(static_cast<uint8_t>(0x80 | (scalar & 0x3f)));
     }
     else
     {
-        text->Append(static_cast<uint8_t>(0xf0 | scalar >> 18));
-        text->Append(static_cast<uint8_t>(0x80 | (scalar >> 12 & 0x3f)));
-        text->Append(static_cast<uint8_t>(0x80 | (scalar >> 6 & 0x3f)));
-        text->Append(static_cast<uint8_t>(0x80 | (scalar & 0x3f)));
+        text->push_back(static_cast<uint8_t>(0xf0 | scalar >> 18));
+        text->push_back(static_cast<uint8_t>(0x80 | (scalar >> 12 & 0x3f)));
+        text->push_back(static_cast<uint8_t>(0x80 | (scalar >> 6 & 0x3f)));
+        text->push_back(static_cast<uint8_t>(0x80 | (scalar & 0x3f)));
     }
 }
 
@@ -617,7 +504,7 @@ private:
             {
                 return false;
             }
-            AddMember(&value->members, Move(member));
+            AddMember(&value->members, std::move(member));
             SkipWhitespace();
             if (Peek() == ',')
             {
@@ -658,7 +545,7 @@ private:
             {
                 return false;
             }
-            value->elements.Append(Move(element));
+            value->elements.push_back(std::move(element));
             SkipWhitespace();
             if (Peek() == ',')
             {
@@ -683,7 +570,7 @@ private:
         return m_depth <= JsonMaximumDepth || Fail("nested too deeply");
     }
 
-    bool ParseString(Vector<uint8_t>* text)
+    bool ParseString(std::vector<uint8_t>* text)
     {
         ++m_offset;
         while (true)
@@ -698,7 +585,7 @@ private:
                 }
                 ++m_offset;
             }
-            text->Append(m_bytes + start, m_offset - start);
+            text->insert(text->end(), m_bytes + start, m_bytes + m_offset);
             const int byte = Peek();
             if (byte < 0)
             {
@@ -723,7 +610,7 @@ private:
                 {
                     return false;
                 }
-                text->Append(m_bytes + m_offset, length);
+                text->insert(text->end(), m_bytes + m_offset, m_bytes + m_offset + length);
                 m_offset += length;
             }
             else
@@ -734,7 +621,7 @@ private:
     }
 
     // Surrogate errors point at the escape that is wrong.
-    bool ParseEscape(Vector<uint8_t>* text)
+    bool ParseEscape(std::vector<uint8_t>* text)
     {
         const size_t start = m_offset;
         ++m_offset;
@@ -771,7 +658,7 @@ private:
         }
         if (simple >= 0)
         {
-            text->Append(static_cast<uint8_t>(simple));
+            text->push_back(static_cast<uint8_t>(simple));
             ++m_offset;
             return true;
         }
@@ -887,7 +774,7 @@ private:
         return true;
     }
 
-    bool ParseNumber(Vector<uint8_t>* text)
+    bool ParseNumber(std::vector<uint8_t>* text)
     {
         const size_t start = m_offset;
         if (Peek() == '-')
@@ -930,7 +817,7 @@ private:
         {
             return false;
         }
-        text->Append(m_bytes + start, m_offset - start);
+        text->insert(text->end(), m_bytes + start, m_bytes + m_offset);
         return true;
     }
 
@@ -982,17 +869,18 @@ private:
     }
 };
 
-void AppendText(Vector<uint8_t>* text, const char* characters)
+void AppendText(std::vector<uint8_t>* text, const char* characters)
 {
-    text->Append(reinterpret_cast<const uint8_t*>(characters), strlen(characters));
+    const auto* bytes = reinterpret_cast<const uint8_t*>(characters);
+    text->insert(text->end(), bytes, bytes + strlen(characters));
 }
 
 // Objects of 8 members, so json's parser searches them in order rather than through a
 // dictionary, as the port does.
-Vector<uint8_t> MakeDocument()
+std::vector<uint8_t> MakeDocument()
 {
     SplitMix generator(3);
-    Vector<uint8_t> text;
+    std::vector<uint8_t> text;
     char buffer[96];
     AppendText(&text, "[");
     for (unsigned long long index = 0; index < JsonObjects; ++index)
@@ -1025,28 +913,28 @@ void Tally(const JsonValue& value, unsigned long long* values, unsigned long lon
         break;
     case JsonKind::Number:
     case JsonKind::String:
-        *bytes += value.text.Size();
+        *bytes += value.text.size();
         break;
     case JsonKind::Array:
-        for (size_t index = 0; index < value.elements.Size(); ++index)
+        for (size_t index = 0; index < value.elements.size(); ++index)
         {
             Tally(value.elements[index], values, bytes);
         }
         break;
     case JsonKind::Object:
-        for (size_t index = 0; index < value.members.Size(); ++index)
+        for (size_t index = 0; index < value.members.size(); ++index)
         {
-            *bytes += value.members[index].key.Size();
+            *bytes += value.members[index].key.size();
             Tally(value.members[index].value, values, bytes);
         }
         break;
     }
 }
 
-unsigned long long RunJson(const Vector<uint8_t>& document)
+unsigned long long RunJson(const std::vector<uint8_t>& document)
 {
-    JsonParser parser(&document[0], document.Size());
-    Vector<JsonValue> parsed;
+    JsonParser parser(document.data(), document.size());
+    std::vector<JsonValue> parsed;
     while (true)
     {
         JsonValue value;
@@ -1054,7 +942,7 @@ unsigned long long RunJson(const Vector<uint8_t>& document)
         {
             break;
         }
-        parsed.Append(Move(value));
+        parsed.push_back(std::move(value));
     }
     if (parser.Error() != nullptr)
     {
@@ -1063,11 +951,11 @@ unsigned long long RunJson(const Vector<uint8_t>& document)
     }
     unsigned long long values = 0;
     unsigned long long bytes = 0;
-    for (size_t index = 0; index < parsed.Size(); ++index)
+    for (size_t index = 0; index < parsed.size(); ++index)
     {
         Tally(parsed[index], &values, &bytes);
     }
-    return document.Size() + values + bytes;
+    return document.size() + values + bytes;
 }
 
 struct Limit
@@ -1102,7 +990,7 @@ template <typename Body> void Measure(const char* name, const Limit& limit, Body
 }
 
 void Run(Workload workload, const Limit& limit, const uint32_t* sort_values,
-         const Vector<uint8_t>& document)
+         const std::vector<uint8_t>& document)
 {
     const char* name = WorkloadNames[workload];
     switch (workload)
@@ -1180,7 +1068,7 @@ int main(int argc, char** argv)
     {
         sort_values[index] = static_cast<uint32_t>(generator.Next());
     }
-    const Vector<uint8_t> document = MakeDocument();
+    const std::vector<uint8_t> document = MakeDocument();
     for (size_t index = 0; index < chosen_count; ++index)
     {
         Run(chosen[index], limit, sort_values, document);
