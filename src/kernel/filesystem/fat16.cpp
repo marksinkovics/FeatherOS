@@ -1,9 +1,11 @@
 #include "fat16.h"
 
 #include "kernel/filesystem/fat_names.h"
+#include "fs/partition.h"
 #include "kernel/storage/block_device.h"
-#include "kernel/storage/partition.h"
+#include "kernel/storage/core_block_device.h"
 
+#include <array>
 #include <stddef.h>
 
 namespace FeatherOS::FAT16
@@ -29,6 +31,7 @@ constexpr uint32_t RootDirectory = 0;
 // FAT limits a directory to 65536 entries; the bound also stops a looping cluster chain.
 constexpr uint32_t MaximumDirectoryEntries = 65536;
 constexpr uint32_t MaximumPathLength = 128;
+constexpr size_t MaximumPartitions = 16;
 
 enum class Lookup : uint8_t
 {
@@ -1004,10 +1007,11 @@ bool SetParent(uint32_t directory, uint32_t parent)
 bool Mount()
 {
     mounted = false;
-    Partition::Range partitions[Partition::MaximumPartitions];
-    const uint32_t partition_count = Partition::Find(partitions);
+    std::array<FeatherDisk::Partition::Range, MaximumPartitions> partitions{};
+    const size_t partition_count =
+        FeatherDisk::Partition::Find(BlockDevice::CoreDevice(), partitions);
     uint8_t boot_sector[BytesPerSector];
-    for (uint32_t index = 0; index < partition_count; ++index)
+    for (size_t index = 0; index < partition_count; ++index)
     {
         if (MountPartition(partitions[index].first_sector, partitions[index].sector_count,
                            boot_sector))

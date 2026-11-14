@@ -88,10 +88,11 @@ set(SRC
     ${SRCROOT}/framebuffer/framebuffer.cpp
     ${SRCROOT}/framebuffer/term.cpp
     ${SRCROOT}/filesystem/initramfs.cpp
+    ${SRCROOT}/filesystem/core_host.cpp
     ${SRCROOT}/filesystem/fat16.cpp
     ${SRCROOT}/filesystem/fat_names.cpp
     ${SRCROOT}/filesystem/path.cpp
-    ${SRCROOT}/storage/partition.cpp
+    ${SRCROOT}/storage/core_block_device.cpp
     ${SRCROOT}/network/address.cpp
     ${SRCROOT}/network/arp.cpp
     ${SRCROOT}/network/checksum.cpp
@@ -132,4 +133,4 @@ if (FEATHEROS_KERNEL_TESTS)
 endif ()
 
 target_sources(${KERNEL_BINARY} PRIVATE ${SRC})
-target_link_libraries(${KERNEL_BINARY} PRIVATE featheros_cxx_headers)
+target_link_libraries(${KERNEL_BINARY} PRIVATE featheros_cxx_headers featherdisk_core)

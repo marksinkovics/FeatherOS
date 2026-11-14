@@ -20,6 +20,10 @@ featheros_fetch_catch2()
 list(APPEND CMAKE_MODULE_PATH "${FEATHEROS_CATCH2_SOURCE_DIR}/extras")
 include(Catch)
 
+# The shared filesystem core builds its own library and tests, which leave with it at the split.
+set(FEATHERDISK_CATCH2_TARGET Catch2::Catch2WithMain)
+add_subdirectory("${FEATHEROS_ROOT}/src/fs/core" "${CMAKE_CURRENT_BINARY_DIR}/fs_core")
+
 add_executable(featheros_unit_tests
     kernel/filesystem/fat_names_tests.cpp
     kernel/filesystem/filesystem_tests.cpp
@@ -124,7 +128,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat16.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/fat_names.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"
-    "${FEATHEROS_ROOT}/src/kernel/storage/partition.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/core_block_device.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/devices.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/procfs.cpp"
@@ -245,7 +249,8 @@ target_include_directories(featheros_unit_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${FEATHEROS_ROOT}/deps/limine"
 )
-target_link_libraries(featheros_unit_tests PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(featheros_unit_tests PRIVATE Catch2::Catch2WithMain featherdisk_core
+    featherdisk_standard_host)
 
 catch_discover_tests(featheros_unit_tests)
 # The Swift programs' host-testable parts, as one host executable per program built with the

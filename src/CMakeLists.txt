@@ -2,6 +2,10 @@ set(KERNEL_BINARY "kernel.elf")
 set(SRCROOT ${PROJECT_SOURCE_DIR}/src)
 
 add_subdirectory(${SRCROOT}/libcxx)
+# The shared filesystem core, with the kernel's flags and standard library.
+set(FEATHERDISK_FREESTANDING ON)
+set(FEATHERDISK_STD_TARGET featheros_cxx_headers)
+add_subdirectory(${SRCROOT}/fs/core)
 add_subdirectory(${SRCROOT}/kernel)
 add_subdirectory(${SRCROOT}/sample)
 

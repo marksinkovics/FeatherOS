@@ -796,24 +796,6 @@ TEST_CASE("FAT16 mounts a partition from a GUID partition table")
     REQUIRE(ReadWhole("/NEW.TXT") == "x");
 }
 
-TEST_CASE("a GUID partition table with a bad header or entry CRC mounts nothing")
-{
-    MakeFat16Disk("contents");
-    ConvertToGpt();
-    disk[1][40] ^= 1;
-    REQUIRE_FALSE(FeatherOS::VFS::MountBlockDevice());
-
-    MakeFat16Disk("contents");
-    ConvertToGpt();
-    disk[2][100] ^= 1;
-    REQUIRE_FALSE(FeatherOS::VFS::MountBlockDevice());
-
-    MakeFat16Disk("contents");
-    ConvertToGpt();
-    std::memcpy(disk[1].data(), "EFI PARX", 8);
-    REQUIRE_FALSE(FeatherOS::VFS::MountBlockDevice());
-}
-
 namespace
 {
 
