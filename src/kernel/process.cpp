@@ -9,6 +9,7 @@
 #include "kernel/filesystem/path.h"
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/tmpfs.h"
+#include "kernel/filesystem/vfs.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/network/settings.h"
@@ -2713,20 +2714,63 @@ uint64_t ChangeDirectorySyscall(void* context, uint64_t path)
     {
         return copied;
     }
-    const uint64_t result = Files::CheckDirectory(path_text);
-    if (User::IsSyscallError(result))
+    return Files::ChangeDirectory(path_text, process->working_directory);
+}
+
+// Whether directory is point or lies inside it, by characters alone, as both are resolved.
+bool DirectoryWithin(const char* directory, const char* point)
+{
+    if (point[0] == '/' && point[1] == '\0')
     {
-        return result;
+        return true;
     }
-    for (size_t index = 0; index < sizeof(path_text); ++index)
+    size_t length = 0;
+    while (point[length] != '\0' && directory[length] == point[length])
     {
-        process->working_directory[index] = path_text[index];
-        if (path_text[index] == '\0')
+        ++length;
+    }
+    return point[length] == '\0' && (directory[length] == '\0' || directory[length] == '/');
+}
+
+// Runs under the filesystem lock, which ChangeDirectory also holds while it writes a working
+// directory.
+bool AnyWorkingDirectoryWithin(const char* point)
+{
+    Sync::SpinLockGuard guard(process_lock);
+    for (const ProcessRecord* process = process_list; process != nullptr; process = process->next)
+    {
+        if (DirectoryWithin(process->working_directory, point))
         {
-            break;
+            return true;
         }
     }
-    return 0;
+    return false;
+}
+
+uint64_t MountSyscall(void* context, uint64_t source, uint64_t target, uint64_t type)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    char source_text[User::MaximumPathLength];
+    char target_text[User::MaximumPathLength];
+    char type_text[User::MaximumPathLength];
+    uint64_t copied = CopyStringFromUser(*process, source, source_text, sizeof(source_text));
+    if (copied == 0)
+    {
+        copied = CopyPathFromUser(*process, target, target_text);
+    }
+    if (copied == 0)
+    {
+        copied = CopyStringFromUser(*process, type, type_text, sizeof(type_text));
+    }
+    return copied != 0 ? copied : Files::Mount(source_text, target_text, type_text);
+}
+
+uint64_t UnmountSyscall(void* context, uint64_t target)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    char target_text[User::MaximumPathLength];
+    const uint64_t copied = CopyPathFromUser(*process, target, target_text);
+    return copied != 0 ? copied : Files::Unmount(target_text, AnyWorkingDirectoryWithin);
 }
 
 uint64_t ShutdownSyscall(void* context, uint64_t action)
@@ -2891,6 +2935,8 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     .create_session = CreateSessionSyscall,
     .session_id = SessionIdSyscall,
     .terminal_control = TerminalControlSyscall,
+    .mount = MountSyscall,
+    .unmount = UnmountSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -3102,7 +3148,8 @@ UserLayout RandomUserLayout()
 
 void Initialize(uint64_t offset)
 {
-    Procfs::SetSource({ProcessAt, DescribeProcess, DescribeMemory, DescribeSystem});
+    Procfs::SetSource(
+        {ProcessAt, DescribeProcess, DescribeMemory, DescribeSystem, VFS::DescribeMount});
     Terminals::SetProcessHooks({InterruptGroup, CallerInterrupted, SignalGroup, HangUpSession});
     hhdm_offset = offset;
     Sync::SpinLockGuard guard(process_lock);

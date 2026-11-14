@@ -233,6 +233,28 @@ uint64_t MissingErrorLocked(const char* path) REQUIRES(file_system_lock)
     return ExistsLocked(path) ? User::SyscallErrorNotDirectory : User::SyscallErrorNotFound;
 }
 
+uint64_t MountError(VFS::MountResult result)
+{
+    switch (result)
+    {
+    case VFS::MountResult::Done:
+        return 0;
+    case VFS::MountResult::NotFound:
+        return User::SyscallErrorNotFound;
+    case VFS::MountResult::Busy:
+        return User::SyscallErrorBusy;
+    case VFS::MountResult::UnknownType:
+        return User::SyscallErrorUnknownFilesystemType;
+    case VFS::MountResult::Full:
+        return User::SyscallErrorNoMemory;
+    case VFS::MountResult::Failed:
+        return User::SyscallErrorInputOutput;
+    case VFS::MountResult::Invalid:
+        break;
+    }
+    return User::SyscallErrorInvalidArgument;
+}
+
 // The use key of the disk or /tmp file at path; false for anything else.
 bool FileKeyLocked(const char* path, VFS::FileKey* key) REQUIRES(file_system_lock)
 {
@@ -957,6 +979,70 @@ uint64_t CheckDirectory(const char* path)
     }
     Sync::MutexGuard guard(file_system_lock);
     return VFS::IsDirectory(path) ? 0 : MissingErrorLocked(path);
+}
+
+uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::MaximumPathLength])
+{
+    if (path == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    if (!VFS::IsDirectory(path))
+    {
+        return MissingErrorLocked(path);
+    }
+    uint64_t index = 0;
+    for (; path[index] != '\0' && index + 1 < sizeof(working_directory); ++index)
+    {
+        working_directory[index] = path[index];
+    }
+    working_directory[index] = '\0';
+    return 0;
+}
+
+uint64_t Mount(const char* source, const char* point, const char* type)
+{
+    if (source == nullptr || point == nullptr || type == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    if (!VFS::IsMountPoint(point))
+    {
+        if (!ExistsLocked(point))
+        {
+            if (!ParentExistsLocked(point))
+            {
+                return User::SyscallErrorNotFound;
+            }
+        }
+        else if (!VFS::IsDirectory(point))
+        {
+            return User::SyscallErrorNotDirectory;
+        }
+    }
+    return MountError(VFS::Mount(type, source, point));
+}
+
+uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use)
+{
+    if (point == nullptr || in_use == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    if (!VFS::IsMountPoint(point))
+    {
+        return ExistsLocked(point) ? User::SyscallErrorInvalidArgument : User::SyscallErrorNotFound;
+    }
+    if (in_use(point))
+    {
+        return User::SyscallErrorBusy;
+    }
+    const VFS::MountResult result = VFS::Unmount(point);
+    return result == VFS::MountResult::NotFound ? User::SyscallErrorInvalidArgument
+                                                : MountError(result);
 }
 
 uint64_t MakeDirectory(const char* path)

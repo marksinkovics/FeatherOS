@@ -73,6 +73,8 @@ public:
     virtual bool IsDirectory(const char* path);
     virtual bool ReadDirectory(const char* path, uint32_t index, DirectoryEntry* entry);
     virtual bool IsReadOnly(const char* path);
+    // Makes everything written so far durable; unmounting calls it last.
+    virtual bool Sync();
 
 protected:
     ~Driver() = default;

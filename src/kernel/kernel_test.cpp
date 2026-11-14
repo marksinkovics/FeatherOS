@@ -1056,6 +1056,43 @@ void RunFileTests(uint64_t boot_count)
     }
 }
 
+// Nothing runs yet, so once the other mounts are out of the way the disk can be unmounted and
+// mounted again; the file written before must still be there.
+void CheckRemount(uint64_t boot_count)
+{
+    constexpr const char* InnerPoints[] = {"/system", "/etc", "/dev", "/proc", "/tmp"};
+    if (VFS::Unmount("/") != VFS::MountResult::Busy)
+    {
+        Panic("Unmounting / with mounts inside it did not fail busy");
+    }
+    for (const char* point : InnerPoints)
+    {
+        if (VFS::Unmount(point) != VFS::MountResult::Done)
+        {
+            Panic("Storage test could not unmount a built-in filesystem");
+        }
+    }
+    VFS::FileHandle file;
+    if (!VFS::Open(PersistentFile, &file) || VFS::Unmount("/") != VFS::MountResult::Busy)
+    {
+        Panic("Unmounting / with an open file did not fail busy");
+    }
+    VFS::Close(&file);
+    if (VFS::Unmount("/") != VFS::MountResult::Done || VFS::Open(PersistentFile, &file))
+    {
+        Panic("Unmounting the FAT16 disk failed");
+    }
+    if (VFS::Mount("fat16", "vda", "/") != VFS::MountResult::Done)
+    {
+        Panic("Mounting the FAT16 disk again failed");
+    }
+    CheckPersistentFile(boot_count);
+    if (!VFS::MountBuiltIn())
+    {
+        Panic("Storage test could not mount the built-in filesystems again");
+    }
+}
+
 } // namespace
 
 // Each boot reads the previous boot's count from the scratch sector, so running twice on one disk
@@ -1119,6 +1156,7 @@ void RunStorageTests()
     }
 
     RunFileTests(boot_count);
+    CheckRemount(boot_count);
 
     char message[80];
     if (!String::FormatTo(message, sizeof(message),

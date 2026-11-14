@@ -74,6 +74,8 @@ enum class SyscallNumber : uint64_t
     CreateSession = 61,    // () -> the new session's ID, the caller's process ID
     SessionId = 62,        // (process_id, or 0 for the caller) -> its session
     TerminalControl = 63,  // (descriptor, request, argument) -> the request's result
+    Mount = 64,            // (source, target, type) -> 0
+    Unmount = 65,          // (target) -> 0
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec, and joins its
@@ -361,6 +363,8 @@ constexpr uint64_t SyscallErrorNotTerminal = UINT64_MAX - 44;
 constexpr uint64_t SyscallErrorNoDevice = UINT64_MAX - 45;
 // Opening a pseudo-terminal's slave while it is locked or its master is closed.
 constexpr uint64_t SyscallErrorInputOutput = UINT64_MAX - 46;
+// Mounting a filesystem type the kernel does not have.
+constexpr uint64_t SyscallErrorUnknownFilesystemType = UINT64_MAX - 47;
 
 constexpr bool IsSyscallError(uint64_t value)
 {

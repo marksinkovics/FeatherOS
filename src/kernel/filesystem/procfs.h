@@ -6,9 +6,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// The generated files mounted at /proc: "meminfo", "stat", and a directory per process holding
-// "status". Paths are relative to the mount ("" is the root). A file's text is made when it is
-// opened, so a reader sees one consistent snapshot.
+// The generated files mounted at /proc: "meminfo", "stat", "mounts", and a directory per process
+// holding "status". Paths are relative to the mount ("" is the root). A file's text is made when it
+// is opened, so a reader sees one consistent snapshot.
 namespace FeatherOS::Procfs
 {
 
@@ -50,7 +50,15 @@ struct SystemStatus
     uint64_t busy_milliseconds[MaximumCpus];
 };
 
-// The kernel's process table and memory counters, which the host tests replace.
+struct MountStatus
+{
+    const char* source;
+    const char* type;
+    char point[64];
+    bool read_only;
+};
+
+// The kernel's process table, memory counters and mounts, which the host tests replace.
 struct Source
 {
     // The index-th live process; false past the last one.
@@ -58,6 +66,8 @@ struct Source
     bool (*process_status)(uint64_t process_id, ProcessStatus* status);
     void (*memory_status)(MemoryStatus* status);
     void (*system_status)(SystemStatus* status);
+    // The index-th mount in mount order; false past the last one.
+    bool (*mount_at)(uint32_t index, MountStatus* status);
 };
 
 void SetSource(const Source& source);

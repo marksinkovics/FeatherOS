@@ -135,10 +135,31 @@ void FakeSystemStatus(FeatherOS::Procfs::SystemStatus* status)
     status->busy_milliseconds[1] = 30;
 }
 
+bool FakeMountAt(uint32_t index, FeatherOS::Procfs::MountStatus* status)
+{
+    if (index >= 2)
+    {
+        return false;
+    }
+    *status = index == 0 ? FeatherOS::Procfs::MountStatus{"initramfs", "initramfs", "/system", true}
+                         : FeatherOS::Procfs::MountStatus{"vda", "fat16", "/", false};
+    return true;
+}
+
 void UseFakeProcesses()
 {
     FeatherOS::Procfs::SetSource(
-        {FakeProcessAt, FakeProcessStatus, FakeMemoryStatus, FakeSystemStatus});
+        {FakeProcessAt, FakeProcessStatus, FakeMemoryStatus, FakeSystemStatus, FakeMountAt});
+}
+
+bool NoWorkingDirectory(const char* /*point*/)
+{
+    return false;
+}
+
+bool EveryWorkingDirectory(const char* /*point*/)
+{
+    return true;
 }
 
 } // namespace
@@ -479,7 +500,8 @@ TEST_CASE("/dev/ttyN opens a virtual console's terminal")
 TEST_CASE("/proc lists processes and generates their status and meminfo")
 {
     UseFakeProcesses();
-    REQUIRE(List("/proc") == std::vector<std::string>{"meminfo", "stat", "1/", "4/", "12/"});
+    REQUIRE(List("/proc") ==
+            std::vector<std::string>{"meminfo", "stat", "mounts", "1/", "4/", "12/"});
     REQUIRE(List("/proc/4") == std::vector<std::string>{"status"});
     REQUIRE(ReadAll("/proc/12/status") ==
             "Name:\tshell\nState:\tR (running)\nPid:\t12\nPPid:\t1\nPgid:\t4\nPages:\t37\n"
@@ -512,4 +534,65 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
     REQUIRE(FeatherOS::Files::Read(&table, reader, text, 10) == 10);
     REQUIRE(std::string(text) == "Name:\tshel");
     REQUIRE(FeatherOS::Files::Close(&table, reader) == 0);
+}
+
+TEST_CASE("/proc/mounts has a line per mount, in mount order")
+{
+    UseFakeProcesses();
+    REQUIRE(ReadAll("/proc/mounts") == "initramfs /system initramfs ro 0 0\nvda / fat16 rw 0 0\n");
+
+    FeatherOS::Procfs::SetSource({FakeProcessAt, FakeProcessStatus, FakeMemoryStatus,
+                                  FakeSystemStatus, FeatherOS::VFS::DescribeMount});
+    const std::string mounts = ReadAll("/proc/mounts");
+    for (const char* line :
+         {"initramfs /system initramfs ro 0 0\n", "etc /etc tmpfs rw 0 0\n",
+          "devfs /dev devfs rw 0 0\n", "procfs /proc procfs ro 0 0\n", "tmp /tmp tmpfs rw 0 0\n"})
+    {
+        REQUIRE(mounts.find(line) != std::string::npos);
+    }
+    REQUIRE(mounts.find("devfs") < mounts.find("procfs"));
+    UseFakeProcesses();
+}
+
+TEST_CASE("unmounting /tmp waits for its users, and mounting it again keeps its files")
+{
+    using FeatherOS::User::SyscallErrorBusy;
+    using FeatherOS::User::SyscallErrorInvalidArgument;
+    using FeatherOS::User::SyscallErrorNotDirectory;
+    using FeatherOS::User::SyscallErrorNotFound;
+    FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table, nullptr);
+    const uint64_t writer =
+        FeatherOS::Files::Open(&table, "/tmp/mounted.txt", OpenWrite | OpenCreate | OpenTruncate);
+    REQUIRE(FeatherOS::Files::Write(&table, writer, "kept", 4) == 4);
+
+    REQUIRE(FeatherOS::Files::Unmount("/tmp", NoWorkingDirectory) == SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
+    REQUIRE(FeatherOS::Files::Unmount("/tmp", EveryWorkingDirectory) == SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Unmount("/nonexistent", NoWorkingDirectory) == SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Unmount("/dev/null", NoWorkingDirectory) ==
+            SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Unmount("/tmp", NoWorkingDirectory) == 0);
+    REQUIRE(FeatherOS::Files::CheckDirectory("/tmp") != 0);
+    REQUIRE(FeatherOS::Files::Open(&table, "/tmp/mounted.txt", OpenRead) == SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Unmount("/tmp", NoWorkingDirectory) == SyscallErrorNotFound);
+
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/tmp", "nosuchfs") ==
+            FeatherOS::User::SyscallErrorUnknownFilesystemType);
+    REQUIRE(FeatherOS::Files::Mount("nosuch", "/tmp", "tmpfs") == SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/no/such", "tmpfs") == SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/dev/null", "tmpfs") == SyscallErrorNotDirectory);
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/dev", "tmpfs") == SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Mount("etc", "/elsewhere", "tmpfs") == SyscallErrorBusy);
+
+    // A mount inside another keeps the outer one mounted.
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/dev/scratch", "tmpfs") == 0);
+    REQUIRE(ReadAll("/dev/scratch/mounted.txt") == "kept");
+    REQUIRE(FeatherOS::Files::Unmount("/dev", NoWorkingDirectory) == SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Unmount("/dev/scratch", NoWorkingDirectory) == 0);
+
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/tmp", "tmpfs") == 0);
+    REQUIRE(ReadAll("/tmp/mounted.txt") == "kept");
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/tmp", "tmpfs") == SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Remove("/tmp/mounted.txt") == 0);
 }

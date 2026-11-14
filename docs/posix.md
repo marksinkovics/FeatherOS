@@ -59,9 +59,9 @@ These come from the kernel and apply everywhere below.
 | `/system` | The read-only initramfs, which holds every bundled program as `/system/<name>` |
 | `/dev` | `null`, `zero` and `random`, as on Linux; all take writes. `tty` opens the caller's controlling terminal, or fails with `ENXIO` without one |
 | `/tmp` | A RAM filesystem, emptied on restart: at most 128 entries and 4 MiB, with case-sensitive names |
-| `/proc` | Read-only: `meminfo`, `stat` (uptime and CPU use), and `<pid>/status` for each process; `/proc/self` is the caller |
+| `/proc` | Read-only: `meminfo`, `stat` (uptime and CPU use), `mounts`, and `<pid>/status` for each process; `/proc/self` is the caller |
 
-`/bin`, an ordinary disk directory, is the second entry of the default `PATH`, for programs copied to the disk. Disk names ignore case and are at most 63 characters, and no file can have holes. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
+`/proc/mounts` lists every mount as Linux does, `<source> <point> <type> <ro|rw> 0 0`, in mount order, and `mount` and `umount` (`sys/mount.h`) change them. `/bin`, an ordinary disk directory, is the second entry of the default `PATH`, for programs copied to the disk. Disk names ignore case and are at most 63 characters, and no file can have holes. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
 
 ## Headers
 
@@ -83,7 +83,7 @@ The `is*` classifiers, `tolower` and `toupper`, for ASCII only, since `"C"` is t
 
 `errno`, with these error numbers, at Linux's values:
 
-`EPERM ENOENT ESRCH EINTR EIO ENXIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST EXDEV ENOTDIR EISDIR EINVAL EMFILE ENOTTY ENOSPC ESPIPE EROFS EPIPE EDOM ERANGE EDEADLK ENAMETOOLONG ENOSYS ENOTEMPTY EOVERFLOW EILSEQ ENOTSOCK EDESTADDRREQ EMSGSIZE ENOPROTOOPT EPROTONOSUPPORT EOPNOTSUPP/ENOTSUP EAFNOSUPPORT EADDRINUSE EADDRNOTAVAIL ENETDOWN ENETUNREACH ECONNRESET ENOBUFS EISCONN ENOTCONN ETIMEDOUT ECONNREFUSED EHOSTUNREACH EALREADY EINPROGRESS`
+`EPERM ENOENT ESRCH EINTR EIO ENXIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST EXDEV ENODEV ENOTDIR EISDIR EINVAL EMFILE ENOTTY ENOSPC ESPIPE EROFS EPIPE EDOM ERANGE EDEADLK ENAMETOOLONG ENOSYS ENOTEMPTY EOVERFLOW EILSEQ ENOTSOCK EDESTADDRREQ EMSGSIZE ENOPROTOOPT EPROTONOSUPPORT EOPNOTSUPP/ENOTSUP EAFNOSUPPORT EADDRINUSE EADDRNOTAVAIL ENETDOWN ENETUNREACH ECONNRESET ENOBUFS EISCONN ENOTCONN ETIMEDOUT ECONNREFUSED EHOSTUNREACH EALREADY EINPROGRESS`
 
 Each kernel error maps to one of them. A background read of the controlling terminal that ignores or blocks `SIGTTIN`, or comes from an orphaned group, fails with `EIO`, as on Linux.
 
@@ -336,6 +336,16 @@ Only `ioctl(fd, TIOCGWINSZ, &size)` and `ioctl(fd, TIOCSWINSZ, &size)`, which do
 ### `sys/reboot.h`
 
 `reboot(RB_POWER_OFF)` and `reboot(RB_AUTOBOOT)`, with Linux's values. Only init and session leaders may call it. The kernel then stops every process, flushes the disk, and powers off or restarts. Anyone else gets `EPERM`.
+
+### `sys/mount.h`
+
+`mount(source, target, filesystemtype, mountflags, data)` and `umount(target)`, with Linux's signatures. The kernel has one instance of each filesystem, which keeps its contents while unmounted and can be mounted at one point at a time, so `filesystemtype` and `source` name an instance, as `/proc/mounts` shows them: `fat16` `vda` (the virtio disk), `initramfs` `initramfs`, `devfs` `devfs`, `procfs` `procfs`, and `tmpfs` `tmp` or `etc`. Differences from Linux:
+
+- `mountflags` must be 0 and `data` null (`EINVAL` otherwise); there is no `MS_RDONLY`, remount, bind or move, and no `umount2` or lazy unmount.
+- An unknown type fails with `ENODEV`, a source the type does not have with `ENOENT`, and an instance mounted elsewhere, or a target that is already a mount point, with `EBUSY`. Mounting over a mount point is not stacking.
+- `target` need not exist, as the built-in mount points have no directory on the disk, but its parent must (`ENOENT`), and an existing one must be a directory (`ENOTDIR`).
+- `umount` fails with `EINVAL` for a path that is not a mount point and `ENOENT` for one that does not exist. It fails with `EBUSY` while a file on the mount is open, a process's working directory is inside it, or another mount point lies inside it, so `/` can never be unmounted from a running shell. Terminal descriptors from `/dev` (`/dev/tty`, `/dev/ttyN`, `/dev/pts/N`) do not keep `/dev` busy. The filesystem's data is flushed to the device first.
+- There are no users, so neither call fails with `EPERM`.
 
 ### `sys/socket.h`, `netinet/in.h`, `arpa/inet.h`, `netinet/ip_icmp.h`, `netinet/icmp6.h`, `sys/time.h`
 

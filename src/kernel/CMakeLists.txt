@@ -118,6 +118,7 @@ set(SRC
     ${SRCROOT}/filesystem/drivers.cpp
     ${SRCROOT}/filesystem/filesystem.cpp
     ${SRCROOT}/filesystem/mount_table.cpp
+    ${SRCROOT}/filesystem/type_registry.cpp
     ${SRCROOT}/filesystem/vfs.cpp
     ${SRCROOT}/elf/elf_loader.cpp
     ${SRCROOT}/input/input.cpp

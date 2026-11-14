@@ -42,6 +42,7 @@ add_library(featheros_c STATIC
     signal.cpp
     socket.cpp
     math.cpp
+    mount.cpp
     spawn.cpp
     stat.cpp
     stdio.cpp

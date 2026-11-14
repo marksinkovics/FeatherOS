@@ -7,6 +7,7 @@
 #include "tmpfs.h"
 
 #include "kernel/memory/heap.h"
+#include "kernel/storage/block_device.h"
 
 #include <stdint.h>
 
@@ -137,6 +138,12 @@ public:
     bool ReadDirectory(const char* path, uint32_t index, DirectoryEntry* entry) override
     {
         return FAT16::ReadDirectory(path, index, entry);
+    }
+
+    // FAT16 writes every sector through at once, so only the device may still hold data back.
+    bool Sync() override
+    {
+        return BlockDevice::Flush();
     }
 
 private:

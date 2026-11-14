@@ -103,6 +103,20 @@ uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* e
 uint64_t MakeDirectory(const char* path);
 // 0 for a directory, otherwise SyscallErrorNotDirectory or SyscallErrorNotFound.
 uint64_t CheckDirectory(const char* path);
+// Checks the directory and copies it into working_directory under the filesystem lock, so an
+// unmount sees either the old working directory or the new one.
+uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::MaximumPathLength]);
+// Mounts the instance of type named source at point, which must be a directory or not exist, in an
+// existing directory. SyscallErrorUnknownFilesystemType for a type nothing registered,
+// SyscallErrorNotFound for an unknown source, SyscallErrorBusy if the point is taken or the
+// instance is mounted elsewhere.
+uint64_t Mount(const char* source, const char* point, const char* type);
+// True if some process's working directory is point or lies inside it.
+using WorkingDirectoryCheck = bool (*)(const char* point);
+// SyscallErrorNotFound if point does not exist, SyscallErrorInvalidArgument if it is not a mount
+// point, SyscallErrorBusy while a file on it is open, a working directory is inside it or another
+// mount point lies inside it, and SyscallErrorInputOutput if its data could not be synced.
+uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use);
 // Fails unless the directory is empty.
 uint64_t RemoveDirectory(const char* path);
 // Within one filesystem; replaces a file at to, but neither a directory nor an open file.

@@ -4,7 +4,9 @@
 #include "fat16.h"
 #include "initramfs.h"
 #include "mount_table.h"
+#include "procfs.h"
 #include "tmpfs.h"
+#include "type_registry.h"
 
 #include "kernel/sync/spinlock.h"
 
@@ -16,43 +18,94 @@ namespace
 using Filesystem::Driver;
 
 constexpr char SystemPoint[] = "/system";
+constexpr char DiskType[] = "fat16";
+// FeatherOS has no disk node in /dev yet; this is the name Linux gives the first virtio disk.
+constexpr char DiskSource[] = "vda";
 
 struct BuiltIn
 {
+    const char* type;
+    const char* source;
     const char* point;
     Driver& (*driver)();
 };
 
 constexpr BuiltIn BuiltIns[] = {
-    {"/system", Filesystem::Drivers::System}, {"/etc", Filesystem::Drivers::Etc},
-    {"/dev", Filesystem::Drivers::Devices},   {"/proc", Filesystem::Drivers::Proc},
-    {"/tmp", Filesystem::Drivers::Tmp},
+    {"initramfs", "initramfs", "/system", Filesystem::Drivers::System},
+    {"tmpfs", "etc", "/etc", Filesystem::Drivers::Etc},
+    {"devfs", "devfs", "/dev", Filesystem::Drivers::Devices},
+    {"procfs", "procfs", "/proc", Filesystem::Drivers::Proc},
+    {"tmpfs", "tmp", "/tmp", Filesystem::Drivers::Tmp},
 };
 
-// Held only while the table is read or changed, never across a driver call, since drivers wait
-// for the disk.
+// Held only while the tables are read or changed, never across a driver call, since drivers wait
+// for the disk. Mount users keep a driver from being unmounted meanwhile (see MountTable).
 constinit Sync::SpinLock mount_lock;
 constinit MountTable mounts GUARDED_BY(mount_lock);
+constinit TypeRegistry types GUARDED_BY(mount_lock);
 
 // The bare names kernel code uses ("init") name files in /system.
-Driver* LocateLocked(const char* path, const char** inner) REQUIRES(mount_lock)
+Driver* AcquireLocked(const char* path, const char** inner) REQUIRES(mount_lock)
 {
     if (path[0] == '/')
     {
-        return mounts.Resolve(path, inner);
+        return mounts.Acquire(path, inner);
     }
     if (path[0] == '\0')
     {
         return nullptr;
     }
     *inner = path;
-    return mounts.Find(SystemPoint);
+    return mounts.AcquirePoint(SystemPoint);
 }
 
+void Release(const Driver* driver)
+{
+    if (driver != nullptr)
+    {
+        Sync::SpinLockGuard guard(mount_lock);
+        mounts.Release(driver);
+    }
+}
+
+// The driver for a path, kept from being unmounted while this lives.
+class Use
+{
+public:
+    explicit Use(const char* path)
+    {
+        Sync::SpinLockGuard guard(mount_lock);
+        driver = AcquireLocked(path, &inner);
+    }
+    ~Use()
+    {
+        Release(driver);
+    }
+    Use(const Use&) = delete;
+    Use& operator=(const Use&) = delete;
+    Use(Use&&) = delete;
+    Use& operator=(Use&&) = delete;
+
+    // For a handle, which holds the mount until Close.
+    void Keep()
+    {
+        driver = nullptr;
+    }
+
+    Driver* driver = nullptr;
+    const char* inner = nullptr;
+};
+
+// For comparing mounts only; the driver must not be called.
 Driver* Locate(const char* path, const char** inner)
 {
     Sync::SpinLockGuard guard(mount_lock);
-    return LocateLocked(path, inner);
+    if (path[0] == '/')
+    {
+        return mounts.Resolve(path, inner);
+    }
+    *inner = path;
+    return path[0] == '\0' ? nullptr : mounts.Find(SystemPoint);
 }
 
 // "/" exists even with nothing mounted there, since it holds the other mount points.
@@ -74,6 +127,16 @@ bool HasSize(const FileHandle& file)
     return !file.driver->Attributes().devices;
 }
 
+void CopyText(char* destination, size_t capacity, const char* source)
+{
+    size_t index = 0;
+    for (; source[index] != '\0' && index + 1 < capacity; ++index)
+    {
+        destination[index] = source[index];
+    }
+    destination[index] = '\0';
+}
+
 } // namespace
 
 bool MountBuiltIn()
@@ -82,7 +145,8 @@ bool MountBuiltIn()
     for (const BuiltIn& built_in : BuiltIns)
     {
         Driver* driver = &built_in.driver();
-        if (mounts.Find(built_in.point) != driver && !mounts.Add(built_in.point, driver))
+        if (!types.Register(built_in.type, built_in.source, driver) ||
+            (!mounts.Holds(driver) && !mounts.Add(built_in.point, driver)))
         {
             return false;
         }
@@ -92,8 +156,22 @@ bool MountBuiltIn()
 
 bool MountBlockDevice()
 {
-    Unmount("/");
-    return FAT16::Mount() && Mount("/", &Filesystem::Drivers::Disk());
+    const bool mounted = FAT16::Mount();
+    Driver* driver = &Filesystem::Drivers::Disk();
+    Sync::SpinLockGuard guard(mount_lock);
+    if (!mounted)
+    {
+        if (mounts.Find("/") == driver)
+        {
+            mounts.Remove("/");
+        }
+        return false;
+    }
+    if (!types.Register(DiskType, DiskSource, driver))
+    {
+        return false;
+    }
+    return mounts.Find("/") == driver || mounts.Add("/", driver);
 }
 
 bool LoadEtc()
@@ -116,16 +194,81 @@ bool LoadEtc()
     return true;
 }
 
-bool Mount(const char* point, Driver* driver)
+MountResult Mount(const char* type, const char* source, const char* point)
 {
+    if (type == nullptr || source == nullptr || point == nullptr)
+    {
+        return MountResult::Invalid;
+    }
     Sync::SpinLockGuard guard(mount_lock);
-    return mounts.Add(point, driver);
+    Driver* driver = nullptr;
+    switch (types.Find(type, source, &driver))
+    {
+    case TypeRegistry::Lookup::UnknownType:
+        return MountResult::UnknownType;
+    case TypeRegistry::Lookup::UnknownSource:
+        return MountResult::NotFound;
+    case TypeRegistry::Lookup::Found:
+        break;
+    }
+    if (!MountTable::IsValidPoint(point))
+    {
+        return MountResult::Invalid;
+    }
+    if (mounts.Find(point) != nullptr || mounts.Holds(driver))
+    {
+        return MountResult::Busy;
+    }
+    if (mounts.Count() == MountTable::Capacity)
+    {
+        return MountResult::Full;
+    }
+    return mounts.Add(point, driver) ? MountResult::Done : MountResult::Invalid;
 }
 
-bool Unmount(const char* point)
+MountResult Unmount(const char* point)
 {
+    Driver* driver = nullptr;
+    {
+        Sync::SpinLockGuard guard(mount_lock);
+        const MountResult begun = mounts.BeginUnmount(point, &driver);
+        if (begun != MountResult::Done)
+        {
+            return begun;
+        }
+    }
+    const bool synced = driver->Sync();
     Sync::SpinLockGuard guard(mount_lock);
-    return mounts.Remove(point);
+    if (!synced)
+    {
+        mounts.CancelUnmount(point);
+        return MountResult::Failed;
+    }
+    mounts.FinishUnmount(point);
+    return MountResult::Done;
+}
+
+bool DescribeMount(uint32_t index, Procfs::MountStatus* status)
+{
+    if (status == nullptr)
+    {
+        return false;
+    }
+    Sync::SpinLockGuard guard(mount_lock);
+    const char* point = nullptr;
+    Driver* driver = nullptr;
+    if (!mounts.At(index, &point, &driver))
+    {
+        return false;
+    }
+    if (!types.Describe(driver, &status->type, &status->source))
+    {
+        status->type = "unknown";
+        status->source = "none";
+    }
+    CopyText(status->point, sizeof(status->point), point);
+    status->read_only = driver->Attributes().read_only;
+    return true;
 }
 
 bool Open(const char* path, FileHandle* file)
@@ -134,15 +277,15 @@ bool Open(const char* path, FileHandle* file)
     {
         return false;
     }
-    const char* inner;
-    Driver* driver = Locate(path, &inner);
+    Use use(path);
     Filesystem::Node node = {};
     uint64_t size = 0;
-    if (driver == nullptr || *inner == '\0' || !driver->Open(inner, &node, &size))
+    if (use.driver == nullptr || *use.inner == '\0' || !use.driver->Open(use.inner, &node, &size))
     {
         return false;
     }
-    *file = {driver, node, size, 0, true};
+    *file = {use.driver, node, size, 0, true};
+    use.Keep();
     return true;
 }
 
@@ -184,9 +327,8 @@ bool Stat(const char* path, FileInfo* info)
         return false;
     }
     info->device = false;
-    const char* inner;
-    Driver* driver = Locate(path, &inner);
-    return driver != nullptr && *inner != '\0' && driver->Stat(inner, info);
+    const Use use(path);
+    return use.driver != nullptr && *use.inner != '\0' && use.driver->Stat(use.inner, info);
 }
 
 void Close(FileHandle* file)
@@ -198,6 +340,7 @@ void Close(FileHandle* file)
     if (file->open && file->driver != nullptr)
     {
         file->driver->Close(file->node);
+        Release(file->driver);
     }
     *file = {};
 }
@@ -208,15 +351,15 @@ bool Create(const char* path, FileHandle* file)
     {
         return false;
     }
-    const char* inner;
-    Driver* driver = Locate(path, &inner);
+    Use use(path);
     Filesystem::Node node = {};
     uint64_t size = 0;
-    if (driver == nullptr || *inner == '\0' || !driver->Create(inner, &node, &size))
+    if (use.driver == nullptr || *use.inner == '\0' || !use.driver->Create(use.inner, &node, &size))
     {
         return false;
     }
-    *file = {driver, node, size, 0, true};
+    *file = {use.driver, node, size, 0, true};
+    use.Keep();
     return true;
 }
 
@@ -260,18 +403,16 @@ bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry*
     {
         return false;
     }
-    const char* inner;
-    Driver* driver;
+    const Use use(path);
     {
         Sync::SpinLockGuard guard(mount_lock);
-        driver = LocateLocked(path, &inner);
         if (mounts.ChildAt(path, index, entry))
         {
             return true;
         }
         index -= mounts.ChildCount(path);
     }
-    return driver != nullptr && driver->ReadDirectory(inner, index, entry);
+    return use.driver != nullptr && use.driver->ReadDirectory(use.inner, index, entry);
 }
 
 bool IsDirectory(const char* path)
@@ -280,13 +421,12 @@ bool IsDirectory(const char* path)
     {
         return false;
     }
-    const char* inner;
-    Driver* driver = Locate(path, &inner);
-    if (driver == nullptr)
+    const Use use(path);
+    if (use.driver == nullptr)
     {
         return IsRoot(path);
     }
-    return (path[0] == '/' && *inner == '\0') || driver->IsDirectory(inner);
+    return (path[0] == '/' && *use.inner == '\0') || use.driver->IsDirectory(use.inner);
 }
 
 bool IsReadOnly(const char* path)
@@ -295,9 +435,8 @@ bool IsReadOnly(const char* path)
     {
         return false;
     }
-    const char* inner;
-    Driver* driver = Locate(path, &inner);
-    return driver != nullptr && driver->IsReadOnly(inner);
+    const Use use(path);
+    return use.driver != nullptr && use.driver->IsReadOnly(use.inner);
 }
 
 bool IsMountPoint(const char* path)
@@ -346,9 +485,8 @@ bool MakeDirectory(const char* path)
     {
         return false;
     }
-    const char* inner;
-    Driver* driver = Locate(path, &inner);
-    return driver != nullptr && *inner != '\0' && driver->MakeDirectory(inner);
+    const Use use(path);
+    return use.driver != nullptr && *use.inner != '\0' && use.driver->MakeDirectory(use.inner);
 }
 
 bool RemoveDirectory(const char* path)
@@ -357,9 +495,8 @@ bool RemoveDirectory(const char* path)
     {
         return false;
     }
-    const char* inner;
-    Driver* driver = Locate(path, &inner);
-    return driver != nullptr && *inner != '\0' && driver->RemoveDirectory(inner);
+    const Use use(path);
+    return use.driver != nullptr && *use.inner != '\0' && use.driver->RemoveDirectory(use.inner);
 }
 
 bool Remove(const char* path)
@@ -368,9 +505,8 @@ bool Remove(const char* path)
     {
         return false;
     }
-    const char* inner;
-    Driver* driver = Locate(path, &inner);
-    return driver != nullptr && *inner != '\0' && driver->Remove(inner);
+    const Use use(path);
+    return use.driver != nullptr && *use.inner != '\0' && use.driver->Remove(use.inner);
 }
 
 bool SameFilesystem(const char* left, const char* right)
@@ -389,11 +525,10 @@ bool Rename(const char* from, const char* to)
     {
         return false;
     }
-    const char* from_inner;
+    const Use use(from);
     const char* to_inner;
-    Driver* driver = Locate(from, &from_inner);
-    return driver != nullptr && Locate(to, &to_inner) == driver && *from_inner != '\0' &&
-           *to_inner != '\0' && driver->Rename(from_inner, to_inner);
+    return use.driver != nullptr && Locate(to, &to_inner) == use.driver && *use.inner != '\0' &&
+           *to_inner != '\0' && use.driver->Rename(use.inner, to_inner);
 }
 
 } // namespace FeatherOS::VFS

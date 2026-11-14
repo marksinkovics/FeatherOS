@@ -124,6 +124,8 @@ struct Handlers
     uint64_t (*session_id)(void* context, uint64_t process_id) = nullptr;
     uint64_t (*terminal_control)(void* context, uint64_t descriptor, uint64_t request,
                                  uint64_t argument) = nullptr;
+    uint64_t (*mount)(void* context, uint64_t source, uint64_t target, uint64_t type) = nullptr;
+    uint64_t (*unmount)(void* context, uint64_t target) = nullptr;
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

@@ -184,6 +184,8 @@ constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     .create_session = ReadFixedProcessId,
     .session_id = RecordDescriptor,
     .terminal_control = RecordSeekFrom,
+    .mount = RecordSeekFrom,
+    .unmount = RecordDescriptor,
 };
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
@@ -457,6 +459,17 @@ TEST_CASE("syscall signal-return is left to the architecture code")
     REQUIRE(output.last_arguments[0] == 3);
     REQUIRE(output.last_arguments[1] == 1);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::TerminalMode), WriteOnly, &output)
+                .action == Action::Invalid);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Mount, 0x10, 0x20, 0x30), AllHandlers,
+                                         &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0x10);
+    REQUIRE(output.last_arguments[1] == 0x20);
+    REQUIRE(output.last_arguments[2] == 0x30);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Unmount, 0x40), AllHandlers, &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0x40);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Unmount, 0x40), WriteOnly, &output)
                 .action == Action::Invalid);
     const auto create = FeatherOS::Syscall::Dispatch(
         MakeRequest(Number::ThreadCreate, 0x1000, 0x2000, 0x3000), AllHandlers, &output);

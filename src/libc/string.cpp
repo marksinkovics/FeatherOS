@@ -428,6 +428,9 @@ char* strerror(int error)
     case ENXIO:
         message = "No such device or address";
         break;
+    case ENODEV:
+        message = "No such device";
+        break;
     case ENOSPC:
         message = "No space left on device";
         break;

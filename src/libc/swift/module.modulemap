@@ -101,6 +101,10 @@ module FeatherLibC [system] {
         header "../include/sys/ioctl.h"
         export *
     }
+    module sys_mount {
+        header "../include/sys/mount.h"
+        export *
+    }
     module sys_reboot {
         header "../include/sys/reboot.h"
         export *

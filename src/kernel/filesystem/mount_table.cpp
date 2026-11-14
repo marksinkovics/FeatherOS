@@ -33,35 +33,6 @@ bool SameText(const char* left, const char* right)
     return Length(right) == length && SamePrefix(left, right, length);
 }
 
-bool IsValidPoint(const char* point)
-{
-    if (point == nullptr || point[0] != '/')
-    {
-        return false;
-    }
-    const uint32_t length = Length(point);
-    if (length >= Path::MaximumLength || (length > 1 && point[length - 1] == '/'))
-    {
-        return false;
-    }
-    for (uint32_t start = 1; start < length;)
-    {
-        uint32_t end = start;
-        while (end < length && point[end] != '/')
-        {
-            ++end;
-        }
-        const uint32_t component = end - start;
-        if (component == 0 || (component == 1 && point[start] == '.') ||
-            (component == 2 && point[start] == '.' && point[start + 1] == '.'))
-        {
-            return false;
-        }
-        start = end + 1;
-    }
-    return true;
-}
-
 // How many characters of path the mount point covers, or 0 if it does not hold path.
 uint32_t Coverage(const char* point, const char* path)
 {
@@ -110,11 +81,51 @@ const char* ChildName(const char* point, const char* directory, uint32_t directo
     return point + last_separator + 1;
 }
 
+// Whether point lies inside base, not at it.
+bool IsInside(const char* point, const char* base)
+{
+    if (SameText(point, base))
+    {
+        return false;
+    }
+    return base[1] == '\0' || Coverage(base, point) != 0;
+}
+
 } // namespace
+
+bool MountTable::IsValidPoint(const char* point)
+{
+    if (point == nullptr || point[0] != '/')
+    {
+        return false;
+    }
+    const uint32_t length = Length(point);
+    if (length >= Path::MaximumLength || (length > 1 && point[length - 1] == '/'))
+    {
+        return false;
+    }
+    for (uint32_t start = 1; start < length;)
+    {
+        uint32_t end = start;
+        while (end < length && point[end] != '/')
+        {
+            ++end;
+        }
+        const uint32_t component = end - start;
+        if (component == 0 || (component == 1 && point[start] == '.') ||
+            (component == 2 && point[start] == '.' && point[start + 1] == '.'))
+        {
+            return false;
+        }
+        start = end + 1;
+    }
+    return true;
+}
 
 bool MountTable::Add(const char* point, Filesystem::Driver* driver)
 {
-    if (driver == nullptr || !IsValidPoint(point) || count == Capacity || Find(point) != nullptr)
+    if (driver == nullptr || !IsValidPoint(point) || count == Capacity || Find(point) != nullptr ||
+        Holds(driver))
     {
         return false;
     }
@@ -126,74 +137,136 @@ bool MountTable::Add(const char* point, Filesystem::Driver* driver)
     }
     entry.point[index] = '\0';
     entry.driver = driver;
+    entry.users = 0;
+    entry.unmounting = false;
     return true;
 }
 
 bool MountTable::Remove(const char* point)
 {
-    if (point == nullptr)
+    const int32_t found = IndexOf(point);
+    if (found < 0)
     {
         return false;
     }
+    for (auto next = static_cast<uint32_t>(found) + 1; next < count; ++next)
+    {
+        entries[next - 1] = entries[next];
+    }
+    entries[--count] = {};
+    return true;
+}
+
+Filesystem::Driver* MountTable::Find(const char* point) const
+{
+    const int32_t found = IndexOf(point);
+    return found < 0 ? nullptr : entries[found].driver;
+}
+
+bool MountTable::Holds(const Filesystem::Driver* driver) const
+{
     for (uint32_t index = 0; index < count; ++index)
     {
-        if (SameText(entries[index].point, point))
+        if (entries[index].driver == driver)
         {
-            for (uint32_t next = index + 1; next < count; ++next)
-            {
-                entries[next - 1] = entries[next];
-            }
-            entries[--count] = {};
             return true;
         }
     }
     return false;
 }
 
-Filesystem::Driver* MountTable::Find(const char* point) const
+uint32_t MountTable::Count() const
 {
-    if (point == nullptr)
+    return count;
+}
+
+bool MountTable::At(uint32_t index, const char** point, Filesystem::Driver** driver) const
+{
+    if (index >= count || point == nullptr || driver == nullptr)
     {
-        return nullptr;
+        return false;
     }
-    for (uint32_t index = 0; index < count; ++index)
-    {
-        if (SameText(entries[index].point, point))
-        {
-            return entries[index].driver;
-        }
-    }
-    return nullptr;
+    *point = entries[index].point;
+    *driver = entries[index].driver;
+    return true;
 }
 
 Filesystem::Driver* MountTable::Resolve(const char* path, const char** inner) const
 {
-    if (path == nullptr || inner == nullptr || path[0] != '/')
+    const int32_t found = ResolveIndex(path, inner);
+    return found < 0 ? nullptr : entries[found].driver;
+}
+
+Filesystem::Driver* MountTable::Acquire(const char* path, const char** inner)
+{
+    const int32_t found = ResolveIndex(path, inner);
+    if (found < 0 || entries[found].unmounting)
     {
         return nullptr;
     }
-    Filesystem::Driver* driver = nullptr;
-    uint32_t best = 0;
+    ++entries[found].users;
+    return entries[found].driver;
+}
+
+Filesystem::Driver* MountTable::AcquirePoint(const char* point)
+{
+    const int32_t found = IndexOf(point);
+    if (found < 0 || entries[found].unmounting)
+    {
+        return nullptr;
+    }
+    ++entries[found].users;
+    return entries[found].driver;
+}
+
+void MountTable::Release(const Filesystem::Driver* driver)
+{
     for (uint32_t index = 0; index < count; ++index)
     {
-        const uint32_t covered = Coverage(entries[index].point, path);
-        if (covered > best)
+        if (entries[index].driver == driver && entries[index].users > 0)
         {
-            best = covered;
-            driver = entries[index].driver;
+            --entries[index].users;
+            return;
         }
     }
-    if (driver == nullptr)
+}
+
+MountResult MountTable::BeginUnmount(const char* point, Filesystem::Driver** driver)
+{
+    const int32_t found = IndexOf(point);
+    if (found < 0 || driver == nullptr)
     {
-        return nullptr;
+        return MountResult::NotFound;
     }
-    const char* rest = path + best;
-    while (*rest == '/')
+    Entry& entry = entries[found];
+    if (entry.users > 0 || entry.unmounting)
     {
-        ++rest;
+        return MountResult::Busy;
     }
-    *inner = rest;
-    return driver;
+    for (uint32_t index = 0; index < count; ++index)
+    {
+        if (IsInside(entries[index].point, entry.point))
+        {
+            return MountResult::Busy;
+        }
+    }
+    entry.unmounting = true;
+    *driver = entry.driver;
+    return MountResult::Done;
+}
+
+void MountTable::FinishUnmount(const char* point)
+{
+    Remove(point);
+}
+
+void MountTable::CancelUnmount(const char* point)
+{
+    const int32_t found = IndexOf(point);
+    if (found >= 0)
+    {
+        entries[found].unmounting = false;
+    }
 }
 
 bool MountTable::ChildAt(const char* directory, uint32_t index,
@@ -241,6 +314,52 @@ uint32_t MountTable::ChildCount(const char* directory) const
         }
     }
     return children;
+}
+
+int32_t MountTable::IndexOf(const char* point) const
+{
+    if (point == nullptr)
+    {
+        return -1;
+    }
+    for (uint32_t index = 0; index < count; ++index)
+    {
+        if (SameText(entries[index].point, point))
+        {
+            return static_cast<int32_t>(index);
+        }
+    }
+    return -1;
+}
+
+int32_t MountTable::ResolveIndex(const char* path, const char** inner) const
+{
+    if (path == nullptr || inner == nullptr || path[0] != '/')
+    {
+        return -1;
+    }
+    int32_t found = -1;
+    uint32_t best = 0;
+    for (uint32_t index = 0; index < count; ++index)
+    {
+        const uint32_t covered = Coverage(entries[index].point, path);
+        if (covered > best)
+        {
+            best = covered;
+            found = static_cast<int32_t>(index);
+        }
+    }
+    if (found < 0)
+    {
+        return -1;
+    }
+    const char* rest = path + best;
+    while (*rest == '/')
+    {
+        ++rest;
+    }
+    *inner = rest;
+    return found;
 }
 
 } // namespace FeatherOS::VFS

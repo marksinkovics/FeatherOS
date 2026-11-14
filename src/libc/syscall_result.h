@@ -82,6 +82,8 @@ constexpr int ErrorNumber(uint64_t result)
         return ENOTTY;
     case User::SyscallErrorNoDevice:
         return ENXIO;
+    case User::SyscallErrorUnknownFilesystemType:
+        return ENODEV;
     case User::SyscallErrorNetworkUnreachable:
         return ENETUNREACH;
     case User::SyscallErrorHostUnreachable:

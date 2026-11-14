@@ -31,6 +31,7 @@ constexpr uint32_t RootDirectorySector = PartitionStart + 1 + FatSizeSectors;
 constexpr uint32_t DataStartSector = RootDirectorySector + RootDirectorySectors;
 
 std::vector<std::array<uint8_t, FeatherOS::BlockDevice::SectorSize>> disk;
+uint32_t flush_count = 0;
 
 void WriteLittleEndian16(uint8_t* destination, uint16_t value)
 {
@@ -180,6 +181,12 @@ bool WriteSector(uint64_t sector, const void* buffer)
         return false;
     }
     std::memcpy(disk[sector].data(), buffer, SectorSize);
+    return true;
+}
+
+bool Flush()
+{
+    ++flush_count;
     return true;
 }
 
@@ -369,6 +376,7 @@ std::string ReadWhole(const char* path)
     uint64_t bytes_read = 0;
     REQUIRE(FeatherOS::VFS::Read(&file, contents.data(), contents.size(), &bytes_read));
     REQUIRE(bytes_read == contents.size());
+    FeatherOS::VFS::Close(&file);
     return contents;
 }
 
@@ -1272,4 +1280,38 @@ TEST_CASE("append writes land at the end through every descriptor")
     REQUIRE(FeatherOS::Files::Write(&table, copy, "-", 1) == 1);
     FeatherOS::Files::CloseAll(&table);
     REQUIRE(ReadWhole("/BLOCK.TXT") == "contents+-");
+}
+
+TEST_CASE("unmounting the disk flushes it, and mounting it again shows the same files")
+{
+    using FeatherOS::VFS::MountResult;
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    FeatherOS::VFS::FileHandle file{};
+    REQUIRE(FeatherOS::VFS::Create("/kept.txt", &file));
+    uint64_t written = 0;
+    REQUIRE(FeatherOS::VFS::Write(&file, "kept", 4, &written));
+    FeatherOS::VFS::Close(&file);
+
+    REQUIRE(FeatherOS::VFS::Unmount("/") == MountResult::Busy);
+    constexpr const char* InnerPoints[] = {"/system", "/etc", "/dev", "/proc", "/tmp"};
+    for (const char* point : InnerPoints)
+    {
+        REQUIRE(FeatherOS::VFS::Unmount(point) == MountResult::Done);
+    }
+    REQUIRE(FeatherOS::VFS::Open("/kept.txt", &file));
+    REQUIRE(FeatherOS::VFS::Unmount("/") == MountResult::Busy);
+    FeatherOS::VFS::Close(&file);
+    flush_count = 0;
+    REQUIRE(FeatherOS::VFS::Unmount("/") == MountResult::Done);
+    REQUIRE(flush_count == 1);
+    REQUIRE_FALSE(FeatherOS::VFS::Open("/kept.txt", &file));
+    REQUIRE(FeatherOS::VFS::Unmount("/") == MountResult::NotFound);
+
+    REQUIRE(FeatherOS::VFS::MountBuiltIn());
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "sda", "/") == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda", "/") == MountResult::UnknownType);
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda", "/") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda", "/mnt") == MountResult::Busy);
+    REQUIRE(ReadWhole("/kept.txt") == "kept");
 }

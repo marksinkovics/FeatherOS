@@ -13,12 +13,16 @@ enum class Kind : uint8_t
     Root,
     MemoryInfo,
     SystemStat,
+    Mounts,
     ProcessDirectory,
     ProcessStatusFile,
 };
 
 constexpr char MemoryInfoName[] = "meminfo";
 constexpr char SystemStatName[] = "stat";
+constexpr char MountsName[] = "mounts";
+constexpr const char* FixedNames[] = {MemoryInfoName, SystemStatName, MountsName};
+constexpr uint32_t FixedCount = sizeof(FixedNames) / sizeof(FixedNames[0]);
 constexpr char StatusName[] = "status";
 
 Source source = {};
@@ -76,6 +80,10 @@ Kind Classify(const char* path, uint64_t* process_id)
     {
         return Kind::SystemStat;
     }
+    if (Equals(path, MountsName))
+    {
+        return Kind::Mounts;
+    }
     const char* rest;
     if (!ParseProcessId(path, process_id, &rest) || !ProcessExists(*process_id))
     {
@@ -123,6 +131,24 @@ void SetEntry(Filesystem::DirectoryEntry* entry, const char* name, bool director
     entry->name[index] = '\0';
     entry->directory = directory;
     entry->size = 0;
+}
+
+// One line per mount, as Linux's /proc/mounts: "<source> <point> <type> <ro|rw> 0 0".
+bool FormatMounts(char* buffer)
+{
+    buffer[0] = '\0';
+    size_t used = 0;
+    MountStatus mount = {};
+    for (uint32_t index = 0; source.mount_at != nullptr && source.mount_at(index, &mount); ++index)
+    {
+        if (!String::FormatTo(buffer + used, MaximumFileSize - used, "{} {} {} {} 0 0\n",
+                              mount.source, mount.point, mount.type, mount.read_only ? "ro" : "rw"))
+        {
+            return false;
+        }
+        used += Length(buffer + used);
+    }
+    return true;
 }
 
 } // namespace
@@ -177,6 +203,9 @@ bool Generate(const char* path, char* buffer, size_t* length)
         }
         break;
     }
+    case Kind::Mounts:
+        formatted = FormatMounts(buffer);
+        break;
     case Kind::ProcessStatusFile:
     {
         ProcessStatus status;
@@ -237,12 +266,12 @@ bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry*
     {
         return false;
     }
-    if (index == 0 || index == 1)
+    if (index < FixedCount)
     {
-        SetEntry(entry, index == 0 ? MemoryInfoName : SystemStatName, false);
+        SetEntry(entry, FixedNames[index], false);
         return true;
     }
-    if (source.process_at == nullptr || !source.process_at(index - 2, &process_id))
+    if (source.process_at == nullptr || !source.process_at(index - FixedCount, &process_id))
     {
         return false;
     }

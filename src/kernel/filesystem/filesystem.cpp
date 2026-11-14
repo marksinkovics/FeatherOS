@@ -72,4 +72,9 @@ bool Driver::IsReadOnly(const char* /*path*/)
     return properties.read_only;
 }
 
+bool Driver::Sync()
+{
+    return true;
+}
+
 } // namespace FeatherOS::Filesystem

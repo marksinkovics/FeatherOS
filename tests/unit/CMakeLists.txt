@@ -132,6 +132,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/filesystem/drivers.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/filesystem.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/mount_table.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/type_registry.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/vfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/elf/elf_loader.cpp"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/font.c"

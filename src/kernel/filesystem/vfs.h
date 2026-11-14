@@ -2,14 +2,22 @@
 #define FEATHEROS_FILESYSTEM_VFS_H
 
 #include "kernel/filesystem/filesystem.h"
+#include "kernel/filesystem/mount_table.h"
 
 #include <stdint.h>
 
-// One tree over the mounted filesystems: at boot the FAT16 disk at "/", the read-only initramfs's
-// "system" directory at "/system", devices at "/dev", generated process files at "/proc", and the
-// RAM filesystem's two roots at "/tmp" and "/etc". A path belongs to the mount with the longest
-// mount point that is a whole-component prefix of it, so a mount hides whatever its parent
-// filesystem has at that path.
+namespace FeatherOS::Procfs
+{
+struct MountStatus;
+} // namespace FeatherOS::Procfs
+
+// One tree over the mounted filesystems. At boot, with their type and source: the initramfs's
+// "system" directory at "/system" (initramfs, initramfs), the RAM filesystem's two roots at "/etc"
+// (tmpfs, etc) and "/tmp" (tmpfs, tmp), devices at "/dev" (devfs, devfs), generated process files
+// at "/proc" (procfs, procfs), and the FAT16 volume on the virtio block device at "/" (fat16,
+// vda). A path belongs to the mount with the longest mount point that is a whole-component prefix
+// of it, so a mount hides whatever its parent filesystem has at that path. Each of these instances
+// keeps its contents while unmounted and can be mounted at one point at a time.
 namespace FeatherOS::VFS
 {
 
@@ -34,16 +42,23 @@ struct FileKey
 };
 
 // The filesystems that need no disk, in the order "/" lists them: /system, /etc, /dev, /proc and
-// /tmp. Those already mounted are left alone.
+// /tmp. Those already mounted somewhere are left alone.
 bool MountBuiltIn();
 // Mounts the block device's FAT16 volume at "/", replacing an earlier one.
 bool MountBlockDevice();
 // Copies the initramfs's "etc" files into /etc, so they can be changed until the next boot.
 bool LoadEtc();
-// point is an absolute path without ".", "..", repeated or trailing '/'; it fails if taken.
-bool Mount(const char* point, Filesystem::Driver* driver);
-bool Unmount(const char* point);
+// point is an absolute path without ".", "..", repeated or trailing '/'. UnknownType for a type
+// nothing registered, NotFound for a source the type does not have, Busy if the point is taken or
+// the instance is mounted elsewhere.
+MountResult Mount(const char* type, const char* source, const char* point);
+// Busy while one of its files is open, an operation on it is in progress or another mount point
+// lies inside it; otherwise syncs the driver and removes the mount.
+MountResult Unmount(const char* point);
+// The index-th mount, in mount order, for /proc/mounts; false past the last one.
+bool DescribeMount(uint32_t index, Procfs::MountStatus* status);
 
+// A handle keeps its mount busy until Close.
 bool Open(const char* path, FileHandle* file);
 bool Read(FileHandle* file, void* buffer, uint64_t length, uint64_t* bytes_read);
 // Devices accept any offset; other files at most their size.
