@@ -529,7 +529,7 @@ Interpreters written from scratch, like the M17 toolchain.
 
 The goal is to plug in a USB drive formatted as FAT, exFAT, ext4, NTFS or APFS, and read and write it. The mount table, the filesystem driver interface and ext2/ext4 come from M22. The milestone is split in two because only the second half needs USB: the filesystems need just a block device, so they are built and tested on a second virtio-blk disk and then work unchanged on USB drives behind the same block-device interface.
 
-- **Part 1: foreign filesystems** (after M22, no USB). Each driver lands in the Feather Disk core first, like M22's ext2/ext4, with unit tests over image files there. QEMU gets a second virtio-blk disk holding one partition per filesystem, built on the host. Partitions on it are mounted with `mount` under `/media/<label>` and unmounted with `umount`, which flushes everything first.
+- **Part 1: foreign filesystems** (after M22, no USB). Each driver lands in the shared filesystem core (`src/fs/core/`, M22) first, like ext2/ext4, with unit tests over image files there. QEMU gets a second virtio-blk disk holding one partition per filesystem, built on the host. Partitions on it are mounted with `mount` under `/media/<label>` and unmounted with `umount`, which flushes everything first.
 - **Part 2: removable USB drives** (after M14). M14 plans only HID keyboards over interrupt transfers, so this part adds xHCI bulk transfers, then USB mass storage: the Bulk-Only Transport protocol carrying SCSI commands, with UAS later. Hot-plug detects the partitions on a new drive (the GPT/MBR code exists) and mounts each one at `/media/<label>`, and `eject` unmounts every partition of a drive so pulling it out afterwards is safe.
 
 **Safety rules:** a filesystem bug here corrupts a real drive, so:
@@ -542,7 +542,7 @@ The goal is to plug in a USB drive formatted as FAT, exFAT, ext4, NTFS or APFS, 
 
 | Filesystem | Specification | Write difficulty | Host tools for test images and checks |
 |---|---|---|---|
-| FAT32 | Microsoft FAT specification | Low: extends the FAT16 driver | `mkfs.fat`, `fsck.fat`, mtools |
+| FAT32 | Microsoft FAT specification | Low: extends the core's FAT driver (M22 Part 2) | `mkfs.fat`, `fsck.fat`, mtools |
 | exFAT | Microsoft's published exFAT specification | Low to medium: allocation bitmap, checksummed directory entry sets, UTF-16 names. The usual format of large USB drives | `mkfs.exfat`, `fsck.exfat` |
 | NTFS | Reverse-engineered documentation (Linux ntfs3 and NTFS-3G docs) | High: MFT records and attributes, data runs, B+ tree directory indexes, `$Bitmap`, update sequence arrays. Mark the volume dirty while mounted. Compressed and encrypted files stay read-only | `mkntfs`, `ntfsfix -n` (NTFS-3G) |
 | APFS | Apple's "Apple File System Reference" | Highest: copy-on-write B-trees, object map, space manager, checkpoints and transaction IDs, Fletcher-64 checksums. FileVault-encrypted volumes also need AES-XTS and the keybag | `hdiutil create -fs APFS`, `fsck_apfs -n` on macOS |
@@ -651,36 +651,46 @@ User programs written in Embedded Swift, built on the host with the swift.org to
 
 **Complete when:** on both targets, Swift programs build from `src/user/`, run from the shell, and the matrix checks their output, and Swift tasks run on every CPU.
 
-### 22. Mount Table And ext2/ext4
+### 22. Mount Table, FAT And ext2/ext3/ext4
 
 The mount table and Linux filesystems, split out of M19 because they need no USB: they are built and tested on the existing virtio-blk disk. This moves beyond the FAT16 limits (ASCII names of at most 63 characters, no permissions or links).
 
-**Feather Disk core:** the ext2/ext4 code lives in Feather Disk, a separate repo by the same author (dual MIT OR Apache-2.0) that also ships a Mac app mounting these filesystems through FSKit. FeatherOS pulls in only its `core/` (freestanding C++, no exceptions, RTTI or standard library) as a git subtree under `src/fs/`, and keeps its own VFS adapter and block-device glue. The core's driver interface covers probe, mount/unmount/sync, lookup, directory reads, attributes, read/write/truncate, create/remove/rename/mkdir/link/symlink and capabilities, with opaque 64-bit node IDs, plain error codes, and every allocation, lock, log and clock call going through its `host.h` hooks. Each part below lands in the core first, with unit tests over image files there, so it reaches the Mac app as soon as it lands.
+**Shared filesystem core:** the filesystem drivers are written once and used by three hosts: the FeatherOS kernel, Feather Disk (a Mac app by the same author, dual MIT OR Apache-2.0, later also on Windows) and a command-line tool, `fscli`. The core is developed here in `src/fs/core/` and kept ready to leave: when the Mac app starts, `git subtree split --prefix=src/fs/core` gives the Feather Disk repo its first commits, and FeatherOS then takes updates with `git subtree pull --squash`. Until then these rules keep the folder self-contained:
 
-Feather Disk repo layout (proposed); only `core/` comes into FeatherOS:
+- It includes nothing outside `src/fs/core/`, which a `tools/quality.sh` check enforces. It reaches the outside only through `block_device.h` (read and write sectors) and `host.h` (allocation, locks, logging, clock).
+- It has its own `CMakeLists.txt` and builds on its own: on the host for its tests and `fscli`, and as a static library with the kernel's flags.
+- It must compile with our standard library, Apple's libc++ and Microsoft's STL, so it uses only headers that never allocate: `<cstdint>`, `<cstddef>`, `<array>`, `<span>`, `<string_view>`, `<optional>`, `<expected>`, `<bit>`, `<type_traits>`, `<utility>`. No `vector`, `string` or `new`; memory comes from `host.h`. No exceptions or RTTI.
+- Every file starts with `// SPDX-License-Identifier: MIT OR Apache-2.0`.
+- The kernel's adapter (core interface and `host.h` to the VFS, heap, locks, `KLogger`, clock and block devices) lives in `src/kernel/filesystem/` and stays behind at the split.
+- The Mac and Windows layers bind to a thin C API over the core, added when the Mac app starts, not in this milestone.
+
+The core's driver interface covers probe, mount/unmount/sync, lookup, directory reads, attributes, read/write/truncate, create/remove/rename/mkdir/link/symlink and capabilities, with opaque 64-bit node IDs and plain error codes. Each part below lands in the core first, with host tests over image files, so it reaches the Mac app as soon as it lands.
 
 ```
-core/          freestanding C++: no exceptions, RTTI or std library
-  include/fs/  block_device.h, host.h (alloc/lock/log/time hooks), filesystem.h
-  common/      block cache, bitmaps, CRC32C, UTF-8/16, little-endian helpers
-  ext/ ntfs/ … one directory per filesystem
-  probe.cpp    filesystem detection from superblocks
-partition/     MBR + GPT
-tests/         unit tests over image files; image scripts (mke2fs, e2fsck, …)
-tools/fscli/   mtools-style CLI (ls, cp in/out); built before the FSKit module
-mac/App/, mac/FSExtension/   SwiftUI app + thin Swift FSKit layer over core
+src/fs/core/
+  CMakeLists.txt
+  include/fs/   block_device.h, host.h, filesystem.h
+  common/       block cache, bitmaps, CRC32C, UTF-8/16, little-endian helpers
+  partition/    MBR + GPT
+  fat/ ext/     one directory per filesystem
+  probe.cpp     filesystem detection from superblocks
+  tests/        host tests over images (mkfs.fat, mke2fs -d), image scripts
+  tools/fscli/  ls, cat, cp in and out, info on an image or disk
 ```
 
-- **Part 1: mount table.** A filesystem driver interface and a mount table in the VFS, with an adapter from the Feather Disk core's interface and its `host.h` hooks to the kernel's heap, locks, `KLogger` and clock, replacing the hard-coded `/` (FAT16) and `/system` (initramfs). FAT16, the initramfs, `/dev`, `/tmp` and `/proc` become drivers behind it. Add `mount` and `umount`, and `/proc/mounts`. Unmounting flushes everything first.
-- **Part 2: ext2 read.** Superblock, block groups, inodes, direct and indirect blocks, directories, symlinks. The test disk gets a second partition made with `mke2fs -d`.
-- **Part 3: ext2 write.** Block and inode bitmaps, create, write, truncate, delete, rename, `mkdir`/`rmdir`, symlinks and hard links. Permissions and owners are stored and shown by `ls`, though not yet enforced (FeatherOS has no users). After the OS writes, the host checks the image with `e2fsck -fn`, extending the `STORAGE_TEST` pattern.
-- **Part 3b: ext2 as root.** The test disk becomes a single ext2 partition mounted at `/`, built with `mke2fs -d` from Homebrew `e2fsprogs` (keg-only, so `build.sh` finds it), and `STORAGE_TEST` checks persistence with `e2fsck` instead of mtools. FAT16 moves to a second partition so its tests keep running; its driver stays for M19's removable drives and a future EFI system partition.
-- **Part 4: ext4 read.** Extents, htree directories, CRC32C metadata checksums, 64-bit block numbers, flexible block groups. A volume whose journal needs recovery mounts read-only.
-- **Part 5: ext4 write.** Extent allocation and splitting, checksum updates, and jbd2 journal transactions, so a crash leaves a volume the host can recover.
-- **Part 5b: ext4 as root.** Switch the root partition to ext4.
+After the split, the Feather Disk repo adds `mac/` (a SwiftUI app that browses and copies, then mounting through an FSKit extension) and later `windows/` (the same, mounting through WinFsp or Dokany; check their licenses first).
+
+- **Part 1: mount table.** A filesystem driver interface and a mount table in the VFS, replacing the hard-coded `/` (FAT16) and `/system` (initramfs). FAT16, the initramfs, `/dev`, `/tmp` and `/proc` become drivers behind it. Add `mount` and `umount`, and `/proc/mounts`. Unmounting flushes everything first.
+- **Part 2: the shared core, with FAT.** Create `src/fs/core/` under the rules above, with its CMake, the include check and host tests. Move the FAT16 driver and the MBR/GPT parsing into it, so the interface's first user is a filesystem that already works and is already tested. The kernel's FAT code becomes the adapter above. Host tests run over `mkfs.fat` images, and `STORAGE_TEST` with its mtools checks must pass unchanged. `fscli` (`ls`, `cat`, `cp` out, `info`) opens the test disk on the host. FAT32 stays in M19 Part 1, as an extension of this driver.
+- **Part 3: ext2 read.** Superblock, block groups, inodes, direct and indirect blocks, directories, symlinks. The test disk gets a second partition made with `mke2fs -d`.
+- **Part 4: ext2 write.** Block and inode bitmaps, create, write, truncate, delete, rename, `mkdir`/`rmdir`, symlinks and hard links. Permissions and owners are stored and shown by `ls`, though not yet enforced (FeatherOS has no users). After the OS writes, the host checks the image with `e2fsck -fn`, extending the `STORAGE_TEST` pattern. `fscli` gains `cp` in.
+- **Part 4b: ext2 as root.** The test disk becomes a single ext2 partition mounted at `/`, built with `mke2fs -d` from Homebrew `e2fsprogs` (keg-only, so `build.sh` finds it), and `STORAGE_TEST` checks persistence with `e2fsck` instead of mtools. FAT16 moves to a second partition so its tests keep running; its driver stays for M19's removable drives and a future EFI system partition.
+- **Part 5: ext3 and ext4 read.** ext3 is ext2 plus a jbd2 journal, so it reads through the ext2 code. ext4 adds extents, htree directories, CRC32C metadata checksums, 64-bit block numbers and flexible block groups. A volume whose journal needs recovery mounts read-only.
+- **Part 6: ext3 and ext4 write.** Journal replay and jbd2 transactions (shared by ext3 and ext4), so a crash leaves a volume the host can recover; extent allocation and splitting, and checksum updates.
+- **Part 6b: ext4 as root.** Switch the root partition to ext4.
 - **Safety:** each driver mounts read-only until its write path passes the matrix, as in M19.
 
-**Complete when:** on both targets, the root filesystem is ext4 from the Feather Disk core, ext2 and ext4 partitions on the virtio-blk disk are mounted, written and unmounted, the data survives a reboot, and `e2fsck -fn` finds no errors.
+**Complete when:** on both targets, the root filesystem is ext4 from the shared core, FAT16 also comes from the core, ext2, ext3 and ext4 partitions on the virtio-blk disk are mounted, written and unmounted, the data survives a reboot, and `e2fsck -fn` finds no errors; on the host, `fscli` reads and writes the same images and the include check keeps `src/fs/core/` self-contained.
 
 ### 23. Pseudo-Terminals And Virtual Consoles (Complete)
 

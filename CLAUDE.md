@@ -6,7 +6,7 @@ Hobby kernel for **x86-64 and AArch64**, booted by Limine, freestanding C/C++ + 
 
 A finished milestone gets one line here. Its full summary (design, files, tests) goes in `docs/roadmap.md`. Only the milestone in progress gets detail.
 
-- **Complete, all on `main`:** M1–M13, M15, M20, M21, M23, M24, M25.
+- **Complete, all on `main`:** M1–M13, M15, M20, M21, M23–M26.
   - M1–M7: multi-arch build, exceptions/IRQs, physical/virtual memory and heap, timers and keyboard, initramfs/VFS/FAT16 over virtio-blk, ELF64 and user mode with syscalls, preemptive scheduler, processes and shell.
   - M8 SMP: one shared run queue (4 CPUs in QEMU), per-CPU index via x86-64 `GS`/`SWAPGS` and AArch64 `TPIDR_EL1`, local APIC IPIs and timers on x86-64, AArch64 kernel on `SP_EL1`.
   - M9 persistent storage: virtio-blk writes, writable FAT16 (subdirectories, VFAT long names, MBR/GPT), file descriptors, per-process working directories.
@@ -16,14 +16,15 @@ A finished milestone gets one line here. Its full summary (design, files, tests)
   - M15 status bar and inline prompt. M20 `gnu++23`, ASan+UBSan unit tests, `constinit` locks.
   - M23 terminal object, sessions, pseudo-terminals, four virtual consoles. M24 stopped processes, Ctrl+Z, background terminal access.
   - M21 Embedded Swift user programs (`FeatherSupport`, a concurrency runtime built from `deps/swift`, `swiftbench` against `cppbench`, `BUILD_TYPE`). M25 Swift beyond the Embedded defaults (clocks, `MainActor`, custom executors, C++ interop, our own build of the Embedded `Swift` module, `Codable`, libc `regex.h`).
+  - M26 a C++23-subset standard library of our own (`src/libcxx/include/`, compiled part `featheros_cxx`, host tests as `featheros_std` in `tests/unit/libcxx/`, `cxxtest` in QEMU; `std::__detail::LibraryAbort` where the standard throws), used by the kernel, libc, all programs, Swift's C++ programs (Clang module `std`) and both Swift runtimes, so libc++ is no longer fetched.
 - **Also on `main`:** M27 full Swift with runtime type information (`src/user/swift_runtime/`, `FEATHEROS_SWIFT_FULL_PROGRAMS`, `./build.sh benchmark`) and M28 Parts 1–2 (`tools/smoke/` harness, `test=<mode>` kernel hooks, `tools/matrix.py` three cases at a time). M28 Part 3 is optional; its roadmap heading is not yet marked complete.
-- **M26 complete on branch `feat/libcxx`** (cut from `main`, not yet squash-merged): FeatherOS's own C++23-subset standard library in `src/libcxx/include/` (SYSTEM include directory `featheros_cxx_headers` for the kernel, libc and all programs), with the static library `featheros_cxx` (`src/libcxx/src/`) linked by programs before `featheros_c`; host tests build it as `featheros_std` (`FEATHEROS_STD_NAMESPACE`) in `tests/unit/libcxx/`, `cxxtest` checks it as `std` in the shell smoke test (195 checks). Where the standard throws, headers call `std::__detail::LibraryAbort`. Parts 1–5: language support, vocabulary types, containers and algorithms, threads and time, formatting (details in `docs/roadmap.md`). Part 6 done: both Swift runtimes (`src/user/swift_concurrency/`, `src/user/swift_runtime/`) compile as C++20 over these headers, with the new `<bitset>`, `<queue>`, `<stack>`, `<cmath>`, `<exception>` and `aligned_storage`/`is_pod`, so `deps/llvm-project` is no longer fetched. The full matrix passed (38 cases). Next: squash-merge `feat/libcxx` into `main`, then pick the next milestone from `docs/roadmap.md`.
+- **Next: M22** (mount table, FAT and ext2/ext3/ext4, roadmap), on `feat/disk`. Parts are planned; start with Part 1 (mount table). Part 2 creates the shared filesystem core `src/fs/core/` (later split into the Feather Disk repo) and moves FAT16 into it.
 - Known hard limits: 16 KiB kernel stacks (guard-paged pool), 16384 pages (64 MiB) per process, 32 descriptors per process (64 open disk files system-wide), TCP rings of at most 256 KiB each way (64 KiB receive window unscaled), 4 out-of-order TCP ranges, a listen backlog of 16, `poll` on at most 64 descriptors, 16 pseudo-terminal pairs, FAT16 long names ASCII-only and at most 63 characters, `/tmp` and `/etc` together at most 128 entries and 4 MiB, `/etc` a RAM copy of the initramfs whose edits are lost at reboot (stopgap; better design in `docs/ideas.md`, "A persistent `/etc`"), 63-page user stack, only the top of the heap can be returned to the kernel (no `mmap`), ≤16 program args in 63 chars, program path included (double quotes group words), environments ≤1 KiB and 32 variables, no console end-of-file key, no `long double` arithmetic on AArch64 (no compiler runtime), sin/cos/tan imprecise above about 10^6 (sinl/cosl above 2^30), full-Swift programs cannot import Embedded modules (`FeatherSupport` is built in both modes), and are 2.4 to 3.1 MB in Release, 16 threads per process with 63-page stacks, no per-CPU run queues, `KLogger` not locked.
 
 ## Branches
 
 - `main` — default branch; every completed milestone was squash-merged into it from a feature branch.
-- `feat/libcxx` — M26.
+- `feat/disk` — M22 in progress.
 - Do feature work on `feat/<topic>` branches cut from `main`, and squash-merge each one back into `main`.
 
 ## Layout
@@ -72,7 +73,7 @@ Get the code lint-clean **before** running any QEMU smoke test or `test-all`. Al
 - Early logging and panic must not allocate. Physical addresses use explicit 64-bit types, and code must not hard-code physical memory addresses (obtain them from the Limine memory map).
 - Every feature should land with tests on **both** architectures: a QEMU case in `tools/matrix.py` and, where logic is host-testable, a unit test.
 - To add a user program, create `src/user/<name>.cpp` with a `main` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt` (a Swift one: `src/user/<name>.swift` with top-level code, in `FEATHEROS_SWIFT_PROGRAMS`, or `FEATHEROS_SWIFT_FULL_PROGRAMS` for full Swift). Use libc, not raw syscalls, unless the program tests the kernel ABI itself. Code shared between programs goes in a header with declarations and a `.cpp` listed in `featheros_user_support` (and in `tests/unit/CMakeLists.txt` when host-tested). A missing POSIX call belongs in `src/libc/`, documented in `docs/posix.md`.
-- At the end of a step or milestone, update the docs with the `finish-step` skill (`.claude/skills/finish-step/`). Adding a program is the `add-program` skill.
+- At the end of a step or milestone, update the docs with the `finish-step` skill (`.claude/skills/finish-step/`). Adding a program is the `add-program` skill. Working through steps with one Opus subagent each, reviewed and committed on the feature branch, is the `autopilot` skill.
 
 ## Deeper docs
 
