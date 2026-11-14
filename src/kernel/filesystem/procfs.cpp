@@ -113,7 +113,7 @@ size_t Length(const char* text)
     return length;
 }
 
-void SetEntry(FAT16::DirectoryEntry* entry, const char* name, bool directory)
+void SetEntry(Filesystem::DirectoryEntry* entry, const char* name, bool directory)
 {
     uint32_t index = 0;
     for (; name[index] != '\0' && index < sizeof(entry->name) - 1; ++index)
@@ -216,7 +216,7 @@ bool IsDirectory(const char* path)
     return kind == Kind::Root || kind == Kind::ProcessDirectory;
 }
 
-bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry)
+bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry)
 {
     uint64_t process_id = 0;
     if (path == nullptr || entry == nullptr)

@@ -58,7 +58,7 @@ bool ParsePair(const char* text, uint32_t* number)
     return length > 0 && text[length] == '\0';
 }
 
-void SetEntry(FAT16::DirectoryEntry* entry, const char* name, bool directory)
+void SetEntry(Filesystem::DirectoryEntry* entry, const char* name, bool directory)
 {
     uint32_t length = 0;
     for (; name[length] != '\0'; ++length)
@@ -173,7 +173,7 @@ void Read(Device device, void* buffer, uint64_t length, uint64_t* bytes_read)
     *bytes_read = length;
 }
 
-bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry)
+bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry)
 {
     if (*path == '\0')
     {

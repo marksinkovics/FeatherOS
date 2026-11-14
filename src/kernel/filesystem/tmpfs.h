@@ -1,7 +1,7 @@
 #ifndef FEATHEROS_FILESYSTEM_TMPFS_H
 #define FEATHEROS_FILESYSTEM_TMPFS_H
 
-#include "kernel/filesystem/fat16.h"
+#include "kernel/filesystem/filesystem.h"
 
 #include <stdint.h>
 
@@ -40,7 +40,7 @@ bool RemoveDirectory(Root root, const char* path);
 // Fails if to exists, or would put a directory inside itself. Open files keep their node.
 bool Rename(Root root, const char* from, const char* to);
 bool IsDirectory(Root root, const char* path);
-bool ReadDirectory(Root root, const char* path, uint32_t index, FAT16::DirectoryEntry* entry);
+bool ReadDirectory(Root root, const char* path, uint32_t index, Filesystem::DirectoryEntry* entry);
 uint64_t UsedBytes();
 // Removes everything, for tests.
 void Reset();

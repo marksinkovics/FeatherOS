@@ -1,50 +1,49 @@
 #ifndef FEATHEROS_FILESYSTEM_VFS_H
 #define FEATHEROS_FILESYSTEM_VFS_H
 
-#include "kernel/filesystem/fat16.h"
+#include "kernel/filesystem/filesystem.h"
 
 #include <stdint.h>
 
-// One tree over several filesystems: the FAT16 disk at "/", the read-only initramfs's "system"
-// directory at "/system", devices at "/dev", generated process files at "/proc", and the RAM
-// filesystem's two roots at "/tmp" and "/etc". Disk entries with those names in the root are
-// hidden by the mounts.
+// One tree over the mounted filesystems: at boot the FAT16 disk at "/", the read-only initramfs's
+// "system" directory at "/system", devices at "/dev", generated process files at "/proc", and the
+// RAM filesystem's two roots at "/tmp" and "/etc". A path belongs to the mount with the longest
+// mount point that is a whole-component prefix of it, so a mount hides whatever its parent
+// filesystem has at that path.
 namespace FeatherOS::VFS
 {
 
-enum class FileKind : uint8_t
-{
-    Archive,
-    Disk,
-    Device,
-    Memory,
-    Generated,
-};
+using FileInfo = Filesystem::FileInfo;
 
 struct FileHandle
 {
-    // An archive file's bytes, or a generated file's text, which the handle owns.
-    const uint8_t* data;
+    Filesystem::Driver* driver;
+    Filesystem::Node node;
     uint64_t size;
     uint64_t offset;
-    uint32_t first_cluster;
-    uint32_t directory_cluster;
-    uint32_t entry_index;
-    // A tmpfs node, or a device as Devices::Find gives it.
-    uint32_t node;
-    FileKind kind;
     bool open;
 };
 
-struct FileInfo
+// Names one file across all its handles.
+struct FileKey
 {
-    uint64_t size;
-    bool device;
+    const Filesystem::Driver* filesystem;
+    uint64_t node;
+
+    bool operator==(const FileKey&) const = default;
 };
 
+// The filesystems that need no disk, in the order "/" lists them: /system, /etc, /dev, /proc and
+// /tmp. Those already mounted are left alone.
+bool MountBuiltIn();
+// Mounts the block device's FAT16 volume at "/", replacing an earlier one.
 bool MountBlockDevice();
 // Copies the initramfs's "etc" files into /etc, so they can be changed until the next boot.
 bool LoadEtc();
+// point is an absolute path without ".", "..", repeated or trailing '/'; it fails if taken.
+bool Mount(const char* point, Filesystem::Driver* driver);
+bool Unmount(const char* point);
+
 bool Open(const char* path, FileHandle* file);
 bool Read(FileHandle* file, void* buffer, uint64_t length, uint64_t* bytes_read);
 // Devices accept any offset; other files at most their size.
@@ -68,14 +67,18 @@ bool IsMountPoint(const char* path);
 // Disk, /tmp and /etc files are tracked while open, so they are not removed or written twice at
 // once.
 bool IsTracked(const FileHandle& file);
+FileKey KeyOf(const FileHandle& file);
+bool IsWritable(const FileHandle& file);
+bool IsDevice(const FileHandle& file);
+// The node Devices::Find gave for a device; false for anything else.
+bool DeviceNode(const FileHandle& file, uint32_t* node);
 bool RemoveDirectory(const char* path);
 bool SameFilesystem(const char* left, const char* right);
-// Within the disk, /tmp or /etc; to must not exist, unless it names from in another case on the
-// disk.
+// Within one filesystem; to must not exist, unless it names from in another case on the disk.
 bool Rename(const char* from, const char* to);
-// Lists a directory, such as "/", "/home/docs", or "/system"; "/" starts with the mount points.
-// False past the last entry.
-bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry);
+// Lists a directory, such as "/", "/home/docs", or "/system": first the mount points directly
+// inside it, then its own entries. False past the last entry.
+bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry);
 
 } // namespace FeatherOS::VFS
 

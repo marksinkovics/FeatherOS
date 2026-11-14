@@ -1,6 +1,8 @@
 #ifndef FEATHEROS_FILESYSTEM_FAT16_H
 #define FEATHEROS_FILESYSTEM_FAT16_H
 
+#include "kernel/filesystem/filesystem.h"
+
 #include <stdint.h>
 
 namespace FeatherOS::FAT16
@@ -18,14 +20,6 @@ struct File
 
 struct FileInfo
 {
-    uint32_t size;
-};
-
-struct DirectoryEntry
-{
-    // The long name if the entry has one, otherwise "NAME.EXT", and a terminator.
-    char name[64];
-    bool directory;
     uint32_t size;
 };
 
@@ -57,7 +51,7 @@ uint32_t FreeClusterCount();
 bool IsDirectory(const char* path);
 // The index-th entry of the directory at path ("" for the root), without "." and "..";
 // false past the last one.
-bool ReadDirectory(const char* path, uint32_t index, DirectoryEntry* entry);
+bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry);
 
 } // namespace FeatherOS::FAT16
 

@@ -10,7 +10,7 @@ namespace
 // Each root's node is its index.
 constexpr uint32_t RootCount = 2;
 constexpr uint32_t MaximumNodes = RootCount + MaximumEntries;
-constexpr uint32_t NameCapacity = sizeof(FAT16::DirectoryEntry::name);
+constexpr uint32_t NameCapacity = sizeof(Filesystem::DirectoryEntry::name);
 constexpr uint64_t MinimumCapacity = 256;
 
 struct Node
@@ -378,7 +378,7 @@ bool IsDirectory(Root root, const char* path)
     return path != nullptr && Lookup(root, path, &node) && nodes[node].directory;
 }
 
-bool ReadDirectory(Root root, const char* path, uint32_t index, FAT16::DirectoryEntry* entry)
+bool ReadDirectory(Root root, const char* path, uint32_t index, Filesystem::DirectoryEntry* entry)
 {
     uint32_t directory;
     if (path == nullptr || entry == nullptr || !Lookup(root, path, &directory) ||

@@ -72,6 +72,10 @@ void MountInitramfs(KLogger& logger, const BootInfo& boot_info)
     {
         Panic("Initramfs archive is missing or invalid");
     }
+    if (!VFS::MountBuiltIn())
+    {
+        Panic("Could not mount /system, /etc, /dev, /proc and /tmp");
+    }
     if (!VFS::LoadEtc())
     {
         Panic("Initramfs etc files do not fit in /etc");

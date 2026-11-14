@@ -52,6 +52,9 @@ uint64_t Next()
 namespace
 {
 
+// As the kernel does at boot.
+[[maybe_unused]] const bool built_in_mounted = FeatherOS::VFS::MountBuiltIn();
+
 using FeatherOS::User::OpenAppend;
 using FeatherOS::User::OpenCreate;
 using FeatherOS::User::OpenRead;
@@ -64,7 +67,7 @@ constexpr FeatherOS::Tmpfs::Root Etc = FeatherOS::Tmpfs::Root::Etc;
 std::vector<std::string> List(const char* path)
 {
     std::vector<std::string> names;
-    FeatherOS::FAT16::DirectoryEntry entry{};
+    FeatherOS::Filesystem::DirectoryEntry entry{};
     for (uint32_t index = 0; FeatherOS::VFS::ReadDirectory(path, index, &entry); ++index)
     {
         names.push_back(std::string(entry.name) + (entry.directory ? "/" : ""));

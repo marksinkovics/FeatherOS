@@ -32,15 +32,13 @@ constexpr uint64_t KnownFlags = User::OpenRead | User::OpenWrite | User::OpenCre
                                 User::OpenTruncate | User::OpenAppend | User::OpenCloseOnExec |
                                 User::OpenNonBlocking | User::OpenNoControllingTerminal;
 constexpr uint32_t MaximumOpenDiskFiles = 64;
-// FAT16 directory clusters fit in 16 bits, so disk keys never set the top bit.
-constexpr uint64_t MemoryKeyBit = 1ULL << 63;
 
-// Disk and /tmp files open anywhere in the system, keyed by where their directory entry or tmpfs
-// node is. A VFS handle caches the file's size and first cluster, so a second writer, or removing
-// an open file, would act on stale state.
+// Disk, /tmp and /etc files open anywhere in the system, keyed by their filesystem and node. A VFS
+// handle caches the file's size and where its data starts, so a second writer, or removing an
+// open file, would act on stale state.
 struct DiskFileUse
 {
-    uint64_t key;
+    VFS::FileKey key;
     uint32_t readers;
     bool writer;
 };
@@ -54,21 +52,7 @@ uint32_t disk_file_count GUARDED_BY(file_system_lock) = 0;
 OpenFile console = {{},    nullptr, 1,       Kind::Terminal, true,   true,
                     false, false,   nullptr, nullptr,        nullptr};
 
-uint64_t UseKey(const VFS::FileHandle& handle)
-{
-    if (handle.kind == VFS::FileKind::Memory)
-    {
-        return MemoryKeyBit | handle.node;
-    }
-    return (static_cast<uint64_t>(handle.directory_cluster) << 32) | handle.entry_index;
-}
-
-bool IsReadOnlyKind(VFS::FileKind kind)
-{
-    return kind == VFS::FileKind::Archive || kind == VFS::FileKind::Generated;
-}
-
-DiskFileUse* FindUse(uint64_t key) REQUIRES(file_system_lock)
+DiskFileUse* FindUse(const VFS::FileKey& key) REQUIRES(file_system_lock)
 {
     for (uint32_t index = 0; index < disk_file_count; ++index)
     {
@@ -80,7 +64,7 @@ DiskFileUse* FindUse(uint64_t key) REQUIRES(file_system_lock)
     return nullptr;
 }
 
-uint64_t AddUse(uint64_t key, bool writable) REQUIRES(file_system_lock)
+uint64_t AddUse(const VFS::FileKey& key, bool writable) REQUIRES(file_system_lock)
 {
     DiskFileUse* use = FindUse(key);
     if (use != nullptr)
@@ -100,7 +84,7 @@ uint64_t AddUse(uint64_t key, bool writable) REQUIRES(file_system_lock)
     return 0;
 }
 
-void DropUse(uint64_t key, bool writable) REQUIRES(file_system_lock)
+void DropUse(const VFS::FileKey& key, bool writable) REQUIRES(file_system_lock)
 {
     DiskFileUse* use = FindUse(key);
     if (use == nullptr)
@@ -171,7 +155,7 @@ void ReleaseLocked(OpenFile* file) REQUIRES(file_system_lock)
     }
     if (VFS::IsTracked(file->handle))
     {
-        DropUse(UseKey(file->handle), file->writable);
+        DropUse(VFS::KeyOf(file->handle), file->writable);
     }
     VFS::Close(&file->handle);
     Memory::Deallocate(file);
@@ -250,7 +234,7 @@ uint64_t MissingErrorLocked(const char* path) REQUIRES(file_system_lock)
 }
 
 // The use key of the disk or /tmp file at path; false for anything else.
-bool FileKeyLocked(const char* path, uint64_t* key) REQUIRES(file_system_lock)
+bool FileKeyLocked(const char* path, VFS::FileKey* key) REQUIRES(file_system_lock)
 {
     VFS::FileHandle handle;
     if (!VFS::Open(path, &handle))
@@ -258,7 +242,7 @@ bool FileKeyLocked(const char* path, uint64_t* key) REQUIRES(file_system_lock)
         return false;
     }
     const bool tracked = VFS::IsTracked(handle);
-    *key = UseKey(handle);
+    *key = VFS::KeyOf(handle);
     VFS::Close(&handle);
     return tracked;
 }
@@ -359,11 +343,12 @@ uint64_t OpenDeviceLocked(Table* table, uint64_t descriptor, uint64_t flags, uin
 
 bool IsTerminalDevice(const VFS::FileHandle& handle)
 {
-    if (handle.kind != VFS::FileKind::Device)
+    uint32_t node;
+    if (!VFS::DeviceNode(handle, &node))
     {
         return false;
     }
-    const Devices::Device device = Devices::DeviceOf(handle.node);
+    const Devices::Device device = Devices::DeviceOf(node);
     return device == Devices::Device::ControllingTerminal ||
            device == Devices::Device::PseudoTerminalMaster ||
            device == Devices::Device::PseudoTerminalSlave || device == Devices::Device::Console;
@@ -446,14 +431,14 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
             return CreateErrorLocked(path);
         }
     }
-    else if (writable && IsReadOnlyKind(handle.kind))
+    else if (writable && !VFS::IsWritable(handle))
     {
         VFS::Close(&handle);
         return User::SyscallErrorReadOnly;
     }
-    if (IsTerminalDevice(handle))
+    uint32_t node;
+    if (IsTerminalDevice(handle) && VFS::DeviceNode(handle, &node))
     {
-        const uint32_t node = handle.node;
         VFS::Close(&handle);
         return OpenDeviceLocked(table, descriptor, flags, node, controlling_terminal);
     }
@@ -465,7 +450,7 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
     }
     if (VFS::IsTracked(handle))
     {
-        const uint64_t added = AddUse(UseKey(handle), writable);
+        const uint64_t added = AddUse(VFS::KeyOf(handle), writable);
         if (User::IsSyscallError(added))
         {
             VFS::Close(&handle);
@@ -926,7 +911,7 @@ uint64_t Remove(const char* path)
         return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorNotFound;
     }
     const bool removable = VFS::IsTracked(handle);
-    const bool busy = removable && FindUse(UseKey(handle)) != nullptr;
+    const bool busy = removable && FindUse(VFS::KeyOf(handle)) != nullptr;
     VFS::Close(&handle);
     if (!removable)
     {
@@ -950,7 +935,7 @@ uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* e
     {
         return MissingErrorLocked(path);
     }
-    FAT16::DirectoryEntry disk_entry;
+    Filesystem::DirectoryEntry disk_entry;
     if (!VFS::ReadDirectory(path, static_cast<uint32_t>(index), &disk_entry))
     {
         return User::SyscallErrorNotFound;
@@ -1007,7 +992,7 @@ uint64_t RemoveDirectory(const char* path)
     {
         return User::SyscallErrorBusy;
     }
-    FAT16::DirectoryEntry entry;
+    Filesystem::DirectoryEntry entry;
     if (VFS::ReadDirectory(path, 0, &entry))
     {
         return User::SyscallErrorNotEmpty;
@@ -1043,7 +1028,7 @@ uint64_t Rename(const char* from, const char* to)
         return IsWithin(from, to) ? 0 : User::SyscallErrorInvalidArgument;
     }
     const bool directory = VFS::IsDirectory(from);
-    uint64_t source_key = 0;
+    VFS::FileKey source_key = {};
     if (!directory)
     {
         if (!FileKeyLocked(from, &source_key))
@@ -1056,7 +1041,7 @@ uint64_t Rename(const char* from, const char* to)
             return User::SyscallErrorBusy;
         }
     }
-    uint64_t target_key = 0;
+    VFS::FileKey target_key = {};
     if (FileKeyLocked(to, &target_key) && (directory || target_key != source_key))
     {
         if (directory)
@@ -1141,10 +1126,9 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
         *status = {0, User::FileType::Device, false};
         return 0;
     }
-    status->type = file->handle.kind == VFS::FileKind::Device ? User::FileType::Device
-                                                              : User::FileType::Regular;
+    status->type = VFS::IsDevice(file->handle) ? User::FileType::Device : User::FileType::Regular;
     status->size = file->handle.size;
-    status->read_only = IsReadOnlyKind(file->handle.kind);
+    status->read_only = !VFS::IsWritable(file->handle);
     return 0;
 }
 
@@ -1179,7 +1163,7 @@ ProgramFile::~ProgramFile()
     Sync::MutexGuard guard(file_system_lock);
     if (tracked)
     {
-        DropUse(UseKey(handle), false);
+        DropUse(VFS::KeyOf(handle), false);
     }
     VFS::Close(&handle);
 }
@@ -1195,14 +1179,14 @@ uint64_t ProgramFile::Open(const char* path)
     {
         return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorNotFound;
     }
-    if (handle.kind == VFS::FileKind::Device || handle.size == 0)
+    if (VFS::IsDevice(handle) || handle.size == 0)
     {
         VFS::Close(&handle);
         return User::SyscallErrorNotExecutable;
     }
     if (VFS::IsTracked(handle))
     {
-        const uint64_t added = AddUse(UseKey(handle), false);
+        const uint64_t added = AddUse(VFS::KeyOf(handle), false);
         if (User::IsSyscallError(added))
         {
             VFS::Close(&handle);

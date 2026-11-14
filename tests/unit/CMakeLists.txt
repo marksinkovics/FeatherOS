@@ -23,6 +23,7 @@ include(Catch)
 add_executable(featheros_unit_tests
     kernel/filesystem/fat_names_tests.cpp
     kernel/filesystem/filesystem_tests.cpp
+    kernel/filesystem/mount_table_tests.cpp
     kernel/filesystem/path_tests.cpp
     kernel/filesystem/pipe_tests.cpp
     kernel/filesystem/virtual_files_tests.cpp
@@ -128,6 +129,9 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/filesystem/devices.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/procfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/tmpfs.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/drivers.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/filesystem.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/mount_table.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/vfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/elf/elf_loader.cpp"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/font.c"

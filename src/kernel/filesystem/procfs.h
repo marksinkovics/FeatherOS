@@ -1,7 +1,7 @@
 #ifndef FEATHEROS_FILESYSTEM_PROCFS_H
 #define FEATHEROS_FILESYSTEM_PROCFS_H
 
-#include "kernel/filesystem/fat16.h"
+#include "kernel/filesystem/filesystem.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -64,7 +64,7 @@ void SetSource(const Source& source);
 // Writes the file's text into buffer (MaximumFileSize bytes) and its length into *length.
 bool Generate(const char* path, char* buffer, size_t* length);
 bool IsDirectory(const char* path);
-bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry);
+bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry);
 
 } // namespace FeatherOS::Procfs
 

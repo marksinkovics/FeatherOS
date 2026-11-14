@@ -19,6 +19,9 @@
 namespace
 {
 
+// As the kernel does at boot.
+[[maybe_unused]] const bool built_in_mounted = FeatherOS::VFS::MountBuiltIn();
+
 constexpr uint32_t DiskSectorCount = 5001;
 constexpr uint32_t PartitionStart = 1;
 constexpr uint32_t PartitionSectorCount = 5000;
@@ -221,7 +224,7 @@ TEST_CASE("USTAR initramfs directories are separate mounts, with etc copied to /
     REQUIRE(FeatherOS::VFS::IsReadOnly("/system/ls"));
     REQUIRE_FALSE(FeatherOS::VFS::IsReadOnly("/etc/hosts"));
 
-    FeatherOS::FAT16::DirectoryEntry entry{};
+    FeatherOS::Filesystem::DirectoryEntry entry{};
     REQUIRE(FeatherOS::VFS::ReadDirectory("/system", 0, &entry));
     REQUIRE(std::string(entry.name) == "ls");
     REQUIRE_FALSE(FeatherOS::VFS::ReadDirectory("/system", 1, &entry));
@@ -435,7 +438,7 @@ TEST_CASE("FAT16 truncation frees the clusters a file no longer needs")
 
     REQUIRE(FeatherOS::VFS::Truncate(&file, 0));
     REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_full + 4);
-    REQUIRE(file.first_cluster == 0);
+    REQUIRE(file.node.payload == 0);
     REQUIRE(ReadWhole("/SHRINK.TXT").empty());
 }
 
@@ -455,7 +458,7 @@ TEST_CASE("FAT16 removal frees the chain and the directory slot")
 
     FeatherOS::VFS::FileHandle file{};
     REQUIRE(FeatherOS::VFS::Create("/AGAIN.TXT", &file));
-    REQUIRE(file.entry_index == 0);
+    REQUIRE(file.node.id == 0);
 }
 
 TEST_CASE("FAT16 rejects bad names, duplicates, read-only paths, and a full root directory")
@@ -809,7 +812,7 @@ namespace
 std::vector<std::string> ListDirectory(const char* path)
 {
     std::vector<std::string> names;
-    FeatherOS::FAT16::DirectoryEntry entry{};
+    FeatherOS::Filesystem::DirectoryEntry entry{};
     for (uint32_t index = 0; FeatherOS::VFS::ReadDirectory(path, index, &entry); ++index)
     {
         names.push_back(std::string(entry.name) + (entry.directory ? "/" : ""));

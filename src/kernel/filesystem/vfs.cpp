@@ -1,141 +1,99 @@
 #include "vfs.h"
 
-#include "devices.h"
+#include "drivers.h"
 #include "fat16.h"
 #include "initramfs.h"
-#include "procfs.h"
+#include "mount_table.h"
 #include "tmpfs.h"
 
-#include "kernel/memory/heap.h"
+#include "kernel/sync/spinlock.h"
 
 namespace FeatherOS::VFS
 {
 namespace
 {
 
-enum class Mount : uint8_t
+using Filesystem::Driver;
+
+constexpr char SystemPoint[] = "/system";
+
+struct BuiltIn
 {
-    Disk,
-    System,
-    Etc,
-    Devices,
-    Proc,
-    Tmp,
+    const char* point;
+    Driver& (*driver)();
 };
 
-struct MountPoint
+constexpr BuiltIn BuiltIns[] = {
+    {"/system", Filesystem::Drivers::System}, {"/etc", Filesystem::Drivers::Etc},
+    {"/dev", Filesystem::Drivers::Devices},   {"/proc", Filesystem::Drivers::Proc},
+    {"/tmp", Filesystem::Drivers::Tmp},
+};
+
+// Held only while the table is read or changed, never across a driver call, since drivers wait
+// for the disk.
+constinit Sync::SpinLock mount_lock;
+constinit MountTable mounts GUARDED_BY(mount_lock);
+
+// The bare names kernel code uses ("init") name files in /system.
+Driver* LocateLocked(const char* path, const char** inner) REQUIRES(mount_lock)
 {
-    const char* name;
-    Mount mount;
-};
+    if (path[0] == '/')
+    {
+        return mounts.Resolve(path, inner);
+    }
+    if (path[0] == '\0')
+    {
+        return nullptr;
+    }
+    *inner = path;
+    return mounts.Find(SystemPoint);
+}
 
-// In the order "/" lists them.
-constexpr MountPoint MountPoints[] = {
-    {"system", Mount::System}, {"etc", Mount::Etc}, {"dev", Mount::Devices},
-    {"proc", Mount::Proc},     {"tmp", Mount::Tmp},
-};
-constexpr uint32_t MountPointCount = sizeof(MountPoints) / sizeof(MountPoints[0]);
+Driver* Locate(const char* path, const char** inner)
+{
+    Sync::SpinLockGuard guard(mount_lock);
+    return LocateLocked(path, inner);
+}
 
-// Which filesystem holds path, and the path inside it ("" for its root). The bare names kernel
-// code uses ("init") name the initramfs.
-Mount Locate(const char* path, const char** inner)
+// "/" exists even with nothing mounted there, since it holds the other mount points.
+bool IsRoot(const char* path)
 {
     if (path[0] != '/')
     {
-        *inner = path;
-        return Mount::System;
+        return false;
     }
-    for (const MountPoint& point : MountPoints)
+    while (*path == '/')
     {
-        uint32_t length = 0;
-        while (point.name[length] != '\0' && path[1 + length] == point.name[length])
-        {
-            ++length;
-        }
-        const char next = path[1 + length];
-        if (point.name[length] == '\0' && (next == '\0' || next == '/'))
-        {
-            const char* rest = path + 1 + length;
-            while (*rest == '/')
-            {
-                ++rest;
-            }
-            *inner = rest;
-            return point.mount;
-        }
+        ++path;
     }
-    *inner = path + 1;
-    return Mount::Disk;
+    return *path == '\0';
 }
 
-bool InMemory(Mount mount)
+bool HasSize(const FileHandle& file)
 {
-    return mount == Mount::Tmp || mount == Mount::Etc;
-}
-
-Tmpfs::Root MemoryRoot(Mount mount)
-{
-    return mount == Mount::Etc ? Tmpfs::Root::Etc : Tmpfs::Root::Tmp;
-}
-
-void ResetHandle(FileHandle* file, FileKind kind, uint64_t size)
-{
-    *file = {};
-    file->kind = kind;
-    file->size = size;
-    file->open = true;
-}
-
-void OpenDiskHandle(const FAT16::File& disk_file, FileHandle* file)
-{
-    ResetHandle(file, FileKind::Disk, disk_file.size);
-    file->first_cluster = disk_file.first_cluster;
-    file->directory_cluster = disk_file.directory_cluster;
-    file->entry_index = disk_file.entry_index;
-}
-
-FAT16::File DiskFile(const FileHandle& file)
-{
-    return {file.first_cluster, static_cast<uint32_t>(file.size), file.directory_cluster,
-            file.entry_index};
-}
-
-void UpdateHandle(const FAT16::File& disk_file, FileHandle* file)
-{
-    file->size = disk_file.size;
-    file->first_cluster = disk_file.first_cluster;
-}
-
-void CopyFromMemory(FileHandle* file, void* buffer, uint64_t length, uint64_t* bytes_read)
-{
-    const uint64_t available = file->size - file->offset;
-    const uint64_t count = length < available ? length : available;
-    auto* destination = static_cast<uint8_t*>(buffer);
-    for (uint64_t index = 0; index < count; ++index)
-    {
-        destination[index] = file->data[file->offset + index];
-    }
-    file->offset += count;
-    *bytes_read = count;
-}
-
-void SetEntry(FAT16::DirectoryEntry* entry, const char* name)
-{
-    uint32_t length = 0;
-    for (; name[length] != '\0'; ++length)
-    {
-        entry->name[length] = name[length];
-    }
-    entry->name[length] = '\0';
-    entry->directory = true;
-    entry->size = 0;
+    return !file.driver->Attributes().devices;
 }
 
 } // namespace
 
+bool MountBuiltIn()
+{
+    Sync::SpinLockGuard guard(mount_lock);
+    for (const BuiltIn& built_in : BuiltIns)
+    {
+        Driver* driver = &built_in.driver();
+        if (mounts.Find(built_in.point) != driver && !mounts.Add(built_in.point, driver))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool MountBlockDevice()
 {
-    return FAT16::Mount();
+    Unmount("/");
+    return FAT16::Mount() && Mount("/", &Filesystem::Drivers::Disk());
 }
 
 bool LoadEtc()
@@ -158,6 +116,18 @@ bool LoadEtc()
     return true;
 }
 
+bool Mount(const char* point, Driver* driver)
+{
+    Sync::SpinLockGuard guard(mount_lock);
+    return mounts.Add(point, driver);
+}
+
+bool Unmount(const char* point)
+{
+    Sync::SpinLockGuard guard(mount_lock);
+    return mounts.Remove(point);
+}
+
 bool Open(const char* path, FileHandle* file)
 {
     if (path == nullptr || file == nullptr)
@@ -165,72 +135,15 @@ bool Open(const char* path, FileHandle* file)
         return false;
     }
     const char* inner;
-    const Mount mount = Locate(path, &inner);
-    switch (mount)
+    Driver* driver = Locate(path, &inner);
+    Filesystem::Node node = {};
+    uint64_t size = 0;
+    if (driver == nullptr || *inner == '\0' || !driver->Open(inner, &node, &size))
     {
-    case Mount::Disk:
-    {
-        FAT16::File disk_file;
-        if (*inner == '\0' || !FAT16::Open(inner, &disk_file))
-        {
-            return false;
-        }
-        OpenDiskHandle(disk_file, file);
-        return true;
+        return false;
     }
-    case Mount::System:
-    {
-        Initramfs::File archive_file;
-        if (!Initramfs::Open("system", inner, &archive_file))
-        {
-            return false;
-        }
-        ResetHandle(file, FileKind::Archive, archive_file.size);
-        file->data = archive_file.data;
-        return true;
-    }
-    case Mount::Devices:
-    {
-        uint32_t node;
-        if (!Devices::Find(inner, &node))
-        {
-            return false;
-        }
-        ResetHandle(file, FileKind::Device, 0);
-        file->node = node;
-        return true;
-    }
-    case Mount::Proc:
-    {
-        auto* text = static_cast<char*>(Memory::Allocate(Procfs::MaximumFileSize));
-        size_t length = 0;
-        if (text == nullptr)
-        {
-            return false;
-        }
-        if (!Procfs::Generate(inner, text, &length))
-        {
-            Memory::Deallocate(text);
-            return false;
-        }
-        ResetHandle(file, FileKind::Generated, length);
-        file->data = reinterpret_cast<const uint8_t*>(text);
-        return true;
-    }
-    case Mount::Tmp:
-    case Mount::Etc:
-    {
-        uint32_t node;
-        if (!Tmpfs::Open(MemoryRoot(mount), inner, &node))
-        {
-            return false;
-        }
-        ResetHandle(file, FileKind::Memory, Tmpfs::Size(node));
-        file->node = node;
-        return true;
-    }
-    }
-    return false;
+    *file = {driver, node, size, 0, true};
+    return true;
 }
 
 bool Read(FileHandle* file, void* buffer, uint64_t length, uint64_t* bytes_read)
@@ -240,48 +153,27 @@ bool Read(FileHandle* file, void* buffer, uint64_t length, uint64_t* bytes_read)
         return false;
     }
     *bytes_read = 0;
-    if (file == nullptr || !file->open || (length > 0 && buffer == nullptr) ||
-        file->offset > file->size)
+    if (file == nullptr || !file->open || file->driver == nullptr ||
+        (length > 0 && buffer == nullptr) || file->offset > file->size ||
+        !file->driver->Read(file->node, file->size, file->offset, buffer, length, bytes_read))
     {
         return false;
     }
-    switch (file->kind)
+    if (HasSize(*file))
     {
-    case FileKind::Disk:
-    {
-        const FAT16::File disk_file = DiskFile(*file);
-        if (!FAT16::Read(&disk_file, file->offset, buffer, length, bytes_read))
-        {
-            return false;
-        }
         file->offset += *bytes_read;
-        return true;
     }
-    case FileKind::Device:
-        Devices::Read(Devices::DeviceOf(file->node), buffer, length, bytes_read);
-        return true;
-    case FileKind::Memory:
-        if (!Tmpfs::Read(file->node, file->offset, buffer, length, bytes_read))
-        {
-            return false;
-        }
-        file->offset += *bytes_read;
-        return true;
-    case FileKind::Archive:
-    case FileKind::Generated:
-        CopyFromMemory(file, buffer, length, bytes_read);
-        return true;
-    }
-    return false;
+    return true;
 }
 
 bool Seek(FileHandle* file, uint64_t offset)
 {
-    if (file == nullptr || !file->open || (file->kind != FileKind::Device && offset > file->size))
+    if (file == nullptr || !file->open || file->driver == nullptr ||
+        (HasSize(*file) && offset > file->size))
     {
         return false;
     }
-    file->offset = file->kind == FileKind::Device ? 0 : offset;
+    file->offset = HasSize(*file) ? offset : 0;
     return true;
 }
 
@@ -293,60 +185,8 @@ bool Stat(const char* path, FileInfo* info)
     }
     info->device = false;
     const char* inner;
-    const Mount mount = Locate(path, &inner);
-    switch (mount)
-    {
-    case Mount::Disk:
-    {
-        FAT16::FileInfo disk_file_info;
-        if (*inner == '\0' || !FAT16::Stat(inner, &disk_file_info))
-        {
-            return false;
-        }
-        info->size = disk_file_info.size;
-        return true;
-    }
-    case Mount::System:
-    {
-        Initramfs::File archive_file;
-        if (!Initramfs::Open("system", inner, &archive_file))
-        {
-            return false;
-        }
-        info->size = archive_file.size;
-        return true;
-    }
-    case Mount::Devices:
-    {
-        uint32_t node;
-        info->size = 0;
-        info->device = true;
-        return Devices::Find(inner, &node);
-    }
-    case Mount::Proc:
-    {
-        char text[Procfs::MaximumFileSize];
-        size_t length = 0;
-        if (!Procfs::Generate(inner, text, &length))
-        {
-            return false;
-        }
-        info->size = length;
-        return true;
-    }
-    case Mount::Tmp:
-    case Mount::Etc:
-    {
-        uint32_t node;
-        if (!Tmpfs::Open(MemoryRoot(mount), inner, &node))
-        {
-            return false;
-        }
-        info->size = Tmpfs::Size(node);
-        return true;
-    }
-    }
-    return false;
+    Driver* driver = Locate(path, &inner);
+    return driver != nullptr && *inner != '\0' && driver->Stat(inner, info);
 }
 
 void Close(FileHandle* file)
@@ -355,9 +195,9 @@ void Close(FileHandle* file)
     {
         return;
     }
-    if (file->open && file->kind == FileKind::Generated && file->data != nullptr)
+    if (file->open && file->driver != nullptr)
     {
-        Memory::Deallocate(const_cast<uint8_t*>(file->data));
+        file->driver->Close(file->node);
     }
     *file = {};
 }
@@ -369,28 +209,14 @@ bool Create(const char* path, FileHandle* file)
         return false;
     }
     const char* inner;
-    const Mount mount = Locate(path, &inner);
-    if (*inner == '\0')
+    Driver* driver = Locate(path, &inner);
+    Filesystem::Node node = {};
+    uint64_t size = 0;
+    if (driver == nullptr || *inner == '\0' || !driver->Create(inner, &node, &size))
     {
         return false;
     }
-    if (mount == Mount::Disk)
-    {
-        FAT16::File disk_file;
-        if (!FAT16::Create(inner, &disk_file))
-        {
-            return false;
-        }
-        OpenDiskHandle(disk_file, file);
-        return true;
-    }
-    uint32_t node;
-    if (!InMemory(mount) || !Tmpfs::Create(MemoryRoot(mount), inner, &node))
-    {
-        return false;
-    }
-    ResetHandle(file, FileKind::Memory, 0);
-    file->node = node;
+    *file = {driver, node, size, 0, true};
     return true;
 }
 
@@ -401,63 +227,26 @@ bool Write(FileHandle* file, const void* buffer, uint64_t length, uint64_t* byte
         return false;
     }
     *bytes_written = 0;
-    if (file == nullptr || !file->open)
+    if (file == nullptr || !file->open || file->driver == nullptr)
     {
         return false;
     }
-    switch (file->kind)
+    const bool written =
+        file->driver->Write(&file->node, &file->size, file->offset, buffer, length, bytes_written);
+    if (HasSize(*file))
     {
-    case FileKind::Disk:
-    {
-        FAT16::File disk_file = DiskFile(*file);
-        const bool written = FAT16::Write(&disk_file, file->offset, buffer, length, bytes_written);
-        UpdateHandle(disk_file, file);
         file->offset += *bytes_written;
-        return written;
     }
-    case FileKind::Memory:
-    {
-        const bool written = Tmpfs::Write(file->node, file->offset, buffer, length, bytes_written);
-        file->size = Tmpfs::Size(file->node);
-        file->offset += *bytes_written;
-        return written;
-    }
-    case FileKind::Device:
-        *bytes_written = length;
-        return true;
-    case FileKind::Archive:
-    case FileKind::Generated:
-        return false;
-    }
-    return false;
+    return written;
 }
 
 bool Truncate(FileHandle* file, uint64_t size)
 {
-    if (file == nullptr || !file->open)
+    if (file == nullptr || !file->open || file->driver == nullptr)
     {
         return false;
     }
-    bool truncated = false;
-    switch (file->kind)
-    {
-    case FileKind::Disk:
-    {
-        FAT16::File disk_file = DiskFile(*file);
-        truncated = FAT16::Truncate(&disk_file, size);
-        UpdateHandle(disk_file, file);
-        break;
-    }
-    case FileKind::Memory:
-        truncated = Tmpfs::Truncate(file->node, size);
-        file->size = Tmpfs::Size(file->node);
-        break;
-    case FileKind::Device:
-        return true;
-    case FileKind::Archive:
-    case FileKind::Generated:
-        return false;
-    }
+    const bool truncated = file->driver->Truncate(&file->node, &file->size, size);
     if (file->offset > file->size)
     {
         file->offset = file->size;
@@ -465,49 +254,24 @@ bool Truncate(FileHandle* file, uint64_t size)
     return truncated;
 }
 
-bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry)
+bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry)
 {
     if (path == nullptr || entry == nullptr)
     {
         return false;
     }
     const char* inner;
-    const Mount mount = Locate(path, &inner);
-    switch (mount)
+    Driver* driver;
     {
-    case Mount::Disk:
-        if (*inner != '\0')
+        Sync::SpinLockGuard guard(mount_lock);
+        driver = LocateLocked(path, &inner);
+        if (mounts.ChildAt(path, index, entry))
         {
-            return FAT16::ReadDirectory(inner, index, entry);
-        }
-        // The root lists the mount points, then the disk's own root entries.
-        if (index < MountPointCount)
-        {
-            SetEntry(entry, MountPoints[index].name);
             return true;
         }
-        return FAT16::ReadDirectory("", index - MountPointCount, entry);
-    case Mount::System:
-    {
-        uint64_t size;
-        if (path[0] != '/' || *inner != '\0' ||
-            !Initramfs::ReadDirectory("system", index, entry->name, &size))
-        {
-            return false;
-        }
-        entry->directory = false;
-        entry->size = static_cast<uint32_t>(size);
-        return true;
+        index -= mounts.ChildCount(path);
     }
-    case Mount::Devices:
-        return Devices::ReadDirectory(inner, index, entry);
-    case Mount::Proc:
-        return Procfs::ReadDirectory(inner, index, entry);
-    case Mount::Tmp:
-    case Mount::Etc:
-        return Tmpfs::ReadDirectory(MemoryRoot(mount), inner, index, entry);
-    }
-    return false;
+    return driver != nullptr && driver->ReadDirectory(inner, index, entry);
 }
 
 bool IsDirectory(const char* path)
@@ -517,23 +281,12 @@ bool IsDirectory(const char* path)
         return false;
     }
     const char* inner;
-    const Mount mount = Locate(path, &inner);
-    switch (mount)
+    Driver* driver = Locate(path, &inner);
+    if (driver == nullptr)
     {
-    case Mount::Disk:
-        // The root exists even without a disk, since it holds the mount points.
-        return *inner == '\0' || FAT16::IsDirectory(inner);
-    case Mount::System:
-        return path[0] == '/' && *inner == '\0';
-    case Mount::Devices:
-        return path[0] == '/' && Devices::IsDirectory(inner);
-    case Mount::Proc:
-        return Procfs::IsDirectory(inner);
-    case Mount::Tmp:
-    case Mount::Etc:
-        return Tmpfs::IsDirectory(MemoryRoot(mount), inner);
+        return IsRoot(path);
     }
-    return false;
+    return (path[0] == '/' && *inner == '\0') || driver->IsDirectory(inner);
 }
 
 bool IsReadOnly(const char* path)
@@ -543,20 +296,8 @@ bool IsReadOnly(const char* path)
         return false;
     }
     const char* inner;
-    uint32_t node;
-    switch (Locate(path, &inner))
-    {
-    case Mount::System:
-    case Mount::Proc:
-        return true;
-    case Mount::Devices:
-        return !Devices::Find(inner, &node);
-    case Mount::Disk:
-    case Mount::Tmp:
-    case Mount::Etc:
-        return false;
-    }
-    return false;
+    Driver* driver = Locate(path, &inner);
+    return driver != nullptr && driver->IsReadOnly(inner);
 }
 
 bool IsMountPoint(const char* path)
@@ -566,13 +307,37 @@ bool IsMountPoint(const char* path)
         return false;
     }
     const char* inner;
-    Locate(path, &inner);
-    return *inner == '\0';
+    return Locate(path, &inner) == nullptr ? IsRoot(path) : *inner == '\0';
 }
 
 bool IsTracked(const FileHandle& file)
 {
-    return file.kind == FileKind::Disk || file.kind == FileKind::Memory;
+    return file.open && file.driver != nullptr && file.driver->Attributes().tracked;
+}
+
+FileKey KeyOf(const FileHandle& file)
+{
+    return {file.driver, file.node.id};
+}
+
+bool IsWritable(const FileHandle& file)
+{
+    return file.driver != nullptr && !file.driver->Attributes().read_only;
+}
+
+bool IsDevice(const FileHandle& file)
+{
+    return file.driver != nullptr && file.driver->Attributes().devices;
+}
+
+bool DeviceNode(const FileHandle& file, uint32_t* node)
+{
+    if (node == nullptr || !IsDevice(file))
+    {
+        return false;
+    }
+    *node = static_cast<uint32_t>(file.node.id);
+    return true;
 }
 
 bool MakeDirectory(const char* path)
@@ -582,14 +347,8 @@ bool MakeDirectory(const char* path)
         return false;
     }
     const char* inner;
-    const Mount mount = Locate(path, &inner);
-    if (*inner == '\0')
-    {
-        return false;
-    }
-    return mount == Mount::Disk ? FAT16::MakeDirectory(inner)
-           : InMemory(mount)    ? Tmpfs::MakeDirectory(MemoryRoot(mount), inner)
-                                : false;
+    Driver* driver = Locate(path, &inner);
+    return driver != nullptr && *inner != '\0' && driver->MakeDirectory(inner);
 }
 
 bool RemoveDirectory(const char* path)
@@ -599,14 +358,8 @@ bool RemoveDirectory(const char* path)
         return false;
     }
     const char* inner;
-    const Mount mount = Locate(path, &inner);
-    if (*inner == '\0')
-    {
-        return false;
-    }
-    return mount == Mount::Disk ? FAT16::RemoveDirectory(inner)
-           : InMemory(mount)    ? Tmpfs::RemoveDirectory(MemoryRoot(mount), inner)
-                                : false;
+    Driver* driver = Locate(path, &inner);
+    return driver != nullptr && *inner != '\0' && driver->RemoveDirectory(inner);
 }
 
 bool Remove(const char* path)
@@ -616,14 +369,8 @@ bool Remove(const char* path)
         return false;
     }
     const char* inner;
-    const Mount mount = Locate(path, &inner);
-    if (*inner == '\0')
-    {
-        return false;
-    }
-    return mount == Mount::Disk ? FAT16::Remove(inner)
-           : InMemory(mount)    ? Tmpfs::Remove(MemoryRoot(mount), inner)
-                                : false;
+    Driver* driver = Locate(path, &inner);
+    return driver != nullptr && *inner != '\0' && driver->Remove(inner);
 }
 
 bool SameFilesystem(const char* left, const char* right)
@@ -644,14 +391,9 @@ bool Rename(const char* from, const char* to)
     }
     const char* from_inner;
     const char* to_inner;
-    const Mount mount = Locate(from, &from_inner);
-    if (Locate(to, &to_inner) != mount || *from_inner == '\0' || *to_inner == '\0')
-    {
-        return false;
-    }
-    return mount == Mount::Disk ? FAT16::Rename(from_inner, to_inner)
-           : InMemory(mount)    ? Tmpfs::Rename(MemoryRoot(mount), from_inner, to_inner)
-                                : false;
+    Driver* driver = Locate(from, &from_inner);
+    return driver != nullptr && Locate(to, &to_inner) == driver && *from_inner != '\0' &&
+           *to_inner != '\0' && driver->Rename(from_inner, to_inner);
 }
 
 } // namespace FeatherOS::VFS

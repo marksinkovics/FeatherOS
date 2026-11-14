@@ -115,6 +115,9 @@ set(SRC
     ${SRCROOT}/filesystem/devices.cpp
     ${SRCROOT}/filesystem/procfs.cpp
     ${SRCROOT}/filesystem/tmpfs.cpp
+    ${SRCROOT}/filesystem/drivers.cpp
+    ${SRCROOT}/filesystem/filesystem.cpp
+    ${SRCROOT}/filesystem/mount_table.cpp
     ${SRCROOT}/filesystem/vfs.cpp
     ${SRCROOT}/elf/elf_loader.cpp
     ${SRCROOT}/input/input.cpp

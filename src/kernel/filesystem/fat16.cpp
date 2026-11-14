@@ -1207,7 +1207,7 @@ bool IsDirectory(const char* path)
     return mounted && path != nullptr && ResolveDirectory(path, &directory);
 }
 
-bool ReadDirectory(const char* path, uint32_t index, DirectoryEntry* entry)
+bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry)
 {
     uint32_t directory;
     if (!mounted || entry == nullptr || !ResolveDirectory(path, &directory))
