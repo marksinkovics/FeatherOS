@@ -17,6 +17,18 @@ struct Range
     std::uint64_t sector_count;
 };
 
+enum class Scheme : std::uint8_t
+{
+    None,
+    Mbr,
+    Gpt,
+};
+
+// The table that sector 0 announces: a protective MBR entry means GPT, whether or not the GPT
+// itself is intact. A FAT boot sector carries the MBR signature too, so a caller that accepts a
+// filesystem on the whole device probes for one first.
+Scheme Identify(BlockDevice& device);
+
 // Partitions that may hold a filesystem, in table order: the used entries of a GUID partition
 // table when the MBR is protective, otherwise the MBR's FAT16 entries. A GPT whose header or
 // entry array fails its CRC32 check yields none rather than falling back to the MBR. Returns how

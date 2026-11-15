@@ -135,31 +135,64 @@ std::size_t FindGpt(BlockDevice& device, std::span<std::uint8_t> sector, std::sp
     return crc == entries_crc ? found : 0;
 }
 
-} // namespace
-
-std::size_t Find(BlockDevice& device, std::span<Range> ranges)
+// sector receives sector 0.
+Scheme ReadMbr(BlockDevice& device, std::span<std::uint8_t> sector)
 {
-    const std::uint32_t sector_size = device.SectorSize();
-    if (sector_size < MbrSize || !std::has_single_bit(sector_size))
+    if (!device.Read(0, sector) || sector[510] != 0x55 || sector[511] != 0xAA)
     {
-        return 0;
+        return Scheme::None;
     }
-    HostBuffer buffer(sector_size);
-    const std::span<std::uint8_t> sector = buffer.Bytes();
-    if (buffer.Empty() || !device.Read(0, sector) || sector[510] != 0x55 || sector[511] != 0xAA)
-    {
-        return 0;
-    }
-    const std::uint8_t* mbr = sector.data();
     for (std::uint32_t index = 0; index < MbrEntryCount; ++index)
     {
         const std::uint8_t* entry =
-            mbr + MbrPartitionTable + static_cast<std::size_t>(index) * MbrEntrySize;
+            sector.data() + MbrPartitionTable + static_cast<std::size_t>(index) * MbrEntrySize;
         if (entry[4] == ProtectiveMbrType)
         {
-            return FindGpt(device, sector, ranges);
+            return Scheme::Gpt;
         }
     }
+    return Scheme::Mbr;
+}
+
+bool ValidSectorSize(std::uint32_t sector_size)
+{
+    return sector_size >= MbrSize && std::has_single_bit(sector_size);
+}
+
+} // namespace
+
+Scheme Identify(BlockDevice& device)
+{
+    if (!ValidSectorSize(device.SectorSize()))
+    {
+        return Scheme::None;
+    }
+    HostBuffer buffer(device.SectorSize());
+    return buffer.Empty() ? Scheme::None : ReadMbr(device, buffer.Bytes());
+}
+
+std::size_t Find(BlockDevice& device, std::span<Range> ranges)
+{
+    if (!ValidSectorSize(device.SectorSize()))
+    {
+        return 0;
+    }
+    HostBuffer buffer(device.SectorSize());
+    const std::span<std::uint8_t> sector = buffer.Bytes();
+    if (buffer.Empty())
+    {
+        return 0;
+    }
+    const Scheme scheme = ReadMbr(device, sector);
+    if (scheme == Scheme::None)
+    {
+        return 0;
+    }
+    if (scheme == Scheme::Gpt)
+    {
+        return FindGpt(device, sector, ranges);
+    }
+    const std::uint8_t* mbr = sector.data();
     const std::uint64_t disk_sectors = device.SectorCount();
     std::size_t found = 0;
     for (std::uint32_t index = 0; index < MbrEntryCount && found < ranges.size(); ++index)

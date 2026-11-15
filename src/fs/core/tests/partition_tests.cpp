@@ -14,7 +14,9 @@ namespace
 
 using FeatherDisk::LoadLittleEndian;
 using FeatherDisk::StoreLittleEndian;
+using FeatherDisk::Partition::Identify;
 using FeatherDisk::Partition::Range;
+using FeatherDisk::Partition::Scheme;
 using FeatherDisk::Tests::MemoryDevice;
 
 constexpr std::uint8_t Fat16 = 0x06;
@@ -259,4 +261,27 @@ TEST_CASE("read errors and unsupported sector sizes find no partitions")
     MemoryDevice odd_sectors(768, 4096);
     SetMbrEntry(odd_sectors, 0, Fat16, 1, 100);
     REQUIRE(Find(odd_sectors).empty());
+}
+
+TEST_CASE("the scheme is the one sector 0 announces")
+{
+    MemoryDevice blank(512, 4096);
+    REQUIRE(Identify(blank) == Scheme::None);
+
+    MemoryDevice mbr_disk(512, 4096);
+    SetMbrEntry(mbr_disk, 0, Linux, 100, 50);
+    REQUIRE(Identify(mbr_disk) == Scheme::Mbr);
+
+    MemoryDevice gpt_disk(512, 4096);
+    WriteGpt(gpt_disk, {{0, 64, 1063}});
+    REQUIRE(Identify(gpt_disk) == Scheme::Gpt);
+    // A damaged GPT is still a GPT; it only yields no partitions.
+    GptHeader(gpt_disk)[40] ^= 1;
+    REQUIRE(Identify(gpt_disk) == Scheme::Gpt);
+
+    gpt_disk.FailReadsFrom(0);
+    REQUIRE(Identify(gpt_disk) == Scheme::None);
+    MemoryDevice odd_sectors(768, 4096);
+    SetMbrEntry(odd_sectors, 0, Fat16, 1, 100);
+    REQUIRE(Identify(odd_sectors) == Scheme::None);
 }

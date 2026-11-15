@@ -55,6 +55,44 @@ target_include_directories(featherdisk_standard_host PRIVATE ${CMAKE_CURRENT_SOU
 target_compile_features(featherdisk_standard_host PRIVATE cxx_std_23)
 target_compile_options(featherdisk_standard_host PRIVATE ${featherdisk_warnings})
 
+# mtools, a FAT implementation independent of the core, makes images for the tests to read and
+# then reads back what the core wrote. Without it those tests are skipped.
+find_program(FEATHERDISK_SH sh)
+find_program(FEATHERDISK_MFORMAT mformat)
+find_program(FEATHERDISK_MMD mmd)
+find_program(FEATHERDISK_MCOPY mcopy)
+find_program(FEATHERDISK_MTYPE mtype)
+find_program(FEATHERDISK_MDIR mdir)
+set(featherdisk_fat16_image)
+set(featherdisk_mbr_image)
+if (FEATHERDISK_SH AND FEATHERDISK_MFORMAT AND FEATHERDISK_MMD AND FEATHERDISK_MCOPY
+    AND FEATHERDISK_MTYPE AND FEATHERDISK_MDIR)
+    set(featherdisk_fat16_image "${CMAKE_CURRENT_BINARY_DIR}/fat16-mtools.img")
+    set(featherdisk_mbr_image "${CMAKE_CURRENT_BINARY_DIR}/fat16-mbr-mtools.img")
+    add_custom_command(
+        OUTPUT "${featherdisk_fat16_image}"
+        COMMAND "${FEATHERDISK_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/make_fat16_image.sh"
+            "${featherdisk_fat16_image}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/make_fat16_image.sh"
+        COMMENT "Making a FAT16 image with mtools"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${featherdisk_mbr_image}"
+        COMMAND "${FEATHERDISK_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/make_fat16_image.sh"
+            "${featherdisk_mbr_image}" mbr
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/make_fat16_image.sh"
+        COMMENT "Making an MBR disk with a FAT16 partition with mtools"
+        VERBATIM
+    )
+    add_custom_target(featherdisk_test_images ALL
+        DEPENDS "${featherdisk_fat16_image}" "${featherdisk_mbr_image}")
+else ()
+    message(STATUS "mtools not found, so the FAT16 image tests are skipped")
+endif ()
+
+add_subdirectory(tools/fscli)
+
 if (NOT FEATHERDISK_CATCH2_TARGET)
     if (NOT featherdisk_top_level)
         return()
@@ -66,6 +104,8 @@ if (NOT FEATHERDISK_CATCH2_TARGET)
         GIT_TAG v3.7.1
         GIT_SHALLOW TRUE
     )
+    # Catch2 prints std::string_view only when it is itself built as C++17 or later.
+    set(CMAKE_CXX_STANDARD 23)
     FetchContent_MakeAvailable(Catch2)
     list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
     include(Catch)
@@ -86,35 +126,14 @@ target_compile_options(featherdisk_core_tests PRIVATE ${featherdisk_warnings})
 target_link_libraries(featherdisk_core_tests PRIVATE
     featherdisk_core featherdisk_standard_host ${FEATHERDISK_CATCH2_TARGET})
 
-# mtools, a FAT implementation independent of the core, makes an image for the tests to read and
-# then reads back what the core wrote. Without it those tests are skipped.
-find_program(FEATHERDISK_SH sh)
-find_program(FEATHERDISK_MFORMAT mformat)
-find_program(FEATHERDISK_MMD mmd)
-find_program(FEATHERDISK_MCOPY mcopy)
-find_program(FEATHERDISK_MTYPE mtype)
-find_program(FEATHERDISK_MDIR mdir)
-if (FEATHERDISK_SH AND FEATHERDISK_MFORMAT AND FEATHERDISK_MMD AND FEATHERDISK_MCOPY
-    AND FEATHERDISK_MTYPE AND FEATHERDISK_MDIR)
-    set(featherdisk_fat16_image "${CMAKE_CURRENT_BINARY_DIR}/fat16-mtools.img")
-    add_custom_command(
-        OUTPUT "${featherdisk_fat16_image}"
-        COMMAND "${FEATHERDISK_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/make_fat16_image.sh"
-            "${featherdisk_fat16_image}"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/make_fat16_image.sh"
-        COMMENT "Making a FAT16 image with mtools"
-        VERBATIM
-    )
-    add_custom_target(featherdisk_fat16_image DEPENDS "${featherdisk_fat16_image}")
-    add_dependencies(featherdisk_core_tests featherdisk_fat16_image)
+if (featherdisk_fat16_image)
+    add_dependencies(featherdisk_core_tests featherdisk_test_images)
     target_compile_definitions(featherdisk_core_tests PRIVATE
         FEATHERDISK_MTOOLS_IMAGE="${featherdisk_fat16_image}"
         FEATHERDISK_MTYPE="${FEATHERDISK_MTYPE}"
         FEATHERDISK_MDIR="${FEATHERDISK_MDIR}"
         FEATHERDISK_TEST_OUTPUT="${CMAKE_CURRENT_BINARY_DIR}"
     )
-else ()
-    message(STATUS "mtools not found, so the FAT16 image tests are skipped")
 endif ()
 if (COMMAND catch_discover_tests)
     catch_discover_tests(featherdisk_core_tests TEST_PREFIX "fs.core:")

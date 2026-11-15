@@ -31,6 +31,7 @@ SHELL_FILES=(
     "$REPO_ROOT/tools/quality.sh"
     "$REPO_ROOT/.claude/hooks/format-edited-file.sh"
     "$REPO_ROOT/src/fs/core/tests/make_fat16_image.sh"
+    "$REPO_ROOT/src/fs/core/tools/fscli/tests/fscli_tests.sh"
 )
 
 ARCHES=(x86_64 aarch64)
@@ -39,8 +40,8 @@ STAGES=(clang-format clang-tidy-x86_64 clang-tidy-aarch64 fs-core ruff-check ruf
 
 # The shared filesystem core leaves the repository one day (docs/roadmap.md, M22), so it includes
 # nothing from outside its folder. Its library uses only the standard headers that never allocate,
-# which FeatherOS's library, Apple's libc++ and Microsoft's STL all have; its tests and host/ run
-# only on a host and may use any.
+# which FeatherOS's library, Apple's libc++ and Microsoft's STL all have; its tests, host/ and
+# tools/ run only on a host and may use any.
 FS_CORE_DIR="$REPO_ROOT/src/fs/core"
 FS_CORE_SPDX="SPDX-License-Identifier: MIT OR Apache-2.0"
 FS_CORE_STD_HEADERS=" cstdint cstddef array span string_view optional expected bit type_traits utility "
@@ -111,7 +112,7 @@ check_fs_core() {
         esac
         host_only=false
         case "$file" in
-            "$FS_CORE_DIR"/tests/* | "$FS_CORE_DIR"/host/*) host_only=true ;;
+            "$FS_CORE_DIR"/tests/* | "$FS_CORE_DIR"/host/* | "$FS_CORE_DIR"/tools/*) host_only=true ;;
         esac
         while IFS= read -r line; do
             number="${line%%:*}"
