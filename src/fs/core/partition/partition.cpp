@@ -18,6 +18,7 @@ constexpr std::uint32_t MbrEntryCount = 4;
 constexpr std::uint8_t ProtectiveMbrType = 0xEE;
 constexpr std::uint8_t Fat16Type = 0x06;
 constexpr std::uint8_t Fat16LbaType = 0x0E;
+constexpr std::uint8_t LinuxType = 0x83;
 constexpr std::uint64_t GptHeaderSector = 1;
 constexpr std::uint32_t GptHeaderMinimumSize = 92;
 constexpr std::uint32_t GptMinimumEntrySize = 128;
@@ -201,7 +202,8 @@ std::size_t Find(BlockDevice& device, std::span<Range> ranges)
             mbr + MbrPartitionTable + static_cast<std::size_t>(index) * MbrEntrySize;
         const std::uint64_t first = Load32(entry + 8);
         const std::uint64_t count = Load32(entry + 12);
-        if ((entry[4] == Fat16Type || entry[4] == Fat16LbaType) && count != 0 &&
+        const std::uint8_t type = entry[4];
+        if ((type == Fat16Type || type == Fat16LbaType || type == LinuxType) && count != 0 &&
             ValidRange(first, first + count - 1, disk_sectors))
         {
             ranges[found++] = {first, count};

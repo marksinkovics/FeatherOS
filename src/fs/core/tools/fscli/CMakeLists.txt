@@ -14,11 +14,16 @@ if (NOT BUILD_TESTING OR NOT FEATHERDISK_SH)
     return()
 endif ()
 
-# Exit status 77 means skipped: the script returns it when mtools made no images.
-foreach (case help info ls cat cp partition errors)
+# Exit status 77 means skipped: the script returns it when mtools or e2fsprogs made no images.
+set(fscli_ext_images)
+if (featherdisk_ext_images)
+    set(fscli_ext_images "${featherdisk_ext_image_directory}")
+endif ()
+foreach (case help info ls cat cp partition errors
+         ext2-info ext2-ls ext2-cat ext2-partition ext2-errors)
     add_test(NAME "fs.core:fscli ${case}"
         COMMAND "${FEATHERDISK_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/fscli_tests.sh"
             "$<TARGET_FILE:fscli>" "${featherdisk_fat16_image}" "${featherdisk_mbr_image}"
-            "${CMAKE_CURRENT_BINARY_DIR}/test-output/${case}" "${case}")
+            "${CMAKE_CURRENT_BINARY_DIR}/test-output/${case}" "${case}" "${fscli_ext_images}")
     set_tests_properties("fs.core:fscli ${case}" PROPERTIES SKIP_RETURN_CODE 77)
 endforeach ()

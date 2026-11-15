@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #include "disk.h"
 
+#include "fs/ext2.h"
 #include "fs/fat.h"
 
 #include <array>
@@ -18,7 +19,7 @@ constexpr std::size_t MaximumPartitions = 128;
 
 std::span<FilesystemType* const> FilesystemTypes()
 {
-    static const std::array<FilesystemType*, 1> types = {&Fat::Fat16Type()};
+    static const std::array<FilesystemType*, 2> types = {&Fat::Fat16Type(), &Ext::Ext2Type()};
     return types;
 }
 

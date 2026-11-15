@@ -804,6 +804,24 @@ TEST_CASE("FAT16 mounts a partition from a GUID partition table")
     REQUIRE(ReadWhole("/NEW.TXT") == "x");
 }
 
+TEST_CASE("the disk's FAT16 mount skips a Linux partition listed before it")
+{
+    MakeFat16Disk("fat contents");
+    constexpr uint32_t LinuxStart = PartitionStart + PartitionSectorCount;
+    constexpr uint32_t LinuxSectors = 64;
+    disk.resize(LinuxStart + LinuxSectors, {});
+    // An ext2 magic number where ext2 keeps it, which FAT16's probe must not care about.
+    WriteLittleEndian16(disk[LinuxStart + 2].data() + 56, 0xEF53);
+    uint8_t* table = disk[0].data() + 446;
+    std::memcpy(table + 16, table, 16);
+    std::memset(table, 0, 16);
+    table[4] = 0x83;
+    WriteLittleEndian32(table + 8, LinuxStart);
+    WriteLittleEndian32(table + 12, LinuxSectors);
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(ReadWhole("/BLOCK.TXT") == "fat contents");
+}
+
 namespace
 {
 

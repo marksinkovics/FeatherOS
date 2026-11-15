@@ -4,8 +4,8 @@
 #include "common/little_endian.h"
 #include "fs/partition.h"
 #include "tests/memory_device.h"
+#include "tests/partition_image.h"
 
-#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -17,98 +17,18 @@ using FeatherDisk::StoreLittleEndian;
 using FeatherDisk::Partition::Identify;
 using FeatherDisk::Partition::Range;
 using FeatherDisk::Partition::Scheme;
+using FeatherDisk::Tests::GptEntry;
+using FeatherDisk::Tests::GptHeader;
+using FeatherDisk::Tests::LinuxFilesystemType;
 using FeatherDisk::Tests::MemoryDevice;
+using FeatherDisk::Tests::SealGptHeader;
+using FeatherDisk::Tests::SetMbrEntry;
+using FeatherDisk::Tests::WriteGpt;
 
 constexpr std::uint8_t Fat16 = 0x06;
 constexpr std::uint8_t Fat16Lba = 0x0E;
 constexpr std::uint8_t Linux = 0x83;
-
-void SetMbrEntry(MemoryDevice& device, std::size_t index, std::uint8_t type, std::uint32_t first,
-                 std::uint32_t count)
-{
-    std::uint8_t* entry = device.Sector(0).data() + 446 + index * 16;
-    entry[4] = type;
-    StoreLittleEndian(entry + 8, first);
-    StoreLittleEndian(entry + 12, count);
-    device.Sector(0)[510] = 0x55;
-    device.Sector(0)[511] = 0xAA;
-}
-
-// Written independently of the code under test: bit by bit, without its masking trick.
-std::uint32_t Crc32(const std::uint8_t* bytes, std::size_t length)
-{
-    std::uint32_t crc = 0xFFFFFFFFU;
-    for (std::size_t index = 0; index < length; ++index)
-    {
-        crc ^= bytes[index];
-        for (int bit = 0; bit < 8; ++bit)
-        {
-            crc = (crc >> 1) ^ ((crc & 1U) != 0 ? 0xEDB88320U : 0U);
-        }
-    }
-    return ~crc;
-}
-
-struct GptEntry
-{
-    std::size_t index;
-    std::uint64_t first;
-    std::uint64_t last;
-};
-
-struct GptLayout
-{
-    std::uint32_t entry_count = 128;
-    std::uint32_t entry_size = 128;
-};
-
-std::uint8_t* GptHeader(MemoryDevice& device)
-{
-    return device.Sector(1).data();
-}
-
-void SealGptHeader(MemoryDevice& device)
-{
-    std::uint8_t* header = GptHeader(device);
-    StoreLittleEndian<std::uint32_t>(header + 16, 0);
-    StoreLittleEndian(header + 16, Crc32(header, LoadLittleEndian<std::uint32_t>(header + 12)));
-}
-
-// A protective MBR, the GPT header in sector 1 and its entry array from sector 2. Entries not
-// listed are unused (an all-zero type GUID).
-void WriteGpt(MemoryDevice& device, const std::vector<GptEntry>& entries, GptLayout layout = {})
-{
-    SetMbrEntry(device, 0, 0xEE, 1, 0xFFFFFFFFU);
-
-    std::vector<std::uint8_t> array(static_cast<std::size_t>(layout.entry_count) *
-                                    layout.entry_size);
-    for (const GptEntry& entry : entries)
-    {
-        std::uint8_t* raw = array.data() + entry.index * layout.entry_size;
-        raw[0] = 0xA2;
-        raw[15] = 0x77;
-        StoreLittleEndian(raw + 32, entry.first);
-        StoreLittleEndian(raw + 40, entry.last);
-    }
-    const std::uint32_t sector_size = device.SectorSize();
-    for (std::size_t offset = 0; offset < array.size(); offset += sector_size)
-    {
-        const std::size_t length = std::min<std::size_t>(sector_size, array.size() - offset);
-        std::memcpy(device.Sector(2 + offset / sector_size).data(), array.data() + offset, length);
-    }
-
-    std::uint8_t* header = GptHeader(device);
-    std::memcpy(header, "EFI PART", 8);
-    StoreLittleEndian<std::uint32_t>(header + 8, 0x00010000);
-    StoreLittleEndian<std::uint32_t>(header + 12, 92);
-    StoreLittleEndian<std::uint64_t>(header + 24, 1);
-    StoreLittleEndian<std::uint64_t>(header + 32, device.SectorCount() - 1);
-    StoreLittleEndian<std::uint64_t>(header + 72, 2);
-    StoreLittleEndian(header + 80, layout.entry_count);
-    StoreLittleEndian(header + 84, layout.entry_size);
-    StoreLittleEndian(header + 88, Crc32(array.data(), array.size()));
-    SealGptHeader(device);
-}
+constexpr std::uint8_t Ntfs = 0x07;
 
 std::vector<Range> Find(MemoryDevice& device, std::size_t capacity = 16)
 {
@@ -129,13 +49,22 @@ bool operator==(const Range& left, const Range& right)
 
 } // namespace FeatherDisk::Partition
 
-TEST_CASE("the MBR's FAT16 entries are found in table order and other types are skipped")
+TEST_CASE("the MBR's FAT16 and Linux entries are found in table order and other types skipped")
 {
     MemoryDevice device(512, 4096);
-    SetMbrEntry(device, 0, Linux, 100, 50);
+    SetMbrEntry(device, 0, Ntfs, 10, 50);
     SetMbrEntry(device, 1, Fat16Lba, 200, 100);
-    SetMbrEntry(device, 2, Fat16, 2048, 1000);
-    REQUIRE(Find(device) == std::vector<Range>{{200, 100}, {2048, 1000}});
+    SetMbrEntry(device, 2, Linux, 2048, 1000);
+    SetMbrEntry(device, 3, Fat16, 100, 50);
+    REQUIRE(Find(device) == std::vector<Range>{{200, 100}, {2048, 1000}, {100, 50}});
+}
+
+TEST_CASE("a GUID partition table's Linux filesystem entries are found")
+{
+    MemoryDevice device(512, 4096);
+    WriteGpt(device, {{0, 64, 1063, LinuxFilesystemType}, {1, 2000, 2999}});
+    REQUIRE(Find(device) == std::vector<Range>{{64, 1000}, {2000, 1000}});
+    REQUIRE(Identify(device) == Scheme::Gpt);
 }
 
 TEST_CASE("MBR entries that start at sector 0, are empty or leave the disk are skipped")

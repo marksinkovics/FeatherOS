@@ -19,7 +19,13 @@ endif ()
 option(FEATHERDISK_FREESTANDING "Build only the library, for a kernel" OFF)
 
 add_library(featherdisk_core STATIC
+    common/block_cache.cpp
+    common/bytes.cpp
     common/host_buffer.cpp
+    ext/directory.cpp
+    ext/ext2.cpp
+    ext/inode.cpp
+    ext/superblock.cpp
     fat/fat16.cpp
     fat/names.cpp
     filesystem.cpp
@@ -91,6 +97,37 @@ else ()
     message(STATUS "mtools not found, so the FAT16 image tests are skipped")
 endif ()
 
+# mke2fs -d from e2fsprogs makes the ext2 images, and debugfs fixes their owners and times.
+# Homebrew installs e2fsprogs keg-only, outside PATH, so its directories come first.
+find_program(FEATHERDISK_MKE2FS mke2fs
+    PATHS /opt/homebrew/opt/e2fsprogs/sbin /usr/local/opt/e2fsprogs/sbin NO_DEFAULT_PATH)
+find_program(FEATHERDISK_MKE2FS mke2fs)
+if (FEATHERDISK_MKE2FS)
+    get_filename_component(featherdisk_e2fsprogs "${FEATHERDISK_MKE2FS}" DIRECTORY)
+    find_program(FEATHERDISK_DEBUGFS debugfs PATHS "${featherdisk_e2fsprogs}" NO_DEFAULT_PATH)
+    find_program(FEATHERDISK_DEBUGFS debugfs)
+endif ()
+set(featherdisk_ext_images)
+set(featherdisk_ext_image_directory "${CMAKE_CURRENT_BINARY_DIR}/ext-images")
+if (FEATHERDISK_SH AND FEATHERDISK_MKE2FS AND FEATHERDISK_DEBUGFS)
+    file(MAKE_DIRECTORY "${featherdisk_ext_image_directory}")
+    foreach (variant 1k 4k nofiletype rev0 mbr ext3 ext4)
+        set(image "${featherdisk_ext_image_directory}/${variant}.img")
+        add_custom_command(
+            OUTPUT "${image}"
+            COMMAND "${FEATHERDISK_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/make_ext2_image.sh"
+                "${FEATHERDISK_MKE2FS}" "${FEATHERDISK_DEBUGFS}" "${image}" "${variant}"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/make_ext2_image.sh"
+            COMMENT "Making the ${variant} ext2 test image with mke2fs"
+            VERBATIM
+        )
+        list(APPEND featherdisk_ext_images "${image}")
+    endforeach ()
+    add_custom_target(featherdisk_ext_test_images ALL DEPENDS ${featherdisk_ext_images})
+else ()
+    message(STATUS "mke2fs or debugfs (e2fsprogs) not found, so the ext2 image tests are skipped")
+endif ()
+
 add_subdirectory(tools/fscli)
 
 if (NOT FEATHERDISK_CATCH2_TARGET)
@@ -113,18 +150,24 @@ if (NOT FEATHERDISK_CATCH2_TARGET)
 endif ()
 
 add_executable(featherdisk_core_tests
+    tests/block_cache_tests.cpp
     tests/common_tests.cpp
+    tests/ext2_format_tests.cpp
+    tests/ext2_image_tests.cpp
     tests/fat_image.cpp
     tests/fat_mtools_tests.cpp
     tests/fat_names_tests.cpp
     tests/fat_tests.cpp
+    tests/filesystem_helpers.cpp
     tests/memory_device.cpp
+    tests/partition_image.cpp
     tests/partition_tests.cpp
 )
 target_include_directories(featherdisk_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(featherdisk_core_tests PRIVATE ${featherdisk_warnings})
+find_package(Threads REQUIRED)
 target_link_libraries(featherdisk_core_tests PRIVATE
-    featherdisk_core featherdisk_standard_host ${FEATHERDISK_CATCH2_TARGET})
+    featherdisk_core featherdisk_standard_host ${FEATHERDISK_CATCH2_TARGET} Threads::Threads)
 
 if (featherdisk_fat16_image)
     add_dependencies(featherdisk_core_tests featherdisk_test_images)
@@ -134,6 +177,11 @@ if (featherdisk_fat16_image)
         FEATHERDISK_MDIR="${FEATHERDISK_MDIR}"
         FEATHERDISK_TEST_OUTPUT="${CMAKE_CURRENT_BINARY_DIR}"
     )
+endif ()
+if (featherdisk_ext_images)
+    add_dependencies(featherdisk_core_tests featherdisk_ext_test_images)
+    target_compile_definitions(featherdisk_core_tests PRIVATE
+        FEATHERDISK_EXT_IMAGES="${featherdisk_ext_image_directory}")
 endif ()
 if (COMMAND catch_discover_tests)
     catch_discover_tests(featherdisk_core_tests TEST_PREFIX "fs.core:")

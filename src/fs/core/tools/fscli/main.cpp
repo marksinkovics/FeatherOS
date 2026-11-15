@@ -29,6 +29,8 @@ constexpr int ExitSuccess = 0;
 constexpr int ExitFailure = 1;
 constexpr int ExitUsage = 2;
 constexpr std::size_t CopyChunk = 64 * 1024;
+// PATH_MAX on Linux; ext2 stores a link target in one block of at most 4 KiB.
+constexpr std::size_t MaximumLinkTarget = 4096;
 
 constexpr const char* Usage = R"(usage: fscli <command> <image>[:<partition>] [arguments]
 
@@ -43,8 +45,10 @@ commands:
                                       copy a file out; a destination directory keeps its name
 
 Partitions are numbered from 1, as `info` lists them. Without a number, fscli uses the whole
-disk if it holds a filesystem, otherwise the first partition that does.
-Filesystems: fat16.
+disk if it holds a filesystem, otherwise the first partition that does. `ls` shows each entry's
+type and permissions, its size and its name, and where a symbolic link points. Symbolic links
+are not followed.
+Filesystems: fat16, ext2.
 
 exit status: 0 on success, 1 when an operation fails, 2 for a usage error
 )";
@@ -135,6 +139,32 @@ char TypeMarker(NodeType type)
     return '?';
 }
 
+// As in ls -l, set-user-ID, set-group-ID and sticky bits take the execute places.
+std::string ModeText(NodeType type, std::uint32_t mode)
+{
+    std::string text = "?rwxrwxrwx";
+    text[0] = TypeMarker(type);
+    for (std::size_t bit = 0; bit < 9; ++bit)
+    {
+        if ((mode & (0400U >> bit)) == 0)
+        {
+            text[1 + bit] = '-';
+        }
+    }
+    const auto special = [&](std::uint32_t flag, std::size_t place, char with_execute)
+    {
+        if ((mode & flag) != 0)
+        {
+            text[place] =
+                text[place] == '-' ? static_cast<char>(with_execute - 'a' + 'A') : with_execute;
+        }
+    };
+    special(04000, 3, 's');
+    special(02000, 6, 's');
+    special(01000, 9, 't');
+    return text;
+}
+
 // The last component, ignoring trailing slashes.
 std::string BaseName(std::string_view path)
 {
@@ -150,6 +180,22 @@ std::string BaseName(std::string_view path)
 std::string ErrorText(Error error)
 {
     return std::string(Describe(error));
+}
+
+std::optional<std::string> NotReadable(NodeType type)
+{
+    switch (type)
+    {
+    case NodeType::File:
+        return std::nullopt;
+    case NodeType::Directory:
+        return ErrorText(Error::IsDirectory);
+    case NodeType::SymbolicLink:
+        return "is a symbolic link, which fscli does not follow";
+    case NodeType::Special:
+        return "is a device, FIFO or socket";
+    }
+    return "cannot be read";
 }
 
 std::expected<std::unique_ptr<FileDevice>, int> OpenDevice(const std::string& path)
@@ -256,6 +302,24 @@ int Info(const std::vector<std::string_view>& arguments)
     return ExitSuccess;
 }
 
+void PrintEntry(Filesystem& filesystem, const Attributes& attributes, const std::string& name)
+{
+    std::string line = ModeText(attributes.type, attributes.mode);
+    char size[32];
+    std::snprintf(size, sizeof(size), " %10llu  ",
+                  static_cast<unsigned long long>(attributes.size));
+    line += size;
+    line += name;
+    if (attributes.type == NodeType::SymbolicLink)
+    {
+        std::vector<char> target(MaximumLinkTarget);
+        const Result<std::size_t> count = filesystem.ReadLink(attributes.node, target);
+        line += " -> ";
+        line += count ? std::string(target.data(), *count) : "(" + ErrorText(count.error()) + ")";
+    }
+    std::printf("%s\n", line.c_str());
+}
+
 int List(const std::vector<std::string_view>& arguments)
 {
     if (arguments.empty() || arguments.size() > 2)
@@ -284,8 +348,7 @@ int List(const std::vector<std::string_view>& arguments)
     }
     if (attributes->type != NodeType::Directory)
     {
-        std::printf("%c %10llu  %s\n", TypeMarker(attributes->type),
-                    static_cast<unsigned long long>(attributes->size), BaseName(path).c_str());
+        PrintEntry(filesystem, *attributes, BaseName(path));
         return ExitSuccess;
     }
     std::uint64_t cookie = 0;
@@ -306,8 +369,7 @@ int List(const std::vector<std::string_view>& arguments)
         {
             return Fail(target.path + ": " + Name(entry) + ": " + ErrorText(child.error()));
         }
-        std::printf("%c %10llu  %s\n", TypeMarker(entry.type),
-                    static_cast<unsigned long long>(child->size), Name(entry).c_str());
+        PrintEntry(filesystem, *child, Name(entry));
     }
 }
 
@@ -327,9 +389,9 @@ std::expected<void, std::string> ReadFile(MountedVolume& mounted, const std::str
     {
         return std::unexpected(path + ": " + ErrorText(attributes.error()));
     }
-    if (attributes->type == NodeType::Directory)
+    if (const std::optional<std::string> reason = NotReadable(attributes->type))
     {
-        return std::unexpected(path + ": " + ErrorText(Error::IsDirectory));
+        return std::unexpected(path + ": " + *reason);
     }
     std::vector<std::uint8_t> buffer(CopyChunk);
     std::uint64_t offset = 0;
@@ -430,9 +492,9 @@ int Copy(const std::vector<std::string_view>& arguments)
     {
         return Fail(target.path + ": " + source + ": " + ErrorText(attributes.error()));
     }
-    if (attributes->type == NodeType::Directory)
+    if (const std::optional<std::string> reason = NotReadable(attributes->type))
     {
-        return Fail(target.path + ": " + source + ": " + ErrorText(Error::IsDirectory));
+        return Fail(target.path + ": " + source + ": " + *reason);
     }
     const int output = ::open(destination.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
     if (output < 0)

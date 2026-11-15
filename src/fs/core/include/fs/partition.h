@@ -30,9 +30,10 @@ enum class Scheme : std::uint8_t
 Scheme Identify(BlockDevice& device);
 
 // Partitions that may hold a filesystem, in table order: the used entries of a GUID partition
-// table when the MBR is protective, otherwise the MBR's FAT16 entries. A GPT whose header or
-// entry array fails its CRC32 check yields none rather than falling back to the MBR. Returns how
-// many were stored, at most ranges.size().
+// table, whatever their type, when the MBR is protective, otherwise the MBR's FAT16 (0x06, 0x0E)
+// and Linux (0x83) entries. Callers probe each for the filesystem they want. A GPT whose header
+// or entry array fails its CRC32 check yields none rather than falling back to the MBR. Returns
+// how many were stored, at most ranges.size().
 std::size_t Find(BlockDevice& device, std::span<Range> ranges);
 
 // One partition of a device as a device of its own, whose sector 0 is the partition's first.
