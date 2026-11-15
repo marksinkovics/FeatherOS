@@ -8,7 +8,8 @@ from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
 from smoke.script import Lines
 
 STORAGE_MESSAGE = (
-    "KERN/STORAGE: sector and FAT16 file writes verified; boot count "
+    "KERN/STORAGE: sector and FAT16 file writes and ext2 reads verified; "
+    "boot count "
 )
 PERSISTENT_FILE_LINES = 200
 # Shell commands for each STORAGE_TEST boot: the first writes notes.txt, and
@@ -178,6 +179,7 @@ class Storage(Case):
 
     def PassMessage(self, result):
         return (
-            "sector, FAT16, and shell file-tool writes verified in the "
-            f"guest and with mtools; boot {self.boot} persisted"
+            "sector, FAT16, and shell file-tool writes and ext2 reads "
+            f"verified in the guest and with mtools; boot {self.boot} "
+            "persisted"
         )

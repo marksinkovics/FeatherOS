@@ -5,6 +5,7 @@
 #include "procfs.h"
 #include "tmpfs.h"
 
+#include "fs/ext2.h"
 #include "fs/fat.h"
 #include "kernel/memory/heap.h"
 #include "kernel/storage/core_block_device.h"
@@ -324,7 +325,13 @@ private:
     Tmpfs::Root root;
 };
 
+constexpr const char* PartitionSources[] = {
+    "vda",  "vda1",  "vda2",  "vda3",  "vda4",  "vda5",  "vda6",  "vda7",  "vda8",
+    "vda9", "vda10", "vda11", "vda12", "vda13", "vda14", "vda15", "vda16",
+};
+
 constinit CoreDriver disk_driver(Writable);
+constinit CoreDriver ext2_driver(ReadOnly);
 constinit ArchiveDriver system_driver("system");
 constinit DeviceDriver device_driver;
 constinit ProcDriver proc_driver;
@@ -336,6 +343,13 @@ constinit MemoryDriver etc_driver(Tmpfs::Root::Etc);
 namespace Drivers
 {
 
+const char* PartitionSource(size_t number)
+{
+    return number < sizeof(PartitionSources) / sizeof(PartitionSources[0])
+               ? PartitionSources[number]
+               : nullptr;
+}
+
 CoreDriver& Disk()
 {
     return disk_driver;
@@ -344,6 +358,16 @@ CoreDriver& Disk()
 bool MountDisk()
 {
     return disk_driver.Mount(FeatherDisk::Fat::Fat16Type(), BlockDevice::CoreDevice());
+}
+
+CoreDriver& Ext2()
+{
+    return ext2_driver;
+}
+
+bool MountExt2()
+{
+    return ext2_driver.Mount(FeatherDisk::Ext::Ext2Type(), BlockDevice::CoreDevice());
 }
 
 Driver& System()

@@ -6,6 +6,7 @@
 #include "fs/filesystem.h"
 #include "fs/partition.h"
 
+#include <stddef.h>
 #include <stdint.h>
 #include <string_view>
 
@@ -24,6 +25,8 @@ public:
     // Mounts the first partition of disk that type accepts, once the filesystem mounted before
     // is unmounted. Read-only properties mount it read-only.
     bool Mount(FeatherDisk::FilesystemType& type, FeatherDisk::BlockDevice& disk);
+    // The mounted partition's place in Partition::Find's list, from 1; 0 with nothing mounted.
+    size_t PartitionNumber() const;
     bool Statistics(FeatherDisk::VolumeStatistics* statistics);
 
     bool Open(const char* path, Node* node, uint64_t* size) override;
@@ -56,6 +59,7 @@ private:
     FeatherDisk::Partition::Volume volume;
     FeatherDisk::FilesystemType* type = nullptr;
     FeatherDisk::Filesystem* filesystem = nullptr;
+    size_t partition_number = 0;
 };
 
 } // namespace FeatherOS::Filesystem

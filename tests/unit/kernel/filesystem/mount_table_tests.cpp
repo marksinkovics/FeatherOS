@@ -225,10 +225,11 @@ TEST_CASE("the type registry finds instances by type and source")
     TypeRegistry types;
     REQUIRE(types.Register("tmpfs", "etc", &etc));
     REQUIRE(types.Register("tmpfs", "tmp", &tmp));
-    REQUIRE(types.Register("fat16", "vda", &disk));
+    REQUIRE(types.Register("fat16", "vda1", &disk));
     REQUIRE(types.Register("tmpfs", "tmp", &tmp));
     REQUIRE_FALSE(types.Register("tmpfs", "tmp", &disk));
     REQUIRE_FALSE(types.Register("ext2", "vda2", &tmp));
+    REQUIRE_FALSE(types.Register("tmpfs", "vda1", &disk));
     REQUIRE_FALSE(types.Register("", "x", &disk));
     REQUIRE_FALSE(types.Register("ext2", "", &disk));
 
@@ -237,15 +238,37 @@ TEST_CASE("the type registry finds instances by type and source")
     REQUIRE(driver == &tmp);
     REQUIRE(types.Find("tmpfs", "etc", &driver) == TypeRegistry::Lookup::Found);
     REQUIRE(driver == &etc);
-    REQUIRE(types.Find("tmpfs", "vda", &driver) == TypeRegistry::Lookup::UnknownSource);
-    REQUIRE(types.Find("ext2", "vda", &driver) == TypeRegistry::Lookup::UnknownType);
+    REQUIRE(types.Find("tmpfs", "vda1", &driver) == TypeRegistry::Lookup::UnknownSource);
+    REQUIRE(types.Find("ext2", "vda1", &driver) == TypeRegistry::Lookup::UnknownType);
     REQUIRE(types.Find("tmp", "tmp", &driver) == TypeRegistry::Lookup::UnknownType);
 
     const char* type = nullptr;
     const char* source = nullptr;
     REQUIRE(types.Describe(&disk, &type, &source));
     REQUIRE(std::string(type) == "fat16");
-    REQUIRE(std::string(source) == "vda");
+    REQUIRE(std::string(source) == "vda1");
     FakeDriver unknown;
     REQUIRE_FALSE(types.Describe(&unknown, &type, &source));
+}
+
+TEST_CASE("the type registry renames a driver's source and forgets a driver")
+{
+    FakeDriver disk;
+    FakeDriver other;
+    TypeRegistry types;
+    REQUIRE(types.Register("fat16", "vda1", &disk));
+    REQUIRE(types.Register("ext2", "vda2", &other));
+    REQUIRE_FALSE(types.Register("fat16", "vda2", &other));
+    REQUIRE(types.Register("fat16", "vda3", &disk));
+    Driver* driver = nullptr;
+    REQUIRE(types.Find("fat16", "vda1", &driver) == TypeRegistry::Lookup::UnknownSource);
+    REQUIRE(types.Find("fat16", "vda3", &driver) == TypeRegistry::Lookup::Found);
+    REQUIRE(driver == &disk);
+
+    types.Unregister(&disk);
+    REQUIRE(types.Find("fat16", "vda3", &driver) == TypeRegistry::Lookup::UnknownType);
+    REQUIRE(types.Find("ext2", "vda2", &driver) == TypeRegistry::Lookup::Found);
+    REQUIRE(driver == &other);
+    types.Unregister(&disk);
+    REQUIRE(types.Register("fat16", "vda1", &disk));
 }

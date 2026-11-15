@@ -339,7 +339,7 @@ Only `ioctl(fd, TIOCGWINSZ, &size)` and `ioctl(fd, TIOCSWINSZ, &size)`, which do
 
 ### `sys/mount.h`
 
-`mount(source, target, filesystemtype, mountflags, data)` and `umount(target)`, with Linux's signatures. The kernel has one instance of each filesystem, which keeps its contents while unmounted and can be mounted at one point at a time, so `filesystemtype` and `source` name an instance, as `/proc/mounts` shows them: `fat16` `vda` (the virtio disk), `initramfs` `initramfs`, `devfs` `devfs`, `procfs` `procfs`, and `tmpfs` `tmp` or `etc`. Differences from Linux:
+`mount(source, target, filesystemtype, mountflags, data)` and `umount(target)`, with Linux's signatures. The kernel has one instance of each filesystem, which keeps its contents while unmounted and can be mounted at one point at a time, so `filesystemtype` and `source` name an instance, as `/proc/mounts` shows them: `fat16` `vda1` (the virtio disk's first partition), `ext2` `vda2` (its second, read-only, which nothing mounts at boot; writes to it fail with `EROFS`), `initramfs` `initramfs`, `devfs` `devfs`, `procfs` `procfs`, and `tmpfs` `tmp` or `etc`. Differences from Linux:
 
 - `mountflags` must be 0 and `data` null (`EINVAL` otherwise); there is no `MS_RDONLY`, remount, bind or move, and no `umount2` or lazy unmount.
 - An unknown type fails with `ENODEV`, a source the type does not have with `ENOENT`, and an instance mounted elsewhere, or a target that is already a mount point, with `EBUSY`. Mounting over a mount point is not stacking.

@@ -18,8 +18,7 @@ using Filesystem::Driver;
 
 constexpr char SystemPoint[] = "/system";
 constexpr char DiskType[] = "fat16";
-// FeatherOS has no disk node in /dev yet; this is the name Linux gives the first virtio disk.
-constexpr char DiskSource[] = "vda";
+constexpr char Ext2Type[] = "ext2";
 
 struct BuiltIn
 {
@@ -136,6 +135,26 @@ void CopyText(char* destination, size_t capacity, const char* source)
     destination[index] = '\0';
 }
 
+// Read-only and left out of the tree at boot; mount names it by its partition, such as vda2.
+void RegisterExt2()
+{
+    Filesystem::CoreDriver& ext2 = Filesystem::Drivers::Ext2();
+    {
+        Sync::SpinLockGuard guard(mount_lock);
+        if (mounts.Holds(&ext2))
+        {
+            return;
+        }
+    }
+    const bool mounted = Filesystem::Drivers::MountExt2();
+    const char* source = Filesystem::Drivers::PartitionSource(ext2.PartitionNumber());
+    Sync::SpinLockGuard guard(mount_lock);
+    if (!mounted || source == nullptr || !types.Register(Ext2Type, source, &ext2))
+    {
+        types.Unregister(&ext2);
+    }
+}
+
 } // namespace
 
 bool MountBuiltIn()
@@ -156,9 +175,11 @@ bool MountBuiltIn()
 bool MountBlockDevice()
 {
     const bool mounted = Filesystem::Drivers::MountDisk();
-    Driver* driver = &Filesystem::Drivers::Disk();
+    RegisterExt2();
+    Filesystem::CoreDriver* driver = &Filesystem::Drivers::Disk();
+    const char* source = Filesystem::Drivers::PartitionSource(driver->PartitionNumber());
     Sync::SpinLockGuard guard(mount_lock);
-    if (!mounted)
+    if (!mounted || source == nullptr)
     {
         if (mounts.Find("/") == driver)
         {
@@ -166,7 +187,7 @@ bool MountBlockDevice()
         }
         return false;
     }
-    if (!types.Register(DiskType, DiskSource, driver))
+    if (!types.Register(DiskType, source, driver))
     {
         return false;
     }

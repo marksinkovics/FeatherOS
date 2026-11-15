@@ -1,5 +1,6 @@
 #include "command_line.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -24,7 +25,7 @@ int main(int argc, char** argv)
     FILE* file = fopen(argv[name_index], append ? "a" : "w");
     if (file == nullptr)
     {
-        printf("write: cannot open %s\n", argv[name_index]);
+        printf("write: cannot open %s: %s\n", argv[name_index], strerror(errno));
         return 1;
     }
     for (int index = name_index + 1; index < argc; ++index)

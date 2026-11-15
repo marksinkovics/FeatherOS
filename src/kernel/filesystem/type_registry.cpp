@@ -27,10 +27,22 @@ bool TypeRegistry::Register(const char* type, const char* source, Filesystem::Dr
     for (uint32_t index = 0; index < count; ++index)
     {
         const Record& record = records[index];
-        const bool same_name = SameText(record.type, type) && SameText(record.source, source);
-        if (same_name || record.driver == driver)
+        if (SameText(record.type, type) && SameText(record.source, source))
         {
-            return same_name && record.driver == driver;
+            return record.driver == driver;
+        }
+    }
+    for (uint32_t index = 0; index < count; ++index)
+    {
+        Record& record = records[index];
+        if (record.driver == driver)
+        {
+            if (!SameText(record.type, type))
+            {
+                return false;
+            }
+            record.source = source;
+            return true;
         }
     }
     if (count == Capacity)
@@ -39,6 +51,22 @@ bool TypeRegistry::Register(const char* type, const char* source, Filesystem::Dr
     }
     records[count++] = {type, source, driver};
     return true;
+}
+
+void TypeRegistry::Unregister(const Filesystem::Driver* driver)
+{
+    for (uint32_t index = 0; index < count; ++index)
+    {
+        if (records[index].driver == driver)
+        {
+            for (uint32_t next = index + 1; next < count; ++next)
+            {
+                records[next - 1] = records[next];
+            }
+            records[--count] = {};
+            return;
+        }
+    }
 }
 
 TypeRegistry::Lookup TypeRegistry::Find(const char* type, const char* source,

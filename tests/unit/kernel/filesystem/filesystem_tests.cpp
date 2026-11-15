@@ -3,6 +3,7 @@
 #include "kernel/files.h"
 #include "kernel/filesystem/drivers.h"
 #include "kernel/filesystem/initramfs.h"
+#include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/tmpfs.h"
 #include "kernel/filesystem/vfs.h"
 #include "kernel/storage/block_device.h"
@@ -789,6 +790,21 @@ void ConvertToGpt()
     WriteLittleEndian32(header + 16, Crc32(header, 92));
 }
 
+// "<source> <type> <ro|rw>" of the mount at point, as /proc/mounts lists it.
+std::string MountSource(const std::string& point)
+{
+    FeatherOS::Procfs::MountStatus status{};
+    for (uint32_t index = 0; FeatherOS::VFS::DescribeMount(index, &status); ++index)
+    {
+        if (point == status.point)
+        {
+            return std::string(status.source) + " " + status.type +
+                   (status.read_only ? " ro" : " rw");
+        }
+    }
+    return "";
+}
+
 } // namespace
 
 TEST_CASE("FAT16 mounts a partition from a GUID partition table")
@@ -806,6 +822,7 @@ TEST_CASE("FAT16 mounts a partition from a GUID partition table")
 
 TEST_CASE("the disk's FAT16 mount skips a Linux partition listed before it")
 {
+    using FeatherOS::VFS::MountResult;
     MakeFat16Disk("fat contents");
     constexpr uint32_t LinuxStart = PartitionStart + PartitionSectorCount;
     constexpr uint32_t LinuxSectors = 64;
@@ -820,7 +837,81 @@ TEST_CASE("the disk's FAT16 mount skips a Linux partition listed before it")
     WriteLittleEndian32(table + 12, LinuxSectors);
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     REQUIRE(ReadWhole("/BLOCK.TXT") == "fat contents");
+    REQUIRE(FeatherOS::Filesystem::Drivers::Disk().PartitionNumber() == 2);
+    REQUIRE(MountSource("/") == "vda2 fat16 rw");
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda1", "/mnt") == MountResult::UnknownType);
 }
+
+TEST_CASE("disk sources are named as Linux names the first virtio disk's partitions")
+{
+    using FeatherOS::Filesystem::Drivers::PartitionSource;
+    REQUIRE(std::string(PartitionSource(0)) == "vda");
+    REQUIRE(std::string(PartitionSource(1)) == "vda1");
+    REQUIRE(std::string(PartitionSource(2)) == "vda2");
+    REQUIRE(std::string(PartitionSource(10)) == "vda10");
+    REQUIRE(std::string(PartitionSource(16)) == "vda16");
+    REQUIRE(PartitionSource(17) == nullptr);
+
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::Filesystem::Drivers::Disk().PartitionNumber() == 1);
+    REQUIRE(MountSource("/") == "vda1 fat16 rw");
+}
+
+#if defined(FEATHEROS_EXT2_TEST_IMAGE)
+TEST_CASE("an ext2 partition after the FAT16 one mounts read-only by its partition name")
+{
+    using FeatherOS::VFS::MountResult;
+    std::FILE* image = std::fopen(FEATHEROS_EXT2_TEST_IMAGE, "rb");
+    if (image == nullptr)
+    {
+        SKIP("no ext2 image from mke2fs");
+    }
+    MakeFat16Disk("fat contents");
+    const uint32_t ext2_start = static_cast<uint32_t>(disk.size());
+    std::array<uint8_t, FeatherOS::BlockDevice::SectorSize> sector{};
+    while (std::fread(sector.data(), 1, sector.size(), image) == sector.size())
+    {
+        disk.push_back(sector);
+    }
+    std::fclose(image);
+    uint8_t* table = disk[0].data() + 446 + 16;
+    table[4] = 0x83;
+    WriteLittleEndian32(table + 8, ext2_start);
+    WriteLittleEndian32(table + 12, static_cast<uint32_t>(disk.size()) - ext2_start);
+
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(MountSource("/") == "vda1 fat16 rw");
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda1", "/mnt") == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::Done);
+    REQUIRE(MountSource("/mnt") == "vda2 ext2 ro");
+    REQUIRE(ReadWhole("/mnt/hello.txt") == "Hello from ext2.\n");
+    REQUIRE(ReadWhole("/mnt/a/b/c/deep.txt") == "deep\n");
+    REQUIRE(FeatherOS::VFS::IsDirectory("/mnt/a/b"));
+    FeatherOS::VFS::FileInfo info{};
+    REQUIRE(FeatherOS::VFS::Stat("/mnt/big.txt", &info));
+    REQUIRE(info.size == 448000);
+
+    FeatherOS::VFS::FileHandle file{};
+    REQUIRE(FeatherOS::VFS::IsReadOnly("/mnt/hello.txt"));
+    REQUIRE(FeatherOS::VFS::IsReadOnly("/mnt/new.txt"));
+    REQUIRE_FALSE(FeatherOS::VFS::Create("/mnt/new.txt", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::MakeDirectory("/mnt/new"));
+    REQUIRE_FALSE(FeatherOS::VFS::Remove("/mnt/hello.txt"));
+    REQUIRE_FALSE(FeatherOS::VFS::Open("/mnt/fast-link", &file));
+    REQUIRE(FeatherOS::VFS::Open("/mnt/hello.txt", &file));
+    REQUIRE_FALSE(FeatherOS::VFS::IsWritable(file));
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Busy);
+    FeatherOS::VFS::Close(&file);
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+    REQUIRE_FALSE(FeatherOS::VFS::Stat("/mnt/hello.txt", &info));
+
+    // A disk without the ext2 partition forgets it.
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::UnknownType);
+}
+#endif
 
 namespace
 {
@@ -1317,8 +1408,9 @@ TEST_CASE("unmounting the disk flushes it, and mounting it again shows the same 
 
     REQUIRE(FeatherOS::VFS::MountBuiltIn());
     REQUIRE(FeatherOS::VFS::Mount("fat16", "sda", "/") == MountResult::NotFound);
-    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda", "/") == MountResult::UnknownType);
-    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda", "/") == MountResult::Done);
-    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda", "/mnt") == MountResult::Busy);
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda", "/") == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda1", "/") == MountResult::UnknownType);
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda1", "/") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda1", "/mnt") == MountResult::Busy);
     REQUIRE(ReadWhole("/kept.txt") == "kept");
 }

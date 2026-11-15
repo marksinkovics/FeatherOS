@@ -23,8 +23,11 @@ public:
         UnknownSource,
     };
 
-    // Registering the same instance again succeeds; a taken name or driver fails.
+    // Registering a driver again under its type renames its source, since a disk's partitions can
+    // change; a name another driver has, or a driver under another type, fails.
     bool Register(const char* type, const char* source, Filesystem::Driver* driver);
+    // For a driver whose filesystem has gone, such as a partition no longer on the disk.
+    void Unregister(const Filesystem::Driver* driver);
     Lookup Find(const char* type, const char* source, Filesystem::Driver** driver) const;
     // The names a registered driver goes by; false for any other.
     bool Describe(const Filesystem::Driver* driver, const char** type, const char** source) const;

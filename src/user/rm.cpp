@@ -26,6 +26,7 @@ int main(int argc, char** argv)
     printf("rm: %s%s\n", argv[1],
            errno == ENOENT  ? ": no such file"
            : errno == EBUSY ? ": the file is open"
+           : errno == EROFS ? ": read-only file system"
                             : ": cannot remove");
     return 1;
 }

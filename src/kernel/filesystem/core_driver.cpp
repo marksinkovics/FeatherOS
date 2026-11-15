@@ -62,10 +62,16 @@ bool CoreDriver::Mount(FeatherDisk::FilesystemType& new_type, FeatherDisk::Block
         {
             type = &new_type;
             filesystem = *mounted;
+            partition_number = index + 1;
             return true;
         }
     }
     return false;
+}
+
+size_t CoreDriver::PartitionNumber() const
+{
+    return filesystem == nullptr ? 0 : partition_number;
 }
 
 bool CoreDriver::Statistics(FeatherDisk::VolumeStatistics* statistics)

@@ -142,7 +142,7 @@ bool FakeMountAt(uint32_t index, FeatherOS::Procfs::MountStatus* status)
         return false;
     }
     *status = index == 0 ? FeatherOS::Procfs::MountStatus{"initramfs", "initramfs", "/system", true}
-                         : FeatherOS::Procfs::MountStatus{"vda", "fat16", "/", false};
+                         : FeatherOS::Procfs::MountStatus{"vda1", "fat16", "/", false};
     return true;
 }
 
@@ -539,7 +539,7 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
 TEST_CASE("/proc/mounts has a line per mount, in mount order")
 {
     UseFakeProcesses();
-    REQUIRE(ReadAll("/proc/mounts") == "initramfs /system initramfs ro 0 0\nvda / fat16 rw 0 0\n");
+    REQUIRE(ReadAll("/proc/mounts") == "initramfs /system initramfs ro 0 0\nvda1 / fat16 rw 0 0\n");
 
     FeatherOS::Procfs::SetSource({FakeProcessAt, FakeProcessStatus, FakeMemoryStatus,
                                   FakeSystemStatus, FeatherOS::VFS::DescribeMount});

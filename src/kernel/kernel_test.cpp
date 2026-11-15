@@ -1089,7 +1089,7 @@ void CheckRemount(uint64_t boot_count)
     {
         Panic("Unmounting the FAT16 disk failed");
     }
-    if (VFS::Mount("fat16", "vda", "/") != VFS::MountResult::Done)
+    if (VFS::Mount("fat16", "vda1", "/") != VFS::MountResult::Done)
     {
         Panic("Mounting the FAT16 disk again failed");
     }
@@ -1097,6 +1097,85 @@ void CheckRemount(uint64_t boot_count)
     if (!VFS::MountBuiltIn())
     {
         Panic("Storage test could not mount the built-in filesystems again");
+    }
+}
+
+// tools/create_test_disk.py's ext2 partition, the disk's second, read-only.
+bool ReadsAs(const char* path, const char* expected)
+{
+    VFS::FileHandle file;
+    if (!VFS::Open(path, &file))
+    {
+        return false;
+    }
+    char contents[64];
+    uint64_t length = 0;
+    const bool read = VFS::Read(&file, contents, sizeof(contents), &length);
+    VFS::Close(&file);
+    uint64_t index = 0;
+    while (read && index < length && expected[index] == contents[index])
+    {
+        ++index;
+    }
+    return read && index == length && expected[index] == '\0';
+}
+
+// big.txt is 5000 lines of "ext2 line NNNNN\n", past what direct blocks reach.
+bool BigFileMatches()
+{
+    constexpr uint32_t Lines = 5000;
+    constexpr uint64_t LineLength = 16;
+    VFS::FileHandle file{};
+    if (!VFS::Open("/mnt/big.txt", &file) || file.size != Lines * LineLength)
+    {
+        VFS::Close(&file);
+        return false;
+    }
+    bool matches = true;
+    for (uint32_t line = 0; matches && line < Lines; ++line)
+    {
+        char text[LineLength];
+        uint64_t length = 0;
+        matches = VFS::Read(&file, text, LineLength, &length) && length == LineLength;
+        constexpr char Prefix[] = "ext2 line ";
+        for (uint32_t index = 0; matches && index < sizeof(Prefix) - 1; ++index)
+        {
+            matches = text[index] == Prefix[index];
+        }
+        uint32_t number = line;
+        for (uint32_t digit = 0; matches && digit < 5; ++digit)
+        {
+            matches = text[14 - digit] == static_cast<char>('0' + number % 10);
+            number /= 10;
+        }
+        matches = matches && text[15] == '\n';
+    }
+    VFS::Close(&file);
+    return matches;
+}
+
+void CheckExt2()
+{
+    if (VFS::Mount("ext2", "vda1", "/mnt") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext2", "vda2", "/mnt") != VFS::MountResult::Done)
+    {
+        Panic("Mounting the ext2 partition failed");
+    }
+    if (!ReadsAs("/mnt/hello.txt", "Hello from the ext2 partition.\n") ||
+        !ReadsAs("/mnt/docs/notes/deep.txt", "nested ext2 file\n") || !BigFileMatches())
+    {
+        Panic("The ext2 partition read back different contents");
+    }
+    VFS::FileHandle file{};
+    if (!VFS::IsReadOnly("/mnt/hello.txt") || VFS::Create("/mnt/new.txt", &file) ||
+        VFS::MakeDirectory("/mnt/new") || VFS::Remove("/mnt/hello.txt") ||
+        VFS::Open("/mnt/fast-link", &file))
+    {
+        Panic("The read-only ext2 partition took a change or opened a link");
+    }
+    if (VFS::Unmount("/mnt") != VFS::MountResult::Done || VFS::IsDirectory("/mnt/docs"))
+    {
+        Panic("Unmounting the ext2 partition failed");
     }
 }
 
@@ -1164,10 +1243,12 @@ void RunStorageTests()
 
     RunFileTests(boot_count);
     CheckRemount(boot_count);
+    CheckExt2();
 
-    char message[80];
+    char message[96];
     if (!String::FormatTo(message, sizeof(message),
-                          "KERN/STORAGE: sector and FAT16 file writes verified; boot count {}\n",
+                          "KERN/STORAGE: sector and FAT16 file writes and ext2 reads verified; "
+                          "boot count {}\n",
                           boot_count))
     {
         Panic("Storage test message formatting failed");

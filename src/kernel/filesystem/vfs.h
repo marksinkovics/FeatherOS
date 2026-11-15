@@ -14,10 +14,12 @@ struct MountStatus;
 // One tree over the mounted filesystems. At boot, with their type and source: the initramfs's
 // "system" directory at "/system" (initramfs, initramfs), the RAM filesystem's two roots at "/etc"
 // (tmpfs, etc) and "/tmp" (tmpfs, tmp), devices at "/dev" (devfs, devfs), generated process files
-// at "/proc" (procfs, procfs), and the FAT16 volume on the virtio block device at "/" (fat16,
-// vda). A path belongs to the mount with the longest mount point that is a whole-component prefix
-// of it, so a mount hides whatever its parent filesystem has at that path. Each of these instances
-// keeps its contents while unmounted and can be mounted at one point at a time.
+// at "/proc" (procfs, procfs), and the FAT16 volume on the virtio block device at "/" (fat16 and
+// its partition's name, such as vda1). An ext2 partition is registered as ext2 and its name, such
+// as vda2, but not mounted. A path belongs to the mount with the longest mount point that is a
+// whole-component prefix of it, so a mount hides whatever its parent filesystem has at that path.
+// Each of these instances keeps its contents while unmounted and can be mounted at one point at a
+// time.
 namespace FeatherOS::VFS
 {
 
@@ -44,7 +46,8 @@ struct FileKey
 // The filesystems that need no disk, in the order "/" lists them: /system, /etc, /dev, /proc and
 // /tmp. Those already mounted somewhere are left alone.
 bool MountBuiltIn();
-// Mounts the block device's FAT16 volume at "/", replacing an earlier one.
+// Mounts the block device's FAT16 volume at "/", replacing an earlier one, and registers its ext2
+// volume, unless that one is mounted.
 bool MountBlockDevice();
 // Copies the initramfs's "etc" files into /etc, so they can be changed until the next boot.
 bool LoadEtc();
