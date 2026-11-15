@@ -524,6 +524,9 @@ char* strerror(int error)
     case ENOTEMPTY:
         message = "Directory not empty";
         break;
+    case ELOOP:
+        message = "Too many levels of symbolic links";
+        break;
     case EOVERFLOW:
         message = "Value too large for defined data type";
         break;

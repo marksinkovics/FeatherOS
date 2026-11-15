@@ -819,7 +819,7 @@ bool BuildProgramPath(const char* program, const char* working_directory,
     {
         named = named && *character != '/';
     }
-    return Path::Resolve(named ? SystemDirectory : working_directory, program, path);
+    return Path::Join(named ? SystemDirectory : working_directory, program, path);
 }
 
 // The last part of the program's path, as much as fits.
@@ -941,17 +941,18 @@ uint64_t CopyStringFromUser(const ProcessRecord& process, uint64_t address, char
     return User::SyscallErrorInvalidArgument;
 }
 
-// A path argument as the program passed it and once resolved; syscalls keep it on the heap,
-// since a kernel stack has no room for several along the filesystem's call chains.
+// A path argument as the program passed it and once joined to the working directory; syscalls
+// keep it on the heap, since a kernel stack has no room for several along the filesystem's call
+// chains. Files walks the joined path, links and all.
 struct UserPath
 {
     char text[User::MaximumPathLength];
     char resolved[Path::MaximumLength];
 };
 
-// Copies a path argument and resolves it against the process's working directory into
-// path->resolved. A path without a terminator in its first MaximumPathLength bytes, or one too
-// long once resolved, fails with SyscallErrorNameTooLong.
+// Copies a path argument and joins it to the process's working directory into path->resolved. A
+// path without a terminator in its first MaximumPathLength bytes, or one too long once joined,
+// fails with SyscallErrorNameTooLong.
 uint64_t CopyPathFromUser(const ProcessRecord& process, uint64_t address,
                           const Memory::HeapObject<UserPath>& path)
 {
@@ -964,7 +965,7 @@ uint64_t CopyPathFromUser(const ProcessRecord& process, uint64_t address,
     {
         return copied;
     }
-    return copied == 0 && Path::Resolve(process.working_directory, path->text, path->resolved) &&
+    return copied == 0 && Path::Join(process.working_directory, path->text, path->resolved) &&
                    Path::ReplaceProcSelf(path->resolved, process.id)
                ? 0
                : User::SyscallErrorNameTooLong;
@@ -1114,6 +1115,8 @@ uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags, uint
         return User::SyscallErrorNoMemory;
     case SpawnStatus::Busy:
         return User::SyscallErrorBusy;
+    case SpawnStatus::Loop:
+        return User::SyscallErrorLoop;
     default:
         return User::SyscallErrorFailed;
     }
@@ -2901,6 +2904,116 @@ uint64_t StatSyscall(void* context, uint64_t path, uint64_t status)
     return User::IsSyscallError(result) ? result : CopyStatusToUser(*process, status, file_status);
 }
 
+uint64_t LinkStatSyscall(void* context, uint64_t path, uint64_t status)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    const Memory::HeapObject<UserPath> path_text;
+    const uint64_t copied = CopyPathFromUser(*process, path, path_text);
+    if (copied != 0)
+    {
+        return copied;
+    }
+    User::FileStatus file_status = {};
+    const uint64_t result = Files::LinkStat(path_text->resolved, &file_status);
+    return User::IsSyscallError(result) ? result : CopyStatusToUser(*process, status, file_status);
+}
+
+struct PathText
+{
+    char text[User::MaximumPathLength];
+};
+
+uint64_t ReadLinkSyscall(void* context, uint64_t path, uint64_t buffer, uint64_t capacity)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    const Memory::HeapObject<UserPath> path_text;
+    const Memory::HeapObject<PathText> target;
+    const uint64_t copied = CopyPathFromUser(*process, path, path_text);
+    if (copied != 0)
+    {
+        return copied;
+    }
+    if (!target)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    if (capacity == 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    const uint64_t length =
+        Files::ReadLink(path_text->resolved, target->text, sizeof(target->text));
+    if (User::IsSyscallError(length))
+    {
+        return length;
+    }
+    const uint64_t count = length < capacity ? length : capacity;
+    return CopyToUser(*process, buffer, target->text, count) ? count : User::SyscallErrorBadAddress;
+}
+
+uint64_t SymbolicLinkSyscall(void* context, uint64_t target, uint64_t path)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    const Memory::HeapObject<PathText> target_text;
+    const Memory::HeapObject<UserPath> path_text;
+    if (!target_text)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    uint64_t copied =
+        CopyStringFromUser(*process, target, target_text->text, sizeof(target_text->text));
+    if (copied == User::SyscallErrorInvalidArgument)
+    {
+        copied = User::SyscallErrorNameTooLong;
+    }
+    if (copied == 0)
+    {
+        copied = CopyPathFromUser(*process, path, path_text);
+    }
+    return copied != 0 ? copied : Files::SymbolicLink(target_text->text, path_text->resolved);
+}
+
+uint64_t LinkSyscall(void* context, uint64_t from, uint64_t to)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    const Memory::HeapObject<UserPath> from_text;
+    const Memory::HeapObject<UserPath> to_text;
+    uint64_t copied = CopyPathFromUser(*process, from, from_text);
+    if (copied == 0)
+    {
+        copied = CopyPathFromUser(*process, to, to_text);
+    }
+    return copied != 0 ? copied : Files::Link(from_text->resolved, to_text->resolved);
+}
+
+uint64_t ResolvePathSyscall(void* context, uint64_t path, uint64_t buffer, uint64_t capacity)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    const Memory::HeapObject<UserPath> path_text;
+    const Memory::HeapObject<PathText> result;
+    const uint64_t copied = CopyPathFromUser(*process, path, path_text);
+    if (copied != 0)
+    {
+        return copied;
+    }
+    if (!result)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    const uint64_t length =
+        Files::ResolvePath(path_text->resolved, result->text, sizeof(result->text));
+    if (User::IsSyscallError(length))
+    {
+        return length;
+    }
+    if (capacity <= length)
+    {
+        return User::SyscallErrorRange;
+    }
+    return CopyToUser(*process, buffer, result->text, length + 1) ? length
+                                                                  : User::SyscallErrorBadAddress;
+}
+
 uint64_t StatDescriptorSyscall(void* context, uint64_t descriptor, uint64_t status)
 {
     auto* process = static_cast<ProcessRecord*>(context);
@@ -2985,6 +3098,11 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     .terminal_control = TerminalControlSyscall,
     .mount = MountSyscall,
     .unmount = UnmountSyscall,
+    .link_stat = LinkStatSyscall,
+    .read_link = ReadLinkSyscall,
+    .symbolic_link = SymbolicLinkSyscall,
+    .link = LinkSyscall,
+    .resolve_path = ResolvePathSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -3383,9 +3501,14 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
     case 0:
         break;
     case User::SyscallErrorNotFound:
+    case User::SyscallErrorNotDirectory:
         return SpawnStatus::NotFound;
     case User::SyscallErrorIsDirectory:
         return SpawnStatus::IsDirectory;
+    case User::SyscallErrorNameTooLong:
+        return SpawnStatus::NameTooLong;
+    case User::SyscallErrorLoop:
+        return SpawnStatus::Loop;
     case User::SyscallErrorNotExecutable:
         return SpawnStatus::InvalidExecutable;
     case User::SyscallErrorBusy:

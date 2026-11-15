@@ -22,6 +22,9 @@
 #define O_NDELAY O_NONBLOCK
 // The descriptor is not passed to programs this one starts.
 #define O_CLOEXEC 02000000
+// A symbolic link in the last component fails with ELOOP instead of being followed. Linux's
+// generic value; its x86-64 value differs from its AArch64 one, and FeatherOS uses one for both.
+#define O_NOFOLLOW 0400000
 
 // fcntl commands, as on Linux. F_SETFL changes O_APPEND and O_NONBLOCK, except on terminals,
 // and ignores other flags. Record locks are not supported.
@@ -35,6 +38,10 @@
 
 // openat's directory for paths relative to the working directory.
 #define AT_FDCWD (-100)
+// The *at functions' flags, as on Linux: fstatat-style calls that describe a link itself, and
+// linkat following a link in its source.
+#define AT_SYMLINK_NOFOLLOW 0x100
+#define AT_SYMLINK_FOLLOW 0x400
 
 __BEGIN_DECLS
 

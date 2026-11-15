@@ -8,33 +8,39 @@
 namespace
 {
 
-std::string Resolve(const char* working_directory, const char* path)
+std::string Join(const char* working_directory, const char* path)
 {
     char result[FeatherOS::Path::MaximumLength];
-    REQUIRE(FeatherOS::Path::Resolve(working_directory, path, result));
+    REQUIRE(FeatherOS::Path::Join(working_directory, path, result));
     return result;
 }
 
 } // namespace
 
-TEST_CASE("paths resolve against the working directory")
+TEST_CASE("paths join the working directory")
 {
-    REQUIRE(Resolve("/home", "notes.txt") == "/home/notes.txt");
-    REQUIRE(Resolve("/home/docs", "old/a.txt") == "/home/docs/old/a.txt");
-    REQUIRE(Resolve("/home/docs", "/hello.txt") == "/hello.txt");
-    REQUIRE(Resolve("/home", "My Notes.txt") == "/home/My Notes.txt");
+    REQUIRE(Join("/home", "notes.txt") == "/home/notes.txt");
+    REQUIRE(Join("/home/docs", "old/a.txt") == "/home/docs/old/a.txt");
+    REQUIRE(Join("/home/docs", "/hello.txt") == "/hello.txt");
+    REQUIRE(Join("/home", "My Notes.txt") == "/home/My Notes.txt");
+    REQUIRE(Join("/", "home") == "/home");
 }
 
-TEST_CASE("paths collapse dots and repeated slashes")
+TEST_CASE("leading dots apply to the working directory, the rest is left for the walk")
 {
-    REQUIRE(Resolve("/home/docs", "..") == "/home");
-    REQUIRE(Resolve("/home/docs", "../..") == "/");
-    REQUIRE(Resolve("/home", "../../..") == "/");
-    REQUIRE(Resolve("/home", "./a/./b/../c") == "/home/a/c");
-    REQUIRE(Resolve("/", "//home///docs//") == "/home/docs");
-    REQUIRE(Resolve("/home", ".") == "/home");
-    REQUIRE(Resolve("/home", "") == "/home");
-    REQUIRE(Resolve("/home", "...") == "/home/...");
+    REQUIRE(Join("/home/docs", "..") == "/home");
+    REQUIRE(Join("/home/docs", "../..") == "/");
+    REQUIRE(Join("/home", "../../..") == "/");
+    REQUIRE(Join("/home", ".") == "/home");
+    REQUIRE(Join("/home", "") == "/home");
+    REQUIRE(Join("/home", "./../tmp") == "/tmp");
+    REQUIRE(Join("/home", "...") == "/home/...");
+    REQUIRE(Join("/home", "..x") == "/home/..x");
+    // Past the first name, ".." may follow a symbolic link, so only the walk can apply it.
+    REQUIRE(Join("/home", "./a/./b/../c") == "/home/a/./b/../c");
+    REQUIRE(Join("/home", "link/..") == "/home/link/..");
+    // An absolute path stays as given, for the walk.
+    REQUIRE(Join("/home", "//tmp/../etc/") == "//tmp/../etc/");
 }
 
 TEST_CASE("paths that would not fit are rejected")
@@ -46,26 +52,31 @@ TEST_CASE("paths that would not fit are rejected")
     const std::string long_name = component + "/" + component + "/" + component + "/" + component +
                                   "/" + std::string(213, 'x');
     REQUIRE(long_name.size() == 1017);
-    REQUIRE(FeatherOS::Path::Resolve("/home", long_name.c_str(), result));
+    REQUIRE(FeatherOS::Path::Join("/home", long_name.c_str(), result));
     REQUIRE(std::string(result).size() == 1023);
-    REQUIRE_FALSE(FeatherOS::Path::Resolve("/home", (long_name + "y").c_str(), result));
-    // Components collapse as they are read, so an intermediate path must fit too.
-    REQUIRE_FALSE(FeatherOS::Path::Resolve("/home", (long_name + "y/..").c_str(), result));
+    REQUIRE_FALSE(FeatherOS::Path::Join("/home", (long_name + "y").c_str(), result));
+    // The joined text must fit, before the walk could take a ".." away again.
+    REQUIRE_FALSE(FeatherOS::Path::Join("/home", (long_name + "/..").c_str(), result));
+    // Leading ".." shortens the working directory first, so this one fits.
+    REQUIRE(FeatherOS::Path::Join("/home", ("../" + long_name + "yy").c_str(), result));
+    REQUIRE(std::string(result).size() == 1020);
     // Five 200-byte components, as the ext2 test volume nests them.
     std::string nested;
     for (int level = 0; level < 5; ++level)
     {
         nested += "/" + component;
     }
-    REQUIRE(FeatherOS::Path::Resolve("/", nested.c_str(), result));
+    REQUIRE(FeatherOS::Path::Join("/", nested.c_str(), result));
+    REQUIRE(std::string(result) == nested);
+    REQUIRE(FeatherOS::Path::Join("/", nested.c_str() + 1, result));
     REQUIRE(std::string(result) == nested);
     REQUIRE_FALSE(
-        FeatherOS::Path::Resolve("/mnt/a/b/c/d/e/f/g/h/i/j/k", nested.c_str() + 1, result));
-    // NAME_MAX limits each component, even one that ".." takes away again.
-    REQUIRE(FeatherOS::Path::Resolve("/tmp", std::string(255, 'n').c_str(), result));
-    REQUIRE_FALSE(FeatherOS::Path::Resolve("/tmp", std::string(256, 'n').c_str(), result));
-    REQUIRE_FALSE(
-        FeatherOS::Path::Resolve("/tmp", (std::string(256, 'n') + "/..").c_str(), result));
+        FeatherOS::Path::Join("/mnt/a/b/c/d/e/f/g/h/i/j/k", nested.c_str() + 1, result));
+    std::string absolute(FeatherOS::Path::MaximumLength, 'a');
+    absolute[0] = '/';
+    REQUIRE_FALSE(FeatherOS::Path::Join("/", absolute.c_str(), result));
+    absolute.pop_back();
+    REQUIRE(FeatherOS::Path::Join("/", absolute.c_str(), result));
 }
 
 TEST_CASE("/proc/self names the calling process")

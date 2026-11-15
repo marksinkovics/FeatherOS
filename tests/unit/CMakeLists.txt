@@ -28,6 +28,7 @@ add_executable(featheros_unit_tests
     kernel/filesystem/filesystem_tests.cpp
     kernel/filesystem/mount_table_tests.cpp
     kernel/filesystem/path_tests.cpp
+    kernel/filesystem/symbolic_link_tests.cpp
     kernel/filesystem/pipe_tests.cpp
     kernel/filesystem/virtual_files_tests.cpp
     kernel/elf/elf_loader_tests.cpp
@@ -126,6 +127,7 @@ add_executable(featheros_unit_tests
     libcxx/host_futex.cpp
     "${FEATHEROS_ROOT}/src/kernel/filesystem/core_driver.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/path_walk.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/core_block_device.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/devices.cpp"

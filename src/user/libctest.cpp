@@ -954,6 +954,88 @@ void CheckPathLimits()
           "readdir lists a NAME_MAX name whole");
 }
 
+// /tmp holds symbolic links, the FAT16 disk holds none, and no writable filesystem holds hard
+// links yet.
+void CheckSymbolicLinks()
+{
+    const int created = open("/tmp/libc-target.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    Check(created >= 0 && write(created, "linked", 6) == 6 && close(created) == 0,
+          "a file to link to");
+    Check(symlink("libc-target.txt", "/tmp/libc-link") == 0, "symlink");
+    errno = 0;
+    Check(symlink("elsewhere", "/tmp/libc-link") == -1 && errno == EEXIST,
+          "symlink onto an existing name");
+    struct stat followed;
+    struct stat link_status;
+    Check(stat("/tmp/libc-link", &followed) == 0 && S_ISREG(followed.st_mode) &&
+              followed.st_size == 6,
+          "stat follows a link");
+    Check(lstat("/tmp/libc-link", &link_status) == 0 && S_ISLNK(link_status.st_mode) &&
+              link_status.st_size == 15 && link_status.st_ino != followed.st_ino,
+          "lstat describes the link");
+    char target[PATH_MAX];
+    Check(readlink("/tmp/libc-link", target, sizeof(target)) == 15 &&
+              memcmp(target, "libc-target.txt", 15) == 0,
+          "readlink");
+    Check(readlink("/tmp/libc-link", target, 4) == 4 && memcmp(target, "libc", 4) == 0,
+          "readlink cuts the target to the buffer");
+    errno = 0;
+    Check(readlink("/tmp/libc-target.txt", target, sizeof(target)) == -1 && errno == EINVAL,
+          "readlink of a file");
+    Check(readlinkat(AT_FDCWD, "/tmp/libc-link", target, sizeof(target)) == 15, "readlinkat");
+    char resolved[PATH_MAX];
+    Check(realpath("/tmp/../tmp//libc-link", resolved) != nullptr &&
+              strcmp(resolved, "/tmp/libc-target.txt") == 0,
+          "realpath resolves links and dots");
+    char* allocated = realpath("/tmp/libc-link", nullptr);
+    Check(allocated != nullptr && strcmp(allocated, "/tmp/libc-target.txt") == 0,
+          "realpath allocates without a buffer");
+    free(allocated);
+    errno = 0;
+    Check(realpath("/tmp/libc-missing", resolved) == nullptr && errno == ENOENT,
+          "realpath of a missing file");
+
+    Check(symlink("libc-loop-b", "/tmp/libc-loop-a") == 0 &&
+              symlinkat("libc-loop-a", AT_FDCWD, "/tmp/libc-loop-b") == 0,
+          "symlinks that form a loop");
+    errno = 0;
+    Check(open("/tmp/libc-loop-a", O_RDONLY) == -1 && errno == ELOOP, "a loop fails with ELOOP");
+    Check(strcmp(strerror(ELOOP), "Too many levels of symbolic links") == 0, "strerror(ELOOP)");
+    errno = 0;
+    Check(open("/tmp/libc-link", O_RDONLY | O_NOFOLLOW) == -1 && errno == ELOOP,
+          "O_NOFOLLOW refuses a link");
+    errno = 0;
+    Check(open("/tmp/libc-link", O_WRONLY | O_CREAT | O_EXCL, 0644) == -1 && errno == EEXIST,
+          "O_EXCL counts a link");
+    errno = 0;
+    Check(link("/tmp/libc-target.txt", "/tmp/libc-hard") == -1 && errno == EPERM,
+          "link where hard links are not held");
+    errno = 0;
+    Check(link("/tmp/libc-target.txt", "/home/libc-hard") == -1 && errno == EXDEV,
+          "link across filesystems");
+    errno = 0;
+    Check(symlink("x", "/home/libc-link") == -1 && errno == EPERM, "symlink on FAT16");
+    errno = 0;
+    Check(symlink("x", "/system/libc-link") == -1 && errno == EROFS,
+          "symlink on a read-only filesystem");
+
+    char original[PATH_MAX];
+    Check(mkdir("/tmp/libc-dir", 0755) == 0 && symlink("/tmp/libc-dir", "/tmp/libc-dir-link") == 0,
+          "a link to a directory");
+    Check(getcwd(original, sizeof(original)) != nullptr && chdir("/tmp/libc-dir-link") == 0 &&
+              getcwd(target, sizeof(target)) != nullptr && strcmp(target, "/tmp/libc-dir") == 0,
+          "chdir through a link keeps the directory's own path");
+    Check(chdir("..") == 0 && getcwd(target, sizeof(target)) != nullptr &&
+              strcmp(target, "/tmp") == 0 && chdir(original) == 0,
+          "chdir .. after a link");
+    Check(unlink("/tmp/libc-link") == 0 && stat("/tmp/libc-target.txt", &followed) == 0,
+          "unlink removes the link, not its target");
+    Check(unlink("/tmp/libc-loop-a") == 0 && unlink("/tmp/libc-loop-b") == 0 &&
+              unlink("/tmp/libc-dir-link") == 0 && rmdir("/tmp/libc-dir") == 0 &&
+              unlink("/tmp/libc-target.txt") == 0,
+          "remove the link test's files");
+}
+
 bool FileContains(const char* path, const char* text)
 {
     FILE* file = fopen(path, "r");
@@ -3354,6 +3436,7 @@ int main(int argc, char** argv)
     CheckFixedParameterCalls();
     CheckDirectories();
     CheckPathLimits();
+    CheckSymbolicLinks();
     CheckVirtualFiles();
     CheckAddressNames();
     CheckTime();

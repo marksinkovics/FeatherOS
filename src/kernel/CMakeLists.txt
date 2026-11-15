@@ -91,6 +91,7 @@ set(SRC
     ${SRCROOT}/filesystem/core_driver.cpp
     ${SRCROOT}/filesystem/core_host.cpp
     ${SRCROOT}/filesystem/path.cpp
+    ${SRCROOT}/filesystem/path_walk.cpp
     ${SRCROOT}/storage/core_block_device.cpp
     ${SRCROOT}/network/address.cpp
     ${SRCROOT}/network/arp.cpp

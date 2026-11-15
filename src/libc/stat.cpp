@@ -50,6 +50,12 @@ int stat(const char* path, struct stat* status)
     return Convert(FeatherOS::User::Stat(path, &file_status), file_status, status);
 }
 
+int lstat(const char* path, struct stat* status)
+{
+    FeatherOS::User::FileStatus file_status = {};
+    return Convert(FeatherOS::User::LinkStat(path, &file_status), file_status, status);
+}
+
 int fstat(int descriptor, struct stat* status)
 {
     FeatherOS::User::FileStatus file_status = {};

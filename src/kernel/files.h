@@ -11,7 +11,10 @@
 // Per-process file descriptors. A descriptor names an open file, which dup and Spawn can share
 // between descriptors and processes; it keeps the offset and closes when its last descriptor
 // does. Functions return the value a syscall hands back: a result, or a User::SyscallError code.
-// Buffers are kernel memory.
+// Buffers are kernel memory. Paths are absolute, and may hold symbolic links, "." and "..": each
+// call walks its paths (VFS::ResolvePath) under the filesystem lock, following a link in the last
+// component unless it says otherwise, and fails with SyscallErrorLoop past
+// User::MaximumSymbolicLinks links.
 namespace FeatherOS::Terminals
 {
 class Terminal;
@@ -58,6 +61,7 @@ void Inherit(Table* child, const Table* parent);
 Kind KindOf(const Table* table, uint64_t descriptor);
 // "/dev/tty" opens controlling_terminal, or fails with SyscallErrorNoDevice if it is null.
 // "/dev/ptmx" creates a pseudo-terminal pair and opens its master, and "/dev/pts/N" opens a slave.
+// With User::OpenNoFollow a link in the last component fails with SyscallErrorLoop.
 uint64_t Open(Table* table, const char* path, uint64_t flags,
               Terminals::Terminal* controlling_terminal = nullptr);
 // The terminal behind a descriptor, or SyscallErrorNotTerminal for another kind. Terminals live
@@ -98,13 +102,15 @@ uint64_t DescriptorFlags(Table* table, uint64_t descriptor, bool set, uint64_t v
 // the last two from value if set is true; value's access flags are ignored.
 uint64_t StatusFlags(Table* table, uint64_t descriptor, bool set, uint64_t value);
 uint64_t CountOpen(const Table* table);
+// A file or a symbolic link, not followed.
 uint64_t Remove(const char* path);
 uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* entry);
+// A link at path, not followed, makes it SyscallErrorExists.
 uint64_t MakeDirectory(const char* path);
 // 0 for a directory, otherwise SyscallErrorNotDirectory or SyscallErrorNotFound.
 uint64_t CheckDirectory(const char* path);
-// Checks the directory and copies it into working_directory under the filesystem lock, so an
-// unmount sees either the old working directory or the new one.
+// Checks the directory and copies its physical path, without links, into working_directory under
+// the filesystem lock, so an unmount sees either the old working directory or the new one.
 uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::MaximumPathLength]);
 // Mounts the instance of type named source at point, which must be a directory or not exist, in an
 // existing directory. SyscallErrorUnknownFilesystemType for a type nothing registered,
@@ -117,11 +123,30 @@ using WorkingDirectoryCheck = bool (*)(const char* point);
 // point, SyscallErrorBusy while a file on it is open, a working directory is inside it or another
 // mount point lies inside it, and SyscallErrorInputOutput if its data could not be synced.
 uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use);
-// Fails unless the directory is empty.
+// Fails unless the directory is empty; a link is SyscallErrorNotDirectory.
 uint64_t RemoveDirectory(const char* path);
-// Within one filesystem; replaces a file at to, but neither a directory nor an open file.
+// Within one filesystem; replaces a file or link at to, but neither a directory nor an open file.
+// Links in the last components are not followed.
 uint64_t Rename(const char* from, const char* to);
 uint64_t Stat(const char* path, User::FileStatus* status);
+// Stat that describes a link in the last component itself, as lstat does.
+uint64_t LinkStat(const char* path, User::FileStatus* status);
+// Copies at most capacity bytes of the target of the link at path (not followed), without a
+// terminator, and returns how many. SyscallErrorInvalidArgument for something else than a link.
+uint64_t ReadLink(const char* path, char* buffer, uint64_t capacity);
+// Makes path (not followed) a symbolic link to target, stored as given and not checked; an empty
+// target fails with SyscallErrorNotFound. SyscallErrorExists if path exists, SyscallErrorReadOnly
+// on a read-only filesystem, SyscallErrorNotPermitted where the filesystem cannot hold links
+// (FAT16 and the virtual filesystems, as Linux's vfat answers).
+uint64_t SymbolicLink(const char* target, const char* path);
+// A second name, to, for the file from; neither is followed, as on Linux. SyscallErrorCrossDevice
+// across filesystems, SyscallErrorNotPermitted for a directory or where the filesystem cannot hold
+// hard links (every writable one so far), and the other errors as SymbolicLink.
+uint64_t Link(const char* from, const char* to);
+// Copies the physical path of what path names, with its terminator, as realpath gives it.
+// SyscallErrorNotFound if it does not exist, SyscallErrorRange if it does not fit; returns its
+// length.
+uint64_t ResolvePath(const char* path, char* buffer, uint64_t capacity);
 uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* status);
 void CloseAll(Table* table);
 

@@ -45,6 +45,7 @@ These come from the kernel and apply everywhere below.
 | Command line passed to a program | 1023 characters, at most 16 words including the name |
 | Environment | 1 KiB and at most 32 variables |
 | Path | 1023 characters (`PATH_MAX` 1024 with the terminator), each name at most 255 (`NAME_MAX`) |
+| Symbolic links | 40 followed per path, then `ELOOP` |
 | Open files per process | 16 descriptors, plus the console's 0, 1 and 2 |
 | Running children per process | 16 |
 | Memory per process | 16384 pages (64 MiB), including the image and stack |
@@ -61,7 +62,7 @@ These come from the kernel and apply everywhere below.
 | `/tmp` | A RAM filesystem, emptied on restart: at most 128 entries and 4 MiB, with case-sensitive names |
 | `/proc` | Read-only: `meminfo`, `stat` (uptime and CPU use), `mounts`, and `<pid>/status` for each process; `/proc/self` is the caller |
 
-`/proc/mounts` lists every mount as Linux does, `<source> <point> <type> <ro|rw> 0 0`, in mount order, and `mount` and `umount` (`sys/mount.h`) change them. `/bin`, an ordinary disk directory, is the second entry of the default `PATH`, for programs copied to the disk. Disk names ignore case and are at most 63 ASCII characters (FAT16's limit; ext2 and `/tmp` take 255 bytes), and no file can have holes. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
+`/proc/mounts` lists every mount as Linux does, `<source> <point> <type> <ro|rw> 0 0`, in mount order, and `mount` and `umount` (`sys/mount.h`) change them. `/bin`, an ordinary disk directory, is the second entry of the default `PATH`, for programs copied to the disk. Disk names ignore case and are at most 63 ASCII characters (FAT16's limit; ext2 and `/tmp` take 255 bytes), and no file can have holes. Symbolic links are followed anywhere in a path and across mounts, and `..` after one leads to the parent of its target, as POSIX's physical walk does; `/tmp`, `/etc` and ext2 hold them, FAT16 does not. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
 
 ## Headers
 
@@ -87,9 +88,9 @@ The compiler's own limits, plus `LLONG_MIN`, `LLONG_MAX` and `ULLONG_MAX` where 
 
 `errno`, with these error numbers, at Linux's values:
 
-`EPERM ENOENT ESRCH EINTR EIO ENXIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST EXDEV ENODEV ENOTDIR EISDIR EINVAL EMFILE ENOTTY ENOSPC ESPIPE EROFS EPIPE EDOM ERANGE EDEADLK ENAMETOOLONG ENOSYS ENOTEMPTY EOVERFLOW EILSEQ ENOTSOCK EDESTADDRREQ EMSGSIZE ENOPROTOOPT EPROTONOSUPPORT EOPNOTSUPP/ENOTSUP EAFNOSUPPORT EADDRINUSE EADDRNOTAVAIL ENETDOWN ENETUNREACH ECONNRESET ENOBUFS EISCONN ENOTCONN ETIMEDOUT ECONNREFUSED EHOSTUNREACH EALREADY EINPROGRESS`
+`EPERM ENOENT ESRCH EINTR EIO ENXIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST EXDEV ENODEV ENOTDIR EISDIR EINVAL EMFILE ENOTTY ENOSPC ESPIPE EROFS EPIPE EDOM ERANGE EDEADLK ENAMETOOLONG ENOSYS ENOTEMPTY ELOOP EOVERFLOW EILSEQ ENOTSOCK EDESTADDRREQ EMSGSIZE ENOPROTOOPT EPROTONOSUPPORT EOPNOTSUPP/ENOTSUP EAFNOSUPPORT EADDRINUSE EADDRNOTAVAIL ENETDOWN ENETUNREACH ECONNRESET ENOBUFS EISCONN ENOTCONN ETIMEDOUT ECONNREFUSED EHOSTUNREACH EALREADY EINPROGRESS`
 
-Each kernel error maps to one of them. A path of `PATH_MAX` characters or more, as passed or once joined to the working directory, or with a component over `NAME_MAX`, fails with `ENAMETOOLONG`. A background read of the controlling terminal that ignores or blocks `SIGTTIN`, or comes from an orphaned group, fails with `EIO`, as on Linux.
+Each kernel error maps to one of them. A path of `PATH_MAX` characters or more, as passed, once joined to the working directory or once its symbolic links are expanded (a link's target and the rest of the path still to walk must fit together, too), or with a component over `NAME_MAX`, fails with `ENAMETOOLONG`. More than 40 links on the way, or `O_NOFOLLOW` on a link, fail with `ELOOP`. A background read of the controlling terminal that ignores or blocks `SIGTTIN`, or comes from an orphaned group, fails with `EIO`, as on Linux.
 
 ### `stdlib.h`
 
@@ -105,13 +106,14 @@ Each kernel error maps to one of them. A path of `PATH_MAX` characters or more, 
   - `atoi`, `atol`, `atoll`, `strtol`, `strtoll`, `strtoul` and `strtoull`, with bases 0 and 2–36.
   - `strtod`, `strtof`, `strtold` and `atof`. These are correctly rounded (ties to even), and accept hexadecimal floats, `inf`, `infinity` and `nan(...)`.
 - **Sorting:** `qsort`, a heapsort, so it never needs extra memory but is not stable. `bsearch`.
+- **Paths:** `realpath` asks the kernel's walk for the physical path of an existing file, with every symbolic link, `.`, `..` and repeated `/` resolved; with a null buffer it returns one from `malloc` of `PATH_MAX` bytes. An empty path fails with `ENOENT`.
 - **Environment:** `getenv`, `setenv` and `unsetenv`. `putenv` is left out, because the table keeps its own copies of the strings.
 - **Random numbers:** `rand` and `srand`, a 64-bit linear congruential generator.
 - **Pseudo-terminals:** `posix_openpt`, `grantpt`, `unlockpt`, `ptsname` and `ptsname_r`. `posix_openpt` takes `O_RDWR`, optionally with `O_NOCTTY` and `O_CLOEXEC`, and opens `/dev/ptmx`; there are 16 pairs, after which it fails with `ENXIO`. The slave is `/dev/pts/N`, and opening it fails with `EIO` until `unlockpt`. There are no owners or permissions, so `grantpt` only checks that the descriptor is a master. `isatty` is false for a master and true for a slave. `ptsname` returns a static buffer. Closing the master hangs up the slave: the session it was the controlling terminal of loses it and every process there gets `SIGHUP`, reads on the slave return 0, writes fail with `EIO`, and `poll` reports `POLLHUP`. Once every slave descriptor is closed, reads on the master return the rest of the output and then 0 (end of file, as on macOS and the BSDs, where Linux returns `EIO`), with `POLLHUP`. A process's `tcsetattr` settings are restored on every terminal when it exits.
 
 Not provided:
 - `system`, because there is no `/bin/sh -c`
-- `mkstemp`, `realpath`, `mbtowc` and the other multibyte functions but `uchar.h`'s
+- `mkstemp`, `mbtowc` and the other multibyte functions but `uchar.h`'s
 
 ### `inttypes.h`
 
@@ -213,8 +215,8 @@ Differences:
 
 - **Descriptors:**
   - `read`, `write`, `close` and `lseek`.
-  - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC O_NONBLOCK O_NOCTTY`. The lowest free descriptor is used, out of 32. A session leader without a controlling terminal takes the first terminal it opens unless it passes `O_NOCTTY`.
-  - `openat` does what `open` does for an absolute path, or a relative one with `AT_FDCWD`. Directories cannot be opened, so a relative path with any other descriptor fails with `ENOTDIR`, or `EBADF` when the descriptor is not open.
+  - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC O_NONBLOCK O_NOCTTY O_NOFOLLOW`. The lowest free descriptor is used, out of 32. A session leader without a controlling terminal takes the first terminal it opens unless it passes `O_NOCTTY`. A symbolic link in the last component is followed, and `O_CREAT` through a dangling one creates its target, as on Linux; `O_NOFOLLOW` makes it fail with `ELOOP` instead (its value is Linux's generic `0400000`, which is Linux's on x86-64 but not on AArch64, where FeatherOS uses the same value). `O_CREAT | O_EXCL` fails with `EEXIST` on any link, a dangling one too.
+  - `openat` does what `open` does for an absolute path, or a relative one with `AT_FDCWD`. Directories cannot be opened, so a relative path with any other descriptor fails with `ENOTDIR`, or `EBADF` when the descriptor is not open. `readlinkat`, `symlinkat` and `linkat` follow the same rule; `linkat` takes `AT_SYMLINK_FOLLOW` (it follows `from` through `realpath`), and `fcntl.h` defines `AT_SYMLINK_NOFOLLOW` too, though no function takes it yet.
   - `dup` and `dup2` share the open file, its offset and its `O_APPEND` and `O_NONBLOCK` flags. `fcntl` supports `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD` and `F_SETFD` (`FD_CLOEXEC`), and `F_GETFL` and `F_SETFL`, which reports the access mode and changes `O_APPEND` and `O_NONBLOCK`, ignoring other flags as Linux does. Locks are not provided.
   - `O_NONBLOCK` makes a pipe or socket call that would wait fail with `EAGAIN` instead; on files it changes nothing. A terminal's flags cannot change (`EINVAL`), since every process shares the console's open file; raw mode with `VMIN` 0 reads it without waiting.
   - Programs started with `posix_spawn` inherit every descriptor not marked close-on-exec.
@@ -222,11 +224,12 @@ Differences:
   - With `O_APPEND`, every write goes to the end, as POSIX requires.
   - `O_CREAT` and `O_TRUNC` need write access.
   - Offsets past the end of a file fail with `EINVAL`, because files cannot have holes.
-- **Files and directories:** `unlink`, `rmdir`, `mkdir`, `chdir`, `getcwd`, `stat`, `fstat`, `access` and `isatty`.
+- **Files and directories:** `unlink`, `rmdir`, `mkdir`, `chdir`, `getcwd`, `stat`, `lstat`, `fstat`, `access`, `isatty`, `readlink`, `symlink` and `link`.
   - There are no users, so owners and permission bits are stored and shown but not enforced.
   - `struct stat` has every POSIX field: `st_dev` (a number per mount), `st_ino`, `st_mode`, `st_nlink`, `st_uid`, `st_gid`, `st_rdev` (always 0), `st_size`, `st_blksize` (512), `st_blocks` (512-byte units of the size), and `st_atim`, `st_mtim` and `st_ctim` as `struct timespec`, with `st_atime`, `st_mtime` and `st_ctime` as macros for their seconds. The type macros are `S_ISREG`, `S_ISDIR`, `S_ISLNK`, `S_ISCHR`, `S_ISBLK`, `S_ISFIFO` and `S_ISSOCK`, with the `S_IF*` bits and the permission constants (`S_IRWXU` … `S_IXOTH`, `S_ISUID`, `S_ISGID`, `S_ISVTX`) at Linux's values.
   - What `stat` reports comes from the filesystem: ext2 has real modes, owners, link counts and times, with nanoseconds where its inodes are large enough; FAT16 reports `0644` or `0755` (`0444` or `0555` read-only), one link, owner 0 and times of 0, since its timestamps are not read yet; the initramfs and `/proc` `0444` and `0555`, `/tmp` and `/etc` `0644` and `0755`, `/dev` `S_IFCHR` `0666`, all with times of 0.
-  - `stat` does not follow symbolic links, so on an ext2 link it reports `S_IFLNK` and the link's own size, as `lstat` would; opening a link fails with `ENOENT`. `lstat`, `readlink`, `symlink` and following links come with M22 Part 4's step 2. An ext2 device node, FIFO or socket has no type bits in `st_mode`, since the shared filesystem core does not say which it is.
+  - `stat`, `chdir`, `opendir` and `access` follow a symbolic link in the last component; `lstat` describes the link itself (`S_IFLNK`, its target's length as `st_size`), and `unlink`, `rmdir`, `mkdir`, `rename`, `readlink`, `symlink` and `link` act on it, as on Linux. `chdir` through a link stores the target's physical path, so `getcwd` never shows a link, and `cd link/..` leads to the target's parent. An ext2 device node, FIFO or socket has no type bits in `st_mode`, since the shared filesystem core does not say which it is.
+  - `readlink` copies the target without a terminator, cut to the buffer, and fails with `EINVAL` for anything but a link. `symlink` stores its target as given, which need not exist (an empty one fails with `ENOENT`); `link` follows neither name. Both fail with `EEXIST`, then `ENOENT` for a missing parent, then (`link` only) `EXDEV` across filesystems, then `EROFS` on a read-only filesystem, then `EPERM` where the filesystem holds no such links, as Linux's vfat answers: FAT16 holds neither kind, `/tmp` and `/etc` only symbolic links, and the ext2 mount is read-only until ext2 writes land, so no `link` succeeds yet. `link` on a directory is `EPERM`.
   - `fstat` on a pipe reports `S_IFIFO` `0600`, on a socket `S_IFSOCK` `0777`, and on a terminal `S_IFCHR` `0620`, each with device 0 and a node number of its own.
   - `access` fails `W_OK` with `EROFS` for anything on a read-only filesystem (the initramfs, `/proc`, an ext2 mount); other modes only check that the file exists.
   - `isatty` is true for terminals (the console, `/dev/tty` and pseudo-terminal slaves), not for the other devices in `/dev`, which are also `S_IFCHR`.
@@ -239,7 +242,7 @@ Differences:
 
 Not provided:
 - `fork` and the `exec*` family, because processes start with `posix_spawn`
-- `link` and `symlink`
+- `fstatat`, `unlinkat` and the other `*at` functions but `openat`, `readlinkat`, `symlinkat` and `linkat`
 - `chmod` and `chown`
 - `getuid` and the other user and group functions
 - `ftruncate` and `fsync`
@@ -248,8 +251,8 @@ Not provided:
 
 `opendir`, `readdir`, `rewinddir` and `closedir`.
 
-- **Entries:** each has `d_ino`, `d_type` and `d_name` (up to `NAME_MAX` bytes and a terminator). `d_ino` is the `st_ino` that `stat` reports for the entry without following it (for a mount point, its filesystem's root), or 0 when the filesystem cannot tell. `d_type` is `DT_REG`, `DT_DIR`, `DT_LNK`, `DT_CHR`, `DT_BLK`, `DT_FIFO` or `DT_SOCK` at Linux's values, or `DT_UNKNOWN` for an ext2 device node, FIFO or socket, so a listing needs no `stat` to tell directories and links apart.
-- **Paths:** `opendir` makes its path absolute, so a later `chdir` does not change which directory the stream reads.
+- **Entries:** each has `d_ino`, `d_type` and `d_name` (up to `NAME_MAX` bytes and a terminator). `d_ino` is the `st_ino` that `lstat` reports for the entry (for a mount point, its filesystem's root), or 0 when the filesystem cannot tell. `d_type` is `DT_REG`, `DT_DIR`, `DT_LNK`, `DT_CHR`, `DT_BLK`, `DT_FIFO` or `DT_SOCK` at Linux's values, or `DT_UNKNOWN` for an ext2 device node, FIFO or socket, so a listing needs no `stat` to tell directories and links apart.
+- **Paths:** `opendir` resolves its path with `realpath`, so neither a later `chdir` nor a symbolic link changed on the way changes which directory the stream reads.
 - **Left out:** listings do not include `.` and `..`. `scandir`, `telldir`, `seekdir` and `fdopendir` are not provided.
 
 ### `spawn.h` and `sys/wait.h`

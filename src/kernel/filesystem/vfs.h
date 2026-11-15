@@ -20,10 +20,44 @@ struct MountStatus;
 // whole-component prefix of it, so a mount hides whatever its parent filesystem has at that path.
 // Each of these instances keeps its contents while unmounted and can be mounted at one point at a
 // time.
+//
+// The calls below take physical paths, without symbolic links, ".", ".." or repeated '/', and no
+// driver follows a link: a call on a link acts on the link itself. ResolvePath turns any absolute
+// path into its physical one first, following links across mounts.
 namespace FeatherOS::VFS
 {
 
 using FileInfo = Filesystem::FileInfo;
+
+enum class Follow : uint8_t
+{
+    // A link in the last component too, as open, stat, exec and chdir do.
+    All,
+    // Not one in the last component, as lstat, readlink, unlink, rename, symlink and link do.
+    NotLast,
+};
+
+enum class WalkResult : uint8_t
+{
+    Done,
+    // A missing directory before "..", or a link that cannot be read or is empty.
+    NotFound,
+    // ".." after something that is not a directory.
+    NotDirectory,
+    // More than User::MaximumSymbolicLinks links on the way.
+    Loop,
+    // A component over User::MaximumNameLength, or a path that grew past Path::MaximumLength.
+    NameTooLong,
+};
+
+// One walk's buffers, for keeping them off the kernel stack: the result in path, and the rest of
+// the path still to walk and the last link's target as work space.
+struct PathWalk
+{
+    char path[Path::MaximumLength];
+    char pending[Path::MaximumLength];
+    char target[Path::MaximumLength];
+};
 
 struct FileHandle
 {
@@ -100,6 +134,24 @@ bool Rename(const char* from, const char* to);
 // Lists a directory, such as "/", "/home/docs", or "/system": first the mount points directly
 // inside it, then its own entries. False past the last entry.
 bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry);
+
+// Puts the physical path that names what path names in walk->path. path is absolute, or a bare
+// name kernel code uses for a file in /system, which is taken as it is. Every symbolic link on the
+// way is replaced by its target, ".." leads to the parent of what the path named so far (after a
+// link, the target's parent), and the last component is followed as follow says. A missing
+// component is left for the call that follows to report, except before "..".
+WalkResult ResolvePath(const char* path, Follow follow, PathWalk* walk);
+// For ResolvePath: the end of the first component of path that is a symbolic link, looking only
+// past its first `from` characters, or 0 if there is none. Each mount's part of the path is asked
+// of its own driver, and a mount point is never a link. path is physical; its characters are
+// changed during the call and put back.
+uint32_t FirstLink(char* path, uint32_t from);
+// The target of the link at path; as Filesystem::Driver::ReadLink.
+bool ReadLink(const char* path, char* buffer, uint32_t capacity, uint32_t* length);
+bool SymbolicLink(const char* path, const char* target);
+// Both on one filesystem.
+bool Link(const char* from, const char* to);
+bool SupportsLinks(const char* path, Filesystem::LinkKind kind);
 
 } // namespace FeatherOS::VFS
 

@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <featheros.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <sched.h>
 #include <stdint.h>
@@ -19,8 +20,30 @@ using FeatherOS::LibC::Check;
 namespace
 {
 
-constexpr int KnownOpenFlags =
-    O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_CLOEXEC | O_NONBLOCK | O_NOCTTY;
+constexpr int KnownOpenFlags = O_ACCMODE | O_CREAT | O_EXCL | O_TRUNC | O_APPEND | O_CLOEXEC |
+                               O_NONBLOCK | O_NOCTTY | O_NOFOLLOW;
+
+// The *at functions take a relative path only from the working directory: directories cannot be
+// opened, so no other descriptor names one. Sets errno and returns false otherwise.
+bool FromWorkingDirectory(int directory, const char* path)
+{
+    if (path == nullptr)
+    {
+        errno = EFAULT;
+        return false;
+    }
+    if (path[0] == '/' || directory == AT_FDCWD)
+    {
+        return true;
+    }
+    // fstat sets EBADF for a closed descriptor; an open one is never a directory.
+    struct stat status;
+    if (fstat(directory, &status) == 0)
+    {
+        errno = ENOTDIR;
+    }
+    return false;
+}
 
 } // namespace
 
@@ -70,10 +93,14 @@ int featheros_open(const char* path, int flags, mode_t /*mode*/)
     {
         open_flags |= FeatherOS::User::OpenNoControllingTerminal;
     }
+    if ((flags & O_NOFOLLOW) != 0)
+    {
+        open_flags |= FeatherOS::User::OpenNoFollow;
+    }
     // Only one program can write a file at a time, so checking first leaves no race that
-    // matters.
+    // matters. A link there counts, even a dangling one, as POSIX asks.
     struct stat status;
-    if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL) && stat(path, &status) == 0)
+    if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL) && lstat(path, &status) == 0)
     {
         errno = EEXIST;
         return -1;
@@ -96,22 +123,7 @@ int open(const char* path, int flags, ...)
 
 int featheros_openat(int directory, const char* path, int flags, mode_t mode)
 {
-    if (path == nullptr)
-    {
-        errno = EFAULT;
-        return -1;
-    }
-    if (path[0] != '/' && directory != AT_FDCWD)
-    {
-        // fstat sets EBADF for a closed descriptor; an open one is never a directory.
-        struct stat status;
-        if (fstat(directory, &status) == 0)
-        {
-            errno = ENOTDIR;
-        }
-        return -1;
-    }
-    return featheros_open(path, flags, mode);
+    return FromWorkingDirectory(directory, path) ? featheros_open(path, flags, mode) : -1;
 }
 
 int openat(int directory, const char* path, int flags, ...)
@@ -294,6 +306,80 @@ off_t lseek(int descriptor, off_t offset, int whence)
 int unlink(const char* path)
 {
     return Check<int>(FeatherOS::User::RemoveFile(path));
+}
+
+ssize_t readlink(const char* path, char* buffer, size_t size)
+{
+    return Check<ssize_t>(FeatherOS::User::ReadLink(path, buffer, size));
+}
+
+int symlink(const char* target, const char* path)
+{
+    return Check<int>(FeatherOS::User::SymbolicLink(target, path));
+}
+
+int link(const char* from, const char* to)
+{
+    return Check<int>(FeatherOS::User::Link(from, to));
+}
+
+ssize_t readlinkat(int directory, const char* path, char* buffer, size_t size)
+{
+    return FromWorkingDirectory(directory, path) ? readlink(path, buffer, size) : -1;
+}
+
+int symlinkat(const char* target, int directory, const char* path)
+{
+    return FromWorkingDirectory(directory, path) ? symlink(target, path) : -1;
+}
+
+int linkat(int from_directory, const char* from, int to_directory, const char* to, int flags)
+{
+    if ((flags & ~AT_SYMLINK_FOLLOW) != 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!FromWorkingDirectory(from_directory, from) || !FromWorkingDirectory(to_directory, to))
+    {
+        return -1;
+    }
+    if ((flags & AT_SYMLINK_FOLLOW) == 0)
+    {
+        return link(from, to);
+    }
+    char resolved[PATH_MAX];
+    return realpath(from, resolved) == nullptr ? -1 : link(resolved, to);
+}
+
+// The kernel walks the path as open would, and fails if the file does not exist.
+char* realpath(const char* path, char* resolved)
+{
+    if (path == nullptr)
+    {
+        errno = EINVAL;
+        return nullptr;
+    }
+    if (path[0] == '\0')
+    {
+        errno = ENOENT;
+        return nullptr;
+    }
+    char* buffer = resolved != nullptr ? resolved : static_cast<char*>(malloc(PATH_MAX));
+    if (buffer == nullptr)
+    {
+        errno = ENOMEM;
+        return nullptr;
+    }
+    if (Check<int64_t>(FeatherOS::User::ResolvePath(path, buffer, PATH_MAX)) < 0)
+    {
+        if (resolved == nullptr)
+        {
+            free(buffer);
+        }
+        return nullptr;
+    }
+    return buffer;
 }
 
 int rmdir(const char* path)

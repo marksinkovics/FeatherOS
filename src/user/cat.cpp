@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
+#include <string.h>
 
 constexpr char Help[] = "usage: cat [file]\n"
                         "Prints a file, or its input without one. A relative name that is\n"
@@ -30,10 +31,15 @@ int main(int argc, char** argv)
         {
             file = fopen(system_path, "r");
         }
+        // The error is the name's own, not its /system copy's.
+        if (file == nullptr)
+        {
+            errno = ENOENT;
+        }
     }
     if (file == nullptr)
     {
-        printf("cat: cannot open %s\n", name);
+        printf("cat: cannot open %s: %s\n", name, strerror(errno));
         return 1;
     }
     // The console shows tabs as spaces and drops other control characters.

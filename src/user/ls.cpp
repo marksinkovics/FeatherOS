@@ -2,6 +2,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -12,7 +13,8 @@ constexpr char Help[] = "usage: ls [-l] [directory]\n"
                         "Lists a directory (the current one by default) with file sizes in\n"
                         "bytes; subdirectories end in /. With -l, each line has the type and\n"
                         "permissions, the link count, owner, group, size and modification time\n"
-                        "(UTC) before the name. /system holds the read-only boot files.";
+                        "(UTC) before the name, and a symbolic link its target after it, as\n"
+                        "name -> target. /system holds the read-only boot files.";
 
 namespace
 {
@@ -109,9 +111,18 @@ void PrintLong(const dirent& entry, const struct stat* status)
     {
         strftime(modified, sizeof(modified), "%Y-%m-%d %H:%M", &time);
     }
-    printf("%s %3lu %5u %5u %10lld %16s %s\n", mode, static_cast<unsigned long>(status->st_nlink),
+    printf("%s %3lu %5u %5u %10lld %16s %s", mode, static_cast<unsigned long>(status->st_nlink),
            status->st_uid, status->st_gid, static_cast<long long>(status->st_size), modified,
            entry.d_name);
+    char target[PATH_MAX];
+    const ssize_t length =
+        S_ISLNK(status->st_mode) ? readlink(entry.d_name, target, sizeof(target) - 1) : -1;
+    if (length >= 0)
+    {
+        target[length] = '\0';
+        printf(" -> %s", target);
+    }
+    putchar('\n');
 }
 
 void PrintShort(const dirent& entry, bool is_directory, long long size)
@@ -170,9 +181,10 @@ int main(int argc, char** argv)
         }
         const bool is_directory = entry->d_type == DT_DIR;
         struct stat status;
-        // The listing already says what is a directory, so only -l needs them stat'ed.
+        // The listing already says what is a directory, so only -l needs them stat'ed. A link
+        // describes itself, with its own size.
         const bool have_status =
-            (long_format || !is_directory) && stat(entry->d_name, &status) == 0;
+            (long_format || !is_directory) && lstat(entry->d_name, &status) == 0;
         const long long size = have_status && !is_directory ? status.st_size : 0;
         if (long_format)
         {

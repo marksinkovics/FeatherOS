@@ -54,6 +54,12 @@ struct Node
     uint64_t payload;
 };
 
+enum class LinkKind : uint8_t
+{
+    Symbolic,
+    Hard,
+};
+
 struct Properties
 {
     // Nothing on it can be created, written or removed.
@@ -100,6 +106,19 @@ public:
     virtual bool IsDirectory(const char* path);
     virtual bool ReadDirectory(const char* path, uint32_t index, DirectoryEntry* entry);
     virtual bool IsReadOnly(const char* path);
+    // Whether the filesystem can hold this kind of link at all, written or not.
+    virtual bool SupportsLinks(LinkKind kind);
+    // For the VFS path walk: the end of the first component of path that is a symbolic link,
+    // walking from the root and stopping at a missing component or a file. Every component is a
+    // plain name, without "." or "..".
+    virtual bool FindLink(const char* path, uint32_t* link_end);
+    // The target of the symbolic link at path into buffer, as much as capacity holds, without a
+    // terminator; *length receives the target's whole length. Fails for anything but a link.
+    virtual bool ReadLink(const char* path, char* buffer, uint32_t capacity, uint32_t* length);
+    // A new symbolic link at path holding target as given; path must not exist.
+    virtual bool SymbolicLink(const char* path, const char* target);
+    // A second name, to, for the file at from; to must not exist.
+    virtual bool Link(const char* from, const char* to);
     // Makes everything written so far durable; unmounting calls it last.
     virtual bool Sync();
 

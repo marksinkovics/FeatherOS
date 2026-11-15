@@ -126,6 +126,13 @@ struct Handlers
                                  uint64_t argument) = nullptr;
     uint64_t (*mount)(void* context, uint64_t source, uint64_t target, uint64_t type) = nullptr;
     uint64_t (*unmount)(void* context, uint64_t target) = nullptr;
+    uint64_t (*link_stat)(void* context, uint64_t path, uint64_t status) = nullptr;
+    uint64_t (*read_link)(void* context, uint64_t path, uint64_t buffer,
+                          uint64_t capacity) = nullptr;
+    uint64_t (*symbolic_link)(void* context, uint64_t target, uint64_t path) = nullptr;
+    uint64_t (*link)(void* context, uint64_t from, uint64_t to) = nullptr;
+    uint64_t (*resolve_path)(void* context, uint64_t path, uint64_t buffer,
+                             uint64_t capacity) = nullptr;
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

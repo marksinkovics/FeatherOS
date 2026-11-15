@@ -64,6 +64,8 @@ constexpr int ErrorNumber(uint64_t result)
         return ETIMEDOUT;
     case User::SyscallErrorCrossDevice:
         return EXDEV;
+    case User::SyscallErrorLoop:
+        return ELOOP;
     case User::SyscallErrorNotSocket:
         return ENOTSOCK;
     case User::SyscallErrorFamilyNotSupported:

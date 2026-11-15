@@ -77,6 +77,11 @@ enum class SyscallNumber : uint64_t
     TerminalControl = 63,  // (descriptor, request, argument) -> the request's result
     Mount = 64,            // (source, target, type) -> 0
     Unmount = 65,          // (target) -> 0
+    LinkStat = 66,         // (path, status) -> 0; a final symbolic link describes itself (lstat)
+    ReadLink = 67,         // (path, buffer, capacity) -> bytes stored, without a terminator
+    SymbolicLink = 68,     // (target, path) -> 0; path, not followed, becomes a link to target
+    Link = 69,             // (from, to) -> 0; a second name for a file, on the same filesystem
+    ResolvePath = 70,      // (path, buffer, capacity) -> length of the path without links
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec, and joins its
@@ -125,7 +130,13 @@ constexpr uint64_t MaximumEnvironmentVariables = 32;
 
 // Paths are absolute ("/home/notes.txt") or relative to the process's working directory, which
 // starts as its parent's ("/home" for the shell). "/" is the disk; "/system" is the read-only
-// initramfs.
+// initramfs. Symbolic links are followed anywhere in a path, across mounts, at most
+// MaximumSymbolicLinks times (SyscallErrorLoop past that), and ".." after one leads to the parent
+// of its target. Open, Stat, ChangeDirectory, ReadDirectory, Spawn and Mount follow a link in the
+// last component too; LinkStat, ReadLink, Remove, RemoveDirectory, MakeDirectory, Rename,
+// SymbolicLink and Link (its from, as on Linux) act on the link itself. The working directory is
+// kept without links.
+constexpr uint64_t MaximumSymbolicLinks = 40;
 constexpr uint64_t OpenRead = 1U << 0;
 constexpr uint64_t OpenWrite = 1U << 1;
 // With OpenWrite: create the file if it is missing, or empty it if it exists.
@@ -142,6 +153,8 @@ constexpr uint64_t OpenNonBlocking = 1U << 6;
 // A session leader without a controlling terminal takes the first terminal it opens, unless it
 // passes this flag.
 constexpr uint64_t OpenNoControllingTerminal = 1U << 7;
+// A symbolic link in the last component fails with SyscallErrorLoop instead of being followed.
+constexpr uint64_t OpenNoFollow = 1U << 8;
 // PATH_MAX: a path, its terminator included, as a program passes it and once it is resolved
 // against the working directory; longer ones fail with SyscallErrorNameTooLong. NAME_MAX: one
 // component, without its terminator.
@@ -425,6 +438,8 @@ constexpr uint64_t SyscallErrorNoDevice = UINT64_MAX - 45;
 constexpr uint64_t SyscallErrorInputOutput = UINT64_MAX - 46;
 // Mounting a filesystem type the kernel does not have.
 constexpr uint64_t SyscallErrorUnknownFilesystemType = UINT64_MAX - 47;
+// More than MaximumSymbolicLinks links on the way, or OpenNoFollow on a link.
+constexpr uint64_t SyscallErrorLoop = UINT64_MAX - 48;
 
 constexpr bool IsSyscallError(uint64_t value)
 {

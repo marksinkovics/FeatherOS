@@ -3,6 +3,7 @@
 #include <array>
 #include <span>
 #include <stddef.h>
+#include <stdint.h>
 
 namespace FeatherOS::Filesystem
 {
@@ -387,6 +388,98 @@ bool CoreDriver::ReadDirectory(const char* path, uint32_t index, DirectoryEntry*
         entry->size = attributes->size;
     }
     return true;
+}
+
+bool CoreDriver::SupportsLinks(LinkKind kind)
+{
+    if (filesystem == nullptr)
+    {
+        return false;
+    }
+    const FeatherDisk::Capabilities capabilities = filesystem->GetCapabilities();
+    return kind == LinkKind::Symbolic ? capabilities.symbolic_links : capabilities.hard_links;
+}
+
+bool CoreDriver::FindLink(const char* path, uint32_t* link_end)
+{
+    if (path == nullptr || link_end == nullptr || !SupportsLinks(LinkKind::Symbolic))
+    {
+        return false;
+    }
+    NodeId directory = filesystem->Root();
+    size_t position = 0;
+    for (;;)
+    {
+        const std::string_view component = NextComponent(path, &position);
+        if (component.empty())
+        {
+            return false;
+        }
+        const Result<NodeId> found = filesystem->Lookup(directory, component);
+        if (!found)
+        {
+            return false;
+        }
+        const Result<FeatherDisk::Attributes> attributes = filesystem->GetAttributes(*found);
+        if (!attributes)
+        {
+            return false;
+        }
+        if (attributes->type == NodeType::SymbolicLink)
+        {
+            *link_end = static_cast<uint32_t>(position);
+            return true;
+        }
+        if (attributes->type != NodeType::Directory)
+        {
+            return false;
+        }
+        directory = *found;
+    }
+}
+
+bool CoreDriver::ReadLink(const char* path, char* buffer, uint32_t capacity, uint32_t* length)
+{
+    if (buffer == nullptr || length == nullptr)
+    {
+        return false;
+    }
+    const Result<NodeId> found = Resolve(path);
+    if (!found)
+    {
+        return false;
+    }
+    const Result<FeatherDisk::Attributes> attributes = filesystem->GetAttributes(*found);
+    if (!attributes || attributes->type != NodeType::SymbolicLink || attributes->size > UINT32_MAX)
+    {
+        return false;
+    }
+    const auto size = static_cast<uint32_t>(attributes->size);
+    const uint32_t count = size < capacity ? size : capacity;
+    const Result<size_t> read = filesystem->ReadLink(*found, std::span(buffer, count));
+    if (!read || *read != count)
+    {
+        return false;
+    }
+    *length = size;
+    return true;
+}
+
+bool CoreDriver::SymbolicLink(const char* path, const char* target)
+{
+    std::string_view leaf;
+    const Result<NodeId> parent = ResolveParent(path, &leaf);
+    return target != nullptr && parent && !leaf.empty() &&
+           filesystem->SymbolicLink(*parent, leaf, target).has_value();
+}
+
+bool CoreDriver::Link(const char* from, const char* to)
+{
+    std::string_view leaf;
+    const Result<NodeId> source = Resolve(from);
+    const Result<NodeId> parent = ResolveParent(to, &leaf);
+    return source && parent && !leaf.empty() &&
+           filesystem->Link(*source, *parent, leaf).has_value();
 }
 
 bool CoreDriver::Sync()

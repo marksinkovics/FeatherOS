@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 static_assert(DT_DIR == FeatherOS::User::ModeDirectory >> FeatherOS::User::EntryTypeShift &&
               DT_REG == FeatherOS::User::ModeRegular >> FeatherOS::User::EntryTypeShift &&
@@ -17,8 +16,8 @@ static_assert(DT_DIR == FeatherOS::User::ModeDirectory >> FeatherOS::User::Entry
               DT_FIFO == FeatherOS::User::ModeFifo >> FeatherOS::User::EntryTypeShift &&
               DT_SOCK == FeatherOS::User::ModeSocket >> FeatherOS::User::EntryTypeShift);
 
-// The path is made absolute when the directory is opened, so a later chdir does not change
-// which directory the stream reads.
+// The path is resolved to its physical form when the directory is opened, so a later chdir, or a
+// symbolic link changed on the way, does not change which directory the stream reads.
 struct FeatherDirectory
 {
     char path[PATH_MAX];
@@ -43,36 +42,11 @@ DIR* opendir(const char* path)
     {
         return nullptr;
     }
-    const size_t length = strlen(path);
-    if (path[0] == '/')
-    {
-        if (length >= sizeof(directory->path))
-        {
-            free(directory);
-            errno = ENAMETOOLONG;
-            return nullptr;
-        }
-        memcpy(directory->path, path, length + 1);
-        return directory;
-    }
-    if (getcwd(directory->path, sizeof(directory->path)) == nullptr)
+    if (realpath(path, directory->path) == nullptr)
     {
         free(directory);
         return nullptr;
     }
-    const size_t prefix = strlen(directory->path);
-    const bool needs_separator = directory->path[prefix - 1] != '/';
-    if (prefix + (needs_separator ? 1 : 0) + length >= sizeof(directory->path))
-    {
-        free(directory);
-        errno = ENAMETOOLONG;
-        return nullptr;
-    }
-    if (needs_separator)
-    {
-        directory->path[prefix] = '/';
-    }
-    memcpy(directory->path + prefix + (needs_separator ? 1 : 0), path, length + 1);
     return directory;
 }
 

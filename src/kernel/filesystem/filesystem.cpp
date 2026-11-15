@@ -77,6 +77,32 @@ bool Driver::IsReadOnly(const char* /*path*/)
     return properties.read_only;
 }
 
+bool Driver::SupportsLinks(LinkKind /*kind*/)
+{
+    return false;
+}
+
+bool Driver::FindLink(const char* /*path*/, uint32_t* /*link_end*/)
+{
+    return false;
+}
+
+bool Driver::ReadLink(const char* /*path*/, char* /*buffer*/, uint32_t /*capacity*/,
+                      uint32_t* /*length*/)
+{
+    return false;
+}
+
+bool Driver::SymbolicLink(const char* /*path*/, const char* /*target*/)
+{
+    return false;
+}
+
+bool Driver::Link(const char* /*from*/, const char* /*to*/)
+{
+    return false;
+}
+
 bool Driver::Sync()
 {
     return true;

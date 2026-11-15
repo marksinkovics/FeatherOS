@@ -47,6 +47,12 @@ public:
     bool Rename(const char* from, const char* to) override;
     bool IsDirectory(const char* path) override;
     bool ReadDirectory(const char* path, uint32_t index, DirectoryEntry* entry) override;
+    // What the mounted filesystem's capabilities say, writable or not.
+    bool SupportsLinks(LinkKind kind) override;
+    bool FindLink(const char* path, uint32_t* link_end) override;
+    bool ReadLink(const char* path, char* buffer, uint32_t capacity, uint32_t* length) override;
+    bool SymbolicLink(const char* path, const char* target) override;
+    bool Link(const char* from, const char* to) override;
     bool Sync() override;
 
 private:

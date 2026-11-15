@@ -64,7 +64,9 @@ struct stat
 
 __BEGIN_DECLS
 
+// stat follows a symbolic link in the last component; lstat describes the link itself.
 int stat(const char* path, struct stat* status);
+int lstat(const char* path, struct stat* status);
 int fstat(int descriptor, struct stat* status);
 // The mode is ignored, since there are no permissions yet.
 int mkdir(const char* path, mode_t mode);

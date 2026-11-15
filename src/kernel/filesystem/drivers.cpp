@@ -25,6 +25,7 @@ constexpr uint32_t ReadOnlyDirectoryMode = User::ModeDirectory | 0555;
 constexpr uint32_t WritableFileMode = User::ModeRegular | 0644;
 constexpr uint32_t WritableDirectoryMode = User::ModeDirectory | 0755;
 constexpr uint32_t DeviceMode = User::ModeCharacterDevice | 0666;
+constexpr uint32_t LinkMode = User::ModeSymbolicLink | 0777;
 // The number every in-memory filesystem gives its root.
 constexpr uint64_t RootSerialNumber = 1;
 
@@ -324,9 +325,10 @@ public:
         {
             return false;
         }
-        *info = Tmpfs::IsDirectoryNode(index)
-                    ? MakeInfo(Tmpfs::SerialNumber(index), WritableDirectoryMode, 0)
-                    : MakeInfo(Tmpfs::SerialNumber(index), WritableFileMode, Tmpfs::Size(index));
+        const uint32_t mode = Tmpfs::IsDirectoryNode(index) ? WritableDirectoryMode
+                              : Tmpfs::IsLinkNode(index)    ? LinkMode
+                                                            : WritableFileMode;
+        *info = MakeInfo(Tmpfs::SerialNumber(index), mode, Tmpfs::Size(index));
         return true;
     }
 
@@ -397,6 +399,28 @@ public:
     bool ReadDirectory(const char* path, uint32_t index, DirectoryEntry* entry) override
     {
         return Tmpfs::ReadDirectory(root, path, index, entry);
+    }
+
+    bool SupportsLinks(LinkKind kind) override
+    {
+        return kind == LinkKind::Symbolic;
+    }
+
+    bool FindLink(const char* path, uint32_t* link_end) override
+    {
+        return Tmpfs::FindLink(root, path, link_end);
+    }
+
+    bool ReadLink(const char* path, char* buffer, uint32_t capacity, uint32_t* length) override
+    {
+        uint32_t index;
+        return Tmpfs::Find(root, path, &index) && Tmpfs::ReadLink(index, buffer, capacity, length);
+    }
+
+    bool SymbolicLink(const char* path, const char* target) override
+    {
+        uint32_t index;
+        return Tmpfs::SymbolicLink(root, path, target, &index);
     }
 
 private:

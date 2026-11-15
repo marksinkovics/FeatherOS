@@ -11,10 +11,12 @@ namespace FeatherOS::Path
 // Including the terminator.
 constexpr uint32_t MaximumLength = User::MaximumPathLength;
 
-// Joins a relative path to working_directory, or takes an absolute one as it is, then collapses
-// ".", "..", and repeated '/' lexically ("/home/.." is "/"). Fails if the result does not fit or
-// a component is longer than User::MaximumNameLength.
-bool Resolve(const char* working_directory, const char* path, char (&result)[MaximumLength]);
+// Takes an absolute path as it is, or joins a relative one to working_directory, which must be
+// physical (absolute, without links, ".", ".." or repeated '/', as the VFS walk leaves it). The
+// relative path's leading "." and ".." components apply to working_directory, whose textual parent
+// is its real one; the rest stays as given, since only the walk can tell where a ".." after a
+// symbolic link leads. Fails if the result does not fit.
+bool Join(const char* working_directory, const char* path, char (&result)[MaximumLength]);
 
 // Rewrites an absolute "/proc/self" path to name the process, as "/proc/7/status". Paths
 // elsewhere are left alone. Fails if the result does not fit.

@@ -606,4 +606,95 @@ bool Rename(const char* from, const char* to)
            *to_inner != '\0' && use.driver->Rename(use.inner, to_inner);
 }
 
+uint32_t FirstLink(char* path, uint32_t from)
+{
+    if (path == nullptr || path[0] != '/')
+    {
+        return 0;
+    }
+    uint32_t end = 0;
+    while (path[end] != '\0')
+    {
+        ++end;
+    }
+    // Walks back one mount at a time, from the deepest; the earliest link found wins.
+    uint32_t found = 0;
+    while (end > from)
+    {
+        const char saved = path[end];
+        path[end] = '\0';
+        uint32_t point_length = 0;
+        {
+            const Use use(path);
+            if (use.driver != nullptr)
+            {
+                const auto inner = static_cast<uint32_t>(use.inner - path);
+                point_length = *use.inner == '\0' ? end : (inner > 1 ? inner - 1 : 1);
+                uint32_t link_end = 0;
+                if (*use.inner != '\0' && use.driver->FindLink(use.inner, &link_end))
+                {
+                    found = inner + link_end;
+                }
+            }
+        }
+        path[end] = saved;
+        if (point_length <= 1)
+        {
+            break;
+        }
+        // The components before the mount point belong to the mounts that hold its parent.
+        uint32_t parent = point_length;
+        while (parent > 0 && path[parent - 1] != '/')
+        {
+            --parent;
+        }
+        end = parent > 1 ? parent - 1 : 1;
+    }
+    return found;
+}
+
+bool ReadLink(const char* path, char* buffer, uint32_t capacity, uint32_t* length)
+{
+    if (path == nullptr || buffer == nullptr || length == nullptr)
+    {
+        return false;
+    }
+    const Use use(path);
+    return use.driver != nullptr && *use.inner != '\0' &&
+           use.driver->ReadLink(use.inner, buffer, capacity, length);
+}
+
+bool SymbolicLink(const char* path, const char* target)
+{
+    if (path == nullptr || target == nullptr)
+    {
+        return false;
+    }
+    const Use use(path);
+    return use.driver != nullptr && *use.inner != '\0' &&
+           use.driver->SymbolicLink(use.inner, target);
+}
+
+bool Link(const char* from, const char* to)
+{
+    if (from == nullptr || to == nullptr)
+    {
+        return false;
+    }
+    const Use use(from);
+    const char* to_inner;
+    return use.driver != nullptr && Locate(to, &to_inner) == use.driver && *use.inner != '\0' &&
+           *to_inner != '\0' && use.driver->Link(use.inner, to_inner);
+}
+
+bool SupportsLinks(const char* path, Filesystem::LinkKind kind)
+{
+    if (path == nullptr)
+    {
+        return false;
+    }
+    const Use use(path);
+    return use.driver != nullptr && use.driver->SupportsLinks(kind);
+}
+
 } // namespace FeatherOS::VFS

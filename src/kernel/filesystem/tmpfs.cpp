@@ -19,6 +19,8 @@ struct Node
     uint32_t parent;
     bool used;
     bool directory;
+    // Its data is the target.
+    bool link;
     uint8_t* data;
     uint64_t size;
     uint64_t capacity;
@@ -225,6 +227,11 @@ uint64_t Reserve(Node& node, uint64_t wanted)
 
 bool IsFile(uint32_t node)
 {
+    return node < MaximumNodes && nodes[node].used && !nodes[node].directory && !nodes[node].link;
+}
+
+bool HasData(uint32_t node)
+{
     return node < MaximumNodes && nodes[node].used && !nodes[node].directory;
 }
 
@@ -240,6 +247,11 @@ bool IsDirectoryNode(uint32_t node)
     return node < MaximumNodes && nodes[node].used && nodes[node].directory;
 }
 
+bool IsLinkNode(uint32_t node)
+{
+    return node < MaximumNodes && nodes[node].used && nodes[node].link;
+}
+
 uint64_t SerialNumber(uint32_t node)
 {
     return uint64_t{node} + 1;
@@ -248,7 +260,7 @@ uint64_t SerialNumber(uint32_t node)
 bool Open(Root root, const char* path, uint32_t* node)
 {
     uint32_t found;
-    if (path == nullptr || node == nullptr || !Lookup(root, path, &found) || nodes[found].directory)
+    if (path == nullptr || node == nullptr || !Lookup(root, path, &found) || !IsFile(found))
     {
         return false;
     }
@@ -263,7 +275,7 @@ bool Create(Root root, const char* path, uint32_t* node)
 
 uint64_t Size(uint32_t node)
 {
-    return IsFile(node) ? nodes[node].size : 0;
+    return HasData(node) ? nodes[node].size : 0;
 }
 
 bool Read(uint32_t node, uint64_t offset, void* buffer, uint64_t length, uint64_t* bytes_read)
@@ -328,7 +340,7 @@ bool Truncate(uint32_t node, uint64_t size)
 bool Remove(Root root, const char* path)
 {
     uint32_t node;
-    if (path == nullptr || !Open(root, path, &node))
+    if (path == nullptr || !Lookup(root, path, &node) || !HasData(node))
     {
         return false;
     }
@@ -415,12 +427,100 @@ bool ReadDirectory(Root root, const char* path, uint32_t index, Filesystem::Dire
         {
             entry->name[offset] = nodes[node].name[offset];
         }
-        entry->type = nodes[node].directory ? User::ModeDirectory : User::ModeRegular;
+        entry->type = nodes[node].directory ? User::ModeDirectory
+                      : nodes[node].link    ? User::ModeSymbolicLink
+                                            : User::ModeRegular;
         entry->node = SerialNumber(node);
         entry->size = nodes[node].size;
         return true;
     }
     return false;
+}
+
+bool SymbolicLink(Root root, const char* path, const char* target, uint32_t* node)
+{
+    if (path == nullptr || target == nullptr || node == nullptr)
+    {
+        return false;
+    }
+    uint64_t length = 0;
+    while (target[length] != '\0')
+    {
+        if (++length >= User::MaximumPathLength)
+        {
+            return false;
+        }
+    }
+    uint32_t created;
+    if (!AddNode(root, path, false, &created))
+    {
+        return false;
+    }
+    Node& link = nodes[created];
+    link.link = true;
+    if (Reserve(link, length) < length)
+    {
+        FreeData(link);
+        link.used = false;
+        return false;
+    }
+    for (uint64_t index = 0; index < length; ++index)
+    {
+        link.data[index] = static_cast<uint8_t>(target[index]);
+    }
+    link.size = length;
+    *node = created;
+    return true;
+}
+
+bool ReadLink(uint32_t node, char* buffer, uint32_t capacity, uint32_t* length)
+{
+    if (!IsLinkNode(node) || buffer == nullptr || length == nullptr)
+    {
+        return false;
+    }
+    const uint64_t size = nodes[node].size;
+    const uint64_t count = size < capacity ? size : capacity;
+    for (uint64_t index = 0; index < count; ++index)
+    {
+        buffer[index] = static_cast<char>(nodes[node].data[index]);
+    }
+    *length = static_cast<uint32_t>(size);
+    return true;
+}
+
+bool FindLink(Root root, const char* path, uint32_t* link_end)
+{
+    if (path == nullptr || link_end == nullptr)
+    {
+        return false;
+    }
+    EnsureRoot(root);
+    uint32_t current = RootNode(root);
+    uint32_t position = 0;
+    for (;;)
+    {
+        while (path[position] == '/')
+        {
+            ++position;
+        }
+        uint32_t length = 0;
+        while (path[position + length] != '\0' && path[position + length] != '/')
+        {
+            ++length;
+        }
+        if (length == 0 || !nodes[current].directory ||
+            !FindChild(current, path + position, length, &current))
+        {
+            return false;
+        }
+        position += length;
+        if (nodes[current].link)
+        {
+            *link_end = position;
+            return true;
+        }
+    }
 }
 
 uint64_t UsedBytes()

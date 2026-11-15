@@ -30,7 +30,8 @@ namespace
 
 constexpr uint64_t KnownFlags = User::OpenRead | User::OpenWrite | User::OpenCreate |
                                 User::OpenTruncate | User::OpenAppend | User::OpenCloseOnExec |
-                                User::OpenNonBlocking | User::OpenNoControllingTerminal;
+                                User::OpenNonBlocking | User::OpenNoControllingTerminal |
+                                User::OpenNoFollow;
 constexpr uint32_t MaximumOpenDiskFiles = 64;
 // Linux's permissions for terminals, pipes and sockets.
 constexpr uint32_t TerminalMode = 0620;
@@ -184,20 +185,65 @@ uint64_t FreeSlotLocked(const Table* table, uint64_t minimum) REQUIRES(file_syst
     return User::SyscallErrorTooManyOpenFiles;
 }
 
+// Anything at path, a link included.
 bool ExistsLocked(const char* path) REQUIRES(file_system_lock)
 {
-    VFS::FileHandle handle;
-    if (VFS::IsDirectory(path))
-    {
-        return true;
-    }
-    if (!VFS::Open(path, &handle))
-    {
-        return false;
-    }
-    VFS::Close(&handle);
-    return true;
+    VFS::FileInfo info;
+    return VFS::Stat(path, &info);
 }
+
+bool IsLinkLocked(const char* path) REQUIRES(file_system_lock)
+{
+    VFS::FileInfo info;
+    return VFS::Stat(path, &info) && (info.mode & User::ModeTypeMask) == User::ModeSymbolicLink;
+}
+
+uint64_t WalkError(VFS::WalkResult result)
+{
+    switch (result)
+    {
+    case VFS::WalkResult::Done:
+        return 0;
+    case VFS::WalkResult::NotFound:
+        return User::SyscallErrorNotFound;
+    case VFS::WalkResult::NotDirectory:
+        return User::SyscallErrorNotDirectory;
+    case VFS::WalkResult::Loop:
+        return User::SyscallErrorLoop;
+    case VFS::WalkResult::NameTooLong:
+        break;
+    }
+    return User::SyscallErrorNameTooLong;
+}
+
+// A path walked into its physical form, which the VFS calls take; its buffers are on the heap.
+class Resolved
+{
+public:
+    Resolved() = default;
+    ~Resolved() = default;
+    Resolved(const Resolved&) = delete;
+    Resolved& operator=(const Resolved&) = delete;
+    Resolved(Resolved&&) = delete;
+    Resolved& operator=(Resolved&&) = delete;
+
+    uint64_t Walk(const char* path, VFS::Follow follow) REQUIRES(file_system_lock)
+    {
+        if (!walk)
+        {
+            return User::SyscallErrorNoMemory;
+        }
+        return WalkError(VFS::ResolvePath(path, follow, &*walk));
+    }
+
+    const char* Path() const
+    {
+        return walk->path;
+    }
+
+private:
+    Memory::HeapObject<VFS::PathWalk> walk;
+};
 
 struct PathText
 {
@@ -436,6 +482,46 @@ uint64_t OpenDeviceLocked(Table* table, uint64_t descriptor, uint64_t flags, uin
     return added;
 }
 
+uint64_t StatPath(const char* path, User::FileStatus* status, VFS::Follow follow)
+{
+    if (path == nullptr || status == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(path, follow);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    VFS::FileInfo info;
+    if (!VFS::Stat(resolved.Path(), &info))
+    {
+        return User::SyscallErrorNotFound;
+    }
+    *status = ToFileStatus(info, VFS::IsReadOnly(resolved.Path()));
+    return 0;
+}
+
+// Why a new link cannot be made at path, in Linux's order, or 0.
+uint64_t NewNameErrorLocked(const char* path, Filesystem::LinkKind kind) REQUIRES(file_system_lock)
+{
+    if (ExistsLocked(path))
+    {
+        return User::SyscallErrorExists;
+    }
+    if (!ParentExistsLocked(path))
+    {
+        return User::SyscallErrorNotFound;
+    }
+    if (VFS::IsReadOnly(path))
+    {
+        return User::SyscallErrorReadOnly;
+    }
+    return VFS::SupportsLinks(path, kind) ? 0 : User::SyscallErrorNotPermitted;
+}
+
 bool IsTerminalDevice(const VFS::FileHandle& handle)
 {
     uint32_t node;
@@ -508,6 +594,19 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
     if (User::IsSyscallError(descriptor))
     {
         return descriptor;
+    }
+    const bool no_follow = (flags & User::OpenNoFollow) != 0;
+    Resolved resolved;
+    const uint64_t walked =
+        resolved.Walk(path, no_follow ? VFS::Follow::NotLast : VFS::Follow::All);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    path = resolved.Path();
+    if (no_follow && IsLinkLocked(path))
+    {
+        return User::SyscallErrorLoop;
     }
 
     VFS::FileHandle handle;
@@ -1000,6 +1099,22 @@ uint64_t Remove(const char* path)
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(path, VFS::Follow::NotLast);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    path = resolved.Path();
+    // No handle ever opens a link, so nothing can be using it.
+    if (IsLinkLocked(path))
+    {
+        if (VFS::IsReadOnly(path))
+        {
+            return User::SyscallErrorReadOnly;
+        }
+        return VFS::Remove(path) ? 0 : User::SyscallErrorFailed;
+    }
     VFS::FileHandle handle;
     if (!VFS::Open(path, &handle))
     {
@@ -1026,6 +1141,13 @@ uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* e
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(path, VFS::Follow::All);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    path = resolved.Path();
     if (!VFS::IsDirectory(path))
     {
         return MissingErrorLocked(path);
@@ -1058,7 +1180,13 @@ uint64_t CheckDirectory(const char* path)
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
-    return VFS::IsDirectory(path) ? 0 : MissingErrorLocked(path);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(path, VFS::Follow::All);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    return VFS::IsDirectory(resolved.Path()) ? 0 : MissingErrorLocked(resolved.Path());
 }
 
 uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::MaximumPathLength])
@@ -1068,6 +1196,13 @@ uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::Maxim
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(path, VFS::Follow::All);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    path = resolved.Path();
     if (!VFS::IsDirectory(path))
     {
         return MissingErrorLocked(path);
@@ -1088,6 +1223,13 @@ uint64_t Mount(const char* source, const char* point, const char* type)
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(point, VFS::Follow::All);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    point = resolved.Path();
     if (!VFS::IsMountPoint(point))
     {
         if (!ExistsLocked(point))
@@ -1112,6 +1254,13 @@ uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use)
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(point, VFS::Follow::All);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    point = resolved.Path();
     if (!VFS::IsMountPoint(point))
     {
         return ExistsLocked(point) ? User::SyscallErrorInvalidArgument : User::SyscallErrorNotFound;
@@ -1132,6 +1281,13 @@ uint64_t MakeDirectory(const char* path)
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(path, VFS::Follow::NotLast);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    path = resolved.Path();
     if (ExistsLocked(path))
     {
         return User::SyscallErrorExists;
@@ -1146,6 +1302,13 @@ uint64_t RemoveDirectory(const char* path)
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(path, VFS::Follow::NotLast);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    path = resolved.Path();
     if (!VFS::IsDirectory(path))
     {
         return MissingErrorLocked(path);
@@ -1177,6 +1340,19 @@ uint64_t Rename(const char* from, const char* to)
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved_from;
+    Resolved resolved_to;
+    uint64_t walked = resolved_from.Walk(from, VFS::Follow::NotLast);
+    if (walked == 0)
+    {
+        walked = resolved_to.Walk(to, VFS::Follow::NotLast);
+    }
+    if (walked != 0)
+    {
+        return walked;
+    }
+    from = resolved_from.Path();
+    to = resolved_to.Path();
     if (!ExistsLocked(from))
     {
         return User::SyscallErrorNotFound;
@@ -1199,7 +1375,7 @@ uint64_t Rename(const char* from, const char* to)
     }
     const bool directory = VFS::IsDirectory(from);
     VFS::FileKey source_key = {};
-    if (!directory)
+    if (!directory && !IsLinkLocked(from))
     {
         if (!FileKeyLocked(from, &source_key))
         {
@@ -1209,6 +1385,17 @@ uint64_t Rename(const char* from, const char* to)
         if (FindUse(source_key) != nullptr)
         {
             return User::SyscallErrorBusy;
+        }
+    }
+    if (IsLinkLocked(to))
+    {
+        if (directory)
+        {
+            return User::SyscallErrorNotDirectory;
+        }
+        if (!VFS::Remove(to))
+        {
+            return User::SyscallErrorFailed;
         }
     }
     VFS::FileKey target_key = {};
@@ -1241,18 +1428,146 @@ uint64_t Rename(const char* from, const char* to)
 
 uint64_t Stat(const char* path, User::FileStatus* status)
 {
-    if (path == nullptr || status == nullptr)
+    return StatPath(path, status, VFS::Follow::All);
+}
+
+uint64_t LinkStat(const char* path, User::FileStatus* status)
+{
+    return StatPath(path, status, VFS::Follow::NotLast);
+}
+
+uint64_t ReadLink(const char* path, char* buffer, uint64_t capacity)
+{
+    if (path == nullptr || buffer == nullptr || capacity == 0)
     {
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
-    VFS::FileInfo info;
-    if (!VFS::Stat(path, &info))
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(path, VFS::Follow::NotLast);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    path = resolved.Path();
+    if (!IsLinkLocked(path))
+    {
+        return ExistsLocked(path) ? User::SyscallErrorInvalidArgument : User::SyscallErrorNotFound;
+    }
+    const auto limit = static_cast<uint32_t>(capacity < UINT32_MAX ? capacity : UINT32_MAX);
+    uint32_t length = 0;
+    if (!VFS::ReadLink(path, buffer, limit, &length))
+    {
+        return User::SyscallErrorInputOutput;
+    }
+    return length < limit ? length : limit;
+}
+
+uint64_t SymbolicLink(const char* target, const char* path)
+{
+    if (target == nullptr || path == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    if (target[0] == '\0')
     {
         return User::SyscallErrorNotFound;
     }
-    *status = ToFileStatus(info, VFS::IsReadOnly(path));
-    return 0;
+    Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(path, VFS::Follow::NotLast);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    path = resolved.Path();
+    const uint64_t refused = NewNameErrorLocked(path, Filesystem::LinkKind::Symbolic);
+    if (refused != 0)
+    {
+        return refused;
+    }
+    return VFS::SymbolicLink(path, target) ? 0 : User::SyscallErrorFailed;
+}
+
+uint64_t Link(const char* from, const char* to)
+{
+    if (from == nullptr || to == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved_from;
+    Resolved resolved_to;
+    uint64_t walked = resolved_from.Walk(from, VFS::Follow::NotLast);
+    if (walked == 0)
+    {
+        walked = resolved_to.Walk(to, VFS::Follow::NotLast);
+    }
+    if (walked != 0)
+    {
+        return walked;
+    }
+    from = resolved_from.Path();
+    to = resolved_to.Path();
+    if (!ExistsLocked(from))
+    {
+        return User::SyscallErrorNotFound;
+    }
+    if (ExistsLocked(to))
+    {
+        return User::SyscallErrorExists;
+    }
+    if (!ParentExistsLocked(to))
+    {
+        return User::SyscallErrorNotFound;
+    }
+    if (!VFS::SameFilesystem(from, to))
+    {
+        return User::SyscallErrorCrossDevice;
+    }
+    if (VFS::IsDirectory(from))
+    {
+        return User::SyscallErrorNotPermitted;
+    }
+    const uint64_t refused = NewNameErrorLocked(to, Filesystem::LinkKind::Hard);
+    if (refused != 0)
+    {
+        return refused;
+    }
+    return VFS::Link(from, to) ? 0 : User::SyscallErrorFailed;
+}
+
+uint64_t ResolvePath(const char* path, char* buffer, uint64_t capacity)
+{
+    if (path == nullptr || buffer == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(path, VFS::Follow::All);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    if (!ExistsLocked(resolved.Path()))
+    {
+        return User::SyscallErrorNotFound;
+    }
+    uint64_t length = 0;
+    while (resolved.Path()[length] != '\0')
+    {
+        ++length;
+    }
+    if (length >= capacity)
+    {
+        return User::SyscallErrorRange;
+    }
+    for (uint64_t index = 0; index <= length; ++index)
+    {
+        buffer[index] = resolved.Path()[index];
+    }
+    return length;
 }
 
 uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* status)
@@ -1343,6 +1658,13 @@ uint64_t ProgramFile::Open(const char* path)
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(path, VFS::Follow::All);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    path = resolved.Path();
     if (!VFS::Open(path, &handle))
     {
         return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorNotFound;

@@ -583,7 +583,7 @@ TEST_CASE("file descriptors validate flags and access modes")
     FeatherOS::Files::OpenConsole(&table, nullptr);
     REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", 0) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
-    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead | 256) ==
+    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead | 512) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
     REQUIRE(FeatherOS::Files::Open(&table, "/NEW.TXT", OpenRead | OpenCreate) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
@@ -1019,7 +1019,7 @@ TEST_CASE("ext2 attributes reach stat and directory entries through the core dri
     REQUIRE(status.size == 1024);
     REQUIRE(FeatherOS::Files::Stat("/mnt/tool", &status) == 0);
     REQUIRE(status.mode == (User::ModeRegular | 04755));
-    REQUIRE(FeatherOS::Files::Stat("/mnt/fast-link", &status) == 0);
+    REQUIRE(FeatherOS::Files::LinkStat("/mnt/fast-link", &status) == 0);
     REQUIRE(status.mode == (User::ModeSymbolicLink | 0777));
     REQUIRE(status.type == FileType::SymbolicLink);
     REQUIRE(status.size == 14);
@@ -1052,6 +1052,71 @@ TEST_CASE("ext2 attributes reach stat and directory entries through the core dri
     REQUIRE(entries.at("hello.txt").size == 17);
     REQUIRE(entries.at("fast-link").type == User::ModeSymbolicLink >> User::EntryTypeShift);
     REQUIRE(entries.at("pipe").type == 0);
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == FeatherOS::VFS::MountResult::Done);
+}
+
+TEST_CASE("ext2 links are followed by the VFS walk, into and out of other mounts")
+{
+    namespace User = FeatherOS::User;
+    using FeatherOS::User::FileType;
+    if (!AttachExt2Image())
+    {
+        SKIP("no ext2 image from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == FeatherOS::VFS::MountResult::Done);
+    FeatherOS::Tmpfs::Reset();
+    FeatherOS::Files::Table table{};
+
+    // fast-link holds "a/b/c/deep.txt" in its inode; slow-link a 64-byte target that does not
+    // exist, in a block of its own.
+    User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat("/mnt/fast-link", &status) == 0);
+    REQUIRE(status.type == FileType::Regular);
+    REQUIRE(status.size == 5);
+    uint64_t descriptor = FeatherOS::Files::Open(&table, "/mnt/fast-link", User::OpenRead);
+    char contents[16] = {};
+    REQUIRE(FeatherOS::Files::Read(&table, descriptor, contents, sizeof(contents)) == 5);
+    REQUIRE(std::string(contents, 5) == "deep\n");
+    REQUIRE(FeatherOS::Files::Close(&table, descriptor) == 0);
+    REQUIRE(FeatherOS::Files::Open(&table, "/mnt/fast-link", User::OpenRead | User::OpenNoFollow) ==
+            User::SyscallErrorLoop);
+    REQUIRE(FeatherOS::Files::Open(&table, "/mnt/slow-link", User::OpenRead) ==
+            User::SyscallErrorNotFound);
+    char target[User::MaximumPathLength];
+    const std::string slow_target =
+        "a/b/c/a-symbolic-link-target-that-is-longer-than-sixty-bytes.txt";
+    REQUIRE(FeatherOS::Files::ReadLink("/mnt/slow-link", target, sizeof(target)) ==
+            slow_target.size());
+    REQUIRE(std::string(target, slow_target.size()) == slow_target);
+    REQUIRE(FeatherOS::Files::LinkStat("/mnt/slow-link", &status) == 0);
+    REQUIRE(status.size == slow_target.size());
+
+    // From /tmp into the ext2 mount and through its own link, and out again with "..".
+    REQUIRE(FeatherOS::Files::SymbolicLink("/mnt/fast-link", "/tmp/to-ext2") == 0);
+    REQUIRE(FeatherOS::Files::SymbolicLink("../mnt/a/b/c/..", "/tmp/up") == 0);
+    REQUIRE(FeatherOS::Files::ResolvePath("/tmp/to-ext2", target, sizeof(target)) == 19);
+    REQUIRE(std::string(target) == "/mnt/a/b/c/deep.txt");
+    REQUIRE(FeatherOS::Files::ResolvePath("/tmp/up/../../../tmp", target, sizeof(target)) == 4);
+    REQUIRE(std::string(target) == "/tmp");
+    descriptor = FeatherOS::Files::Open(&table, "/tmp/to-ext2", User::OpenRead);
+    REQUIRE(FeatherOS::Files::Read(&table, descriptor, contents, sizeof(contents)) == 5);
+    REQUIRE(FeatherOS::Files::Close(&table, descriptor) == 0);
+    char working_directory[User::MaximumPathLength] = "/";
+    REQUIRE(FeatherOS::Files::ChangeDirectory("/tmp/up", working_directory) == 0);
+    REQUIRE(std::string(working_directory) == "/mnt/a/b");
+
+    // The ext2 mount is read-only, and FAT16 holds no links at all.
+    REQUIRE(FeatherOS::Files::SymbolicLink("x", "/mnt/new-link") == User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Link("/mnt/hello.txt", "/mnt/hard2") == User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Remove("/mnt/fast-link") == User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::SymbolicLink("x", "/fat-link") == User::SyscallErrorNotPermitted);
+    REQUIRE(FeatherOS::Files::Link("/BLOCK.TXT", "/BLOCK2.TXT") == User::SyscallErrorNotPermitted);
+    REQUIRE(FeatherOS::Files::Link("/mnt/hello.txt", "/tmp/hard") ==
+            User::SyscallErrorCrossDevice);
+    REQUIRE(FeatherOS::Files::Stat("/fat-link", &status) == User::SyscallErrorNotFound);
+
+    FeatherOS::Tmpfs::Reset();
     REQUIRE(FeatherOS::VFS::Unmount("/mnt") == FeatherOS::VFS::MountResult::Done);
 }
 

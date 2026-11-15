@@ -19,7 +19,8 @@ EXT2_INPUT = (
     b"mount -t ext2 vda2 /mnt\ngrep ext2 /proc/mounts\nls /mnt\nls -l /mnt\n"
     b"cat /mnt/" + LONG_EXT2_NAME + b"\n"
     b"cat /mnt/hello.txt\ncat /mnt/docs/notes/deep.txt\nwc -c /mnt/big.txt\n"
-    b"write /mnt/new.txt x\nrm /mnt/hello.txt\ncat /mnt/fast-link\n"
+    b"write /mnt/new.txt x\nrm /mnt/hello.txt\n"
+    b"cat /mnt/fast-link\ncat /mnt/slow-link\n"
     b"umount /mnt\nls /mnt\n"
     b"write /tmp/" + LONG_TMP_NAME + b" kept\nls /tmp\n"
 )
@@ -32,7 +33,6 @@ EXPECTED_EXT2_OUTPUT = (
     "80000 /mnt/big.txt",
     "write: cannot open /mnt/new.txt: Read-only file system",
     "rm: /mnt/hello.txt: read-only file system",
-    "cat: cannot open /mnt/fast-link",
     "ls: /mnt: no such directory",
 )
 # ls shows the long name whole, and stat gives links their own size.
@@ -49,8 +49,20 @@ LONG_LISTING = tuple(
         + re.escape(LONG_EXT2_NAME.decode())
         + r"\r?$",
         r"^drwxr-xr-x +3 +1000 +1000 +1024 2026-01-01 00:00 docs\r?$",
-        r"^lrwxrwxrwx +1 +1000 +1000 +9 2026-01-01 00:00 fast-link\r?$",
+        r"^lrwxrwxrwx +1 +1000 +1000 +9 2026-01-01 00:00 fast-link"
+        r" -> hello\.txt\r?$",
+        r"^lrwxrwxrwx +1 +1000 +1000 +64 2026-01-01 00:00 slow-link -> "
+        r"docs/notes/(\.\./notes/){5}deep\.txt\r?$",
         r"^-rw-r----- +1 +1000 +100 +31 2026-01-01 00:00 hello\.txt\r?$",
+    )
+)
+# The VFS follows both links: the fast one's target is in its inode, the slow
+# one's in a block, through "../" five times.
+THROUGH_LINKS = tuple(
+    re.compile(line, re.MULTILINE)
+    for line in (
+        r"> cat /mnt/fast-link\r?\nHello from the ext2 partition\.\r?$",
+        r"> cat /mnt/slow-link\r?\nnested ext2 file\r?$",
     )
 )
 TMP_LISTING = re.compile(
@@ -64,6 +76,9 @@ def Check(result):
     for line in LONG_LISTING:
         if line.search(result.output) is None:
             return f"ls -l /mnt is missing a line like {line.pattern!r}"
+    for line in THROUGH_LINKS:
+        if line.search(result.output) is None:
+            return f"cat through an ext2 link did not print {line.pattern!r}"
     if TMP_LISTING.search(result.output) is None:
         return "ls /tmp did not list the long tmpfs name whole"
     return None
