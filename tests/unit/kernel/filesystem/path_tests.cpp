@@ -40,13 +40,32 @@ TEST_CASE("paths collapse dots and repeated slashes")
 TEST_CASE("paths that would not fit are rejected")
 {
     char result[FeatherOS::Path::MaximumLength];
-    // "/home/" and 57 characters make the longest path, 63 characters.
-    const std::string long_name(57, 'x');
+    // "/home/" and 1017 characters make the longest path, PATH_MAX less its terminator.
+    static_assert(FeatherOS::Path::MaximumLength == 1024);
+    const std::string component(200, 'x');
+    const std::string long_name = component + "/" + component + "/" + component + "/" + component +
+                                  "/" + std::string(213, 'x');
+    REQUIRE(long_name.size() == 1017);
     REQUIRE(FeatherOS::Path::Resolve("/home", long_name.c_str(), result));
-    REQUIRE(std::string(result).size() == 63);
+    REQUIRE(std::string(result).size() == 1023);
     REQUIRE_FALSE(FeatherOS::Path::Resolve("/home", (long_name + "y").c_str(), result));
     // Components collapse as they are read, so an intermediate path must fit too.
     REQUIRE_FALSE(FeatherOS::Path::Resolve("/home", (long_name + "y/..").c_str(), result));
+    // Five 200-byte components, as the ext2 test volume nests them.
+    std::string nested;
+    for (int level = 0; level < 5; ++level)
+    {
+        nested += "/" + component;
+    }
+    REQUIRE(FeatherOS::Path::Resolve("/", nested.c_str(), result));
+    REQUIRE(std::string(result) == nested);
+    REQUIRE_FALSE(
+        FeatherOS::Path::Resolve("/mnt/a/b/c/d/e/f/g/h/i/j/k", nested.c_str() + 1, result));
+    // NAME_MAX limits each component, even one that ".." takes away again.
+    REQUIRE(FeatherOS::Path::Resolve("/tmp", std::string(255, 'n').c_str(), result));
+    REQUIRE_FALSE(FeatherOS::Path::Resolve("/tmp", std::string(256, 'n').c_str(), result));
+    REQUIRE_FALSE(
+        FeatherOS::Path::Resolve("/tmp", (std::string(256, 'n') + "/..").c_str(), result));
 }
 
 TEST_CASE("/proc/self names the calling process")
@@ -70,4 +89,3 @@ TEST_CASE("/proc/self names the calling process")
     path[sizeof(path) - 1] = '\0';
     REQUIRE_FALSE(FeatherOS::Path::ReplaceProcSelf(path, 123456));
 }
-

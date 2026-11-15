@@ -858,9 +858,9 @@ void CheckFixedParameterCalls()
 
 void CheckDirectories()
 {
-    char directory[64];
+    char directory[PATH_MAX];
     Check(getcwd(directory, sizeof(directory)) != nullptr, "getcwd");
-    char original[64];
+    char original[PATH_MAX];
     strcpy(original, directory);
     Check(mkdir(WorkDirectory, 0755) == 0, "mkdir");
     errno = 0;
@@ -879,6 +879,11 @@ void CheckDirectories()
     const struct dirent* entry = readdir(listing);
     Check(entry != nullptr && strcmp(entry->d_name, "note.txt") == 0 && entry->d_type == DT_REG,
           "readdir after a chdir");
+    struct stat note_status;
+    Check(entry != nullptr && stat("/home/libcwork/note.txt", &note_status) == 0 &&
+              entry->d_ino == note_status.st_ino && note_status.st_ino != 0 &&
+              note_status.st_nlink == 1 && (note_status.st_mode & 07777) == 0644,
+          "d_ino is stat's st_ino");
     Check(readdir(listing) == nullptr, "readdir at the end");
     rewinddir(listing);
     Check(readdir(listing) != nullptr && closedir(listing) == 0, "rewinddir");
@@ -901,6 +906,52 @@ void CheckDirectories()
     Check(chdir(WorkDirectory) == 0 && unlink("note.txt") == 0 && chdir(original) == 0,
           "unlink relative to the working directory");
     Check(rmdir(WorkDirectory) == 0, "rmdir");
+}
+
+// PATH_MAX counts the terminator, so a path of PATH_MAX characters is too long and one of
+// PATH_MAX - 1 fits; NAME_MAX limits each component.
+void CheckPathLimits()
+{
+    static char path[PATH_MAX + 1];
+    memset(path, 'x', PATH_MAX);
+    path[0] = '/';
+    path[PATH_MAX] = '\0';
+    struct stat status;
+    errno = 0;
+    Check(stat(path, &status) == -1 && errno == ENAMETOOLONG, "stat of a PATH_MAX path");
+    errno = 0;
+    Check(open(path, O_RDONLY) == -1 && errno == ENAMETOOLONG, "open of a PATH_MAX path");
+    for (size_t slash = 200; slash < PATH_MAX - 1; slash += 200)
+    {
+        path[slash] = '/';
+    }
+    path[PATH_MAX - 1] = '\0';
+    errno = 0;
+    Check(stat(path, &status) == -1 && errno == ENOENT, "a path of PATH_MAX - 1 fits");
+    char original[PATH_MAX];
+    errno = 0;
+    Check(getcwd(original, sizeof(original)) != nullptr && chdir("/tmp") == 0 &&
+              stat(path + 1, &status) == -1 && errno == ENAMETOOLONG && chdir(original) == 0,
+          "a relative path too long once resolved");
+
+    char name[sizeof("/tmp/") + NAME_MAX + 1] = "/tmp/";
+    memset(name + 5, 'n', NAME_MAX + 1);
+    name[sizeof(name) - 1] = '\0';
+    errno = 0;
+    Check(open(name, O_WRONLY | O_CREAT, 0644) == -1 && errno == ENAMETOOLONG,
+          "a component over NAME_MAX");
+    name[sizeof(name) - 2] = '\0';
+    const int created = open(name, O_WRONLY | O_CREAT, 0644);
+    Check(created >= 0 && close(created) == 0, "a component of NAME_MAX");
+    DIR* listing = opendir("/tmp");
+    bool listed = false;
+    for (const struct dirent* entry = listing == nullptr ? nullptr : readdir(listing);
+         entry != nullptr; entry = readdir(listing))
+    {
+        listed = listed || strcmp(entry->d_name, name + 5) == 0;
+    }
+    Check(listing != nullptr && listed && closedir(listing) == 0 && unlink(name) == 0,
+          "readdir lists a NAME_MAX name whole");
 }
 
 bool FileContains(const char* path, const char* text)
@@ -3302,6 +3353,7 @@ int main(int argc, char** argv)
     CheckDescriptorFiles();
     CheckFixedParameterCalls();
     CheckDirectories();
+    CheckPathLimits();
     CheckVirtualFiles();
     CheckAddressNames();
     CheckTime();

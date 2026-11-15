@@ -31,6 +31,7 @@ public:
 
     bool Open(const char* path, Node* node, uint64_t* size) override;
     bool Stat(const char* path, FileInfo* info) override;
+    bool StatNode(const Node& node, FileInfo* info) override;
     bool Read(const Node& node, uint64_t size, uint64_t offset, void* buffer, uint64_t length,
               uint64_t* bytes_read) override;
     bool Create(const char* path, Node* node, uint64_t* size) override;

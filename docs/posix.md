@@ -42,9 +42,9 @@ These come from the kernel and apply everywhere below.
 
 | Limit | Value |
 | --- | --- |
-| Command line passed to a program | 63 characters, at most 16 words including the name |
+| Command line passed to a program | 1023 characters, at most 16 words including the name |
 | Environment | 1 KiB and at most 32 variables |
-| Path | 63 characters |
+| Path | 1023 characters (`PATH_MAX` 1024 with the terminator), each name at most 255 (`NAME_MAX`) |
 | Open files per process | 16 descriptors, plus the console's 0, 1 and 2 |
 | Running children per process | 16 |
 | Memory per process | 16384 pages (64 MiB), including the image and stack |
@@ -61,7 +61,7 @@ These come from the kernel and apply everywhere below.
 | `/tmp` | A RAM filesystem, emptied on restart: at most 128 entries and 4 MiB, with case-sensitive names |
 | `/proc` | Read-only: `meminfo`, `stat` (uptime and CPU use), `mounts`, and `<pid>/status` for each process; `/proc/self` is the caller |
 
-`/proc/mounts` lists every mount as Linux does, `<source> <point> <type> <ro|rw> 0 0`, in mount order, and `mount` and `umount` (`sys/mount.h`) change them. `/bin`, an ordinary disk directory, is the second entry of the default `PATH`, for programs copied to the disk. Disk names ignore case and are at most 63 characters, and no file can have holes. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
+`/proc/mounts` lists every mount as Linux does, `<source> <point> <type> <ro|rw> 0 0`, in mount order, and `mount` and `umount` (`sys/mount.h`) change them. `/bin`, an ordinary disk directory, is the second entry of the default `PATH`, for programs copied to the disk. Disk names ignore case and are at most 63 ASCII characters (FAT16's limit; ext2 and `/tmp` take 255 bytes), and no file can have holes. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
 
 ## Headers
 
@@ -79,13 +79,17 @@ There is no locale, so `strcoll` and `strxfrm` are left out. `strerror` knows a 
 
 The `is*` classifiers, `tolower` and `toupper`, for ASCII only, since `"C"` is the only locale.
 
+### `limits.h`
+
+The compiler's own limits, plus `LLONG_MIN`, `LLONG_MAX` and `ULLONG_MAX` where it leaves them out, and the kernel's: `PATH_MAX` 1024 (a path with its terminator, the size of the kernel's path buffers), `NAME_MAX` 255 (one component, as `d_name` holds it with its terminator), `PIPE_BUF` 512 and `OPEN_MAX` 32, and the C library's `PTHREAD_KEYS_MAX` 128 and `PTHREAD_DESTRUCTOR_ITERATIONS` 4. FAT16 names stay at most 63 ASCII characters within `NAME_MAX`.
+
 ### `errno.h`
 
 `errno`, with these error numbers, at Linux's values:
 
 `EPERM ENOENT ESRCH EINTR EIO ENXIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST EXDEV ENODEV ENOTDIR EISDIR EINVAL EMFILE ENOTTY ENOSPC ESPIPE EROFS EPIPE EDOM ERANGE EDEADLK ENAMETOOLONG ENOSYS ENOTEMPTY EOVERFLOW EILSEQ ENOTSOCK EDESTADDRREQ EMSGSIZE ENOPROTOOPT EPROTONOSUPPORT EOPNOTSUPP/ENOTSUP EAFNOSUPPORT EADDRINUSE EADDRNOTAVAIL ENETDOWN ENETUNREACH ECONNRESET ENOBUFS EISCONN ENOTCONN ETIMEDOUT ECONNREFUSED EHOSTUNREACH EALREADY EINPROGRESS`
 
-Each kernel error maps to one of them. A background read of the controlling terminal that ignores or blocks `SIGTTIN`, or comes from an orphaned group, fails with `EIO`, as on Linux.
+Each kernel error maps to one of them. A path of `PATH_MAX` characters or more, as passed or once joined to the working directory, or with a component over `NAME_MAX`, fails with `ENAMETOOLONG`. A background read of the controlling terminal that ignores or blocks `SIGTTIN`, or comes from an orphaned group, fails with `EIO`, as on Linux.
 
 ### `stdlib.h`
 
@@ -219,10 +223,12 @@ Differences:
   - `O_CREAT` and `O_TRUNC` need write access.
   - Offsets past the end of a file fail with `EINVAL`, because files cannot have holes.
 - **Files and directories:** `unlink`, `rmdir`, `mkdir`, `chdir`, `getcwd`, `stat`, `fstat`, `access` and `isatty`.
-  - There are no users or permissions.
-  - `stat` reports owner 0, and mode bits that only show whether a file is writable: `0644` or `0444`, and `0755` or `0555` for directories.
-  - Every time in `stat` is 0, because FAT16 timestamps are not read.
-  - `access` fails `W_OK` for the read-only initramfs and `/proc`.
+  - There are no users, so owners and permission bits are stored and shown but not enforced.
+  - `struct stat` has every POSIX field: `st_dev` (a number per mount), `st_ino`, `st_mode`, `st_nlink`, `st_uid`, `st_gid`, `st_rdev` (always 0), `st_size`, `st_blksize` (512), `st_blocks` (512-byte units of the size), and `st_atim`, `st_mtim` and `st_ctim` as `struct timespec`, with `st_atime`, `st_mtime` and `st_ctime` as macros for their seconds. The type macros are `S_ISREG`, `S_ISDIR`, `S_ISLNK`, `S_ISCHR`, `S_ISBLK`, `S_ISFIFO` and `S_ISSOCK`, with the `S_IF*` bits and the permission constants (`S_IRWXU` … `S_IXOTH`, `S_ISUID`, `S_ISGID`, `S_ISVTX`) at Linux's values.
+  - What `stat` reports comes from the filesystem: ext2 has real modes, owners, link counts and times, with nanoseconds where its inodes are large enough; FAT16 reports `0644` or `0755` (`0444` or `0555` read-only), one link, owner 0 and times of 0, since its timestamps are not read yet; the initramfs and `/proc` `0444` and `0555`, `/tmp` and `/etc` `0644` and `0755`, `/dev` `S_IFCHR` `0666`, all with times of 0.
+  - `stat` does not follow symbolic links, so on an ext2 link it reports `S_IFLNK` and the link's own size, as `lstat` would; opening a link fails with `ENOENT`. `lstat`, `readlink`, `symlink` and following links come with M22 Part 4's step 2. An ext2 device node, FIFO or socket has no type bits in `st_mode`, since the shared filesystem core does not say which it is.
+  - `fstat` on a pipe reports `S_IFIFO` `0600`, on a socket `S_IFSOCK` `0777`, and on a terminal `S_IFCHR` `0620`, each with device 0 and a node number of its own.
+  - `access` fails `W_OK` with `EROFS` for anything on a read-only filesystem (the initramfs, `/proc`, an ext2 mount); other modes only check that the file exists.
   - `isatty` is true for terminals (the console, `/dev/tty` and pseudo-terminal slaves), not for the other devices in `/dev`, which are also `S_IFCHR`.
   - `mkdir` ignores its mode.
 - **Processes:** `getpid`, `getppid`, `getpgrp`, `getpgid`, `setsid`, `getsid` and `_exit`. The kernel starts init in a session of its own without a controlling terminal; a child joins its parent's session and controlling terminal unless it is started with `POSIX_SPAWN_SETSID`. `setsid` starts a session without a controlling terminal and fails with `EPERM` for a group leader, which every command the shell starts is. `tcgetpgrp` works only on the caller's controlling terminal (`ENOTTY` on others). `tcsetpgrp` only names a group of the caller's session there, otherwise `EPERM`. On the controlling terminal a background group's read gets `SIGTTIN`, and its `tcsetattr` or `tcsetpgrp` gets `SIGTTOU`, both of which stop the group by default; the call runs again once the group continues. A read that ignores or blocks `SIGTTIN` fails with `EIO`; a change that ignores or blocks `SIGTTOU` goes ahead, which is how a shell takes the terminal back. An orphaned group gets `EIO` instead of the signal. Writes from the background are allowed, as with `stty -tostop`. On another terminal there is no such check. Besides the console, pseudo-terminal slaves are terminals (see `stdlib.h`). `setpgid` is not provided: groups are chosen when `posix_spawn` starts the child.
@@ -242,7 +248,7 @@ Not provided:
 
 `opendir`, `readdir`, `rewinddir` and `closedir`.
 
-- **Entries:** each has `d_ino`, `d_type` (`DT_DIR` or `DT_REG`) and `d_name`. `d_ino` numbers the entries from 1 within their directory.
+- **Entries:** each has `d_ino`, `d_type` and `d_name` (up to `NAME_MAX` bytes and a terminator). `d_ino` is the `st_ino` that `stat` reports for the entry without following it (for a mount point, its filesystem's root), or 0 when the filesystem cannot tell. `d_type` is `DT_REG`, `DT_DIR`, `DT_LNK`, `DT_CHR`, `DT_BLK`, `DT_FIFO` or `DT_SOCK` at Linux's values, or `DT_UNKNOWN` for an ext2 device node, FIFO or socket, so a listing needs no `stat` to tell directories and links apart.
 - **Paths:** `opendir` makes its path absolute, so a later `chdir` does not change which directory the stream reads.
 - **Left out:** listings do not include `.` and `..`. `scandir`, `telldir`, `seekdir` and `fdopendir` are not provided.
 
@@ -251,7 +257,7 @@ Not provided:
 **`posix_spawn` and `posix_spawnp`.** The path names a program file anywhere the VFS can read: the disk, `/tmp`, or `/system`. A relative path such as `./tool` starts at the working directory. FeatherOS difference: a name without a `/` is looked up in `/system`, so `posix_spawn("ls", …)` runs `/system/ls`, where POSIX would look in the working directory.
 - **Programs:** FAT16 has no execute bit, so any regular file may be tried. The kernel checks it like a `/system` program and reads only its segments, so the file's size does not matter; one that is not a valid program fails with `ENOEXEC`, as do devices, one whose segments need more memory than a process may have fails with `ENOMEM`, one open for writing with `EBUSY`, a directory with `EISDIR`, and a missing file with `ENOENT`.
 - **Arguments:** the kernel always makes the path its `argv[0]`, or the bare name for a program in `/system`.
-- **Errors:** the path or an argument containing a double quote fails with `EINVAL`. A command line or environment over the limits fails with `E2BIG`; the path counts toward the 63-character command line, and must resolve to at most 63 characters (`ENAMETOOLONG`).
+- **Errors:** the path or an argument containing a double quote fails with `EINVAL`. A command line or environment over the limits fails with `E2BIG`; the path counts toward the 1023-character command line (16 words at most), and must resolve to at most 1023 characters with components of at most `NAME_MAX` (`ENAMETOOLONG`). A path of up to about 1000 characters therefore fits as an argument.
 - **Console:** by default the child takes the console until it exits.
 - **PATH:** `posix_spawnp` runs the first regular file it finds in the directories of the caller's `PATH`, or `/system:/bin` when `PATH` is unset; empty entries are skipped rather than meaning the working directory. A file name holding a `/` is used as it is. Unlike `execvp`, a file that is not a program is not run as a shell script; `posix_spawnp` returns `ENOEXEC`.
 
@@ -265,7 +271,7 @@ Not provided:
 
 Other flags fail with `EINVAL`.
 
-**File actions.** `posix_spawn_file_actions_adddup2`, `addopen` and `addclose` run in order, at most 8 per spawn. The C library applies them to the caller's own descriptors around the `Spawn` syscall and puts those back afterwards. Another thread using those descriptors meanwhile would see the child's, so spawn with file actions from one thread at a time. A failing action makes `posix_spawn` return its error without starting the child. `addopen` paths are at most 63 characters, and opens with `O_NOCTTY`, so the caller never takes the terminal meant for the child.
+**File actions.** `posix_spawn_file_actions_adddup2`, `addopen` and `addclose` run in order, at most 8 per spawn. The C library applies them to the caller's own descriptors around the `Spawn` syscall and puts those back afterwards. Another thread using those descriptors meanwhile would see the child's, so spawn with file actions from one thread at a time. A failing action makes `posix_spawn` return its error without starting the child. `addopen` paths are shorter than `PATH_MAX`, and opens with `O_NOCTTY`, so the caller never takes the terminal meant for the child.
 
 **`waitpid` and `wait`.** They use the Linux status encoding with `WIFEXITED`, `WEXITSTATUS`, `WIFSIGNALED`, `WTERMSIG`, `WIFSTOPPED`, `WSTOPSIG` and `WIFCONTINUED`, and the options `WNOHANG`, `WUNTRACED` (also report a child that stopped) and `WCONTINUED` (also report one that `SIGCONT` continued). Each stop or continue is reported once, and a newer one replaces one not yet reported. A CPU exception reports signal 11 (`SIGSEGV`).
 

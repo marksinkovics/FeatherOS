@@ -8,7 +8,9 @@
 namespace FeatherOS::User
 {
 
-constexpr uint64_t MaximumCommandLineLength = 64;
+// The whole command line, program path included, with its terminator: a full path fits as an
+// argument.
+constexpr uint64_t MaximumCommandLineLength = MaximumPathLength;
 constexpr uint64_t MaximumArgumentCount = 16;
 
 // Read-only block the kernel maps into each program; _start receives a pointer to it.

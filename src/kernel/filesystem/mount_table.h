@@ -63,15 +63,21 @@ public:
     void FinishUnmount(const char* point);
     void CancelUnmount(const char* point);
     // The index-th mount point directly inside directory, in mount order, as a directory entry;
-    // false past the last one.
-    bool ChildAt(const char* directory, uint32_t index, Filesystem::DirectoryEntry* entry) const;
+    // false past the last one. *driver receives its driver, counted as Acquire does, or null
+    // while it is being unmounted.
+    bool AcquireChild(const char* directory, uint32_t index, Filesystem::DirectoryEntry* entry,
+                      Filesystem::Driver** driver);
     uint32_t ChildCount(const char* directory) const;
+    // The number each mount gets when it is added, unique until the table is destroyed, for
+    // st_dev; 0 for a driver that is not mounted.
+    uint64_t DeviceOf(const Filesystem::Driver* driver) const;
 
 private:
     struct Entry
     {
         char point[Path::MaximumLength];
         Filesystem::Driver* driver;
+        uint64_t device;
         uint32_t users;
         bool unmounting;
     };
@@ -81,6 +87,7 @@ private:
 
     Entry entries[Capacity] = {};
     uint32_t count = 0;
+    uint64_t next_device = 1;
 };
 
 } // namespace FeatherOS::VFS

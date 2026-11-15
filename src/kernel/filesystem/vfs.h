@@ -66,7 +66,10 @@ bool Open(const char* path, FileHandle* file);
 bool Read(FileHandle* file, void* buffer, uint64_t length, uint64_t* bytes_read);
 // Devices accept any offset; other files at most their size.
 bool Seek(FileHandle* file, uint64_t offset);
+// Any file, directory or link, without following links. info->device is the mount's number.
 bool Stat(const char* path, FileInfo* info);
+// What Stat reports for an open file, with the handle's size.
+bool StatOpen(const FileHandle& file, FileInfo* info);
 void Close(FileHandle* file);
 // Disk, /tmp and /etc files can be created and changed, and devices take writes. A handle caches
 // the file's size, so other handles to the same file do not see its changes.

@@ -10,7 +10,7 @@ namespace
 // Each root's node is its index.
 constexpr uint32_t RootCount = 2;
 constexpr uint32_t MaximumNodes = RootCount + MaximumEntries;
-constexpr uint32_t NameCapacity = sizeof(Filesystem::DirectoryEntry::name);
+constexpr uint32_t NameCapacity = User::MaximumNameLength + 1;
 constexpr uint64_t MinimumCapacity = 256;
 
 struct Node
@@ -75,29 +75,42 @@ bool FindChild(uint32_t parent, const char* name, uint32_t length, uint32_t* chi
     return false;
 }
 
-bool Lookup(Root root, const char* path, uint32_t* node)
+// Walks the first length characters of path.
+bool LookupPrefix(Root root, const char* path, uint32_t length, uint32_t* node)
 {
     EnsureRoot(root);
     uint32_t current = RootNode(root);
-    while (*path != '\0')
+    uint32_t position = 0;
+    while (position < length)
     {
-        uint32_t length = 0;
-        while (path[length] != '\0' && path[length] != '/')
+        uint32_t component = 0;
+        while (position + component < length && path[position + component] != '/')
         {
-            ++length;
+            ++component;
         }
-        if (length == 0 || !nodes[current].directory || !FindChild(current, path, length, &current))
+        if (component == 0 || !nodes[current].directory ||
+            !FindChild(current, path + position, component, &current))
         {
             return false;
         }
-        path += length;
-        if (*path == '/')
+        position += component;
+        if (position < length)
         {
-            ++path;
+            ++position;
         }
     }
     *node = current;
     return true;
+}
+
+bool Lookup(Root root, const char* path, uint32_t* node)
+{
+    uint32_t length = 0;
+    while (path[length] != '\0')
+    {
+        ++length;
+    }
+    return LookupPrefix(root, path, length, node);
 }
 
 // Finds the directory that will hold path's last component, and where that name starts.
@@ -128,17 +141,7 @@ bool LookupParent(Root root, const char* path, uint32_t* parent, const char** na
         *parent = RootNode(root);
         return true;
     }
-    char parent_path[NameCapacity];
-    if (last_separator >= sizeof(parent_path))
-    {
-        return false;
-    }
-    for (uint32_t index = 0; index < last_separator; ++index)
-    {
-        parent_path[index] = path[index];
-    }
-    parent_path[last_separator] = '\0';
-    return Lookup(root, parent_path, parent) && nodes[*parent].directory;
+    return LookupPrefix(root, path, last_separator, parent) && nodes[*parent].directory;
 }
 
 bool AddNode(Root root, const char* path, bool directory, uint32_t* node)
@@ -226,6 +229,21 @@ bool IsFile(uint32_t node)
 }
 
 } // namespace
+
+bool Find(Root root, const char* path, uint32_t* node)
+{
+    return path != nullptr && node != nullptr && Lookup(root, path, node);
+}
+
+bool IsDirectoryNode(uint32_t node)
+{
+    return node < MaximumNodes && nodes[node].used && nodes[node].directory;
+}
+
+uint64_t SerialNumber(uint32_t node)
+{
+    return uint64_t{node} + 1;
+}
 
 bool Open(Root root, const char* path, uint32_t* node)
 {
@@ -397,8 +415,9 @@ bool ReadDirectory(Root root, const char* path, uint32_t index, Filesystem::Dire
         {
             entry->name[offset] = nodes[node].name[offset];
         }
-        entry->directory = nodes[node].directory;
-        entry->size = static_cast<uint32_t>(nodes[node].size);
+        entry->type = nodes[node].directory ? User::ModeDirectory : User::ModeRegular;
+        entry->node = SerialNumber(node);
+        entry->size = nodes[node].size;
         return true;
     }
     return false;

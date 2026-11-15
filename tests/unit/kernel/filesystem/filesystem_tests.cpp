@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -692,7 +693,7 @@ TEST_CASE("directory listing skips deleted entries and names files as NAME.EXT")
     // Indices 0-4 of the root are the mount points.
     REQUIRE(FeatherOS::Files::ReadDirectory("/", 0, &entry) == 0);
     REQUIRE(std::string(entry.name) == "system");
-    REQUIRE(entry.directory);
+    REQUIRE(entry.type == FeatherOS::User::ModeDirectory >> FeatherOS::User::EntryTypeShift);
     REQUIRE(FeatherOS::Files::ReadDirectory("/", 5, &entry) == 0);
     REQUIRE(std::string(entry.name) == "BLOCK.TXT");
     REQUIRE(entry.size == 8);
@@ -858,14 +859,62 @@ TEST_CASE("disk sources are named as Linux names the first virtio disk's partiti
     REQUIRE(MountSource("/") == "vda1 fat16 rw");
 }
 
-#if defined(FEATHEROS_EXT2_TEST_IMAGE)
-TEST_CASE("an ext2 partition after the FAT16 one mounts read-only by its partition name")
+
+namespace
 {
-    using FeatherOS::VFS::MountResult;
+
+std::vector<std::string> ListDirectory(const char* path)
+{
+    std::vector<std::string> names;
+    FeatherOS::Filesystem::DirectoryEntry entry{};
+    for (uint32_t index = 0; FeatherOS::VFS::ReadDirectory(path, index, &entry); ++index)
+    {
+        names.push_back(std::string(entry.name) +
+                        (entry.type == FeatherOS::User::ModeDirectory ? "/" : ""));
+    }
+    return names;
+}
+
+// The disk's root entries, without the mount points listed first.
+std::vector<std::string> ListDiskRoot()
+{
+    std::vector<std::string> names = ListDirectory("/");
+    const std::vector<std::string> mounts = {"system/", "etc/", "dev/", "proc/", "tmp/"};
+    REQUIRE(names.size() >= mounts.size());
+    REQUIRE(std::vector<std::string>(names.begin(), names.begin() + mounts.size()) == mounts);
+    names.erase(names.begin(), names.begin() + mounts.size());
+    return names;
+}
+
+std::vector<std::string> Sorted(std::vector<std::string> names)
+{
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+void WriteWhole(const char* path, const std::string& contents)
+{
+    FeatherOS::VFS::FileHandle file{};
+    REQUIRE(FeatherOS::VFS::Create(path, &file));
+    uint64_t written = 0;
+    REQUIRE(FeatherOS::VFS::Write(&file, contents.data(), contents.size(), &written));
+    REQUIRE(written == contents.size());
+}
+
+} // namespace
+
+#if defined(FEATHEROS_EXT2_TEST_IMAGE)
+namespace
+{
+
+// The core's 1 KiB ext2 image as the disk's second partition, after a FAT16 one; false without
+// the image.
+bool AttachExt2Image()
+{
     std::FILE* image = std::fopen(FEATHEROS_EXT2_TEST_IMAGE, "rb");
     if (image == nullptr)
     {
-        SKIP("no ext2 image from mke2fs");
+        return false;
     }
     MakeFat16Disk("fat contents");
     const uint32_t ext2_start = static_cast<uint32_t>(disk.size());
@@ -879,6 +928,30 @@ TEST_CASE("an ext2 partition after the FAT16 one mounts read-only by its partiti
     table[4] = 0x83;
     WriteLittleEndian32(table + 8, ext2_start);
     WriteLittleEndian32(table + 12, static_cast<uint32_t>(disk.size()) - ext2_start);
+    return true;
+}
+
+// As make_ext2_image.sh names it.
+std::string LongName()
+{
+    std::string name;
+    while (name.size() < 200)
+    {
+        name += "a-long-name-";
+    }
+    name.resize(200);
+    return name;
+}
+
+} // namespace
+
+TEST_CASE("an ext2 partition after the FAT16 one mounts read-only by its partition name")
+{
+    using FeatherOS::VFS::MountResult;
+    if (!AttachExt2Image())
+    {
+        SKIP("no ext2 image from mke2fs");
+    }
 
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     REQUIRE(MountSource("/") == "vda1 fat16 rw");
@@ -911,49 +984,105 @@ TEST_CASE("an ext2 partition after the FAT16 one mounts read-only by its partiti
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::UnknownType);
 }
-#endif
 
-namespace
+TEST_CASE("ext2 attributes reach stat and directory entries through the core driver")
 {
-
-std::vector<std::string> ListDirectory(const char* path)
-{
-    std::vector<std::string> names;
-    FeatherOS::Filesystem::DirectoryEntry entry{};
-    for (uint32_t index = 0; FeatherOS::VFS::ReadDirectory(path, index, &entry); ++index)
+    using FeatherOS::User::FileStatus;
+    using FeatherOS::User::FileType;
+    namespace User = FeatherOS::User;
+    if (!AttachExt2Image())
     {
-        names.push_back(std::string(entry.name) + (entry.directory ? "/" : ""));
+        SKIP("no ext2 image from mke2fs");
     }
-    return names;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == FeatherOS::VFS::MountResult::Done);
+
+    FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat("/mnt/hello.txt", &status) == 0);
+    REQUIRE(status.mode == (User::ModeRegular | 0640));
+    REQUIRE(status.type == FileType::Regular);
+    REQUIRE(status.link_count == 2);
+    REQUIRE(status.owner == 100000);
+    REQUIRE(status.group == 4242);
+    REQUIRE(status.size == 17);
+    REQUIRE(status.access_time.seconds == 1600000000);
+    REQUIRE(status.modify_time.seconds == 1577934245);
+    REQUIRE(status.change_time.seconds == 1614834367);
+    REQUIRE(status.read_only);
+    const uint64_t hello_node = status.node;
+    const uint64_t ext2_device = status.device;
+    REQUIRE(FeatherOS::Files::Stat("/mnt/hard.txt", &status) == 0);
+    REQUIRE(status.node == hello_node);
+    REQUIRE(FeatherOS::Files::Stat("/mnt", &status) == 0);
+    REQUIRE(status.mode == (User::ModeDirectory | 0755));
+    REQUIRE(status.node == 2);
+    REQUIRE(status.size == 1024);
+    REQUIRE(FeatherOS::Files::Stat("/mnt/tool", &status) == 0);
+    REQUIRE(status.mode == (User::ModeRegular | 04755));
+    REQUIRE(FeatherOS::Files::Stat("/mnt/fast-link", &status) == 0);
+    REQUIRE(status.mode == (User::ModeSymbolicLink | 0777));
+    REQUIRE(status.type == FileType::SymbolicLink);
+    REQUIRE(status.size == 14);
+    // The core does not say what kind of special node a FIFO is.
+    REQUIRE(FeatherOS::Files::Stat("/mnt/pipe", &status) == 0);
+    REQUIRE(status.mode == 0644);
+    REQUIRE(status.type == FileType::Unknown);
+    REQUIRE(FeatherOS::Files::Stat("/BLOCK.TXT", &status) == 0);
+    REQUIRE(status.device != ext2_device);
+
+    FeatherOS::Files::Table table{};
+    const uint64_t descriptor =
+        FeatherOS::Files::Open(&table, "/mnt/hello.txt", FeatherOS::User::OpenRead);
+    REQUIRE(FeatherOS::Files::StatDescriptor(&table, descriptor, &status) == 0);
+    REQUIRE(status.node == hello_node);
+    REQUIRE(status.device == ext2_device);
+    REQUIRE(status.owner == 100000);
+    REQUIRE(status.size == 17);
+    FeatherOS::Files::CloseAll(&table);
+
+    std::map<std::string, User::DirectoryEntry> entries;
+    User::DirectoryEntry entry{};
+    for (uint64_t index = 0; FeatherOS::Files::ReadDirectory("/mnt", index, &entry) == 0; ++index)
+    {
+        entries[entry.name] = entry;
+    }
+    REQUIRE(entries.at("a").type == User::ModeDirectory >> User::EntryTypeShift);
+    REQUIRE(entries.at("hello.txt").type == User::ModeRegular >> User::EntryTypeShift);
+    REQUIRE(entries.at("hello.txt").node == hello_node);
+    REQUIRE(entries.at("hello.txt").size == 17);
+    REQUIRE(entries.at("fast-link").type == User::ModeSymbolicLink >> User::EntryTypeShift);
+    REQUIRE(entries.at("pipe").type == 0);
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == FeatherOS::VFS::MountResult::Done);
 }
 
-// The disk's root entries, without the mount points listed first.
-std::vector<std::string> ListDiskRoot()
+TEST_CASE("ext2 names of 200 bytes and paths near PATH_MAX pass through the VFS whole")
 {
-    std::vector<std::string> names = ListDirectory("/");
-    const std::vector<std::string> mounts = {"system/", "etc/", "dev/", "proc/", "tmp/"};
-    REQUIRE(names.size() >= mounts.size());
-    REQUIRE(std::vector<std::string>(names.begin(), names.begin() + mounts.size()) == mounts);
-    names.erase(names.begin(), names.begin() + mounts.size());
-    return names;
+    if (!AttachExt2Image())
+    {
+        SKIP("no ext2 image from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == FeatherOS::VFS::MountResult::Done);
+    const std::string name = LongName();
+    REQUIRE(Sorted(ListDirectory("/mnt/a")) == std::vector<std::string>{name + "/", "b/"});
+    std::string path = "/mnt/a";
+    for (int level = 0; level < 5; ++level)
+    {
+        path += "/" + name;
+    }
+    REQUIRE(path.size() == 1011);
+    REQUIRE(path.size() < FeatherOS::User::MaximumPathLength);
+    REQUIRE(ReadWhole(path.c_str()) == "far\n");
+    FeatherOS::User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat(path.c_str(), &status) == 0);
+    REQUIRE(status.size == 4);
+    FeatherOS::User::DirectoryEntry entry{};
+    const std::string directory = path.substr(0, path.size() - name.size() - 1);
+    REQUIRE(FeatherOS::Files::ReadDirectory(directory.c_str(), 0, &entry) == 0);
+    REQUIRE(std::string(entry.name) == name);
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == FeatherOS::VFS::MountResult::Done);
 }
-
-std::vector<std::string> Sorted(std::vector<std::string> names)
-{
-    std::sort(names.begin(), names.end());
-    return names;
-}
-
-void WriteWhole(const char* path, const std::string& contents)
-{
-    FeatherOS::VFS::FileHandle file{};
-    REQUIRE(FeatherOS::VFS::Create(path, &file));
-    uint64_t written = 0;
-    REQUIRE(FeatherOS::VFS::Write(&file, contents.data(), contents.size(), &written));
-    REQUIRE(written == contents.size());
-}
-
-} // namespace
+#endif
 
 TEST_CASE("FAT16 creates nested directories and files inside them")
 {
@@ -1116,7 +1245,7 @@ TEST_CASE("open-file sharing rules tell apart files with the same slot in differ
     FeatherOS::User::DirectoryEntry entry{};
     REQUIRE(FeatherOS::Files::ReadDirectory("/", 6, &entry) == 0);
     REQUIRE(std::string(entry.name) == "a");
-    REQUIRE(entry.directory);
+    REQUIRE(entry.type == FeatherOS::User::ModeDirectory >> FeatherOS::User::EntryTypeShift);
 }
 
 TEST_CASE("FAT16 stores long names with numbered short aliases")
@@ -1251,21 +1380,39 @@ TEST_CASE("stat reports type, size, and whether a file is read-only")
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     const std::vector<uint8_t> archive = MakeTarArchive("system/hello.txt", "archive");
     REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
+    namespace User = FeatherOS::User;
     FeatherOS::User::FileStatus status{};
     REQUIRE(FeatherOS::Files::Stat("/BLOCK.TXT", &status) == 0);
     REQUIRE(status.type == FeatherOS::User::FileType::Regular);
     REQUIRE(status.size == 8);
     REQUIRE_FALSE(status.read_only);
+    // FAT16 through the core: fixed modes, one link, no owners and, for now, no times.
+    REQUIRE(status.mode == (User::ModeRegular | 0644));
+    REQUIRE(status.link_count == 1);
+    REQUIRE(status.owner == 0);
+    REQUIRE(status.modify_time.seconds == 0);
+    const uint64_t block_node = status.node;
+    const uint64_t disk_device = status.device;
+    User::DirectoryEntry entry{};
+    REQUIRE(FeatherOS::Files::ReadDirectory("/", 5, &entry) == 0);
+    REQUIRE(std::string(entry.name) == "BLOCK.TXT");
+    REQUIRE(entry.node == block_node);
+    REQUIRE(entry.type == User::ModeRegular >> User::EntryTypeShift);
     REQUIRE(FeatherOS::Files::Stat("/system/hello.txt", &status) == 0);
     REQUIRE(status.type == FeatherOS::User::FileType::Regular);
     REQUIRE(status.size == 7);
     REQUIRE(status.read_only);
+    REQUIRE(status.mode == (User::ModeRegular | 0444));
+    REQUIRE(status.device != disk_device);
     REQUIRE(FeatherOS::Files::Stat("/", &status) == 0);
     REQUIRE(status.type == FeatherOS::User::FileType::Directory);
     REQUIRE_FALSE(status.read_only);
+    REQUIRE(status.mode == (User::ModeDirectory | 0755));
+    REQUIRE(status.device == disk_device);
     REQUIRE(FeatherOS::Files::Stat("/system", &status) == 0);
     REQUIRE(status.type == FeatherOS::User::FileType::Directory);
     REQUIRE(status.read_only);
+    REQUIRE(status.mode == (User::ModeDirectory | 0555));
     REQUIRE(FeatherOS::Files::Stat("/missing", &status) == FeatherOS::User::SyscallErrorNotFound);
 
     FeatherOS::Files::Table table{};
@@ -1275,6 +1422,9 @@ TEST_CASE("stat reports type, size, and whether a file is read-only")
     REQUIRE(FeatherOS::Files::StatDescriptor(&table, writer, &status) == 0);
     REQUIRE(status.size == 10);
     REQUIRE_FALSE(status.read_only);
+    REQUIRE(status.node == block_node);
+    REQUIRE(status.device == disk_device);
+    REQUIRE(status.mode == (User::ModeRegular | 0644));
     REQUIRE(FeatherOS::Files::StatDescriptor(&table, writer + 1, &status) ==
             FeatherOS::User::SyscallErrorBadDescriptor);
     FeatherOS::Files::CloseAll(&table);

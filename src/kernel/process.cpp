@@ -941,18 +941,31 @@ uint64_t CopyStringFromUser(const ProcessRecord& process, uint64_t address, char
     return User::SyscallErrorInvalidArgument;
 }
 
-// Copies a path argument and resolves it against the process's working directory.
-uint64_t CopyPathFromUser(const ProcessRecord& process, uint64_t address,
-                          char (&path)[User::MaximumPathLength])
+// A path argument as the program passed it and once resolved; syscalls keep it on the heap,
+// since a kernel stack has no room for several along the filesystem's call chains.
+struct UserPath
 {
     char text[User::MaximumPathLength];
-    const uint64_t copied = CopyStringFromUser(process, address, text, sizeof(text));
+    char resolved[Path::MaximumLength];
+};
+
+// Copies a path argument and resolves it against the process's working directory into
+// path->resolved. A path without a terminator in its first MaximumPathLength bytes, or one too
+// long once resolved, fails with SyscallErrorNameTooLong.
+uint64_t CopyPathFromUser(const ProcessRecord& process, uint64_t address,
+                          const Memory::HeapObject<UserPath>& path)
+{
+    if (!path)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    const uint64_t copied = CopyStringFromUser(process, address, path->text, sizeof(path->text));
     if (copied == User::SyscallErrorBadAddress)
     {
         return copied;
     }
-    return copied == 0 && Path::Resolve(process.working_directory, text, path) &&
-                   Path::ReplaceProcSelf(path, process.id)
+    return copied == 0 && Path::Resolve(process.working_directory, path->text, path->resolved) &&
+                   Path::ReplaceProcSelf(path->resolved, process.id)
                ? 0
                : User::SyscallErrorNameTooLong;
 }
@@ -989,18 +1002,29 @@ bool WriteCharacterSyscall(void*, char character)
     return true;
 }
 
+struct ReadLineText
+{
+    char prompt[MaximumPromptLength];
+    char line[User::MaximumCommandLineLength];
+};
+
 uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint64_t prompt)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    char prompt_text[MaximumPromptLength];
-    const uint64_t copied = CopyStringFromUser(*process, prompt, prompt_text, sizeof(prompt_text));
+    const Memory::HeapObject<ReadLineText> text;
+    if (!text)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    const uint64_t copied =
+        CopyStringFromUser(*process, prompt, text->prompt, sizeof(text->prompt));
     if (copied != 0)
     {
         return copied;
     }
-    char line[User::MaximumCommandLineLength];
+    char* line = text->line;
     const size_t line_capacity =
-        capacity < sizeof(line) ? static_cast<size_t>(capacity) : sizeof(line);
+        capacity < sizeof(text->line) ? static_cast<size_t>(capacity) : sizeof(text->line);
     if (line_capacity == 0)
     {
         return User::SyscallErrorInvalidArgument;
@@ -1021,7 +1045,7 @@ uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint
         return access;
     }
     const uint64_t length =
-        terminal->ReadLine(OwnGroup(*process), prompt_text, line, line_capacity);
+        terminal->ReadLine(OwnGroup(*process), text->prompt, line, line_capacity);
     if (User::IsSyscallError(length))
     {
         return length;
@@ -1032,6 +1056,12 @@ uint64_t ReadLineSyscall(void* context, uint64_t buffer, uint64_t capacity, uint
     }
     return length;
 }
+
+struct SpawnText
+{
+    char line[User::MaximumCommandLineLength];
+    char environment[User::MaximumEnvironmentSize];
+};
 
 uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags, uint64_t environment)
 {
@@ -1044,24 +1074,29 @@ uint64_t SpawnSyscall(void* context, uint64_t command_line, uint64_t flags, uint
     {
         return User::SyscallErrorInvalidArgument;
     }
-    char line[User::MaximumCommandLineLength];
-    const uint64_t copied = CopyStringFromUser(*process, command_line, line, sizeof(line));
+    const Memory::HeapObject<SpawnText> text;
+    if (!text)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    const uint64_t copied =
+        CopyStringFromUser(*process, command_line, text->line, sizeof(text->line));
     if (copied != 0)
     {
         return copied;
     }
-    char environment_block[User::MaximumEnvironmentSize];
     if (environment != 0)
     {
         const uint64_t environment_copied =
-            CopyEnvironmentFromUser(*process, environment, environment_block);
+            CopyEnvironmentFromUser(*process, environment, text->environment);
         if (environment_copied != 0)
         {
             return environment_copied;
         }
     }
     ProcessId child;
-    switch (Spawn(line, environment != 0 ? environment_block : nullptr, process->id, flags, &child))
+    switch (Spawn(text->line, environment != 0 ? text->environment : nullptr, process->id, flags,
+                  &child))
     {
     case SpawnStatus::Started:
         return child;
@@ -1376,14 +1411,14 @@ constexpr uint64_t FileChunkSize = 512;
 uint64_t OpenSyscall(void* context, uint64_t path, uint64_t flags)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    char path_text[User::MaximumPathLength];
+    const Memory::HeapObject<UserPath> path_text;
     const uint64_t copied = CopyPathFromUser(*process, path, path_text);
     if (copied != 0)
     {
         return copied;
     }
     const uint64_t descriptor =
-        Files::Open(&process->files, path_text, flags, ControllingTerminal(*process));
+        Files::Open(&process->files, path_text->resolved, flags, ControllingTerminal(*process));
     if (!User::IsSyscallError(descriptor) && (flags & User::OpenNoControllingTerminal) == 0)
     {
         AcquireTerminal(process, descriptor);
@@ -2668,13 +2703,13 @@ uint64_t FileStatusFlagsSyscall(void* context, uint64_t descriptor, uint64_t set
 uint64_t PathSyscall(void* context, uint64_t path, uint64_t (*operation)(const char*))
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    char path_text[User::MaximumPathLength];
+    const Memory::HeapObject<UserPath> path_text;
     const uint64_t copied = CopyPathFromUser(*process, path, path_text);
     if (copied != 0)
     {
         return copied;
     }
-    return operation(path_text);
+    return operation(path_text->resolved);
 }
 
 uint64_t RemoveSyscall(void* context, uint64_t path)
@@ -2695,26 +2730,26 @@ uint64_t RemoveDirectorySyscall(void* context, uint64_t path)
 uint64_t RenameSyscall(void* context, uint64_t from, uint64_t to)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    char from_text[User::MaximumPathLength];
-    char to_text[User::MaximumPathLength];
+    const Memory::HeapObject<UserPath> from_text;
+    const Memory::HeapObject<UserPath> to_text;
     uint64_t copied = CopyPathFromUser(*process, from, from_text);
     if (copied == 0)
     {
         copied = CopyPathFromUser(*process, to, to_text);
     }
-    return copied != 0 ? copied : Files::Rename(from_text, to_text);
+    return copied != 0 ? copied : Files::Rename(from_text->resolved, to_text->resolved);
 }
 
 uint64_t ChangeDirectorySyscall(void* context, uint64_t path)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    char path_text[User::MaximumPathLength];
+    const Memory::HeapObject<UserPath> path_text;
     const uint64_t copied = CopyPathFromUser(*process, path, path_text);
     if (copied != 0)
     {
         return copied;
     }
-    return Files::ChangeDirectory(path_text, process->working_directory);
+    return Files::ChangeDirectory(path_text->resolved, process->working_directory);
 }
 
 // Whether directory is point or lies inside it, by characters alone, as both are resolved.
@@ -2747,30 +2782,39 @@ bool AnyWorkingDirectoryWithin(const char* point)
     return false;
 }
 
+struct MountText
+{
+    char source[User::MaximumPathLength];
+    char type[User::MaximumPathLength];
+};
+
 uint64_t MountSyscall(void* context, uint64_t source, uint64_t target, uint64_t type)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    char source_text[User::MaximumPathLength];
-    char target_text[User::MaximumPathLength];
-    char type_text[User::MaximumPathLength];
-    uint64_t copied = CopyStringFromUser(*process, source, source_text, sizeof(source_text));
+    const Memory::HeapObject<MountText> names;
+    const Memory::HeapObject<UserPath> target_text;
+    if (!names)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    uint64_t copied = CopyStringFromUser(*process, source, names->source, sizeof(names->source));
     if (copied == 0)
     {
         copied = CopyPathFromUser(*process, target, target_text);
     }
     if (copied == 0)
     {
-        copied = CopyStringFromUser(*process, type, type_text, sizeof(type_text));
+        copied = CopyStringFromUser(*process, type, names->type, sizeof(names->type));
     }
-    return copied != 0 ? copied : Files::Mount(source_text, target_text, type_text);
+    return copied != 0 ? copied : Files::Mount(names->source, target_text->resolved, names->type);
 }
 
 uint64_t UnmountSyscall(void* context, uint64_t target)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    char target_text[User::MaximumPathLength];
+    const Memory::HeapObject<UserPath> target_text;
     const uint64_t copied = CopyPathFromUser(*process, target, target_text);
-    return copied != 0 ? copied : Files::Unmount(target_text, AnyWorkingDirectoryWithin);
+    return copied != 0 ? copied : Files::Unmount(target_text->resolved, AnyWorkingDirectoryWithin);
 }
 
 uint64_t ShutdownSyscall(void* context, uint64_t action)
@@ -2812,23 +2856,27 @@ uint64_t CurrentDirectorySyscall(void* context, uint64_t buffer, uint64_t capaci
 uint64_t ReadDirectorySyscall(void* context, uint64_t path, uint64_t index, uint64_t entry)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    char path_text[User::MaximumPathLength];
-    User::DirectoryEntry directory_entry;
+    const Memory::HeapObject<UserPath> path_text;
+    const Memory::HeapObject<User::DirectoryEntry> directory_entry;
     const uint64_t copied = CopyPathFromUser(*process, path, path_text);
     if (copied != 0)
     {
         return copied;
     }
-    if (!UserRangeWritable(*process, entry, sizeof(directory_entry)))
+    if (!directory_entry)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    if (!UserRangeWritable(*process, entry, sizeof(User::DirectoryEntry)))
     {
         return User::SyscallErrorBadAddress;
     }
-    const uint64_t result = Files::ReadDirectory(path_text, index, &directory_entry);
+    const uint64_t result = Files::ReadDirectory(path_text->resolved, index, &*directory_entry);
     if (User::IsSyscallError(result))
     {
         return result;
     }
-    return CopyToUser(*process, entry, &directory_entry, sizeof(directory_entry))
+    return CopyToUser(*process, entry, &*directory_entry, sizeof(User::DirectoryEntry))
                ? 0
                : User::SyscallErrorBadAddress;
 }
@@ -2842,14 +2890,14 @@ uint64_t CopyStatusToUser(const ProcessRecord& process, uint64_t address,
 uint64_t StatSyscall(void* context, uint64_t path, uint64_t status)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
-    char path_text[User::MaximumPathLength];
+    const Memory::HeapObject<UserPath> path_text;
     const uint64_t copied = CopyPathFromUser(*process, path, path_text);
     if (copied != 0)
     {
         return copied;
     }
     User::FileStatus file_status = {};
-    const uint64_t result = Files::Stat(path_text, &file_status);
+    const uint64_t result = Files::Stat(path_text->resolved, &file_status);
     return User::IsSyscallError(result) ? result : CopyStatusToUser(*process, status, file_status);
 }
 
@@ -3271,6 +3319,19 @@ uint64_t RunUserProgram(void* context)
     return program->execution_context.exit_status;
 }
 
+namespace
+{
+
+// Spawn's buffers, which together would take a fifth of a kernel stack.
+struct SpawnBuffers
+{
+    User::ProgramArguments arguments;
+    char working_directory[User::MaximumPathLength];
+    char path[Path::MaximumLength];
+};
+
+} // namespace
+
 SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId parent,
                   uint64_t flags, ProcessId* process_id)
 {
@@ -3278,9 +3339,14 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
     {
         return SpawnStatus::InvalidArguments;
     }
+    const Memory::HeapObject<SpawnBuffers> buffers;
+    if (!buffers)
+    {
+        return SpawnStatus::NoResources;
+    }
+    User::ProgramArguments& arguments = buffers->arguments;
     // The arguments block holds pointers into itself, so its address is chosen first.
     const UserLayout layout = RandomUserLayout();
-    User::ProgramArguments arguments;
     if (!BuildProgramArguments(command_line, layout.arguments_address, &arguments) ||
         !CopyEnvironment(environment, User::MaximumEnvironmentSize, &arguments))
     {
@@ -3292,27 +3358,27 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
     }
     // The first argument, without the quotes that may group a path with spaces.
     const char* program = arguments.argument_storage;
-    char working_directory[User::MaximumPathLength] = "/";
     {
+        char (&parent_directory)[User::MaximumPathLength] = buffers->working_directory;
+        parent_directory[0] = '/';
         Sync::SpinLockGuard guard(process_lock);
         const ProcessRecord* parent_record = FindProcessLocked(parent);
-        for (size_t index = 0; parent_record != nullptr && index < sizeof(working_directory);
+        for (size_t index = 0; parent_record != nullptr && index < sizeof(parent_directory);
              ++index)
         {
-            working_directory[index] = parent_record->working_directory[index];
-            if (working_directory[index] == '\0')
+            parent_directory[index] = parent_record->working_directory[index];
+            if (parent_directory[index] == '\0')
             {
                 break;
             }
         }
     }
-    char path[Path::MaximumLength];
-    if (!BuildProgramPath(program, working_directory, path))
+    if (!BuildProgramPath(program, buffers->working_directory, buffers->path))
     {
         return SpawnStatus::NameTooLong;
     }
     Files::ProgramFile file;
-    switch (file.Open(path))
+    switch (file.Open(buffers->path))
     {
     case 0:
         break;

@@ -1,6 +1,7 @@
 #include "command_line.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 
 constexpr char Help[] = "usage: cat [file]\n"
@@ -23,9 +24,12 @@ int main(int argc, char** argv)
     FILE* file = argc == 2 ? fopen(name, "r") : stdin;
     if (file == nullptr && errno == ENOENT && argc == 2 && name[0] != '/')
     {
-        char system_path[96];
-        snprintf(system_path, sizeof(system_path), "/system/%s", name);
-        file = fopen(system_path, "r");
+        char system_path[PATH_MAX];
+        const int length = snprintf(system_path, sizeof(system_path), "/system/%s", name);
+        if (length > 0 && static_cast<size_t>(length) < sizeof(system_path))
+        {
+            file = fopen(system_path, "r");
+        }
     }
     if (file == nullptr)
     {

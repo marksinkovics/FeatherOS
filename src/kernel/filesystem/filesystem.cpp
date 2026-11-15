@@ -13,6 +13,11 @@ bool Driver::Stat(const char* /*path*/, FileInfo* /*info*/)
     return false;
 }
 
+bool Driver::StatNode(const Node& /*node*/, FileInfo* /*info*/)
+{
+    return false;
+}
+
 bool Driver::Read(const Node& /*node*/, uint64_t /*size*/, uint64_t /*offset*/, void* /*buffer*/,
                   uint64_t /*length*/, uint64_t* /*bytes_read*/)
 {

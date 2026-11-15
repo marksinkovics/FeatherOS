@@ -19,6 +19,8 @@ using Filesystem::Driver;
 constexpr char SystemPoint[] = "/system";
 constexpr char DiskType[] = "fat16";
 constexpr char Ext2Type[] = "ext2";
+constexpr uint32_t RootDirectoryMode = 0755;
+constexpr uint64_t RootSerialNumber = 1;
 
 struct BuiltIn
 {
@@ -125,6 +127,12 @@ bool HasSize(const FileHandle& file)
     return !file.driver->Attributes().devices;
 }
 
+uint64_t DeviceOf(const Driver* driver)
+{
+    Sync::SpinLockGuard guard(mount_lock);
+    return mounts.DeviceOf(driver);
+}
+
 void CopyText(char* destination, size_t capacity, const char* source)
 {
     size_t index = 0;
@@ -196,15 +204,13 @@ bool MountBlockDevice()
 
 bool LoadEtc()
 {
-    char name[64];
-    uint64_t size;
-    for (uint32_t index = 0; Initramfs::ReadDirectory("etc", index, name, &size); ++index)
+    char name[Initramfs::NameCapacity];
+    Initramfs::File archive_file;
+    for (uint32_t index = 0; Initramfs::ReadDirectory("etc", index, name, &archive_file); ++index)
     {
-        Initramfs::File archive_file;
         uint32_t node;
         uint64_t written;
-        if (!Initramfs::Open("etc", name, &archive_file) ||
-            (!Tmpfs::Create(Tmpfs::Root::Etc, name, &node) &&
+        if ((!Tmpfs::Create(Tmpfs::Root::Etc, name, &node) &&
              !(Tmpfs::Open(Tmpfs::Root::Etc, name, &node) && Tmpfs::Truncate(node, 0))) ||
             !Tmpfs::Write(node, 0, archive_file.data, archive_file.size, &written))
         {
@@ -346,9 +352,45 @@ bool Stat(const char* path, FileInfo* info)
     {
         return false;
     }
-    info->device = false;
+    *info = {};
     const Use use(path);
-    return use.driver != nullptr && *use.inner != '\0' && use.driver->Stat(use.inner, info);
+    if (use.driver == nullptr || !use.driver->Stat(use.inner, info))
+    {
+        // "/" with nothing mounted there holds the other mount points, and a mount point is a
+        // directory even when its driver cannot describe its root.
+        if (!(use.driver == nullptr ? IsRoot(path) : path[0] == '/' && *use.inner == '\0'))
+        {
+            return false;
+        }
+        *info = {};
+        info->node = RootSerialNumber;
+        info->mode = User::ModeDirectory | RootDirectoryMode;
+        info->link_count = 1;
+    }
+    if (use.driver != nullptr)
+    {
+        info->device = DeviceOf(use.driver);
+    }
+    return true;
+}
+
+bool StatOpen(const FileHandle& file, FileInfo* info)
+{
+    if (info == nullptr || !file.open || file.driver == nullptr)
+    {
+        return false;
+    }
+    *info = {};
+    if (!file.driver->StatNode(file.node, info))
+    {
+        return false;
+    }
+    if (HasSize(file))
+    {
+        info->size = file.size;
+    }
+    info->device = DeviceOf(file.driver);
+    return true;
 }
 
 void Close(FileHandle* file)
@@ -424,15 +466,28 @@ bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry*
         return false;
     }
     const Use use(path);
+    Driver* child = nullptr;
+    bool mount_point = false;
     {
         Sync::SpinLockGuard guard(mount_lock);
-        if (mounts.ChildAt(path, index, entry))
+        mount_point = mounts.AcquireChild(path, index, entry, &child);
+        if (!mount_point)
         {
-            return true;
+            index -= mounts.ChildCount(path);
         }
-        index -= mounts.ChildCount(path);
     }
-    return use.driver != nullptr && use.driver->ReadDirectory(use.inner, index, entry);
+    if (!mount_point)
+    {
+        return use.driver != nullptr && use.driver->ReadDirectory(use.inner, index, entry);
+    }
+    // A mount point's node is its filesystem's root, as stat reports it.
+    FileInfo root = {};
+    if (child != nullptr && child->Stat("", &root))
+    {
+        entry->node = root.node;
+    }
+    Release(child);
+    return true;
 }
 
 bool IsDirectory(const char* path)

@@ -218,15 +218,15 @@ bool Open(const char* directory, const char* name, File* file)
         });
 }
 
-bool ReadDirectory(const char* directory, uint32_t index, char (&name)[64], uint64_t* size)
+bool ReadDirectory(const char* directory, uint32_t index, char (&name)[NameCapacity], File* file)
 {
-    if (directory == nullptr || size == nullptr)
+    if (directory == nullptr || file == nullptr)
     {
         return false;
     }
     uint32_t listed = 0;
     return ForEachFile(
-        [&](const TarHeader& header, const uint8_t*, uint64_t file_size)
+        [&](const TarHeader& header, const uint8_t* data, uint64_t file_size)
         {
             char path[FullPathCapacity];
             const char* inner = FullPath(header, path) ? InDirectory(path, directory) : nullptr;
@@ -248,7 +248,8 @@ bool ReadDirectory(const char* directory, uint32_t index, char (&name)[64], uint
                 name[character] = inner[character];
             }
             name[length] = '\0';
-            *size = file_size;
+            file->data = data;
+            file->size = file_size;
             return true;
         });
 }

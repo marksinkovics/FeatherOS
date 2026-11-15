@@ -29,13 +29,16 @@ std::string Inner(const MountTable& table, const char* path, Driver* expected)
     return inner;
 }
 
-std::vector<std::string> Children(const MountTable& table, const char* directory)
+std::vector<std::string> Children(MountTable& table, const char* directory)
 {
     std::vector<std::string> names;
     FeatherOS::Filesystem::DirectoryEntry entry{};
-    for (uint32_t index = 0; table.ChildAt(directory, index, &entry); ++index)
+    Driver* driver = nullptr;
+    for (uint32_t index = 0; table.AcquireChild(directory, index, &entry, &driver); ++index)
     {
-        REQUIRE(entry.directory);
+        REQUIRE(entry.type == FeatherOS::User::ModeDirectory);
+        REQUIRE(driver != nullptr);
+        table.Release(driver);
         names.emplace_back(entry.name);
     }
     REQUIRE(names.size() == table.ChildCount(directory));

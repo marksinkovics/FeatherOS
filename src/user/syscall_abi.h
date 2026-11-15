@@ -1,6 +1,7 @@
 #ifndef FEATHEROS_USER_SYSCALL_ABI_H
 #define FEATHEROS_USER_SYSCALL_ABI_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 // Syscall numbers and result codes shared by the kernel and user programs.
@@ -141,7 +142,11 @@ constexpr uint64_t OpenNonBlocking = 1U << 6;
 // A session leader without a controlling terminal takes the first terminal it opens, unless it
 // passes this flag.
 constexpr uint64_t OpenNoControllingTerminal = 1U << 7;
-constexpr uint64_t MaximumPathLength = 64;
+// PATH_MAX: a path, its terminator included, as a program passes it and once it is resolved
+// against the working directory; longer ones fail with SyscallErrorNameTooLong. NAME_MAX: one
+// component, without its terminator.
+constexpr uint64_t MaximumPathLength = 1024;
+constexpr uint64_t MaximumNameLength = 255;
 // Descriptors 0-2 start as the console, unless the parent passed other files there. The console
 // is a terminal: in its default mode a read returns one line, ending in '\n'. On a process's
 // controlling terminal only the foreground group may read or change the mode: another group's
@@ -263,13 +268,34 @@ struct SocketMessage
     uint64_t address;
 };
 
+// A mode's type bits, with Linux's values, as st_mode holds them; the low 12 bits are the
+// permissions (07777). A directory entry's type is the same bits shifted down, as d_type.
+constexpr uint32_t ModeTypeMask = 0170000;
+constexpr uint32_t ModeFifo = 0010000;
+constexpr uint32_t ModeCharacterDevice = 0020000;
+constexpr uint32_t ModeDirectory = 0040000;
+constexpr uint32_t ModeBlockDevice = 0060000;
+constexpr uint32_t ModeRegular = 0100000;
+constexpr uint32_t ModeSymbolicLink = 0120000;
+constexpr uint32_t ModeSocket = 0140000;
+constexpr uint32_t ModePermissionMask = 07777;
+constexpr uint32_t EntryTypeShift = 12;
+
+// ReadDirectory's entry. The node is the one Stat reports for the file, or 0 when the
+// filesystem cannot tell; size is 0 for directories.
 struct DirectoryEntry
 {
-    // The long name if the file has one, otherwise its 8.3 name, and a terminator.
-    char name[64];
-    bool directory;
+    uint64_t node;
     uint64_t size;
+    // The mode's type bits shifted down by EntryTypeShift (DT_DIR and the rest); 0 if unknown.
+    uint32_t type;
+    uint32_t reserved;
+    char name[MaximumNameLength + 1];
 };
+
+static_assert(sizeof(DirectoryEntry) == 280 && offsetof(DirectoryEntry, size) == 8 &&
+                  offsetof(DirectoryEntry, type) == 16 && offsetof(DirectoryEntry, name) == 24,
+              "the kernel and the C library share DirectoryEntry's layout");
 
 enum class FileType : uint32_t
 {
@@ -278,19 +304,53 @@ enum class FileType : uint32_t
     Regular = 1,
     Directory = 2,
     Terminal = 3,
-    // Under /dev.
+    // Under /dev, a pseudo-terminal's master, or an ext2 device node.
     Device = 4,
     Pipe = 5,
     Socket = 6,
+    SymbolicLink = 7,
 };
 
+// Since 1970-01-01 UTC.
+struct FileTime
+{
+    int64_t seconds;
+    uint32_t nanoseconds;
+    uint32_t reserved;
+};
+
+// Stat's and StatDescriptor's result, which the C library turns into struct stat. Every mount
+// has a device number of its own, and node numbers are unique within it; pipes, sockets and
+// terminals have device 0 and a node number of their own. Filesystems without owners or times,
+// such as FAT16 and the virtual ones, report 0 for them.
 struct FileStatus
 {
+    uint64_t device;
+    uint64_t node;
+    // Type and permission bits; permissions are stored, not enforced.
+    uint32_t mode;
+    uint32_t link_count;
+    uint32_t owner;
+    uint32_t group;
     uint64_t size;
+    FileTime access_time;
+    FileTime modify_time;
+    FileTime change_time;
+    // The kind of open file, which tells terminals apart from the other character devices.
     FileType type;
-    // Files under /system and /proc cannot be changed.
+    // Nothing can be written there: /system, /proc, a read-only mount, or a pipe's read end.
     bool read_only;
 };
+
+static_assert(sizeof(FileTime) == 16 && sizeof(FileStatus) == 96 &&
+                  offsetof(FileStatus, node) == 8 && offsetof(FileStatus, mode) == 16 &&
+                  offsetof(FileStatus, link_count) == 20 && offsetof(FileStatus, owner) == 24 &&
+                  offsetof(FileStatus, group) == 28 && offsetof(FileStatus, size) == 32 &&
+                  offsetof(FileStatus, access_time) == 40 &&
+                  offsetof(FileStatus, modify_time) == 56 &&
+                  offsetof(FileStatus, change_time) == 72 && offsetof(FileStatus, type) == 88 &&
+                  offsetof(FileStatus, read_only) == 92,
+              "the kernel and the C library share FileStatus's layout");
 
 // Results at or above SyscallErrorBase report failures instead of values. As on Linux, the top
 // 4095 values are reserved, which no size, address, or process ID ever reaches.

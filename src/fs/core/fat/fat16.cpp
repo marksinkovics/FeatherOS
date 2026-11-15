@@ -49,9 +49,10 @@ constexpr std::uint64_t PastTheEnd = UINT64_MAX;
 constexpr NodeId DirectoryNode = NodeId{1} << 63;
 constexpr NodeId LowHalf = 0xFFFFFFFFU;
 
-// FAT has no permissions, so nodes report everything it allows.
-constexpr std::uint32_t FileMode = 0666;
-constexpr std::uint32_t DirectoryMode = 0777;
+// FAT has no permissions, so nodes report what a Unix system gives new files: the owner may
+// write, everyone may read, and directories may be searched.
+constexpr std::uint32_t FileMode = 0644;
+constexpr std::uint32_t DirectoryMode = 0755;
 constexpr std::uint32_t WriteBits = 0222;
 
 using Sector = std::array<std::uint8_t, BytesPerSector>;

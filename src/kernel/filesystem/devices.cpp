@@ -58,6 +58,10 @@ bool ParsePair(const char* text, uint32_t* number)
     return length > 0 && text[length] == '\0';
 }
 
+constexpr uint64_t RootSerialNumber = 1;
+constexpr uint64_t SlaveDirectorySerialNumber = 2;
+constexpr uint64_t FirstDeviceSerialNumber = 3;
+
 void SetEntry(Filesystem::DirectoryEntry* entry, const char* name, bool directory)
 {
     uint32_t length = 0;
@@ -66,7 +70,10 @@ void SetEntry(Filesystem::DirectoryEntry* entry, const char* name, bool director
         entry->name[length] = name[length];
     }
     entry->name[length] = '\0';
-    entry->directory = directory;
+    entry->type = directory ? User::ModeDirectory : User::ModeCharacterDevice;
+    uint32_t node = 0;
+    entry->node =
+        directory ? SlaveDirectorySerialNumber : (Find(name, &node) ? SerialNumber(node) : 0);
     entry->size = 0;
 }
 
@@ -148,6 +155,16 @@ bool IsDirectory(const char* path)
     return *path == '\0' || Equals(path, SlaveDirectory);
 }
 
+uint64_t SerialNumber(uint32_t node)
+{
+    return FirstDeviceSerialNumber + node;
+}
+
+uint64_t DirectorySerialNumber(const char* path)
+{
+    return *path == '\0' ? RootSerialNumber : SlaveDirectorySerialNumber;
+}
+
 void Read(Device device, void* buffer, uint64_t length, uint64_t* bytes_read)
 {
     auto* bytes = static_cast<uint8_t*>(buffer);
@@ -210,6 +227,8 @@ bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry*
             const char name[] = {number < 10 ? static_cast<char>('0' + number) : '1',
                                  number < 10 ? '\0' : static_cast<char>('0' + number - 10), '\0'};
             SetEntry(entry, name, false);
+            entry->node = SerialNumber(static_cast<uint32_t>(Device::PseudoTerminalSlave) |
+                                       (number << PairShift));
             return true;
         }
     }

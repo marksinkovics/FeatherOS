@@ -3,6 +3,7 @@
 
 #include "key_decoder.h"
 
+#include <limits.h>
 #include <stddef.h>
 
 namespace FeatherOS::User
@@ -118,7 +119,7 @@ private:
     SaveFunction m_save;
     void* m_save_context;
     ViBuffer m_buffer;
-    char m_name[64] = {};
+    char m_name[PATH_MAX] = {};
     Mode m_mode = Mode::Normal;
     size_t m_line = 0;
     size_t m_column = 0;

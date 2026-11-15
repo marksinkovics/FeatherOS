@@ -22,7 +22,13 @@ constexpr uint32_t MaximumEntries = 128;
 // All file data together; writes beyond it are short.
 constexpr uint64_t MaximumBytes = 4 * 1024 * 1024;
 
-// Node indices stay valid until the node is removed, and are unique across the roots.
+// Node indices stay valid until the node is removed, and are unique across the roots. Names are
+// at most User::MaximumNameLength bytes.
+// Any file or directory, "" for the root.
+bool Find(Root root, const char* path, uint32_t* node);
+bool IsDirectoryNode(uint32_t node);
+// A node's number for stat and directory entries, never 0.
+uint64_t SerialNumber(uint32_t node);
 bool Open(Root root, const char* path, uint32_t* node);
 bool Create(Root root, const char* path, uint32_t* node);
 uint64_t Size(uint32_t node);

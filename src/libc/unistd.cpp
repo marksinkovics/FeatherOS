@@ -322,14 +322,15 @@ char* getcwd(char* buffer, size_t size)
     return Check<int64_t>(FeatherOS::User::CurrentDirectory(buffer, size)) < 0 ? nullptr : buffer;
 }
 
+// Permissions are not enforced, so only a read-only filesystem refuses writing.
 int access(const char* path, int mode)
 {
-    struct stat status;
-    if (stat(path, &status) != 0)
+    FeatherOS::User::FileStatus status{};
+    if (Check<int>(FeatherOS::User::Stat(path, &status)) < 0)
     {
         return -1;
     }
-    if ((mode & W_OK) != 0 && (status.st_mode & 0200) == 0)
+    if ((mode & W_OK) != 0 && status.read_only)
     {
         errno = EROFS;
         return -1;

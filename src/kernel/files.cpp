@@ -32,6 +32,10 @@ constexpr uint64_t KnownFlags = User::OpenRead | User::OpenWrite | User::OpenCre
                                 User::OpenTruncate | User::OpenAppend | User::OpenCloseOnExec |
                                 User::OpenNonBlocking | User::OpenNoControllingTerminal;
 constexpr uint32_t MaximumOpenDiskFiles = 64;
+// Linux's permissions for terminals, pipes and sockets.
+constexpr uint32_t TerminalMode = 0620;
+constexpr uint32_t PipeMode = 0600;
+constexpr uint32_t SocketMode = 0777;
 
 // Disk, /tmp and /etc files open anywhere in the system, keyed by their filesystem and node. A VFS
 // handle caches the file's size and where its data starts, so a second writer, or removing an
@@ -195,23 +199,92 @@ bool ExistsLocked(const char* path) REQUIRES(file_system_lock)
     return true;
 }
 
+struct PathText
+{
+    char text[User::MaximumPathLength];
+};
+
 // Paths reach Files already resolved to absolute form, so the parent is everything before the
 // last '/'.
 bool ParentExistsLocked(const char* path) REQUIRES(file_system_lock)
 {
-    char parent[User::MaximumPathLength];
+    const Memory::HeapObject<PathText> parent;
+    if (!parent)
+    {
+        return false;
+    }
     uint64_t last_separator = 0;
     uint64_t length = 0;
-    for (; path[length] != '\0' && length < sizeof(parent) - 1; ++length)
+    for (; path[length] != '\0' && length < sizeof(parent->text) - 1; ++length)
     {
-        parent[length] = path[length];
+        parent->text[length] = path[length];
         if (path[length] == '/')
         {
             last_separator = length;
         }
     }
-    parent[last_separator == 0 ? 1 : last_separator] = '\0';
-    return VFS::IsDirectory(parent);
+    parent->text[last_separator == 0 ? 1 : last_separator] = '\0';
+    return VFS::IsDirectory(parent->text);
+}
+
+User::FileTime ToFileTime(const Filesystem::Timestamp& time)
+{
+    return {time.seconds, time.nanoseconds, 0};
+}
+
+// 0 is an ext2 special node whose kind the shared core does not tell.
+User::FileType KindOfMode(uint32_t mode)
+{
+    switch (mode & User::ModeTypeMask)
+    {
+    case User::ModeRegular:
+        return User::FileType::Regular;
+    case User::ModeDirectory:
+        return User::FileType::Directory;
+    case User::ModeCharacterDevice:
+    case User::ModeBlockDevice:
+        return User::FileType::Device;
+    case User::ModeFifo:
+        return User::FileType::Pipe;
+    case User::ModeSocket:
+        return User::FileType::Socket;
+    case User::ModeSymbolicLink:
+        return User::FileType::SymbolicLink;
+    default:
+        return User::FileType::Unknown;
+    }
+}
+
+User::FileStatus ToFileStatus(const VFS::FileInfo& info, bool read_only)
+{
+    return {
+        .device = info.device,
+        .node = info.node,
+        .mode = info.mode,
+        .link_count = info.link_count,
+        .owner = info.owner,
+        .group = info.group,
+        .size = info.size,
+        .access_time = ToFileTime(info.access_time),
+        .modify_time = ToFileTime(info.modify_time),
+        .change_time = ToFileTime(info.change_time),
+        .type = KindOfMode(info.mode),
+        .read_only = read_only,
+    };
+}
+
+// Pipes, sockets and terminals live outside the mounts; their address names them.
+User::FileStatus UnmountedStatus(const void* object, uint32_t mode, User::FileType type,
+                                 uint64_t size, bool read_only)
+{
+    User::FileStatus status = {};
+    status.node = reinterpret_cast<uintptr_t>(object);
+    status.mode = mode;
+    status.link_count = 1;
+    status.size = size;
+    status.type = type;
+    status.read_only = read_only;
+    return status;
 }
 
 // Why an operation that changes path could not create it.
@@ -957,17 +1030,24 @@ uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* e
     {
         return MissingErrorLocked(path);
     }
-    Filesystem::DirectoryEntry disk_entry;
-    if (!VFS::ReadDirectory(path, static_cast<uint32_t>(index), &disk_entry))
+    const Memory::HeapObject<Filesystem::DirectoryEntry> found;
+    if (!found)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    if (!VFS::ReadDirectory(path, static_cast<uint32_t>(index), &*found))
     {
         return User::SyscallErrorNotFound;
     }
-    for (uint32_t offset = 0; offset < sizeof(entry->name); ++offset)
+    static_assert(sizeof(entry->name) == sizeof(found->name));
+    *entry = {};
+    for (uint32_t offset = 0; offset < sizeof(entry->name) && found->name[offset] != '\0'; ++offset)
     {
-        entry->name[offset] = disk_entry.name[offset];
+        entry->name[offset] = found->name[offset];
     }
-    entry->directory = disk_entry.directory;
-    entry->size = disk_entry.size;
+    entry->node = found->node;
+    entry->size = found->size;
+    entry->type = (found->type & User::ModeTypeMask) >> User::EntryTypeShift;
     return 0;
 }
 
@@ -1078,8 +1158,12 @@ uint64_t RemoveDirectory(const char* path)
     {
         return User::SyscallErrorBusy;
     }
-    Filesystem::DirectoryEntry entry;
-    if (VFS::ReadDirectory(path, 0, &entry))
+    const Memory::HeapObject<Filesystem::DirectoryEntry> entry;
+    if (!entry)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    if (VFS::ReadDirectory(path, 0, &*entry))
     {
         return User::SyscallErrorNotEmpty;
     }
@@ -1162,20 +1246,12 @@ uint64_t Stat(const char* path, User::FileStatus* status)
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
-    status->read_only = VFS::IsReadOnly(path);
-    if (VFS::IsDirectory(path))
-    {
-        status->type = User::FileType::Directory;
-        status->size = 0;
-        return 0;
-    }
     VFS::FileInfo info;
     if (!VFS::Stat(path, &info))
     {
         return User::SyscallErrorNotFound;
     }
-    status->type = info.device ? User::FileType::Device : User::FileType::Regular;
-    status->size = info.size;
+    *status = ToFileStatus(info, VFS::IsReadOnly(path));
     return 0;
 }
 
@@ -1192,29 +1268,35 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
         return User::SyscallErrorBadDescriptor;
     }
     const OpenFile* file = slot->file;
-    if (file->kind == Kind::Terminal)
+    switch (file->kind)
     {
-        *status = {0, User::FileType::Terminal, false};
+    case Kind::Terminal:
+        *status = UnmountedStatus(
+            file->terminal != nullptr ? static_cast<const void*>(file->terminal) : file,
+            User::ModeCharacterDevice | TerminalMode, User::FileType::Terminal, 0, false);
         return 0;
+    case Kind::Pipe:
+        *status = UnmountedStatus(file->pipe, User::ModeFifo | PipeMode, User::FileType::Pipe,
+                                  Pipes::Buffered(file->pipe), !file->writable);
+        return 0;
+    case Kind::Socket:
+        *status = UnmountedStatus(file->socket, User::ModeSocket | SocketMode,
+                                  User::FileType::Socket, 0, false);
+        return 0;
+    case Kind::PseudoTerminalMaster:
+        *status = UnmountedStatus(file->pair, User::ModeCharacterDevice | TerminalMode,
+                                  User::FileType::Device, 0, false);
+        return 0;
+    case Kind::File:
+    case Kind::None:
+        break;
     }
-    if (file->kind == Kind::Pipe)
+    VFS::FileInfo info;
+    if (!VFS::StatOpen(file->handle, &info))
     {
-        *status = {Pipes::Buffered(file->pipe), User::FileType::Pipe, !file->writable};
-        return 0;
+        return User::SyscallErrorFailed;
     }
-    if (file->kind == Kind::Socket)
-    {
-        *status = {0, User::FileType::Socket, false};
-        return 0;
-    }
-    if (file->kind == Kind::PseudoTerminalMaster)
-    {
-        *status = {0, User::FileType::Device, false};
-        return 0;
-    }
-    status->type = VFS::IsDevice(file->handle) ? User::FileType::Device : User::FileType::Regular;
-    status->size = file->handle.size;
-    status->read_only = !VFS::IsWritable(file->handle);
+    *status = ToFileStatus(info, !VFS::IsWritable(file->handle));
     return 0;
 }
 

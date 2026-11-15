@@ -137,6 +137,7 @@ bool MountTable::Add(const char* point, Filesystem::Driver* driver)
     }
     entry.point[index] = '\0';
     entry.driver = driver;
+    entry.device = next_device++;
     entry.users = 0;
     entry.unmounting = false;
     return true;
@@ -269,10 +270,10 @@ void MountTable::CancelUnmount(const char* point)
     }
 }
 
-bool MountTable::ChildAt(const char* directory, uint32_t index,
-                         Filesystem::DirectoryEntry* entry) const
+bool MountTable::AcquireChild(const char* directory, uint32_t index,
+                              Filesystem::DirectoryEntry* entry, Filesystem::Driver** driver)
 {
-    if (directory == nullptr || entry == nullptr || directory[0] != '/')
+    if (directory == nullptr || entry == nullptr || driver == nullptr || directory[0] != '/')
     {
         return false;
     }
@@ -291,8 +292,15 @@ bool MountTable::ChildAt(const char* directory, uint32_t index,
             entry->name[length] = name[length];
         }
         entry->name[length] = '\0';
-        entry->directory = true;
+        entry->type = User::ModeDirectory;
+        entry->node = 0;
         entry->size = 0;
+        *driver = nullptr;
+        if (!entries[position].unmounting)
+        {
+            ++entries[position].users;
+            *driver = entries[position].driver;
+        }
         return true;
     }
     return false;
@@ -314,6 +322,18 @@ uint32_t MountTable::ChildCount(const char* directory) const
         }
     }
     return children;
+}
+
+uint64_t MountTable::DeviceOf(const Filesystem::Driver* driver) const
+{
+    for (uint32_t index = 0; index < count; ++index)
+    {
+        if (entries[index].driver == driver)
+        {
+            return entries[index].device;
+        }
+    }
+    return 0;
 }
 
 int32_t MountTable::IndexOf(const char* point) const

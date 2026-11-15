@@ -1,6 +1,7 @@
 #ifndef FEATHEROS_LIBC_SPAWN_H
 #define FEATHEROS_LIBC_SPAWN_H
 
+#include <limits.h>
 #include <sys/cdefs.h>
 #include <sys/types.h>
 
@@ -27,7 +28,7 @@ struct __posix_spawn_file_action
     int descriptor;
     int source;
     int flags;
-    char path[64];
+    char path[PATH_MAX];
 };
 
 typedef struct
@@ -59,7 +60,7 @@ int posix_spawnp(pid_t* pid, const char* file, const posix_spawn_file_actions_t*
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t* file_actions);
 int posix_spawn_file_actions_destroy(posix_spawn_file_actions_t* file_actions);
 // Each fails with ENOMEM past POSIX_SPAWN_MAXIMUM_FILE_ACTIONS, and addopen with ENAMETOOLONG
-// for a path over 63 characters.
+// for a path of PATH_MAX characters or more.
 int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t* file_actions, int descriptor,
                                      int target);
 int posix_spawn_file_actions_addopen(posix_spawn_file_actions_t* file_actions, int descriptor,

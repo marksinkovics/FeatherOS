@@ -51,6 +51,13 @@ EXT2_LINKS = {
     "fast-link": "hello.txt",
     "slow-link": "docs/notes/" + "../notes/" * 5 + "deep.txt",
 }
+# Owners and modes, which `ls -l` in the shell test shows: whatever builds
+# the image, everything but the root and lost+found belongs to user and group
+# 1000, files are 0644, directories 0755 and links 0777, and hello.txt is
+# 0640, owned by group 100.
+EXT2_OWNER = 1000
+EXT2_SPECIAL_MODES = {"hello.txt": 0o640}
+EXT2_SPECIAL_GROUPS = {"hello.txt": 100}
 E2FSPROGS_DIRECTORIES = (
     "/opt/homebrew/opt/e2fsprogs/sbin",
     "/usr/local/opt/e2fsprogs/sbin",
@@ -150,23 +157,73 @@ def find_mke2fs():
     return found
 
 
+def find_debugfs(mke2fs):
+    beside = Path(mke2fs).parent / "debugfs"
+    if os.access(beside, os.X_OK):
+        return str(beside)
+    found = shutil.which("debugfs") or shutil.which(
+        "debugfs", path="/usr/sbin:/sbin"
+    )
+    if found is None:
+        sys.exit("create_test_disk.py: debugfs not found beside mke2fs")
+    return found
+
+
+def set_owners(debugfs, volume_path, names, environment):
+    commands = []
+    for name in names:
+        group = EXT2_SPECIAL_GROUPS.get(name, EXT2_OWNER)
+        commands.append(f"sif /{name} uid {EXT2_OWNER}")
+        commands.append(f"sif /{name} gid {group}")
+        if name in EXT2_LINKS:
+            commands.append(f"sif /{name} mode 0120777")
+    with tempfile.NamedTemporaryFile("w", suffix=".txt") as command_file:
+        command_file.write("\n".join(commands) + "\n")
+        command_file.flush()
+        result = subprocess.run(
+            [debugfs, "-w", "-f", command_file.name, str(volume_path)],
+            capture_output=True,
+            text=True,
+            env=environment,
+            check=False,
+        )
+    # debugfs echoes each command after "debugfs:" and exits 0 even when one
+    # fails, so any other line is an error.
+    errors = [
+        line
+        for line in (result.stdout + result.stderr).splitlines()
+        if line and not line.startswith("debugfs")
+    ]
+    if result.returncode != 0 or errors:
+        sys.exit("create_test_disk.py: debugfs failed:\n" + "\n".join(errors))
+
+
 def make_ext2_volume(volume_path, sector_count):
     with tempfile.TemporaryDirectory() as source_name:
         source = Path(source_name)
+        source.chmod(0o755)
         for name, contents in EXT2_FILES.items():
             path = source / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(contents)
+            path.chmod(EXT2_SPECIAL_MODES.get(name, 0o644))
         for name, target in EXT2_LINKS.items():
             (source / name).symlink_to(target)
+        names = sorted(
+            str(path.relative_to(source)) for path in source.rglob("*")
+        )
+        for path in source.rglob("*"):
+            if path.is_dir() and not path.is_symlink():
+                path.chmod(0o755)
         for path in sorted(source.rglob("*"), reverse=True):
             os.utime(path, (EXT2_TIME, EXT2_TIME), follow_symlinks=False)
         environment = dict(os.environ, E2FSPROGS_FAKE_TIME=str(EXT2_TIME))
+        mke2fs = find_mke2fs()
         # mke2fs warns about 128-byte inodes even with -q, so its output is
         # shown only when it fails.
         result = subprocess.run(
             [
-                find_mke2fs(),
+                mke2fs,
                 "-q",
                 "-F",
                 "-t",
@@ -196,6 +253,7 @@ def make_ext2_volume(volume_path, sector_count):
             f"create_test_disk.py: mke2fs failed:\n{result.stdout}"
             f"{result.stderr}"
         )
+    set_owners(find_debugfs(mke2fs), volume_path, names, environment)
 
 
 def main():

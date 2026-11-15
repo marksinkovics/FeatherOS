@@ -36,7 +36,8 @@ bool Append(const char* text, char (&result)[MaximumLength], uint32_t* length)
             text += component_length;
             continue;
         }
-        if (*length + 1 + component_length >= MaximumLength)
+        if (component_length > User::MaximumNameLength ||
+            *length + 1 + component_length >= MaximumLength)
         {
             return false;
         }

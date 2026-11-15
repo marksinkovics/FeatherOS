@@ -51,9 +51,22 @@ awk -v directory="$source/many" 'BEGIN {
     }
 }'
 printf '#!/bin/sh\n' >"$source/tool"
+# A 200-byte name, four directories of them deep under a/, so the file's path in the volume is
+# 1006 bytes: close to FeatherOS's PATH_MAX of 1024 once mounted. That is past macOS's own limit
+# for the source tree, so it is made one directory at a time, and chmod runs from inside each.
+long=$(awk 'BEGIN { while (length(name) < 200) name = name "a-long-name-"; print substr(name, 1, 200) }')
+(
+    cd "$source/a"
+    for _ in 1 2 3 4; do
+        mkdir "$long"
+        cd "$long"
+    done
+    printf 'far\n' >"$long"
+)
 # Fixed modes, whatever the umask.
-find "$source" -type d -exec chmod 0755 {} +
-find "$source" -type f -exec chmod 0644 {} +
+chmod 0755 "$source"
+find "$source" -mindepth 1 -type d -execdir chmod 0755 {} +
+find "$source" -mindepth 1 -type f -execdir chmod 0644 {} +
 chmod 0640 "$source/hello.txt"
 chmod 4755 "$source/tool"
 mkfifo -m 0644 "$source/pipe"

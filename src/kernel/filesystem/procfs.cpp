@@ -1,5 +1,6 @@
 #include "procfs.h"
 
+#include "kernel/memory/heap.h"
 #include "kernel/string/format.h"
 
 namespace FeatherOS::Procfs
@@ -22,6 +23,7 @@ constexpr char MemoryInfoName[] = "meminfo";
 constexpr char SystemStatName[] = "stat";
 constexpr char MountsName[] = "mounts";
 constexpr const char* FixedNames[] = {MemoryInfoName, SystemStatName, MountsName};
+constexpr Kind FixedKinds[] = {Kind::MemoryInfo, Kind::SystemStat, Kind::Mounts};
 constexpr uint32_t FixedCount = sizeof(FixedNames) / sizeof(FixedNames[0]);
 constexpr char StatusName[] = "status";
 
@@ -121,7 +123,34 @@ size_t Length(const char* text)
     return length;
 }
 
-void SetEntry(Filesystem::DirectoryEntry* entry, const char* name, bool directory)
+// The root is 1 and the fixed files follow it; each process has two numbers past them.
+constexpr uint64_t RootSerialNumber = 1;
+constexpr uint64_t FirstProcessSerialNumber = 16;
+
+uint64_t SerialNumber(Kind kind, uint64_t process_id)
+{
+    switch (kind)
+    {
+    case Kind::Root:
+        return RootSerialNumber;
+    case Kind::MemoryInfo:
+        return RootSerialNumber + 1;
+    case Kind::SystemStat:
+        return RootSerialNumber + 2;
+    case Kind::Mounts:
+        return RootSerialNumber + 3;
+    case Kind::ProcessDirectory:
+        return FirstProcessSerialNumber + 2 * process_id;
+    case Kind::ProcessStatusFile:
+        return FirstProcessSerialNumber + 2 * process_id + 1;
+    case Kind::None:
+        break;
+    }
+    return 0;
+}
+
+void SetEntry(Filesystem::DirectoryEntry* entry, const char* name, Kind kind,
+              uint64_t process_id = 0)
 {
     uint32_t index = 0;
     for (; name[index] != '\0' && index < sizeof(entry->name) - 1; ++index)
@@ -129,7 +158,9 @@ void SetEntry(Filesystem::DirectoryEntry* entry, const char* name, bool director
         entry->name[index] = name[index];
     }
     entry->name[index] = '\0';
-    entry->directory = directory;
+    const bool directory = kind == Kind::Root || kind == Kind::ProcessDirectory;
+    entry->type = directory ? User::ModeDirectory : User::ModeRegular;
+    entry->node = SerialNumber(kind, process_id);
     entry->size = 0;
 }
 
@@ -138,11 +169,16 @@ bool FormatMounts(char* buffer)
 {
     buffer[0] = '\0';
     size_t used = 0;
-    MountStatus mount = {};
-    for (uint32_t index = 0; source.mount_at != nullptr && source.mount_at(index, &mount); ++index)
+    const Memory::HeapObject<MountStatus> mount;
+    if (!mount)
+    {
+        return false;
+    }
+    for (uint32_t index = 0; source.mount_at != nullptr && source.mount_at(index, &*mount); ++index)
     {
         if (!String::FormatTo(buffer + used, MaximumFileSize - used, "{} {} {} {} 0 0\n",
-                              mount.source, mount.point, mount.type, mount.read_only ? "ro" : "rw"))
+                              mount->source, mount->point, mount->type,
+                              mount->read_only ? "ro" : "rw"))
         {
             return false;
         }
@@ -245,6 +281,19 @@ bool IsDirectory(const char* path)
     return kind == Kind::Root || kind == Kind::ProcessDirectory;
 }
 
+bool Find(const char* path, uint64_t* serial_number, bool* directory)
+{
+    uint64_t process_id = 0;
+    if (path == nullptr || serial_number == nullptr || directory == nullptr)
+    {
+        return false;
+    }
+    const Kind kind = Classify(path, &process_id);
+    *serial_number = SerialNumber(kind, process_id);
+    *directory = kind == Kind::Root || kind == Kind::ProcessDirectory;
+    return kind != Kind::None;
+}
+
 bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry)
 {
     uint64_t process_id = 0;
@@ -259,7 +308,7 @@ bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry*
         {
             return false;
         }
-        SetEntry(entry, StatusName, false);
+        SetEntry(entry, StatusName, Kind::ProcessStatusFile, process_id);
         return true;
     }
     if (kind != Kind::Root)
@@ -268,7 +317,7 @@ bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry*
     }
     if (index < FixedCount)
     {
-        SetEntry(entry, FixedNames[index], false);
+        SetEntry(entry, FixedNames[index], FixedKinds[index]);
         return true;
     }
     if (source.process_at == nullptr || !source.process_at(index - FixedCount, &process_id))
@@ -280,7 +329,7 @@ bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry*
     {
         return false;
     }
-    SetEntry(entry, name, true);
+    SetEntry(entry, name, Kind::ProcessDirectory, process_id);
     return true;
 }
 

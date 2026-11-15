@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -70,7 +71,8 @@ std::vector<std::string> List(const char* path)
     FeatherOS::Filesystem::DirectoryEntry entry{};
     for (uint32_t index = 0; FeatherOS::VFS::ReadDirectory(path, index, &entry); ++index)
     {
-        names.push_back(std::string(entry.name) + (entry.directory ? "/" : ""));
+        names.push_back(std::string(entry.name) +
+                        (entry.type == FeatherOS::User::ModeDirectory ? "/" : ""));
     }
     return names;
 }
@@ -204,7 +206,9 @@ TEST_CASE("tmpfs directories nest, and names are case-sensitive")
     REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "missing/plan.txt", &node));
     REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "docs/Plan.txt/x", &node));
     REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "docs/..", &node));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, std::string(64, 'n').c_str(), &node));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, std::string(256, 'n').c_str(), &node));
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, std::string(255, 'n').c_str(), &node));
+    REQUIRE(FeatherOS::Tmpfs::Remove(Tmp, std::string(255, 'n').c_str()));
     REQUIRE(FeatherOS::Tmpfs::IsDirectory(Tmp, ""));
     REQUIRE(FeatherOS::Tmpfs::IsDirectory(Tmp, "docs/old"));
     REQUIRE_FALSE(FeatherOS::Tmpfs::IsDirectory(Tmp, "docs/plan.txt"));
@@ -338,6 +342,85 @@ TEST_CASE("/tmp works through file descriptors with the disk's sharing rules")
     REQUIRE(FeatherOS::Files::Close(&table, open_file) == 0);
     REQUIRE(FeatherOS::Files::Rename("/tmp/a.txt", "/tmp/b.txt") == 0);
     REQUIRE(List("/tmp") == std::vector<std::string>{"b.txt"});
+}
+
+TEST_CASE("/tmp holds 200-byte names and paths near PATH_MAX, listed whole")
+{
+    namespace User = FeatherOS::User;
+    FeatherOS::Tmpfs::Reset();
+    const std::string name(200, 'n');
+    std::string path = "/tmp";
+    for (int level = 0; level < 4; ++level)
+    {
+        path += "/" + name;
+        REQUIRE(FeatherOS::Files::MakeDirectory(path.c_str()) == 0);
+    }
+    const std::string directory = path;
+    path += "/" + name;
+    REQUIRE(path.size() == 1009);
+    FeatherOS::Files::Table table{};
+    const uint64_t file =
+        FeatherOS::Files::Open(&table, path.c_str(), OpenWrite | OpenCreate | OpenTruncate);
+    REQUIRE_FALSE(User::IsSyscallError(file));
+    REQUIRE(FeatherOS::Files::Write(&table, file, "far", 3) == 3);
+    FeatherOS::Files::CloseAll(&table);
+    REQUIRE(ReadAll(path.c_str()) == "far");
+    REQUIRE(List(directory.c_str()) == std::vector<std::string>{name});
+
+    User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat(path.c_str(), &status) == 0);
+    REQUIRE(status.mode == (User::ModeRegular | 0644));
+    REQUIRE(status.size == 3);
+    REQUIRE(status.link_count == 1);
+    User::DirectoryEntry entry{};
+    REQUIRE(FeatherOS::Files::ReadDirectory(directory.c_str(), 0, &entry) == 0);
+    REQUIRE(std::string(entry.name) == name);
+    REQUIRE(entry.node == status.node);
+    REQUIRE(entry.type == User::ModeRegular >> User::EntryTypeShift);
+    REQUIRE(entry.size == 3);
+    REQUIRE(FeatherOS::Files::Stat(directory.c_str(), &status) == 0);
+    REQUIRE(status.mode == (User::ModeDirectory | 0755));
+    // Five more characters would pass PATH_MAX.
+    REQUIRE(FeatherOS::Files::MakeDirectory((path.substr(0, 1004) + "/xxxxxxxxxxxxxxx").c_str()) !=
+            0);
+    FeatherOS::Tmpfs::Reset();
+}
+
+TEST_CASE("the virtual filesystems report fixed modes, and mount points their roots' nodes")
+{
+    namespace User = FeatherOS::User;
+    User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat("/dev/null", &status) == 0);
+    REQUIRE(status.mode == (User::ModeCharacterDevice | 0666));
+    REQUIRE(status.node != 0);
+    const uint64_t dev_device = status.device;
+    REQUIRE(dev_device != 0);
+    REQUIRE(FeatherOS::Files::Stat("/dev/zero", &status) == 0);
+    REQUIRE(status.device == dev_device);
+    REQUIRE(FeatherOS::Files::Stat("/proc", &status) == 0);
+    REQUIRE(status.mode == (User::ModeDirectory | 0555));
+    REQUIRE(status.device != dev_device);
+    REQUIRE(FeatherOS::Files::Stat("/proc/mounts", &status) == 0);
+    REQUIRE(status.mode == (User::ModeRegular | 0444));
+    REQUIRE(FeatherOS::Files::Stat("/tmp", &status) == 0);
+    REQUIRE(status.mode == (User::ModeDirectory | 0755));
+
+    std::map<std::string, uint64_t> nodes;
+    User::DirectoryEntry entry{};
+    for (uint64_t index = 0; FeatherOS::Files::ReadDirectory("/", index, &entry) == 0; ++index)
+    {
+        nodes[entry.name] = entry.node;
+    }
+    for (const char* point : {"dev", "proc", "tmp", "etc"})
+    {
+        REQUIRE(FeatherOS::Files::Stat((std::string("/") + point).c_str(), &status) == 0);
+        REQUIRE(nodes.at(point) == status.node);
+    }
+    REQUIRE(FeatherOS::Files::ReadDirectory("/dev", 0, &entry) == 0);
+    REQUIRE(std::string(entry.name) == "null");
+    REQUIRE(entry.type == User::ModeCharacterDevice >> User::EntryTypeShift);
+    REQUIRE(FeatherOS::Files::Stat("/dev/null", &status) == 0);
+    REQUIRE(entry.node == status.node);
 }
 
 TEST_CASE("Spawn reads program files in pieces and keeps them from changing meanwhile")

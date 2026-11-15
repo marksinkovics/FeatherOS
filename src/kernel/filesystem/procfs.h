@@ -54,7 +54,7 @@ struct MountStatus
 {
     const char* source;
     const char* type;
-    char point[64];
+    char point[User::MaximumPathLength];
     bool read_only;
 };
 
@@ -74,6 +74,8 @@ void SetSource(const Source& source);
 // Writes the file's text into buffer (MaximumFileSize bytes) and its length into *length.
 bool Generate(const char* path, char* buffer, size_t* length);
 bool IsDirectory(const char* path);
+// Whether path exists, with its number for stat and whether it is a directory.
+bool Find(const char* path, uint64_t* serial_number, bool* directory);
 bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry);
 
 } // namespace FeatherOS::Procfs

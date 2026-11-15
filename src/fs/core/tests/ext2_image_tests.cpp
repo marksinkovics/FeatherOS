@@ -317,7 +317,25 @@ void CheckVolume(Filesystem& ext2, Expected expected)
     const Attributes directory = Value(ext2.GetAttributes(Value(Walk(ext2, "a"))));
     REQUIRE(directory.type == NodeType::Directory);
     REQUIRE(directory.mode == 0755);
-    REQUIRE(directory.link_count == 3);
+    // Its own entry, ".", and ".." in b and in the long-named directory.
+    REQUIRE(directory.link_count == 4);
+
+    // A 200-byte name, four directories of them deep, as make_ext2_image.sh makes it.
+    std::string long_name;
+    while (long_name.size() < 200)
+    {
+        long_name += "a-long-name-";
+    }
+    long_name.resize(200);
+    std::string deep_path = "a";
+    for (int level = 0; level < 5; ++level)
+    {
+        deep_path += "/" + long_name;
+    }
+    REQUIRE(deep_path.size() == 1006);
+    REQUIRE(ReadAll(ext2, Value(Walk(ext2, deep_path))) == "far\n");
+    REQUIRE(Sorted(List(ext2, Value(Walk(ext2, "a")))) ==
+            std::vector<std::string>{long_name + "/", "b/"});
 
     // Fast and slow symbolic links.
     const NodeId fast = Value(Walk(ext2, "fast-link"));

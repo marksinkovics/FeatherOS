@@ -17,6 +17,44 @@ constexpr size_t MaximumPartitions = 16;
 constexpr uint32_t NewFileMode = 0666;
 constexpr uint32_t NewDirectoryMode = 0777;
 
+// The core's special nodes (devices, FIFOs, sockets) do not say which kind they are, so they
+// report no type.
+uint32_t TypeBits(NodeType type)
+{
+    switch (type)
+    {
+    case NodeType::File:
+        return User::ModeRegular;
+    case NodeType::Directory:
+        return User::ModeDirectory;
+    case NodeType::SymbolicLink:
+        return User::ModeSymbolicLink;
+    case NodeType::Special:
+        break;
+    }
+    return 0;
+}
+
+Timestamp ToTimestamp(const FeatherDisk::Timestamp& time)
+{
+    return {time.seconds, time.nanoseconds};
+}
+
+FileInfo ToFileInfo(const FeatherDisk::Attributes& attributes)
+{
+    FileInfo info = {};
+    info.node = attributes.node;
+    info.size = attributes.size;
+    info.mode = TypeBits(attributes.type) | (attributes.mode & User::ModePermissionMask);
+    info.link_count = attributes.link_count;
+    info.owner = attributes.owner;
+    info.group = attributes.group;
+    info.access_time = ToTimestamp(attributes.access_time);
+    info.modify_time = ToTimestamp(attributes.modify_time);
+    info.change_time = ToTimestamp(attributes.change_time);
+    return info;
+}
+
 // The component of path at or after *position, past any '/'s; empty at the end.
 std::string_view NextComponent(const char* path, size_t* position)
 {
@@ -152,13 +190,26 @@ bool CoreDriver::Open(const char* path, Node* node, uint64_t* size)
 
 bool CoreDriver::Stat(const char* path, FileInfo* info)
 {
-    Node node = {};
-    uint64_t size = 0;
-    if (!Open(path, &node, &size))
+    const Result<NodeId> found = Resolve(path);
+    if (!found)
     {
         return false;
     }
-    info->size = size;
+    return StatNode({*found, 0}, info);
+}
+
+bool CoreDriver::StatNode(const Node& node, FileInfo* info)
+{
+    if (filesystem == nullptr)
+    {
+        return false;
+    }
+    const Result<FeatherDisk::Attributes> attributes = filesystem->GetAttributes(node.id);
+    if (!attributes)
+    {
+        return false;
+    }
+    *info = ToFileInfo(*attributes);
     return true;
 }
 
@@ -313,24 +364,27 @@ bool CoreDriver::ReadDirectory(const char* path, uint32_t index, DirectoryEntry*
             return false;
         }
     }
-    // Longer names than the VFS can carry are cut short.
-    const size_t length =
-        found.name_length < sizeof(entry->name) ? found.name_length : sizeof(entry->name) - 1;
-    for (size_t offset = 0; offset < length; ++offset)
+    static_assert(sizeof(entry->name) > FeatherDisk::MaximumNameLength);
+    if (found.name_length > FeatherDisk::MaximumNameLength)
+    {
+        return false;
+    }
+    for (size_t offset = 0; offset < found.name_length; ++offset)
     {
         entry->name[offset] = found.name[offset];
     }
-    entry->name[length] = '\0';
-    entry->directory = found.type == NodeType::Directory;
+    entry->name[found.name_length] = '\0';
+    entry->type = TypeBits(found.type);
+    entry->node = found.node;
     entry->size = 0;
-    if (!entry->directory)
+    if (found.type != NodeType::Directory)
     {
         const Result<FeatherDisk::Attributes> attributes = filesystem->GetAttributes(found.node);
         if (!attributes)
         {
             return false;
         }
-        entry->size = static_cast<uint32_t>(attributes->size);
+        entry->size = attributes->size;
     }
     return true;
 }

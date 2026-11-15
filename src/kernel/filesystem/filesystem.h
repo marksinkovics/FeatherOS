@@ -1,6 +1,8 @@
 #ifndef FEATHEROS_FILESYSTEM_FILESYSTEM_H
 #define FEATHEROS_FILESYSTEM_FILESYSTEM_H
 
+#include "user/syscall_abi.h"
+
 #include <stdint.h>
 
 // The interface between the VFS and a mounted filesystem. Paths reaching a driver are relative to
@@ -10,16 +12,38 @@ namespace FeatherOS::Filesystem
 
 struct DirectoryEntry
 {
-    // The long name if the entry has one, otherwise "NAME.EXT", and a terminator.
-    char name[64];
-    bool directory;
-    uint32_t size;
+    // A FAT long name if the entry has one, otherwise "NAME.EXT", and a terminator.
+    char name[User::MaximumNameLength + 1];
+    // The mode's type bits (User::ModeDirectory and the rest); 0 if unknown.
+    uint32_t type;
+    // As FileInfo::node; 0 if unknown.
+    uint64_t node;
+    // 0 for directories.
+    uint64_t size;
+};
+
+// Since 1970-01-01 UTC.
+struct Timestamp
+{
+    int64_t seconds;
+    uint32_t nanoseconds;
 };
 
 struct FileInfo
 {
+    // Unique within the filesystem while the file exists.
+    uint64_t node;
     uint64_t size;
-    bool device;
+    // Type and permission bits, as st_mode holds them.
+    uint32_t mode;
+    uint32_t link_count;
+    uint32_t owner;
+    uint32_t group;
+    Timestamp access_time;
+    Timestamp modify_time;
+    Timestamp change_time;
+    // The mount's number, which the VFS fills in; drivers leave it.
+    uint64_t device;
 };
 
 // An open file as its driver identifies it; the VFS never looks inside. The ID stays the same for
@@ -56,7 +80,10 @@ public:
     }
 
     virtual bool Open(const char* path, Node* node, uint64_t* size);
+    // Any file, directory or link, "" for the root; links are not followed.
     virtual bool Stat(const char* path, FileInfo* info);
+    // An open file; the VFS fills in the size from the handle.
+    virtual bool StatNode(const Node& node, FileInfo* info);
     virtual bool Read(const Node& node, uint64_t size, uint64_t offset, void* buffer,
                       uint64_t length, uint64_t* bytes_read);
     virtual void Close(const Node& node);

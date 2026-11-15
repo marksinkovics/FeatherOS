@@ -22,12 +22,10 @@ namespace
 {
 
 constexpr size_t MaximumWords = 16;
-constexpr size_t MaximumPathLength = 64;
 
 constexpr size_t MaximumRedirects = 4;
 constexpr size_t MaximumStages = 4;
 constexpr size_t MaximumPipelineWords = MaximumStages * MaximumWords;
-constexpr size_t MaximumCommandLineLength = 64;
 constexpr size_t MaximumJobs = 8;
 
 // Opens the files the redirections name, close-on-exec so only the copies the file actions make
@@ -798,7 +796,7 @@ int main(int argc, char** argv)
     char line[MaximumCommandLineLength];
     LineHistory history;
     // "<working directory>> ", such as "/home/docs> ".
-    char prompt[MaximumPathLength + 3];
+    char prompt[MaximumPromptLength + 1];
     for (;;)
     {
         if (getcwd(prompt, MaximumPathLength) == nullptr)

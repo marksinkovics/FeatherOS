@@ -584,7 +584,8 @@ TEST_CASE("FAT16 node IDs stay with a file while it is written")
     REQUIRE(attributes.node == file);
     REQUIRE(attributes.type == NodeType::File);
     REQUIRE(attributes.size == 5);
-    REQUIRE(attributes.mode == 0666);
+    REQUIRE(attributes.mode == 0644);
+    REQUIRE(Value(fat->GetAttributes(fat->Root())).mode == 0755);
     REQUIRE(attributes.link_count == 1);
 }
 

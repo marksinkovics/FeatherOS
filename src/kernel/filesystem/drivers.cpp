@@ -20,6 +20,29 @@ namespace
 constexpr Properties Writable = {.read_only = false, .tracked = true, .devices = false};
 constexpr Properties ReadOnly = {.read_only = true, .tracked = false, .devices = false};
 constexpr Properties DeviceFiles = {.read_only = false, .tracked = false, .devices = true};
+constexpr uint32_t ReadOnlyFileMode = User::ModeRegular | 0444;
+constexpr uint32_t ReadOnlyDirectoryMode = User::ModeDirectory | 0555;
+constexpr uint32_t WritableFileMode = User::ModeRegular | 0644;
+constexpr uint32_t WritableDirectoryMode = User::ModeDirectory | 0755;
+constexpr uint32_t DeviceMode = User::ModeCharacterDevice | 0666;
+// The number every in-memory filesystem gives its root.
+constexpr uint64_t RootSerialNumber = 1;
+
+// The virtual filesystems have no owners, times or hard links.
+FileInfo MakeInfo(uint64_t node, uint32_t mode, uint64_t size)
+{
+    FileInfo info = {};
+    info.node = node;
+    info.mode = mode;
+    info.size = size;
+    info.link_count = 1;
+    return info;
+}
+
+struct GeneratedText
+{
+    char text[Procfs::MaximumFileSize];
+};
 
 // Archive and generated files are bytes in memory; their node ID is the address.
 uint64_t MemoryId(const void* data)
@@ -69,12 +92,23 @@ public:
 
     bool Stat(const char* path, FileInfo* info) override
     {
+        if (*path == '\0')
+        {
+            *info = MakeInfo(RootSerialNumber, ReadOnlyDirectoryMode, 0);
+            return true;
+        }
         Initramfs::File file;
         if (!Initramfs::Open(directory, path, &file))
         {
             return false;
         }
-        info->size = file.size;
+        *info = MakeInfo(MemoryId(file.data), ReadOnlyFileMode, file.size);
+        return true;
+    }
+
+    bool StatNode(const Node& node, FileInfo* info) override
+    {
+        *info = MakeInfo(node.id, ReadOnlyFileMode, 0);
         return true;
     }
 
@@ -86,13 +120,14 @@ public:
 
     bool ReadDirectory(const char* path, uint32_t index, DirectoryEntry* entry) override
     {
-        uint64_t size;
-        if (*path != '\0' || !Initramfs::ReadDirectory(directory, index, entry->name, &size))
+        Initramfs::File file;
+        if (*path != '\0' || !Initramfs::ReadDirectory(directory, index, entry->name, &file))
         {
             return false;
         }
-        entry->directory = false;
-        entry->size = static_cast<uint32_t>(size);
+        entry->type = User::ModeRegular;
+        entry->node = MemoryId(file.data);
+        entry->size = file.size;
         return true;
     }
 
@@ -120,10 +155,26 @@ public:
 
     bool Stat(const char* path, FileInfo* info) override
     {
+        if (FeatherOS::Devices::IsDirectory(path))
+        {
+            *info =
+                MakeInfo(FeatherOS::Devices::DirectorySerialNumber(path), WritableDirectoryMode, 0);
+            return true;
+        }
         uint32_t device;
-        info->size = 0;
-        info->device = true;
-        return FeatherOS::Devices::Find(path, &device);
+        if (!FeatherOS::Devices::Find(path, &device))
+        {
+            return false;
+        }
+        *info = MakeInfo(FeatherOS::Devices::SerialNumber(device), DeviceMode, 0);
+        return true;
+    }
+
+    bool StatNode(const Node& node, FileInfo* info) override
+    {
+        *info = MakeInfo(FeatherOS::Devices::SerialNumber(static_cast<uint32_t>(node.id)),
+                         DeviceMode, 0);
+        return true;
     }
 
     bool Read(const Node& node, uint64_t /*size*/, uint64_t /*offset*/, void* buffer,
@@ -169,8 +220,15 @@ class ProcDriver final : public Driver
 public:
     constexpr ProcDriver() : Driver(ReadOnly) {}
 
+    // The payload is the file's number for stat.
     bool Open(const char* path, Node* node, uint64_t* size) override
     {
+        uint64_t serial_number = 0;
+        bool directory = false;
+        if (!Procfs::Find(path, &serial_number, &directory) || directory)
+        {
+            return false;
+        }
         auto* text = static_cast<char*>(Memory::Allocate(Procfs::MaximumFileSize));
         size_t length = 0;
         if (text == nullptr)
@@ -182,20 +240,37 @@ public:
             Memory::Deallocate(text);
             return false;
         }
-        *node = {MemoryId(text), 0};
+        *node = {MemoryId(text), serial_number};
         *size = length;
         return true;
     }
 
     bool Stat(const char* path, FileInfo* info) override
     {
-        char text[Procfs::MaximumFileSize];
-        size_t length = 0;
-        if (!Procfs::Generate(path, text, &length))
+        uint64_t serial_number = 0;
+        bool directory = false;
+        if (!Procfs::Find(path, &serial_number, &directory))
         {
             return false;
         }
-        info->size = length;
+        if (directory)
+        {
+            *info = MakeInfo(serial_number, ReadOnlyDirectoryMode, 0);
+            return true;
+        }
+        const Memory::HeapObject<GeneratedText> generated;
+        size_t length = 0;
+        if (!generated || !Procfs::Generate(path, generated->text, &length))
+        {
+            return false;
+        }
+        *info = MakeInfo(serial_number, ReadOnlyFileMode, length);
+        return true;
+    }
+
+    bool StatNode(const Node& node, FileInfo* info) override
+    {
+        *info = MakeInfo(node.payload, ReadOnlyFileMode, 0);
         return true;
     }
 
@@ -245,11 +320,19 @@ public:
     bool Stat(const char* path, FileInfo* info) override
     {
         uint32_t index;
-        if (!Tmpfs::Open(root, path, &index))
+        if (!Tmpfs::Find(root, path, &index))
         {
             return false;
         }
-        info->size = Tmpfs::Size(index);
+        *info = Tmpfs::IsDirectoryNode(index)
+                    ? MakeInfo(Tmpfs::SerialNumber(index), WritableDirectoryMode, 0)
+                    : MakeInfo(Tmpfs::SerialNumber(index), WritableFileMode, Tmpfs::Size(index));
+        return true;
+    }
+
+    bool StatNode(const Node& node, FileInfo* info) override
+    {
+        *info = MakeInfo(Tmpfs::SerialNumber(Index(node)), WritableFileMode, 0);
         return true;
     }
 
