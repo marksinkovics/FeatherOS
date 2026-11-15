@@ -45,6 +45,7 @@ public:
     Open(BlockDevice& device, std::optional<std::uint32_t> partition, MountOptions options);
     static std::expected<std::unique_ptr<MountedVolume>, std::string>
     Open(BlockDevice& device, Partition::Range range, MountOptions options);
+    // Unmounts unless Unmount already did, reporting a failure on standard error.
     ~MountedVolume();
     MountedVolume(const MountedVolume&) = delete;
     MountedVolume& operator=(const MountedVolume&) = delete;
@@ -53,6 +54,8 @@ public:
     FilesystemType& Type();
     // Path components are separated by '/'; an empty path is the root.
     Result<NodeId> Walk(std::string_view path);
+    // Syncs and unmounts, so a command that wrote can report a failure.
+    Status Unmount();
 
 private:
     MountedVolume(BlockDevice& device, Partition::Range range);

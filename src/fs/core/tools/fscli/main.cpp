@@ -17,6 +17,7 @@
 #include <string_view>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 namespace
@@ -34,7 +35,8 @@ constexpr std::size_t MaximumLinkTarget = 4096;
 
 constexpr const char* Usage = R"(usage: fscli <command> <image>[:<partition>] [arguments]
 
-Reads filesystems in a disk image or on a raw disk, opened read-only.
+Reads and writes filesystems in a disk image or on a raw disk, which is opened read-only unless
+the command writes.
 
 commands:
   info <image>                        the partition table, each partition's start, size and
@@ -43,11 +45,17 @@ commands:
   cat <image>[:<partition>] <path>    write a file's bytes to standard output
   cp <image>[:<partition>] <path> <destination>
                                       copy a file out; a destination directory keeps its name
+  cp-in <image>[:<partition>] <host file> <path>
+                                      copy a host file in, replacing a file of that name; a
+                                      directory in the volume keeps the host file's name
+  rm <image>[:<partition>] <path>     remove a file or symbolic link
 
 Partitions are numbered from 1, as `info` lists them. Without a number, fscli uses the whole
 disk if it holds a filesystem, otherwise the first partition that does. `ls` shows each entry's
 type and permissions, its size and its name, and where a symbolic link points. Symbolic links
-are not followed.
+are not followed. A copied-in file keeps the host file's permission bits and belongs to user
+and group 0. A volume that cannot be written (an ext2 volume with errors or a journal, say)
+mounts read-only, and cp-in and rm then fail.
 Filesystems: fat16, ext2.
 
 exit status: 0 on success, 1 when an operation fails, 2 for a usage error
@@ -198,9 +206,10 @@ std::optional<std::string> NotReadable(NodeType type)
     return "cannot be read";
 }
 
-std::expected<std::unique_ptr<FileDevice>, int> OpenDevice(const std::string& path)
+std::expected<std::unique_ptr<FileDevice>, int> OpenDevice(const std::string& path,
+                                                           bool writable = false)
 {
-    auto device = FileDevice::Open(path, false);
+    auto device = FileDevice::Open(path, writable);
     if (!device)
     {
         return std::unexpected(Fail(path + ": " + device.error()));
@@ -208,15 +217,44 @@ std::expected<std::unique_ptr<FileDevice>, int> OpenDevice(const std::string& pa
     return std::move(*device);
 }
 
-std::expected<std::unique_ptr<MountedVolume>, int> MountTarget(BlockDevice& device,
-                                                               const Target& target)
+std::expected<std::unique_ptr<MountedVolume>, int>
+MountTarget(BlockDevice& device, const Target& target, bool writable = false)
 {
-    auto mounted = MountedVolume::Open(device, target.partition, MountOptions{.read_only = true});
+    auto mounted =
+        MountedVolume::Open(device, target.partition, MountOptions{.read_only = !writable});
     if (!mounted)
     {
         return std::unexpected(Fail(target.path + ": " + mounted.error()));
     }
+    if (writable && !(*mounted)->Mounted().GetCapabilities().writable)
+    {
+        return std::unexpected(Fail(target.path + ": the volume mounted read-only"));
+    }
     return std::move(*mounted);
+}
+
+// The directory part and the last component of a path in a volume, without trailing slashes.
+std::pair<std::string, std::string> SplitPath(std::string_view path)
+{
+    while (path.size() > 1 && path.back() == '/')
+    {
+        path.remove_suffix(1);
+    }
+    const std::size_t slash = path.rfind('/');
+    if (slash == std::string_view::npos)
+    {
+        return {std::string(), std::string(path)};
+    }
+    return {std::string(path.substr(0, slash)), std::string(path.substr(slash + 1))};
+}
+
+int Finish(MountedVolume& mounted, const Target& target)
+{
+    if (const Status unmounted = mounted.Unmount(); !unmounted)
+    {
+        return Fail(target.path + ": unmounting failed: " + ErrorText(unmounted.error()));
+    }
+    return ExitSuccess;
 }
 
 void PrintStatistics(Filesystem& filesystem)
@@ -526,6 +564,188 @@ int Copy(const std::vector<std::string_view>& arguments)
     return ExitSuccess;
 }
 
+// Writes the host file to node from its start, in chunks.
+std::expected<void, std::string> CopyInto(Filesystem& filesystem, NodeId node, int input)
+{
+    std::vector<std::uint8_t> buffer(CopyChunk);
+    std::uint64_t offset = 0;
+    while (true)
+    {
+        const ssize_t count = ::read(input, buffer.data(), buffer.size());
+        if (count < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        if (count < 0)
+        {
+            return std::unexpected(std::string(std::strerror(errno)));
+        }
+        if (count == 0)
+        {
+            return {};
+        }
+        const std::span<const std::uint8_t> chunk(buffer.data(), static_cast<std::size_t>(count));
+        const Result<std::size_t> written = filesystem.Write(node, offset, chunk);
+        if (!written)
+        {
+            return std::unexpected(ErrorText(written.error()));
+        }
+        if (*written < chunk.size())
+        {
+            return std::unexpected(ErrorText(Error::NoSpace));
+        }
+        offset += *written;
+    }
+}
+
+int CopyIn(const std::vector<std::string_view>& arguments)
+{
+    if (arguments.size() != 3)
+    {
+        return UsageError("cp-in takes an image, a host file and a path in the image");
+    }
+    const Target target = ParseTarget(arguments[0]);
+    const std::string source(arguments[1]);
+    const std::string destination(arguments[2]);
+    const int input = ::open(source.c_str(), O_RDONLY | O_CLOEXEC);
+    if (input < 0)
+    {
+        return Fail(source + ": " + std::strerror(errno));
+    }
+    struct stat status = {};
+    if (::fstat(input, &status) != 0 || !S_ISREG(status.st_mode))
+    {
+        ::close(input);
+        return Fail(source + ": not a regular file");
+    }
+    const auto result = [&]() -> int
+    {
+        auto device = OpenDevice(target.path, true);
+        if (!device)
+        {
+            return device.error();
+        }
+        auto mounted = MountTarget(**device, target, true);
+        if (!mounted)
+        {
+            return mounted.error();
+        }
+        Filesystem& filesystem = (*mounted)->Mounted();
+        const auto fail = [&](const std::string& path, const std::string& reason)
+        { return Fail(target.path + ": " + path + ": " + reason); };
+
+        // Into a directory under the host file's name, or at the path itself.
+        auto [directory_path, name] = SplitPath(destination);
+        if (const Result<NodeId> named = (*mounted)->Walk(destination); named)
+        {
+            const Result<Attributes> attributes = filesystem.GetAttributes(*named);
+            if (attributes && attributes->type == NodeType::Directory)
+            {
+                directory_path = destination;
+                name = BaseName(source);
+            }
+        }
+        if (name.empty() || name == "/" || name == "." || name == "..")
+        {
+            return fail(destination, "needs a file name");
+        }
+        const std::string path = directory_path + "/" + name;
+        const Result<NodeId> directory = (*mounted)->Walk(directory_path);
+        if (!directory)
+        {
+            return fail(directory_path.empty() ? "/" : directory_path,
+                        ErrorText(directory.error()));
+        }
+        bool created = false;
+        Result<NodeId> node = filesystem.Lookup(*directory, name);
+        if (node)
+        {
+            const Result<Attributes> attributes = filesystem.GetAttributes(*node);
+            if (!attributes)
+            {
+                return fail(path, ErrorText(attributes.error()));
+            }
+            if (const std::optional<std::string> reason = NotReadable(attributes->type))
+            {
+                return fail(path, *reason);
+            }
+            if (const Status emptied = filesystem.Truncate(*node, 0); !emptied)
+            {
+                return fail(path, ErrorText(emptied.error()));
+            }
+        }
+        else if (node.error() == Error::NotFound)
+        {
+            node = filesystem.Create(*directory, name, status.st_mode & 07777);
+            if (!node)
+            {
+                return fail(path, ErrorText(node.error()));
+            }
+            created = true;
+        }
+        else
+        {
+            return fail(path, ErrorText(node.error()));
+        }
+        if (const auto copied = CopyInto(filesystem, *node, input); !copied)
+        {
+            // A file this command made goes again, so a failed copy leaves nothing behind.
+            if (created)
+            {
+                static_cast<void>(filesystem.Remove(*directory, name));
+            }
+            return fail(path, copied.error());
+        }
+        return Finish(**mounted, target);
+    }();
+    ::close(input);
+    return result;
+}
+
+int Remove(const std::vector<std::string_view>& arguments)
+{
+    if (arguments.size() != 2)
+    {
+        return UsageError("rm takes an image and a path");
+    }
+    const Target target = ParseTarget(arguments[0]);
+    const std::string path(arguments[1]);
+    auto device = OpenDevice(target.path, true);
+    if (!device)
+    {
+        return device.error();
+    }
+    auto mounted = MountTarget(**device, target, true);
+    if (!mounted)
+    {
+        return mounted.error();
+    }
+    Filesystem& filesystem = (*mounted)->Mounted();
+    const auto [directory_path, name] = SplitPath(path);
+    if (name.empty() || name == "/" || name == "." || name == "..")
+    {
+        return Fail(target.path + ": " + path + ": " + ErrorText(Error::IsDirectory));
+    }
+    const Result<NodeId> directory = (*mounted)->Walk(directory_path);
+    const Result<NodeId> node =
+        directory ? filesystem.Lookup(*directory, name) : Result<NodeId>(directory);
+    const Result<Attributes> attributes =
+        node ? filesystem.GetAttributes(*node) : Result<Attributes>(std::unexpected(node.error()));
+    if (!attributes)
+    {
+        return Fail(target.path + ": " + path + ": " + ErrorText(attributes.error()));
+    }
+    if (attributes->type == NodeType::Directory)
+    {
+        return Fail(target.path + ": " + path + ": " + ErrorText(Error::IsDirectory));
+    }
+    if (const Status removed = filesystem.Remove(*directory, name); !removed)
+    {
+        return Fail(target.path + ": " + path + ": " + ErrorText(removed.error()));
+    }
+    return Finish(**mounted, target);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -558,6 +778,14 @@ int main(int argc, char** argv)
     if (command == "cp")
     {
         return Copy(arguments);
+    }
+    if (command == "cp-in")
+    {
+        return CopyIn(arguments);
+    }
+    if (command == "rm")
+    {
+        return Remove(arguments);
     }
     return UsageError("unknown command '" + std::string(command) + "'");
 }

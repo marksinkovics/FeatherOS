@@ -14,16 +14,26 @@ if (NOT BUILD_TESTING OR NOT FEATHERDISK_SH)
     return()
 endif ()
 
-# Exit status 77 means skipped: the script returns it when mtools or e2fsprogs made no images.
+# Exit status 77 means skipped: the script returns it when mtools or e2fsprogs made no images, or
+# e2fsck is missing for a case that writes ext2.
 set(fscli_ext_images)
 if (featherdisk_ext_images)
     set(fscli_ext_images "${featherdisk_ext_image_directory}")
 endif ()
-foreach (case help info ls cat cp partition errors
-         ext2-info ext2-ls ext2-cat ext2-partition ext2-errors)
+set(fscli_e2fsck)
+if (FEATHERDISK_E2FSCK)
+    set(fscli_e2fsck "${FEATHERDISK_E2FSCK}")
+endif ()
+set(fscli_debugfs)
+if (FEATHERDISK_DEBUGFS)
+    set(fscli_debugfs "${FEATHERDISK_DEBUGFS}")
+endif ()
+foreach (case help info ls cat cp cp-in partition errors
+         ext2-info ext2-ls ext2-cat ext2-partition ext2-errors ext2-cp-in ext2-rm)
     add_test(NAME "fs.core:fscli ${case}"
         COMMAND "${FEATHERDISK_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/fscli_tests.sh"
             "$<TARGET_FILE:fscli>" "${featherdisk_fat16_image}" "${featherdisk_mbr_image}"
-            "${CMAKE_CURRENT_BINARY_DIR}/test-output/${case}" "${case}" "${fscli_ext_images}")
+            "${CMAKE_CURRENT_BINARY_DIR}/test-output/${case}" "${case}" "${fscli_ext_images}"
+            "${fscli_e2fsck}" "${fscli_debugfs}")
     set_tests_properties("fs.core:fscli ${case}" PROPERTIES SKIP_RETURN_CODE 77)
 endforeach ()

@@ -38,6 +38,9 @@ public:
                 std::span<std::uint8_t> scratch);
     // Whole blocks from the device, bypassing the cache, for file contents.
     Status ReadUncached(std::uint64_t first_block, std::span<std::uint8_t> out);
+    // Whole blocks straight to the device (write-through); cached copies of them take the new
+    // bytes, and a failed write drops them, since the device may hold part of it.
+    Status Write(std::uint64_t first_block, std::span<const std::uint8_t> bytes);
 
 private:
     struct Slot

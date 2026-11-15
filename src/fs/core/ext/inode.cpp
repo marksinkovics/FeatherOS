@@ -38,11 +38,25 @@ Timestamp DecodeTime(std::uint32_t seconds, std::optional<std::uint32_t> extra)
     return time;
 }
 
+// The 32-bit seconds go in the base field; the extra word holds the bits above them that are not
+// just the sign (the epoch) and the nanoseconds.
+std::uint32_t EncodeExtraTime(Timestamp time)
+{
+    const auto low = static_cast<std::int32_t>(static_cast<std::uint32_t>(time.seconds));
+    const auto epoch = static_cast<std::uint32_t>(((time.seconds - low) >> 32) & 3);
+    return epoch | (time.nanoseconds << 2);
+}
+
 } // namespace
 
 std::uint32_t Inode::Block(std::uint32_t index) const
 {
     return Load32(blocks.data() + static_cast<std::size_t>(index) * 4);
+}
+
+void Inode::SetBlock(std::uint32_t index, std::uint32_t block)
+{
+    StoreLittleEndian(blocks.data() + static_cast<std::size_t>(index) * 4, block);
 }
 
 Inode DecodeInode(std::span<const std::uint8_t> raw, std::uint32_t read_only_compatible,
@@ -97,12 +111,66 @@ Inode DecodeInode(std::span<const std::uint8_t> raw, std::uint32_t read_only_com
         .modify_time = DecodeTime(Load32(bytes + 16), extra(136)),
         .change_time = DecodeTime(Load32(bytes + 12), extra(132)),
         .blocks = {},
+        .deletion_time = Load32(bytes + 20),
+        .attribute_block = Load32(bytes + 104),
+        .extra_size = static_cast<std::uint16_t>(extra_size),
+        .creation_time = {.seconds = 0, .nanoseconds = 0},
     };
     for (std::size_t index = 0; index < BlockArrayBytes; ++index)
     {
         inode.blocks[index] = bytes[40 + index];
     }
+    if (const std::optional<std::uint32_t> seconds = extra(144))
+    {
+        inode.creation_time = DecodeTime(*seconds, extra(148));
+    }
     return inode;
+}
+
+void EncodeInode(const Inode& inode, std::span<std::uint8_t> raw)
+{
+    std::uint8_t* bytes = raw.data();
+    const std::size_t fields_end = GoodOldInodeSize + std::size_t{inode.extra_size};
+    const auto covered = [&](std::size_t offset)
+    { return offset + 4 <= fields_end && offset + 4 <= raw.size(); };
+    const auto store_time = [&](std::size_t base, std::size_t extra, Timestamp time)
+    {
+        StoreLittleEndian(bytes + base, static_cast<std::uint32_t>(time.seconds));
+        if (covered(extra))
+        {
+            StoreLittleEndian(bytes + extra, EncodeExtraTime(time));
+        }
+    };
+
+    StoreLittleEndian(bytes + 0, inode.mode);
+    StoreLittleEndian(bytes + 2, static_cast<std::uint16_t>(inode.owner));
+    StoreLittleEndian(bytes + 120, static_cast<std::uint16_t>(inode.owner >> 16));
+    StoreLittleEndian(bytes + 24, static_cast<std::uint16_t>(inode.group));
+    StoreLittleEndian(bytes + 122, static_cast<std::uint16_t>(inode.group >> 16));
+    StoreLittleEndian(bytes + 4, static_cast<std::uint32_t>(inode.size));
+    if ((inode.mode & ModeTypeMask) == ModeRegular)
+    {
+        StoreLittleEndian(bytes + 108, static_cast<std::uint32_t>(inode.size >> 32));
+    }
+    store_time(8, 140, inode.access_time);
+    store_time(12, 132, inode.change_time);
+    store_time(16, 136, inode.modify_time);
+    StoreLittleEndian(bytes + 20, inode.deletion_time);
+    StoreLittleEndian(bytes + 26, inode.link_count);
+    StoreLittleEndian(bytes + 28, static_cast<std::uint32_t>(inode.allocated_bytes / 512));
+    StoreLittleEndian(bytes + 32, inode.flags);
+    for (std::size_t index = 0; index < BlockArrayBytes; ++index)
+    {
+        bytes[40 + index] = inode.blocks[index];
+    }
+    if (raw.size() >= GoodOldInodeSize + 2)
+    {
+        StoreLittleEndian(bytes + GoodOldInodeSize, inode.extra_size);
+    }
+    if (covered(144))
+    {
+        store_time(144, 148, inode.creation_time);
+    }
 }
 
 std::optional<NodeType> TypeOf(std::uint16_t mode)

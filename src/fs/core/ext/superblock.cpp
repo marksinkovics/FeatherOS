@@ -23,6 +23,15 @@ std::uint32_t Load32(const std::uint8_t* bytes)
     return LoadLittleEndian<std::uint32_t>(bytes);
 }
 
+bool IsPowerOf(std::uint32_t value, std::uint32_t base)
+{
+    while (value > 1 && value % base == 0)
+    {
+        value /= base;
+    }
+    return value == 1;
+}
+
 std::uint64_t DivideRoundingUp(std::uint64_t value, std::uint64_t divisor)
 {
     return value / divisor + (value % divisor != 0 ? 1 : 0);
@@ -50,6 +59,16 @@ Superblock DecodeSuperblock(std::span<const std::uint8_t, SuperblockSize> bytes)
         .incompatible = 0,
         .read_only_compatible = 0,
         .group_count = 0,
+        .reserved_blocks_count = Load32(raw + 8),
+        .mount_time = Load32(raw + 44),
+        .write_time = Load32(raw + 48),
+        .mount_count = Load16(raw + 52),
+        .state = Load16(raw + 58),
+        .errors = Load16(raw + 60),
+        .first_inode = GoodOldFirstInode,
+        .reserved_descriptor_blocks = 0,
+        .minimum_extra_size = 0,
+        .wanted_extra_size = 0,
     };
     if (superblock.log_block_size <= MaximumLogBlockSize)
     {
@@ -62,6 +81,16 @@ Superblock DecodeSuperblock(std::span<const std::uint8_t, SuperblockSize> bytes)
         superblock.compatible = Load32(raw + 92);
         superblock.incompatible = Load32(raw + 96);
         superblock.read_only_compatible = Load32(raw + 100);
+        superblock.first_inode = Load32(raw + 84);
+        if ((superblock.compatible & CompatibleResizeInode) != 0)
+        {
+            superblock.reserved_descriptor_blocks = Load16(raw + 206);
+        }
+        if (superblock.inode_size > GoodOldInodeSize)
+        {
+            superblock.minimum_extra_size = Load16(raw + 348);
+            superblock.wanted_extra_size = Load16(raw + 350);
+        }
     }
     if (superblock.blocks_per_group != 0 && superblock.blocks_count > superblock.first_data_block)
     {
@@ -114,6 +143,52 @@ Status CheckSuperblock(const Superblock& superblock, std::uint64_t volume_bytes)
         return std::unexpected(Error::Corrupt);
     }
     return {};
+}
+
+void EncodeSuperblockState(const Superblock& superblock,
+                           std::span<std::uint8_t, SuperblockSize> bytes)
+{
+    std::uint8_t* raw = bytes.data();
+    StoreLittleEndian(raw + 12, superblock.free_blocks_count);
+    StoreLittleEndian(raw + 16, superblock.free_inodes_count);
+    StoreLittleEndian(raw + 44, superblock.mount_time);
+    StoreLittleEndian(raw + 48, superblock.write_time);
+    StoreLittleEndian(raw + 52, superblock.mount_count);
+    StoreLittleEndian(raw + 58, superblock.state);
+    if (superblock.revision >= DynamicRevision)
+    {
+        StoreLittleEndian(raw + 100, superblock.read_only_compatible);
+    }
+}
+
+bool GroupHasSuperblock(const Superblock& superblock, std::uint32_t group)
+{
+    if (group <= 1 || (superblock.read_only_compatible & ReadOnlyCompatibleSparseSuper) == 0)
+    {
+        return true;
+    }
+    return IsPowerOf(group, 3) || IsPowerOf(group, 5) || IsPowerOf(group, 7);
+}
+
+GroupDescriptor DecodeGroupDescriptor(std::span<const std::uint8_t, GroupDescriptorSize> bytes)
+{
+    const std::uint8_t* raw = bytes.data();
+    return {
+        .block_bitmap = Load32(raw + 0),
+        .inode_bitmap = Load32(raw + 4),
+        .inode_table = Load32(raw + 8),
+        .free_blocks = Load16(raw + 12),
+        .free_inodes = Load16(raw + 14),
+        .used_directories = Load16(raw + 16),
+    };
+}
+
+void EncodeGroupCounts(const GroupDescriptor& descriptor,
+                       std::span<std::uint8_t, GroupDescriptorSize> bytes)
+{
+    StoreLittleEndian(bytes.data() + 12, descriptor.free_blocks);
+    StoreLittleEndian(bytes.data() + 14, descriptor.free_inodes);
+    StoreLittleEndian(bytes.data() + 16, descriptor.used_directories);
 }
 
 } // namespace FeatherDisk::Ext

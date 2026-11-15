@@ -122,4 +122,34 @@ Status BlockCache::ReadUncached(std::uint64_t first_block, std::span<std::uint8_
     return device->Read(first_block * sectors_per_block, out);
 }
 
+Status BlockCache::Write(std::uint64_t first_block, std::span<const std::uint8_t> bytes)
+{
+    if (device == nullptr || bytes.size() % block_size != 0)
+    {
+        return std::unexpected(Error::InvalidArgument);
+    }
+    const Status written = device->Write(first_block * sectors_per_block, bytes);
+    const std::uint64_t count = bytes.size() / block_size;
+    Host::Acquire(*lock);
+    for (std::size_t index = 0; index < slot_count; ++index)
+    {
+        Slot& slot = slots[index];
+        if (!slot.valid || slot.block < first_block || slot.block - first_block >= count)
+        {
+            continue;
+        }
+        if (written)
+        {
+            CopyBytes(SlotData(slot), bytes.data() + (slot.block - first_block) * block_size,
+                      block_size);
+        }
+        else
+        {
+            slot.valid = false;
+        }
+    }
+    Host::Release(*lock);
+    return written;
+}
+
 } // namespace FeatherDisk

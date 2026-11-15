@@ -19,13 +19,16 @@ endif ()
 option(FEATHERDISK_FREESTANDING "Build only the library, for a kernel" OFF)
 
 add_library(featherdisk_core STATIC
+    common/bitmap.cpp
     common/block_cache.cpp
     common/bytes.cpp
     common/host_buffer.cpp
+    ext/allocation.cpp
     ext/directory.cpp
     ext/ext2.cpp
     ext/inode.cpp
     ext/superblock.cpp
+    ext/write.cpp
     fat/fat16.cpp
     fat/names.cpp
     filesystem.cpp
@@ -97,8 +100,9 @@ else ()
     message(STATUS "mtools not found, so the FAT16 image tests are skipped")
 endif ()
 
-# mke2fs -d from e2fsprogs makes the ext2 images, and debugfs fixes their owners and times.
-# Homebrew installs e2fsprogs keg-only, outside PATH, so its directories come first.
+# mke2fs -d from e2fsprogs makes the ext2 images, debugfs fixes their owners and times and reads
+# back what the core wrote, and e2fsck -fn checks every volume the core changed. Homebrew
+# installs e2fsprogs keg-only, outside PATH, so its directories come first.
 find_program(FEATHERDISK_MKE2FS mke2fs
     PATHS /opt/homebrew/opt/e2fsprogs/sbin /usr/local/opt/e2fsprogs/sbin NO_DEFAULT_PATH)
 find_program(FEATHERDISK_MKE2FS mke2fs)
@@ -106,6 +110,11 @@ if (FEATHERDISK_MKE2FS)
     get_filename_component(featherdisk_e2fsprogs "${FEATHERDISK_MKE2FS}" DIRECTORY)
     find_program(FEATHERDISK_DEBUGFS debugfs PATHS "${featherdisk_e2fsprogs}" NO_DEFAULT_PATH)
     find_program(FEATHERDISK_DEBUGFS debugfs)
+    find_program(FEATHERDISK_E2FSCK e2fsck PATHS "${featherdisk_e2fsprogs}" NO_DEFAULT_PATH)
+    find_program(FEATHERDISK_E2FSCK e2fsck)
+endif ()
+if (NOT FEATHERDISK_E2FSCK)
+    message(STATUS "e2fsck (e2fsprogs) not found, so the ext2 write tests check no volumes")
 endif ()
 set(featherdisk_ext_images)
 set(featherdisk_ext_image_directory "${CMAKE_CURRENT_BINARY_DIR}/ext-images")
@@ -153,7 +162,9 @@ add_executable(featherdisk_core_tests
     tests/block_cache_tests.cpp
     tests/common_tests.cpp
     tests/ext2_format_tests.cpp
+    tests/ext2_image.cpp
     tests/ext2_image_tests.cpp
+    tests/ext2_write_tests.cpp
     tests/fat_image.cpp
     tests/fat_mtools_tests.cpp
     tests/fat_names_tests.cpp
@@ -180,8 +191,15 @@ if (featherdisk_fat16_image)
 endif ()
 if (featherdisk_ext_images)
     add_dependencies(featherdisk_core_tests featherdisk_ext_test_images)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ext-work")
     target_compile_definitions(featherdisk_core_tests PRIVATE
-        FEATHERDISK_EXT_IMAGES="${featherdisk_ext_image_directory}")
+        FEATHERDISK_EXT_IMAGES="${featherdisk_ext_image_directory}"
+        FEATHERDISK_EXT_WORK="${CMAKE_CURRENT_BINARY_DIR}/ext-work"
+        FEATHERDISK_DEBUGFS="${FEATHERDISK_DEBUGFS}")
+    if (FEATHERDISK_E2FSCK)
+        target_compile_definitions(featherdisk_core_tests PRIVATE
+            FEATHERDISK_E2FSCK="${FEATHERDISK_E2FSCK}")
+    endif ()
 endif ()
 if (COMMAND catch_discover_tests)
     catch_discover_tests(featherdisk_core_tests TEST_PREFIX "fs.core:")

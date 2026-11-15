@@ -1,0 +1,331 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// The ext2 filesystem behind Ext2Type(), shared by ext2.cpp (mounting and reading),
+// allocation.cpp (groups and bitmaps) and write.cpp (changes).
+#ifndef FEATHERDISK_EXT_EXT2_FILESYSTEM_H
+#define FEATHERDISK_EXT_EXT2_FILESYSTEM_H
+
+#include "common/block_cache.h"
+#include "common/host_buffer.h"
+#include "ext/directory.h"
+#include "ext/inode.h"
+#include "ext/superblock.h"
+#include "fs/filesystem.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <string_view>
+
+namespace FeatherDisk::Ext
+{
+
+template <typename T> std::unexpected<Error> Failure(const Result<T>& result)
+{
+    return std::unexpected(result.error());
+}
+
+std::uint64_t DivideRoundingUp(std::uint64_t value, std::uint64_t divisor);
+// A warning for the host's log: message, then a detail or value as eight hexadecimal digits.
+void LogWarning(std::string_view message, std::string_view detail);
+void LogWithValue(std::string_view message, std::uint32_t value);
+
+// Block-sized buffers from the host, for one operation.
+class Buffers
+{
+public:
+    Buffers(std::uint32_t block_size, std::size_t count);
+
+    bool Empty() const;
+    std::span<std::uint8_t> operator[](std::size_t index);
+
+private:
+    HostBuffer memory;
+    std::uint32_t size;
+};
+
+// An inode in use, of a type ext2 defines.
+struct Node
+{
+    Inode inode;
+    NodeType type;
+};
+
+constexpr std::size_t NoRecord = ~std::size_t{0};
+
+// Where WalkDirectory found a record.
+struct RecordPlace
+{
+    std::uint32_t physical;
+    std::size_t offset;
+    // The record before it in the same block, or NoRecord for the block's first.
+    std::size_t previous;
+    // The byte offset in the directory of the record after it: ReadDirectory's cookie.
+    std::uint64_t next;
+};
+
+// The way to a file's logical block: i_block[root], then index[level] in each of depth indirect
+// blocks.
+struct BlockPath
+{
+    std::uint32_t root;
+    std::uint32_t depth;
+    std::array<std::uint32_t, 3> index;
+};
+
+// The indirect blocks on the way to the block a write maps, kept while consecutive blocks share
+// them. A changed one is written when the way leaves it, after the deeper ones it points to.
+struct MapCursor
+{
+    struct Level
+    {
+        // 0 when the level holds nothing.
+        std::uint32_t block;
+        bool dirty;
+        std::span<std::uint8_t> data;
+    };
+    std::array<Level, 3> levels;
+    // Where the next block is looked for.
+    std::uint32_t goal;
+    // Indirect and data blocks allocated, for i_blocks.
+    std::uint64_t allocated;
+};
+
+// Blocks going back to their bitmaps: one group's bitmap is held until a block of another group
+// is freed or FinishFrees.
+struct FreeCursor
+{
+    std::span<std::uint8_t> bitmap;
+    std::uint32_t group;
+    bool loaded;
+    bool dirty;
+};
+
+// Changes (Write, Truncate, Create, Remove, SetAttributes, Sync) must not run at the same time
+// as any other operation on the mount; reads may run together. The host serialises them.
+class Ext2Filesystem final : public Filesystem
+{
+public:
+    Ext2Filesystem(BlockDevice& device, const Superblock& layout, bool mounted_read_only);
+    ~Ext2Filesystem() = default;
+
+    // Constructed in memory from Host::Allocate; the core has no <new> for the global form.
+    static void* operator new(std::size_t size, void* place) noexcept;
+
+    Status Initialize();
+
+    Capabilities GetCapabilities() const override;
+    NodeId Root() const override;
+    Result<VolumeStatistics> Statistics() override;
+    Result<NodeId> Lookup(NodeId directory, std::string_view name) override;
+    Result<bool> ReadDirectory(NodeId directory, std::uint64_t& cookie,
+                               DirectoryEntry& entry) override;
+    Result<Attributes> GetAttributes(NodeId node) override;
+    Status SetAttributes(NodeId node, const AttributeChanges& changes) override;
+    Result<std::size_t> Read(NodeId file, std::uint64_t offset,
+                             std::span<std::uint8_t> buffer) override;
+    Result<std::size_t> Write(NodeId file, std::uint64_t offset,
+                              std::span<const std::uint8_t> data) override;
+    Status Truncate(NodeId file, std::uint64_t size) override;
+    Result<NodeId> Create(NodeId directory, std::string_view name, std::uint32_t mode) override;
+    Result<NodeId> MakeDirectory(NodeId directory, std::string_view name,
+                                 std::uint32_t mode) override;
+    Status Remove(NodeId directory, std::string_view name) override;
+    Status RemoveDirectory(NodeId directory, std::string_view name) override;
+    Status Rename(NodeId from_directory, std::string_view from_name, NodeId to_directory,
+                  std::string_view to_name) override;
+    Status Link(NodeId node, NodeId directory, std::string_view name) override;
+    Result<NodeId> SymbolicLink(NodeId directory, std::string_view name,
+                                std::string_view target) override;
+    Result<std::size_t> ReadLink(NodeId link, std::span<char> buffer) override;
+    Status Sync() override;
+
+private:
+    struct InodePlace
+    {
+        std::uint32_t block;
+        std::size_t offset;
+    };
+
+    // Reading (ext2.cpp).
+    std::unexpected<Error> Refused() const;
+    bool IsDataBlock(std::uint64_t block) const;
+    std::uint64_t MaximumFileSize() const;
+    Result<InodePlace> LocateInode(NodeId node) const;
+    Result<Inode> LoadInode(NodeId node, std::span<std::uint8_t> scratch);
+    Result<Node> LoadNode(NodeId node, std::span<std::uint8_t> scratch);
+    Result<std::uint32_t> ReadPointer(std::uint32_t block, std::uint64_t index,
+                                      std::span<std::uint8_t> scratch);
+    std::optional<BlockPath> PathOf(std::uint64_t logical) const;
+    // The block holding a file's logical block, or 0 for a hole.
+    Result<std::uint32_t> MapBlock(const Inode& inode, std::uint64_t logical,
+                                   std::span<std::uint8_t> scratch);
+    // Calls visit(entry, place) for each record from byte start on, unused ones (inode 0)
+    // included, until it returns true. block receives each directory block and still holds the
+    // block of the record visit stopped at; scratch serves the rest.
+    template <typename Visit>
+    Result<bool> WalkDirectory(const Inode& directory, std::uint64_t start,
+                               std::span<std::uint8_t> block, std::span<std::uint8_t> scratch,
+                               Visit visit);
+    Result<NodeType> EntryType(const RawEntry& entry, std::span<std::uint8_t> scratch);
+    Result<std::size_t> ReadContents(const Inode& file, std::uint64_t offset,
+                                     std::span<std::uint8_t> buffer,
+                                     std::span<std::uint8_t> scratch);
+
+    // Groups and bitmaps (allocation.cpp).
+    std::uint32_t BlocksInGroup(std::uint32_t group) const;
+    std::uint64_t GroupFirstBlock(std::uint32_t group) const;
+    std::uint32_t GroupOfInode(NodeId node) const;
+    GroupDescriptor Group(std::uint32_t group) const;
+    void StoreGroup(std::uint32_t group, const GroupDescriptor& descriptor);
+    bool IsGroupMetadata(std::uint32_t group, std::uint64_t block) const;
+    // Why the descriptors cannot be trusted for writing, or nullopt.
+    std::optional<std::string_view> CheckGroups() const;
+    Status WriteGroups();
+    Result<std::uint32_t> AllocateBlock(std::uint32_t goal, std::span<std::uint8_t> bitmap);
+    // In the parent's group when it has room, otherwise in the next group that does (Orlov-lite:
+    // files stay near their directory).
+    Result<NodeId> AllocateInode(std::uint32_t parent_group, bool directory,
+                                 std::span<std::uint8_t> bitmap, std::span<std::uint8_t> scratch);
+    Status FreeInode(NodeId node, bool directory, std::span<std::uint8_t> bitmap);
+    Status FreeBlock(FreeCursor& cursor, std::uint32_t block);
+    Status FinishFrees(FreeCursor& cursor);
+
+    // Changes (write.cpp).
+    Timestamp Now() const;
+    bool IsReserved(NodeId node) const;
+    // Marks the volume not clean on disk before the first change after a mount or Sync.
+    Status BeginChange(std::span<std::uint8_t> scratch);
+    Status WriteSuperblock(std::span<std::uint8_t> scratch);
+    Status MarkMounted();
+    // Sets the error state, and stops writes unless s_errors says continue.
+    void NoteError(Error error);
+    template <typename T> T Noted(T result)
+    {
+        if (!result)
+        {
+            NoteError(result.error());
+        }
+        return result;
+    }
+    // A fresh inode's slot is zeroed first, so nothing of an earlier inode survives.
+    Status StoreInode(NodeId node, const Inode& inode, bool fresh, std::span<std::uint8_t> scratch);
+    Status SetLargeFile(std::uint64_t size, std::span<std::uint8_t> scratch);
+    Status ClearIndex(NodeId directory, Inode& inode, std::span<std::uint8_t> scratch);
+    Status ZeroFrom(const Inode& inode, std::uint64_t position, std::span<std::uint8_t> scratch);
+    Result<std::uint32_t> AllocateFor(MapCursor& cursor, std::span<std::uint8_t> bitmap);
+    Status ReleaseLevels(MapCursor& cursor, std::uint32_t from);
+    // The data block for logical, 0 for a hole, after allocating the missing indirect blocks.
+    Result<std::uint32_t> ResolveForWrite(Inode& inode, MapCursor& cursor, std::uint64_t logical,
+                                          std::span<std::uint8_t> bitmap);
+    // Points logical at block; ResolveForWrite has just walked to it.
+    void LinkBlock(Inode& inode, MapCursor& cursor, std::uint64_t logical, std::uint32_t block);
+    Result<std::uint64_t> FreeTree(std::uint32_t block, std::uint32_t depth, Buffers& buffers,
+                                   FreeCursor& frees);
+    Result<std::uint64_t> ShrinkIndirect(std::uint32_t block, std::uint32_t depth,
+                                         std::uint64_t first, std::uint64_t keep,
+                                         std::uint32_t level, Buffers& buffers, FreeCursor& frees);
+    Status ShrinkBlocks(NodeId node, Inode& inode, std::uint64_t size, Buffers& buffers);
+    Status ReleaseAttributeBlock(std::uint32_t block, FreeCursor& frees,
+                                 std::span<std::uint8_t> scratch);
+    Status ReleaseContents(const Node& node, Buffers& buffers);
+    Status AddEntry(NodeId directory, Inode& inode, std::optional<RecordPlace> room,
+                    const RawEntry& entry, Buffers& buffers);
+
+    Result<std::size_t> WriteFile(NodeId file, std::uint64_t offset,
+                                  std::span<const std::uint8_t> data);
+    Status TruncateFile(NodeId file, std::uint64_t size);
+    Result<NodeId> CreateFile(NodeId directory, std::string_view name, std::uint32_t mode);
+    Status RemoveFile(NodeId directory, std::string_view name);
+    Status ChangeAttributes(NodeId node, const AttributeChanges& changes);
+
+    BlockDevice& volume;
+    Superblock superblock;
+    BlockCache cache;
+    HostBuffer descriptor_memory;
+    std::span<std::uint8_t> descriptors;
+    // The descriptor table's blocks that changed since they were last written, [first, end).
+    std::uint64_t dirty_descriptors_first = 0;
+    std::uint64_t dirty_descriptors_end = 0;
+    // Mounted for writing: the superblock is this mount's to write back, even after errors
+    // stop further changes.
+    bool writable_mount;
+    bool read_only;
+    // The superblock on disk says clean, so the next change must say otherwise first.
+    bool superblock_clean = true;
+    bool has_file_type;
+    std::uint32_t block_size;
+    std::uint32_t pointers_per_block;
+    std::uint64_t inode_table_blocks;
+    std::uint64_t descriptor_blocks;
+};
+
+template <typename Visit>
+Result<bool> Ext2Filesystem::WalkDirectory(const Inode& directory, std::uint64_t start,
+                                           std::span<std::uint8_t> block,
+                                           std::span<std::uint8_t> scratch, Visit visit)
+{
+    if (TypeOf(directory.mode) != NodeType::Directory)
+    {
+        return std::unexpected(Error::NotDirectory);
+    }
+    // Directories are whole blocks without holes, so their size cannot exceed what they hold;
+    // the check also keeps a corrupt size from sending the walk over billions of blocks.
+    if (directory.size % block_size != 0 || directory.size > directory.allocated_bytes)
+    {
+        return std::unexpected(Error::Corrupt);
+    }
+    const std::uint64_t blocks = directory.size / block_size;
+    for (std::uint64_t logical = start / block_size; logical < blocks; ++logical)
+    {
+        const Result<std::uint32_t> physical = MapBlock(directory, logical, scratch);
+        if (!physical)
+        {
+            return Failure(physical);
+        }
+        if (*physical == 0)
+        {
+            continue;
+        }
+        if (const Status read = cache.Read(*physical, 0, block, block); !read)
+        {
+            return Failure(read);
+        }
+        // Records are walked from the block's start even when resuming, so a cookie that does
+        // not fall on one still finds the next.
+        std::size_t previous = NoRecord;
+        for (std::size_t offset = 0; offset < block_size;)
+        {
+            const Result<RawEntry> entry =
+                ParseEntry(block, offset, has_file_type, superblock.inodes_count);
+            if (!entry)
+            {
+                return Failure(entry);
+            }
+            const std::uint64_t position = logical * block_size + offset;
+            const RecordPlace place = {
+                .physical = *physical,
+                .offset = offset,
+                .previous = previous,
+                .next = position + entry->record_length,
+            };
+            previous = offset;
+            offset += entry->record_length;
+            if (position < start)
+            {
+                continue;
+            }
+            const Result<bool> done = visit(*entry, place);
+            if (!done || *done)
+            {
+                return done;
+            }
+        }
+    }
+    return false;
+}
+
+} // namespace FeatherDisk::Ext
+
+#endif

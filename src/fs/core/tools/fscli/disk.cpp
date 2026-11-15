@@ -164,13 +164,27 @@ MountedVolume::~MountedVolume()
     {
         return;
     }
-    const Status unmounted = type->Unmount(*filesystem);
+    const Status unmounted = Unmount();
     if (!unmounted)
     {
         std::fprintf(stderr, "fscli: unmounting failed: %.*s\n",
                      static_cast<int>(Describe(unmounted.error()).size()),
                      Describe(unmounted.error()).data());
     }
+}
+
+Status MountedVolume::Unmount()
+{
+    if (filesystem == nullptr)
+    {
+        return {};
+    }
+    const Status unmounted = type->Unmount(*filesystem);
+    if (unmounted)
+    {
+        filesystem = nullptr;
+    }
+    return unmounted;
 }
 
 Filesystem& MountedVolume::Mounted()

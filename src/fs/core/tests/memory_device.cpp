@@ -9,7 +9,8 @@ namespace FeatherDisk::Tests
 
 MemoryDevice::MemoryDevice(std::uint32_t sector_size_in_bytes, std::uint64_t sector_count)
     : sector_size(sector_size_in_bytes), failing_sector(sector_count),
-      bytes(static_cast<std::size_t>(sector_size_in_bytes * sector_count), 0)
+      size(static_cast<std::size_t>(sector_size_in_bytes * sector_count)),
+      bytes(std::make_unique<std::uint8_t[]>(size))
 {
 }
 
@@ -20,7 +21,7 @@ std::uint32_t MemoryDevice::SectorSize() const
 
 std::uint64_t MemoryDevice::SectorCount() const
 {
-    return bytes.size() / sector_size;
+    return size / sector_size;
 }
 
 bool MemoryDevice::Covers(std::uint64_t first_sector, std::size_t byte_count) const
@@ -39,7 +40,7 @@ Status MemoryDevice::Read(std::uint64_t first_sector, std::span<std::uint8_t> bu
     {
         return std::unexpected(Error::Io);
     }
-    std::memcpy(buffer.data(), bytes.data() + first_sector * sector_size, buffer.size());
+    std::memcpy(buffer.data(), bytes.get() + first_sector * sector_size, buffer.size());
     return {};
 }
 
@@ -53,7 +54,12 @@ Status MemoryDevice::Write(std::uint64_t first_sector, std::span<const std::uint
     {
         return std::unexpected(Error::ReadOnly);
     }
-    std::memcpy(bytes.data() + first_sector * sector_size, data.data(), data.size());
+    if (write_count >= write_limit)
+    {
+        return std::unexpected(Error::Io);
+    }
+    ++write_count;
+    std::memcpy(bytes.get() + first_sector * sector_size, data.data(), data.size());
     return {};
 }
 
@@ -65,12 +71,22 @@ Status MemoryDevice::Flush()
 
 std::span<std::uint8_t> MemoryDevice::Sector(std::uint64_t index)
 {
-    return std::span<std::uint8_t>(bytes).subspan(index * sector_size, sector_size);
+    return Bytes().subspan(index * sector_size, sector_size);
+}
+
+std::span<std::uint8_t> MemoryDevice::Bytes()
+{
+    return {bytes.get(), size};
 }
 
 void MemoryDevice::FailReadsFrom(std::uint64_t sector)
 {
     failing_sector = std::min(sector, failing_sector);
+}
+
+void MemoryDevice::FailWritesAfter(std::uint64_t count)
+{
+    write_limit = count;
 }
 
 } // namespace FeatherDisk::Tests

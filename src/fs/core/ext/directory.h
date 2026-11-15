@@ -33,6 +33,15 @@ constexpr std::size_t EntryHeaderSize = 8;
 Result<RawEntry> ParseEntry(std::span<const std::uint8_t> block, std::size_t offset,
                             bool has_file_type, std::uint32_t inode_count);
 std::optional<NodeType> TypeOfEntry(std::uint8_t file_type);
+// The filetype byte for an inode's mode.
+std::uint8_t EntryFileType(std::uint16_t mode);
+// The bytes a record needs for a name of name_length: the header and the name, rounded up to a
+// multiple of 4.
+std::size_t RecordLength(std::size_t name_length);
+// Stores entry's header and name at offset, which must have room for them. Without the filetype
+// feature the type byte is the name length's upper half and is written as 0.
+void StoreEntry(std::span<std::uint8_t> block, std::size_t offset, const RawEntry& entry,
+                bool has_file_type);
 
 } // namespace FeatherDisk::Ext
 

@@ -101,6 +101,38 @@ TEST_CASE("the block cache reads whole blocks into the caller's buffer and bypas
     REQUIRE(cache.ReadUncached(20, std::span(run).first(BlockSize)).error() == Error::Io);
 }
 
+TEST_CASE("the block cache writes through and keeps its copies current")
+{
+    MemoryDevice device(512, 128);
+    Number(device);
+    BlockCache cache;
+    REQUIRE(cache.Initialize(device, BlockSize, 4).has_value());
+    std::vector<std::uint8_t> scratch(BlockSize);
+    std::array<std::uint8_t, 1> byte{};
+    REQUIRE(cache.Read(5, 0, byte, scratch).has_value());
+    REQUIRE(cache.Read(6, 0, byte, scratch).has_value());
+
+    // Blocks 5 to 7 at once: the device takes them, and cached 5 and 6 take the new bytes.
+    std::vector<std::uint8_t> written(3 * BlockSize, 0xA5);
+    written[BlockSize + 3] = 0x5A;
+    REQUIRE(cache.Write(5, written).has_value());
+    REQUIRE(device.Sector(10)[0] == 0xA5);
+    REQUIRE(device.Sector(14)[1023 - 512] == 0xA5);
+    device.FailReadsFrom(0);
+    REQUIRE(cache.Read(6, 3, byte, scratch).has_value());
+    REQUIRE(byte[0] == 0x5A);
+    REQUIRE(cache.Read(5, 1000, byte, scratch).has_value());
+    REQUIRE(byte[0] == 0xA5);
+    // A block that was not cached stays out of the cache.
+    REQUIRE(cache.Read(7, 0, byte, scratch).error() == Error::Io);
+
+    // A failed write leaves the device in doubt, so the cached copy goes.
+    device.read_only = true;
+    REQUIRE(cache.Write(5, std::span(written).first(BlockSize)).error() == Error::ReadOnly);
+    REQUIRE(cache.Read(5, 0, byte, scratch).error() == Error::Io);
+    REQUIRE(cache.Write(5, std::span(written).first(100)).error() == Error::InvalidArgument);
+}
+
 TEST_CASE("the block cache refuses bad sizes and offsets")
 {
     MemoryDevice device(512, 16);

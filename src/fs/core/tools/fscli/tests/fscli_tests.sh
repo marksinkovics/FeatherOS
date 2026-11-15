@@ -2,12 +2,14 @@
 # shellcheck shell=sh
 #
 # Runs fscli against the images tests/make_fat16_image.sh and tests/make_ext2_image.sh made and
-# checks what it prints.
+# checks what it prints. Cases that write work on copies, and e2fsck -fn must pass on every ext2
+# volume fscli changed.
 #
 #   sh fscli_tests.sh <fscli> <bare image> <mbr image> <work directory> <case> [<ext2 images>]
+#       [<e2fsck>] [<debugfs>]
 #
 # Exits 77, which CTest reports as skipped, when the images a case needs were not made (no mtools
-# or no e2fsprogs).
+# or no e2fsprogs) or e2fsck is missing for a case that writes ext2.
 
 set -eu
 
@@ -17,6 +19,8 @@ mbr="$3"
 work="$4"
 case="$5"
 ext="${6:-}"
+e2fsck="${7:-}"
+debugfs="${8:-}"
 
 rm -rf "$work"
 mkdir -p "$work"
@@ -62,6 +66,32 @@ need_ext_images() {
     if [ -z "$ext" ] || [ ! -f "$ext/1k.img" ] || [ ! -f "$ext/mbr.img" ]; then
         printf 'e2fsprogs made no images, so this test is skipped\n'
         exit 77
+    fi
+}
+
+need_e2fsck() {
+    need_ext_images
+    if [ -z "$e2fsck" ] || [ ! -x "$e2fsck" ]; then
+        printf 'e2fsck is not installed, so this test is skipped\n'
+        exit 77
+    fi
+}
+
+# e2fsck -fn has nothing to report about the ext2 volume in the image.
+check_clean() {
+    status=0
+    "$e2fsck" -fn "$1" >"$work/e2fsck" 2>&1 || status=$?
+    if [ "$status" -ne 0 ]; then
+        cat "$work/e2fsck" >&2
+        fail "e2fsck -fn $1 exited $status"
+    fi
+}
+
+# What debugfs reads from a path in the image matches a host file.
+debugfs_matches() {
+    if [ -n "$debugfs" ] && [ -x "$debugfs" ]; then
+        "$debugfs" -R "cat $2" "$1" 2>/dev/null | cmp -s - "$3" \
+            || fail "debugfs reads $2 differently from $3"
     fi
 }
 
@@ -126,6 +156,20 @@ case "$case" in
         [ ! -e "$work/docs-copy" ] || fail "a failed copy left a file behind"
         run 1 cp "$bare" /missing.txt "$work/missing-copy"
         [ ! -e "$work/missing-copy" ] || fail "a failed copy left a file behind"
+        ;;
+    cp-in)
+        need_images
+        cp "$bare" "$work/fat.img"
+        big_file >"$work/big.txt"
+        run 0 cp-in "$work/fat.img" "$work/big.txt" /COPIED.TXT
+        run 0 cat "$work/fat.img" /copied.txt
+        cmp -s "$work/big.txt" "$work/out" || fail "wrong file copied into FAT16"
+        run 0 cp-in "$work/fat.img" "$work/big.txt" /docs
+        run 0 cat "$work/fat.img" /docs/big.txt
+        cmp -s "$work/big.txt" "$work/out" || fail "wrong file copied into a FAT16 directory"
+        run 0 rm "$work/fat.img" /COPIED.TXT
+        run 1 cat "$work/fat.img" /COPIED.TXT
+        error_has 'not found'
         ;;
     partition)
         need_images
@@ -235,6 +279,73 @@ case "$case" in
         error_has 'not a directory'
         run 1 ls "$ext/1k.img" /HELLO.TXT
         error_has 'not found'
+        ;;
+    ext2-cp-in)
+        need_e2fsck
+        cp "$ext/1k.img" "$work/1k.img"
+        printf 'small file\n' >"$work/small.txt"
+        # 310000 bytes reach double indirect blocks with 1 KiB blocks.
+        awk 'BEGIN { for (line = 0; line < 10000; line++) printf "copied line %06d of 31 bytes\n", line }' \
+            >"$work/large.txt"
+        chmod 0640 "$work/large.txt"
+        run 0 cp-in "$work/1k.img" "$work/small.txt" /small.txt
+        run 0 cp-in "$work/1k.img" "$work/large.txt" /a/b
+        run 0 cp-in "$work/1k.img" "$work/large.txt" /a/b/c/renamed.txt
+        # Replacing a file that is there.
+        run 0 cp-in "$work/1k.img" "$work/small.txt" /big.txt
+        run 0 cat "$work/1k.img" /small.txt
+        cmp -s "$work/small.txt" "$work/out" || fail "wrong small file"
+        run 0 cat "$work/1k.img" /a/b/large.txt
+        cmp -s "$work/large.txt" "$work/out" || fail "wrong file copied into a directory"
+        run 0 cat "$work/1k.img" /big.txt
+        cmp -s "$work/small.txt" "$work/out" || fail "the replaced file still has its old bytes"
+        run 0 ls "$work/1k.img" /a/b/large.txt
+        has_line '-rw-r-----     310000  large.txt'
+        check_clean "$work/1k.img"
+        debugfs_matches "$work/1k.img" /a/b/c/renamed.txt "$work/large.txt"
+        debugfs_matches "$work/1k.img" /big.txt "$work/small.txt"
+        # The partition of an MBR disk, and refusals.
+        cp "$ext/mbr.img" "$work/mbr.img"
+        run 0 cp-in "$work/mbr.img:1" "$work/small.txt" /a/small.txt
+        run 0 cat "$work/mbr.img" /a/small.txt
+        cmp -s "$work/small.txt" "$work/out" || fail "wrong file in the Linux partition"
+        run 1 cp-in "$work/1k.img" "$work/small.txt" /missing/small.txt
+        error_has 'not found'
+        run 1 cp-in "$work/1k.img" "$work/small.txt" /fast-link
+        error_has 'is a symbolic link'
+        run 1 cp-in "$work/1k.img" "$work/no-such-file" /x
+        error_has 'No such file or directory'
+        run 1 cp-in "$work/1k.img" "$work" /x
+        error_has 'not a regular file'
+        cp "$ext/ext3.img" "$work/ext3.img"
+        run 1 cp-in "$work/ext3.img" "$work/small.txt" /small.txt
+        error_has 'the volume mounted read-only'
+        error_has 'journal'
+        run 2 cp-in "$work/1k.img" "$work/small.txt"
+        check_clean "$work/1k.img"
+        ;;
+    ext2-rm)
+        need_e2fsck
+        cp "$ext/4k.img" "$work/4k.img"
+        run 0 rm "$work/4k.img" /big.txt
+        run 0 rm "$work/4k.img" /hello.txt
+        run 0 rm "$work/4k.img" /slow-link
+        run 0 rm "$work/4k.img" /sparse.bin
+        run 0 rm "$work/4k.img" many/entry-with-a-longer-name-150.txt
+        run 0 ls "$work/4k.img"
+        has_line '-rw-r-----         17  hard.txt'
+        if grep -q 'big.txt\|hello.txt\|slow-link\|sparse.bin' "$work/out"; then
+            fail "a removed file is still listed"
+        fi
+        run 0 ls "$work/4k.img" many
+        [ "$(wc -l <"$work/out")" -eq 299 ] || fail "many should hold 299 entries"
+        run 1 rm "$work/4k.img" /a
+        error_has 'is a directory'
+        run 1 rm "$work/4k.img" /big.txt
+        error_has 'not found'
+        run 1 rm "$work/4k.img" /
+        run 2 rm "$work/4k.img"
+        check_clean "$work/4k.img"
         ;;
     *)
         fail "unknown case '$case'"

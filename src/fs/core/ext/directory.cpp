@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #include "ext/directory.h"
 
+#include "common/bytes.h"
 #include "common/little_endian.h"
+#include "ext/inode.h"
 
 namespace FeatherDisk::Ext
 {
@@ -11,12 +13,12 @@ namespace
 // The shortest record: the header and a name of up to four bytes.
 constexpr std::size_t MinimumRecordLength = 12;
 
-std::size_t RecordLengthFor(std::size_t name_length)
+} // namespace
+
+std::size_t RecordLength(std::size_t name_length)
 {
     return (EntryHeaderSize + name_length + 3) & ~std::size_t{3};
 }
-
-} // namespace
 
 Result<RawEntry> ParseEntry(std::span<const std::uint8_t> block, std::size_t offset,
                             bool has_file_type, std::uint32_t inode_count)
@@ -32,7 +34,7 @@ Result<RawEntry> ParseEntry(std::span<const std::uint8_t> block, std::size_t off
     const std::size_t name_length =
         has_file_type ? raw[6] : LoadLittleEndian<std::uint16_t>(raw + 6);
     if (record_length < MinimumRecordLength || record_length % 4 != 0 ||
-        record_length > block.size() - offset || record_length < RecordLengthFor(name_length) ||
+        record_length > block.size() - offset || record_length < RecordLength(name_length) ||
         name_length > MaximumNameLength || inode > inode_count || (inode != 0 && name_length == 0))
     {
         return std::unexpected(Error::Corrupt);
@@ -63,6 +65,47 @@ std::optional<NodeType> TypeOfEntry(std::uint8_t file_type)
     default:
         return std::nullopt;
     }
+}
+
+std::uint8_t EntryFileType(std::uint16_t mode)
+{
+    switch (mode & ModeTypeMask)
+    {
+    case ModeRegular:
+        return 1;
+    case ModeDirectory:
+        return 2;
+    case ModeCharacterDevice:
+        return 3;
+    case ModeBlockDevice:
+        return 4;
+    case ModeFifo:
+        return 5;
+    case ModeSocket:
+        return 6;
+    case ModeSymbolicLink:
+        return 7;
+    default:
+        return 0;
+    }
+}
+
+void StoreEntry(std::span<std::uint8_t> block, std::size_t offset, const RawEntry& entry,
+                bool has_file_type)
+{
+    std::uint8_t* raw = block.data() + offset;
+    StoreLittleEndian(raw, entry.inode);
+    StoreLittleEndian(raw + 4, entry.record_length);
+    if (has_file_type)
+    {
+        raw[6] = static_cast<std::uint8_t>(entry.name.size());
+        raw[7] = entry.file_type;
+    }
+    else
+    {
+        StoreLittleEndian(raw + 6, static_cast<std::uint16_t>(entry.name.size()));
+    }
+    CopyBytes(raw + EntryHeaderSize, entry.name.data(), entry.name.size());
 }
 
 } // namespace FeatherDisk::Ext

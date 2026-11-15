@@ -1,6 +1,6 @@
 ---
 name: autopilot
-description: Work through the next planned FeatherOS steps automatically - one Opus subagent per step in the working tree, then review, commit on the current feature branch, and continue with the next step until a stop condition. Use when the user says autopilot, "keep going", "work through the parts", or asks to delegate the next steps to subagents.
+description: Work through the next planned FeatherOS steps automatically - one subagent per step in the working tree, then review, commit on the current feature branch, and continue with the next step until a stop condition. Use when the user says autopilot, "keep going", "work through the parts", or asks to delegate the next steps to subagents.
 ---
 
 # Autopilot: subagent per step, review, commit, repeat
@@ -23,14 +23,16 @@ You are the coordinator. Subagents write the code; you choose the work, review i
 
 - The next unit is the next part not marked `(done)` in the milestone in progress, or the next step within it.
 - A part that is too big for one subagent (a rough guide: more than about 15 files or more than one subsystem) gets split into steps. Read enough of the code to split it sensibly, or use the `Plan` agent for a large part. Write the step list into that part's roadmap text (`steps: 1 ..., 2 ..., 3 ...`) so it survives a cleared conversation, and include that edit in the first step's commit.
-- Pick the effort level for the subagent:
-  - `medium`: mechanical work (renames, moving code, docs, adding tests for existing behaviour).
-  - `high`: the default for new kernel, filesystem, libc or tooling code.
-  - `xhigh`: concurrency, on-disk write paths, memory management, anything where a subtle bug corrupts data or hangs both architectures.
+- Pick the model and effort per step. What counts is a working, bug-free result, and the cost comes second: subagents were 94% of usage when every step ran on Opus at `high`/`xhigh`.
+  - `sonnet` at `medium`: mechanical work (renames, moving code, docs, tests for existing behaviour, small programs, tooling).
+  - `sonnet` at `high`: new code with a clear plan in one subsystem.
+  - `opus` at `high`: design-heavy or risky steps, such as on-disk write paths, concurrency, memory management, ABI changes, and path resolution.
+  - `opus` at `xhigh`: only where a subtle bug would corrupt data or hang both architectures and the step has no simpler shape.
+  - If a Sonnet step fails both fix rounds, retry it once on Opus before stopping.
 
 ## 2. Spawn the subagent
 
-`Agent` with `subagent_type: "general-purpose"`, `model: "opus"`, and the chosen `effort`. No worktree isolation. The prompt has to stand on its own, because the agent doesn't see this conversation. Include:
+`Agent` with `subagent_type: "general-purpose"` and the chosen `model` and `effort`. No worktree isolation. The prompt has to stand on its own, because the agent doesn't see this conversation. Include:
 
 1. **Task:** the milestone, part and step, quoted from the roadmap, plus the decisions already made in earlier steps (files and types it should build on).
 2. **Rules:** follow `CLAUDE.md` (read it first), including the lint-before-test workflow, the header/source split, minimal comments, both architectures, and `GUARDED_BY`/`REQUIRES` annotations. Never run `git commit`, `git add`, `git stash`, `git checkout`, `git reset` or any other git command that writes. Don't start a background shell that outlives the task.

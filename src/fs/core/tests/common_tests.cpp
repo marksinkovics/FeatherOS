@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #include <catch2/catch_test_macros.hpp>
 
+#include "common/bitmap.h"
 #include "common/host_buffer.h"
 #include "common/little_endian.h"
 #include "fs/filesystem.h"
@@ -118,4 +119,27 @@ TEST_CASE("a driver's left-out operations are unsupported, and syncing succeeds"
     REQUIRE(filesystem.SymbolicLink(root, "l", "a").error() == unsupported);
     REQUIRE(filesystem.ReadLink(root, link).error() == unsupported);
     REQUIRE(filesystem.Sync().has_value());
+}
+
+TEST_CASE("bitmaps set, clear and find clear bits within a range")
+{
+    std::array<std::uint8_t, 4> bitmap{};
+    FeatherDisk::SetBit(bitmap, 0);
+    FeatherDisk::SetBit(bitmap, 9);
+    REQUIRE(bitmap == std::array<std::uint8_t, 4>{0x01, 0x02, 0x00, 0x00});
+    REQUIRE(FeatherDisk::TestBit(bitmap, 9));
+    REQUIRE_FALSE(FeatherDisk::TestBit(bitmap, 8));
+    FeatherDisk::ClearBit(bitmap, 9);
+    REQUIRE_FALSE(FeatherDisk::TestBit(bitmap, 9));
+
+    bitmap = {0xFF, 0xFF, 0x7F, 0x00};
+    REQUIRE(FeatherDisk::FindClearBit(bitmap, 0, 32) == 23U);
+    REQUIRE(FeatherDisk::FindClearBit(bitmap, 24, 32) == 24U);
+    // The end is exclusive, and a range past the bitmap stops at its end.
+    REQUIRE_FALSE(FeatherDisk::FindClearBit(bitmap, 0, 23).has_value());
+    bitmap = {0xFF, 0xFF, 0xFF, 0xFF};
+    REQUIRE_FALSE(FeatherDisk::FindClearBit(bitmap, 0, 1000).has_value());
+    bitmap = {0xFF, 0xEF, 0xFF, 0xFF};
+    REQUIRE(FeatherDisk::FindClearBit(bitmap, 3, 32) == 12U);
+    REQUIRE_FALSE(FeatherDisk::FindClearBit(bitmap, 13, 32).has_value());
 }

@@ -58,6 +58,7 @@ std::array<std::uint8_t, SuperblockSize> SuperblockBytes()
     StoreLittleEndian<std::uint32_t>(raw + 40, 2048); // inodes per group
     StoreLittleEndian<std::uint16_t>(raw + 56, 0xEF53);
     StoreLittleEndian<std::uint32_t>(raw + 76, 1);
+    StoreLittleEndian<std::uint32_t>(raw + 84, 11); // first inode
     StoreLittleEndian<std::uint16_t>(raw + 88, 128);
     StoreLittleEndian<std::uint32_t>(raw + 96, IncompatibleFileType);
     return bytes;
@@ -270,6 +271,154 @@ TEST_CASE("ext2 inodes decode owners, sizes, times and block numbers")
     REQUIRE(TypeOf(0010644) == NodeType::Special);
     REQUIRE_FALSE(TypeOf(0).has_value());
     REQUIRE_FALSE(TypeOf(0170000).has_value());
+}
+
+TEST_CASE("ext2 inodes encode what the driver changes and keep the other bytes")
+{
+    std::array<std::uint8_t, DecodedInodeBytes> raw{};
+    raw.fill(0xCC);
+    Inode inode = {
+        .mode = 0100644,
+        .owner = 70000,
+        .group = 0x12345,
+        .size = 0x300000005ULL,
+        .link_count = 2,
+        .flags = 0x10,
+        .allocated_bytes = 3 * 1024,
+        .access_time = {.seconds = 1700000000, .nanoseconds = 7},
+        .modify_time = {.seconds = (std::int64_t{1} << 32) + 10, .nanoseconds = 999999999},
+        .change_time = {.seconds = -5, .nanoseconds = 0},
+        .blocks = {},
+        .deletion_time = 0,
+        .attribute_block = 0xCCCCCCCC,
+        .extra_size = 32,
+        .creation_time = {.seconds = 1600000000, .nanoseconds = 42},
+    };
+    inode.SetBlock(0, 1234);
+    inode.SetBlock(TripleIndirectBlock, 5678);
+    EncodeInode(inode, raw);
+    const Inode decoded = DecodeInode(raw, 0, 1024);
+    REQUIRE(decoded.mode == inode.mode);
+    REQUIRE(decoded.owner == 70000);
+    REQUIRE(decoded.group == 0x12345);
+    REQUIRE(decoded.size == 0x300000005ULL);
+    REQUIRE(decoded.link_count == 2);
+    REQUIRE(decoded.flags == 0x10);
+    REQUIRE(decoded.allocated_bytes == 3 * 1024);
+    REQUIRE(decoded.Block(0) == 1234);
+    REQUIRE(decoded.Block(TripleIndirectBlock) == 5678);
+    REQUIRE(decoded.access_time.seconds == 1700000000);
+    REQUIRE(decoded.access_time.nanoseconds == 7);
+    REQUIRE(decoded.modify_time.seconds == (std::int64_t{1} << 32) + 10);
+    REQUIRE(decoded.modify_time.nanoseconds == 999999999);
+    REQUIRE(decoded.change_time.seconds == -5);
+    REQUIRE(decoded.creation_time.seconds == 1600000000);
+    REQUIRE(decoded.creation_time.nanoseconds == 42);
+    REQUIRE(decoded.deletion_time == 0);
+    REQUIRE(decoded.extra_size == 32);
+    // Fields the driver never changes keep their bytes: i_generation and i_file_acl.
+    REQUIRE(raw[100] == 0xCC);
+    REQUIRE(raw[104] == 0xCC);
+
+    // A directory's i_size_high is its ACL, and a 128-byte inode has no extended times.
+    std::array<std::uint8_t, 128> small{};
+    small.fill(0xEE);
+    inode.mode = 040755;
+    inode.extra_size = 0;
+    EncodeInode(inode, small);
+    REQUIRE(small[108] == 0xEE);
+    const Inode directory = DecodeInode(small, 0, 1024);
+    REQUIRE(directory.size == 5);
+    REQUIRE(directory.modify_time.seconds == 10);
+}
+
+TEST_CASE("the ext2 superblock state and group counts encode in place")
+{
+    std::array<std::uint8_t, SuperblockSize> bytes = SuperblockBytes();
+    Superblock superblock = DecodeSuperblock(bytes);
+    REQUIRE(superblock.first_inode == 11);
+    superblock.free_blocks_count = 77;
+    superblock.free_inodes_count = 88;
+    superblock.mount_time = 1700000000;
+    superblock.write_time = 1700000001;
+    superblock.mount_count = 9;
+    superblock.state = StateErrors;
+    superblock.read_only_compatible = ReadOnlyCompatibleLargeFile;
+    superblock.blocks_count = 1;
+    EncodeSuperblockState(superblock, bytes);
+    const Superblock decoded = DecodeSuperblock(bytes);
+    REQUIRE(decoded.free_blocks_count == 77);
+    REQUIRE(decoded.free_inodes_count == 88);
+    REQUIRE(decoded.mount_time == 1700000000);
+    REQUIRE(decoded.write_time == 1700000001);
+    REQUIRE(decoded.mount_count == 9);
+    REQUIRE(decoded.state == StateErrors);
+    REQUIRE(decoded.read_only_compatible == ReadOnlyCompatibleLargeFile);
+    // The geometry is never written.
+    REQUIRE(decoded.blocks_count == 8192);
+
+    superblock.read_only_compatible = ReadOnlyCompatibleSparseSuper;
+    for (const std::uint32_t group : {0U, 1U, 3U, 5U, 7U, 9U, 25U, 27U, 49U, 125U, 343U})
+    {
+        REQUIRE(GroupHasSuperblock(superblock, group));
+    }
+    for (const std::uint32_t group : {2U, 4U, 6U, 8U, 10U, 15U, 21U, 35U, 45U})
+    {
+        REQUIRE_FALSE(GroupHasSuperblock(superblock, group));
+    }
+    superblock.read_only_compatible = 0;
+    REQUIRE(GroupHasSuperblock(superblock, 4));
+
+    std::array<std::uint8_t, GroupDescriptorSize> descriptor{};
+    StoreLittleEndian<std::uint32_t>(descriptor.data() + 0, 3);
+    StoreLittleEndian<std::uint32_t>(descriptor.data() + 4, 4);
+    StoreLittleEndian<std::uint32_t>(descriptor.data() + 8, 5);
+    StoreLittleEndian<std::uint16_t>(descriptor.data() + 12, 100);
+    GroupDescriptor group = DecodeGroupDescriptor(descriptor);
+    REQUIRE(group.block_bitmap == 3);
+    REQUIRE(group.inode_bitmap == 4);
+    REQUIRE(group.inode_table == 5);
+    REQUIRE(group.free_blocks == 100);
+    group.free_blocks = 99;
+    group.free_inodes = 12;
+    group.used_directories = 2;
+    group.inode_table = 6;
+    EncodeGroupCounts(group, descriptor);
+    group = DecodeGroupDescriptor(descriptor);
+    REQUIRE(group.free_blocks == 99);
+    REQUIRE(group.free_inodes == 12);
+    REQUIRE(group.used_directories == 2);
+    REQUIRE(group.inode_table == 5);
+}
+
+TEST_CASE("ext2 directory records are stored with and without the filetype feature")
+{
+    REQUIRE(RecordLength(1) == 12);
+    REQUIRE(RecordLength(4) == 12);
+    REQUIRE(RecordLength(5) == 16);
+    REQUIRE(RecordLength(255) == 264);
+    REQUIRE(EntryFileType(0100644) == 1);
+    REQUIRE(EntryFileType(040755) == 2);
+    REQUIRE(EntryFileType(0120777) == 7);
+    REQUIRE(EntryFileType(0010644) == 5);
+    REQUIRE(EntryFileType(0) == 0);
+
+    std::vector<std::uint8_t> block(1024);
+    StoreEntry(block, 24, {.inode = 12, .record_length = 1000, .file_type = 1, .name = "hi.txt"},
+               true);
+    const Result<RawEntry> typed = ParseEntry(block, 24, true, 100);
+    REQUIRE(typed.has_value());
+    REQUIRE(typed->inode == 12);
+    REQUIRE(typed->record_length == 1000);
+    REQUIRE(typed->file_type == 1);
+    REQUIRE(typed->name == "hi.txt");
+    StoreEntry(block, 24, {.inode = 13, .record_length = 1000, .file_type = 1, .name = "hi"},
+               false);
+    REQUIRE(block[24 + 7] == 0);
+    const Result<RawEntry> untyped = ParseEntry(block, 24, false, 100);
+    REQUIRE(untyped.has_value());
+    REQUIRE(untyped->inode == 13);
+    REQUIRE(untyped->name == "hi");
 }
 
 TEST_CASE("huge_file inodes count blocks in filesystem blocks")

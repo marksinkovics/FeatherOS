@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #include "fs/ext2.h"
 
-#include "common/block_cache.h"
 #include "common/bytes.h"
-#include "common/host_buffer.h"
 #include "common/little_endian.h"
-#include "ext/directory.h"
-#include "ext/inode.h"
-#include "ext/superblock.h"
+#include "ext/ext2_filesystem.h"
 #include "fs/host.h"
 
 #include <array>
@@ -23,8 +19,6 @@ namespace FeatherDisk::Ext
 namespace
 {
 
-// Writing is not implemented yet, so every mount is read-only.
-constexpr bool WritesSupported = false;
 // Metadata blocks each mounted volume keeps in memory.
 constexpr std::size_t CacheBytes = 32 * 1024;
 constexpr std::uint32_t PointerSize = 4;
@@ -33,65 +27,16 @@ constexpr std::uint32_t PointerSize = 4;
 constexpr std::uint64_t MaximumAllocatedBytes = std::uint64_t{0xFFFFFFFF} * 512;
 constexpr std::uint64_t MaximumSmallFileBytes = 0x7FFFFFFF;
 
-template <typename T> std::unexpected<Error> Failure(const Result<T>& result)
+// Appends text to a log line, leaving room for what LogWithValue adds.
+void Append(std::array<char, 128>& line, std::size_t& length, std::string_view text)
 {
-    return std::unexpected(result.error());
-}
-
-std::uint64_t DivideRoundingUp(std::uint64_t value, std::uint64_t divisor)
-{
-    return value / divisor + (value % divisor != 0 ? 1 : 0);
-}
-
-// The message, then value as eight hexadecimal digits.
-void LogWithValue(std::string_view message, std::uint32_t value)
-{
-    constexpr std::string_view Digits = "0123456789abcdef";
-    std::array<char, 96> text{};
-    std::size_t length = 0;
-    for (const char character : message)
+    for (const char character : text)
     {
-        if (length < text.size() - 10)
+        if (length < line.size() - 10)
         {
-            text[length++] = character;
+            line[length++] = character;
         }
     }
-    text[length++] = '0';
-    text[length++] = 'x';
-    for (int shift = 28; shift >= 0; shift -= 4)
-    {
-        text[length++] = Digits[(value >> shift) & 0xFU];
-    }
-    Host::Log(Host::LogLevel::Warning, std::string_view(text.data(), length));
-}
-
-// Block-sized buffers from the host, for one operation.
-class Buffers
-{
-public:
-    Buffers(std::uint32_t block_size, std::size_t count);
-
-    bool Empty() const;
-    std::span<std::uint8_t> operator[](std::size_t index);
-
-private:
-    HostBuffer memory;
-    std::uint32_t size;
-};
-
-Buffers::Buffers(std::uint32_t block_size, std::size_t count)
-    : memory(std::size_t{block_size} * count), size(block_size)
-{
-}
-
-bool Buffers::Empty() const
-{
-    return memory.Empty();
-}
-
-std::span<std::uint8_t> Buffers::operator[](std::size_t index)
-{
-    return memory.Bytes().subspan(index * size, size);
 }
 
 Result<Superblock> ReadSuperblock(BlockDevice& volume)
@@ -122,80 +67,37 @@ Result<Superblock> ReadSuperblock(BlockDevice& volume)
     return DecodeSuperblock(bytes.first<SuperblockSize>());
 }
 
-// An inode in use, of a type ext2 defines.
-struct Node
+// Why a volume this driver reads must not be written, or nullopt.
+std::optional<std::string_view> WriteRefusal(const Superblock& superblock)
 {
-    Inode inode;
-    NodeType type;
-};
-
-class Ext2Filesystem final : public Filesystem
-{
-public:
-    Ext2Filesystem(BlockDevice& device, const Superblock& layout, bool mounted_read_only);
-    ~Ext2Filesystem() = default;
-
-    // Constructed in memory from Host::Allocate; the core has no <new> for the global form.
-    static void* operator new(std::size_t size, void* place) noexcept;
-
-    Status Initialize();
-
-    Capabilities GetCapabilities() const override;
-    NodeId Root() const override;
-    Result<VolumeStatistics> Statistics() override;
-    Result<NodeId> Lookup(NodeId directory, std::string_view name) override;
-    Result<bool> ReadDirectory(NodeId directory, std::uint64_t& cookie,
-                               DirectoryEntry& entry) override;
-    Result<Attributes> GetAttributes(NodeId node) override;
-    Status SetAttributes(NodeId node, const AttributeChanges& changes) override;
-    Result<std::size_t> Read(NodeId file, std::uint64_t offset,
-                             std::span<std::uint8_t> buffer) override;
-    Result<std::size_t> Write(NodeId file, std::uint64_t offset,
-                              std::span<const std::uint8_t> data) override;
-    Status Truncate(NodeId file, std::uint64_t size) override;
-    Result<NodeId> Create(NodeId directory, std::string_view name, std::uint32_t mode) override;
-    Result<NodeId> MakeDirectory(NodeId directory, std::string_view name,
-                                 std::uint32_t mode) override;
-    Status Remove(NodeId directory, std::string_view name) override;
-    Status RemoveDirectory(NodeId directory, std::string_view name) override;
-    Status Rename(NodeId from_directory, std::string_view from_name, NodeId to_directory,
-                  std::string_view to_name) override;
-    Status Link(NodeId node, NodeId directory, std::string_view name) override;
-    Result<NodeId> SymbolicLink(NodeId directory, std::string_view name,
-                                std::string_view target) override;
-    Result<std::size_t> ReadLink(NodeId link, std::span<char> buffer) override;
-    Status Sync() override;
-
-private:
-    std::unexpected<Error> Refused() const;
-    bool IsDataBlock(std::uint64_t block) const;
-    Result<Inode> LoadInode(NodeId node, std::span<std::uint8_t> scratch);
-    Result<Node> LoadNode(NodeId node, std::span<std::uint8_t> scratch);
-    Result<std::uint32_t> ReadPointer(std::uint32_t block, std::uint64_t index,
-                                      std::span<std::uint8_t> scratch);
-    // The block holding a file's logical block, or 0 for a hole.
-    Result<std::uint32_t> MapBlock(const Inode& inode, std::uint64_t logical,
-                                   std::span<std::uint8_t> scratch);
-    // Calls visit(entry, offset of the next entry) for each used entry from byte start on,
-    // until it returns true. block receives each directory block, and scratch serves the rest.
-    template <typename Visit>
-    Result<bool> ScanDirectory(const Inode& directory, std::uint64_t start,
-                               std::span<std::uint8_t> block, std::span<std::uint8_t> scratch,
-                               Visit visit);
-    Result<NodeType> EntryType(const RawEntry& entry, std::span<std::uint8_t> scratch);
-    Result<std::size_t> ReadContents(const Inode& file, std::uint64_t offset,
-                                     std::span<std::uint8_t> buffer,
-                                     std::span<std::uint8_t> scratch);
-
-    BlockDevice& volume;
-    Superblock superblock;
-    BlockCache cache;
-    bool read_only;
-    bool has_file_type;
-    std::uint32_t block_size;
-    std::uint32_t pointers_per_block;
-    std::uint64_t inode_table_blocks;
-};
+    if ((superblock.read_only_compatible & ~ReadOnlyCompatibleUnderstood) != 0)
+    {
+        return "unknown read-only compatible features";
+    }
+    if ((superblock.compatible & CompatibleHasJournal) != 0)
+    {
+        return "an ext3 journal, which writes would have to go through";
+    }
+    if ((superblock.compatible & ~CompatibleWritable) != 0)
+    {
+        return "compatible features whose rules it does not keep";
+    }
+    // New inodes are taken from s_first_ino on; the ones below are reserved.
+    if (superblock.first_inode < GoodOldFirstInode ||
+        superblock.first_inode > superblock.inodes_count)
+    {
+        return "the first ordinary inode number is impossible";
+    }
+    if ((superblock.state & StateErrors) != 0)
+    {
+        return "errors are recorded; run e2fsck";
+    }
+    if ((superblock.state & StateClean) == 0)
+    {
+        return "it was not cleanly unmounted; run e2fsck";
+    }
+    return std::nullopt;
+}
 
 class Ext2FilesystemType final : public FilesystemType
 {
@@ -208,13 +110,66 @@ public:
     Status Unmount(Filesystem& filesystem) override;
 };
 
+} // namespace
+
+std::uint64_t DivideRoundingUp(std::uint64_t value, std::uint64_t divisor)
+{
+    return value / divisor + (value % divisor != 0 ? 1 : 0);
+}
+
+void LogWarning(std::string_view message, std::string_view detail)
+{
+    std::array<char, 128> line{};
+    std::size_t length = 0;
+    Append(line, length, message);
+    Append(line, length, detail);
+    Host::Log(Host::LogLevel::Warning, std::string_view(line.data(), length));
+}
+
+void LogWithValue(std::string_view message, std::uint32_t value)
+{
+    constexpr std::string_view Digits = "0123456789abcdef";
+    std::array<char, 128> line{};
+    std::size_t length = 0;
+    Append(line, length, message);
+    line[length++] = '0';
+    line[length++] = 'x';
+    for (int shift = 28; shift >= 0; shift -= 4)
+    {
+        line[length++] = Digits[(value >> shift) & 0xFU];
+    }
+    Host::Log(Host::LogLevel::Warning, std::string_view(line.data(), length));
+}
+
+Buffers::Buffers(std::uint32_t block_size, std::size_t count)
+    : memory(std::size_t{block_size} * count), size(block_size)
+{
+}
+
+bool Buffers::Empty() const
+{
+    return memory.Empty();
+}
+
+std::span<std::uint8_t> Buffers::operator[](std::size_t index)
+{
+    return memory.Bytes().subspan(index * size, size);
+}
+
 Ext2Filesystem::Ext2Filesystem(BlockDevice& device, const Superblock& layout,
                                bool mounted_read_only)
-    : volume(device), superblock(layout), read_only(mounted_read_only),
+    : volume(device), superblock(layout),
+      descriptor_memory(static_cast<std::size_t>(
+          DivideRoundingUp(std::uint64_t{layout.group_count} * GroupDescriptorSize,
+                           layout.block_size) *
+          layout.block_size)),
+      writable_mount(false), read_only(mounted_read_only),
       has_file_type((layout.incompatible & IncompatibleFileType) != 0),
       block_size(layout.block_size), pointers_per_block(layout.block_size / PointerSize),
       inode_table_blocks(DivideRoundingUp(
-          std::uint64_t{layout.inodes_per_group} * layout.inode_size, layout.block_size))
+          std::uint64_t{layout.inodes_per_group} * layout.inode_size, layout.block_size)),
+      descriptor_blocks(DivideRoundingUp(std::uint64_t{layout.group_count} * GroupDescriptorSize,
+                                         layout.block_size))
 {
 }
 
@@ -230,6 +185,17 @@ Status Ext2Filesystem::Initialize()
     {
         return initialized;
     }
+    if (descriptor_memory.Empty())
+    {
+        return std::unexpected(Error::OutOfMemory);
+    }
+    // The group descriptor table follows the superblock's block, and CheckSuperblock made sure
+    // it fits. It stays in memory: its free counts change with every allocation.
+    descriptors = descriptor_memory.Bytes();
+    if (const Status read = cache.ReadUncached(superblock.first_data_block + 1, descriptors); !read)
+    {
+        return read;
+    }
     Buffers buffers(block_size, 1);
     if (buffers.Empty())
     {
@@ -244,7 +210,17 @@ Status Ext2Filesystem::Initialize()
     {
         return std::unexpected(Error::Corrupt);
     }
-    return {};
+    if (read_only)
+    {
+        return {};
+    }
+    if (const std::optional<std::string_view> reason = CheckGroups())
+    {
+        LogWarning("ext2: mounted read-only: ", *reason);
+        read_only = true;
+        return {};
+    }
+    return MarkMounted();
 }
 
 std::unexpected<Error> Ext2Filesystem::Refused() const
@@ -259,39 +235,61 @@ bool Ext2Filesystem::IsDataBlock(std::uint64_t block) const
     return block > superblock.first_data_block && block < superblock.blocks_count;
 }
 
-Result<Inode> Ext2Filesystem::LoadInode(NodeId node, std::span<std::uint8_t> scratch)
+std::uint64_t Ext2Filesystem::MaximumFileSize() const
+{
+    const std::uint64_t per_block = pointers_per_block;
+    const std::uint64_t mapped_blocks =
+        DirectBlocks + per_block + per_block * per_block + per_block * per_block * per_block;
+    std::uint64_t maximum = mapped_blocks * block_size;
+    if (maximum > MaximumAllocatedBytes)
+    {
+        maximum = MaximumAllocatedBytes;
+    }
+    // A writable revision 1 volume gains large_file with its first large file, as on Linux; a
+    // revision 0 volume is not upgraded to make room for the feature.
+    const bool large_files = (superblock.read_only_compatible & ReadOnlyCompatibleLargeFile) != 0 ||
+                             (!read_only && superblock.revision >= DynamicRevision);
+    if (!large_files && maximum > MaximumSmallFileBytes)
+    {
+        maximum = MaximumSmallFileBytes;
+    }
+    return maximum;
+}
+
+Result<Ext2Filesystem::InodePlace> Ext2Filesystem::LocateInode(NodeId node) const
 {
     if (node == 0 || node > superblock.inodes_count)
     {
         return std::unexpected(Error::InvalidArgument);
     }
     // Inodes count from 1, in groups of inodes_per_group, each group with its own inode table
-    // that its 32-byte descriptor locates.
+    // that its descriptor locates.
     const auto number = static_cast<std::uint32_t>(node - 1);
-    const std::uint32_t group = number / superblock.inodes_per_group;
-    const std::uint32_t index = number % superblock.inodes_per_group;
-    const std::uint64_t descriptor = std::uint64_t{group} * GroupDescriptorSize;
-    std::array<std::uint8_t, GroupDescriptorSize> raw_descriptor{};
-    if (const Status read = cache.Read(superblock.first_data_block + 1 + descriptor / block_size,
-                                       descriptor % block_size, raw_descriptor, scratch);
-        !read)
-    {
-        return Failure(read);
-    }
-    const std::uint32_t table = LoadLittleEndian<std::uint32_t>(raw_descriptor.data() + 8);
+    const std::uint32_t table = Group(number / superblock.inodes_per_group).inode_table;
     if (!IsDataBlock(table) || table + inode_table_blocks > superblock.blocks_count)
     {
         return std::unexpected(Error::Corrupt);
     }
+    const std::uint64_t byte =
+        std::uint64_t{number % superblock.inodes_per_group} * superblock.inode_size;
+    return InodePlace{
+        .block = static_cast<std::uint32_t>(table + byte / block_size),
+        .offset = static_cast<std::size_t>(byte % block_size),
+    };
+}
 
-    const std::uint64_t byte = std::uint64_t{index} * superblock.inode_size;
+Result<Inode> Ext2Filesystem::LoadInode(NodeId node, std::span<std::uint8_t> scratch)
+{
+    const Result<InodePlace> place = LocateInode(node);
+    if (!place)
+    {
+        return Failure(place);
+    }
     std::array<std::uint8_t, DecodedInodeBytes> raw{};
     const std::size_t length =
         superblock.inode_size < DecodedInodeBytes ? superblock.inode_size : DecodedInodeBytes;
     const std::span<std::uint8_t> bytes(raw.data(), length);
-    if (const Status read =
-            cache.Read(table + byte / block_size, byte % block_size, bytes, scratch);
-        !read)
+    if (const Status read = cache.Read(place->block, place->offset, bytes, scratch); !read)
     {
         return Failure(read);
     }
@@ -329,6 +327,46 @@ Result<std::uint32_t> Ext2Filesystem::ReadPointer(std::uint32_t block, std::uint
     return LoadLittleEndian<std::uint32_t>(raw.data());
 }
 
+// Each level of indirection multiplies the reach by the pointers a block holds. The path is the
+// index into each indirect block on the way down; the depth is fixed, so a corrupt block map
+// cannot loop.
+std::optional<BlockPath> Ext2Filesystem::PathOf(std::uint64_t logical) const
+{
+    const std::uint64_t per_block = pointers_per_block;
+    const std::uint64_t single_start = DirectBlocks;
+    const std::uint64_t double_start = single_start + per_block;
+    const std::uint64_t triple_start = double_start + per_block * per_block;
+    const std::uint64_t end = triple_start + per_block * per_block * per_block;
+    const auto index = [](std::uint64_t value) { return static_cast<std::uint32_t>(value); };
+    if (logical < single_start)
+    {
+        return BlockPath{.root = index(logical), .depth = 0, .index = {}};
+    }
+    if (logical < double_start)
+    {
+        return BlockPath{.root = SingleIndirectBlock,
+                         .depth = 1,
+                         .index = {index(logical - single_start), 0, 0}};
+    }
+    if (logical < triple_start)
+    {
+        const std::uint64_t offset = logical - double_start;
+        return BlockPath{.root = DoubleIndirectBlock,
+                         .depth = 2,
+                         .index = {index(offset / per_block), index(offset % per_block), 0}};
+    }
+    if (logical < end)
+    {
+        const std::uint64_t offset = logical - triple_start;
+        return BlockPath{.root = TripleIndirectBlock,
+                         .depth = 3,
+                         .index = {index(offset / (per_block * per_block)),
+                                   index((offset / per_block) % per_block),
+                                   index(offset % per_block)}};
+    }
+    return std::nullopt;
+}
+
 Result<std::uint32_t> Ext2Filesystem::MapBlock(const Inode& inode, std::uint64_t logical,
                                                std::span<std::uint8_t> scratch)
 {
@@ -337,48 +375,14 @@ Result<std::uint32_t> Ext2Filesystem::MapBlock(const Inode& inode, std::uint64_t
     {
         return std::unexpected(Error::Unsupported);
     }
-    // Each level of indirection multiplies the reach by the pointers a block holds. The path is
-    // the index into each indirect block on the way down; the depth is fixed, so a corrupt block
-    // map cannot loop.
-    const std::uint64_t per_block = pointers_per_block;
-    const std::uint64_t single_start = DirectBlocks;
-    const std::uint64_t double_start = single_start + per_block;
-    const std::uint64_t triple_start = double_start + per_block * per_block;
-    const std::uint64_t end = triple_start + per_block * per_block * per_block;
-    std::array<std::uint64_t, 3> path{};
-    std::uint32_t depth = 0;
-    std::uint32_t block = 0;
-    if (logical < single_start)
-    {
-        block = inode.Block(static_cast<std::uint32_t>(logical));
-    }
-    else if (logical < double_start)
-    {
-        block = inode.Block(SingleIndirectBlock);
-        path = {logical - single_start, 0, 0};
-        depth = 1;
-    }
-    else if (logical < triple_start)
-    {
-        const std::uint64_t index = logical - double_start;
-        block = inode.Block(DoubleIndirectBlock);
-        path = {index / per_block, index % per_block, 0};
-        depth = 2;
-    }
-    else if (logical < end)
-    {
-        const std::uint64_t index = logical - triple_start;
-        block = inode.Block(TripleIndirectBlock);
-        path = {index / (per_block * per_block), (index / per_block) % per_block,
-                index % per_block};
-        depth = 3;
-    }
-    else
+    const std::optional<BlockPath> path = PathOf(logical);
+    if (!path)
     {
         // Past the block map's reach, which a size beyond it claims.
         return std::unexpected(Error::Corrupt);
     }
-    for (std::uint32_t level = 0; level < depth; ++level)
+    std::uint32_t block = inode.Block(path->root);
+    for (std::uint32_t level = 0; level < path->depth; ++level)
     {
         if (block == 0)
         {
@@ -388,7 +392,7 @@ Result<std::uint32_t> Ext2Filesystem::MapBlock(const Inode& inode, std::uint64_t
         {
             return std::unexpected(Error::Corrupt);
         }
-        const Result<std::uint32_t> next = ReadPointer(block, path[level], scratch);
+        const Result<std::uint32_t> next = ReadPointer(block, path->index[level], scratch);
         if (!next)
         {
             return next;
@@ -400,63 +404,6 @@ Result<std::uint32_t> Ext2Filesystem::MapBlock(const Inode& inode, std::uint64_t
         return std::unexpected(Error::Corrupt);
     }
     return block;
-}
-
-template <typename Visit>
-Result<bool> Ext2Filesystem::ScanDirectory(const Inode& directory, std::uint64_t start,
-                                           std::span<std::uint8_t> block,
-                                           std::span<std::uint8_t> scratch, Visit visit)
-{
-    if (TypeOf(directory.mode) != NodeType::Directory)
-    {
-        return std::unexpected(Error::NotDirectory);
-    }
-    // Directories are whole blocks without holes, so their size cannot exceed what they hold;
-    // the check also keeps a corrupt size from sending the scan over billions of blocks.
-    if (directory.size % block_size != 0 || directory.size > directory.allocated_bytes)
-    {
-        return std::unexpected(Error::Corrupt);
-    }
-    const std::uint64_t blocks = directory.size / block_size;
-    for (std::uint64_t logical = start / block_size; logical < blocks; ++logical)
-    {
-        const Result<std::uint32_t> physical = MapBlock(directory, logical, scratch);
-        if (!physical)
-        {
-            return Failure(physical);
-        }
-        if (*physical == 0)
-        {
-            continue;
-        }
-        if (const Status read = cache.Read(*physical, 0, block, block); !read)
-        {
-            return Failure(read);
-        }
-        // Entries are walked from the block's start even when resuming, so a cookie that does
-        // not fall on an entry still finds the next one.
-        for (std::size_t offset = 0; offset < block_size;)
-        {
-            const Result<RawEntry> entry =
-                ParseEntry(block, offset, has_file_type, superblock.inodes_count);
-            if (!entry)
-            {
-                return Failure(entry);
-            }
-            const std::uint64_t position = logical * block_size + offset;
-            offset += entry->record_length;
-            if (entry->inode == 0 || position < start)
-            {
-                continue;
-            }
-            const Result<bool> done = visit(*entry, logical * block_size + offset);
-            if (!done || *done)
-            {
-                return done;
-            }
-        }
-    }
-    return false;
 }
 
 Result<NodeType> Ext2Filesystem::EntryType(const RawEntry& entry, std::span<std::uint8_t> scratch)
@@ -552,19 +499,6 @@ Result<std::size_t> Ext2Filesystem::ReadContents(const Inode& file, std::uint64_
 
 Capabilities Ext2Filesystem::GetCapabilities() const
 {
-    const std::uint64_t per_block = pointers_per_block;
-    const std::uint64_t mapped_blocks =
-        DirectBlocks + per_block + per_block * per_block + per_block * per_block * per_block;
-    std::uint64_t maximum = mapped_blocks * block_size;
-    if (maximum > MaximumAllocatedBytes)
-    {
-        maximum = MaximumAllocatedBytes;
-    }
-    if ((superblock.read_only_compatible & ReadOnlyCompatibleLargeFile) == 0 &&
-        maximum > MaximumSmallFileBytes)
-    {
-        maximum = MaximumSmallFileBytes;
-    }
     return {
         .writable = !read_only,
         .symbolic_links = true,
@@ -572,7 +506,7 @@ Capabilities Ext2Filesystem::GetCapabilities() const
         .permissions = true,
         .case_sensitive = true,
         .maximum_name_length = MaximumNameLength,
-        .maximum_file_size = maximum,
+        .maximum_file_size = MaximumFileSize(),
     };
 }
 
@@ -625,10 +559,10 @@ Result<NodeId> Ext2Filesystem::Lookup(NodeId directory, std::string_view name)
     }
     NodeId found = 0;
     const Result<bool> scanned =
-        ScanDirectory(node->inode, 0, buffers[0], buffers[1],
-                      [&](const RawEntry& entry, std::uint64_t) -> Result<bool>
+        WalkDirectory(node->inode, 0, buffers[0], buffers[1],
+                      [&](const RawEntry& entry, const RecordPlace&) -> Result<bool>
                       {
-                          if (entry.name != name)
+                          if (entry.inode == 0 || entry.name != name)
                           {
                               return false;
                           }
@@ -659,10 +593,10 @@ Result<bool> Ext2Filesystem::ReadDirectory(NodeId directory, std::uint64_t& cook
     {
         return Failure(node);
     }
-    return ScanDirectory(node->inode, cookie, buffers[0], buffers[1],
-                         [&](const RawEntry& raw, std::uint64_t next) -> Result<bool>
+    return WalkDirectory(node->inode, cookie, buffers[0], buffers[1],
+                         [&](const RawEntry& raw, const RecordPlace& place) -> Result<bool>
                          {
-                             if (raw.name == "." || raw.name == "..")
+                             if (raw.inode == 0 || raw.name == "." || raw.name == "..")
                              {
                                  return false;
                              }
@@ -675,7 +609,7 @@ Result<bool> Ext2Filesystem::ReadDirectory(NodeId directory, std::uint64_t& cook
                              entry.type = *type;
                              entry.name_length = static_cast<std::uint16_t>(raw.name.size());
                              CopyBytes(entry.name.data(), raw.name.data(), raw.name.size());
-                             cookie = next;
+                             cookie = place.next;
                              return true;
                          });
 }
@@ -707,11 +641,6 @@ Result<Attributes> Ext2Filesystem::GetAttributes(NodeId node)
     };
 }
 
-Status Ext2Filesystem::SetAttributes(NodeId /*node*/, const AttributeChanges& /*changes*/)
-{
-    return Refused();
-}
-
 Result<std::size_t> Ext2Filesystem::Read(NodeId file, std::uint64_t offset,
                                          std::span<std::uint8_t> buffer)
 {
@@ -736,30 +665,8 @@ Result<std::size_t> Ext2Filesystem::Read(NodeId file, std::uint64_t offset,
     return ReadContents(node->inode, offset, buffer, buffers[0]);
 }
 
-Result<std::size_t> Ext2Filesystem::Write(NodeId /*file*/, std::uint64_t /*offset*/,
-                                          std::span<const std::uint8_t> /*data*/)
-{
-    return Refused();
-}
-
-Status Ext2Filesystem::Truncate(NodeId /*file*/, std::uint64_t /*size*/)
-{
-    return Refused();
-}
-
-Result<NodeId> Ext2Filesystem::Create(NodeId /*directory*/, std::string_view /*name*/,
-                                      std::uint32_t /*mode*/)
-{
-    return Refused();
-}
-
 Result<NodeId> Ext2Filesystem::MakeDirectory(NodeId /*directory*/, std::string_view /*name*/,
                                              std::uint32_t /*mode*/)
-{
-    return Refused();
-}
-
-Status Ext2Filesystem::Remove(NodeId /*directory*/, std::string_view /*name*/)
 {
     return Refused();
 }
@@ -837,11 +744,8 @@ Result<std::size_t> Ext2Filesystem::ReadLink(NodeId link, std::span<char> buffer
     return count;
 }
 
-// Nothing is ever written, so there is nothing to hold back.
-Status Ext2Filesystem::Sync()
+namespace
 {
-    return {};
-}
 
 std::string_view Ext2FilesystemType::Name() const
 {
@@ -889,8 +793,13 @@ Result<Filesystem*> Ext2FilesystemType::Mount(BlockDevice& volume, MountOptions 
         return std::unexpected(Error::Unsupported);
     }
 
-    const bool read_only = !WritesSupported || options.read_only ||
-                           (superblock->read_only_compatible & ~ReadOnlyCompatibleUnderstood) != 0;
+    bool read_only = options.read_only;
+    if (const std::optional<std::string_view> reason = WriteRefusal(*superblock);
+        reason && !read_only)
+    {
+        LogWarning("ext2: mounted read-only: ", *reason);
+        read_only = true;
+    }
     void* memory = Host::Allocate(sizeof(Ext2Filesystem));
     if (memory == nullptr)
     {

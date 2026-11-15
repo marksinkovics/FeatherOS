@@ -3,11 +3,11 @@
 // Without e2fsprogs the images are not made and these tests are skipped.
 #include <catch2/catch_test_macros.hpp>
 
-#include "common/little_endian.h"
 #include "fs/ext2.h"
 #include "fs/fat.h"
 #include "fs/partition.h"
 #include "tests/fat_image.h"
+#include "tests/ext2_image.h"
 #include "tests/filesystem_helpers.h"
 #include "tests/memory_device.h"
 #include "tests/partition_image.h"
@@ -16,7 +16,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <map>
 #include <memory>
 #include <optional>
@@ -36,23 +35,23 @@ using FeatherDisk::Capabilities;
 using FeatherDisk::DirectoryEntry;
 using FeatherDisk::Error;
 using FeatherDisk::Filesystem;
-using FeatherDisk::LoadLittleEndian;
-using FeatherDisk::MountOptions;
 using FeatherDisk::NodeId;
 using FeatherDisk::NodeType;
 using FeatherDisk::Result;
-using FeatherDisk::StoreLittleEndian;
 using FeatherDisk::VolumeStatistics;
 using FeatherDisk::Ext::Ext2Type;
 using FeatherDisk::Fat::Fat16Type;
 using FeatherDisk::Partition::Range;
 using FeatherDisk::Partition::Volume;
+using FeatherDisk::Tests::DeviceFrom;
 using FeatherDisk::Tests::ErrorOf;
 using FeatherDisk::Tests::Fat16Image;
 using FeatherDisk::Tests::LinuxFilesystemType;
 using FeatherDisk::Tests::List;
+using FeatherDisk::Tests::LoadExtImage;
 using FeatherDisk::Tests::MemoryDevice;
 using FeatherDisk::Tests::MountedFilesystem;
+using FeatherDisk::Tests::RawVolume;
 using FeatherDisk::Tests::ReadAll;
 using FeatherDisk::Tests::SetMbrEntry;
 using FeatherDisk::Tests::Sorted;
@@ -67,107 +66,6 @@ constexpr std::uint64_t SparseTail = 73400320;
 constexpr std::uint64_t SparseMiddle = 300000;
 constexpr std::string_view SlowTarget =
     "a/b/c/a-symbolic-link-target-that-is-longer-than-sixty-bytes.txt";
-
-std::vector<std::uint8_t> LoadImage(std::string_view variant)
-{
-    const std::string path =
-        std::string(FEATHERDISK_EXT_IMAGES) + "/" + std::string(variant) + ".img";
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    REQUIRE(file.good());
-    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(file.tellg()));
-    file.seekg(0);
-    file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    REQUIRE(file.good());
-    REQUIRE(bytes.size() % 4096 == 0);
-    return bytes;
-}
-
-std::unique_ptr<MemoryDevice> DeviceFrom(const std::vector<std::uint8_t>& bytes,
-                                         std::uint32_t sector_size = SectorSize)
-{
-    auto device = std::make_unique<MemoryDevice>(sector_size, bytes.size() / sector_size);
-    for (std::uint64_t sector = 0; sector < device->SectorCount(); ++sector)
-    {
-        std::memcpy(device->Sector(sector).data(), bytes.data() + sector * sector_size,
-                    sector_size);
-    }
-    return device;
-}
-
-// The volume's structures located from its bytes alone, to damage them on purpose.
-struct RawVolume
-{
-    std::vector<std::uint8_t>& bytes;
-
-    std::uint16_t Load16(std::uint64_t offset) const
-    {
-        return LoadLittleEndian<std::uint16_t>(bytes.data() + offset);
-    }
-    std::uint32_t Load32(std::uint64_t offset) const
-    {
-        return LoadLittleEndian<std::uint32_t>(bytes.data() + offset);
-    }
-    void Store16(std::uint64_t offset, std::uint16_t value)
-    {
-        StoreLittleEndian(bytes.data() + offset, value);
-    }
-    void Store32(std::uint64_t offset, std::uint32_t value)
-    {
-        StoreLittleEndian(bytes.data() + offset, value);
-    }
-    std::uint32_t BlockSize() const
-    {
-        return 1024U << Load32(1024 + 24);
-    }
-    std::uint32_t BlockCount() const
-    {
-        return Load32(1024 + 4);
-    }
-    std::uint32_t InodeCount() const
-    {
-        return Load32(1024 + 0);
-    }
-    std::uint64_t BlockOffset(std::uint32_t block) const
-    {
-        return std::uint64_t{block} * BlockSize();
-    }
-    std::uint64_t DescriptorOffset() const
-    {
-        return BlockOffset(Load32(1024 + 20) + 1);
-    }
-    std::uint64_t InodeOffset(std::uint32_t inode) const
-    {
-        const std::uint32_t per_group = Load32(1024 + 40);
-        const std::uint32_t size = Load32(1024 + 76) == 0 ? 128 : Load16(1024 + 88);
-        const std::uint32_t group = (inode - 1) / per_group;
-        const std::uint32_t table = Load32(DescriptorOffset() + group * 32 + 8);
-        return BlockOffset(table) + std::uint64_t{(inode - 1) % per_group} * size;
-    }
-    std::uint32_t InodeBlock(std::uint32_t inode, std::uint32_t index) const
-    {
-        return Load32(InodeOffset(inode) + 40 + index * 4);
-    }
-    // The named entry in the directory's first block.
-    std::uint64_t EntryOffset(std::uint32_t directory, std::string_view name) const
-    {
-        const std::uint64_t block = BlockOffset(InodeBlock(directory, 0));
-        for (std::uint64_t offset = 0; offset < BlockSize();)
-        {
-            const std::uint16_t length = Load16(block + offset + 4);
-            const std::string_view entry_name(
-                reinterpret_cast<const char*>(bytes.data() + block + offset + 8),
-                bytes[block + offset + 6]);
-            if (entry_name == name)
-            {
-                return block + offset;
-            }
-            REQUIRE(length != 0);
-            offset += length;
-        }
-        FAIL("no entry " << name);
-        return 0;
-    }
-};
 
 std::string BigText()
 {
@@ -401,7 +299,7 @@ void CheckVolume(Filesystem& ext2, Expected expected)
 
 void CheckImage(std::string_view variant, Expected expected)
 {
-    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadImage(variant));
+    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
     REQUIRE(Ext2Type().Name() == "ext2");
     REQUIRE(Ext2Type().Probe(*device));
     REQUIRE_FALSE(Fat16Type().Probe(*device));
@@ -488,22 +386,23 @@ TEST_CASE("an ext3 volume with a clean journal reads as ext2")
 #endif
 }
 
-TEST_CASE("ext2 mounts read-only even when asked for a writable mount")
+TEST_CASE("a read-only ext2 mount changes nothing on the volume")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadImage("1k"));
+    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage("1k"));
     {
-        MountedFilesystem ext2(Ext2Type(), *device, false);
+        MountedFilesystem ext2(Ext2Type(), *device, true);
         CheckReadOnly(*ext2);
     }
-    const std::vector<std::uint8_t> original = LoadImage("1k");
+    const std::vector<std::uint8_t> original = LoadExtImage("1k");
     for (std::uint64_t sector = 0; sector < device->SectorCount(); ++sector)
     {
         REQUIRE(std::memcmp(device->Sector(sector).data(), original.data() + sector * SectorSize,
                             SectorSize) == 0);
     }
+    REQUIRE(device->flush_count == 0);
 #endif
 }
 
@@ -512,14 +411,14 @@ TEST_CASE("ext2 refuses volumes with incompatible features it does not support")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    const std::unique_ptr<MemoryDevice> ext4 = DeviceFrom(LoadImage("ext4"));
+    const std::unique_ptr<MemoryDevice> ext4 = DeviceFrom(LoadExtImage("ext4"));
     REQUIRE(Ext2Type().Probe(*ext4));
     REQUIRE(ErrorOf(Ext2Type().Mount(*ext4, {.read_only = true})) == Error::Unsupported);
 
     // A journal that needs recovery, extents, and a bit no one has defined yet.
     for (const std::uint32_t feature : {0x0004U, 0x0040U, 0x80000000U})
     {
-        std::vector<std::uint8_t> bytes = LoadImage("1k");
+        std::vector<std::uint8_t> bytes = LoadExtImage("1k");
         RawVolume raw{bytes};
         raw.Store32(1024 + 96, raw.Load32(1024 + 96) | feature);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(bytes);
@@ -528,7 +427,7 @@ TEST_CASE("ext2 refuses volumes with incompatible features it does not support")
     }
 
     // Read-only compatible features that are unknown still leave the volume readable.
-    std::vector<std::uint8_t> bytes = LoadImage("1k");
+    std::vector<std::uint8_t> bytes = LoadExtImage("1k");
     RawVolume raw{bytes};
     raw.Store32(1024 + 100, raw.Load32(1024 + 100) | 0x80000000U);
     const std::unique_ptr<MemoryDevice> device = DeviceFrom(bytes);
@@ -556,13 +455,13 @@ TEST_CASE("ext2 probes only ext2 volumes and needs blocks of whole sectors")
     REQUIRE(ErrorOf(Ext2Type().Mount(unreadable, {.read_only = true})) == Error::Io);
 
     // With 4096-byte sectors the superblock is the second quarter of sector 0.
-    const std::unique_ptr<MemoryDevice> large_sectors = DeviceFrom(LoadImage("4k"), 4096);
+    const std::unique_ptr<MemoryDevice> large_sectors = DeviceFrom(LoadExtImage("4k"), 4096);
     {
         MountedFilesystem ext2(Ext2Type(), *large_sectors, true);
         REQUIRE(ReadAll(*ext2, Value(Walk(*ext2, "a/b/c/deep.txt"))) == "deep\n");
         REQUIRE(ReadAll(*ext2, Value(Walk(*ext2, "big.txt"))) == BigText());
     }
-    const std::unique_ptr<MemoryDevice> small_blocks = DeviceFrom(LoadImage("1k"), 4096);
+    const std::unique_ptr<MemoryDevice> small_blocks = DeviceFrom(LoadExtImage("1k"), 4096);
     REQUIRE(Ext2Type().Probe(*small_blocks));
     REQUIRE(ErrorOf(Ext2Type().Mount(*small_blocks, {.read_only = true})) == Error::Unsupported);
 #endif
@@ -573,7 +472,7 @@ TEST_CASE("ext2 mounts the Linux partition of an MBR disk that mke2fs made")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    const std::unique_ptr<MemoryDevice> disk = DeviceFrom(LoadImage("mbr"));
+    const std::unique_ptr<MemoryDevice> disk = DeviceFrom(LoadExtImage("mbr"));
     REQUIRE_FALSE(Ext2Type().Probe(*disk));
     REQUIRE(FeatherDisk::Partition::Identify(*disk) == FeatherDisk::Partition::Scheme::Mbr);
     std::array<Range, 4> ranges{};
@@ -599,7 +498,7 @@ std::unique_ptr<MemoryDevice> TwoVolumeDisk()
 {
     Fat16Image fat;
     fat.AddRootFile("FAT16 beside ext2.\n");
-    const std::vector<std::uint8_t> ext = LoadImage("1k");
+    const std::vector<std::uint8_t> ext = LoadExtImage("1k");
     auto disk = std::make_unique<MemoryDevice>(SectorSize, ExtStart + ext.size() / SectorSize + 64);
     for (std::uint64_t sector = 0; sector < fat.Device().SectorCount(); ++sector)
     {
@@ -682,7 +581,7 @@ TEST_CASE("damaged ext2 directory records are corrupt, never followed")
 #else
     const auto damaged = [](auto damage)
     {
-        std::vector<std::uint8_t> bytes = LoadImage("1k");
+        std::vector<std::uint8_t> bytes = LoadExtImage("1k");
         RawVolume raw{bytes};
         damage(raw);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(bytes);
@@ -709,7 +608,7 @@ TEST_CASE("damaged ext2 block pointers and sizes are corrupt, never followed")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    std::vector<std::uint8_t> original = LoadImage("1k");
+    std::vector<std::uint8_t> original = LoadExtImage("1k");
     RawVolume original_raw{original};
     const auto inode_of = [&](std::string_view name)
     { return original_raw.Load32(original_raw.EntryOffset(2, name)); };
@@ -779,7 +678,7 @@ TEST_CASE("damaged ext2 counts, groups and root refuse the mount")
 #else
     const auto mount_error = [](auto damage)
     {
-        std::vector<std::uint8_t> bytes = LoadImage("1k");
+        std::vector<std::uint8_t> bytes = LoadExtImage("1k");
         RawVolume raw{bytes};
         damage(raw);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(bytes);
@@ -809,7 +708,7 @@ TEST_CASE("random damage to ext2 metadata never crashes the driver or makes it l
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    std::vector<std::uint8_t> original = LoadImage("1k");
+    std::vector<std::uint8_t> original = LoadExtImage("1k");
     const RawVolume raw{original};
     const std::uint32_t block_size = raw.BlockSize();
     const auto inode_of = [&](std::string_view name)
