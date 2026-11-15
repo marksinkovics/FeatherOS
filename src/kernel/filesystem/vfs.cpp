@@ -1,7 +1,6 @@
 #include "vfs.h"
 
 #include "drivers.h"
-#include "fat16.h"
 #include "initramfs.h"
 #include "mount_table.h"
 #include "procfs.h"
@@ -156,7 +155,7 @@ bool MountBuiltIn()
 
 bool MountBlockDevice()
 {
-    const bool mounted = FAT16::Mount();
+    const bool mounted = Filesystem::Drivers::MountDisk();
     Driver* driver = &Filesystem::Drivers::Disk();
     Sync::SpinLockGuard guard(mount_lock);
     if (!mounted)

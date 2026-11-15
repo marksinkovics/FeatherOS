@@ -88,9 +88,8 @@ set(SRC
     ${SRCROOT}/framebuffer/framebuffer.cpp
     ${SRCROOT}/framebuffer/term.cpp
     ${SRCROOT}/filesystem/initramfs.cpp
+    ${SRCROOT}/filesystem/core_driver.cpp
     ${SRCROOT}/filesystem/core_host.cpp
-    ${SRCROOT}/filesystem/fat16.cpp
-    ${SRCROOT}/filesystem/fat_names.cpp
     ${SRCROOT}/filesystem/path.cpp
     ${SRCROOT}/storage/core_block_device.cpp
     ${SRCROOT}/network/address.cpp

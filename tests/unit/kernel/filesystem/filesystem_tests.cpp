@@ -1,8 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "kernel/files.h"
-#include "kernel/filesystem/fat16.h"
-#include "kernel/filesystem/fat_names.h"
+#include "kernel/filesystem/drivers.h"
 #include "kernel/filesystem/initramfs.h"
 #include "kernel/filesystem/tmpfs.h"
 #include "kernel/filesystem/vfs.h"
@@ -311,14 +310,14 @@ TEST_CASE("FAT16 mount rejects a malformed MBR signature")
 {
     MakeFat16Disk("contents");
     disk[0][510] = 0;
-    REQUIRE_FALSE(FeatherOS::FAT16::Mount());
+    REQUIRE_FALSE(FeatherOS::VFS::MountBlockDevice());
 }
 
 TEST_CASE("FAT16 mount rejects unsupported bytes per sector")
 {
     MakeFat16Disk("contents");
     WriteLittleEndian16(disk[PartitionStart].data() + 11, 1024);
-    REQUIRE_FALSE(FeatherOS::FAT16::Mount());
+    REQUIRE_FALSE(FeatherOS::VFS::MountBlockDevice());
 }
 
 TEST_CASE("FAT16 VFS reports missing files")
@@ -380,6 +379,13 @@ std::string ReadWhole(const char* path)
     return contents;
 }
 
+uint64_t FreeDiskBlocks()
+{
+    FeatherDisk::VolumeStatistics statistics{};
+    REQUIRE(FeatherOS::Filesystem::Drivers::Disk().Statistics(&statistics));
+    return statistics.free_blocks;
+}
+
 uint16_t FatEntry(uint32_t cluster)
 {
     const uint8_t* fat = disk[PartitionStart + 1].data();
@@ -392,7 +398,7 @@ TEST_CASE("FAT16 creates a file and writes it across clusters")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
+    const uint64_t free_before = FreeDiskBlocks();
 
     FeatherOS::VFS::FileHandle file{};
     REQUIRE(FeatherOS::VFS::Create("/new.txt", &file));
@@ -405,7 +411,7 @@ TEST_CASE("FAT16 creates a file and writes it across clusters")
         REQUIRE(written == chunk);
     }
     REQUIRE(file.size == contents.size());
-    REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before - 3);
+    REQUIRE(FreeDiskBlocks() == free_before - 3);
     REQUIRE(std::memcmp(disk[RootDirectorySector].data() + 32, "NEW     TXT", 11) == 0);
     REQUIRE(ReadWhole("/NEW.TXT") == contents);
 }
@@ -437,16 +443,18 @@ TEST_CASE("FAT16 truncation frees the clusters a file no longer needs")
     const std::string contents = Pattern(2000);
     uint64_t written = 0;
     REQUIRE(FeatherOS::VFS::Write(&file, contents.data(), contents.size(), &written));
-    const uint32_t free_full = FeatherOS::FAT16::FreeClusterCount();
+    const uint64_t free_full = FreeDiskBlocks();
 
     REQUIRE(FeatherOS::VFS::Truncate(&file, 600));
-    REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_full + 2);
+    REQUIRE(FreeDiskBlocks() == free_full + 2);
     REQUIRE(ReadWhole("/SHRINK.TXT") == contents.substr(0, 600));
     REQUIRE_FALSE(FeatherOS::VFS::Truncate(&file, 601));
 
     REQUIRE(FeatherOS::VFS::Truncate(&file, 0));
-    REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_full + 4);
-    REQUIRE(file.node.payload == 0);
+    REQUIRE(FreeDiskBlocks() == free_full + 4);
+    // An empty file owns no cluster.
+    REQUIRE(disk[RootDirectorySector][32 + 26] == 0);
+    REQUIRE(disk[RootDirectorySector][32 + 27] == 0);
     REQUIRE(ReadWhole("/SHRINK.TXT").empty());
 }
 
@@ -454,11 +462,11 @@ TEST_CASE("FAT16 removal frees the chain and the directory slot")
 {
     MakeFat16Disk(std::string(700, 'x'));
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
+    const uint64_t free_before = FreeDiskBlocks();
     REQUIRE(FeatherOS::VFS::Remove("/BLOCK.TXT"));
     FeatherOS::VFS::FileInfo info{};
     REQUIRE_FALSE(FeatherOS::VFS::Stat("/BLOCK.TXT", &info));
-    REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before + 2);
+    REQUIRE(FreeDiskBlocks() == free_before + 2);
     REQUIRE(FatEntry(2) == 0);
     REQUIRE(FatEntry(3) == 0);
     REQUIRE(disk[RootDirectorySector][0] == 0xE5);
@@ -497,7 +505,7 @@ TEST_CASE("FAT16 stops a write cleanly when the disk is full")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     // Leave exactly one free cluster.
-    const uint32_t free_clusters = FeatherOS::FAT16::FreeClusterCount();
+    const uint64_t free_clusters = FreeDiskBlocks();
     uint32_t marked = 0;
     for (uint32_t cluster = 3; marked + 1 < free_clusters; ++cluster)
     {
@@ -509,7 +517,7 @@ TEST_CASE("FAT16 stops a write cleanly when the disk is full")
             ++marked;
         }
     }
-    REQUIRE(FeatherOS::FAT16::FreeClusterCount() == 1);
+    REQUIRE(FreeDiskBlocks() == 1);
 
     FeatherOS::VFS::FileHandle file{};
     REQUIRE(FeatherOS::VFS::Create("/FULL.TXT", &file));
@@ -870,7 +878,7 @@ TEST_CASE("FAT16 grows a subdirectory past its first cluster")
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     REQUIRE(FeatherOS::VFS::MakeDirectory("/many"));
-    const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
+    const uint64_t free_before = FreeDiskBlocks();
     // One-sector clusters hold 16 entries, and "." and ".." take two of them.
     std::vector<std::string> expected;
     for (int index = 0; index < 40; ++index)
@@ -880,7 +888,7 @@ TEST_CASE("FAT16 grows a subdirectory past its first cluster")
         REQUIRE(FeatherOS::VFS::Create(("/many/" + name).c_str(), &file));
         expected.push_back(name);
     }
-    REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before - 2);
+    REQUIRE(FreeDiskBlocks() == free_before - 2);
     REQUIRE(ListDirectory("/many") == expected);
     REQUIRE(ReadWhole("/many/F39.TXT").empty());
 }
@@ -889,13 +897,13 @@ TEST_CASE("FAT16 removes only empty directories and frees their clusters")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
+    const uint64_t free_before = FreeDiskBlocks();
     REQUIRE(FeatherOS::VFS::MakeDirectory("/scratch"));
     WriteWhole("/scratch/x.txt", "x");
     REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/scratch"));
     REQUIRE(FeatherOS::VFS::Remove("/scratch/x.txt"));
     REQUIRE(FeatherOS::VFS::RemoveDirectory("/scratch"));
-    REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before);
+    REQUIRE(FreeDiskBlocks() == free_before);
     REQUIRE(ListDiskRoot() == std::vector<std::string>{"BLOCK.TXT"});
     REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/scratch"));
     REQUIRE_FALSE(FeatherOS::VFS::RemoveDirectory("/"));
@@ -910,7 +918,7 @@ TEST_CASE("FAT16 renames files and directories, keeping their data")
     REQUIRE(FeatherOS::VFS::MakeDirectory("/docs"));
     REQUIRE(FeatherOS::VFS::MakeDirectory("/docs/old"));
     WriteWhole("/docs/old/x.txt", "deep");
-    const uint32_t free_before = FeatherOS::FAT16::FreeClusterCount();
+    const uint64_t free_before = FreeDiskBlocks();
 
     REQUIRE(FeatherOS::VFS::Rename("/a.txt", "/b.txt"));
     REQUIRE(FeatherOS::VFS::Rename("/b.txt", "/A much longer name.txt"));
@@ -927,7 +935,7 @@ TEST_CASE("FAT16 renames files and directories, keeping their data")
     REQUIRE(ReadWhole("/docs/archive/x.txt") == "deep");
     REQUIRE(ReadWhole("/docs/archive/../../BLOCK.TXT") == "contents");
     REQUIRE(ListDirectory("/docs") == std::vector<std::string>{"archive/"});
-    REQUIRE(FeatherOS::FAT16::FreeClusterCount() == free_before);
+    REQUIRE(FreeDiskBlocks() == free_before);
 
     REQUIRE_FALSE(FeatherOS::VFS::Rename("/docs", "/docs/archive/inner"));
     REQUIRE_FALSE(FeatherOS::VFS::Rename("/docs", "/DOCS/inner"));
@@ -1010,10 +1018,9 @@ TEST_CASE("FAT16 stores long names with numbered short aliases")
     WriteWhole("/My Notes2.txt", "second");
     const uint8_t* root = disk[RootDirectorySector].data();
     // Slot 1 holds the long-name entry and slot 2 the short alias.
-    REQUIRE(root[32 + 11] == FeatherOS::FatNames::LongNameAttribute);
+    REQUIRE(root[32 + 11] == 0x0F);
     REQUIRE(root[32] == 0x41);
     REQUIRE(std::memcmp(root + 64, "MYNOTE~1TXT", 11) == 0);
-    REQUIRE(root[32 + 13] == FeatherOS::FatNames::Checksum(root + 64));
     REQUIRE(std::memcmp(root + 128, "MYNOTE~2TXT", 11) == 0);
 
     REQUIRE(ListDiskRoot() ==

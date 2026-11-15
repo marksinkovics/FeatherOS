@@ -25,7 +25,6 @@ set(FEATHERDISK_CATCH2_TARGET Catch2::Catch2WithMain)
 add_subdirectory("${FEATHEROS_ROOT}/src/fs/core" "${CMAKE_CURRENT_BINARY_DIR}/fs_core")
 
 add_executable(featheros_unit_tests
-    kernel/filesystem/fat_names_tests.cpp
     kernel/filesystem/filesystem_tests.cpp
     kernel/filesystem/mount_table_tests.cpp
     kernel/filesystem/path_tests.cpp
@@ -125,8 +124,7 @@ add_executable(featheros_unit_tests
     libcxx/vector_tests.cpp
     libcxx/wait_tests.cpp
     libcxx/host_futex.cpp
-    "${FEATHEROS_ROOT}/src/kernel/filesystem/fat16.cpp"
-    "${FEATHEROS_ROOT}/src/kernel/filesystem/fat_names.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/core_driver.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/core_block_device.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"

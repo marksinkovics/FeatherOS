@@ -30,6 +30,7 @@ SHELL_FILES=(
     "$REPO_ROOT/tools/check.sh"
     "$REPO_ROOT/tools/quality.sh"
     "$REPO_ROOT/.claude/hooks/format-edited-file.sh"
+    "$REPO_ROOT/src/fs/core/tests/make_fat16_image.sh"
 )
 
 ARCHES=(x86_64 aarch64)

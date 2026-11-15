@@ -1,13 +1,13 @@
 #include "drivers.h"
 
 #include "devices.h"
-#include "fat16.h"
 #include "initramfs.h"
 #include "procfs.h"
 #include "tmpfs.h"
 
+#include "fs/fat.h"
 #include "kernel/memory/heap.h"
-#include "kernel/storage/block_device.h"
+#include "kernel/storage/core_block_device.h"
 
 #include <stdint.h>
 
@@ -45,121 +45,6 @@ bool CopyFromMemory(const Node& node, uint64_t size, uint64_t offset, void* buff
     *bytes_read = count;
     return true;
 }
-
-// A FAT16 file is identified by where its directory entry is; the payload is its first cluster,
-// which writes can change.
-class DiskDriver final : public Driver
-{
-public:
-    constexpr DiskDriver() : Driver(Writable) {}
-
-    bool Open(const char* path, Node* node, uint64_t* size) override
-    {
-        FAT16::File file;
-        if (!FAT16::Open(path, &file))
-        {
-            return false;
-        }
-        Store(file, node, size);
-        return true;
-    }
-
-    bool Stat(const char* path, FileInfo* info) override
-    {
-        FAT16::FileInfo disk_info;
-        if (!FAT16::Stat(path, &disk_info))
-        {
-            return false;
-        }
-        info->size = disk_info.size;
-        return true;
-    }
-
-    bool Read(const Node& node, uint64_t size, uint64_t offset, void* buffer, uint64_t length,
-              uint64_t* bytes_read) override
-    {
-        const FAT16::File file = Load(node, size);
-        return FAT16::Read(&file, offset, buffer, length, bytes_read);
-    }
-
-    bool Create(const char* path, Node* node, uint64_t* size) override
-    {
-        FAT16::File file;
-        if (!FAT16::Create(path, &file))
-        {
-            return false;
-        }
-        Store(file, node, size);
-        return true;
-    }
-
-    bool Write(Node* node, uint64_t* size, uint64_t offset, const void* buffer, uint64_t length,
-               uint64_t* bytes_written) override
-    {
-        FAT16::File file = Load(*node, *size);
-        const bool written = FAT16::Write(&file, offset, buffer, length, bytes_written);
-        Store(file, node, size);
-        return written;
-    }
-
-    bool Truncate(Node* node, uint64_t* size, uint64_t new_size) override
-    {
-        FAT16::File file = Load(*node, *size);
-        const bool truncated = FAT16::Truncate(&file, new_size);
-        Store(file, node, size);
-        return truncated;
-    }
-
-    bool Remove(const char* path) override
-    {
-        return FAT16::Remove(path);
-    }
-
-    bool MakeDirectory(const char* path) override
-    {
-        return FAT16::MakeDirectory(path);
-    }
-
-    bool RemoveDirectory(const char* path) override
-    {
-        return FAT16::RemoveDirectory(path);
-    }
-
-    bool Rename(const char* from, const char* to) override
-    {
-        return FAT16::Rename(from, to);
-    }
-
-    bool IsDirectory(const char* path) override
-    {
-        return FAT16::IsDirectory(path);
-    }
-
-    bool ReadDirectory(const char* path, uint32_t index, DirectoryEntry* entry) override
-    {
-        return FAT16::ReadDirectory(path, index, entry);
-    }
-
-    // FAT16 writes every sector through at once, so only the device may still hold data back.
-    bool Sync() override
-    {
-        return BlockDevice::Flush();
-    }
-
-private:
-    static FAT16::File Load(const Node& node, uint64_t size)
-    {
-        return {static_cast<uint32_t>(node.payload), static_cast<uint32_t>(size),
-                static_cast<uint32_t>(node.id >> 32), static_cast<uint32_t>(node.id)};
-    }
-
-    static void Store(const FAT16::File& file, Node* node, uint64_t* size)
-    {
-        node->id = (static_cast<uint64_t>(file.directory_cluster) << 32) | file.entry_index;
-        node->payload = file.first_cluster;
-        *size = file.size;
-    }
-};
 
 // One top-level directory of the initramfs.
 class ArchiveDriver final : public Driver
@@ -439,7 +324,7 @@ private:
     Tmpfs::Root root;
 };
 
-constinit DiskDriver disk_driver;
+constinit CoreDriver disk_driver(Writable);
 constinit ArchiveDriver system_driver("system");
 constinit DeviceDriver device_driver;
 constinit ProcDriver proc_driver;
@@ -451,9 +336,14 @@ constinit MemoryDriver etc_driver(Tmpfs::Root::Etc);
 namespace Drivers
 {
 
-Driver& Disk()
+CoreDriver& Disk()
 {
     return disk_driver;
+}
+
+bool MountDisk()
+{
+    return disk_driver.Mount(FeatherDisk::Fat::Fat16Type(), BlockDevice::CoreDevice());
 }
 
 Driver& System()

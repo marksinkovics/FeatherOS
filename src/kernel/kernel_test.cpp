@@ -5,7 +5,7 @@
 #include "kernel/console.h"
 #include "kernel/cpu.h"
 #include "kernel/exception.h"
-#include "kernel/filesystem/fat16.h"
+#include "kernel/filesystem/drivers.h"
 #include "kernel/filesystem/vfs.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/kernel_stack.h"
@@ -1015,6 +1015,13 @@ void CheckPersistentFile(uint64_t boot_count)
     VFS::Close(&file);
 }
 
+// 0 when the disk cannot say.
+uint64_t FreeDiskBlocks()
+{
+    FeatherDisk::VolumeStatistics statistics = {};
+    return Filesystem::Drivers::Disk().Statistics(&statistics) ? statistics.free_blocks : 0;
+}
+
 // Rewrites the previous boot's file in place, then checks that deleting a file returns its
 // clusters.
 void RunFileTests(uint64_t boot_count)
@@ -1042,15 +1049,15 @@ void RunFileTests(uint64_t boot_count)
     VFS::Close(&file);
     CheckPersistentFile(boot_count);
 
-    const uint32_t free_clusters = FAT16::FreeClusterCount();
+    const uint64_t free_clusters = FreeDiskBlocks();
     if (!VFS::Create(ScratchFile, &file))
     {
         Panic("Storage scratch file creation failed");
     }
     WriteLines(&file, boot_count, 100);
     VFS::Close(&file);
-    if (FAT16::FreeClusterCount() >= free_clusters || !VFS::Remove(ScratchFile) ||
-        FAT16::FreeClusterCount() != free_clusters)
+    if (FreeDiskBlocks() >= free_clusters || !VFS::Remove(ScratchFile) ||
+        FreeDiskBlocks() != free_clusters)
     {
         Panic("Removing the storage scratch file did not free its clusters");
     }
