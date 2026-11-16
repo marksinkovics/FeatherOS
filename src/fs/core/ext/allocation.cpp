@@ -172,6 +172,37 @@ Result<std::uint32_t> Ext2Filesystem::AllocateBlock(std::uint32_t goal,
     return std::unexpected(Error::NoSpace);
 }
 
+// Orlov-lite, after Linux's ext2: a directory in the root starts a subtree of its own, so it goes
+// to the group with the fewest directories among those with at least the average share of free
+// inodes and blocks, which spreads the top of the tree over the volume. Any other directory starts
+// looking in its parent's group, as files do, so a subtree stays together.
+std::uint32_t Ext2Filesystem::DirectoryGroup(std::uint32_t parent_group, bool top_level) const
+{
+    if (!top_level)
+    {
+        return parent_group;
+    }
+    const std::uint32_t average_inodes = superblock.free_inodes_count / superblock.group_count;
+    const std::uint32_t average_blocks = superblock.free_blocks_count / superblock.group_count;
+    std::optional<std::uint32_t> best;
+    std::uint32_t fewest = 0;
+    for (std::uint32_t group = 0; group < superblock.group_count; ++group)
+    {
+        const GroupDescriptor descriptor = Group(group);
+        if (descriptor.free_inodes == 0 || descriptor.free_blocks == 0 ||
+            descriptor.free_inodes < average_inodes || descriptor.free_blocks < average_blocks)
+        {
+            continue;
+        }
+        if (!best || descriptor.used_directories < fewest)
+        {
+            best = group;
+            fewest = descriptor.used_directories;
+        }
+    }
+    return best ? *best : parent_group;
+}
+
 Result<NodeId> Ext2Filesystem::AllocateInode(std::uint32_t parent_group, bool directory,
                                              std::span<std::uint8_t> bitmap,
                                              std::span<std::uint8_t> scratch)

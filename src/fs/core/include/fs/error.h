@@ -25,6 +25,8 @@ enum class Error : std::uint8_t
     FileTooLarge,
     TooManyLinks,
     Busy,
+    // Not allowed for this kind of node, such as a hard link to a directory.
+    NotPermitted,
     OutOfMemory,
     Unsupported,
 };

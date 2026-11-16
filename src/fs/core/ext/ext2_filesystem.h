@@ -27,6 +27,14 @@ template <typename T> std::unexpected<Error> Failure(const Result<T>& result)
 }
 
 std::uint64_t DivideRoundingUp(std::uint64_t value, std::uint64_t divisor);
+// The buffers of one change, by use.
+constexpr std::size_t DataBuffer = 0;
+constexpr std::size_t ScratchBuffer = 1;
+constexpr std::size_t BitmapBuffer = 2;
+// Three: the indirect blocks a MapCursor holds, or those FreeTree walks.
+constexpr std::size_t LevelBuffers = 3;
+constexpr std::size_t ChangeBuffers = 6;
+
 // A warning for the host's log: message, then a detail or value as eight hexadecimal digits.
 void LogWarning(std::string_view message, std::string_view detail);
 void LogWithValue(std::string_view message, std::uint32_t value);
@@ -92,6 +100,18 @@ struct MapCursor
     std::uint64_t allocated;
 };
 
+// What SearchDirectory found for a name.
+struct NameSearch
+{
+    // The record naming it, if any, with its inode and filetype byte.
+    std::optional<RecordPlace> place;
+    std::uint32_t inode;
+    std::uint8_t file_type;
+    // Without such a record: the first record with room for the bytes asked for, or nullopt
+    // when the directory needs a new block.
+    std::optional<RecordPlace> room;
+};
+
 // Blocks going back to their bitmaps: one group's bitmap is held until a block of another group
 // is freed or FinishFrees.
 struct FreeCursor
@@ -102,7 +122,7 @@ struct FreeCursor
     bool dirty;
 };
 
-// Changes (Write, Truncate, Create, Remove, SetAttributes, Sync) must not run at the same time
+// Changes (everything from SetAttributes to SymbolicLink, and Sync) must not run at the same time
 // as any other operation on the mount; reads may run together. The host serialises them.
 class Ext2Filesystem final : public Filesystem
 {
@@ -186,6 +206,8 @@ private:
     Result<std::uint32_t> AllocateBlock(std::uint32_t goal, std::span<std::uint8_t> bitmap);
     // In the parent's group when it has room, otherwise in the next group that does (Orlov-lite:
     // files stay near their directory).
+    // Where a new directory's inode is looked for first (Orlov-lite).
+    std::uint32_t DirectoryGroup(std::uint32_t parent_group, bool top_level) const;
     Result<NodeId> AllocateInode(std::uint32_t parent_group, bool directory,
                                  std::span<std::uint8_t> bitmap, std::span<std::uint8_t> scratch);
     Status FreeInode(NodeId node, bool directory, std::span<std::uint8_t> bitmap);
@@ -229,6 +251,8 @@ private:
     Status ShrinkBlocks(NodeId node, Inode& inode, std::uint64_t size, Buffers& buffers);
     Status ReleaseAttributeBlock(std::uint32_t block, FreeCursor& frees,
                                  std::span<std::uint8_t> scratch);
+    // Checks what ReleaseContents will meet, before anything changes.
+    Status CheckReleasable(const Inode& inode, std::span<std::uint8_t> scratch);
     Status ReleaseContents(const Node& node, Buffers& buffers);
     Status AddEntry(NodeId directory, Inode& inode, std::optional<RecordPlace> room,
                     const RawEntry& entry, Buffers& buffers);
@@ -236,9 +260,34 @@ private:
     Result<std::size_t> WriteFile(NodeId file, std::uint64_t offset,
                                   std::span<const std::uint8_t> data);
     Status TruncateFile(NodeId file, std::uint64_t size);
-    Result<NodeId> CreateFile(NodeId directory, std::string_view name, std::uint32_t mode);
-    Status RemoveFile(NodeId directory, std::string_view name);
     Status ChangeAttributes(NodeId node, const AttributeChanges& changes);
+
+    // The directory tree (namespace.cpp).
+    Inode NewInode(std::uint16_t mode, Timestamp now) const;
+    // Looks for name, and for a record with room for needed bytes when it is not there.
+    Result<NameSearch> SearchDirectory(const Inode& directory, std::string_view name,
+                                       std::size_t needed, Buffers& buffers);
+    // Removes the record at place, which must still name inode.
+    Status DropRecord(const RecordPlace& place, std::uint32_t inode, std::span<std::uint8_t> block);
+    // Points the record at place, which must still name inode, at replacement.
+    Status RewriteRecord(const RecordPlace& place, std::uint32_t inode, std::uint32_t replacement,
+                         std::uint8_t file_type, std::span<std::uint8_t> block);
+    // Adds links to a directory's link count and, when touched, sets its modification and
+    // change times.
+    Status UpdateDirectory(NodeId directory, int links, bool touched,
+                           std::span<std::uint8_t> scratch);
+    // Only ".", ".." and unused records; ".." must name parent.
+    Result<bool> IsEmptyDirectory(const Inode& directory, NodeId parent, Buffers& buffers);
+    Status CheckOutside(NodeId directory, NodeId moving, Buffers& buffers);
+    // One link fewer for a node whose entry is gone; the last frees it, and a directory's last
+    // also takes its ".." out of parent's count.
+    Status DropLink(NodeId node, const Node& loaded, NodeId parent, Buffers& buffers);
+    Result<NodeId> CreateNode(NodeId directory, std::string_view name, std::uint16_t mode,
+                              std::string_view target);
+    Status RemoveNode(NodeId directory, std::string_view name, bool directory_wanted);
+    Status RenameNode(NodeId from_directory, std::string_view from_name, NodeId to_directory,
+                      std::string_view to_name);
+    Status LinkNode(NodeId node, NodeId directory, std::string_view name);
 
     BlockDevice& volume;
     Superblock superblock;

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Changes to an ext2 volume. Without a journal, the order of the writes is what keeps a volume
-// whole across a crash:
+// Changes to an ext2 volume's files; namespace.cpp changes its directory tree under the same
+// rules. Without a journal, the order of the writes is what keeps a volume whole across a crash:
 //   - a block or inode is marked in its bitmap before anything points to it;
 //   - a new block's contents (file data, a zeroed indirect block, a directory block) are written
 //     before the pointer to it, indirect blocks before the inode that holds them, and an inode
 //     before the directory entry that names it;
+//   - a link count goes up before the entry (or a new directory's "..") that adds the link is
+//     written, and down only after it is gone;
 //   - removing runs the other way: the entry goes first, then the inode's link, and the blocks
 //     and the inode go back to their bitmaps last.
 // A crash can then leave leaked blocks and inodes, free counts, sizes and i_blocks that lag, an
@@ -29,19 +31,10 @@ constexpr std::uint64_t MaximumSmallFileBytes = 0x7FFFFFFF;
 // i_size is 32 bits for a directory.
 constexpr std::uint64_t MaximumDirectoryBytes = 0xFFFFFFFF;
 constexpr std::uint32_t MaximumNanoseconds = 999'999'999;
-// What Linux and mke2fs give a new large inode: room for the extended times and creation time.
-constexpr std::uint16_t NewInodeExtraSize = 32;
 // The header of an extended attribute block: h_magic, then h_refcount, the inodes sharing it.
 constexpr std::uint32_t AttributeMagic = 0xEA020000;
 constexpr std::size_t AttributeReferences = 4;
 
-// The buffers of one change, by use.
-constexpr std::size_t DataBuffer = 0;
-constexpr std::size_t ScratchBuffer = 1;
-constexpr std::size_t BitmapBuffer = 2;
-// Three: the indirect blocks a MapCursor holds, or those FreeTree walks.
-constexpr std::size_t LevelBuffers = 3;
-constexpr std::size_t ChangeBuffers = 6;
 // Three each: the indirect blocks on the way to a shrinking file's new end, as read and as cut.
 constexpr std::size_t ShrinkOriginals = 6;
 constexpr std::size_t ShrinkChanged = 9;
@@ -55,20 +48,6 @@ std::uint32_t LoadPointer(std::span<const std::uint8_t> block, std::uint32_t ind
 void StorePointer(std::span<std::uint8_t> block, std::uint32_t index, std::uint32_t value)
 {
     StoreLittleEndian(block.data() + std::size_t{index} * 4, value);
-}
-
-Status CheckName(std::string_view name)
-{
-    if (name.size() > MaximumNameLength)
-    {
-        return std::unexpected(Error::NameTooLong);
-    }
-    if (name.empty() || name.find('/') != std::string_view::npos ||
-        name.find('\0') != std::string_view::npos)
-    {
-        return std::unexpected(Error::InvalidArgument);
-    }
-    return {};
 }
 
 std::uint32_t RootDepth(std::uint32_t root)
@@ -621,6 +600,31 @@ Status Ext2Filesystem::ReleaseAttributeBlock(std::uint32_t block, FreeCursor& fr
     return FreeBlock(frees, block);
 }
 
+Status Ext2Filesystem::CheckReleasable(const Inode& inode, std::span<std::uint8_t> scratch)
+{
+    if ((inode.flags & (InodeExtents | InodeInlineData)) != 0)
+    {
+        return std::unexpected(Error::Unsupported);
+    }
+    if (inode.attribute_block == 0)
+    {
+        return {};
+    }
+    if (!IsDataBlock(inode.attribute_block))
+    {
+        return std::unexpected(Error::Corrupt);
+    }
+    if (const Status read = cache.Read(inode.attribute_block, 0, scratch, scratch); !read)
+    {
+        return read;
+    }
+    if (LoadLittleEndian<std::uint32_t>(scratch.data()) != AttributeMagic)
+    {
+        return std::unexpected(Error::Corrupt);
+    }
+    return {};
+}
+
 // The blocks of an inode that is already marked deleted on the volume.
 Status Ext2Filesystem::ReleaseContents(const Node& node, Buffers& buffers)
 {
@@ -991,271 +995,6 @@ Status Ext2Filesystem::TruncateFile(NodeId file, std::uint64_t size)
     return StoreInode(file, inode, false, scratch);
 }
 
-Result<NodeId> Ext2Filesystem::CreateFile(NodeId directory, std::string_view name,
-                                          std::uint32_t mode)
-{
-    if (const Status valid = CheckName(name); !valid)
-    {
-        return Failure(valid);
-    }
-    if (name == "." || name == "..")
-    {
-        return std::unexpected(Error::Exists);
-    }
-    Buffers buffers(block_size, ChangeBuffers);
-    if (buffers.Empty())
-    {
-        return std::unexpected(Error::OutOfMemory);
-    }
-    const std::span<std::uint8_t> scratch = buffers[ScratchBuffer];
-    const Result<Node> parent = LoadNode(directory, scratch);
-    if (!parent)
-    {
-        return Failure(parent);
-    }
-    if (parent->type != NodeType::Directory)
-    {
-        return std::unexpected(Error::NotDirectory);
-    }
-    // One walk checks the name is new and finds the first record with room after it.
-    const std::size_t needed = RecordLength(name.size());
-    std::optional<RecordPlace> room;
-    bool exists = false;
-    const Result<bool> walked =
-        WalkDirectory(parent->inode, 0, buffers[DataBuffer], scratch,
-                      [&](const RawEntry& entry, const RecordPlace& place) -> Result<bool>
-                      {
-                          if (entry.inode != 0 && entry.name == name)
-                          {
-                              exists = true;
-                              return true;
-                          }
-                          const std::size_t used =
-                              entry.inode != 0 ? RecordLength(entry.name.size()) : 0;
-                          if (!room && entry.record_length - used >= needed)
-                          {
-                              room = place;
-                          }
-                          return false;
-                      });
-    if (!walked)
-    {
-        return Failure(walked);
-    }
-    if (exists)
-    {
-        return std::unexpected(Error::Exists);
-    }
-    if (const Status begun = BeginChange(scratch); !begun)
-    {
-        return Failure(begun);
-    }
-    Inode directory_inode = parent->inode;
-    if (const Status cleared = ClearIndex(directory, directory_inode, scratch); !cleared)
-    {
-        return Failure(cleared);
-    }
-    const Result<NodeId> node =
-        AllocateInode(GroupOfInode(directory), false, buffers[BitmapBuffer], scratch);
-    if (!node)
-    {
-        return node;
-    }
-
-    const Timestamp now = Now();
-    std::uint16_t extra_size = 0;
-    if (superblock.inode_size > GoodOldInodeSize)
-    {
-        // At least what the volume asks for, within the inode.
-        std::uint32_t wanted = NewInodeExtraSize;
-        wanted = superblock.minimum_extra_size > wanted ? superblock.minimum_extra_size : wanted;
-        wanted = superblock.wanted_extra_size > wanted ? superblock.wanted_extra_size : wanted;
-        const std::uint32_t room_left = superblock.inode_size - GoodOldInodeSize;
-        extra_size = static_cast<std::uint16_t>((wanted < room_left ? wanted : room_left) & ~3U);
-    }
-    Inode inode = {
-        .mode = static_cast<std::uint16_t>(ModeRegular | (mode & ModePermissions)),
-        .owner = 0,
-        .group = 0,
-        .size = 0,
-        .link_count = 1,
-        .flags = 0,
-        .allocated_bytes = 0,
-        .access_time = now,
-        .modify_time = now,
-        .change_time = now,
-        .blocks = {},
-        .deletion_time = 0,
-        .attribute_block = 0,
-        .extra_size = extra_size,
-        .creation_time = now,
-    };
-    if (const Status stored = StoreInode(*node, inode, true, scratch); !stored)
-    {
-        return Failure(stored);
-    }
-    const RawEntry entry = {
-        .inode = static_cast<std::uint32_t>(*node),
-        .record_length = 0,
-        .file_type = has_file_type ? EntryFileType(inode.mode) : std::uint8_t{0},
-        .name = name,
-    };
-    if (const Status added = AddEntry(directory, directory_inode, room, entry, buffers); !added)
-    {
-        // Nothing names the inode, so it goes back, deleted before it leaves the bitmap.
-        inode.link_count = 0;
-        inode.deletion_time = static_cast<std::uint32_t>(now.seconds);
-        if (StoreInode(*node, inode, false, scratch))
-        {
-            // If this fails too, the inode only leaks.
-            [[maybe_unused]] const Status freed = FreeInode(*node, false, buffers[BitmapBuffer]);
-        }
-        return Failure(added);
-    }
-    return node;
-}
-
-Status Ext2Filesystem::RemoveFile(NodeId directory, std::string_view name)
-{
-    if (name == "." || name == "..")
-    {
-        return std::unexpected(Error::IsDirectory);
-    }
-    if (const Status valid = CheckName(name); !valid)
-    {
-        return valid;
-    }
-    Buffers buffers(block_size, ChangeBuffers);
-    if (buffers.Empty())
-    {
-        return std::unexpected(Error::OutOfMemory);
-    }
-    const std::span<std::uint8_t> block = buffers[DataBuffer];
-    const std::span<std::uint8_t> scratch = buffers[ScratchBuffer];
-    const Result<Node> parent = LoadNode(directory, scratch);
-    if (!parent)
-    {
-        return Failure(parent);
-    }
-    if (parent->type != NodeType::Directory)
-    {
-        return std::unexpected(Error::NotDirectory);
-    }
-    std::optional<RecordPlace> place;
-    std::uint32_t target = 0;
-    std::uint16_t record_length = 0;
-    const Result<bool> walked =
-        WalkDirectory(parent->inode, 0, block, scratch,
-                      [&](const RawEntry& entry, const RecordPlace& where) -> Result<bool>
-                      {
-                          if (entry.inode == 0 || entry.name != name)
-                          {
-                              return false;
-                          }
-                          place = where;
-                          target = entry.inode;
-                          record_length = entry.record_length;
-                          return true;
-                      });
-    if (!walked)
-    {
-        return Failure(walked);
-    }
-    if (!*walked || !place)
-    {
-        return std::unexpected(Error::NotFound);
-    }
-    if (IsReserved(target))
-    {
-        return std::unexpected(Error::InvalidArgument);
-    }
-    const Result<Node> node = LoadNode(target, scratch);
-    if (!node)
-    {
-        // An entry naming a free inode.
-        return std::unexpected(node.error() == Error::NotFound ? Error::Corrupt : node.error());
-    }
-    if (node->type == NodeType::Directory)
-    {
-        return std::unexpected(Error::IsDirectory);
-    }
-    Inode inode = node->inode;
-    const bool last_link = inode.link_count <= 1;
-    if (last_link)
-    {
-        // Whatever the last link frees is checked before anything changes.
-        if ((inode.flags & (InodeExtents | InodeInlineData)) != 0)
-        {
-            return std::unexpected(Error::Unsupported);
-        }
-        if (inode.attribute_block != 0)
-        {
-            const std::span<std::uint8_t> attributes = buffers[BitmapBuffer];
-            if (!IsDataBlock(inode.attribute_block))
-            {
-                return std::unexpected(Error::Corrupt);
-            }
-            if (const Status read = cache.Read(inode.attribute_block, 0, attributes, attributes);
-                !read)
-            {
-                return read;
-            }
-            if (LoadLittleEndian<std::uint32_t>(attributes.data()) != AttributeMagic)
-            {
-                return std::unexpected(Error::Corrupt);
-            }
-        }
-    }
-    if (const Status begun = BeginChange(scratch); !begun)
-    {
-        return begun;
-    }
-    Inode directory_inode = parent->inode;
-    if (const Status cleared = ClearIndex(directory, directory_inode, scratch); !cleared)
-    {
-        return cleared;
-    }
-    // The record before takes over the space, or the block's first record becomes unused.
-    if (place->previous != NoRecord)
-    {
-        std::uint8_t* previous = block.data() + place->previous + 4;
-        StoreLittleEndian(previous, static_cast<std::uint16_t>(
-                                        LoadLittleEndian<std::uint16_t>(previous) + record_length));
-    }
-    StoreLittleEndian(block.data() + place->offset, std::uint32_t{0});
-    if (const Status written = cache.Write(place->physical, block); !written)
-    {
-        return written;
-    }
-    const Timestamp now = Now();
-    directory_inode.modify_time = now;
-    directory_inode.change_time = now;
-    if (const Status stored = StoreInode(directory, directory_inode, false, scratch); !stored)
-    {
-        return stored;
-    }
-    inode.change_time = now;
-    if (!last_link)
-    {
-        --inode.link_count;
-        return StoreInode(target, inode, false, scratch);
-    }
-    // With no links and a deletion time, e2fsck counts the inode free whatever it still points
-    // to, so it is written before its blocks and itself go back to the bitmaps.
-    inode.link_count = 0;
-    inode.deletion_time = static_cast<std::uint32_t>(now.seconds);
-    if (const Status stored = StoreInode(target, inode, false, scratch); !stored)
-    {
-        return stored;
-    }
-    if (const Status released = ReleaseContents({.inode = inode, .type = node->type}, buffers);
-        !released)
-    {
-        return released;
-    }
-    return FreeInode(target, false, buffers[BitmapBuffer]);
-}
-
 Status Ext2Filesystem::ChangeAttributes(NodeId node, const AttributeChanges& changes)
 {
     if (IsReserved(node))
@@ -1338,24 +1077,6 @@ Status Ext2Filesystem::Truncate(NodeId file, std::uint64_t size)
         return Refused();
     }
     return Noted(TruncateFile(file, size));
-}
-
-Result<NodeId> Ext2Filesystem::Create(NodeId directory, std::string_view name, std::uint32_t mode)
-{
-    if (read_only)
-    {
-        return Refused();
-    }
-    return Noted(CreateFile(directory, name, mode));
-}
-
-Status Ext2Filesystem::Remove(NodeId directory, std::string_view name)
-{
-    if (read_only)
-    {
-        return Refused();
-    }
-    return Noted(RemoveFile(directory, name));
 }
 
 Status Ext2Filesystem::Sync()

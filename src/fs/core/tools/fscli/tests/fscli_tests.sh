@@ -171,6 +171,23 @@ case "$case" in
         run 1 cat "$work/fat.img" /COPIED.TXT
         error_has 'not found'
         ;;
+    tree)
+        need_images
+        cp "$bare" "$work/fat.img"
+        run 0 mkdir "$work/fat.img" /made
+        run 0 mkdir "$work/fat.img" "/made/Long Directory Name"
+        run 0 mv "$work/fat.img" /big.txt "/made/Long Directory Name/moved.txt"
+        run 0 cat "$work/fat.img" "/made/long directory name/moved.txt"
+        big_file | cmp -s - "$work/out" || fail "wrong file after a move on FAT16"
+        run 0 mv "$work/fat.img" "/made/Long Directory Name" /
+        run 0 ls "$work/fat.img" "/Long Directory Name"
+        has_line '-r--r--r--      11400  moved.txt'
+        run 1 rmdir "$work/fat.img" "/Long Directory Name"
+        error_has 'directory not empty'
+        run 0 rmdir "$work/fat.img" /made
+        run 1 ln -s "$work/fat.img" big.txt /link
+        error_has 'not supported by this filesystem'
+        ;;
     partition)
         need_images
         run 0 info "$mbr"
@@ -346,6 +363,103 @@ case "$case" in
         run 1 rm "$work/4k.img" /
         run 2 rm "$work/4k.img"
         check_clean "$work/4k.img"
+        ;;
+    ext2-mkdir)
+        need_e2fsck
+        cp "$ext/1k.img" "$work/1k.img"
+        run 0 mkdir "$work/1k.img" /made
+        run 0 mkdir "$work/1k.img" /made/inner
+        run 0 mkdir "$work/1k.img" a/b/c/deeper
+        printf 'inside\n' >"$work/inside.txt"
+        run 0 cp-in "$work/1k.img" "$work/inside.txt" /made/inner
+        run 0 ls "$work/1k.img"
+        grep -Eq '^drwxr-xr-x +1024  made$' "$work/out" || fail "made is not listed as a directory"
+        run 1 mkdir "$work/1k.img" /made
+        error_has 'already exists'
+        run 1 mkdir "$work/1k.img" /missing/x
+        error_has 'not found'
+        run 1 rmdir "$work/1k.img" /made
+        error_has 'directory not empty'
+        run 1 rmdir "$work/1k.img" /hello.txt
+        error_has 'not a directory'
+        run 1 rmdir "$work/1k.img" /
+        error_has 'needs a name'
+        check_clean "$work/1k.img"
+        if [ -n "$debugfs" ] && [ -x "$debugfs" ]; then
+            "$debugfs" -R "ls /made" "$work/1k.img" 2>/dev/null | grep -q inner \
+                || fail "debugfs does not list /made/inner"
+        fi
+        debugfs_matches "$work/1k.img" /made/inner/inside.txt "$work/inside.txt"
+        run 0 rm "$work/1k.img" /made/inner/inside.txt
+        run 0 rmdir "$work/1k.img" /made/inner
+        run 0 rmdir "$work/1k.img" /made
+        run 0 rmdir "$work/1k.img" a/b/c/deeper
+        run 1 ls "$work/1k.img" /made
+        check_clean "$work/1k.img"
+        ;;
+    ext2-mv)
+        need_e2fsck
+        cp "$ext/4k.img" "$work/4k.img"
+        run 0 mv "$work/4k.img" /hello.txt /greeting.txt
+        run 0 mv "$work/4k.img" /greeting.txt /a/b
+        run 0 cat "$work/4k.img" /a/b/greeting.txt
+        printf 'Hello from ext2.\n' | cmp -s - "$work/out" || fail "wrong file after moving it"
+        # Over a file, then a directory into another and back out over an empty one.
+        run 0 mv "$work/4k.img" /tool /a/b/greeting.txt
+        run 0 cat "$work/4k.img" /a/b/greeting.txt
+        printf '#!/bin/sh\n' | cmp -s - "$work/out" || fail "the replaced file still has its old bytes"
+        run 0 mv "$work/4k.img" /many /a
+        run 0 ls "$work/4k.img" /a/many
+        [ "$(wc -l <"$work/out")" -eq 300 ] || fail "a/many should hold 300 entries"
+        run 0 mkdir "$work/4k.img" /landing
+        run 0 mv "$work/4k.img" /a/many /landing
+        run 0 ls "$work/4k.img" /landing/many
+        run 0 mv "$work/4k.img" /landing/many /many-again
+        run 0 rmdir "$work/4k.img" /landing
+        run 1 mv "$work/4k.img" /a /a/b/c
+        error_has 'invalid argument'
+        run 1 mv "$work/4k.img" /a/b/c /big.txt
+        error_has 'not a directory'
+        run 1 mv "$work/4k.img" /missing /x
+        error_has 'not found'
+        check_clean "$work/4k.img"
+        printf '#!/bin/sh\n' >"$work/tool.txt"
+        debugfs_matches "$work/4k.img" /a/b/greeting.txt "$work/tool.txt"
+        if [ -n "$debugfs" ] && [ -x "$debugfs" ]; then
+            "$debugfs" -R "ls /many-again" "$work/4k.img" 2>/dev/null \
+                | grep -q entry-with-a-longer-name-299.txt || fail "debugfs does not see the move"
+        fi
+        ;;
+    ext2-ln)
+        need_e2fsck
+        cp "$ext/1k.img" "$work/1k.img"
+        run 0 ln "$work/1k.img" /big.txt /a/b/big-again.txt
+        run 0 ln -s "$work/1k.img" ../../hello.txt /a/b/fast
+        long_target=$(awk 'BEGIN { while (length(t) < 300) t = t "a/long/target/"; print t }')
+        run 0 ln -s "$work/1k.img" "$long_target" /slow
+        run 0 ln -s "$work/1k.img" hello.txt /a
+        run 0 readlink "$work/1k.img" /a/b/fast
+        has_line '../../hello.txt'
+        run 0 readlink "$work/1k.img" /slow
+        has_line "$long_target"
+        run 0 readlink "$work/1k.img" /a/hello.txt
+        has_line 'hello.txt'
+        run 0 rm "$work/1k.img" /big.txt
+        run 0 cat "$work/1k.img" /a/b/big-again.txt
+        awk 'BEGIN { for (line = 0; line < 12800; line++) printf "line %05d of a file with indirect\n", line }' \
+            | cmp -s - "$work/out" || fail "the second name lost the data"
+        run 1 ln "$work/1k.img" /a /a-again
+        error_has 'operation not permitted'
+        run 1 ln "$work/1k.img" /hello.txt /hard.txt
+        error_has 'already exists'
+        run 1 readlink "$work/1k.img" /hello.txt
+        error_has 'not a symbolic link'
+        run 2 ln -s "$work/1k.img" x
+        check_clean "$work/1k.img"
+        if [ -n "$debugfs" ] && [ -x "$debugfs" ]; then
+            "$debugfs" -R "stat /slow" "$work/1k.img" 2>/dev/null | grep -q 'Type: symlink' \
+                || fail "debugfs does not see a symbolic link"
+        fi
         ;;
     *)
         fail "unknown case '$case'"

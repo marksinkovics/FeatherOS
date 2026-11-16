@@ -9,6 +9,7 @@
 #   4k          4 KiB blocks, 256-byte inodes with nanosecond times, filetype
 #   nofiletype  2 KiB blocks, 256-byte inodes, without the filetype feature
 #   rev0        revision 0: 1 KiB blocks, 128-byte inodes, no features at all
+#   groups      1 KiB blocks, 128-byte inodes, in eight groups of 1024 blocks
 #   mbr         the 1k volume as the only partition (type 0x83) of an MBR disk, from sector 2048
 #   ext3        an ext3 volume with a clean journal
 #   ext4        an ext4 volume, which the ext2 driver must refuse
@@ -76,6 +77,7 @@ case "$variant" in
     4k) options="-t ext2 -b 4096 -I 256" ;;
     nofiletype) options="-t ext2 -b 2048 -I 256 -O ^filetype" ;;
     rev0) options="-t ext2 -b 1024" ;;
+    groups) options="-t ext2 -b 1024 -I 128 -g 1024" ;;
     ext3) options="-t ext3 -b 1024 -I 256" ;;
     ext4) options="-t ext4 -b 1024" ;;
     *)

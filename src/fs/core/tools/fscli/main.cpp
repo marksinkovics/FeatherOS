@@ -49,13 +49,25 @@ commands:
                                       copy a host file in, replacing a file of that name; a
                                       directory in the volume keeps the host file's name
   rm <image>[:<partition>] <path>     remove a file or symbolic link
+  mkdir <image>[:<partition>] <path>  make a directory (mode 0755)
+  rmdir <image>[:<partition>] <path>  remove an empty directory
+  mv <image>[:<partition>] <from> <to>
+                                      rename or move a file, link or directory, replacing a
+                                      file or empty directory at <to>; a directory at <to>
+                                      takes it under its own name
+  ln [-s] <image>[:<partition>] <target> <path>
+                                      give the file <target> a second name, or with -s make a
+                                      symbolic link holding <target> as given; a directory at
+                                      <path> takes it under <target>'s last name
+  readlink <image>[:<partition>] <path>
+                                      print where a symbolic link points
 
 Partitions are numbered from 1, as `info` lists them. Without a number, fscli uses the whole
 disk if it holds a filesystem, otherwise the first partition that does. `ls` shows each entry's
 type and permissions, its size and its name, and where a symbolic link points. Symbolic links
 are not followed. A copied-in file keeps the host file's permission bits and belongs to user
 and group 0. A volume that cannot be written (an ext2 volume with errors or a journal, say)
-mounts read-only, and cp-in and rm then fail.
+mounts read-only, and the commands that write then fail. FAT16 holds no links.
 Filesystems: fat16, ext2.
 
 exit status: 0 on success, 1 when an operation fails, 2 for a usage error
@@ -746,6 +758,221 @@ int Remove(const std::vector<std::string_view>& arguments)
     return Finish(**mounted, target);
 }
 
+// A volume opened for writing, for the commands that change it.
+struct WritableVolume
+{
+    std::unique_ptr<FileDevice> device;
+    std::unique_ptr<MountedVolume> mounted;
+};
+
+std::expected<WritableVolume, int> OpenWritable(const Target& target)
+{
+    auto device = OpenDevice(target.path, true);
+    if (!device)
+    {
+        return std::unexpected(device.error());
+    }
+    auto mounted = MountTarget(**device, target, true);
+    if (!mounted)
+    {
+        return std::unexpected(mounted.error());
+    }
+    return WritableVolume{.device = std::move(*device), .mounted = std::move(*mounted)};
+}
+
+// A name in a directory of the volume.
+struct Place
+{
+    NodeId directory;
+    std::string name;
+};
+
+// The directory holding path's last component, which must be a name; the error is a message.
+std::expected<Place, std::string> PlaceOf(MountedVolume& mounted, std::string_view path)
+{
+    const auto [directory_path, name] = SplitPath(path);
+    if (name.empty() || name == "/" || name == "." || name == "..")
+    {
+        return std::unexpected(std::string(path) + ": needs a name");
+    }
+    const Result<NodeId> directory = mounted.Walk(directory_path);
+    if (!directory)
+    {
+        return std::unexpected((directory_path.empty() ? "/" : directory_path) + ": " +
+                               ErrorText(directory.error()));
+    }
+    return Place{.directory = *directory, .name = name};
+}
+
+// Inside path under name when path is a directory, as mv and ln take it, otherwise path itself.
+std::expected<Place, std::string> PlaceAt(MountedVolume& mounted, std::string_view path,
+                                          const std::string& name)
+{
+    if (const Result<NodeId> named = mounted.Walk(path); named)
+    {
+        const Result<Attributes> attributes = mounted.Mounted().GetAttributes(*named);
+        if (attributes && attributes->type == NodeType::Directory)
+        {
+            return Place{.directory = *named, .name = name};
+        }
+    }
+    return PlaceOf(mounted, path);
+}
+
+int ChangeDirectory(const std::vector<std::string_view>& arguments, bool make)
+{
+    if (arguments.size() != 2)
+    {
+        return UsageError(make ? "mkdir takes an image and a path"
+                               : "rmdir takes an image and a path");
+    }
+    const Target target = ParseTarget(arguments[0]);
+    const std::string path(arguments[1]);
+    auto volume = OpenWritable(target);
+    if (!volume)
+    {
+        return volume.error();
+    }
+    MountedVolume& mounted = *volume->mounted;
+    const auto place = PlaceOf(mounted, path);
+    if (!place)
+    {
+        return Fail(target.path + ": " + place.error());
+    }
+    Filesystem& filesystem = mounted.Mounted();
+    const Status changed =
+        make
+            ? filesystem.MakeDirectory(place->directory, place->name, 0755).transform([](NodeId) {})
+            : filesystem.RemoveDirectory(place->directory, place->name);
+    if (!changed)
+    {
+        return Fail(target.path + ": " + path + ": " + ErrorText(changed.error()));
+    }
+    return Finish(mounted, target);
+}
+
+int Move(const std::vector<std::string_view>& arguments)
+{
+    if (arguments.size() != 3)
+    {
+        return UsageError("mv takes an image and two paths in it");
+    }
+    const Target target = ParseTarget(arguments[0]);
+    const std::string from(arguments[1]);
+    const std::string to(arguments[2]);
+    auto volume = OpenWritable(target);
+    if (!volume)
+    {
+        return volume.error();
+    }
+    MountedVolume& mounted = *volume->mounted;
+    const auto source = PlaceOf(mounted, from);
+    if (!source)
+    {
+        return Fail(target.path + ": " + source.error());
+    }
+    const auto destination = PlaceAt(mounted, to, BaseName(from));
+    if (!destination)
+    {
+        return Fail(target.path + ": " + destination.error());
+    }
+    if (const Status renamed = mounted.Mounted().Rename(source->directory, source->name,
+                                                        destination->directory, destination->name);
+        !renamed)
+    {
+        return Fail(target.path + ": " + from + ": " + ErrorText(renamed.error()));
+    }
+    return Finish(mounted, target);
+}
+
+int MakeLink(std::vector<std::string_view> arguments)
+{
+    const bool symbolic = !arguments.empty() && arguments.front() == "-s";
+    if (symbolic)
+    {
+        arguments.erase(arguments.begin());
+    }
+    if (arguments.size() != 3)
+    {
+        return UsageError("ln takes [-s], an image, a target and a path");
+    }
+    const Target target = ParseTarget(arguments[0]);
+    const std::string link_target(arguments[1]);
+    const std::string path(arguments[2]);
+    auto volume = OpenWritable(target);
+    if (!volume)
+    {
+        return volume.error();
+    }
+    MountedVolume& mounted = *volume->mounted;
+    Filesystem& filesystem = mounted.Mounted();
+    const auto place = PlaceAt(mounted, path, BaseName(link_target));
+    if (!place)
+    {
+        return Fail(target.path + ": " + place.error());
+    }
+    Status made;
+    if (symbolic)
+    {
+        made = filesystem.SymbolicLink(place->directory, place->name, link_target)
+                   .transform([](NodeId) {});
+    }
+    else
+    {
+        const Result<NodeId> source = mounted.Walk(link_target);
+        if (!source)
+        {
+            return Fail(target.path + ": " + link_target + ": " + ErrorText(source.error()));
+        }
+        made = filesystem.Link(*source, place->directory, place->name);
+    }
+    if (!made)
+    {
+        return Fail(target.path + ": " + path + ": " + ErrorText(made.error()));
+    }
+    return Finish(mounted, target);
+}
+
+int ReadLink(const std::vector<std::string_view>& arguments)
+{
+    if (arguments.size() != 2)
+    {
+        return UsageError("readlink takes an image and a path");
+    }
+    const Target target = ParseTarget(arguments[0]);
+    const std::string path(arguments[1]);
+    auto device = OpenDevice(target.path);
+    if (!device)
+    {
+        return device.error();
+    }
+    auto mounted = MountTarget(**device, target);
+    if (!mounted)
+    {
+        return mounted.error();
+    }
+    Filesystem& filesystem = (*mounted)->Mounted();
+    const Result<NodeId> node = (*mounted)->Walk(path);
+    const Result<Attributes> attributes =
+        node ? filesystem.GetAttributes(*node) : Result<Attributes>(std::unexpected(node.error()));
+    if (!attributes)
+    {
+        return Fail(target.path + ": " + path + ": " + ErrorText(attributes.error()));
+    }
+    if (attributes->type != NodeType::SymbolicLink)
+    {
+        return Fail(target.path + ": " + path + ": not a symbolic link");
+    }
+    std::vector<char> buffer(MaximumLinkTarget);
+    const Result<std::size_t> count = filesystem.ReadLink(*node, buffer);
+    if (!count)
+    {
+        return Fail(target.path + ": " + path + ": " + ErrorText(count.error()));
+    }
+    std::printf("%.*s\n", static_cast<int>(*count), buffer.data());
+    return std::fflush(stdout) == 0 ? ExitSuccess : Fail("writing to standard output failed");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -786,6 +1013,22 @@ int main(int argc, char** argv)
     if (command == "rm")
     {
         return Remove(arguments);
+    }
+    if (command == "mkdir" || command == "rmdir")
+    {
+        return ChangeDirectory(arguments, command == "mkdir");
+    }
+    if (command == "mv")
+    {
+        return Move(arguments);
+    }
+    if (command == "ln")
+    {
+        return MakeLink(arguments);
+    }
+    if (command == "readlink")
+    {
+        return ReadLink(arguments);
     }
     return UsageError("unknown command '" + std::string(command) + "'");
 }

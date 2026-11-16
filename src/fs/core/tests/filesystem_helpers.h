@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -59,6 +60,12 @@ NodeId WriteNewFile(Filesystem& filesystem, std::string_view path, const std::st
 std::vector<std::string> List(Filesystem& filesystem, NodeId directory);
 std::vector<std::string> Sorted(std::vector<std::string> names);
 std::string Pattern(std::size_t length);
+// stem, the number and letters up to length bytes.
+std::string NumberedName(std::string_view stem, int number, std::size_t length);
+std::span<const std::uint8_t> BytesOfText(const std::string& text);
+std::size_t WriteAt(Filesystem& filesystem, NodeId file, std::uint64_t offset,
+                    const std::string& text);
+std::string ReadAt(Filesystem& filesystem, NodeId file, std::uint64_t offset, std::size_t length);
 std::uint32_t FreeBlocks(Filesystem& filesystem);
 
 } // namespace FeatherDisk::Tests

@@ -5,6 +5,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -231,6 +233,67 @@ void CheckClean(MemoryDevice& device, std::string_view name)
     const ToolRun run = RunE2fsck(device, name);
     INFO("e2fsck -fn on " << name << ":\n" << run.output);
     REQUIRE(run.status == 0);
+}
+
+// A '+' in a bitmap difference would be something in use that its bitmap calls free.
+bool OnlyRoutineRepairs(const std::string& report, bool renames)
+{
+    constexpr std::array<std::string_view, 12> Routine = {
+        "Free blocks count wrong",
+        "Free inodes count wrong",
+        "Directories count wrong",
+        "Unattached inode",
+        "Unattached zero-length inode",
+        "Unconnected directory inode",
+        // The unconnected directory's ".." against the parent e2fsck did not find.
+        "should be <The NULL inode> (0)",
+        "ref count is",
+        ", i_size is",
+        ", i_blocks is",
+        "Block bitmap differences:",
+        "Inode bitmap differences:",
+    };
+    constexpr std::array<std::string_view, 2> Renames = {
+        "is a link to directory",
+        "'..' in ",
+    };
+    constexpr std::array<std::string_view, 8> Noise = {
+        "e2fsck ",
+        "Pass ",
+        "Fix? no",
+        "Clear? no",
+        "Connect to /lost+found? no",
+        "WARNING: Filesystem still has errors",
+        " files (",
+        "check forced",
+    };
+    const auto contains = [](std::string_view line, const auto& phrases)
+    {
+        return std::any_of(phrases.begin(), phrases.end(), [&](std::string_view phrase)
+                           { return line.find(phrase) != std::string_view::npos; });
+    };
+    std::size_t start = 0;
+    while (start < report.size())
+    {
+        std::size_t end = report.find('\n', start);
+        end = end == std::string::npos ? report.size() : end;
+        const std::string_view line(report.data() + start, end - start);
+        start = end + 1;
+        if (line.empty() || contains(line, Noise))
+        {
+            continue;
+        }
+        if (!contains(line, Routine) && !(renames && contains(line, Renames)))
+        {
+            return false;
+        }
+        if (line.find("bitmap differences") != std::string_view::npos &&
+            line.find('+') != std::string_view::npos)
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 ToolRun RunDebugfs(MemoryDevice& device, std::string_view name, std::string_view command)

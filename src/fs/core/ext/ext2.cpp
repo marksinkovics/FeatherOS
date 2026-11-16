@@ -665,34 +665,6 @@ Result<std::size_t> Ext2Filesystem::Read(NodeId file, std::uint64_t offset,
     return ReadContents(node->inode, offset, buffer, buffers[0]);
 }
 
-Result<NodeId> Ext2Filesystem::MakeDirectory(NodeId /*directory*/, std::string_view /*name*/,
-                                             std::uint32_t /*mode*/)
-{
-    return Refused();
-}
-
-Status Ext2Filesystem::RemoveDirectory(NodeId /*directory*/, std::string_view /*name*/)
-{
-    return Refused();
-}
-
-Status Ext2Filesystem::Rename(NodeId /*from_directory*/, std::string_view /*from_name*/,
-                              NodeId /*to_directory*/, std::string_view /*to_name*/)
-{
-    return Refused();
-}
-
-Status Ext2Filesystem::Link(NodeId /*node*/, NodeId /*directory*/, std::string_view /*name*/)
-{
-    return Refused();
-}
-
-Result<NodeId> Ext2Filesystem::SymbolicLink(NodeId /*directory*/, std::string_view /*name*/,
-                                            std::string_view /*target*/)
-{
-    return Refused();
-}
-
 Result<std::size_t> Ext2Filesystem::ReadLink(NodeId link, std::span<char> buffer)
 {
     Buffers buffers(block_size, 1);

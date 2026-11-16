@@ -57,6 +57,11 @@ bool HaveE2fsck();
 void CheckClean(MemoryDevice& device, std::string_view name);
 // e2fsck -fn's exit status and output, unchecked.
 ToolRun RunE2fsck(MemoryDevice& device, std::string_view name);
+// What e2fsck may report about a volume that stopped in the middle of a change: lost blocks and
+// inodes, counts, sizes and link counts behind the truth, unattached inodes and unconnected
+// directories. With renames, also what a crash between a directory's two names leaves: a second
+// name of a directory, and a ".." that still names the old parent.
+bool OnlyRoutineRepairs(const std::string& report, bool renames = false);
 // debugfs -R command over the device's bytes: what it printed on standard output.
 ToolRun RunDebugfs(MemoryDevice& device, std::string_view name, std::string_view command);
 // debugfs -w -R command, with the changed volume read back into the device.

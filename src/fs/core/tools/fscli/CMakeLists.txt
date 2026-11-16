@@ -28,8 +28,9 @@ set(fscli_debugfs)
 if (FEATHERDISK_DEBUGFS)
     set(fscli_debugfs "${FEATHERDISK_DEBUGFS}")
 endif ()
-foreach (case help info ls cat cp cp-in partition errors
-         ext2-info ext2-ls ext2-cat ext2-partition ext2-errors ext2-cp-in ext2-rm)
+foreach (case help info ls cat cp cp-in tree partition errors
+         ext2-info ext2-ls ext2-cat ext2-partition ext2-errors ext2-cp-in ext2-rm
+         ext2-mkdir ext2-mv ext2-ln)
     add_test(NAME "fs.core:fscli ${case}"
         COMMAND "${FEATHERDISK_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/fscli_tests.sh"
             "$<TARGET_FILE:fscli>" "${featherdisk_fat16_image}" "${featherdisk_mbr_image}"

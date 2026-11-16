@@ -118,6 +118,36 @@ std::string Pattern(std::size_t length)
     return text;
 }
 
+std::string NumberedName(std::string_view stem, int number, std::size_t length)
+{
+    std::string name = std::string(stem) + "-" + std::to_string(number) + "-";
+    while (name.size() < length)
+    {
+        name += static_cast<char>('a' + name.size() % 26);
+    }
+    return name;
+}
+
+std::span<const std::uint8_t> BytesOfText(const std::string& text)
+{
+    return {reinterpret_cast<const std::uint8_t*>(text.data()), text.size()};
+}
+
+std::size_t WriteAt(Filesystem& filesystem, NodeId file, std::uint64_t offset,
+                    const std::string& text)
+{
+    return Value(filesystem.Write(file, offset, BytesOfText(text)));
+}
+
+std::string ReadAt(Filesystem& filesystem, NodeId file, std::uint64_t offset, std::size_t length)
+{
+    std::string text(length, '\0');
+    const std::size_t count = Value(filesystem.Read(
+        file, offset, std::span(reinterpret_cast<std::uint8_t*>(text.data()), text.size())));
+    text.resize(count);
+    return text;
+}
+
 std::uint32_t FreeBlocks(Filesystem& filesystem)
 {
     return static_cast<std::uint32_t>(Value(filesystem.Statistics()).free_blocks);

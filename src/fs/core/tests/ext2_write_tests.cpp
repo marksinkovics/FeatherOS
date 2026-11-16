@@ -34,9 +34,11 @@ using FeatherDisk::Filesystem;
 using FeatherDisk::NodeId;
 using FeatherDisk::NodeType;
 using FeatherDisk::Result;
+using FeatherDisk::Status;
 using FeatherDisk::Timestamp;
 using FeatherDisk::Ext::Ext2Type;
 using FeatherDisk::Tests::BytesOf;
+using FeatherDisk::Tests::BytesOfText;
 using FeatherDisk::Tests::ChangeWithDebugfs;
 using FeatherDisk::Tests::CheckClean;
 using FeatherDisk::Tests::CopyOf;
@@ -48,9 +50,12 @@ using FeatherDisk::Tests::List;
 using FeatherDisk::Tests::LoadExtImage;
 using FeatherDisk::Tests::MemoryDevice;
 using FeatherDisk::Tests::MountedFilesystem;
+using FeatherDisk::Tests::NumberedName;
+using FeatherDisk::Tests::OnlyRoutineRepairs;
 using FeatherDisk::Tests::Pattern;
 using FeatherDisk::Tests::RawVolume;
 using FeatherDisk::Tests::ReadAll;
+using FeatherDisk::Tests::ReadAt;
 using FeatherDisk::Tests::RunDebugfs;
 using FeatherDisk::Tests::RunE2fsck;
 using FeatherDisk::Tests::Sorted;
@@ -58,6 +63,7 @@ using FeatherDisk::Tests::Succeeds;
 using FeatherDisk::Tests::ToolRun;
 using FeatherDisk::Tests::Value;
 using FeatherDisk::Tests::Walk;
+using FeatherDisk::Tests::WriteAt;
 using FeatherDisk::Tests::WriteNewFile;
 
 // Superblock fields, from the start of the volume.
@@ -67,26 +73,6 @@ constexpr std::uint64_t CompatibleOffset = 1024 + 92;
 constexpr std::uint64_t ReadOnlyCompatibleOffset = 1024 + 100;
 constexpr std::uint32_t LargeFileFeature = 0x0002;
 constexpr std::uint64_t GiB = std::uint64_t{1} << 30;
-
-std::span<const std::uint8_t> BytesOfText(const std::string& text)
-{
-    return {reinterpret_cast<const std::uint8_t*>(text.data()), text.size()};
-}
-
-std::size_t WriteAt(Filesystem& filesystem, NodeId file, std::uint64_t offset,
-                    const std::string& text)
-{
-    return Value(filesystem.Write(file, offset, BytesOfText(text)));
-}
-
-std::string ReadAt(Filesystem& filesystem, NodeId file, std::uint64_t offset, std::size_t length)
-{
-    std::string text(length, '\0');
-    const std::size_t count = Value(filesystem.Read(
-        file, offset, std::span(reinterpret_cast<std::uint8_t*>(text.data()), text.size())));
-    text.resize(count);
-    return text;
-}
 
 std::uint64_t FreeInodes(Filesystem& filesystem)
 {
@@ -121,16 +107,6 @@ std::uint64_t DenseBlocks(std::uint64_t size, std::uint64_t block_size)
         blocks += 1 + (past + per_block - 1) / per_block;
     }
     return blocks;
-}
-
-std::string Name(std::string_view stem, int number, std::size_t length)
-{
-    std::string name = std::string(stem) + "-" + std::to_string(number) + "-";
-    while (name.size() < length)
-    {
-        name += static_cast<char>('a' + name.size() % 26);
-    }
-    return name;
 }
 
 std::int64_t Seconds()
@@ -560,7 +536,7 @@ TEST_CASE("ext2 removes files, hard links, symbolic links and special nodes")
             REQUIRE(List(*ext2, many).empty());
             for (int number = 0; number < 40; ++number)
             {
-                WriteNewFile(*ext2, "many/" + Name("again", number, 30), "again\n");
+                WriteNewFile(*ext2, "many/" + NumberedName("again", number, 30), "again\n");
             }
             REQUIRE(List(*ext2, many).size() == 40);
             REQUIRE(Value(ext2->GetAttributes(many)).size == many_size);
@@ -613,7 +589,7 @@ TEST_CASE("ext2 grows a directory past its direct blocks and shrinks it back")
         // Four 200-byte names fill a 1 KiB block, so 100 files need 25 blocks: an indirect one.
         for (int number = 0; number < 100; ++number)
         {
-            names.push_back(Name("grown", number, 200));
+            names.push_back(NumberedName("grown", number, 200));
             const NodeId file = Value(ext2->Create(root, names.back(), 0644));
             REQUIRE(WriteAt(*ext2, file, 0, names.back()) == names.back().size());
         }
@@ -695,7 +671,8 @@ TEST_CASE("ext2 fills the volume, then frees and reuses the space")
         int created = 0;
         while (true)
         {
-            const Result<NodeId> file = ext2->Create(directory, Name("node", created, 12), 0644);
+            const Result<NodeId> file =
+                ext2->Create(directory, NumberedName("node", created, 12), 0644);
             if (!file)
             {
                 REQUIRE(file.error() == Error::NoSpace);
@@ -705,7 +682,7 @@ TEST_CASE("ext2 fills the volume, then frees and reuses the space")
         }
         REQUIRE(FreeInodes(*ext2) == 0);
         REQUIRE(created > 100);
-        Succeeds(ext2->Remove(directory, Name("node", 7, 12)));
+        Succeeds(ext2->Remove(directory, NumberedName("node", 7, 12)));
         Value(ext2->Create(directory, "one-more", 0644));
     }
     CheckClean(*inodes, "no-inodes");
@@ -828,9 +805,10 @@ void CrashScenario(Filesystem& ext2)
     }
     for (int number = 0; number < 12; ++number)
     {
-        if (const Result<NodeId> made = ext2.Create(root, Name("crash", number, 120), 0644))
+        if (const Result<NodeId> made = ext2.Create(root, NumberedName("crash", number, 120), 0644))
         {
-            static_cast<void>(ext2.Write(*made, 0, BytesOfText(Name("data", number, 1500))));
+            static_cast<void>(
+                ext2.Write(*made, 0, BytesOfText(NumberedName("data", number, 1500))));
         }
     }
     static_cast<void>(ext2.Remove(root, "hello.txt"));
@@ -838,7 +816,7 @@ void CrashScenario(Filesystem& ext2)
     static_cast<void>(ext2.Remove(root, "crash.bin"));
     for (int number = 0; number < 12; number += 3)
     {
-        static_cast<void>(ext2.Remove(root, Name("crash", number, 120)));
+        static_cast<void>(ext2.Remove(root, NumberedName("crash", number, 120)));
     }
     if (const Result<NodeId> hard = Walk(ext2, "hard.txt"))
     {
@@ -846,58 +824,6 @@ void CrashScenario(Filesystem& ext2)
         mode.mode = 0600;
         static_cast<void>(ext2.SetAttributes(*hard, mode));
     }
-}
-
-// What e2fsck may report about a volume that stopped in the middle: lost blocks and inodes,
-// counts, sizes and link counts behind the truth, all repaired in preen mode. A '+' in a bitmap
-// difference would be something in use that its bitmap calls free.
-bool OnlyRoutineRepairs(const std::string& report)
-{
-    constexpr std::array<std::string_view, 9> Routine = {
-        "Free blocks count wrong",
-        "Free inodes count wrong",
-        "Unattached inode",
-        "Unattached zero-length inode",
-        "ref count is",
-        ", i_size is",
-        ", i_blocks is",
-        "Block bitmap differences:",
-        "Inode bitmap differences:",
-    };
-    constexpr std::array<std::string_view, 8> Noise = {
-        "e2fsck ",
-        "Pass ",
-        "Fix? no",
-        "Clear? no",
-        "Connect to /lost+found? no",
-        "WARNING: Filesystem still has errors",
-        " files (",
-        "check forced",
-    };
-    std::size_t start = 0;
-    while (start < report.size())
-    {
-        std::size_t end = report.find('\n', start);
-        end = end == std::string::npos ? report.size() : end;
-        const std::string_view line(report.data() + start, end - start);
-        start = end + 1;
-        if (line.empty() || std::any_of(Noise.begin(), Noise.end(), [&](std::string_view noise)
-                                        { return line.find(noise) != std::string_view::npos; }))
-        {
-            continue;
-        }
-        if (!std::any_of(Routine.begin(), Routine.end(), [&](std::string_view routine)
-                         { return line.find(routine) != std::string_view::npos; }))
-        {
-            return false;
-        }
-        if (line.find("bitmap differences") != std::string_view::npos &&
-            line.find('+') != std::string_view::npos)
-        {
-            return false;
-        }
-    }
-    return true;
 }
 
 } // namespace
@@ -947,9 +873,30 @@ TEST_CASE("an ext2 volume stopped after any write needs only e2fsck's routine re
 namespace
 {
 
+enum class Kind
+{
+    File,
+    Directory,
+    Link,
+};
+
+struct ModelEntry
+{
+    Kind kind;
+    // A file's contents, shared by its hard links.
+    int file;
+    std::string target;
+    // Directories of the image, whose other entries the model does not know: never renamed or
+    // removed.
+    bool fixed;
+};
+
+// Paths from the root without a leading '/'; the root itself is "".
 struct Model
 {
-    std::map<std::string, std::string> files;
+    std::map<std::string, ModelEntry> entries;
+    std::map<int, std::string> contents;
+    int next_file = 0;
 };
 
 std::string RandomName(std::mt19937& random)
@@ -985,13 +932,174 @@ std::pair<std::string, std::string> SplitPath(const std::string& path)
     return {path.substr(0, slash), path.substr(slash + 1)};
 }
 
+std::string Join(const std::string& directory, const std::string& name)
+{
+    return directory.empty() ? name : directory + "/" + name;
+}
+
+bool IsWithin(const std::string& path, const std::string& directory)
+{
+    return path == directory ||
+           (path.size() > directory.size() && path.compare(0, directory.size(), directory) == 0 &&
+            path[directory.size()] == '/');
+}
+
+std::vector<std::string> Paths(const Model& model, Kind kind, bool movable)
+{
+    std::vector<std::string> paths;
+    for (const auto& [path, entry] : model.entries)
+    {
+        if (entry.kind == kind && !(movable && entry.fixed))
+        {
+            paths.push_back(path);
+        }
+    }
+    return paths;
+}
+
+std::vector<std::string> Directories(const Model& model)
+{
+    std::vector<std::string> directories = Paths(model, Kind::Directory, false);
+    directories.emplace_back();
+    return directories;
+}
+
+// The names in directory, as List gives them.
+std::vector<std::string> Children(const Model& model, const std::string& directory)
+{
+    std::vector<std::string> names;
+    for (const auto& [path, entry] : model.entries)
+    {
+        if (!path.empty() && SplitPath(path).first == directory)
+        {
+            names.push_back(SplitPath(path).second + (entry.kind == Kind::Directory ? "/" : ""));
+        }
+    }
+    return Sorted(names);
+}
+
+std::uint32_t NameCount(const Model& model, int file)
+{
+    std::uint32_t count = 0;
+    for (const auto& [path, entry] : model.entries)
+    {
+        count += entry.kind == Kind::File && entry.file == file ? 1 : 0;
+    }
+    return count;
+}
+
+void Forget(Model& model, const std::string& path)
+{
+    const ModelEntry entry = model.entries.at(path);
+    model.entries.erase(path);
+    if (entry.kind == Kind::File && NameCount(model, entry.file) == 0)
+    {
+        model.contents.erase(entry.file);
+    }
+}
+
 void Verify(Filesystem& ext2, const Model& model)
 {
-    for (const auto& [path, contents] : model.files)
+    for (const auto& [path, entry] : model.entries)
     {
         INFO(path);
-        REQUIRE(ReadAll(ext2, Value(Walk(ext2, path))) == contents);
+        const NodeId node = Value(Walk(ext2, path));
+        const Attributes attributes = Value(ext2.GetAttributes(node));
+        switch (entry.kind)
+        {
+        case Kind::File:
+            REQUIRE(attributes.type == NodeType::File);
+            REQUIRE(ReadAll(ext2, node) == model.contents.at(entry.file));
+            REQUIRE(attributes.link_count == NameCount(model, entry.file));
+            break;
+        case Kind::Link:
+        {
+            REQUIRE(attributes.type == NodeType::SymbolicLink);
+            std::string target(1024, '\0');
+            target.resize(Value(ext2.ReadLink(node, std::span(target.data(), target.size()))));
+            REQUIRE(target == entry.target);
+            break;
+        }
+        case Kind::Directory:
+            REQUIRE(attributes.type == NodeType::Directory);
+            if (!entry.fixed)
+            {
+                const std::vector<std::string> children = Children(model, path);
+                REQUIRE(Sorted(List(ext2, node)) == children);
+                REQUIRE(Value(ext2.Lookup(node, "..")) == Value(Walk(ext2, SplitPath(path).first)));
+                REQUIRE(attributes.link_count == 2 + std::count_if(children.begin(), children.end(),
+                                                                   [](const std::string& name)
+                                                                   { return name.back() == '/'; }));
+            }
+            break;
+        }
     }
+}
+
+template <typename T> const T& Pick(std::mt19937& random, const std::vector<T>& from)
+{
+    return from[random() % from.size()];
+}
+
+// What Rename must answer for the model, in the order the driver checks.
+std::optional<Error> RenameRefusal(const Model& model, const std::string& from,
+                                   const std::string& to)
+{
+    const ModelEntry& source = model.entries.at(from);
+    const auto existing = model.entries.find(to);
+    if (existing != model.entries.end())
+    {
+        if (from == to || (source.kind == Kind::File && existing->second.kind == Kind::File &&
+                           source.file == existing->second.file))
+        {
+            return std::nullopt;
+        }
+        const bool source_directory = source.kind == Kind::Directory;
+        const bool target_directory = existing->second.kind == Kind::Directory;
+        if (source_directory != target_directory)
+        {
+            return source_directory ? Error::NotDirectory : Error::IsDirectory;
+        }
+        if (target_directory && (existing->second.fixed || !Children(model, to).empty()))
+        {
+            return Error::NotEmpty;
+        }
+    }
+    if (source.kind == Kind::Directory && SplitPath(from).first != SplitPath(to).first &&
+        IsWithin(SplitPath(to).first, from))
+    {
+        return Error::InvalidArgument;
+    }
+    return std::nullopt;
+}
+
+void ApplyRename(Model& model, const std::string& from, const std::string& to)
+{
+    const auto existing = model.entries.find(to);
+    if (existing != model.entries.end())
+    {
+        const ModelEntry& source = model.entries.at(from);
+        if (from == to || (source.kind == Kind::File && existing->second.kind == Kind::File &&
+                           source.file == existing->second.file))
+        {
+            return;
+        }
+        Forget(model, to);
+    }
+    std::map<std::string, ModelEntry> moved;
+    for (auto entry = model.entries.begin(); entry != model.entries.end();)
+    {
+        if (IsWithin(entry->first, from))
+        {
+            moved[to + entry->first.substr(from.size())] = entry->second;
+            entry = model.entries.erase(entry);
+        }
+        else
+        {
+            ++entry;
+        }
+    }
+    model.entries.insert(moved.begin(), moved.end());
 }
 
 void RandomChanges(std::string_view variant, std::uint32_t seed, int operations, std::uint64_t far)
@@ -999,43 +1107,56 @@ void RandomChanges(std::string_view variant, std::uint32_t seed, int operations,
     const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
     std::mt19937 random(seed);
     Model model;
-    const std::array<std::string, 3> directories = {"", "a/b", "many"};
+    model.entries["a/b"] = {.kind = Kind::Directory, .file = 0, .target = {}, .fixed = true};
+    model.entries["many"] = {.kind = Kind::Directory, .file = 0, .target = {}, .fixed = true};
     auto ext2 = std::make_unique<MountedFilesystem>(Ext2Type(), *device);
     const std::string big = ReadAll(**ext2, Value(Walk(**ext2, "big.txt")));
     int checks = 0;
-    const auto pick = [&]() -> std::string
+    // A name new to the volume in a random directory, or nothing when it is taken by an entry
+    // of the image the model does not know.
+    const auto new_path = [&](Filesystem& filesystem) -> std::optional<std::string>
     {
-        auto entry = model.files.begin();
-        std::advance(entry, random() % model.files.size());
-        return entry->first;
+        const std::string directory = Pick(random, Directories(model));
+        const std::string path = Join(directory, RandomName(random));
+        if (model.entries.contains(path) || Walk(filesystem, path))
+        {
+            return std::nullopt;
+        }
+        return path;
+    };
+    const auto allowed = [](const Result<NodeId>& result)
+    {
+        if (!result)
+        {
+            REQUIRE(result.error() == Error::NoSpace);
+        }
+        return result.has_value();
     };
     for (int operation = 0; operation < operations; ++operation)
     {
         Filesystem& filesystem = **ext2;
+        const std::vector<std::string> files = Paths(model, Kind::File, false);
         const std::uint32_t choice = random() % 100;
         INFO("operation " << operation << ", choice " << choice);
-        if (model.files.empty() || choice < 18)
+        if (files.empty() || choice < 14)
         {
-            const std::string& directory = directories[random() % directories.size()];
-            const std::string name = RandomName(random);
-            const std::string path = directory.empty() ? name : directory + "/" + name;
-            const NodeId parent = Value(Walk(filesystem, directory));
-            if (filesystem.Lookup(parent, name))
+            const std::optional<std::string> path = new_path(filesystem);
+            if (!path)
             {
                 continue;
             }
-            const Result<NodeId> created = filesystem.Create(parent, name, 0644);
-            if (!created)
+            const auto [directory, name] = SplitPath(*path);
+            if (allowed(filesystem.Create(Value(Walk(filesystem, directory)), name, 0644)))
             {
-                REQUIRE(created.error() == Error::NoSpace);
-                continue;
+                model.entries[*path] = {
+                    .kind = Kind::File, .file = model.next_file, .target = {}, .fixed = false};
+                model.contents[model.next_file++] = "";
             }
-            model.files[path] = "";
         }
-        else if (choice < 55)
+        else if (choice < 40)
         {
-            const std::string path = pick();
-            std::string& contents = model.files[path];
+            const std::string path = Pick(random, files);
+            std::string& contents = model.contents[model.entries.at(path).file];
             std::uint64_t offset = 0;
             switch (random() % 4)
             {
@@ -1074,10 +1195,10 @@ void RandomChanges(std::string_view variant, std::uint32_t seed, int operations,
                 contents.replace(static_cast<std::size_t>(offset), count, data, 0, count);
             }
         }
-        else if (choice < 70)
+        else if (choice < 50)
         {
-            const std::string path = pick();
-            std::string& contents = model.files[path];
+            const std::string path = Pick(random, files);
+            std::string& contents = model.contents[model.entries.at(path).file];
             std::uint64_t size = 0;
             switch (random() % 3)
             {
@@ -1094,14 +1215,131 @@ void RandomChanges(std::string_view variant, std::uint32_t seed, int operations,
             Succeeds(filesystem.Truncate(Value(Walk(filesystem, path)), size));
             contents.resize(static_cast<std::size_t>(size), '\0');
         }
-        else if (choice < 85)
+        else if (choice < 58)
         {
-            const std::string path = pick();
+            std::vector<std::string> removable = files;
+            const std::vector<std::string> links = Paths(model, Kind::Link, false);
+            removable.insert(removable.end(), links.begin(), links.end());
+            const std::string path = Pick(random, removable);
             const auto [directory, name] = SplitPath(path);
             Succeeds(filesystem.Remove(Value(Walk(filesystem, directory)), name));
-            model.files.erase(path);
+            Forget(model, path);
         }
-        else if (choice < 90)
+        else if (choice < 64)
+        {
+            const std::optional<std::string> path = new_path(filesystem);
+            if (!path)
+            {
+                continue;
+            }
+            const auto [directory, name] = SplitPath(*path);
+            if (allowed(filesystem.MakeDirectory(Value(Walk(filesystem, directory)), name, 0755)))
+            {
+                model.entries[*path] = {
+                    .kind = Kind::Directory, .file = 0, .target = {}, .fixed = false};
+            }
+        }
+        else if (choice < 68)
+        {
+            const std::vector<std::string> directories = Paths(model, Kind::Directory, true);
+            if (directories.empty())
+            {
+                continue;
+            }
+            const std::string path = Pick(random, directories);
+            const auto [directory, name] = SplitPath(path);
+            const Status removed =
+                filesystem.RemoveDirectory(Value(Walk(filesystem, directory)), name);
+            if (Children(model, path).empty())
+            {
+                Succeeds(removed);
+                model.entries.erase(path);
+            }
+            else
+            {
+                REQUIRE(removed.error() == Error::NotEmpty);
+            }
+        }
+        else if (choice < 80)
+        {
+            std::vector<std::string> movable = Paths(model, Kind::Directory, true);
+            const std::vector<std::string> links = Paths(model, Kind::Link, false);
+            movable.insert(movable.end(), files.begin(), files.end());
+            movable.insert(movable.end(), links.begin(), links.end());
+            const std::string from = Pick(random, movable);
+            std::string to;
+            const std::string directory = Pick(random, Directories(model));
+            const std::vector<std::string> taken = Children(model, directory);
+            if (random() % 2 == 0 && !taken.empty())
+            {
+                std::string name = Pick(random, taken);
+                if (name.back() == '/')
+                {
+                    name.pop_back();
+                }
+                to = Join(directory, name);
+            }
+            else
+            {
+                to = Join(directory, RandomName(random));
+                if (!model.entries.contains(to) && Walk(filesystem, to))
+                {
+                    continue;
+                }
+            }
+            INFO("rename " << from << " to " << to);
+            const std::optional<Error> refusal = RenameRefusal(model, from, to);
+            const Status renamed = filesystem.Rename(
+                Value(Walk(filesystem, SplitPath(from).first)), SplitPath(from).second,
+                Value(Walk(filesystem, SplitPath(to).first)), SplitPath(to).second);
+            if (!renamed && renamed.error() == Error::NoSpace)
+            {
+                continue;
+            }
+            if (refusal)
+            {
+                REQUIRE(renamed.error() == *refusal);
+            }
+            else
+            {
+                Succeeds(renamed);
+                ApplyRename(model, from, to);
+            }
+        }
+        else if (choice < 84)
+        {
+            const std::optional<std::string> path = new_path(filesystem);
+            if (!path)
+            {
+                continue;
+            }
+            const std::string source = Pick(random, files);
+            const auto [directory, name] = SplitPath(*path);
+            const Status linked = filesystem.Link(Value(Walk(filesystem, source)),
+                                                  Value(Walk(filesystem, directory)), name);
+            if (!linked)
+            {
+                REQUIRE(linked.error() == Error::NoSpace);
+                continue;
+            }
+            model.entries[*path] = model.entries.at(source);
+        }
+        else if (choice < 88)
+        {
+            const std::optional<std::string> path = new_path(filesystem);
+            if (!path)
+            {
+                continue;
+            }
+            const std::string target = RandomName(random) + "/" + RandomName(random);
+            const auto [directory, name] = SplitPath(*path);
+            if (allowed(filesystem.SymbolicLink(Value(Walk(filesystem, directory)), name, target)))
+            {
+                model.entries[*path] = {
+                    .kind = Kind::Link, .file = 0, .target = target, .fixed = false};
+            }
+        }
+        else if (choice < 92)
         {
             ext2.reset();
             if (checks++ % 4 == 0)
@@ -1112,8 +1350,9 @@ void RandomChanges(std::string_view variant, std::uint32_t seed, int operations,
         }
         else
         {
-            const std::string path = pick();
-            REQUIRE(ReadAll(filesystem, Value(Walk(filesystem, path))) == model.files[path]);
+            const std::string path = Pick(random, files);
+            REQUIRE(ReadAll(filesystem, Value(Walk(filesystem, path))) ==
+                    model.contents.at(model.entries.at(path).file));
         }
     }
     Verify(**ext2, model);
@@ -1122,18 +1361,10 @@ void RandomChanges(std::string_view variant, std::uint32_t seed, int operations,
     MountedFilesystem check(Ext2Type(), *device, true);
     Verify(*check, model);
     REQUIRE(ReadAll(*check, Value(Walk(*check, "big.txt"))) == big);
-    for (const std::string& directory : directories)
+    for (const std::string& directory : {std::string(), std::string("a/b"), std::string("many")})
     {
-        std::vector<std::string> expected;
-        for (const auto& [path, contents] : model.files)
-        {
-            if (SplitPath(path).first == directory)
-            {
-                expected.push_back(SplitPath(path).second);
-            }
-        }
         const std::vector<std::string> listed = List(*check, Value(Walk(*check, directory)));
-        for (const std::string& name : expected)
+        for (const std::string& name : Children(model, directory))
         {
             REQUIRE(std::count(listed.begin(), listed.end(), name) == 1);
         }
@@ -1143,7 +1374,7 @@ void RandomChanges(std::string_view variant, std::uint32_t seed, int operations,
 } // namespace
 #endif
 
-TEST_CASE("random ext2 creates, writes, truncates and removes match a model")
+TEST_CASE("random ext2 file and directory changes match a model")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");

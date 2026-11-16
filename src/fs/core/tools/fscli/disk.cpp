@@ -67,6 +67,8 @@ std::string_view Describe(Error error)
         return "too many links";
     case Error::Busy:
         return "busy";
+    case Error::NotPermitted:
+        return "operation not permitted";
     case Error::OutOfMemory:
         return "out of memory";
     case Error::Unsupported:

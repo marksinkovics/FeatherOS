@@ -21,6 +21,8 @@ using NodeId = std::uint64_t;
 
 // The longest name, in bytes of UTF-8, that any driver hands out or accepts.
 constexpr std::size_t MaximumNameLength = 255;
+// PATH_MAX, terminator included: a symbolic link's target is at most one byte shorter.
+constexpr std::size_t MaximumPathLength = 1024;
 
 enum class NodeType : std::uint8_t
 {
@@ -138,10 +140,13 @@ public:
     // Only an empty directory.
     virtual Status RemoveDirectory(NodeId directory, std::string_view name);
     // Replaces an existing target of the same kind, as POSIX rename does, and refuses to move a
-    // directory inside itself.
+    // directory inside itself. Renaming onto another name of the same node changes nothing.
     virtual Status Rename(NodeId from_directory, std::string_view from_name, NodeId to_directory,
                           std::string_view to_name);
+    // A hard link: Error::NotPermitted for a directory, Error::TooManyLinks past the
+    // filesystem's limit.
     virtual Status Link(NodeId node, NodeId directory, std::string_view name);
+    // target is stored as given and need not exist; Error::NameTooLong from MaximumPathLength on.
     virtual Result<NodeId> SymbolicLink(NodeId directory, std::string_view name,
                                         std::string_view target);
     virtual Result<std::size_t> ReadLink(NodeId link, std::span<char> buffer);
