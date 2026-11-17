@@ -251,11 +251,14 @@ target_include_directories(featheros_unit_tests PRIVATE
 )
 target_link_libraries(featheros_unit_tests PRIVATE Catch2::Catch2WithMain featherdisk_core
     featherdisk_standard_host)
-# The VFS reads the core's 1 KiB ext2 image as a partition, when e2fsprogs made it.
+# The VFS reads the core's 1 KiB ext2, ext3 and ext4 images as partitions, when e2fsprogs made
+# them.
 if (TARGET featherdisk_ext_test_images)
     add_dependencies(featheros_unit_tests featherdisk_ext_test_images)
     target_compile_definitions(featheros_unit_tests PRIVATE
-        FEATHEROS_EXT2_TEST_IMAGE="${CMAKE_CURRENT_BINARY_DIR}/fs_core/ext-images/1k.img")
+        FEATHEROS_EXT2_TEST_IMAGE="${CMAKE_CURRENT_BINARY_DIR}/fs_core/ext-images/1k.img"
+        FEATHEROS_EXT3_TEST_IMAGE="${CMAKE_CURRENT_BINARY_DIR}/fs_core/ext-images/ext3.img"
+        FEATHEROS_EXT4_TEST_IMAGE="${CMAKE_CURRENT_BINARY_DIR}/fs_core/ext-images/ext4.img")
 endif ()
 
 catch_discover_tests(featheros_unit_tests)

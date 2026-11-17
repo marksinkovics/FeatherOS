@@ -81,8 +81,9 @@ struct FileKey
 // /tmp. Those already mounted somewhere are left alone.
 bool MountBuiltIn();
 // Mounts the block device's first partition with a FAT16 or ext2 volume at "/", replacing an
-// earlier root, and registers each volume under its type and partition name. A volume mounted
-// elsewhere is kept; one that refuses writes becomes a read-only root.
+// earlier root, and registers each FAT16, ext2, ext3 and ext4 volume under its type and partition
+// name; ext3 and ext4 are never the root. A volume mounted elsewhere is kept; one that refuses
+// writes becomes a read-only root.
 bool MountBlockDevice();
 // Copies the initramfs's "etc" files into /etc, so they can be changed until the next boot.
 bool LoadEtc();

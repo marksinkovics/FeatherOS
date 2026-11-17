@@ -341,7 +341,7 @@ void DescribeVolume(BlockDevice& device, Partition::Range range)
         return;
     }
     std::printf("%.*s\n", static_cast<int>(type->Name().size()), type->Name().data());
-    if (type == &Ext::Ext2Type())
+    if (type == &Ext::Ext2Type() || type == &Ext::Ext3Type() || type == &Ext::Ext4Type())
     {
         PrintExtFeatures(volume);
     }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// The ext2 filesystem behind Ext2Type(), shared by ext2.cpp (mounting and reading), extent.cpp
-// (extent trees), allocation.cpp (groups and bitmaps) and write.cpp (changes).
+// The filesystem behind Ext2Type(), Ext3Type() and Ext4Type(), shared by ext2.cpp (mounting and
+// reading), extent.cpp (extent trees), allocation.cpp (groups and bitmaps) and write.cpp (changes).
 #ifndef FEATHERDISK_EXT_EXT2_FILESYSTEM_H
 #define FEATHERDISK_EXT_EXT2_FILESYSTEM_H
 

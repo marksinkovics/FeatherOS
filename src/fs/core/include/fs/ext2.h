@@ -12,17 +12,18 @@
 namespace FeatherDisk::Ext
 {
 
-// ext2 ("ext2"), revisions 0 and 1, with 1, 2 or 4 KiB blocks, and the ext3 and ext4 layout
-// around it. ext3's journal is ignored, and ext4 volumes read when their files use block maps:
-// 64bit with large group descriptors, flex_bg, large inodes, huge_file, dir_nlink, extra_isize,
-// unwritten groups (uninit_bg) and the CRC16 or CRC32C checksums (gdt_csum, metadata_csum and its
-// seed), which are verified on read: a mismatch is Error::Corrupt. A journal that needs recovery
-// is not replayed: the volume mounts read-only with a log line. Any other incompatible feature
-// (extents, meta_bg, inline_data, encrypt, casefold, mmp, journal_dev, ...) or bigalloc refuses
-// the mount (Error::Unsupported, with a log line of the feature bits), and inodes flagged for
-// extents, inline data or encryption are Error::Unsupported. Node IDs are inode numbers, and the
-// root is inode 2. Directories list in their on-disk order (hash-indexed ones too), names match
-// byte for byte, symbolic links are not followed, and holes in sparse files read as zeros.
+// ext2, ext3 and ext4 through one driver: ext2 revisions 0 and 1, with 1, 2 or 4 KiB blocks, and
+// the ext3 and ext4 layout around it. ext3's journal is ignored. ext4 reads extent trees of any
+// depth (unwritten extents as zeros), 64bit with large group descriptors, flex_bg, large inodes,
+// huge_file, dir_nlink, extra_isize, unwritten groups (uninit_bg) and the CRC16 or CRC32C
+// checksums (gdt_csum, metadata_csum and its seed), which are verified on read: a mismatch is
+// Error::Corrupt. A journal that needs recovery is not replayed: the volume mounts read-only with a
+// log line. Any other incompatible feature (meta_bg, inline_data, encrypt, casefold, mmp,
+// journal_dev, ...) or bigalloc refuses the mount (Error::Unsupported, with a log line of the
+// feature bits), and inodes flagged for inline data or encryption are Error::Unsupported. Node IDs
+// are inode numbers, and the root is inode 2. Directories list in their on-disk order
+// (hash-indexed ones too), names match byte for byte, symbolic links are not followed, and holes
+// in sparse files read as zeros.
 //
 // A mount asked for writing creates, writes, truncates and removes files, makes and removes
 // directories, renames, makes symbolic and hard links and sets attributes, on plain ext2 only. It
@@ -35,7 +36,13 @@ namespace FeatherDisk::Ext
 //
 // Changes (writing operations and Sync) must not run at the same time as any other operation
 // on the same mount; reads may run together, since the metadata cache's lock covers only copying.
+//
+// The three types differ only in Name and Probe: each probes only volumes of its own variant, as
+// ExtFeatures::variant names them (so probing them in turn names a volume as blkid does), and each
+// mounts all three variants, as Linux's ext4 driver does.
 FilesystemType& Ext2Type();
+FilesystemType& Ext3Type();
+FilesystemType& Ext4Type();
 
 enum class FeatureSet
 {

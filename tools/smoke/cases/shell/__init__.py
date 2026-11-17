@@ -9,6 +9,7 @@ from smoke.cases.shell import (
     cppbench,
     editing,
     ext2,
+    ext4,
     files,
     interrupt,
     job_control,
@@ -44,6 +45,7 @@ PARTS = (
     files.PART,
     mounts.PART,
     ext2.PART,
+    ext4.PART,
     links.PART,
     ping.PART,
     text_tools.PART,
@@ -75,6 +77,10 @@ class Shell(Case):
     def __init__(self, args):
         super().__init__(args)
         self.parts = []
+        self.read_only_hashes = None
+
+    def Start(self):
+        self.read_only_hashes = storage.HashReadOnlyPartitions(self.args.disk)
 
     def Script(self, session):
         build_dir = self.args.build_dir
@@ -116,6 +122,11 @@ class Shell(Case):
         ext2_error = storage.VerifyExt2(self.args.disk)
         if ext2_error is not None:
             return f"the root after the session: {ext2_error}"
+        read_only_error = storage.VerifyReadOnlyPartitions(
+            self.args.disk, self.read_only_hashes
+        )
+        if read_only_error is not None:
+            return f"after the session: {read_only_error}"
         # A prompt may precede the echo on the same line.
         interrupts = len(re.findall(r"\^C\r?$", output, re.MULTILINE))
         expected_interrupts = sum(part.interrupts for part in self.parts)

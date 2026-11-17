@@ -24,6 +24,13 @@ CoreDriver& Ext2();
 // Mounts the first ext2 partition on the block device as Ext2(), read-only in the core until the
 // VFS mounts it read-write, so an unmounted volume stays clean.
 bool MountExt2();
+// The block device's ext3 and ext4 filesystems, which the core keeps read-only whatever the VFS
+// asks for until it writes them.
+CoreDriver& Ext3();
+CoreDriver& Ext4();
+// Mount the first ext3 or ext4 partition on the block device, read-only.
+bool MountExt3();
+bool MountExt4();
 // The initramfs's "system" directory.
 Driver& System();
 Driver& Devices();

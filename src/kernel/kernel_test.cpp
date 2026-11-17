@@ -6,6 +6,7 @@
 #include "kernel/cpu.h"
 #include "kernel/exception.h"
 #include "kernel/filesystem/drivers.h"
+#include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/vfs.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/kernel_stack.h"
@@ -1095,27 +1096,26 @@ bool ReadsAs(const char* path, const char* expected)
     return read && index == length && expected[index] == '\0';
 }
 
-// big.txt is 5000 lines of "ext2 line NNNNN\n", past what direct blocks reach.
-bool BigFileMatches()
+// Lines of "extN line NNNNN\n", past what direct blocks reach: the root's /samples/big.txt and the
+// ext3 partition's big.txt.
+bool BigFileMatches(const char* path, const char (&prefix)[11], uint32_t lines)
 {
-    constexpr uint32_t Lines = 5000;
     constexpr uint64_t LineLength = 16;
     VFS::FileHandle file{};
-    if (!VFS::Open("/samples/big.txt", &file) || file.size != Lines * LineLength)
+    if (!VFS::Open(path, &file) || file.size != lines * LineLength)
     {
         VFS::Close(&file);
         return false;
     }
     bool matches = true;
-    for (uint32_t line = 0; matches && line < Lines; ++line)
+    for (uint32_t line = 0; matches && line < lines; ++line)
     {
         char text[LineLength];
         uint64_t length = 0;
         matches = VFS::Read(&file, text, LineLength, &length) && length == LineLength;
-        constexpr char Prefix[] = "ext2 line ";
-        for (uint32_t index = 0; matches && index < sizeof(Prefix) - 1; ++index)
+        for (uint32_t index = 0; matches && index < sizeof(prefix) - 1; ++index)
         {
-            matches = text[index] == Prefix[index];
+            matches = text[index] == prefix[index];
         }
         uint32_t number = line;
         for (uint32_t digit = 0; matches && digit < 5; ++digit)
@@ -1138,7 +1138,8 @@ void CheckExt2ReadOnly()
         Panic("Mounting the root read-only failed");
     }
     if (!ReadsAs("/samples/hello.txt", "Hello from the ext2 partition.\n") ||
-        !ReadsAs("/samples/docs/notes/deep.txt", "nested ext2 file\n") || !BigFileMatches())
+        !ReadsAs("/samples/docs/notes/deep.txt", "nested ext2 file\n") ||
+        !BigFileMatches("/samples/big.txt", "ext2 line ", 5000))
     {
         Panic("The ext2 root read back different contents");
     }
@@ -1270,7 +1271,7 @@ bool LinkCountIs(const char* path, uint32_t count)
 
 bool LinkTargetIs(const char* path, const char* expected)
 {
-    char target[16];
+    char target[32];
     uint32_t length = 0;
     if (!VFS::ReadLink(path, target, sizeof(target), &length) || length >= sizeof(target))
     {
@@ -1370,6 +1371,174 @@ void CheckExt2(uint64_t boot_count)
     }
 }
 
+bool SameText(const char* left, const char* right)
+{
+    while (*left != '\0' && *left == *right)
+    {
+        ++left;
+        ++right;
+    }
+    return *left == *right;
+}
+
+// The directory has count entries, name among them with the type bits given.
+bool ListsWith(const char* path, uint32_t count, const char* name, uint32_t type)
+{
+    const Memory::HeapObject<Filesystem::DirectoryEntry> entry;
+    bool found = false;
+    uint32_t index = 0;
+    for (; entry && VFS::ReadDirectory(path, index, &*entry); ++index)
+    {
+        found = found || (SameText(entry->name, name) && entry->type == type);
+    }
+    return found && index == count;
+}
+
+bool MountedReadOnly(const char* point, const char* type, const char* source)
+{
+    const Memory::HeapObject<Procfs::MountStatus> status;
+    for (uint32_t index = 0; status && VFS::DescribeMount(index, &*status); ++index)
+    {
+        if (SameText(status->point, point))
+        {
+            return SameText(status->type, type) && SameText(status->source, source) &&
+                   status->read_only;
+        }
+    }
+    return false;
+}
+
+// The ext4 partition's extents.bin (tools/create_test_disk.py): 2048 blocks of 1 KiB, each 32
+// lines of "ext4 block BBBB line LL extents\n", except every fourth block, a hole of zeros. With
+// 512 extents its tree is two levels deep.
+constexpr uint32_t ExtentFileBlocks = 2048;
+constexpr uint32_t ExtentBlockSize = 1024;
+constexpr uint32_t ExtentLineLength = 32;
+
+struct ExtentBlock
+{
+    char bytes[ExtentBlockSize];
+};
+
+void WriteDigits(char* text, uint32_t value, uint32_t count)
+{
+    for (uint32_t digit = count; digit-- > 0;)
+    {
+        text[digit] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    }
+}
+
+bool ExtentBlockMatches(const char* bytes, uint32_t block)
+{
+    if (block % 4 == 3)
+    {
+        for (uint32_t index = 0; index < ExtentBlockSize; ++index)
+        {
+            if (bytes[index] != '\0')
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    char expected[] = "ext4 block 0000 line 00 extents\n";
+    static_assert(sizeof(expected) == ExtentLineLength + 1);
+    WriteDigits(expected + 11, block, 4);
+    for (uint32_t line = 0; line < ExtentBlockSize / ExtentLineLength; ++line)
+    {
+        WriteDigits(expected + 21, line, 2);
+        for (uint32_t index = 0; index < ExtentLineLength; ++index)
+        {
+            if (bytes[line * ExtentLineLength + index] != expected[index])
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool ExtentFileMatches(const char* path)
+{
+    const Memory::HeapObject<ExtentBlock> block;
+    VFS::FileHandle file{};
+    if (!block || !VFS::Open(path, &file))
+    {
+        return false;
+    }
+    bool matches = file.size == uint64_t{ExtentFileBlocks} * ExtentBlockSize;
+    for (uint32_t number = 0; matches && number < ExtentFileBlocks; ++number)
+    {
+        uint64_t length = 0;
+        matches = VFS::Read(&file, block->bytes, ExtentBlockSize, &length) &&
+                  length == ExtentBlockSize && ExtentBlockMatches(block->bytes, number);
+    }
+    VFS::Close(&file);
+    return matches;
+}
+
+// Nothing may change a read-only volume: tools/smoke/cases/storage.py compares each partition's
+// bytes with what they were before the boot.
+bool RefusesChanges(const char* point)
+{
+    char path[32];
+    VFS::FileHandle file{};
+    return String::FormatTo(path, sizeof(path), "{}/hello.txt", point) && VFS::IsReadOnly(path) &&
+           !VFS::Remove(path) && VFS::LastError() == User::SyscallErrorReadOnly &&
+           String::FormatTo(path, sizeof(path), "{}/new.txt", point) && !VFS::Create(path, &file) &&
+           VFS::LastError() == User::SyscallErrorReadOnly &&
+           String::FormatTo(path, sizeof(path), "{}/new", point) && !VFS::MakeDirectory(path);
+}
+
+// The disk's third and fourth partitions, ext3 and ext4, which the core reads but does not write
+// yet: mounted as asked for writing, they come up read-only.
+void CheckExt3AndExt4()
+{
+    if (VFS::Mount("ext2", "vda3", "/ext3") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext4", "vda3", "/ext3") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext3", "vda4", "/ext3") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext4", "vda1", "/ext3") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext3", "vda3", "/ext3") != VFS::MountResult::Done ||
+        VFS::Mount("ext4", "vda4", "/ext4") != VFS::MountResult::Done)
+    {
+        Panic("Mounting the ext3 and ext4 partitions failed");
+    }
+    if (!MountedReadOnly("/ext3", "ext3", "vda3") || !MountedReadOnly("/ext4", "ext4", "vda4") ||
+        !RefusesChanges("/ext3") || !RefusesChanges("/ext4"))
+    {
+        Panic("An ext3 or ext4 partition mounted writable or took a change");
+    }
+    if (!ReadsAs("/ext3/hello.txt", "Hello from the ext3 partition.\n") ||
+        !ReadsAs("/ext3/docs/readme.txt", "ext3 subdirectory file\n") ||
+        !BigFileMatches("/ext3/big.txt", "ext3 line ", 3000) ||
+        !LinkTargetIs("/ext3/link", "docs/readme.txt") ||
+        !ListsWith("/ext3", 5, "docs", User::ModeDirectory) ||
+        !ListsWith("/ext3/docs", 1, "readme.txt", User::ModeRegular))
+    {
+        Panic("The ext3 partition read back different contents");
+    }
+    if (!ReadsAs("/ext4/hello.txt", "Hello from the ext4 partition.\n") ||
+        !ReadsAs("/ext4/docs/nested/deep.txt", "nested ext4 file\n") ||
+        !ExtentFileMatches("/ext4/extents.bin") ||
+        !LinkTargetIs("/ext4/link", "docs/nested/deep.txt") ||
+        !ListsWith("/ext4", 5, "link", User::ModeSymbolicLink) ||
+        !ListsWith("/ext4/docs", 1, "nested", User::ModeDirectory))
+    {
+        Panic("The ext4 partition read back different contents");
+    }
+    if (VFS::Unmount("/ext3") != VFS::MountResult::Done ||
+        VFS::Unmount("/ext4") != VFS::MountResult::Done || VFS::IsDirectory("/ext4/docs") ||
+        VFS::Mount("ext4", "vda4", "/ext4", Filesystem::MountMode::ReadOnly) !=
+            VFS::MountResult::Done ||
+        !MountedReadOnly("/ext4", "ext4", "vda4") ||
+        !ReadsAs("/ext4/hello.txt", "Hello from the ext4 partition.\n") ||
+        VFS::Unmount("/ext4") != VFS::MountResult::Done)
+    {
+        Panic("Unmounting or remounting the ext3 and ext4 partitions failed");
+    }
+}
+
 } // namespace
 
 // Each boot reads the previous boot's count from the scratch sector, so running twice on one disk
@@ -1436,15 +1605,16 @@ void RunStorageTests()
     RunFileTests(boot_count);
     CheckRemount(boot_count);
     CheckExt2(boot_count);
+    CheckExt3AndExt4();
     if (VFS::Unmount(FatPoint) != VFS::MountResult::Done)
     {
         Panic("Unmounting the FAT16 partition failed");
     }
 
-    char message[96];
+    char message[128];
     if (!String::FormatTo(message, sizeof(message),
-                          "KERN/STORAGE: sector, FAT16 and ext2 file writes verified; "
-                          "boot count {}\n",
+                          "KERN/STORAGE: sector, FAT16 and ext2 file writes verified, ext3 and "
+                          "ext4 read; boot count {}\n",
                           boot_count))
     {
         Panic("Storage test message formatting failed");

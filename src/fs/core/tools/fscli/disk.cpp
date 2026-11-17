@@ -19,7 +19,8 @@ constexpr std::size_t MaximumPartitions = 128;
 
 std::span<FilesystemType* const> FilesystemTypes()
 {
-    static const std::array<FilesystemType*, 2> types = {&Fat::Fat16Type(), &Ext::Ext2Type()};
+    static const std::array<FilesystemType*, 4> types = {&Fat::Fat16Type(), &Ext::Ext2Type(),
+                                                         &Ext::Ext3Type(), &Ext::Ext4Type()};
     return types;
 }
 

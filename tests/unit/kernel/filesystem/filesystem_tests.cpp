@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -909,28 +910,34 @@ namespace
 
 constexpr FeatherOS::Filesystem::MountMode ReadOnly = FeatherOS::Filesystem::MountMode::ReadOnly;
 
-// The core's 1 KiB ext2 image as the disk's second partition, after a FAT16 one; false without
-// the image.
-bool AttachExt2Image()
+// One of the core's images at the end of the disk, as the MBR's entry; false without the image.
+bool AppendExtImage(const char* path, uint32_t entry)
 {
-    std::FILE* image = std::fopen(FEATHEROS_EXT2_TEST_IMAGE, "rb");
+    std::FILE* image = std::fopen(path, "rb");
     if (image == nullptr)
     {
         return false;
     }
-    MakeFat16Disk("fat contents");
-    const uint32_t ext2_start = static_cast<uint32_t>(disk.size());
+    const uint32_t start = static_cast<uint32_t>(disk.size());
     std::array<uint8_t, FeatherOS::BlockDevice::SectorSize> sector{};
     while (std::fread(sector.data(), 1, sector.size(), image) == sector.size())
     {
         disk.push_back(sector);
     }
     std::fclose(image);
-    uint8_t* table = disk[0].data() + 446 + 16;
+    uint8_t* table = disk[0].data() + 446 + 16 * entry;
     table[4] = 0x83;
-    WriteLittleEndian32(table + 8, ext2_start);
-    WriteLittleEndian32(table + 12, static_cast<uint32_t>(disk.size()) - ext2_start);
+    WriteLittleEndian32(table + 8, start);
+    WriteLittleEndian32(table + 12, static_cast<uint32_t>(disk.size()) - start);
     return true;
+}
+
+// The core's 1 KiB ext2 image as the disk's second partition, after a FAT16 one; false without
+// the image.
+bool AttachExt2Image()
+{
+    MakeFat16Disk("fat contents");
+    return AppendExtImage(FEATHEROS_EXT2_TEST_IMAGE, 1);
 }
 
 // As make_ext2_image.sh names it.
@@ -987,6 +994,45 @@ TEST_CASE("an ext2 partition after the FAT16 one mounts read-only by its partiti
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::UnknownType);
+}
+
+TEST_CASE("ext3 and ext4 partitions register by their variant and mount only read-only")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace User = FeatherOS::User;
+    if (!AttachExt2Image())
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    const auto ext3_start = static_cast<std::ptrdiff_t>(disk.size());
+    REQUIRE(AppendExtImage(FEATHEROS_EXT3_TEST_IMAGE, 2));
+    REQUIRE(AppendExtImage(FEATHEROS_EXT4_TEST_IMAGE, 3));
+
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(MountSource("/") == "vda1 fat16 rw");
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda3", "/mnt") == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda3", "/mnt") == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Mount("ext3", "vda4", "/mnt") == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda2", "/mnt") == MountResult::NotFound);
+    const std::vector<std::array<uint8_t, FeatherOS::BlockDevice::SectorSize>> before(
+        disk.begin() + ext3_start, disk.end());
+    for (const auto& [type, source] : {std::pair{"ext3", "vda3"}, std::pair{"ext4", "vda4"}})
+    {
+        INFO(type);
+        REQUIRE(FeatherOS::VFS::Mount(type, source, "/mnt") == MountResult::Done);
+        REQUIRE(MountSource("/mnt") == std::string(source) + " " + type + " ro");
+        REQUIRE(ReadWhole("/mnt/hello.txt") == "Hello from ext2.\n");
+        REQUIRE(ReadWhole("/mnt/a/b/c/deep.txt") == "deep\n");
+        char target[32] = {};
+        REQUIRE(FeatherOS::Files::ReadLink("/mnt/fast-link", target, sizeof(target)) == 14);
+        FeatherOS::VFS::FileHandle file{};
+        REQUIRE_FALSE(FeatherOS::VFS::Create("/mnt/new.txt", &file));
+        REQUIRE(FeatherOS::VFS::LastError() == User::SyscallErrorReadOnly);
+        REQUIRE(FeatherOS::Files::Remove("/mnt/hello.txt") == User::SyscallErrorReadOnly);
+        REQUIRE(FeatherOS::Files::MakeDirectory("/mnt/new") == User::SyscallErrorReadOnly);
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+    }
+    REQUIRE(std::equal(before.begin(), before.end(), disk.begin() + ext3_start, disk.end()));
 }
 
 TEST_CASE("ext2 attributes reach stat and directory entries through the core driver")

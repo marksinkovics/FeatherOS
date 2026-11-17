@@ -40,6 +40,8 @@ using FeatherDisk::NodeType;
 using FeatherDisk::Result;
 using FeatherDisk::VolumeStatistics;
 using FeatherDisk::Ext::Ext2Type;
+using FeatherDisk::Ext::Ext3Type;
+using FeatherDisk::Ext::Ext4Type;
 using FeatherDisk::Fat::Fat16Type;
 using FeatherDisk::Partition::Range;
 using FeatherDisk::Partition::Volume;
@@ -301,14 +303,24 @@ void CheckVolume(Filesystem& ext2, Expected expected)
     CheckReadOnly(ext2);
 }
 
-void CheckImage(std::string_view variant, Expected expected)
+// Only the type of the image's variant probes it, and that type mounts it.
+void CheckImage(std::string_view image, Expected expected)
 {
-    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
-    REQUIRE(Ext2Type().Name() == "ext2");
-    REQUIRE(Ext2Type().Probe(*device));
+    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
+    const std::string_view variant = image.starts_with("ext4") ? "ext4"
+                                     : image == "ext3"         ? "ext3"
+                                                               : "ext2";
+    FeatherDisk::FilesystemType* probed = nullptr;
+    for (FeatherDisk::FilesystemType* type : {&Ext2Type(), &Ext3Type(), &Ext4Type()})
+    {
+        INFO(type->Name());
+        REQUIRE(type->Probe(*device) == (type->Name() == variant));
+        probed = type->Name() == variant ? type : probed;
+    }
     REQUIRE_FALSE(Fat16Type().Probe(*device));
-    MountedFilesystem ext2(Ext2Type(), *device, true);
-    CheckVolume(*ext2, expected);
+    REQUIRE(probed != nullptr);
+    MountedFilesystem ext(*probed, *device, true);
+    CheckVolume(*ext, expected);
 }
 
 // Mounts with every metadata block the walk reaches read, bounded so that a damaged directory
@@ -853,7 +865,8 @@ int DamageAtRandom(std::string_view variant)
             byte_at(offset) ^= static_cast<std::uint8_t>(1 + generator() % 255);
             damaged.push_back(offset);
         }
-        if (Ext2Type().Probe(*device))
+        // Damage to the feature words can change which name probes the volume.
+        if (Ext2Type().Probe(*device) || Ext3Type().Probe(*device) || Ext4Type().Probe(*device))
         {
             const Result<Filesystem*> filesystem = Ext2Type().Mount(*device, {.read_only = true});
             if (filesystem)

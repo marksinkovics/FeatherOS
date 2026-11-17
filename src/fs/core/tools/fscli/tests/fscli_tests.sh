@@ -237,12 +237,13 @@ case "$case" in
         grep -Eq '^  [0-9]+ nodes, [0-9]+ free$' "$work/out" || fail "no node counts"
         grep -Eq '^  format: ext2, features: .*filetype' "$work/out" || fail "no ext2 features"
         run 0 info "$ext/ext3.img"
+        has_line 'filesystem: ext3'
         grep -Eq '^  format: ext3, features: has_journal ' "$work/out" || fail "no ext3 features"
         ;;
     ext4-read)
         need_ext_images
         run 0 info "$ext/ext4-64bit.img"
-        has_line 'filesystem: ext2'
+        has_line 'filesystem: ext4'
         grep -Eq '^  format: ext4, features: .* 64bit .*metadata_csum' "$work/out" \
             || fail "no ext4 features"
         grep -Eq '^  4096 blocks of 2048 bytes, ' "$work/out" || fail "no volume statistics"
@@ -351,7 +352,7 @@ case "$case" in
             cp "$ext/ext4.img" "$work/inline.img"
             "$debugfs" -w -R "feature inline_data" "$work/inline.img" >/dev/null 2>&1
             run 1 ls "$work/inline.img"
-            error_has 'cannot mount ext2: not supported by this filesystem'
+            error_has 'cannot mount ext4: not supported by this filesystem'
             error_has 'unsupported incompatible features'
         fi
         run 1 cat "$ext/1k.img" /fast-link

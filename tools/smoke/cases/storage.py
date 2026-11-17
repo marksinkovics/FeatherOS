@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import shutil
@@ -8,6 +9,9 @@ from pathlib import Path
 
 from create_test_disk import (
     E2FSPROGS_DIRECTORIES,
+    EXT3_START,
+    EXT4_END,
+    EXT4_START,
     FAT16_START,
     ROOT_START,
     SECTOR_SIZE,
@@ -18,8 +22,14 @@ from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
 from smoke.script import Lines
 
 STORAGE_MESSAGE = (
-    "KERN/STORAGE: sector, FAT16 and ext2 file writes verified; boot count "
+    "KERN/STORAGE: sector, FAT16 and ext2 file writes verified, ext3 and "
+    "ext4 read; boot count "
 )
+# The partitions FeatherOS mounts read-only, which must keep every byte.
+READ_ONLY_PARTITIONS = {
+    "ext3": (EXT3_START, EXT4_START),
+    "ext4": (EXT4_START, EXT4_END),
+}
 # What the STORAGE kernel test (CheckExt2 in kernel_test.cpp) leaves on the
 # ext2 root after each boot.
 EXT2_DATA = b"".join(
@@ -230,6 +240,35 @@ def VerifyExt2Volume(volume, boot_count):
     return None
 
 
+def PartitionBytes(disk_path, first, end):
+    with open(disk_path, "rb") as disk:
+        disk.seek(first * SECTOR_SIZE)
+        return disk.read((end - first) * SECTOR_SIZE)
+
+
+def HashReadOnlyPartitions(disk_path):
+    return {
+        name: hashlib.sha256(PartitionBytes(disk_path, first, end)).digest()
+        for name, (first, end) in READ_ONLY_PARTITIONS.items()
+    }
+
+
+def VerifyReadOnlyPartitions(disk_path, hashes):
+    """The ext3 and ext4 partitions are as they were before QEMU ran, and
+    e2fsck -fn finds nothing on them."""
+    for name, (first, end) in READ_ONLY_PARTITIONS.items():
+        contents = PartitionBytes(disk_path, first, end)
+        if hashlib.sha256(contents).digest() != hashes[name]:
+            return f"the read-only {name} partition changed"
+        with tempfile.TemporaryDirectory() as work:
+            volume = Path(work) / f"{name}.img"
+            volume.write_bytes(contents)
+            checked = E2fsck(str(volume))
+        if checked is not None:
+            return f"{name}: {checked}"
+    return None
+
+
 def VerifyExt2(disk_path, boot_count=None):
     """Checks the root's ext2 partition, copied out of the disk image: with
     e2fsck alone without a boot count, else also what that boot of the STORAGE
@@ -251,6 +290,10 @@ class Storage(Case):
     def __init__(self, args):
         super().__init__(args)
         self.boot = args.expect_storage_boot
+        self.read_only_hashes = None
+
+    def Start(self):
+        self.read_only_hashes = HashReadOnlyPartitions(self.args.disk)
 
     def Script(self, session):
         return Lines(STORAGE_SHELL_INPUT[self.boot])
@@ -285,11 +328,16 @@ class Storage(Case):
         ext2_error = VerifyExt2(self.args.disk, self.boot)
         if ext2_error is not None:
             return f"ext2 root check: {ext2_error}"
+        read_only_error = VerifyReadOnlyPartitions(
+            self.args.disk, self.read_only_hashes
+        )
+        if read_only_error is not None:
+            return f"ext3/ext4 check: {read_only_error}"
         return None
 
     def PassMessage(self, result):
         return (
             "sector, FAT16, ext2 and shell file-tool writes verified in the "
-            f"guest, with mtools, e2fsck and debugfs; boot {self.boot} "
-            "persisted"
+            "guest, with mtools, e2fsck and debugfs, and ext3 and ext4 read "
+            f"and left unchanged; boot {self.boot} persisted"
         )

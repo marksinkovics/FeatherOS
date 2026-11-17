@@ -126,6 +126,21 @@ TEST_CASE("ext4 describes its variant and features by e2fsprogs' names")
     REQUIRE(variant("ext3") == "ext3");
     REQUIRE(variant("ext4") == "ext4");
     REQUIRE(variant("ext4-gdtcsum") == "ext4");
+    REQUIRE(FeatherDisk::Ext::Ext2Type().Name() == "ext2");
+    REQUIRE(FeatherDisk::Ext::Ext3Type().Name() == "ext3");
+    REQUIRE(FeatherDisk::Ext::Ext4Type().Name() == "ext4");
+    // Each name mounts every variant; only Probe tells them apart.
+    for (const std::string_view image : {"1k", "ext3", "ext4"})
+    {
+        INFO(image);
+        const std::unique_ptr<MemoryDevice> volume = DeviceFrom(LoadExtImage(image));
+        for (FeatherDisk::FilesystemType* type :
+             {&Ext2Type(), &FeatherDisk::Ext::Ext3Type(), &FeatherDisk::Ext::Ext4Type()})
+        {
+            MountedFilesystem mounted(*type, *volume, true);
+            REQUIRE(ReadAll(*mounted, Value(Walk(*mounted, "hello.txt"))).size() == 17);
+        }
+    }
     const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage("ext4-64bit"));
     const FeatherDisk::Ext::ExtFeatures features = Value(DescribeFeatures(*device));
     REQUIRE((features.incompatible & 0x80U) != 0);

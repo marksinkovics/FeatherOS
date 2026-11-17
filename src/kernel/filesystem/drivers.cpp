@@ -439,6 +439,8 @@ constexpr const char* PartitionSources[] = {
 
 constinit CoreDriver disk_driver(Writable);
 constinit CoreDriver ext2_driver(Writable);
+constinit CoreDriver ext3_driver(Writable);
+constinit CoreDriver ext4_driver(Writable);
 constinit ArchiveDriver system_driver("system");
 constinit DeviceDriver device_driver;
 constinit ProcDriver proc_driver;
@@ -476,6 +478,28 @@ CoreDriver& Ext2()
 bool MountExt2()
 {
     return ext2_driver.Mount(FeatherDisk::Ext::Ext2Type(), BlockDevice::CoreDevice(),
+                             MountMode::ReadOnly);
+}
+
+CoreDriver& Ext3()
+{
+    return ext3_driver;
+}
+
+CoreDriver& Ext4()
+{
+    return ext4_driver;
+}
+
+bool MountExt3()
+{
+    return ext3_driver.Mount(FeatherDisk::Ext::Ext3Type(), BlockDevice::CoreDevice(),
+                             MountMode::ReadOnly);
+}
+
+bool MountExt4()
+{
+    return ext4_driver.Mount(FeatherDisk::Ext::Ext4Type(), BlockDevice::CoreDevice(),
                              MountMode::ReadOnly);
 }
 

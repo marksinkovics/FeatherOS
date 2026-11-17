@@ -19,6 +19,8 @@ using Filesystem::Driver;
 constexpr char SystemPoint[] = "/system";
 constexpr char Fat16Type[] = "fat16";
 constexpr char Ext2Type[] = "ext2";
+constexpr char Ext3Type[] = "ext3";
+constexpr char Ext4Type[] = "ext4";
 constexpr uint32_t RootDirectoryMode = 0755;
 constexpr uint64_t RootSerialNumber = 1;
 
@@ -251,8 +253,13 @@ bool MountBlockDevice()
 {
     Filesystem::CoreDriver& fat16 = Filesystem::Drivers::Disk();
     Filesystem::CoreDriver& ext2 = Filesystem::Drivers::Ext2();
+    Filesystem::CoreDriver& ext3 = Filesystem::Drivers::Ext3();
+    Filesystem::CoreDriver& ext4 = Filesystem::Drivers::Ext4();
     const bool fat16_found = FindVolume(fat16, Filesystem::Drivers::MountDisk);
     const bool ext2_found = FindVolume(ext2, Filesystem::Drivers::MountExt2);
+    // Never the root: only FAT16 and ext2 are written yet.
+    const bool ext3_found = FindVolume(ext3, Filesystem::Drivers::MountExt3);
+    const bool ext4_found = FindVolume(ext4, Filesystem::Drivers::MountExt4);
     Filesystem::CoreDriver* root = nullptr;
     if (fat16_found && ext2_found)
     {
@@ -267,6 +274,8 @@ bool MountBlockDevice()
     Sync::SpinLockGuard guard(mount_lock);
     RegisterVolumeLocked(Fat16Type, fat16, fat16_found);
     RegisterVolumeLocked(Ext2Type, ext2, ext2_found);
+    RegisterVolumeLocked(Ext3Type, ext3, ext3_found);
+    RegisterVolumeLocked(Ext4Type, ext4, ext4_found);
     const char* type = nullptr;
     const char* source = nullptr;
     const bool usable = prepared && types.Describe(root, &type, &source);

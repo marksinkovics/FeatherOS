@@ -110,15 +110,19 @@ std::optional<std::string_view> WriteRefusal(const Superblock& superblock)
     return std::nullopt;
 }
 
-class Ext2FilesystemType final : public FilesystemType
+// One driver under the three names; the name only decides which volumes Probe takes.
+class ExtFilesystemType final : public FilesystemType
 {
 public:
-    constexpr Ext2FilesystemType() = default;
+    constexpr explicit ExtFilesystemType(std::string_view variant) : variant(variant) {}
 
     std::string_view Name() const override;
     bool Probe(BlockDevice& volume) override;
     Result<Filesystem*> Mount(BlockDevice& volume, MountOptions options) override;
     Status Unmount(Filesystem& filesystem) override;
+
+private:
+    std::string_view variant;
 };
 
 } // namespace
@@ -872,18 +876,18 @@ Result<std::size_t> Ext2Filesystem::ReadLink(NodeId link, std::span<char> buffer
 namespace
 {
 
-std::string_view Ext2FilesystemType::Name() const
+std::string_view ExtFilesystemType::Name() const
 {
-    return "ext2";
+    return variant;
 }
 
-bool Ext2FilesystemType::Probe(BlockDevice& volume)
+bool ExtFilesystemType::Probe(BlockDevice& volume)
 {
     const Result<Superblock> superblock = ReadSuperblock(volume);
-    return superblock && LooksLikeExt(*superblock);
+    return superblock && LooksLikeExt(*superblock) && Variant(*superblock) == variant;
 }
 
-Result<Filesystem*> Ext2FilesystemType::Mount(BlockDevice& volume, MountOptions options)
+Result<Filesystem*> ExtFilesystemType::Mount(BlockDevice& volume, MountOptions options)
 {
     const Result<Superblock> superblock = ReadSuperblock(volume);
     if (!superblock)
@@ -964,7 +968,7 @@ Result<Filesystem*> Ext2FilesystemType::Mount(BlockDevice& volume, MountOptions 
     return filesystem;
 }
 
-Status Ext2FilesystemType::Unmount(Filesystem& filesystem)
+Status ExtFilesystemType::Unmount(Filesystem& filesystem)
 {
     auto& ext2 = static_cast<Ext2Filesystem&>(filesystem);
     if (const Status synced = ext2.Sync(); !synced)
@@ -976,13 +980,25 @@ Status Ext2FilesystemType::Unmount(Filesystem& filesystem)
     return {};
 }
 
-constinit Ext2FilesystemType ext2_type;
+constinit ExtFilesystemType ext2_type("ext2");
+constinit ExtFilesystemType ext3_type("ext3");
+constinit ExtFilesystemType ext4_type("ext4");
 
 } // namespace
 
 FilesystemType& Ext2Type()
 {
     return ext2_type;
+}
+
+FilesystemType& Ext3Type()
+{
+    return ext3_type;
+}
+
+FilesystemType& Ext4Type()
+{
+    return ext4_type;
 }
 
 Result<ExtFeatures> DescribeFeatures(BlockDevice& volume)
