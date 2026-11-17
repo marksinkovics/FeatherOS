@@ -24,9 +24,10 @@ namespace
 // Metadata blocks each mounted volume keeps in memory.
 constexpr std::size_t CacheBytes = 32 * 1024;
 constexpr std::uint32_t PointerSize = 4;
-// i_blocks counts 512-byte sectors in 32 bits without huge_file, which caps a file at 2 TiB;
-// without large_file, sizes stay below 2 GiB.
+// i_blocks counts 512-byte sectors in 32 bits without huge_file, which caps a file at 2 TiB, and
+// in 48 bits of blocks with it; without large_file, sizes stay below 2 GiB.
 constexpr std::uint64_t MaximumAllocatedBytes = std::uint64_t{0xFFFFFFFF} * 512;
+constexpr std::uint64_t MaximumHugeBlocks = (std::uint64_t{1} << 48) - 1;
 constexpr std::uint64_t MaximumSmallFileBytes = 0x7FFFFFFF;
 
 // Appends text to a log line, leaving room for what LogWithValue adds.
@@ -69,21 +70,21 @@ Result<Superblock> ReadSuperblock(BlockDevice& volume)
     return DecodeSuperblock(bytes.first<SuperblockSize>());
 }
 
-// Why a volume this driver reads must not be written, or nullopt. Only plain ext2 is written:
-// a journal or any ext4 feature keeps the volume read-only.
+// Why a volume this driver reads must not be written, or nullopt. ext2 and ext4's layouts are
+// written, but not a journal (Part 6 step 4) or extents (step 3).
 std::optional<std::string_view> WriteRefusal(const Superblock& superblock)
 {
     if ((superblock.compatible & CompatibleHasJournal) != 0)
     {
         return "a journal, which writes would have to go through";
     }
-    if ((superblock.incompatible & ~IncompatibleWritable) != 0 ||
-        (superblock.read_only_compatible &
-         (ReadOnlyCompatibleHugeFile | ReadOnlyCompatibleGroupChecksum |
-          ReadOnlyCompatibleDirectoryLinks | ReadOnlyCompatibleExtraInodeSize |
-          ReadOnlyCompatibleMetadataChecksum)) != 0)
+    if ((superblock.incompatible & IncompatibleExtents) != 0)
     {
-        return "ext4 features, which only the read path supports";
+        return "extents, which only the read path supports";
+    }
+    if ((superblock.incompatible & ~IncompatibleWritable) != 0)
+    {
+        return "incompatible features the write path does not keep";
     }
     if ((superblock.read_only_compatible & ~ReadOnlyCompatibleWritable) != 0)
     {
@@ -183,6 +184,7 @@ Ext2Filesystem::Ext2Filesystem(BlockDevice& device, const Superblock& layout,
       group_checksums(HasGroupChecksums(layout)), metadata_checksums(HasMetadataChecksums(layout)),
       hashed_directories((layout.compatible & CompatibleDirectoryIndex) != 0),
       extents((layout.incompatible & IncompatibleExtents) != 0),
+      directory_links((layout.read_only_compatible & ReadOnlyCompatibleDirectoryLinks) != 0),
       volume_seed(VolumeChecksumSeed(layout)), descriptor_size(layout.descriptor_size),
       block_size(layout.block_size), pointers_per_block(layout.block_size / PointerSize),
       inode_table_blocks(DivideRoundingUp(
@@ -284,9 +286,13 @@ std::uint64_t Ext2Filesystem::MaximumFileSize() const
                                                 : DirectBlocks + per_block + per_block * per_block +
                                                       per_block * per_block * per_block;
     std::uint64_t maximum = mapped_blocks * block_size;
-    if (maximum > MaximumAllocatedBytes)
+    const std::uint64_t allocated_limit =
+        (superblock.read_only_compatible & ReadOnlyCompatibleHugeFile) != 0
+            ? MaximumHugeBlocks * block_size
+            : MaximumAllocatedBytes;
+    if (maximum > allocated_limit)
     {
-        maximum = MaximumAllocatedBytes;
+        maximum = allocated_limit;
     }
     // A writable revision 1 volume gains large_file with its first large file, as on Linux; a
     // revision 0 volume is not upgraded to make room for the feature.
@@ -534,10 +540,17 @@ Result<BlockRun> Ext2Filesystem::MapRun(const Inode& inode, std::uint64_t logica
     return BlockRun{.logical = logical, .physical = *block, .count = 1};
 }
 
+bool Ext2Filesystem::IsIndexOf(const Inode& directory, std::uint64_t logical,
+                               std::span<const std::uint8_t> block) const
+{
+    return hashed_directories && (directory.flags & InodeIndexed) != 0 &&
+           IsIndexBlock(block, logical);
+}
+
 bool Ext2Filesystem::DirectoryBlockMatches(const Inode& directory, std::uint64_t logical,
                                            std::span<const std::uint8_t> block) const
 {
-    if (hashed_directories && (directory.flags & InodeIndexed) != 0 && IsIndexBlock(block, logical))
+    if (IsIndexOf(directory, logical, block))
     {
         return IndexBlockChecksumMatches(block, directory.checksum_seed);
     }

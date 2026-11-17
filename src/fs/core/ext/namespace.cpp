@@ -27,6 +27,8 @@
 //     means a crash never loses S, at the price of those repairs.
 //   - symlink: as a file, with a target shorter than i_block stored in the inode ("fast", no
 //     blocks) and a longer one in a block of its own, written before the inode.
+// A hashed directory keeps its index while names leave it or an entry is pointed elsewhere, and
+// loses it before a name is added (ClearIndex in write.cpp).
 #include "common/bytes.h"
 #include "common/little_endian.h"
 #include "ext/ext2_filesystem.h"
@@ -36,8 +38,10 @@ namespace FeatherDisk::Ext
 namespace
 {
 
-// EXT2_LINK_MAX: Linux allows no more links to an inode, so no more subdirectories either.
+// EXT2_LINK_MAX: Linux's ext2 allows no more links to an inode, so no more subdirectories either.
 constexpr std::uint16_t MaximumLinks = 32000;
+// EXT4_LINK_MAX, for volumes with dir_nlink.
+constexpr std::uint16_t MaximumExt4Links = 65000;
 // What Linux and mke2fs give a new large inode: room for the extended times and creation time.
 constexpr std::uint16_t NewInodeExtraSize = 32;
 constexpr std::uint16_t LinkPermissions = 0777;
@@ -97,6 +101,7 @@ Inode Ext2Filesystem::NewInode(std::uint16_t mode, Timestamp now) const
         .blocks = {},
         .deletion_time = 0,
         .attribute_block = 0,
+        .attribute_block_high = 0,
         .extra_size = extra_size,
         .creation_time = now,
         .generation = 0,
@@ -119,9 +124,10 @@ Result<NameSearch> Ext2Filesystem::SearchDirectory(const Inode& directory, std::
                               search.file_type = entry.file_type;
                               return true;
                           }
+                          // An index block's records only hide the index; they are no room.
                           const std::size_t used =
                               entry.inode != 0 ? RecordLength(entry.name.size()) : 0;
-                          if (!search.room && entry.record_length - used >= needed)
+                          if (!search.room && !place.index && entry.record_length - used >= needed)
                           {
                               search.room = place;
                           }
@@ -136,8 +142,8 @@ Result<NameSearch> Ext2Filesystem::SearchDirectory(const Inode& directory, std::
 
 // The record before takes over the space, or the block's first record becomes unused, so the
 // block stays covered by records.
-Status Ext2Filesystem::DropRecord(const RecordPlace& place, std::uint32_t inode,
-                                  std::span<std::uint8_t> block)
+Status Ext2Filesystem::DropRecord(const Inode& directory, const RecordPlace& place,
+                                  std::uint32_t inode, std::span<std::uint8_t> block)
 {
     if (const Status read = cache.Read(place.physical, 0, block, block); !read)
     {
@@ -170,12 +176,12 @@ Status Ext2Filesystem::DropRecord(const RecordPlace& place, std::uint32_t inode,
             static_cast<std::uint16_t>(previous->record_length + record->record_length));
     }
     StoreLittleEndian(block.data() + place.offset, std::uint32_t{0});
-    return cache.Write(place.physical, block);
+    return WriteDirectoryBlock(directory, place.logical, place.physical, block);
 }
 
-Status Ext2Filesystem::RewriteRecord(const RecordPlace& place, std::uint32_t inode,
-                                     std::uint32_t replacement, std::uint8_t file_type,
-                                     std::span<std::uint8_t> block)
+Status Ext2Filesystem::RewriteRecord(const Inode& directory, const RecordPlace& place,
+                                     std::uint32_t inode, std::uint32_t replacement,
+                                     std::uint8_t file_type, std::span<std::uint8_t> block)
 {
     if (const Status read = cache.Read(place.physical, 0, block, block); !read)
     {
@@ -196,7 +202,36 @@ Status Ext2Filesystem::RewriteRecord(const RecordPlace& place, std::uint32_t ino
     {
         block[place.offset + 7] = file_type;
     }
-    return cache.Write(place.physical, block);
+    return WriteDirectoryBlock(directory, place.logical, place.physical, block);
+}
+
+std::uint16_t Ext2Filesystem::LinkLimit() const
+{
+    return directory_links ? MaximumExt4Links : MaximumLinks;
+}
+
+std::optional<std::uint16_t> Ext2Filesystem::DirectoryLinks(std::uint16_t count, int delta) const
+{
+    if (directory_links && count == 1)
+    {
+        return count;
+    }
+    // A directory always has "." and its parent's entry.
+    const int links = int{count} + delta;
+    if (links < 2)
+    {
+        return std::nullopt;
+    }
+    if (links > LinkLimit())
+    {
+        return directory_links ? std::optional<std::uint16_t>(1) : std::nullopt;
+    }
+    return static_cast<std::uint16_t>(links);
+}
+
+bool Ext2Filesystem::HasSubdirectoryLink(std::uint16_t count) const
+{
+    return count >= 3 || (directory_links && count == 1);
 }
 
 Status Ext2Filesystem::UpdateDirectory(NodeId directory, int links, bool touched,
@@ -207,13 +242,12 @@ Status Ext2Filesystem::UpdateDirectory(NodeId directory, int links, bool touched
     {
         return Failure(inode);
     }
-    // A directory always has "." and its parent's entry.
-    const int count = int{inode->link_count} + links;
-    if (count < 2 || count > MaximumLinks + 1)
+    const std::optional<std::uint16_t> count = DirectoryLinks(inode->link_count, links);
+    if (!count)
     {
         return std::unexpected(Error::Corrupt);
     }
-    inode->link_count = static_cast<std::uint16_t>(count);
+    inode->link_count = *count;
     if (touched)
     {
         const Timestamp now = Now();
@@ -367,7 +401,7 @@ Result<NodeId> Ext2Filesystem::CreateNode(NodeId directory, std::string_view nam
     {
         return std::unexpected(Error::NotDirectory);
     }
-    if (is_directory && parent->inode.link_count >= MaximumLinks)
+    if (is_directory && !directory_links && parent->inode.link_count >= MaximumLinks)
     {
         return std::unexpected(Error::TooManyLinks);
     }
@@ -386,7 +420,7 @@ Result<NodeId> Ext2Filesystem::CreateNode(NodeId directory, std::string_view nam
         return Failure(begun);
     }
     Inode directory_inode = parent->inode;
-    if (const Status cleared = ClearIndex(directory, directory_inode, scratch); !cleared)
+    if (const Status cleared = ClearIndex(directory, directory_inode, buffers); !cleared)
     {
         return Failure(cleared);
     }
@@ -422,13 +456,21 @@ Result<NodeId> Ext2Filesystem::CreateNode(NodeId directory, std::string_view nam
                             .file_type = type,
                             .name = "."},
                            has_file_type);
+                const std::size_t records_end =
+                    metadata_checksums ? block_size - DirectoryTailSize : block_size;
                 StoreEntry(
                     contents, DotRecordLength,
                     {.inode = static_cast<std::uint32_t>(directory),
-                     .record_length = static_cast<std::uint16_t>(block_size - DotRecordLength),
+                     .record_length = static_cast<std::uint16_t>(records_end - DotRecordLength),
                      .file_type = type,
                      .name = ".."},
                     has_file_type);
+                if (metadata_checksums)
+                {
+                    StoreDirectoryTail(
+                        contents, InodeChecksumSeed(volume_seed, static_cast<std::uint32_t>(*node),
+                                                    inode.generation));
+                }
                 inode.size = block_size;
                 inode.link_count = 2;
             }
@@ -453,11 +495,20 @@ Result<NodeId> Ext2Filesystem::CreateNode(NodeId directory, std::string_view nam
     }
     // The new directory's ".." links the parent once the inode is in use.
     bool parent_counted = false;
+    const std::uint16_t parent_links = directory_inode.link_count;
     if (status && is_directory)
     {
-        ++directory_inode.link_count;
-        status = StoreInode(directory, directory_inode, false, scratch);
-        parent_counted = status.has_value();
+        const std::optional<std::uint16_t> count = DirectoryLinks(parent_links, 1);
+        if (count)
+        {
+            directory_inode.link_count = *count;
+            status = StoreInode(directory, directory_inode, false, scratch);
+            parent_counted = status.has_value();
+        }
+        else
+        {
+            status = std::unexpected(Error::Corrupt);
+        }
     }
     if (status)
     {
@@ -487,7 +538,7 @@ Result<NodeId> Ext2Filesystem::CreateNode(NodeId directory, std::string_view nam
     }
     if (parent_counted)
     {
-        --directory_inode.link_count;
+        directory_inode.link_count = parent_links;
         [[maybe_unused]] const Status restored =
             StoreInode(directory, directory_inode, false, scratch);
     }
@@ -562,7 +613,7 @@ Status Ext2Filesystem::RemoveNode(NodeId directory, std::string_view name, bool 
         {
             return std::unexpected(Error::NotEmpty);
         }
-        if (parent->inode.link_count < 3)
+        if (!HasSubdirectoryLink(parent->inode.link_count))
         {
             return std::unexpected(Error::Corrupt);
         }
@@ -584,11 +635,9 @@ Status Ext2Filesystem::RemoveNode(NodeId directory, std::string_view name, bool 
         return begun;
     }
     Inode directory_inode = parent->inode;
-    if (const Status cleared = ClearIndex(directory, directory_inode, scratch); !cleared)
-    {
-        return cleared;
-    }
-    if (const Status dropped = DropRecord(*search->place, target, buffers[DataBuffer]); !dropped)
+    if (const Status dropped =
+            DropRecord(directory_inode, *search->place, target, buffers[DataBuffer]);
+        !dropped)
     {
         return dropped;
     }
@@ -635,7 +684,7 @@ Status Ext2Filesystem::LinkNode(NodeId node, NodeId directory, std::string_view 
     {
         return std::unexpected(Error::NotPermitted);
     }
-    if (target->inode.link_count >= MaximumLinks)
+    if (target->inode.link_count >= LinkLimit())
     {
         return std::unexpected(Error::TooManyLinks);
     }
@@ -663,7 +712,7 @@ Status Ext2Filesystem::LinkNode(NodeId node, NodeId directory, std::string_view 
         return begun;
     }
     Inode directory_inode = parent->inode;
-    if (const Status cleared = ClearIndex(directory, directory_inode, scratch); !cleared)
+    if (const Status cleared = ClearIndex(directory, directory_inode, buffers); !cleared)
     {
         return cleared;
     }
@@ -797,7 +846,7 @@ Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_n
             {
                 return std::unexpected(Error::NotEmpty);
             }
-            if (to_parent->inode.link_count < 3)
+            if (!HasSubdirectoryLink(to_parent->inode.link_count))
             {
                 return std::unexpected(Error::Corrupt);
             }
@@ -819,7 +868,7 @@ Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_n
         {
             return outside;
         }
-        if (!replaced && to_parent->inode.link_count >= MaximumLinks)
+        if (!replaced && !directory_links && to_parent->inode.link_count >= MaximumLinks)
         {
             return std::unexpected(Error::TooManyLinks);
         }
@@ -829,7 +878,7 @@ Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_n
             return Failure(parent_entry);
         }
         if (!parent_entry->place || parent_entry->inode != from_directory ||
-            from_parent->inode.link_count < 3)
+            !HasSubdirectoryLink(from_parent->inode.link_count))
         {
             return std::unexpected(Error::Corrupt);
         }
@@ -840,15 +889,11 @@ Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_n
     {
         return begun;
     }
-    Inode from_inode = from_parent->inode;
-    if (const Status cleared = ClearIndex(from_directory, from_inode, scratch); !cleared)
-    {
-        return cleared;
-    }
-    if (new_parent)
+    // Only a new record changes what a hash index would have to say.
+    if (!replaced)
     {
         Inode to_inode = to_parent->inode;
-        if (const Status cleared = ClearIndex(to_directory, to_inode, scratch); !cleared)
+        if (const Status cleared = ClearIndex(to_directory, to_inode, buffers); !cleared)
         {
             return cleared;
         }
@@ -866,8 +911,8 @@ Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_n
         has_file_type ? EntryFileType(moved->inode.mode) : std::uint8_t{0};
     if (replaced)
     {
-        if (const Status pointed =
-                RewriteRecord(*replaced, replaced_inode, moving, file_type, block);
+        if (const Status pointed = RewriteRecord(to_parent->inode, *replaced, replaced_inode,
+                                                 moving, file_type, block);
             !pointed)
         {
             return pointed;
@@ -914,7 +959,7 @@ Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_n
         {
             return std::unexpected(Error::Corrupt);
         }
-        if (const Status dropped = DropRecord(*again->place, moving, block); !dropped)
+        if (const Status dropped = DropRecord(*current, *again->place, moving, block); !dropped)
         {
             return dropped;
         }
@@ -927,7 +972,7 @@ Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_n
     if (dot_dot)
     {
         if (const Status pointed = RewriteRecord(
-                *dot_dot, static_cast<std::uint32_t>(from_directory),
+                moved->inode, *dot_dot, static_cast<std::uint32_t>(from_directory),
                 static_cast<std::uint32_t>(to_directory),
                 has_file_type ? EntryFileType(ModeDirectory) : std::uint8_t{0}, block);
             !pointed)

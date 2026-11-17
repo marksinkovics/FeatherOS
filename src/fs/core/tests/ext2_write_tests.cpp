@@ -332,12 +332,24 @@ TEST_CASE("ext2 creates files without the filetype feature and on revision 0")
 #endif
 }
 
+TEST_CASE("ext4 layouts without a journal or extents take files with every checksum kept")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    // metadata_csum with its seed, 64bit descriptors with metadata_csum, and gdt_csum.
+    CreateWriteAndRead("ext4-csum");
+    CreateWriteAndRead("ext4-csum64");
+    CreateWriteAndRead("ext4-gdtcsum");
+#endif
+}
+
 TEST_CASE("ext2 writes through direct, single and double indirect blocks")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view variant : {"1k", "4k"})
+    for (const std::string_view variant : {"1k", "4k", "ext4-csum", "ext4-csum64", "ext4-gdtcsum"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
@@ -481,7 +493,8 @@ TEST_CASE("ext2 removes files, hard links, symbolic links and special nodes")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view variant : {"1k", "4k"})
+    // many/ has a hash index on the ext4-csum volumes.
+    for (const std::string_view variant : {"1k", "4k", "ext4-csum", "ext4-csum64", "ext4-gdtcsum"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
@@ -581,35 +594,39 @@ TEST_CASE("ext2 grows a directory past its direct blocks and shrinks it back")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage("1k"));
-    std::vector<std::string> names;
+    for (const std::string_view variant : {"1k", "ext4-csum"})
     {
-        MountedFilesystem ext2(Ext2Type(), *device);
-        const NodeId root = ext2->Root();
-        // Four 200-byte names fill a 1 KiB block, so 100 files need 25 blocks: an indirect one.
-        for (int number = 0; number < 100; ++number)
+        INFO(variant);
+        const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
+        std::vector<std::string> names;
         {
-            names.push_back(NumberedName("grown", number, 200));
-            const NodeId file = Value(ext2->Create(root, names.back(), 0644));
-            REQUIRE(WriteAt(*ext2, file, 0, names.back()) == names.back().size());
+            MountedFilesystem ext2(Ext2Type(), *device);
+            const NodeId root = ext2->Root();
+            // Four 200-byte names fill a 1 KiB block, so 100 files need 25 blocks: an indirect one.
+            for (int number = 0; number < 100; ++number)
+            {
+                names.push_back(NumberedName("grown", number, 200));
+                const NodeId file = Value(ext2->Create(root, names.back(), 0644));
+                REQUIRE(WriteAt(*ext2, file, 0, names.back()) == names.back().size());
+            }
+            REQUIRE(Value(ext2->GetAttributes(root)).size > 13 * 1024);
+            REQUIRE(List(*ext2, root).size() == 112);
+            for (const std::string& name : names)
+            {
+                REQUIRE(ReadAll(*ext2, Value(ext2->Lookup(root, name))) == name);
+            }
         }
-        REQUIRE(Value(ext2->GetAttributes(root)).size > 13 * 1024);
-        REQUIRE(List(*ext2, root).size() == 112);
-        for (const std::string& name : names)
+        CheckClean(*device, "directory-grown");
         {
-            REQUIRE(ReadAll(*ext2, Value(ext2->Lookup(root, name))) == name);
+            MountedFilesystem ext2(Ext2Type(), *device);
+            for (const std::string& name : names)
+            {
+                Succeeds(ext2->Remove(ext2->Root(), name));
+            }
+            REQUIRE(List(*ext2, ext2->Root()).size() == 12);
         }
+        CheckClean(*device, "directory-emptied");
     }
-    CheckClean(*device, "directory-grown");
-    {
-        MountedFilesystem ext2(Ext2Type(), *device);
-        for (const std::string& name : names)
-        {
-            Succeeds(ext2->Remove(ext2->Root(), name));
-        }
-        REQUIRE(List(*ext2, ext2->Root()).size() == 12);
-    }
-    CheckClean(*device, "directory-emptied");
 #endif
 }
 
@@ -618,74 +635,85 @@ TEST_CASE("ext2 fills the volume, then frees and reuses the space")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage("1k"));
-    std::uint64_t written = 0;
+    // ext4-csum's groups 2 and 3 start uninitialised.
+    for (const std::string_view variant : {"1k", "ext4-csum"})
     {
-        MountedFilesystem ext2(Ext2Type(), *device);
-        const NodeId file = Value(ext2->Create(ext2->Root(), "filler.bin", 0644));
-        const std::string chunk = Pattern(64 * 1024);
-        while (true)
+        INFO(variant);
+        const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
+        std::uint64_t written = 0;
         {
-            const Result<std::size_t> count = ext2->Write(file, written, BytesOfText(chunk));
-            if (!count)
+            MountedFilesystem ext2(Ext2Type(), *device);
+            const NodeId file = Value(ext2->Create(ext2->Root(), "filler.bin", 0644));
+            const std::string chunk = Pattern(64 * 1024);
+            while (true)
             {
-                REQUIRE(count.error() == Error::NoSpace);
-                break;
+                const Result<std::size_t> count = ext2->Write(file, written, BytesOfText(chunk));
+                if (!count)
+                {
+                    REQUIRE(count.error() == Error::NoSpace);
+                    break;
+                }
+                written += *count;
+                REQUIRE(*count > 0);
+                if (*count < chunk.size())
+                {
+                    REQUIRE(ErrorOf(ext2->Write(file, written, BytesOfText("x"))) ==
+                            Error::NoSpace);
+                    break;
+                }
             }
-            written += *count;
-            REQUIRE(*count > 0);
-            if (*count < chunk.size())
-            {
-                REQUIRE(ErrorOf(ext2->Write(file, written, BytesOfText("x"))) == Error::NoSpace);
-                break;
-            }
+            REQUIRE(FreeBlocks(*ext2) == 0);
+            REQUIRE(Value(ext2->GetAttributes(file)).size == written);
+            // Writing where blocks already are still works; a new empty file still fits, as long
+            // as the root directory has room.
+            REQUIRE(WriteAt(*ext2, file, 10, "rewritten") == 9);
+            const NodeId empty = Value(ext2->Create(ext2->Root(), "empty-on-full.txt", 0644));
+            REQUIRE(ErrorOf(ext2->Write(empty, 0, BytesOfText("x"))) == Error::NoSpace);
+            Succeeds(ext2->Truncate(empty, 4096));
         }
-        REQUIRE(FreeBlocks(*ext2) == 0);
-        REQUIRE(Value(ext2->GetAttributes(file)).size == written);
-        // Writing where blocks already are still works; a new empty file still fits, as long
-        // as the root directory has room.
-        REQUIRE(WriteAt(*ext2, file, 10, "rewritten") == 9);
-        const NodeId empty = Value(ext2->Create(ext2->Root(), "empty-on-full.txt", 0644));
-        REQUIRE(ErrorOf(ext2->Write(empty, 0, BytesOfText("x"))) == Error::NoSpace);
-        Succeeds(ext2->Truncate(empty, 4096));
+        CheckClean(*device, "full");
+        {
+            MountedFilesystem ext2(Ext2Type(), *device);
+            const NodeId file = Value(Walk(*ext2, "filler.bin"));
+            std::string expected = Pattern(64 * 1024);
+            expected.replace(10, 9, "rewritten");
+            REQUIRE(ReadAt(*ext2, file, 0, expected.size()) == expected);
+            Succeeds(ext2->Remove(ext2->Root(), "filler.bin"));
+            REQUIRE(FreeBlocks(*ext2) > written / 1024);
+            WriteNewFile(*ext2, "reused.bin", Pattern(200 * 1024));
+            REQUIRE(ReadAll(*ext2, Value(Walk(*ext2, "reused.bin"))) == Pattern(200 * 1024));
+        }
+        CheckClean(*device, "full-reused");
     }
-    CheckClean(*device, "full");
-    {
-        MountedFilesystem ext2(Ext2Type(), *device);
-        const NodeId file = Value(Walk(*ext2, "filler.bin"));
-        std::string expected = Pattern(64 * 1024);
-        expected.replace(10, 9, "rewritten");
-        REQUIRE(ReadAt(*ext2, file, 0, expected.size()) == expected);
-        Succeeds(ext2->Remove(ext2->Root(), "filler.bin"));
-        REQUIRE(FreeBlocks(*ext2) > written / 1024);
-        WriteNewFile(*ext2, "reused.bin", Pattern(200 * 1024));
-        REQUIRE(ReadAll(*ext2, Value(Walk(*ext2, "reused.bin"))) == Pattern(200 * 1024));
-    }
-    CheckClean(*device, "full-reused");
 
-    // And the inodes: empty files until none is left.
-    const std::unique_ptr<MemoryDevice> inodes = DeviceFrom(LoadExtImage("4k"));
+    // And the inodes: empty files until none is left, through ext4-gdtcsum's uninitialised
+    // inode tables too.
+    for (const std::string_view variant : {"4k", "ext4-gdtcsum"})
     {
-        MountedFilesystem ext2(Ext2Type(), *inodes);
-        const NodeId directory = Value(Walk(*ext2, "a/b"));
-        int created = 0;
-        while (true)
+        INFO(variant);
+        const std::unique_ptr<MemoryDevice> inodes = DeviceFrom(LoadExtImage(variant));
         {
-            const Result<NodeId> file =
-                ext2->Create(directory, NumberedName("node", created, 12), 0644);
-            if (!file)
+            MountedFilesystem ext2(Ext2Type(), *inodes);
+            const NodeId directory = Value(Walk(*ext2, "a/b"));
+            int created = 0;
+            while (true)
             {
-                REQUIRE(file.error() == Error::NoSpace);
-                break;
+                const Result<NodeId> file =
+                    ext2->Create(directory, NumberedName("node", created, 12), 0644);
+                if (!file)
+                {
+                    REQUIRE(file.error() == Error::NoSpace);
+                    break;
+                }
+                ++created;
             }
-            ++created;
+            REQUIRE(FreeInodes(*ext2) == 0);
+            REQUIRE(created > 100);
+            Succeeds(ext2->Remove(directory, NumberedName("node", 7, 12)));
+            Value(ext2->Create(directory, "one-more", 0644));
         }
-        REQUIRE(FreeInodes(*ext2) == 0);
-        REQUIRE(created > 100);
-        Succeeds(ext2->Remove(directory, NumberedName("node", 7, 12)));
-        Value(ext2->Create(directory, "one-more", 0644));
+        CheckClean(*inodes, "no-inodes");
     }
-    CheckClean(*inodes, "no-inodes");
 #endif
 }
 
@@ -694,10 +722,10 @@ TEST_CASE("ext2 sets modes, owners and times")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view variant : {"1k", "4k"})
+    for (const std::string_view variant : {"1k", "4k", "ext4-csum", "ext4-gdtcsum"})
     {
         INFO(variant);
-        const bool nanoseconds = variant == "4k";
+        const bool nanoseconds = variant != "1k";
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
         {
             MountedFilesystem ext2(Ext2Type(), *device);
@@ -838,33 +866,38 @@ TEST_CASE("an ext2 volume stopped after any write needs only e2fsck's routine re
     {
         SKIP("e2fsck is not installed");
     }
-    const std::vector<std::uint8_t> original = LoadExtImage("1k");
-    std::uint64_t total = 0;
+    // ext4-csum adds checksums and groups whose first use writes their descriptor.
+    for (const std::string_view variant : {"1k", "ext4-csum"})
     {
-        const std::unique_ptr<MemoryDevice> device = DeviceFrom(original);
+        INFO(variant);
+        const std::vector<std::uint8_t> original = LoadExtImage(variant);
+        std::uint64_t total = 0;
         {
-            MountedFilesystem ext2(Ext2Type(), *device);
-            CrashScenario(*ext2);
+            const std::unique_ptr<MemoryDevice> device = DeviceFrom(original);
+            {
+                MountedFilesystem ext2(Ext2Type(), *device);
+                CrashScenario(*ext2);
+            }
+            total = device->write_count;
+            CheckClean(*device, "crash-complete");
         }
-        total = device->write_count;
-        CheckClean(*device, "crash-complete");
-    }
-    REQUIRE(total > 100);
-    for (std::uint64_t cut = 1; cut < total; ++cut)
-    {
-        INFO("stopped after write " << cut << " of " << total);
-        const std::unique_ptr<MemoryDevice> device = DeviceFrom(original);
-        device->FailWritesAfter(cut);
-        const Result<Filesystem*> mounted = Ext2Type().Mount(*device, {.read_only = false});
-        REQUIRE(mounted.has_value());
-        CrashScenario(**mounted);
-        const std::unique_ptr<MemoryDevice> stopped = CopyOf(*device);
-        // The mount's memory goes; what it would still write lands after the snapshot.
-        device->FailWritesAfter(UINT64_MAX);
-        Succeeds(Ext2Type().Unmount(**mounted));
-        const ToolRun report = RunE2fsck(*stopped, "crash");
-        INFO(report.output);
-        REQUIRE(OnlyRoutineRepairs(report.output));
+        REQUIRE(total > 100);
+        for (std::uint64_t cut = 1; cut < total; ++cut)
+        {
+            INFO("stopped after write " << cut << " of " << total);
+            const std::unique_ptr<MemoryDevice> device = DeviceFrom(original);
+            device->FailWritesAfter(cut);
+            const Result<Filesystem*> mounted = Ext2Type().Mount(*device, {.read_only = false});
+            REQUIRE(mounted.has_value());
+            CrashScenario(**mounted);
+            const std::unique_ptr<MemoryDevice> stopped = CopyOf(*device);
+            // The mount's memory goes; what it would still write lands after the snapshot.
+            device->FailWritesAfter(UINT64_MAX);
+            Succeeds(Ext2Type().Unmount(**mounted));
+            const ToolRun report = RunE2fsck(*stopped, "crash");
+            INFO(report.output);
+            REQUIRE(OnlyRoutineRepairs(report.output));
+        }
     }
 #endif
 }
@@ -1379,9 +1412,12 @@ TEST_CASE("random ext2 file and directory changes match a model")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    // Far offsets reach double indirect blocks: past 268 KiB with 1 KiB blocks, past 4 MiB with
-    // 4 KiB ones.
+    // Far offsets reach double indirect blocks: past 268 KiB with 1 KiB blocks, past 1 MiB with
+    // 2 KiB ones, past 4 MiB with 4 KiB ones.
     RandomChanges("1k", 2026, 1200, 600 * 1024);
     RandomChanges("4k", 1114, 600, 6 * 1024 * 1024);
+    RandomChanges("ext4-csum", 2027, 800, 600 * 1024);
+    RandomChanges("ext4-csum64", 2028, 500, 2 * 1024 * 1024);
+    RandomChanges("ext4-gdtcsum", 2029, 400, 6 * 1024 * 1024);
 #endif
 }

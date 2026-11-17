@@ -62,6 +62,8 @@ struct Inode
     std::uint32_t deletion_time;
     // A block of extended attributes shared by reference count, or 0.
     std::uint32_t attribute_block;
+    // l_i_file_acl_high, the block's bits 32 to 47 on a 64bit volume.
+    std::uint16_t attribute_block_high;
     // i_extra_isize: the bytes past the first 128 that hold fields.
     std::uint16_t extra_size;
     Timestamp creation_time;
@@ -79,9 +81,11 @@ struct Inode
 Inode DecodeInode(std::span<const std::uint8_t> raw, std::uint32_t read_only_compatible,
                   std::uint32_t block_size);
 // Stores the fields this driver changes into raw, laid out as DecodeInode takes it, and keeps
-// every other byte. allocated_bytes goes into i_blocks in 512-byte sectors, so volumes with
-// huge_file are never written. Extended times are stored where i_extra_isize covers them.
-void EncodeInode(const Inode& inode, std::span<std::uint8_t> raw);
+// every other byte. allocated_bytes goes into i_blocks in 512-byte sectors; with huge_file, in
+// 48 bits, and past them in blocks under the huge-file flag, as Linux stores it. Extended times
+// are stored where i_extra_isize covers them.
+void EncodeInode(const Inode& inode, std::span<std::uint8_t> raw,
+                 std::uint32_t read_only_compatible, std::uint32_t block_size);
 // nullopt for a type ext2 does not define.
 std::optional<NodeType> TypeOf(std::uint16_t mode);
 

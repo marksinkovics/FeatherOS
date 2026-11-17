@@ -28,6 +28,13 @@
 #               extent feature away again (the files keep their block maps)
 #   ext4-gdtcsum    4 KiB blocks, CRC16 group descriptor checksums (uninit_bg) instead of
 #               metadata_csum, flex_bg, no journal, four groups
+#   ext4-csum   ext4-blockmap without the journal (and so without orphan_file), which the core
+#               writes: groups 1 to 3 with uninitialised inode tables, group 2 without a block
+#               bitmap; e2fsck -D gives many/ a hash index
+#   ext4-csum64 ext4-64bit without the journal, made the same way; many/ hashed too
+#   ext4-htree  ext4-csum in 16 MiB with 4096 inodes and large/: 3000 empty files, a hash index of
+#               two levels after e2fsck -D
+#   ext4-htree-gdtcsum  the same with uninit_bg instead of metadata_csum
 #
 #   sh make_ext2_image.sh <mke2fs> <debugfs> <image> <variant>
 #
@@ -87,6 +94,19 @@ chmod 0640 "$source/hello.txt"
 chmod 4755 "$source/tool"
 mkfifo -m 0644 "$source/pipe"
 
+if [ "$variant" = ext4-htree ] || [ "$variant" = ext4-htree-gdtcsum ]; then
+    mkdir "$source/large"
+    awk -v directory="$source/large" 'BEGIN {
+        for (number = 0; number < 3000; number++) {
+            name = sprintf("%s/file-with-a-long-name-for-htree-%05d.txt", directory, number)
+            printf "" > name
+            close(name)
+        }
+    }'
+    chmod 0755 "$source/large"
+    find "$source/large" -type f -exec chmod 0644 {} +
+fi
+
 if [ "$variant" = ext4-extents ]; then
     mkdir "$source/large" "$source/filler"
     awk -v directory="$source/large" 'BEGIN {
@@ -131,6 +151,18 @@ case "$variant" in
     ext4-gdtcsum)
         options="-t ext4 -b 4096 -g 512 -O ^extent,^64bit,^metadata_csum,^has_journal,uninit_bg"
         ;;
+    ext4-csum) options="-t ext4 -b 1024 -g 2048 -O ^extent,^64bit,^has_journal" ;;
+    ext4-csum64)
+        options="-t ext4 -b 2048 -g 1024 -O ^extent,^64bit,^metadata_csum_seed,^has_journal"
+        ;;
+    ext4-htree)
+        options="-t ext4 -b 1024 -N 4096 -O ^extent,^64bit,^has_journal"
+        size=16M
+        ;;
+    ext4-htree-gdtcsum)
+        options="-t ext4 -b 1024 -N 4096 -O ^extent,^64bit,^has_journal,^metadata_csum,uninit_bg"
+        size=16M
+        ;;
     *)
         printf 'unknown variant %s\n' "$variant" >&2
         exit 2
@@ -154,14 +186,6 @@ elif ! "$mke2fs" -q -F $options -d "$source" "$volume" "$size" >"$work/log" 2>&1
 fi
 
 tools="$(dirname "$mke2fs")"
-if [ "$variant" = ext4-64bit ]; then
-    if ! "$tools/tune2fs" -O extent "$volume" >"$work/log" 2>&1 \
-        || ! "$tools/resize2fs" -b "$volume" >"$work/log" 2>&1 \
-        || ! "$debugfs" -w -R "feature -extent" "$volume" >"$work/log" 2>&1; then
-        cat "$work/log" >&2
-        exit 1
-    fi
-fi
 
 if [ "$variant" = ext4-extents ]; then
     {
@@ -182,11 +206,23 @@ if [ "$variant" = ext4-extents ]; then
     fi
 fi
 
-if [ "$variant" = ext4-blockmap ] || [ "$variant" = ext4-extents ]; then
+if [ "$variant" = ext4-blockmap ] || [ "$variant" = ext4-extents ] \
+    || [ "$variant" = ext4-csum ] || [ "$variant" = ext4-csum64 ] \
+    || [ "$variant" = ext4-htree ] || [ "$variant" = ext4-htree-gdtcsum ]; then
     # Exit status 1 means e2fsck changed the volume, as -D asks.
     status=0
     "$tools/e2fsck" -fyD "$volume" >"$work/log" 2>&1 || status=$?
     if [ "$status" -gt 1 ]; then
+        cat "$work/log" >&2
+        exit 1
+    fi
+fi
+
+# After e2fsck -D, which would put the extent feature back on a 64bit volume.
+if [ "$variant" = ext4-64bit ] || [ "$variant" = ext4-csum64 ]; then
+    if ! "$tools/tune2fs" -O extent "$volume" >"$work/log" 2>&1 \
+        || ! "$tools/resize2fs" -b "$volume" >"$work/log" 2>&1 \
+        || ! "$debugfs" -w -R "feature -extent" "$volume" >"$work/log" 2>&1; then
         cat "$work/log" >&2
         exit 1
     fi

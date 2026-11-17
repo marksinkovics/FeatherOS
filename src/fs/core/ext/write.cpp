@@ -16,7 +16,10 @@
 // The order is that of BlockDevice writes, which reach the device at once (write-through); only
 // Sync's Flush is a barrier, so a device that reorders completed writes in a volatile cache can
 // still break it on power loss. The group descriptors and the superblock's counts are kept in
-// memory and written by Sync.
+// memory and written by Sync, so after a crash e2fsck also finds bitmap checksums (metadata_csum)
+// that lag behind their bitmaps; descriptor changes that say more of a group is in use are
+// written at once (allocation.cpp). Every block written carries its checksums: the superblock,
+// inodes, directory leaves and index blocks, and extended attribute blocks.
 #include "common/bytes.h"
 #include "common/little_endian.h"
 #include "ext/ext2_filesystem.h"
@@ -34,6 +37,11 @@ constexpr std::uint32_t MaximumNanoseconds = 999'999'999;
 // The header of an extended attribute block: h_magic, then h_refcount, the inodes sharing it.
 constexpr std::uint32_t AttributeMagic = 0xEA020000;
 constexpr std::size_t AttributeReferences = 4;
+// h_blocks: always 1, as Linux requires.
+constexpr std::size_t AttributeBlocks = 8;
+constexpr std::size_t AttributeChecksum = 16;
+// A hash index's root: "." in 12 bytes, ".." over the rest of the block.
+constexpr std::size_t DotDotOffset = 12;
 
 // Three each: the indirect blocks on the way to a shrinking file's new end, as read and as cut.
 constexpr std::size_t ShrinkOriginals = 6;
@@ -113,7 +121,13 @@ Status Ext2Filesystem::WriteSuperblock(std::span<std::uint8_t> scratch)
     {
         return read;
     }
-    EncodeSuperblockState(superblock, scratch.subspan(offset).first<SuperblockSize>());
+    const std::span<std::uint8_t, SuperblockSize> bytes =
+        scratch.subspan(offset).first<SuperblockSize>();
+    EncodeSuperblockState(superblock, bytes);
+    if (metadata_checksums)
+    {
+        StoreSuperblockChecksum(bytes);
+    }
     return cache.Write(block, scratch);
 }
 
@@ -183,7 +197,7 @@ void Ext2Filesystem::NoteError(Error error)
         return;
     }
     superblock.state = static_cast<std::uint16_t>(superblock.state | StateErrors);
-    if (superblock.errors == ErrorsContinue)
+    if (superblock.errors == ErrorsContinue && !read_only)
     {
         LogWarning("ext2: damage found; ", "writes go on, as s_errors says");
     }
@@ -217,8 +231,16 @@ Status Ext2Filesystem::StoreInode(NodeId node, const Inode& inode, bool fresh,
     {
         ZeroBytes(slot);
     }
-    EncodeInode(inode, slot.first(superblock.inode_size < DecodedInodeBytes ? superblock.inode_size
-                                                                            : DecodedInodeBytes));
+    EncodeInode(inode,
+                slot.first(superblock.inode_size < DecodedInodeBytes ? superblock.inode_size
+                                                                     : DecodedInodeBytes),
+                superblock.read_only_compatible, block_size);
+    if (metadata_checksums)
+    {
+        StoreInodeChecksum(slot,
+                           InodeChecksumSeed(volume_seed, static_cast<std::uint32_t>(node),
+                                             LoadLittleEndian<std::uint32_t>(slot.data() + 100)));
+    }
     return cache.Write(place->block, scratch);
 }
 
@@ -234,16 +256,94 @@ Status Ext2Filesystem::SetLargeFile(std::uint64_t size, std::span<std::uint8_t> 
     return WriteSuperblock(scratch);
 }
 
-// A changed directory no longer matches a hash index, so it drops the index before any of its
-// blocks change, as Linux's ext2 does; its blocks still read as a plain directory.
-Status Ext2Filesystem::ClearIndex(NodeId directory, Inode& inode, std::span<std::uint8_t> scratch)
+Status Ext2Filesystem::WriteDirectoryBlock(const Inode& directory, std::uint64_t logical,
+                                           std::uint64_t physical, std::span<std::uint8_t> block)
+{
+    if (metadata_checksums)
+    {
+        if (IsIndexOf(directory, logical, block))
+        {
+            if (!StoreIndexBlockChecksum(block, directory.checksum_seed))
+            {
+                return std::unexpected(Error::Corrupt);
+            }
+        }
+        else
+        {
+            StoreDirectoryTail(block, directory.checksum_seed);
+        }
+    }
+    return cache.Write(physical, block);
+}
+
+// A name added to a hashed directory would have to go into the leaf its hash picks, so the
+// directory drops the index before any of its blocks change, as Linux's ext2 does; removing a
+// name leaves the index right. Without checksums its blocks then read as a plain directory. With
+// them, the blocks that held the index need a leaf's checksum record: the root's ".." and an
+// interior node's empty record each give up their last 12 bytes for it. The order is the one
+// e2fsck's preen mode repairs at every cut: the root first (e2fsck still reads the index through
+// it, whose leaf checksum now matches), then the flag, then the interior nodes, which until then
+// are a plain directory's blocks without a checksum record that e2fsck salvages.
+Status Ext2Filesystem::ClearIndex(NodeId directory, Inode& inode, Buffers& buffers)
 {
     if ((inode.flags & InodeIndexed) == 0)
     {
         return {};
     }
+    const Inode indexed = inode;
     inode.flags &= ~InodeIndexed;
-    return StoreInode(directory, inode, false, scratch);
+    if (!metadata_checksums || !hashed_directories)
+    {
+        return StoreInode(directory, inode, false, buffers[ScratchBuffer]);
+    }
+    const std::span<std::uint8_t> block = buffers[DataBuffer];
+    const auto convert = [&](std::uint64_t logical) -> Status
+    {
+        const Result<std::uint32_t> physical = MapBlock(indexed, logical, buffers[ScratchBuffer]);
+        if (!physical)
+        {
+            return Failure(physical);
+        }
+        if (*physical == 0)
+        {
+            return {};
+        }
+        if (const Status read = cache.Read(*physical, 0, block, block); !read)
+        {
+            return read;
+        }
+        if (!IsIndexOf(indexed, logical, block))
+        {
+            return {};
+        }
+        if (!IndexBlockChecksumMatches(block, indexed.checksum_seed))
+        {
+            return std::unexpected(Error::Corrupt);
+        }
+        // IndexBlockChecksumMatches has seen the records it relies on: the root's "." of 12
+        // bytes and ".." over the rest, or one record over the whole node.
+        const std::size_t record = logical == 0 ? DotDotOffset : 0;
+        const auto length = LoadLittleEndian<std::uint16_t>(block.data() + record + 4);
+        StoreLittleEndian(block.data() + record + 4,
+                          static_cast<std::uint16_t>(length - DirectoryTailSize));
+        return WriteDirectoryBlock(inode, logical, *physical, block);
+    };
+    if (const Status converted = convert(0); !converted)
+    {
+        return converted;
+    }
+    if (const Status stored = StoreInode(directory, inode, false, buffers[ScratchBuffer]); !stored)
+    {
+        return stored;
+    }
+    for (std::uint64_t logical = 1; logical < indexed.size / block_size; ++logical)
+    {
+        if (const Status converted = convert(logical); !converted)
+        {
+            return converted;
+        }
+    }
+    return {};
 }
 
 // The bytes from position to the end of its block, so that what lay past the end of the file
@@ -586,7 +686,7 @@ Status Ext2Filesystem::ReleaseAttributeBlock(std::uint32_t block, FreeCursor& fr
     {
         return read;
     }
-    if (LoadLittleEndian<std::uint32_t>(scratch.data()) != AttributeMagic)
+    if (!AttributeBlockMatches(block, scratch))
     {
         return std::unexpected(Error::Corrupt);
     }
@@ -595,14 +695,34 @@ Status Ext2Filesystem::ReleaseAttributeBlock(std::uint32_t block, FreeCursor& fr
     if (references > 1)
     {
         StoreLittleEndian(scratch.data() + AttributeReferences, references - 1);
+        if (metadata_checksums)
+        {
+            StoreLittleEndian(scratch.data() + AttributeChecksum,
+                              AttributeBlockChecksum(volume_seed, block, scratch));
+        }
         return cache.Write(block, scratch);
     }
     return FreeBlock(frees, block);
 }
 
+bool Ext2Filesystem::AttributeBlockMatches(std::uint32_t block,
+                                           std::span<const std::uint8_t> contents) const
+{
+    return LoadLittleEndian<std::uint32_t>(contents.data()) == AttributeMagic &&
+           LoadLittleEndian<std::uint32_t>(contents.data() + AttributeBlocks) == 1 &&
+           (!metadata_checksums ||
+            LoadLittleEndian<std::uint32_t>(contents.data() + AttributeChecksum) ==
+                AttributeBlockChecksum(volume_seed, block, contents));
+}
+
 Status Ext2Filesystem::CheckReleasable(const Inode& inode, std::span<std::uint8_t> scratch)
 {
     if ((inode.flags & (InodeExtents | InodeInlineData)) != 0)
+    {
+        return std::unexpected(Error::Unsupported);
+    }
+    // A block past 2^32 on a 64bit volume, which FreeBlock cannot take.
+    if ((superblock.incompatible & Incompatible64Bit) != 0 && inode.attribute_block_high != 0)
     {
         return std::unexpected(Error::Unsupported);
     }
@@ -618,7 +738,7 @@ Status Ext2Filesystem::CheckReleasable(const Inode& inode, std::span<std::uint8_
     {
         return read;
     }
-    if (LoadLittleEndian<std::uint32_t>(scratch.data()) != AttributeMagic)
+    if (!AttributeBlockMatches(inode.attribute_block, scratch))
     {
         return std::unexpected(Error::Corrupt);
     }
@@ -688,7 +808,8 @@ Status Ext2Filesystem::AddEntry(NodeId directory, Inode& inode, std::optional<Re
             StoreLittleEndian(block.data() + room->offset + 4, static_cast<std::uint16_t>(used));
         }
         StoreEntry(block, room->offset + used, placed, has_file_type);
-        if (const Status written = cache.Write(room->physical, block); !written)
+        if (const Status written = WriteDirectoryBlock(inode, room->logical, room->physical, block);
+            !written)
         {
             return written;
         }
@@ -736,9 +857,10 @@ Status Ext2Filesystem::AddEntry(NodeId directory, Inode& inode, std::optional<Re
         else
         {
             ZeroBytes(block);
-            placed.record_length = static_cast<std::uint16_t>(block_size);
+            placed.record_length = static_cast<std::uint16_t>(
+                metadata_checksums ? block_size - DirectoryTailSize : block_size);
             StoreEntry(block, 0, placed, has_file_type);
-            status = cache.Write(*fresh, block);
+            status = WriteDirectoryBlock(inode, logical, *fresh, block);
             if (status)
             {
                 LinkBlock(inode, cursor, logical, *fresh);

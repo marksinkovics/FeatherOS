@@ -19,6 +19,7 @@ namespace
 {
 
 using FeatherDisk::Error;
+using FeatherDisk::LoadLittleEndian;
 using FeatherDisk::NodeType;
 using FeatherDisk::Result;
 using FeatherDisk::StoreLittleEndian;
@@ -291,6 +292,7 @@ TEST_CASE("ext2 inodes encode what the driver changes and keep the other bytes")
         .blocks = {},
         .deletion_time = 0,
         .attribute_block = 0xCCCCCCCC,
+        .attribute_block_high = 0,
         .extra_size = 32,
         .creation_time = {.seconds = 1600000000, .nanoseconds = 42},
         .generation = 0,
@@ -298,7 +300,7 @@ TEST_CASE("ext2 inodes encode what the driver changes and keep the other bytes")
     };
     inode.SetBlock(0, 1234);
     inode.SetBlock(TripleIndirectBlock, 5678);
-    EncodeInode(inode, raw);
+    EncodeInode(inode, raw, 0, 1024);
     const Inode decoded = DecodeInode(raw, 0, 1024);
     REQUIRE(decoded.mode == inode.mode);
     REQUIRE(decoded.owner == 70000);
@@ -319,16 +321,43 @@ TEST_CASE("ext2 inodes encode what the driver changes and keep the other bytes")
     REQUIRE(decoded.deletion_time == 0);
     REQUIRE(decoded.extra_size == 32);
     REQUIRE(decoded.generation == 0xCCCCCCCCU);
-    // Fields the driver never changes keep their bytes: i_generation and i_file_acl.
+    // Fields the driver never changes keep their bytes: i_generation and i_file_acl, and
+    // without huge_file, l_i_blocks_high.
     REQUIRE(raw[100] == 0xCC);
     REQUIRE(raw[104] == 0xCC);
+    REQUIRE(raw[116] == 0xCC);
+
+    // With huge_file, i_blocks takes 48 bits of sectors, and past them counts blocks under the
+    // huge-file flag, which a smaller count clears again.
+    constexpr std::uint64_t TiB = std::uint64_t{1} << 40;
+    inode.flags = InodeHugeFile;
+    inode.allocated_bytes = 3 * TiB;
+    EncodeInode(inode, raw, ReadOnlyCompatibleHugeFile, 4096);
+    REQUIRE(LoadLittleEndian<std::uint32_t>(raw.data() + 28) == 0x80000000U);
+    REQUIRE(LoadLittleEndian<std::uint16_t>(raw.data() + 116) == 1);
+    Inode huge = DecodeInode(raw, ReadOnlyCompatibleHugeFile, 4096);
+    REQUIRE(huge.allocated_bytes == 3 * TiB);
+    REQUIRE(huge.flags == 0);
+    inode.allocated_bytes = std::uint64_t{1} << 57;
+    EncodeInode(inode, raw, ReadOnlyCompatibleHugeFile, 4096);
+    huge = DecodeInode(raw, ReadOnlyCompatibleHugeFile, 4096);
+    REQUIRE(huge.flags == InodeHugeFile);
+    REQUIRE(huge.allocated_bytes == std::uint64_t{1} << 57);
+    REQUIRE(LoadLittleEndian<std::uint16_t>(raw.data() + 116) == (1U << 13));
+    inode.allocated_bytes = 8192;
+    EncodeInode(inode, raw, ReadOnlyCompatibleHugeFile, 4096);
+    huge = DecodeInode(raw, ReadOnlyCompatibleHugeFile, 4096);
+    REQUIRE(huge.flags == 0);
+    REQUIRE(huge.allocated_bytes == 8192);
+    REQUIRE(LoadLittleEndian<std::uint16_t>(raw.data() + 116) == 0);
+    inode.flags = 0x10;
 
     // A directory's i_size_high is its ACL, and a 128-byte inode has no extended times.
     std::array<std::uint8_t, 128> small{};
     small.fill(0xEE);
     inode.mode = 040755;
     inode.extra_size = 0;
-    EncodeInode(inode, small);
+    EncodeInode(inode, small, 0, 1024);
     REQUIRE(small[108] == 0xEE);
     const Inode directory = DecodeInode(small, 0, 1024);
     REQUIRE(directory.size == 5);
@@ -386,12 +415,21 @@ TEST_CASE("the ext2 superblock state and group counts encode in place")
     group.free_inodes = 12;
     group.used_directories = 2;
     group.inode_table = 6;
-    EncodeGroupCounts(group, descriptor);
+    group.flags = GroupBlocksUnused;
+    group.unused_inodes = 0x12345;
+    group.block_bitmap_checksum = 0xAAAABBBB;
+    group.checksum = 0x7777;
+    EncodeGroupDescriptor(group, descriptor);
     group = DecodeGroupDescriptor(descriptor);
     REQUIRE(group.free_blocks == 99);
     REQUIRE(group.free_inodes == 12);
     REQUIRE(group.used_directories == 2);
     REQUIRE(group.inode_table == 5);
+    REQUIRE(group.flags == GroupBlocksUnused);
+    // 32 bytes keep the lower halves only, and bg_checksum is left to the caller.
+    REQUIRE(group.unused_inodes == 0x2345);
+    REQUIRE(group.block_bitmap_checksum == 0xBBBB);
+    REQUIRE(group.checksum == 0);
 }
 
 TEST_CASE("64-byte group descriptors carry the upper halves, and sparse_super2 names backups")
@@ -419,8 +457,15 @@ TEST_CASE("64-byte group descriptors carry the upper halves, and sparse_super2 n
     REQUIRE(small.inode_table == 5);
     REQUIRE(small.free_blocks == 100);
     group.free_blocks = (4U << 16) + 9;
-    EncodeGroupCounts(group, descriptor);
-    REQUIRE(DecodeGroupDescriptor(descriptor).free_blocks == (4U << 16) + 9);
+    group.unused_inodes = (5U << 16) + 1;
+    group.inode_bitmap_checksum = 0x33334444;
+    EncodeGroupDescriptor(group, descriptor);
+    const GroupDescriptor encoded = DecodeGroupDescriptor(descriptor);
+    REQUIRE(encoded.free_blocks == (4U << 16) + 9);
+    REQUIRE(encoded.unused_inodes == (5U << 16) + 1);
+    REQUIRE(encoded.block_bitmap_checksum == 0x11112222U);
+    REQUIRE(encoded.inode_bitmap_checksum == 0x33334444U);
+    REQUIRE(encoded.checksum == 0xABCD);
 
     std::array<std::uint8_t, SuperblockSize> bytes = SuperblockBytes();
     Superblock superblock = DecodeSuperblock(bytes);

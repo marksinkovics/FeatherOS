@@ -67,7 +67,10 @@ constexpr std::size_t NoRecord = ~std::size_t{0};
 // Where WalkDirectory found a record.
 struct RecordPlace
 {
+    std::uint64_t logical;
     std::uint64_t physical;
+    // In a block of a hash index rather than a leaf.
+    bool index;
     std::size_t offset;
     // The record before it in the same block, or NoRecord for the block's first.
     std::size_t previous;
@@ -212,6 +215,9 @@ private:
     Result<bool> WalkDirectory(const Inode& directory, std::uint64_t start,
                                std::span<std::uint8_t> block, std::span<std::uint8_t> scratch,
                                Visit visit);
+    // A block of an indexed directory that holds index entries instead of names.
+    bool IsIndexOf(const Inode& directory, std::uint64_t logical,
+                   std::span<const std::uint8_t> block) const;
     bool DirectoryBlockMatches(const Inode& directory, std::uint64_t logical,
                                std::span<const std::uint8_t> block) const;
     Result<NodeType> EntryType(const RawEntry& entry, std::span<std::uint8_t> scratch);
@@ -259,6 +265,16 @@ private:
     GroupDescriptor Group(std::uint32_t group) const;
     void StoreGroup(std::uint32_t group, const GroupDescriptor& descriptor);
     bool IsGroupMetadata(std::uint32_t group, std::uint64_t block) const;
+    void MarkGroupMetadata(std::uint32_t group, std::span<std::uint8_t> bitmap) const;
+    void SetPadding(std::span<std::uint8_t> bitmap, std::uint32_t used_bits) const;
+    std::uint32_t BitmapChecksumOf(std::span<const std::uint8_t> bitmap, std::uint32_t bits) const;
+    // Logs, stops writes and gives Corrupt.
+    std::unexpected<Error> BitmapMismatch(std::string_view message, std::uint32_t group);
+    Status LoadBlockBitmap(std::uint32_t group, std::span<std::uint8_t> bitmap);
+    Status LoadInodeBitmap(std::uint32_t group, std::span<std::uint8_t> bitmap);
+    // Writes a changed bitmap, then keeps descriptor as the group's.
+    Status CommitBitmap(std::uint32_t group, GroupDescriptor descriptor, bool blocks,
+                        std::span<const std::uint8_t> bitmap);
     // Why the descriptors cannot be trusted for writing, or nullopt.
     std::optional<std::string_view> CheckGroups() const;
     Status WriteGroups();
@@ -293,7 +309,10 @@ private:
     // A fresh inode's slot is zeroed first, so nothing of an earlier inode survives.
     Status StoreInode(NodeId node, const Inode& inode, bool fresh, std::span<std::uint8_t> scratch);
     Status SetLargeFile(std::uint64_t size, std::span<std::uint8_t> scratch);
-    Status ClearIndex(NodeId directory, Inode& inode, std::span<std::uint8_t> scratch);
+    // Writes a changed directory block with its checksum, if the volume keeps them.
+    Status WriteDirectoryBlock(const Inode& directory, std::uint64_t logical,
+                               std::uint64_t physical, std::span<std::uint8_t> block);
+    Status ClearIndex(NodeId directory, Inode& inode, Buffers& buffers);
     Status ZeroFrom(const Inode& inode, std::uint64_t position, std::span<std::uint8_t> scratch);
     Result<std::uint32_t> AllocateFor(MapCursor& cursor, std::span<std::uint8_t> bitmap);
     Status ReleaseLevels(MapCursor& cursor, std::uint32_t from);
@@ -310,6 +329,8 @@ private:
     Status ShrinkBlocks(NodeId node, Inode& inode, std::uint64_t size, Buffers& buffers);
     Status ReleaseAttributeBlock(std::uint32_t block, FreeCursor& frees,
                                  std::span<std::uint8_t> scratch);
+    // The header Linux requires (magic, one block) and, with metadata_csum, the checksum.
+    bool AttributeBlockMatches(std::uint32_t block, std::span<const std::uint8_t> contents) const;
     // Checks what ReleaseContents will meet, before anything changes.
     Status CheckReleasable(const Inode& inode, std::span<std::uint8_t> scratch);
     Status ReleaseContents(const Node& node, Buffers& buffers);
@@ -326,11 +347,20 @@ private:
     // Looks for name, and for a record with room for needed bytes when it is not there.
     Result<NameSearch> SearchDirectory(const Inode& directory, std::string_view name,
                                        std::size_t needed, Buffers& buffers);
-    // Removes the record at place, which must still name inode.
-    Status DropRecord(const RecordPlace& place, std::uint32_t inode, std::span<std::uint8_t> block);
+    // Removes the record at place in directory, which must still name inode.
+    Status DropRecord(const Inode& directory, const RecordPlace& place, std::uint32_t inode,
+                      std::span<std::uint8_t> block);
     // Points the record at place, which must still name inode, at replacement.
-    Status RewriteRecord(const RecordPlace& place, std::uint32_t inode, std::uint32_t replacement,
-                         std::uint8_t file_type, std::span<std::uint8_t> block);
+    Status RewriteRecord(const Inode& directory, const RecordPlace& place, std::uint32_t inode,
+                         std::uint32_t replacement, std::uint8_t file_type,
+                         std::span<std::uint8_t> block);
+    // The most links an inode may have.
+    std::uint16_t LinkLimit() const;
+    // A directory's link count with delta more subdirectories, or nullopt when that is damage:
+    // with dir_nlink, a count past the limit becomes 1 and stays 1, as on Linux.
+    std::optional<std::uint16_t> DirectoryLinks(std::uint16_t count, int delta) const;
+    // Whether a directory's count holds at least one subdirectory's "..".
+    bool HasSubdirectoryLink(std::uint16_t count) const;
     // Adds links to a directory's link count and, when touched, sets its modification and
     // change times.
     Status UpdateDirectory(NodeId directory, int links, bool touched,
@@ -368,6 +398,8 @@ private:
     bool metadata_checksums;
     bool hashed_directories;
     bool extents;
+    // dir_nlink: a directory past the link limit keeps a count of 1.
+    bool directory_links;
     std::uint32_t volume_seed;
     std::uint32_t descriptor_size;
     std::uint32_t block_size;
@@ -417,20 +449,26 @@ Result<bool> Ext2Filesystem::WalkDirectory(const Inode& directory, std::uint64_t
         {
             return std::unexpected(Error::Corrupt);
         }
+        // A leaf's checksum record is not an entry.
+        const bool index = IsIndexOf(directory, logical, block);
+        const std::size_t end =
+            metadata_checksums && !index ? block_size - DirectoryTailSize : block_size;
         // Records are walked from the block's start even when resuming, so a cookie that does
         // not fall on one still finds the next.
         std::size_t previous = NoRecord;
-        for (std::size_t offset = 0; offset < block_size;)
+        for (std::size_t offset = 0; offset < end;)
         {
             const Result<RawEntry> entry =
-                ParseEntry(block, offset, has_file_type, superblock.inodes_count);
+                ParseEntry(block.first(end), offset, has_file_type, superblock.inodes_count);
             if (!entry)
             {
                 return Failure(entry);
             }
             const std::uint64_t position = logical * block_size + offset;
             const RecordPlace place = {
+                .logical = logical,
                 .physical = physical,
+                .index = index,
                 .offset = offset,
                 .previous = previous,
                 .next = position + entry->record_length,

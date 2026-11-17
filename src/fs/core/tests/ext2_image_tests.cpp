@@ -456,8 +456,9 @@ TEST_CASE("ext3 and ext4 volumes mount read-only when asked to write, and keep e
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
+    // A journal or extents; ext4-gdtcsum has neither and is written (ext4_write_tests.cpp).
     for (const std::string_view variant :
-         {"ext3", "ext4", "ext4-extents", "ext4-blockmap", "ext4-64bit", "ext4-gdtcsum"})
+         {"ext3", "ext4", "ext4-extents", "ext4-blockmap", "ext4-64bit"})
     {
         INFO(variant);
         const std::vector<std::uint8_t> original = LoadExtImage(variant);

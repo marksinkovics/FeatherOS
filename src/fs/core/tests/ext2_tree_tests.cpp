@@ -234,6 +234,9 @@ TEST_CASE("ext2 makes nested and wide directories and removes empty ones")
     MakeAndRemoveDirectories("1k");
     MakeAndRemoveDirectories("4k");
     MakeAndRemoveDirectories("nofiletype");
+    MakeAndRemoveDirectories("ext4-csum");
+    MakeAndRemoveDirectories("ext4-csum64");
+    MakeAndRemoveDirectories("ext4-gdtcsum");
 #endif
 }
 
@@ -439,6 +442,8 @@ TEST_CASE("ext2 renames files and directories as POSIX rename does")
 #else
     RenameAll("1k");
     RenameAll("nofiletype");
+    RenameAll("ext4-csum");
+    RenameAll("ext4-csum64");
 #endif
 }
 
@@ -447,7 +452,7 @@ TEST_CASE("ext2 stores short symbolic links in the inode and long ones in a bloc
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view variant : {"1k", "4k"})
+    for (const std::string_view variant : {"1k", "4k", "ext4-csum", "ext4-gdtcsum"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
@@ -677,34 +682,38 @@ TEST_CASE("an ext2 volume stopped during directory changes needs only e2fsck's r
     {
         SKIP("e2fsck is not installed");
     }
-    const std::vector<std::uint8_t> original = LoadExtImage("1k");
-    std::uint64_t total = 0;
+    for (const std::string_view variant : {"1k", "ext4-csum64"})
     {
-        const std::unique_ptr<MemoryDevice> device = DeviceFrom(original);
+        INFO(variant);
+        const std::vector<std::uint8_t> original = LoadExtImage(variant);
+        std::uint64_t total = 0;
         {
-            MountedFilesystem ext2(Ext2Type(), *device);
-            TreeScenario(*ext2);
-            REQUIRE(ErrorOf(Walk(*ext2, "landing")) == Error::NotFound);
-            REQUIRE(Value(Walk(*ext2, "a/b/moved.txt")) != 0);
+            const std::unique_ptr<MemoryDevice> device = DeviceFrom(original);
+            {
+                MountedFilesystem ext2(Ext2Type(), *device);
+                TreeScenario(*ext2);
+                REQUIRE(ErrorOf(Walk(*ext2, "landing")) == Error::NotFound);
+                REQUIRE(Value(Walk(*ext2, "a/b/moved.txt")) != 0);
+            }
+            total = device->write_count;
+            CheckClean(*device, "tree-crash-complete");
         }
-        total = device->write_count;
-        CheckClean(*device, "tree-crash-complete");
-    }
-    REQUIRE(total > 50);
-    for (std::uint64_t cut = 1; cut < total; ++cut)
-    {
-        INFO("stopped after write " << cut << " of " << total);
-        const std::unique_ptr<MemoryDevice> device = DeviceFrom(original);
-        device->FailWritesAfter(cut);
-        const Result<Filesystem*> mounted = Ext2Type().Mount(*device, {.read_only = false});
-        REQUIRE(mounted.has_value());
-        TreeScenario(**mounted);
-        const std::unique_ptr<MemoryDevice> stopped = CopyOf(*device);
-        device->FailWritesAfter(UINT64_MAX);
-        Succeeds(Ext2Type().Unmount(**mounted));
-        const ToolRun report = RunE2fsck(*stopped, "tree-crash");
-        INFO(report.output);
-        REQUIRE(OnlyRoutineRepairs(report.output, true));
+        REQUIRE(total > 50);
+        for (std::uint64_t cut = 1; cut < total; ++cut)
+        {
+            INFO("stopped after write " << cut << " of " << total);
+            const std::unique_ptr<MemoryDevice> device = DeviceFrom(original);
+            device->FailWritesAfter(cut);
+            const Result<Filesystem*> mounted = Ext2Type().Mount(*device, {.read_only = false});
+            REQUIRE(mounted.has_value());
+            TreeScenario(**mounted);
+            const std::unique_ptr<MemoryDevice> stopped = CopyOf(*device);
+            device->FailWritesAfter(UINT64_MAX);
+            Succeeds(Ext2Type().Unmount(**mounted));
+            const ToolRun report = RunE2fsck(*stopped, "tree-crash");
+            INFO(report.output);
+            REQUIRE(OnlyRoutineRepairs(report.output, true));
+        }
     }
 #endif
 }

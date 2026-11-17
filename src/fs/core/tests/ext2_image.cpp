@@ -278,21 +278,45 @@ bool HaveE2fsck()
 #endif
 }
 
-ToolRun RunE2fsck([[maybe_unused]] MemoryDevice& device, [[maybe_unused]] std::string_view name)
+namespace
+{
+
+// e2fsck with options over the device's bytes; a repair reads the changed volume back.
+ToolRun E2fsck([[maybe_unused]] MemoryDevice& device, [[maybe_unused]] std::string_view name,
+               [[maybe_unused]] std::string_view options, [[maybe_unused]] bool repair)
 {
 #ifdef FEATHERDISK_E2FSCK
     const std::string image = WorkPath(name) + ".img";
     const std::string output = image + ".e2fsck.txt";
     SaveImage(device, image);
-    const ToolRun run = Run(std::string("\"") + FEATHERDISK_E2FSCK + "\" -fn \"" + image +
-                                "\" > \"" + output + "\" 2>&1",
+    const ToolRun run = Run(std::string("\"") + FEATHERDISK_E2FSCK + "\" " + std::string(options) +
+                                " \"" + image + "\" > \"" + output + "\" 2>&1",
                             output);
+    if (repair)
+    {
+        std::ifstream file(image, std::ios::binary);
+        file.read(reinterpret_cast<char*>(device.Bytes().data()),
+                  static_cast<std::streamsize>(device.Bytes().size()));
+        REQUIRE(file.good());
+    }
     std::remove(output.c_str());
     std::remove(image.c_str());
     return run;
 #else
     return {.ran = false, .status = 0, .output = {}};
 #endif
+}
+
+} // namespace
+
+ToolRun RunE2fsck(MemoryDevice& device, std::string_view name)
+{
+    return E2fsck(device, name, "-fn", false);
+}
+
+ToolRun PreenWithE2fsck(MemoryDevice& device, std::string_view name)
+{
+    return E2fsck(device, name, "-fp", true);
 }
 
 void CheckClean(MemoryDevice& device, std::string_view name)
@@ -303,9 +327,9 @@ void CheckClean(MemoryDevice& device, std::string_view name)
 }
 
 // A '+' in a bitmap difference would be something in use that its bitmap calls free.
-bool OnlyRoutineRepairs(const std::string& report, bool renames)
+bool OnlyRoutineRepairs(const std::string& report, bool renames, bool indexes)
 {
-    constexpr std::array<std::string_view, 12> Routine = {
+    constexpr std::array<std::string_view, 14> Routine = {
         "Free blocks count wrong",
         "Free inodes count wrong",
         "Directories count wrong",
@@ -319,20 +343,34 @@ bool OnlyRoutineRepairs(const std::string& report, bool renames)
         ", i_blocks is",
         "Block bitmap differences:",
         "Inode bitmap differences:",
+        // metadata_csum: the descriptors that hold bitmap checksums are written by Sync.
+        "block bitmap does not match checksum",
+        "inode bitmap does not match checksum",
     };
     constexpr std::array<std::string_view, 2> Renames = {
         "is a link to directory",
         "'..' in ",
     };
-    constexpr std::array<std::string_view, 8> Noise = {
+    // What a hashed directory that stopped while dropping its index leaves: interior index blocks
+    // that a plain directory's blocks must not look like, which e2fsck -n stops at and preen
+    // mode salvages.
+    constexpr std::array<std::string_view, 3> Indexes = {
+        ": directory corrupted",
+        "Salvage? no",
+        "e2fsck: aborted",
+    };
+    constexpr std::array<std::string_view, 10> Noise = {
         "e2fsck ",
         "Pass ",
         "Fix? no",
         "Clear? no",
         "Connect to /lost+found? no",
+        "IGNORED.",
         "WARNING: Filesystem still has errors",
         " files (",
         "check forced",
+        // A 64bit volume without extents, as the ext4-csum64 image is made.
+        "needs extents to access the whole disk",
     };
     const auto contains = [](std::string_view line, const auto& phrases)
     {
@@ -350,7 +388,8 @@ bool OnlyRoutineRepairs(const std::string& report, bool renames)
         {
             continue;
         }
-        if (!contains(line, Routine) && !(renames && contains(line, Renames)))
+        if (!contains(line, Routine) && !(renames && contains(line, Renames)) &&
+            !(indexes && contains(line, Indexes)))
         {
             return false;
         }

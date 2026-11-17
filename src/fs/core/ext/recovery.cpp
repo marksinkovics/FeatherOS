@@ -14,7 +14,6 @@
 // the first transaction not replayed, so no stale commit block can be taken for a new one. Then
 // needs_recovery goes from the superblock, which the replay may have rewritten. A crash at any
 // point replays the same transactions again, or finds an empty journal.
-#include "common/crc.h"
 #include "common/little_endian.h"
 #include "ext/ext2_filesystem.h"
 #include "ext/journal.h"
@@ -379,8 +378,7 @@ Status Ext2Filesystem::ClearRecoveryFlag(std::span<std::uint8_t> scratch)
                       replayed.incompatible & ~IncompatibleRecover);
     if (HasMetadataChecksums(replayed))
     {
-        StoreLittleEndian(bytes.data() + SuperblockChecksumOffset,
-                          Crc32c(~0U, bytes.first(SuperblockChecksumOffset)));
+        StoreSuperblockChecksum(bytes);
     }
     return cache.Write(block, scratch);
 }

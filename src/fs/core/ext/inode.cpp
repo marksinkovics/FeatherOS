@@ -10,6 +10,8 @@ namespace
 {
 
 constexpr std::uint32_t MaximumNanoseconds = 999'999'999;
+// i_blocks with huge_file: 48 bits, of 512-byte sectors unless the inode says blocks.
+constexpr std::uint64_t MaximumHugeSectors = (std::uint64_t{1} << 48) - 1;
 
 std::uint16_t Load16(const std::uint8_t* bytes)
 {
@@ -113,6 +115,7 @@ Inode DecodeInode(std::span<const std::uint8_t> raw, std::uint32_t read_only_com
         .blocks = {},
         .deletion_time = Load32(bytes + 20),
         .attribute_block = Load32(bytes + 104),
+        .attribute_block_high = Load16(bytes + 118),
         .extra_size = static_cast<std::uint16_t>(extra_size),
         .creation_time = {.seconds = 0, .nanoseconds = 0},
         .generation = Load32(bytes + 100),
@@ -129,7 +132,8 @@ Inode DecodeInode(std::span<const std::uint8_t> raw, std::uint32_t read_only_com
     return inode;
 }
 
-void EncodeInode(const Inode& inode, std::span<std::uint8_t> raw)
+void EncodeInode(const Inode& inode, std::span<std::uint8_t> raw,
+                 std::uint32_t read_only_compatible, std::uint32_t block_size)
 {
     std::uint8_t* bytes = raw.data();
     const std::size_t fields_end = GoodOldInodeSize + std::size_t{inode.extra_size};
@@ -159,8 +163,20 @@ void EncodeInode(const Inode& inode, std::span<std::uint8_t> raw)
     store_time(16, 136, inode.modify_time);
     StoreLittleEndian(bytes + 20, inode.deletion_time);
     StoreLittleEndian(bytes + 26, inode.link_count);
-    StoreLittleEndian(bytes + 28, static_cast<std::uint32_t>(inode.allocated_bytes / 512));
-    StoreLittleEndian(bytes + 32, inode.flags);
+    std::uint64_t blocks = inode.allocated_bytes / 512;
+    std::uint32_t flags = inode.flags;
+    if ((read_only_compatible & ReadOnlyCompatibleHugeFile) != 0)
+    {
+        flags &= ~InodeHugeFile;
+        if (blocks > MaximumHugeSectors)
+        {
+            flags |= InodeHugeFile;
+            blocks = inode.allocated_bytes / block_size;
+        }
+        StoreLittleEndian(bytes + 116, static_cast<std::uint16_t>(blocks >> 32));
+    }
+    StoreLittleEndian(bytes + 28, static_cast<std::uint32_t>(blocks));
+    StoreLittleEndian(bytes + 32, flags);
     for (std::size_t index = 0; index < BlockArrayBytes; ++index)
     {
         bytes[40 + index] = inode.blocks[index];

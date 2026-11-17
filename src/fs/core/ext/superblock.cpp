@@ -75,6 +75,7 @@ Superblock DecodeSuperblock(std::span<const std::uint8_t, SuperblockSize> bytes)
         .stored_checksum_seed = 0,
         .backup_groups = {},
         .journal_inode = 0,
+        .log_groups_per_flex = 0,
         .checksum_matches = true,
     };
     if (superblock.log_block_size <= MaximumLogBlockSize)
@@ -113,6 +114,7 @@ Superblock DecodeSuperblock(std::span<const std::uint8_t, SuperblockSize> bytes)
         superblock.stored_checksum_seed = Load32(raw + 624);
         superblock.backup_groups = {Load32(raw + 588), Load32(raw + 592)};
         superblock.journal_inode = Load32(raw + 224);
+        superblock.log_groups_per_flex = raw[372];
         if (HasMetadataChecksums(superblock))
         {
             superblock.checksum_matches = Crc32c(~0U, bytes.first(SuperblockChecksumOffset)) ==
@@ -211,6 +213,13 @@ void EncodeSuperblockState(const Superblock& superblock,
     }
 }
 
+void StoreSuperblockChecksum(std::span<std::uint8_t, SuperblockSize> bytes)
+{
+    StoreLittleEndian(
+        bytes.data() + SuperblockChecksumOffset,
+        Crc32c(~0U, std::span<const std::uint8_t>(bytes).first(SuperblockChecksumOffset)));
+}
+
 bool GroupHasSuperblock(const Superblock& superblock, std::uint32_t group)
 {
     if (group == 0)
@@ -270,17 +279,26 @@ GroupDescriptor DecodeGroupDescriptor(std::span<const std::uint8_t> bytes)
     return descriptor;
 }
 
-void EncodeGroupCounts(const GroupDescriptor& descriptor, std::span<std::uint8_t> bytes)
+void EncodeGroupDescriptor(const GroupDescriptor& descriptor, std::span<std::uint8_t> bytes)
 {
     std::uint8_t* raw = bytes.data();
-    StoreLittleEndian(raw + 12, static_cast<std::uint16_t>(descriptor.free_blocks));
-    StoreLittleEndian(raw + 14, static_cast<std::uint16_t>(descriptor.free_inodes));
-    StoreLittleEndian(raw + 16, static_cast<std::uint16_t>(descriptor.used_directories));
+    const auto low = [](std::uint32_t value) { return static_cast<std::uint16_t>(value); };
+    const auto high = [](std::uint32_t value) { return static_cast<std::uint16_t>(value >> 16); };
+    StoreLittleEndian(raw + 12, low(descriptor.free_blocks));
+    StoreLittleEndian(raw + 14, low(descriptor.free_inodes));
+    StoreLittleEndian(raw + 16, low(descriptor.used_directories));
+    StoreLittleEndian(raw + 18, descriptor.flags);
+    StoreLittleEndian(raw + 24, low(descriptor.block_bitmap_checksum));
+    StoreLittleEndian(raw + 26, low(descriptor.inode_bitmap_checksum));
+    StoreLittleEndian(raw + 28, low(descriptor.unused_inodes));
     if (bytes.size() >= LargeGroupDescriptorSize)
     {
-        StoreLittleEndian(raw + 44, static_cast<std::uint16_t>(descriptor.free_blocks >> 16));
-        StoreLittleEndian(raw + 46, static_cast<std::uint16_t>(descriptor.free_inodes >> 16));
-        StoreLittleEndian(raw + 48, static_cast<std::uint16_t>(descriptor.used_directories >> 16));
+        StoreLittleEndian(raw + 44, high(descriptor.free_blocks));
+        StoreLittleEndian(raw + 46, high(descriptor.free_inodes));
+        StoreLittleEndian(raw + 48, high(descriptor.used_directories));
+        StoreLittleEndian(raw + 50, high(descriptor.unused_inodes));
+        StoreLittleEndian(raw + 56, high(descriptor.block_bitmap_checksum));
+        StoreLittleEndian(raw + 58, high(descriptor.inode_bitmap_checksum));
     }
 }
 

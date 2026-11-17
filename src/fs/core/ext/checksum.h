@@ -34,14 +34,22 @@ std::uint32_t InodeChecksumSeed(std::uint32_t volume_seed, std::uint32_t inode,
 // raw is the whole on-disk inode. Inodes of 128 bytes, or whose i_extra_isize leaves out
 // i_checksum_hi, keep only the lower 16 bits.
 bool InodeChecksumMatches(std::span<const std::uint8_t> raw, std::uint32_t inode_seed);
+void StoreInodeChecksum(std::span<std::uint8_t> raw, std::uint32_t inode_seed);
 // A leaf block must end in the checksum record and match it.
 bool DirectoryBlockChecksumMatches(std::span<const std::uint8_t> block, std::uint32_t inode_seed);
+// Writes the checksum record over a leaf block's last 12 bytes, which its entries leave free.
+void StoreDirectoryTail(std::span<std::uint8_t> block, std::uint32_t inode_seed);
 // Whether a block of a hashed directory is an index block instead of a leaf: the first block, or
 // one that starts with an unused record covering it all.
 bool IsIndexBlock(std::span<const std::uint8_t> block, std::uint64_t logical);
 // An index block (the root after "." and "..", or an interior node) must leave room after its
 // entries' limit for the checksum, and match it.
 bool IndexBlockChecksumMatches(std::span<const std::uint8_t> block, std::uint32_t inode_seed);
+// False, with nothing written, for a block that does not hold together as an index block.
+bool StoreIndexBlockChecksum(std::span<std::uint8_t> block, std::uint32_t inode_seed);
+// h_checksum of an extended attribute block, seeded by the volume and the block's number.
+std::uint32_t AttributeBlockChecksum(std::uint32_t volume_seed, std::uint64_t block_number,
+                                     std::span<const std::uint8_t> block);
 // An extent tree block's tail follows its header's eh_max entries; nullopt when it would not fit.
 std::optional<std::size_t> ExtentTailOffset(std::span<const std::uint8_t> block);
 // What the tail at offset (from ExtentTailOffset) must hold.

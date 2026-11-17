@@ -41,7 +41,8 @@ constexpr std::uint16_t ErrorsPanic = 3;
 // s_feature_compat: a reader may ignore these, but a writer must keep what they promise. These
 // ask nothing of this driver that it does not do: preallocation is a hint, extended attribute
 // blocks are reference-counted when a file goes, the resize inode's blocks stay marked in the
-// bitmaps, and a hashed directory loses its index flag when it changes, as Linux's ext2 does.
+// bitmaps, a hashed directory keeps its index while names leave it and loses it before one is
+// added, and sparse_super2's backups are metadata like any other.
 constexpr std::uint32_t CompatibleDirectoryPreallocation = 0x0001;
 constexpr std::uint32_t CompatibleHasJournal = 0x0004;
 constexpr std::uint32_t CompatibleExtendedAttributes = 0x0008;
@@ -51,7 +52,7 @@ constexpr std::uint32_t CompatibleDirectoryIndex = 0x0020;
 constexpr std::uint32_t CompatibleSparseSuper2 = 0x0200;
 constexpr std::uint32_t CompatibleWritable = CompatibleDirectoryPreallocation |
                                              CompatibleExtendedAttributes | CompatibleResizeInode |
-                                             CompatibleDirectoryIndex;
+                                             CompatibleDirectoryIndex | CompatibleSparseSuper2;
 
 // s_feature_incompat: a driver must refuse a volume with a bit it does not know.
 constexpr std::uint32_t IncompatibleCompression = 0x0001;
@@ -76,7 +77,10 @@ constexpr std::uint32_t IncompatibleCaseFolding = 0x20000;
 constexpr std::uint32_t IncompatibleReadable =
     IncompatibleFileType | IncompatibleRecover | IncompatibleExtents | Incompatible64Bit |
     IncompatibleFlexibleGroups | IncompatibleChecksumSeed;
-constexpr std::uint32_t IncompatibleWritable = IncompatibleFileType;
+// Extents stay read-only until the write path allocates them, even on a volume with none yet.
+constexpr std::uint32_t IncompatibleWritable = IncompatibleFileType | Incompatible64Bit |
+                                               IncompatibleFlexibleGroups |
+                                               IncompatibleChecksumSeed;
 
 // s_feature_ro_compat: a driver may read a volume with a bit it does not know, but not write it.
 constexpr std::uint32_t ReadOnlyCompatibleSparseSuper = 0x0001;
@@ -92,7 +96,9 @@ constexpr std::uint32_t ReadOnlyCompatibleBigAlloc = 0x0200;
 // CRC32C checksums in the superblock, descriptors, bitmaps, inodes and directory blocks.
 constexpr std::uint32_t ReadOnlyCompatibleMetadataChecksum = 0x0400;
 constexpr std::uint32_t ReadOnlyCompatibleWritable =
-    ReadOnlyCompatibleSparseSuper | ReadOnlyCompatibleLargeFile;
+    ReadOnlyCompatibleSparseSuper | ReadOnlyCompatibleLargeFile | ReadOnlyCompatibleHugeFile |
+    ReadOnlyCompatibleGroupChecksum | ReadOnlyCompatibleDirectoryLinks |
+    ReadOnlyCompatibleExtraInodeSize | ReadOnlyCompatibleMetadataChecksum;
 // Those the read path refuses: the others only matter to a writer.
 constexpr std::uint32_t ReadOnlyCompatibleUnreadable = ReadOnlyCompatibleBigAlloc;
 
@@ -146,6 +152,8 @@ struct Superblock
     std::array<std::uint32_t, 2> backup_groups;
     // s_journal_inum: 0 when the journal is on another device.
     std::uint32_t journal_inode;
+    // flex_bg packs the bitmaps and inode tables of 2^log_groups_per_flex groups together.
+    std::uint32_t log_groups_per_flex;
     // Without metadata_csum always true; with it, whether s_checksum matches the bytes.
     bool checksum_matches;
 };
@@ -184,6 +192,8 @@ Status CheckSuperblock(const Superblock& superblock, std::uint64_t volume_bytes)
 // state and, from revision 1, the read-only compatible features. Every other byte is kept.
 void EncodeSuperblockState(const Superblock& superblock,
                            std::span<std::uint8_t, SuperblockSize> bytes);
+// s_checksum over the other bytes, for a volume with metadata_csum.
+void StoreSuperblockChecksum(std::span<std::uint8_t, SuperblockSize> bytes);
 // Whether a group starts with a copy of the superblock and the group descriptor table: groups 0
 // and 1 and the powers of 3, 5 and 7 with sparse_super, group 0 and the two s_backup_bgs with
 // sparse_super2, every group without either.
@@ -195,8 +205,9 @@ bool HasMetadataChecksums(const Superblock& superblock);
 
 // bytes is one descriptor, 32 bytes or the superblock's descriptor size.
 GroupDescriptor DecodeGroupDescriptor(std::span<const std::uint8_t> bytes);
-// Stores the three counts; the locations never change.
-void EncodeGroupCounts(const GroupDescriptor& descriptor, std::span<std::uint8_t> bytes);
+// Stores the counts, flags, unused-inode count and bitmap checksums, each in as many bits as the
+// descriptor's size holds; the locations never change, and bg_checksum is the caller's.
+void EncodeGroupDescriptor(const GroupDescriptor& descriptor, std::span<std::uint8_t> bytes);
 
 } // namespace FeatherDisk::Ext
 
