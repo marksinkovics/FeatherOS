@@ -887,7 +887,8 @@ bool ExtFilesystemType::Probe(BlockDevice& volume)
     return superblock && LooksLikeExt(*superblock) && Variant(*superblock) == variant;
 }
 
-Result<Filesystem*> ExtFilesystemType::Mount(BlockDevice& volume, MountOptions options)
+// The superblock, if this driver can mount the volume.
+Result<Superblock> ReadMountable(BlockDevice& volume)
 {
     const Result<Superblock> superblock = ReadSuperblock(volume);
     if (!superblock)
@@ -937,15 +938,60 @@ Result<Filesystem*> ExtFilesystemType::Mount(BlockDevice& volume, MountOptions o
                      superblock->block_size);
         return std::unexpected(Error::Unsupported);
     }
+    return superblock;
+}
 
+// Replays the journal through a read-only instance, which reads the volume as it was before.
+Status Recover(BlockDevice& volume, const Superblock& superblock)
+{
+    void* memory = Host::Allocate(sizeof(Ext2Filesystem));
+    if (memory == nullptr)
+    {
+        return std::unexpected(Error::OutOfMemory);
+    }
+    auto* filesystem = new (memory) Ext2Filesystem(volume, superblock, true);
+    Status recovered = filesystem->Initialize();
+    if (recovered)
+    {
+        recovered = filesystem->RecoverJournal();
+    }
+    filesystem->~Ext2Filesystem();
+    Host::Free(memory);
+    return recovered;
+}
+
+Result<Filesystem*> ExtFilesystemType::Mount(BlockDevice& volume, MountOptions options)
+{
+    Result<Superblock> superblock = ReadMountable(volume);
+    if (!superblock)
+    {
+        return Failure(superblock);
+    }
     bool read_only = options.read_only;
-    // Linux replays the journal first; without that, reads see the volume as it was before the
-    // transactions the journal still holds.
+    // Linux replays the journal at mount. Without that, reads see the volume as it was before
+    // the transactions the journal still holds, which a read-only mount accepts: it never writes.
     if ((superblock->incompatible & IncompatibleRecover) != 0)
     {
-        LogWarning("ext2: mounted read-only: ",
-                   "the journal needs recovery, which is not replayed; recent changes are missing");
-        read_only = true;
+        const Status recovered =
+            read_only ? Status(std::unexpected(Error::ReadOnly)) : Recover(volume, *superblock);
+        if (recovered)
+        {
+            superblock = ReadMountable(volume);
+            if (!superblock)
+            {
+                return Failure(superblock);
+            }
+        }
+        else if (recovered.error() == Error::ReadOnly || recovered.error() == Error::Unsupported)
+        {
+            LogWarning("ext2: mounted read-only: ", "the journal needs recovery, which is not "
+                                                    "replayed; recent changes are missing");
+            read_only = true;
+        }
+        else
+        {
+            return Failure(recovered);
+        }
     }
     if (const std::optional<std::string_view> reason = WriteRefusal(*superblock);
         reason && !read_only)

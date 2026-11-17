@@ -31,7 +31,9 @@ add_library(featherdisk_core STATIC
     ext/ext2.cpp
     ext/features.cpp
     ext/inode.cpp
+    ext/journal.cpp
     ext/namespace.cpp
+    ext/recovery.cpp
     ext/superblock.cpp
     ext/write.cpp
     fat/fat16.cpp
@@ -174,6 +176,7 @@ add_executable(featherdisk_core_tests
     tests/ext2_write_tests.cpp
     tests/ext4_extent_tests.cpp
     tests/ext4_layout_tests.cpp
+    tests/ext_journal_tests.cpp
     tests/fat_image.cpp
     tests/fat_mtools_tests.cpp
     tests/fat_names_tests.cpp

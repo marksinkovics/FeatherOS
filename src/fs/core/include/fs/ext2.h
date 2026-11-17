@@ -13,12 +13,15 @@ namespace FeatherDisk::Ext
 {
 
 // ext2, ext3 and ext4 through one driver: ext2 revisions 0 and 1, with 1, 2 or 4 KiB blocks, and
-// the ext3 and ext4 layout around it. ext3's journal is ignored. ext4 reads extent trees of any
-// depth (unwritten extents as zeros), 64bit with large group descriptors, flex_bg, large inodes,
-// huge_file, dir_nlink, extra_isize, unwritten groups (uninit_bg) and the CRC16 or CRC32C
-// checksums (gdt_csum, metadata_csum and its seed), which are verified on read: a mismatch is
-// Error::Corrupt. A journal that needs recovery is not replayed: the volume mounts read-only with a
-// log line. Any other incompatible feature (meta_bg, inline_data, encrypt, casefold, mmp,
+// the ext3 and ext4 layout around it. ext4 reads extent trees of any depth (unwritten extents as
+// zeros), 64bit with large group descriptors, flex_bg, large inodes, huge_file, dir_nlink,
+// extra_isize, unwritten groups (uninit_bg) and the CRC16 or CRC32C checksums (gdt_csum,
+// metadata_csum and its seed), which are verified on read: a mismatch is Error::Corrupt. A jbd2
+// journal inside the volume that needs recovery is replayed by a mount asked to write, which then
+// goes on as for a clean volume. A read-only mount never writes, so it reads the volume as it is,
+// with a log line, and so does a mount whose journal is on another device or has unknown
+// features. A malformed journal fails the writable mount with Error::Corrupt before anything is
+// written. Any other incompatible feature (meta_bg, inline_data, encrypt, casefold, mmp,
 // journal_dev, ...) or bigalloc refuses the mount (Error::Unsupported, with a log line of the
 // feature bits), and inodes flagged for inline data or encryption are Error::Unsupported. Node IDs
 // are inode numbers, and the root is inode 2. Directories list in their on-disk order

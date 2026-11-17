@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // The filesystem behind Ext2Type(), Ext3Type() and Ext4Type(), shared by ext2.cpp (mounting and
-// reading), extent.cpp (extent trees), allocation.cpp (groups and bitmaps) and write.cpp (changes).
+// reading), extent.cpp (extent trees), recovery.cpp (journal replay), allocation.cpp (groups and
+// bitmaps) and write.cpp (changes).
 #ifndef FEATHERDISK_EXT_EXT2_FILESYSTEM_H
 #define FEATHERDISK_EXT_EXT2_FILESYSTEM_H
 
@@ -144,6 +145,10 @@ public:
     static void* operator new(std::size_t size, void* place) noexcept;
 
     Status Initialize();
+    // Copies the transactions the journal committed to their places, empties the journal and
+    // clears needs_recovery (recovery.cpp). Mount runs it on a read-only instance for a mount
+    // asked to write, then mounts the recovered volume.
+    Status RecoverJournal();
 
     Capabilities GetCapabilities() const override;
     NodeId Root() const override;
@@ -213,6 +218,39 @@ private:
     Result<std::size_t> ReadContents(const Inode& file, std::uint64_t offset,
                                      std::span<std::uint8_t> buffer,
                                      std::span<std::uint8_t> scratch);
+
+    // Journal replay (recovery.cpp).
+    struct JournalLog;
+    enum class LogPass : std::uint8_t
+    {
+        // Finds the end of the log: the first transaction without a valid commit.
+        Scan,
+        Revoke,
+        Replay,
+    };
+    // What the scan found wrong with the transaction it is in, which counts once it commits.
+    struct TransactionCheck
+    {
+        // A block outside the volume, or a revoke count past its block.
+        bool outside;
+        // A descriptor, revoke or block checksum that does not match.
+        bool mismatch;
+    };
+    Status OpenJournal(JournalLog& log, Buffers& buffers);
+    Result<std::uint64_t> LogBlockPlace(JournalLog& log, std::uint32_t position,
+                                        std::span<std::uint8_t> scratch);
+    Status ReadLogBlock(JournalLog& log, std::uint32_t position, std::span<std::uint8_t> out,
+                        std::span<std::uint8_t> scratch);
+    // The first transaction the walk did not finish.
+    Result<std::uint32_t> WalkLog(JournalLog& log, LogPass pass, Buffers& buffers);
+    // Whether a commit block ends the log instead of committing; Corrupt when the transaction
+    // must not be replayed and the log must not end before it either.
+    Result<bool> CheckCommit(const JournalLog& log, std::uint32_t sequence,
+                             const TransactionCheck& check, std::span<const std::uint8_t> block);
+    // Walks the blocks a descriptor block (in buffers[0]) tags.
+    Status FollowTags(JournalLog& log, LogPass pass, std::uint32_t sequence,
+                      TransactionCheck& check, Buffers& buffers);
+    Status ClearRecoveryFlag(std::span<std::uint8_t> scratch);
 
     // Groups and bitmaps (allocation.cpp).
     std::uint32_t BlocksInGroup(std::uint32_t group) const;

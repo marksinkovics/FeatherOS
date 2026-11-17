@@ -76,6 +76,10 @@ bool OnlyRoutineRepairs(const std::string& report, bool renames = false);
 ToolRun RunDebugfs(MemoryDevice& device, std::string_view name, std::string_view command);
 // debugfs -w -R command, with the changed volume read back into the device.
 ToolRun ChangeWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view command);
+// debugfs -w -f over a script of commands, one per line, with the changed volume read back into
+// the device. "%N" in the script names a file holding files[N] (N a single digit).
+ToolRun ScriptWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view script,
+                          const std::vector<std::vector<std::uint8_t>>& files);
 
 } // namespace FeatherDisk::Tests
 

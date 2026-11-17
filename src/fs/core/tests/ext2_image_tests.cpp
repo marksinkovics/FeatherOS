@@ -472,28 +472,6 @@ TEST_CASE("ext3 and ext4 volumes mount read-only when asked to write, and keep e
 #endif
 }
 
-TEST_CASE("a journal that needs recovery mounts read-only instead of being replayed")
-{
-#ifndef FEATHERDISK_EXT_IMAGES
-    SKIP("e2fsprogs is not installed");
-#else
-    for (const std::string_view variant : {"ext3", "ext4-blockmap"})
-    {
-        INFO(variant);
-        std::vector<std::uint8_t> bytes = LoadExtImage(variant);
-        RawVolume raw{bytes};
-        raw.Store32(1024 + 96, raw.Load32(1024 + 96) | 0x0004U);
-        raw.UpdateSuperblockChecksum();
-        const std::unique_ptr<MemoryDevice> device = DeviceFrom(bytes);
-        {
-            MountedFilesystem ext2(Ext2Type(), *device, false);
-            CheckReadOnly(*ext2);
-        }
-        REQUIRE(std::memcmp(device->Bytes().data(), bytes.data(), bytes.size()) == 0);
-    }
-#endif
-}
-
 TEST_CASE("a read-only ext2 mount changes nothing on the volume")
 {
 #ifndef FEATHERDISK_EXT_IMAGES

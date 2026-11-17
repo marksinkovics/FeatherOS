@@ -13,9 +13,6 @@ namespace
 
 // Larger block sizes exist on machines with bigger pages; 64 KiB is the format's limit.
 constexpr std::uint32_t MaximumLogBlockSize = 6;
-// s_checksum covers the superblock up to itself.
-constexpr std::size_t SuperblockChecksumOffset = 1020;
-
 std::uint16_t Load16(const std::uint8_t* bytes)
 {
     return LoadLittleEndian<std::uint16_t>(bytes);
@@ -77,6 +74,7 @@ Superblock DecodeSuperblock(std::span<const std::uint8_t, SuperblockSize> bytes)
         .checksum_type = 0,
         .stored_checksum_seed = 0,
         .backup_groups = {},
+        .journal_inode = 0,
         .checksum_matches = true,
     };
     if (superblock.log_block_size <= MaximumLogBlockSize)
@@ -88,7 +86,7 @@ Superblock DecodeSuperblock(std::span<const std::uint8_t, SuperblockSize> bytes)
     {
         superblock.inode_size = Load16(raw + 88);
         superblock.compatible = Load32(raw + 92);
-        superblock.incompatible = Load32(raw + 96);
+        superblock.incompatible = Load32(raw + SuperblockIncompatibleOffset);
         superblock.read_only_compatible = Load32(raw + 100);
         superblock.first_inode = Load32(raw + 84);
         if ((superblock.compatible & CompatibleResizeInode) != 0)
@@ -114,6 +112,7 @@ Superblock DecodeSuperblock(std::span<const std::uint8_t, SuperblockSize> bytes)
         superblock.checksum_type = raw[373];
         superblock.stored_checksum_seed = Load32(raw + 624);
         superblock.backup_groups = {Load32(raw + 588), Load32(raw + 592)};
+        superblock.journal_inode = Load32(raw + 224);
         if (HasMetadataChecksums(superblock))
         {
             superblock.checksum_matches = Crc32c(~0U, bytes.first(SuperblockChecksumOffset)) ==

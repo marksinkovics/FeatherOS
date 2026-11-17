@@ -57,16 +57,17 @@ void SaveImage(MemoryDevice& device, const std::string& path)
     return run;
 }
 
+// options are debugfs's before the image: -R with a command or -f with a script.
 ToolRun Debugfs([[maybe_unused]] MemoryDevice& device, [[maybe_unused]] std::string_view name,
-                [[maybe_unused]] std::string_view command, [[maybe_unused]] bool writable)
+                [[maybe_unused]] const std::string& options, [[maybe_unused]] bool writable)
 {
 #ifdef FEATHERDISK_DEBUGFS
     const std::string image = WorkPath(name) + ".img";
     const std::string output = image + ".debugfs.txt";
     SaveImage(device, image);
     const ToolRun run =
-        Run(std::string("\"") + FEATHERDISK_DEBUGFS + "\"" + (writable ? " -w" : "") + " -R '" +
-                std::string(command) + "' \"" + image + "\" > \"" + output + "\" 2>/dev/null",
+        Run(std::string("\"") + FEATHERDISK_DEBUGFS + "\"" + (writable ? " -w " : " ") + options +
+                " \"" + image + "\" > \"" + output + "\" 2>/dev/null",
             output);
     if (writable)
     {
@@ -81,6 +82,11 @@ ToolRun Debugfs([[maybe_unused]] MemoryDevice& device, [[maybe_unused]] std::str
 #else
     return {.ran = false, .status = 0, .output = {}};
 #endif
+}
+
+std::string CommandOption(std::string_view command)
+{
+    return "-R '" + std::string(command) + "'";
 }
 
 } // namespace
@@ -359,12 +365,53 @@ bool OnlyRoutineRepairs(const std::string& report, bool renames)
 
 ToolRun RunDebugfs(MemoryDevice& device, std::string_view name, std::string_view command)
 {
-    return Debugfs(device, name, command, false);
+    return Debugfs(device, name, CommandOption(command), false);
 }
 
 ToolRun ChangeWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view command)
 {
-    return Debugfs(device, name, command, true);
+    return Debugfs(device, name, CommandOption(command), true);
+}
+
+ToolRun ScriptWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view script,
+                          const std::vector<std::vector<std::uint8_t>>& files)
+{
+    const std::string base = WorkPath(name);
+    std::vector<std::string> paths;
+    for (std::size_t index = 0; index < files.size(); ++index)
+    {
+        paths.push_back(base + ".data" + std::to_string(index));
+        std::ofstream file(paths.back(), std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(files[index].data()),
+                   static_cast<std::streamsize>(files[index].size()));
+        REQUIRE(file.good());
+    }
+    std::string text;
+    for (std::size_t at = 0; at < script.size(); ++at)
+    {
+        if (script[at] == '%' && at + 1 < script.size() && script[at + 1] >= '0' &&
+            script[at + 1] <= '9')
+        {
+            const auto index = static_cast<std::size_t>(script[++at] - '0');
+            REQUIRE(index < paths.size());
+            text += paths[index];
+            continue;
+        }
+        text += script[at];
+    }
+    const std::string script_path = base + ".debugfs-script";
+    {
+        std::ofstream file(script_path, std::ios::trunc);
+        file << text;
+        REQUIRE(file.good());
+    }
+    const ToolRun run = Debugfs(device, name, "-f \"" + script_path + "\"", true);
+    std::remove(script_path.c_str());
+    for (const std::string& path : paths)
+    {
+        std::remove(path.c_str());
+    }
+    return run;
 }
 
 } // namespace FeatherDisk::Tests

@@ -98,6 +98,9 @@ constexpr std::uint32_t ReadOnlyCompatibleUnreadable = ReadOnlyCompatibleBigAllo
 
 // s_checksum_type: the only algorithm defined.
 constexpr std::uint8_t ChecksumTypeCrc32c = 1;
+// Where s_feature_incompat and s_checksum sit in the superblock's bytes.
+constexpr std::size_t SuperblockIncompatibleOffset = 96;
+constexpr std::size_t SuperblockChecksumOffset = 1020;
 
 // Counts and block numbers are 64-bit: with 64bit their upper halves are in later fields.
 struct Superblock
@@ -141,6 +144,8 @@ struct Superblock
     std::uint32_t stored_checksum_seed;
     // s_backup_bgs, with sparse_super2.
     std::array<std::uint32_t, 2> backup_groups;
+    // s_journal_inum: 0 when the journal is on another device.
+    std::uint32_t journal_inode;
     // Without metadata_csum always true; with it, whether s_checksum matches the bytes.
     bool checksum_matches;
 };
