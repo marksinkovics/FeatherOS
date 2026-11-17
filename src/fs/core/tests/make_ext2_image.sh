@@ -12,7 +12,16 @@
 #   groups      1 KiB blocks, 128-byte inodes, in eight groups of 1024 blocks
 #   mbr         the 1k volume as the only partition (type 0x83) of an MBR disk, from sector 2048
 #   ext3        an ext3 volume with a clean journal
-#   ext4        an ext4 volume, which the ext2 driver must refuse
+#   ext4        an ext4 volume with extents, which the driver refuses until it reads them
+#   ext4-blockmap   ext4 without extents or 64bit: 1 KiB blocks, metadata_csum with
+#               metadata_csum_seed, flex_bg, huge_file, dir_nlink, extra_isize, four groups;
+#               e2fsck -D gives many/ a hash index
+#   ext4-64bit  2 KiB blocks, 64bit with 64-byte group descriptors, metadata_csum seeded from the
+#               UUID, flex_bg, four groups; mke2fs makes 64bit only with extents, so the volume
+#               is made without, tune2fs and resize2fs -b convert it, and debugfs takes the
+#               extent feature away again (the files keep their block maps)
+#   ext4-gdtcsum    4 KiB blocks, CRC16 group descriptor checksums (uninit_bg) instead of
+#               metadata_csum, flex_bg, no journal, four groups
 #
 #   sh make_ext2_image.sh <mke2fs> <debugfs> <image> <variant>
 #
@@ -80,6 +89,11 @@ case "$variant" in
     groups) options="-t ext2 -b 1024 -I 128 -g 1024" ;;
     ext3) options="-t ext3 -b 1024 -I 256" ;;
     ext4) options="-t ext4 -b 1024" ;;
+    ext4-blockmap) options="-t ext4 -b 1024 -g 2048 -O ^extent,^64bit" ;;
+    ext4-64bit) options="-t ext4 -b 2048 -g 1024 -O ^extent,^64bit,^metadata_csum_seed" ;;
+    ext4-gdtcsum)
+        options="-t ext4 -b 4096 -g 512 -O ^extent,^64bit,^metadata_csum,^has_journal,uninit_bg"
+        ;;
     *)
         printf 'unknown variant %s\n' "$variant" >&2
         exit 2
@@ -102,6 +116,26 @@ elif ! "$mke2fs" -q -F $options -d "$source" "$volume" 8M >"$work/log" 2>&1; the
     exit 1
 fi
 
+tools="$(dirname "$mke2fs")"
+if [ "$variant" = ext4-64bit ]; then
+    if ! "$tools/tune2fs" -O extent "$volume" >"$work/log" 2>&1 \
+        || ! "$tools/resize2fs" -b "$volume" >"$work/log" 2>&1 \
+        || ! "$debugfs" -w -R "feature -extent" "$volume" >"$work/log" 2>&1; then
+        cat "$work/log" >&2
+        exit 1
+    fi
+fi
+
+if [ "$variant" = ext4-blockmap ]; then
+    # Exit status 1 means e2fsck changed the volume, as -D asks.
+    status=0
+    "$tools/e2fsck" -fyD "$volume" >"$work/log" 2>&1 || status=$?
+    if [ "$status" -gt 1 ]; then
+        cat "$work/log" >&2
+        exit 1
+    fi
+fi
+
 {
     printf 'sif /hello.txt uid 100000\n'
     printf 'sif /hello.txt gid 4242\n'
@@ -112,7 +146,7 @@ fi
     printf 'sif /slow-link mode 0120777\n'
     case "$variant" in
         # 4000 >> 2: 1000 nanoseconds, with no extra epoch bits.
-        4k | nofiletype | ext3) printf 'sif /hello.txt mtime_extra 4000\n' ;;
+        4k | nofiletype | ext3 | ext4-*) printf 'sif /hello.txt mtime_extra 4000\n' ;;
     esac
 } >"$work/commands"
 # debugfs echoes each command after "debugfs:" and exits 0 even when one fails, so any other line

@@ -37,7 +37,12 @@ struct RawVolume
     std::uint32_t InodeCount() const;
     std::uint64_t BlockOffset(std::uint32_t block) const;
     std::uint64_t DescriptorOffset() const;
+    // 32 bytes, or s_desc_size with 64bit.
+    std::uint32_t DescriptorSize() const;
+    std::uint32_t InodeSize() const;
     std::uint64_t InodeOffset(std::uint32_t inode) const;
+    // s_checksum again after a deliberate change, on a volume with metadata_csum.
+    void UpdateSuperblockChecksum();
     std::uint32_t InodeBlock(std::uint32_t inode, std::uint32_t index) const;
     // The named entry in the directory's first block.
     std::uint64_t EntryOffset(std::uint32_t directory, std::string_view name) const;

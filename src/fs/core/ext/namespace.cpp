@@ -99,6 +99,8 @@ Inode Ext2Filesystem::NewInode(std::uint16_t mode, Timestamp now) const
         .attribute_block = 0,
         .extra_size = extra_size,
         .creation_time = now,
+        .generation = 0,
+        .checksum_seed = 0,
     };
 }
 

@@ -4,6 +4,7 @@
 #include "common/bytes.h"
 #include "common/little_endian.h"
 #include "ext/ext2_filesystem.h"
+#include "ext/features.h"
 #include "fs/host.h"
 
 #include <array>
@@ -67,16 +68,25 @@ Result<Superblock> ReadSuperblock(BlockDevice& volume)
     return DecodeSuperblock(bytes.first<SuperblockSize>());
 }
 
-// Why a volume this driver reads must not be written, or nullopt.
+// Why a volume this driver reads must not be written, or nullopt. Only plain ext2 is written:
+// a journal or any ext4 feature keeps the volume read-only.
 std::optional<std::string_view> WriteRefusal(const Superblock& superblock)
 {
-    if ((superblock.read_only_compatible & ~ReadOnlyCompatibleUnderstood) != 0)
-    {
-        return "unknown read-only compatible features";
-    }
     if ((superblock.compatible & CompatibleHasJournal) != 0)
     {
-        return "an ext3 journal, which writes would have to go through";
+        return "a journal, which writes would have to go through";
+    }
+    if ((superblock.incompatible & ~IncompatibleWritable) != 0 ||
+        (superblock.read_only_compatible &
+         (ReadOnlyCompatibleHugeFile | ReadOnlyCompatibleGroupChecksum |
+          ReadOnlyCompatibleDirectoryLinks | ReadOnlyCompatibleExtraInodeSize |
+          ReadOnlyCompatibleMetadataChecksum)) != 0)
+    {
+        return "ext4 features, which only the read path supports";
+    }
+    if ((superblock.read_only_compatible & ~ReadOnlyCompatibleWritable) != 0)
+    {
+        return "unknown read-only compatible features";
     }
     if ((superblock.compatible & ~CompatibleWritable) != 0)
     {
@@ -160,15 +170,18 @@ Ext2Filesystem::Ext2Filesystem(BlockDevice& device, const Superblock& layout,
                                bool mounted_read_only)
     : volume(device), superblock(layout),
       descriptor_memory(static_cast<std::size_t>(
-          DivideRoundingUp(std::uint64_t{layout.group_count} * GroupDescriptorSize,
+          DivideRoundingUp(std::uint64_t{layout.group_count} * layout.descriptor_size,
                            layout.block_size) *
           layout.block_size)),
       writable_mount(false), read_only(mounted_read_only),
       has_file_type((layout.incompatible & IncompatibleFileType) != 0),
+      group_checksums(HasGroupChecksums(layout)), metadata_checksums(HasMetadataChecksums(layout)),
+      hashed_directories((layout.compatible & CompatibleDirectoryIndex) != 0),
+      volume_seed(VolumeChecksumSeed(layout)), descriptor_size(layout.descriptor_size),
       block_size(layout.block_size), pointers_per_block(layout.block_size / PointerSize),
       inode_table_blocks(DivideRoundingUp(
           std::uint64_t{layout.inodes_per_group} * layout.inode_size, layout.block_size)),
-      descriptor_blocks(DivideRoundingUp(std::uint64_t{layout.group_count} * GroupDescriptorSize,
+      descriptor_blocks(DivideRoundingUp(std::uint64_t{layout.group_count} * layout.descriptor_size,
                                          layout.block_size))
 {
 }
@@ -196,6 +209,10 @@ Status Ext2Filesystem::Initialize()
     {
         return read;
     }
+    if (const Status checked = CheckDescriptorChecksums(); !checked)
+    {
+        return checked;
+    }
     Buffers buffers(block_size, 1);
     if (buffers.Empty())
     {
@@ -221,6 +238,25 @@ Status Ext2Filesystem::Initialize()
         return {};
     }
     return MarkMounted();
+}
+
+Status Ext2Filesystem::CheckDescriptorChecksums() const
+{
+    if (!group_checksums)
+    {
+        return {};
+    }
+    for (std::uint32_t group = 0; group < superblock.group_count; ++group)
+    {
+        const std::span<const std::uint8_t> bytes =
+            descriptors.subspan(std::size_t{group} * descriptor_size, descriptor_size);
+        if (GroupDescriptorChecksum(superblock, volume_seed, group, bytes) != Group(group).checksum)
+        {
+            LogWithValue("ext2: group descriptor checksum mismatch in group ", group);
+            return std::unexpected(Error::Corrupt);
+        }
+    }
+    return {};
 }
 
 std::unexpected<Error> Ext2Filesystem::Refused() const
@@ -265,7 +301,7 @@ Result<Ext2Filesystem::InodePlace> Ext2Filesystem::LocateInode(NodeId node) cons
     // Inodes count from 1, in groups of inodes_per_group, each group with its own inode table
     // that its descriptor locates.
     const auto number = static_cast<std::uint32_t>(node - 1);
-    const std::uint32_t table = Group(number / superblock.inodes_per_group).inode_table;
+    const std::uint64_t table = Group(number / superblock.inodes_per_group).inode_table;
     if (!IsDataBlock(table) || table + inode_table_blocks > superblock.blocks_count)
     {
         return std::unexpected(Error::Corrupt);
@@ -273,9 +309,29 @@ Result<Ext2Filesystem::InodePlace> Ext2Filesystem::LocateInode(NodeId node) cons
     const std::uint64_t byte =
         std::uint64_t{number % superblock.inodes_per_group} * superblock.inode_size;
     return InodePlace{
-        .block = static_cast<std::uint32_t>(table + byte / block_size),
+        .block = table + byte / block_size,
         .offset = static_cast<std::size_t>(byte % block_size),
     };
+}
+
+// A group whose inodes were never used may have no inode table written (lazy_itable_init), so
+// what is there must not be read as inodes.
+bool Ext2Filesystem::IsUnusedInode(NodeId node) const
+{
+    if (!group_checksums)
+    {
+        return false;
+    }
+    const auto number = static_cast<std::uint32_t>(node - 1);
+    const GroupDescriptor descriptor = Group(number / superblock.inodes_per_group);
+    if ((descriptor.flags & GroupInodesUnused) != 0)
+    {
+        return true;
+    }
+    const std::uint32_t unused = descriptor.unused_inodes < superblock.inodes_per_group
+                                     ? descriptor.unused_inodes
+                                     : superblock.inodes_per_group;
+    return number % superblock.inodes_per_group >= superblock.inodes_per_group - unused;
 }
 
 Result<Inode> Ext2Filesystem::LoadInode(NodeId node, std::span<std::uint8_t> scratch)
@@ -285,15 +341,59 @@ Result<Inode> Ext2Filesystem::LoadInode(NodeId node, std::span<std::uint8_t> scr
     {
         return Failure(place);
     }
-    std::array<std::uint8_t, DecodedInodeBytes> raw{};
+    if (IsUnusedInode(node))
+    {
+        return Inode{};
+    }
     const std::size_t length =
         superblock.inode_size < DecodedInodeBytes ? superblock.inode_size : DecodedInodeBytes;
-    const std::span<std::uint8_t> bytes(raw.data(), length);
-    if (const Status read = cache.Read(place->block, place->offset, bytes, scratch); !read)
+    std::array<std::uint8_t, DecodedInodeBytes> copy{};
+    std::span<const std::uint8_t> bytes(copy.data(), length);
+    std::uint32_t inode_seed = 0;
+    if (metadata_checksums)
+    {
+        // The checksum covers the whole inode, so its block is read whole.
+        if (const Status read = cache.Read(place->block, 0, scratch, scratch); !read)
+        {
+            return Failure(read);
+        }
+        const std::span<const std::uint8_t> whole =
+            scratch.subspan(place->offset, superblock.inode_size);
+        bool zero = true;
+        for (const std::uint8_t byte : whole)
+        {
+            zero = zero && byte == 0;
+        }
+        // An inode that was never written has no checksum either, as e2fsck allows.
+        if (zero)
+        {
+            return Inode{};
+        }
+        inode_seed = InodeChecksumSeed(volume_seed, static_cast<std::uint32_t>(node),
+                                       LoadLittleEndian<std::uint32_t>(whole.data() + 100));
+        if (!InodeChecksumMatches(whole, inode_seed))
+        {
+            LogWithValue("ext2: inode checksum mismatch in inode ",
+                         static_cast<std::uint32_t>(node));
+            return std::unexpected(Error::Corrupt);
+        }
+        bytes = whole.first(length);
+    }
+    else if (const Status read = cache.Read(place->block, place->offset,
+                                            std::span<std::uint8_t>(copy.data(), length), scratch);
+             !read)
     {
         return Failure(read);
     }
-    return DecodeInode(bytes, superblock.read_only_compatible, block_size);
+    Inode inode = DecodeInode(bytes, superblock.read_only_compatible, block_size);
+    // The extra fields must fit in the inode and keep 4-byte alignment.
+    if (GoodOldInodeSize + std::uint32_t{inode.extra_size} > superblock.inode_size ||
+        inode.extra_size % 4 != 0)
+    {
+        return std::unexpected(Error::Corrupt);
+    }
+    inode.checksum_seed = inode_seed;
+    return inode;
 }
 
 Result<Node> Ext2Filesystem::LoadNode(NodeId node, std::span<std::uint8_t> scratch)
@@ -370,8 +470,9 @@ std::optional<BlockPath> Ext2Filesystem::PathOf(std::uint64_t logical) const
 Result<std::uint32_t> Ext2Filesystem::MapBlock(const Inode& inode, std::uint64_t logical,
                                                std::span<std::uint8_t> scratch)
 {
-    // ext4's extent trees and inline data put something else in i_block.
-    if ((inode.flags & (InodeExtents | InodeInlineData)) != 0)
+    // ext4's extent trees and inline data put something else in i_block, and encrypted contents
+    // need keys.
+    if ((inode.flags & (InodeExtents | InodeInlineData | InodeEncrypted)) != 0)
     {
         return std::unexpected(Error::Unsupported);
     }
@@ -404,6 +505,16 @@ Result<std::uint32_t> Ext2Filesystem::MapBlock(const Inode& inode, std::uint64_t
         return std::unexpected(Error::Corrupt);
     }
     return block;
+}
+
+bool Ext2Filesystem::DirectoryBlockMatches(const Inode& directory, std::uint64_t logical,
+                                           std::span<const std::uint8_t> block) const
+{
+    if (hashed_directories && (directory.flags & InodeIndexed) != 0 && IsIndexBlock(block, logical))
+    {
+        return IndexBlockChecksumMatches(block, directory.checksum_seed);
+    }
+    return DirectoryBlockChecksumMatches(block, directory.checksum_seed);
 }
 
 Result<NodeType> Ext2Filesystem::EntryType(const RawEntry& entry, std::span<std::uint8_t> scratch)
@@ -517,7 +628,7 @@ NodeId Ext2Filesystem::Root() const
 
 Result<VolumeStatistics> Ext2Filesystem::Statistics()
 {
-    const std::uint32_t free_blocks = superblock.free_blocks_count < superblock.blocks_count
+    const std::uint64_t free_blocks = superblock.free_blocks_count < superblock.blocks_count
                                           ? superblock.free_blocks_count
                                           : superblock.blocks_count;
     const std::uint32_t free_inodes = superblock.free_inodes_count < superblock.inodes_count
@@ -682,7 +793,7 @@ Result<std::size_t> Ext2Filesystem::ReadLink(NodeId link, std::span<char> buffer
         return std::unexpected(Error::InvalidArgument);
     }
     const Inode& inode = node->inode;
-    if ((inode.flags & InodeInlineData) != 0)
+    if ((inode.flags & (InodeInlineData | InodeEncrypted)) != 0)
     {
         return std::unexpected(Error::Unsupported);
     }
@@ -741,21 +852,37 @@ Result<Filesystem*> Ext2FilesystemType::Mount(BlockDevice& volume, MountOptions 
     {
         return std::unexpected(Error::Unsupported);
     }
-    if (const std::uint32_t unknown = superblock->incompatible & ~IncompatibleSupported;
+    if (const std::uint32_t unknown = superblock->incompatible & ~IncompatibleReadable;
         unknown != 0)
     {
         LogWithValue("ext2: unsupported incompatible features ", unknown);
+        return std::unexpected(Error::Unsupported);
+    }
+    if (const std::uint32_t unreadable =
+            superblock->read_only_compatible & ReadOnlyCompatibleUnreadable;
+        unreadable != 0)
+    {
+        LogWithValue("ext2: unsupported read-only compatible features ", unreadable);
         return std::unexpected(Error::Unsupported);
     }
     if (const Status checked =
             CheckSuperblock(*superblock, volume.SectorCount() * volume.SectorSize());
         !checked)
     {
-        LogWithValue(checked.error() == Error::Unsupported
-                         ? "ext2: unsupported revision or block size, log2 of KiB "
-                         : "ext2: inconsistent superblock, block count ",
-                     checked.error() == Error::Unsupported ? superblock->log_block_size
-                                                           : superblock->blocks_count);
+        if (checked.error() == Error::Corrupt && !superblock->checksum_matches)
+        {
+            LogWarning("ext2: ", "the superblock's checksum does not match");
+        }
+        else if (checked.error() == Error::Unsupported)
+        {
+            LogWithValue("ext2: unsupported revision, block size or checksum type, log2 of KiB ",
+                         superblock->log_block_size);
+        }
+        else
+        {
+            LogWithValue("ext2: inconsistent superblock, block count ",
+                         static_cast<std::uint32_t>(superblock->blocks_count));
+        }
         return Failure(checked);
     }
     if (superblock->block_size % volume.SectorSize() != 0)
@@ -766,6 +893,14 @@ Result<Filesystem*> Ext2FilesystemType::Mount(BlockDevice& volume, MountOptions 
     }
 
     bool read_only = options.read_only;
+    // Linux replays the journal first; without that, reads see the volume as it was before the
+    // transactions the journal still holds.
+    if ((superblock->incompatible & IncompatibleRecover) != 0)
+    {
+        LogWarning("ext2: mounted read-only: ",
+                   "the journal needs recovery, which is not replayed; recent changes are missing");
+        read_only = true;
+    }
     if (const std::optional<std::string_view> reason = WriteRefusal(*superblock);
         reason && !read_only)
     {
@@ -806,6 +941,25 @@ constinit Ext2FilesystemType ext2_type;
 FilesystemType& Ext2Type()
 {
     return ext2_type;
+}
+
+Result<ExtFeatures> DescribeFeatures(BlockDevice& volume)
+{
+    const Result<Superblock> superblock = ReadSuperblock(volume);
+    if (!superblock)
+    {
+        return Failure(superblock);
+    }
+    if (!LooksLikeExt(*superblock))
+    {
+        return std::unexpected(Error::Unsupported);
+    }
+    return ExtFeatures{
+        .variant = Variant(*superblock),
+        .compatible = superblock->compatible,
+        .incompatible = superblock->incompatible,
+        .read_only_compatible = superblock->read_only_compatible,
+    };
 }
 
 } // namespace FeatherDisk::Ext

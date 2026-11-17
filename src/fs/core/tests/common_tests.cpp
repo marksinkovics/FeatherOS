@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "common/bitmap.h"
+#include "common/crc.h"
 #include "common/host_buffer.h"
 #include "common/little_endian.h"
 #include "fs/filesystem.h"
@@ -9,6 +10,8 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
+#include <string_view>
 
 using FeatherDisk::LoadLittleEndian;
 using FeatherDisk::StoreLittleEndian;
@@ -24,6 +27,29 @@ TEST_CASE("little-endian fields load and store byte by byte at any alignment")
     REQUIRE(LoadLittleEndian<std::uint32_t>(bytes.data() + 3) == 0x89ABCDEFU);
     REQUIRE(LoadLittleEndian<std::uint64_t>(bytes.data() + 3) == 0x0123456789ABCDEFULL);
     REQUIRE(LoadLittleEndian<std::uint8_t>(bytes.data() + 10) == 0x01);
+}
+
+TEST_CASE("CRC-32C and CRC-16 match their published check values and continue over pieces")
+{
+    using FeatherDisk::Crc16;
+    using FeatherDisk::Crc32c;
+    constexpr std::string_view Check = "123456789";
+    const std::span<const std::uint8_t> check(reinterpret_cast<const std::uint8_t*>(Check.data()),
+                                              Check.size());
+    REQUIRE(~Crc32c(~0U, check) == 0xE3069283U);
+    // RFC 3720's iSCSI vectors: 32 bytes of zeros, and of ones.
+    std::array<std::uint8_t, 32> block{};
+    REQUIRE(~Crc32c(~0U, block) == 0x8A9136AAU);
+    block.fill(0xFF);
+    REQUIRE(~Crc32c(~0U, block) == 0x62A8AB43U);
+    REQUIRE(Crc32c(0x12345678U, {}) == 0x12345678U);
+    REQUIRE(Crc32c(Crc32c(~0U, check.first(4)), check.subspan(4)) == Crc32c(~0U, check));
+
+    // CRC-16/MODBUS, which is ext4's gdt_csum form seeded with ~0.
+    REQUIRE(Crc16(0xFFFF, check) == 0x4B37);
+    // CRC-16/ARC: the same polynomial from zero.
+    REQUIRE(Crc16(0, check) == 0xBB3D);
+    REQUIRE(Crc16(Crc16(0xFFFF, check.first(5)), check.subspan(5)) == Crc16(0xFFFF, check));
 }
 
 constexpr std::array<std::uint8_t, 4> CompileTimeBytes{1, 2, 3, 4};

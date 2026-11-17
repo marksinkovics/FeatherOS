@@ -133,7 +133,7 @@ Status Ext2Filesystem::MarkMounted()
         free_inodes += Group(group).free_inodes;
     }
     const Superblock before = superblock;
-    superblock.free_blocks_count = static_cast<std::uint32_t>(free_blocks);
+    superblock.free_blocks_count = free_blocks;
     superblock.free_inodes_count = static_cast<std::uint32_t>(free_inodes);
     ++superblock.mount_count;
     superblock.mount_time = static_cast<std::uint32_t>(Now().seconds);

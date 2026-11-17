@@ -235,6 +235,37 @@ case "$case" in
         grep -Eq '^  2048 blocks of 4096 bytes, [0-9]+ free \(' "$work/out" \
             || fail "no volume statistics"
         grep -Eq '^  [0-9]+ nodes, [0-9]+ free$' "$work/out" || fail "no node counts"
+        grep -Eq '^  format: ext2, features: .*filetype' "$work/out" || fail "no ext2 features"
+        run 0 info "$ext/ext3.img"
+        grep -Eq '^  format: ext3, features: has_journal ' "$work/out" || fail "no ext3 features"
+        ;;
+    ext4-read)
+        need_ext_images
+        run 0 info "$ext/ext4-64bit.img"
+        has_line 'filesystem: ext2'
+        grep -Eq '^  format: ext4, features: .* 64bit .*metadata_csum' "$work/out" \
+            || fail "no ext4 features"
+        grep -Eq '^  4096 blocks of 2048 bytes, ' "$work/out" || fail "no volume statistics"
+        run 0 info "$ext/ext4.img"
+        grep -Eq '^  format: ext4, features: .* extent ' "$work/out" || fail "no extent feature"
+        has_line '  not mounted: cannot mount ext2: not supported by this filesystem'
+        for image in ext4-blockmap ext4-64bit ext4-gdtcsum; do
+            run 0 ls "$ext/$image.img"
+            has_line '-rw-r-----         17  hello.txt'
+            has_line 'lrwxrwxrwx         64  slow-link -> a/b/c/a-symbolic-link-target-that-is-longer-than-sixty-bytes.txt'
+            [ "$(wc -l <"$work/out")" -eq 12 ] || fail "the root of $image should hold 12 entries"
+            run 0 ls "$ext/$image.img" many
+            [ "$(wc -l <"$work/out")" -eq 300 ] || fail "many in $image should hold 300 entries"
+            run 0 cat "$ext/$image.img" big.txt
+            awk 'BEGIN { for (line = 0; line < 12800; line++) printf "line %05d of a file with indirect\n", line }' \
+                | cmp -s - "$work/out" || fail "wrong file over indirect blocks in $image"
+        done
+        # A journal and ext4 features keep the volume read-only, byte for byte.
+        cp "$ext/ext4-blockmap.img" "$work/ext4.img"
+        printf 'new\n' >"$work/new.txt"
+        run 1 cp-in "$work/ext4.img" "$work/new.txt" /new.txt
+        error_has 'the volume mounted read-only'
+        cmp -s "$ext/ext4-blockmap.img" "$work/ext4.img" || fail "the read-only volume changed"
         ;;
     ext2-ls)
         need_ext_images

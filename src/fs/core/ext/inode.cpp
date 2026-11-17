@@ -115,6 +115,8 @@ Inode DecodeInode(std::span<const std::uint8_t> raw, std::uint32_t read_only_com
         .attribute_block = Load32(bytes + 104),
         .extra_size = static_cast<std::uint16_t>(extra_size),
         .creation_time = {.seconds = 0, .nanoseconds = 0},
+        .generation = Load32(bytes + 100),
+        .checksum_seed = 0,
     };
     for (std::size_t index = 0; index < BlockArrayBytes; ++index)
     {

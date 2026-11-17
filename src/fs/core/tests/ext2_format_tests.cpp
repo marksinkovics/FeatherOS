@@ -293,6 +293,8 @@ TEST_CASE("ext2 inodes encode what the driver changes and keep the other bytes")
         .attribute_block = 0xCCCCCCCC,
         .extra_size = 32,
         .creation_time = {.seconds = 1600000000, .nanoseconds = 42},
+        .generation = 0,
+        .checksum_seed = 0,
     };
     inode.SetBlock(0, 1234);
     inode.SetBlock(TripleIndirectBlock, 5678);
@@ -316,6 +318,7 @@ TEST_CASE("ext2 inodes encode what the driver changes and keep the other bytes")
     REQUIRE(decoded.creation_time.nanoseconds == 42);
     REQUIRE(decoded.deletion_time == 0);
     REQUIRE(decoded.extra_size == 32);
+    REQUIRE(decoded.generation == 0xCCCCCCCCU);
     // Fields the driver never changes keep their bytes: i_generation and i_file_acl.
     REQUIRE(raw[100] == 0xCC);
     REQUIRE(raw[104] == 0xCC);
@@ -389,6 +392,45 @@ TEST_CASE("the ext2 superblock state and group counts encode in place")
     REQUIRE(group.free_inodes == 12);
     REQUIRE(group.used_directories == 2);
     REQUIRE(group.inode_table == 5);
+}
+
+TEST_CASE("64-byte group descriptors carry the upper halves, and sparse_super2 names backups")
+{
+    std::array<std::uint8_t, LargeGroupDescriptorSize> descriptor{};
+    StoreLittleEndian<std::uint32_t>(descriptor.data() + 8, 5);
+    StoreLittleEndian<std::uint16_t>(descriptor.data() + 12, 100);
+    StoreLittleEndian<std::uint16_t>(descriptor.data() + 18, GroupInodesUnused);
+    StoreLittleEndian<std::uint16_t>(descriptor.data() + 24, 0x2222);
+    StoreLittleEndian<std::uint16_t>(descriptor.data() + 28, 7);
+    StoreLittleEndian<std::uint16_t>(descriptor.data() + 30, 0xABCD);
+    StoreLittleEndian<std::uint32_t>(descriptor.data() + 40, 1);
+    StoreLittleEndian<std::uint16_t>(descriptor.data() + 44, 2);
+    StoreLittleEndian<std::uint16_t>(descriptor.data() + 50, 3);
+    StoreLittleEndian<std::uint16_t>(descriptor.data() + 56, 0x1111);
+    GroupDescriptor group = DecodeGroupDescriptor(descriptor);
+    REQUIRE(group.inode_table == (std::uint64_t{1} << 32) + 5);
+    REQUIRE(group.free_blocks == (2U << 16) + 100);
+    REQUIRE(group.flags == GroupInodesUnused);
+    REQUIRE(group.unused_inodes == (3U << 16) + 7);
+    REQUIRE(group.block_bitmap_checksum == 0x11112222U);
+    REQUIRE(group.checksum == 0xABCD);
+    // A 32-byte view of the same bytes has no upper halves.
+    const GroupDescriptor small = DecodeGroupDescriptor(std::span(descriptor).first(32));
+    REQUIRE(small.inode_table == 5);
+    REQUIRE(small.free_blocks == 100);
+    group.free_blocks = (4U << 16) + 9;
+    EncodeGroupCounts(group, descriptor);
+    REQUIRE(DecodeGroupDescriptor(descriptor).free_blocks == (4U << 16) + 9);
+
+    std::array<std::uint8_t, SuperblockSize> bytes = SuperblockBytes();
+    Superblock superblock = DecodeSuperblock(bytes);
+    superblock.compatible = CompatibleSparseSuper2;
+    superblock.backup_groups = {5, 9};
+    REQUIRE(GroupHasSuperblock(superblock, 0));
+    REQUIRE(GroupHasSuperblock(superblock, 5));
+    REQUIRE(GroupHasSuperblock(superblock, 9));
+    REQUIRE_FALSE(GroupHasSuperblock(superblock, 1));
+    REQUIRE_FALSE(GroupHasSuperblock(superblock, 3));
 }
 
 TEST_CASE("ext2 directory records are stored with and without the filetype feature")

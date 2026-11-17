@@ -32,13 +32,13 @@ std::uint32_t Ext2Filesystem::GroupOfInode(NodeId node) const
 GroupDescriptor Ext2Filesystem::Group(std::uint32_t group) const
 {
     return DecodeGroupDescriptor(
-        descriptors.subspan(std::size_t{group} * GroupDescriptorSize).first<GroupDescriptorSize>());
+        descriptors.subspan(std::size_t{group} * descriptor_size, descriptor_size));
 }
 
 void Ext2Filesystem::StoreGroup(std::uint32_t group, const GroupDescriptor& descriptor)
 {
-    const std::size_t offset = std::size_t{group} * GroupDescriptorSize;
-    EncodeGroupCounts(descriptor, descriptors.subspan(offset).first<GroupDescriptorSize>());
+    const std::size_t offset = std::size_t{group} * descriptor_size;
+    EncodeGroupCounts(descriptor, descriptors.subspan(offset, descriptor_size));
     const std::uint64_t block = offset / block_size;
     if (dirty_descriptors_first == dirty_descriptors_end)
     {
@@ -183,7 +183,7 @@ std::uint32_t Ext2Filesystem::DirectoryGroup(std::uint32_t parent_group, bool to
         return parent_group;
     }
     const std::uint32_t average_inodes = superblock.free_inodes_count / superblock.group_count;
-    const std::uint32_t average_blocks = superblock.free_blocks_count / superblock.group_count;
+    const std::uint64_t average_blocks = superblock.free_blocks_count / superblock.group_count;
     std::optional<std::uint32_t> best;
     std::uint32_t fewest = 0;
     for (std::uint32_t group = 0; group < superblock.group_count; ++group)

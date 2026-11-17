@@ -386,6 +386,75 @@ TEST_CASE("an ext3 volume with a clean journal reads as ext2")
 #endif
 }
 
+TEST_CASE("ext4 without extents reads with metadata checksums, flex_bg and a hashed directory")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    CheckImage("ext4-blockmap", {.block_size = 1024, .nanoseconds = true});
+#endif
+}
+
+TEST_CASE("ext4 reads with 64bit, 64-byte group descriptors and a seed from the UUID")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    CheckImage("ext4-64bit", {.block_size = 2048, .nanoseconds = true});
+#endif
+}
+
+TEST_CASE("ext4 reads with CRC16 group descriptor checksums and without a journal")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    CheckImage("ext4-gdtcsum", {.block_size = 4096, .nanoseconds = true});
+#endif
+}
+
+TEST_CASE("ext3 and ext4 volumes mount read-only when asked to write, and keep every byte")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    for (const std::string_view variant : {"ext3", "ext4-blockmap", "ext4-64bit", "ext4-gdtcsum"})
+    {
+        INFO(variant);
+        const std::vector<std::uint8_t> original = LoadExtImage(variant);
+        const std::unique_ptr<MemoryDevice> device = DeviceFrom(original);
+        {
+            MountedFilesystem ext2(Ext2Type(), *device, false);
+            CheckReadOnly(*ext2);
+        }
+        REQUIRE(std::memcmp(device->Bytes().data(), original.data(), original.size()) == 0);
+        REQUIRE(device->flush_count == 0);
+    }
+#endif
+}
+
+TEST_CASE("a journal that needs recovery mounts read-only instead of being replayed")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    for (const std::string_view variant : {"ext3", "ext4-blockmap"})
+    {
+        INFO(variant);
+        std::vector<std::uint8_t> bytes = LoadExtImage(variant);
+        RawVolume raw{bytes};
+        raw.Store32(1024 + 96, raw.Load32(1024 + 96) | 0x0004U);
+        raw.UpdateSuperblockChecksum();
+        const std::unique_ptr<MemoryDevice> device = DeviceFrom(bytes);
+        {
+            MountedFilesystem ext2(Ext2Type(), *device, false);
+            CheckReadOnly(*ext2);
+        }
+        REQUIRE(std::memcmp(device->Bytes().data(), bytes.data(), bytes.size()) == 0);
+    }
+#endif
+}
+
 TEST_CASE("a read-only ext2 mount changes nothing on the volume")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
@@ -415,8 +484,8 @@ TEST_CASE("ext2 refuses volumes with incompatible features it does not support")
     REQUIRE(Ext2Type().Probe(*ext4));
     REQUIRE(ErrorOf(Ext2Type().Mount(*ext4, {.read_only = true})) == Error::Unsupported);
 
-    // A journal that needs recovery, extents, and a bit no one has defined yet.
-    for (const std::uint32_t feature : {0x0004U, 0x0040U, 0x80000000U})
+    // Extents, meta_bg, and a bit no one has defined yet.
+    for (const std::uint32_t feature : {0x0040U, 0x0010U, 0x80000000U})
     {
         std::vector<std::uint8_t> bytes = LoadExtImage("1k");
         RawVolume raw{bytes};
@@ -703,12 +772,15 @@ TEST_CASE("damaged ext2 counts, groups and root refuse the mount")
 #endif
 }
 
-TEST_CASE("random damage to ext2 metadata never crashes the driver or makes it loop")
+#ifdef FEATHERDISK_EXT_IMAGES
+namespace
 {
-#ifndef FEATHERDISK_EXT_IMAGES
-    SKIP("e2fsprogs is not installed");
-#else
-    std::vector<std::uint8_t> original = LoadExtImage("1k");
+
+// Damage the image in rounds, each mounting what is left when it still probes; returns how many
+// rounds mounted.
+int DamageAtRandom(std::string_view variant)
+{
+    std::vector<std::uint8_t> original = LoadExtImage(variant);
     const RawVolume raw{original};
     const std::uint32_t block_size = raw.BlockSize();
     const auto inode_of = [&](std::string_view name)
@@ -717,8 +789,8 @@ TEST_CASE("random damage to ext2 metadata never crashes the driver or makes it l
     // "many" directories' first blocks, and big.txt's indirect blocks.
     const std::vector<std::pair<std::uint64_t, std::uint64_t>> regions = {
         {1024, 264},
-        {raw.DescriptorOffset(), 32},
-        {raw.InodeOffset(1), 40 * 128},
+        {raw.DescriptorOffset(), raw.DescriptorSize()},
+        {raw.InodeOffset(1), std::uint64_t{40} * raw.InodeSize()},
         {raw.BlockOffset(raw.InodeBlock(2, 0)), block_size},
         {raw.BlockOffset(raw.InodeBlock(inode_of("many"), 0)), block_size},
         {raw.BlockOffset(raw.InodeBlock(inode_of("big.txt"), 12)), block_size},
@@ -759,6 +831,19 @@ TEST_CASE("random damage to ext2 metadata never crashes the driver or makes it l
             byte_at(offset) = original[offset];
         }
     }
-    REQUIRE(mounted > 100);
+    return mounted;
+}
+
+} // namespace
+#endif
+
+TEST_CASE("random damage to ext2 metadata never crashes the driver or makes it loop")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    REQUIRE(DamageAtRandom("1k") > 100);
+    // Checksums refuse most damage to the superblock, descriptors and inodes.
+    REQUIRE(DamageAtRandom("ext4-blockmap") > 20);
 #endif
 }

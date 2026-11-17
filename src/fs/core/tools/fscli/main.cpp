@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #include "disk.h"
 #include "file_device.h"
+#include "fs/ext2.h"
 
+#include <array>
 #include <cerrno>
 #include <charconv>
 #include <cstdint>
@@ -290,6 +292,44 @@ void PrintStatistics(Filesystem& filesystem)
     }
 }
 
+// ext2, ext3 or ext4, and the feature names in dumpe2fs's order.
+void PrintExtFeatures(BlockDevice& volume)
+{
+    const Result<Ext::ExtFeatures> features = Ext::DescribeFeatures(volume);
+    if (!features)
+    {
+        return;
+    }
+    std::string line = "  format: " + std::string(features->variant) + ", features:";
+    const auto add = [&line](Ext::FeatureSet set, std::uint32_t bits)
+    {
+        for (unsigned shift = 0; shift < 32; ++shift)
+        {
+            const std::uint32_t bit = 1U << shift;
+            if ((bits & bit) == 0)
+            {
+                continue;
+            }
+            const std::string_view name = Ext::FeatureName(set, bit);
+            line += ' ';
+            if (name.empty())
+            {
+                std::array<char, 24> unknown{};
+                std::snprintf(unknown.data(), unknown.size(), "unknown_0x%x", bit);
+                line += unknown.data();
+            }
+            else
+            {
+                line += name;
+            }
+        }
+    };
+    add(Ext::FeatureSet::Compatible, features->compatible);
+    add(Ext::FeatureSet::Incompatible, features->incompatible);
+    add(Ext::FeatureSet::ReadOnlyCompatible, features->read_only_compatible);
+    std::printf("%s\n", line.c_str());
+}
+
 // The filesystem's type, and its statistics when it mounts.
 void DescribeVolume(BlockDevice& device, Partition::Range range)
 {
@@ -301,6 +341,10 @@ void DescribeVolume(BlockDevice& device, Partition::Range range)
         return;
     }
     std::printf("%.*s\n", static_cast<int>(type->Name().size()), type->Name().data());
+    if (type == &Ext::Ext2Type())
+    {
+        PrintExtFeatures(volume);
+    }
     auto mounted = MountedVolume::Open(device, range, MountOptions{.read_only = true});
     if (!mounted)
     {

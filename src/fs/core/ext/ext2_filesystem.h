@@ -6,6 +6,7 @@
 
 #include "common/block_cache.h"
 #include "common/host_buffer.h"
+#include "ext/checksum.h"
 #include "ext/directory.h"
 #include "ext/inode.h"
 #include "ext/superblock.h"
@@ -164,15 +165,18 @@ public:
 private:
     struct InodePlace
     {
-        std::uint32_t block;
+        std::uint64_t block;
         std::size_t offset;
     };
 
     // Reading (ext2.cpp).
+    Status CheckDescriptorChecksums() const;
     std::unexpected<Error> Refused() const;
     bool IsDataBlock(std::uint64_t block) const;
     std::uint64_t MaximumFileSize() const;
     Result<InodePlace> LocateInode(NodeId node) const;
+    // An inode past what its group ever used (with group checksums), which reads as free.
+    bool IsUnusedInode(NodeId node) const;
     Result<Inode> LoadInode(NodeId node, std::span<std::uint8_t> scratch);
     Result<Node> LoadNode(NodeId node, std::span<std::uint8_t> scratch);
     Result<std::uint32_t> ReadPointer(std::uint32_t block, std::uint64_t index,
@@ -188,6 +192,8 @@ private:
     Result<bool> WalkDirectory(const Inode& directory, std::uint64_t start,
                                std::span<std::uint8_t> block, std::span<std::uint8_t> scratch,
                                Visit visit);
+    bool DirectoryBlockMatches(const Inode& directory, std::uint64_t logical,
+                               std::span<const std::uint8_t> block) const;
     Result<NodeType> EntryType(const RawEntry& entry, std::span<std::uint8_t> scratch);
     Result<std::size_t> ReadContents(const Inode& file, std::uint64_t offset,
                                      std::span<std::uint8_t> buffer,
@@ -304,6 +310,12 @@ private:
     // The superblock on disk says clean, so the next change must say otherwise first.
     bool superblock_clean = true;
     bool has_file_type;
+    // gdt_csum or metadata_csum: descriptor checksums, flags and unused-inode counts.
+    bool group_checksums;
+    bool metadata_checksums;
+    bool hashed_directories;
+    std::uint32_t volume_seed;
+    std::uint32_t descriptor_size;
     std::uint32_t block_size;
     std::uint32_t pointers_per_block;
     std::uint64_t inode_table_blocks;
@@ -340,6 +352,10 @@ Result<bool> Ext2Filesystem::WalkDirectory(const Inode& directory, std::uint64_t
         if (const Status read = cache.Read(*physical, 0, block, block); !read)
         {
             return Failure(read);
+        }
+        if (metadata_checksums && !DirectoryBlockMatches(directory, logical, block))
+        {
+            return std::unexpected(Error::Corrupt);
         }
         // Records are walked from the block's start even when resuming, so a cookie that does
         // not fall on one still finds the next.

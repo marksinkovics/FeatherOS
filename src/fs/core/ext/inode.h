@@ -26,6 +26,7 @@ constexpr std::size_t DecodedInodeBytes = 160;
 
 // i_flags
 // A directory whose first block holds a hash index (dir_index) behind fake records.
+constexpr std::uint32_t InodeEncrypted = 0x00000800;
 constexpr std::uint32_t InodeIndexed = 0x00001000;
 constexpr std::uint32_t InodeHugeFile = 0x00040000;
 constexpr std::uint32_t InodeExtents = 0x00080000;
@@ -64,6 +65,10 @@ struct Inode
     // i_extra_isize: the bytes past the first 128 that hold fields.
     std::uint16_t extra_size;
     Timestamp creation_time;
+    // i_generation, which seeds the inode's checksums.
+    std::uint32_t generation;
+    // Where the CRC32C of the inode's directory blocks starts, with metadata_csum; else 0.
+    std::uint32_t checksum_seed;
 
     std::uint32_t Block(std::uint32_t index) const;
     void SetBlock(std::uint32_t index, std::uint32_t block);

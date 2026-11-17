@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #include "tests/ext2_image.h"
 
+#include "common/crc.h"
 #include "common/little_endian.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -168,13 +169,27 @@ std::uint64_t RawVolume::DescriptorOffset() const
     return BlockOffset(Load32(1024 + 20) + 1);
 }
 
+std::uint32_t RawVolume::DescriptorSize() const
+{
+    return (Load32(1024 + 96) & 0x80U) != 0 ? Load16(1024 + 254) : 32;
+}
+
+std::uint32_t RawVolume::InodeSize() const
+{
+    return Load32(1024 + 76) == 0 ? 128 : Load16(1024 + 88);
+}
+
 std::uint64_t RawVolume::InodeOffset(std::uint32_t inode) const
 {
     const std::uint32_t per_group = Load32(1024 + 40);
-    const std::uint32_t size = Load32(1024 + 76) == 0 ? 128 : Load16(1024 + 88);
     const std::uint32_t group = (inode - 1) / per_group;
-    const std::uint32_t table = Load32(DescriptorOffset() + group * 32 + 8);
-    return BlockOffset(table) + std::uint64_t{(inode - 1) % per_group} * size;
+    const std::uint32_t table = Load32(DescriptorOffset() + group * DescriptorSize() + 8);
+    return BlockOffset(table) + std::uint64_t{(inode - 1) % per_group} * InodeSize();
+}
+
+void RawVolume::UpdateSuperblockChecksum()
+{
+    Store32(1024 + 1020, Crc32c(~0U, std::span(bytes).subspan(1024, 1020)));
 }
 
 std::uint32_t RawVolume::InodeBlock(std::uint32_t inode, std::uint32_t index) const
