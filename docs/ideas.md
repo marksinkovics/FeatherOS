@@ -88,6 +88,8 @@ Moved out of M11 to keep it focused; each can come back as a milestone of its ow
   - A separate configuration partition.
 
   Each one needs a fallback for boots without a disk, which the QEMU tests do today.
+- **Periodic sync of the root.** Since M22 Part 4b the root is ext2, whose superblock stays not clean until `sync`, an unmount or a shutdown writes the free counts back, so a machine stopped from outside after a change boots with a read-only root until the host runs `e2fsck`. A kernel task that syncs a few seconds after the last change (as Linux's writeback does) would shrink that window; ext3/ext4 journals (M22 Part 6) remove it.
+- **A `root=` kernel argument** choosing the root partition, instead of the first one with a FAT16 or ext2 volume.
 - **FeatherFS:** a filesystem of our own design with journaling, so files survive a crash in the middle of a write.
 - **Page cache:** keep recently read disk blocks in memory so repeated reads don't go to the disk.
 

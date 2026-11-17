@@ -382,6 +382,11 @@ char* realpath(const char* path, char* resolved)
     return buffer;
 }
 
+void sync()
+{
+    FeatherOS::User::SyncFilesystems();
+}
+
 int rmdir(const char* path)
 {
     return Check<int>(FeatherOS::User::RemoveDirectory(path));

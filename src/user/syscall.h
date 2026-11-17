@@ -191,6 +191,11 @@ inline uint64_t ResolvePath(const char* path, char* buffer, uint64_t capacity)
                    reinterpret_cast<uint64_t>(buffer), capacity);
 }
 
+inline uint64_t SyncFilesystems()
+{
+    return Syscall(SyscallNumber::Sync);
+}
+
 inline uint64_t StatDescriptor(uint64_t descriptor, FileStatus* status)
 {
     return Syscall(SyscallNumber::StatDescriptor, descriptor, reinterpret_cast<uint64_t>(status));

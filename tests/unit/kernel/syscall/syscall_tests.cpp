@@ -191,6 +191,7 @@ constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     .symbolic_link = RecordSeek,
     .link = RecordSeek,
     .resolve_path = RecordSeekFrom,
+    .sync = ReadFixedProcessId,
 };
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
@@ -500,8 +501,10 @@ TEST_CASE("syscall signal-return is left to the architecture code")
                                          AllHandlers, &output)
                 .value == 0x98);
     REQUIRE(output.last_arguments[2] == 64);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Sync), AllHandlers, &output).action ==
+            Action::Return);
     for (const Number number : {Number::LinkStat, Number::ReadLink, Number::SymbolicLink,
-                                Number::Link, Number::ResolvePath})
+                                Number::Link, Number::ResolvePath, Number::Sync})
     {
         REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(number), WriteOnly, &output).action ==
                 Action::Invalid);

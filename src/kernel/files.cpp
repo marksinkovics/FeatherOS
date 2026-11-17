@@ -1662,6 +1662,12 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
     return 0;
 }
 
+uint64_t SyncAll()
+{
+    Sync::MutexGuard guard(file_system_lock);
+    return VFS::SyncAll() ? 0 : User::SyscallErrorInputOutput;
+}
+
 // Held until the machine stops, so nothing writes to the disk after it.
 void Quiesce() NO_THREAD_SAFETY_ANALYSIS
 {

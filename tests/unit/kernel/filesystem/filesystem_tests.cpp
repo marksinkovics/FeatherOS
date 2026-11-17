@@ -1234,6 +1234,84 @@ TEST_CASE("an ext2 partition mounted read-write takes changes through the file s
     REQUIRE(FeatherOS::Files::Rename("/mnt/dir/.", "/mnt/x") == User::SyscallErrorBusy);
     REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
 }
+
+namespace
+{
+
+// The ext2 volume as the disk's first partition and FAT16 as its second, as on the QEMU test
+// disk; the first sector of the ext2 partition, or 0 without the image.
+uint32_t AttachExt2Root()
+{
+    if (!AttachExt2Image())
+    {
+        return 0;
+    }
+    uint8_t* table = disk[0].data() + 446;
+    std::array<uint8_t, 16> first{};
+    std::memcpy(first.data(), table, first.size());
+    std::memmove(table, table + 16, first.size());
+    std::memcpy(table + 16, first.data(), first.size());
+    return static_cast<uint32_t>(table[8] | table[9] << 8 | table[10] << 16 | table[11] << 24);
+}
+
+std::string RootDescription()
+{
+    const char* type = nullptr;
+    const char* source = nullptr;
+    bool read_only = false;
+    REQUIRE(FeatherOS::VFS::DescribeRoot(&type, &source, &read_only));
+    return std::string(source) + " " + type + (read_only ? " ro" : " rw");
+}
+
+} // namespace
+
+TEST_CASE("the first partition's ext2 volume becomes the root, read-only if it refuses writes")
+{
+    using FeatherOS::VFS::MountResult;
+    uint32_t ext2_start = AttachExt2Root();
+    if (ext2_start == 0)
+    {
+        SKIP("no ext2 image from mke2fs");
+    }
+
+    // s_state, 58 bytes into the superblock 1024 bytes into the volume: not cleanly unmounted.
+    disk[ext2_start + 2][58] = 0;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(RootDescription() == "vda1 ext2 ro");
+    REQUIRE(MountSource("/") == "vda1 ext2 ro");
+    REQUIRE(ReadWhole("/hello.txt") == "Hello from ext2.\n");
+    FeatherOS::VFS::FileHandle file{};
+    REQUIRE_FALSE(FeatherOS::VFS::Create("/new.txt", &file));
+    REQUIRE(FeatherOS::VFS::LastError() == FeatherOS::User::SyscallErrorReadOnly);
+
+    ext2_start = AttachExt2Root();
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(RootDescription() == "vda1 ext2 rw");
+    REQUIRE(ReadWhole("/hello.txt") == "Hello from ext2.\n");
+    REQUIRE(FeatherOS::VFS::Create("/new.txt", &file));
+    uint64_t written = 0;
+    REQUIRE(FeatherOS::VFS::Write(&file, "root\n", 5, &written));
+    FeatherOS::VFS::Close(&file);
+    REQUIRE(disk[ext2_start + 2][58] == 0);
+    REQUIRE(FeatherOS::Files::SyncAll() == 0);
+    REQUIRE(disk[ext2_start + 2][58] == 1);
+    REQUIRE(ReadWhole("/new.txt") == "root\n");
+
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda1", "/mnt") == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda1", "/mnt") == MountResult::Busy);
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda2", "/mnt") == MountResult::Done);
+    REQUIRE(MountSource("/mnt") == "vda2 fat16 rw");
+    REQUIRE(ReadWhole("/mnt/BLOCK.TXT") == "fat contents");
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+
+    // The core read-only again, so changing the disk below it writes nothing; then a FAT16 disk
+    // gives a FAT16 root again.
+    REQUIRE(FeatherOS::Filesystem::Drivers::MountExt2());
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(RootDescription() == "vda1 fat16 rw");
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::UnknownType);
+}
 #endif
 
 TEST_CASE("core errors become Linux's errno codes")

@@ -82,6 +82,7 @@ enum class SyscallNumber : uint64_t
     SymbolicLink = 68,     // (target, path) -> 0; path, not followed, becomes a link to target
     Link = 69,             // (from, to) -> 0; a second name for a file, on the same filesystem
     ResolvePath = 70,      // (path, buffer, capacity) -> length of the path without links
+    Sync = 71,             // () -> 0 once every mounted filesystem has written its changes
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec, and joins its

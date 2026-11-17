@@ -2999,6 +2999,11 @@ uint64_t LinkSyscall(void* context, uint64_t from, uint64_t to)
     return copied != 0 ? copied : Files::Link(from_text->resolved, to_text->resolved);
 }
 
+uint64_t SyncSyscall(void* /*context*/)
+{
+    return Files::SyncAll();
+}
+
 uint64_t ResolvePathSyscall(void* context, uint64_t path, uint64_t buffer, uint64_t capacity)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
@@ -3116,6 +3121,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     .symbolic_link = SymbolicLinkSyscall,
     .link = LinkSyscall,
     .resolve_path = ResolvePathSyscall,
+    .sync = SyncSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.

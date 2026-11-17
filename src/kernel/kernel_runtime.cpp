@@ -240,9 +240,26 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     {
         Panic("Virtio block device initialization failed");
     }
-    if (!VFS::MountBlockDevice())
+    const char* root_type = nullptr;
+    const char* root_source = nullptr;
+    bool root_read_only = false;
+    if (!VFS::MountBlockDevice() || !VFS::DescribeRoot(&root_type, &root_source, &root_read_only))
     {
-        Panic("MBR partition or FAT16 mount failed");
+        Panic("No FAT16 or ext2 root filesystem on the disk");
+    }
+    char message[96];
+    if (!String::FormatTo(message, sizeof(message), "VFS: / is {} {}, {}", root_source, root_type,
+                          root_read_only ? "read-only: the volume refused writes" : "read-write"))
+    {
+        Panic("Root filesystem message formatting failed");
+    }
+    if (root_read_only)
+    {
+        logger.Warning(message);
+    }
+    else
+    {
+        logger.Info(message);
     }
 #if defined(FEATHEROS_KERNEL_TESTS)
     if (KernelTest::Selected(KernelTest::Mode::Storage))
@@ -251,16 +268,16 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     }
 #endif
 
-    constexpr char expected_contents[] = "FeatherOS FAT16 volume OK";
+    constexpr char expected_contents[] = "FeatherOS root volume OK";
     VFS::FileInfo file_info;
     VFS::FileHandle file;
     if (!VFS::Stat("/BLOCK.TXT", &file_info) || file_info.size != sizeof(expected_contents) - 1)
     {
-        Panic("VFS could not stat FAT16 BLOCK.TXT");
+        Panic("VFS could not stat /BLOCK.TXT");
     }
     if (!VFS::Open("/BLOCK.TXT", &file))
     {
-        Panic("VFS could not open FAT16 BLOCK.TXT");
+        Panic("VFS could not open /BLOCK.TXT");
     }
 
     char contents[sizeof(expected_contents) - 1];
@@ -268,21 +285,21 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     if (!VFS::Read(&file, contents, sizeof(contents), &bytes_read) ||
         bytes_read != sizeof(contents))
     {
-        Panic("VFS could not read FAT16 BLOCK.TXT");
+        Panic("VFS could not read /BLOCK.TXT");
     }
     for (size_t index = 0; index < sizeof(contents); ++index)
     {
         if (contents[index] != expected_contents[index])
         {
-            Panic("VFS returned invalid FAT16 file data");
+            Panic("VFS returned invalid /BLOCK.TXT data");
         }
     }
     if (!VFS::Seek(&file, 0))
     {
-        Panic("VFS could not seek in FAT16 BLOCK.TXT");
+        Panic("VFS could not seek in /BLOCK.TXT");
     }
     VFS::Close(&file);
-    logger.Info("VFS: FAT16 BLOCK.TXT read passed");
+    logger.Info("VFS: /BLOCK.TXT read passed");
 }
 
 void LogCpuProtections(KLogger& logger)

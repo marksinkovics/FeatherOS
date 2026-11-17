@@ -882,7 +882,7 @@ int main(int argc, char** argv)
                  "rm <file>, cp <source> <target>, mv <source> <target>, touch <file>, head, tail, "
                  "wc, grep <text>, sort, "
                  "mkdir <dir>, rmdir <dir>, ln [-s] <target> <link>, readlink [-f] <path>, "
-                 "mount [-t type source target], umount <target>, "
+                 "mount [-t type source target], umount <target>, sync, "
                  "env, kill [-signal] <pid>, ps, keys, clear, "
                  "vi [file], script [-c command] [file], stty, ping [-6] [-c count] <host>, "
                  "host [-4|-6] <name>, net, dhcp, "

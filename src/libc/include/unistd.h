@@ -53,6 +53,7 @@ off_t lseek(int descriptor, off_t offset, int whence);
 // Removes a symbolic link itself, not what it points to.
 int unlink(const char* path);
 int rmdir(const char* path);
+void sync(void);
 // The target of a symbolic link, cut to size bytes without a terminator; EINVAL for anything else.
 ssize_t readlink(const char* path, char* buffer, size_t size);
 // target is stored as given and need not exist. EPERM where the filesystem cannot hold links

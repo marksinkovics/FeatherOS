@@ -938,7 +938,7 @@ void RunSmpTests()
 namespace
 {
 
-// The last sector before the FAT16 partition, which nothing else uses.
+// The last sector before the root's partition, which nothing else uses.
 constexpr uint64_t ScratchSector = 2047;
 constexpr char BootCountMagic[] = "FOSBOOT";
 
@@ -947,9 +947,11 @@ uint8_t PatternByte(uint32_t index, uint64_t boot_count)
     return static_cast<uint8_t>(static_cast<uint64_t>(index) * 7 + boot_count);
 }
 
-// The host-side check in tools/smoke_test.py rebuilds the same text.
-constexpr char PersistentFile[] = "/PERSIST.TXT";
-constexpr char ScratchFile[] = "/SCRATCH.TMP";
+// The disk's FAT16 partition, its second, which nothing mounts at boot. The host-side check in
+// tools/smoke/cases/storage.py rebuilds the same text.
+constexpr char FatPoint[] = "/fat";
+constexpr char PersistentFile[] = "/fat/PERSIST.TXT";
+constexpr char ScratchFile[] = "/fat/SCRATCH.TMP";
 constexpr uint32_t PersistentLines = 200;
 
 uint64_t FormatLine(char (&line)[48], uint64_t boot_count, uint32_t line_number)
@@ -1063,44 +1065,17 @@ void RunFileTests(uint64_t boot_count)
     }
 }
 
-// Nothing runs yet, so once the other mounts are out of the way the disk can be unmounted and
-// mounted again; the file written before must still be there.
-void CheckRemount(uint64_t boot_count)
+void MountFat16()
 {
-    constexpr const char* InnerPoints[] = {"/system", "/etc", "/dev", "/proc", "/tmp"};
-    if (VFS::Unmount("/") != VFS::MountResult::Busy)
+    if (VFS::Mount("fat16", "vda1", FatPoint) != VFS::MountResult::NotFound ||
+        VFS::Mount("ext2", "vda2", FatPoint) != VFS::MountResult::NotFound ||
+        VFS::Mount("fat16", "vda2", FatPoint) != VFS::MountResult::Done)
     {
-        Panic("Unmounting / with mounts inside it did not fail busy");
-    }
-    for (const char* point : InnerPoints)
-    {
-        if (VFS::Unmount(point) != VFS::MountResult::Done)
-        {
-            Panic("Storage test could not unmount a built-in filesystem");
-        }
-    }
-    VFS::FileHandle file;
-    if (!VFS::Open(PersistentFile, &file) || VFS::Unmount("/") != VFS::MountResult::Busy)
-    {
-        Panic("Unmounting / with an open file did not fail busy");
-    }
-    VFS::Close(&file);
-    if (VFS::Unmount("/") != VFS::MountResult::Done || VFS::Open(PersistentFile, &file))
-    {
-        Panic("Unmounting the FAT16 disk failed");
-    }
-    if (VFS::Mount("fat16", "vda1", "/") != VFS::MountResult::Done)
-    {
-        Panic("Mounting the FAT16 disk again failed");
-    }
-    CheckPersistentFile(boot_count);
-    if (!VFS::MountBuiltIn())
-    {
-        Panic("Storage test could not mount the built-in filesystems again");
+        Panic("Mounting the FAT16 partition failed");
     }
 }
 
-// For tools/create_test_disk.py's ext2 partition, the disk's second.
+// For the root's /samples, which tools/create_test_disk.py fills.
 bool ReadsAs(const char* path, const char* expected)
 {
     VFS::FileHandle file;
@@ -1126,7 +1101,7 @@ bool BigFileMatches()
     constexpr uint32_t Lines = 5000;
     constexpr uint64_t LineLength = 16;
     VFS::FileHandle file{};
-    if (!VFS::Open("/mnt/big.txt", &file) || file.size != Lines * LineLength)
+    if (!VFS::Open("/samples/big.txt", &file) || file.size != Lines * LineLength)
     {
         VFS::Close(&file);
         return false;
@@ -1156,30 +1131,68 @@ bool BigFileMatches()
 
 void CheckExt2ReadOnly()
 {
-    if (VFS::Mount("ext2", "vda1", "/mnt", Filesystem::MountMode::ReadOnly) !=
+    if (VFS::Mount("ext2", "vda2", "/", Filesystem::MountMode::ReadOnly) !=
             VFS::MountResult::NotFound ||
-        VFS::Mount("ext2", "vda2", "/mnt", Filesystem::MountMode::ReadOnly) !=
-            VFS::MountResult::Done)
+        VFS::Mount("ext2", "vda1", "/", Filesystem::MountMode::ReadOnly) != VFS::MountResult::Done)
     {
-        Panic("Mounting the ext2 partition failed");
+        Panic("Mounting the root read-only failed");
     }
-    if (!ReadsAs("/mnt/hello.txt", "Hello from the ext2 partition.\n") ||
-        !ReadsAs("/mnt/docs/notes/deep.txt", "nested ext2 file\n") || !BigFileMatches())
+    if (!ReadsAs("/samples/hello.txt", "Hello from the ext2 partition.\n") ||
+        !ReadsAs("/samples/docs/notes/deep.txt", "nested ext2 file\n") || !BigFileMatches())
     {
-        Panic("The ext2 partition read back different contents");
+        Panic("The ext2 root read back different contents");
     }
     VFS::FileHandle file{};
-    if (!VFS::IsReadOnly("/mnt/hello.txt") || VFS::Create("/mnt/new.txt", &file) ||
-        VFS::LastError() != User::SyscallErrorReadOnly || VFS::MakeDirectory("/mnt/new") ||
-        VFS::Remove("/mnt/hello.txt") || VFS::LastError() != User::SyscallErrorReadOnly ||
-        VFS::Open("/mnt/fast-link", &file))
+    if (!VFS::IsReadOnly("/samples/hello.txt") || VFS::Create("/samples/new.txt", &file) ||
+        VFS::LastError() != User::SyscallErrorReadOnly || VFS::MakeDirectory("/samples/new") ||
+        VFS::Remove("/samples/hello.txt") || VFS::LastError() != User::SyscallErrorReadOnly ||
+        VFS::Open("/samples/fast-link", &file))
     {
-        Panic("The read-only ext2 partition took a change or opened a link");
+        Panic("The read-only ext2 root took a change or opened a link");
     }
-    if (VFS::Unmount("/mnt") != VFS::MountResult::Done || VFS::IsDirectory("/mnt/docs"))
+    if (VFS::Unmount("/") != VFS::MountResult::Done || VFS::IsDirectory("/samples/docs"))
     {
-        Panic("Unmounting the ext2 partition failed");
+        Panic("Unmounting the read-only root failed");
     }
+}
+
+// Nothing runs yet, so once the other mounts are out of the way the root can be unmounted, mounted
+// read-only and read-write again, and the FAT16 file written before must still be there.
+void CheckRemount(uint64_t boot_count)
+{
+    constexpr const char* InnerPoints[] = {"/system", "/etc", "/dev", "/proc", "/tmp", FatPoint};
+    constexpr char RootFile[] = "/BLOCK.TXT";
+    if (VFS::Unmount("/") != VFS::MountResult::Busy)
+    {
+        Panic("Unmounting / with mounts inside it did not fail busy");
+    }
+    for (const char* point : InnerPoints)
+    {
+        if (VFS::Unmount(point) != VFS::MountResult::Done)
+        {
+            Panic("Storage test could not unmount a filesystem inside /");
+        }
+    }
+    VFS::FileHandle file;
+    if (!VFS::Open(RootFile, &file) || VFS::Unmount("/") != VFS::MountResult::Busy)
+    {
+        Panic("Unmounting / with an open file did not fail busy");
+    }
+    VFS::Close(&file);
+    if (VFS::Unmount("/") != VFS::MountResult::Done || VFS::Open(RootFile, &file))
+    {
+        Panic("Unmounting the root failed");
+    }
+    CheckExt2ReadOnly();
+    if (VFS::Mount("ext2", "vda1", "/") != VFS::MountResult::Done || VFS::IsReadOnly(RootFile))
+    {
+        Panic("Mounting the root read-write again failed");
+    }
+    if (!VFS::MountBuiltIn() || VFS::Mount("fat16", "vda2", FatPoint) != VFS::MountResult::Done)
+    {
+        Panic("Storage test could not mount the filesystems inside / again");
+    }
+    CheckPersistentFile(boot_count);
 }
 
 // The file the read-write checks write: 1000 lines of "feather ext2 line NNNNN\n", past the
@@ -1272,37 +1285,35 @@ bool LinkTargetIs(const char* path, const char* expected)
     return expected[index] == '\0' && index == length;
 }
 
-// The first boot builds /os on the ext2 partition; the second checks it and changes it again.
-// After each boot the harness runs e2fsck -fn on the partition and reads it with debugfs.
+// The first boot builds /os on the ext2 root; the second checks it and changes it again. After
+// each boot the harness runs e2fsck -fn on the partition and reads it with debugfs.
 void WriteExt2FirstBoot(Ext2Data* data)
 {
     constexpr char Short[] = "short\nand the rest is truncated away";
     VFS::FileHandle file{};
-    if (!VFS::MakeDirectory("/mnt/os") ||
-        !WriteNew("/mnt/os/data.txt", data->bytes, Ext2DataSize) ||
-        !VFS::Link("/mnt/os/data.txt", "/mnt/os/data-link.txt") ||
-        !VFS::SymbolicLink("/mnt/os/to-data", "data.txt") || !VFS::MakeDirectory("/mnt/os/sub") ||
-        !WriteNew("/mnt/os/scratch.txt", "moved\n", 6) ||
-        !VFS::Rename("/mnt/os/scratch.txt", "/mnt/os/sub/moved.txt") ||
-        !WriteNew("/mnt/os/short.txt", Short, sizeof(Short) - 1) ||
-        !WriteNew("/mnt/os/gone.txt", "gone\n", 5) || !VFS::Remove("/mnt/os/gone.txt") ||
-        !VFS::MakeDirectory("/mnt/os/empty") || !VFS::RemoveDirectory("/mnt/os/empty"))
+    if (!VFS::MakeDirectory("/os") || !WriteNew("/os/data.txt", data->bytes, Ext2DataSize) ||
+        !VFS::Link("/os/data.txt", "/os/data-link.txt") ||
+        !VFS::SymbolicLink("/os/to-data", "data.txt") || !VFS::MakeDirectory("/os/sub") ||
+        !WriteNew("/os/scratch.txt", "moved\n", 6) ||
+        !VFS::Rename("/os/scratch.txt", "/os/sub/moved.txt") ||
+        !WriteNew("/os/short.txt", Short, sizeof(Short) - 1) ||
+        !WriteNew("/os/gone.txt", "gone\n", 5) || !VFS::Remove("/os/gone.txt") ||
+        !VFS::MakeDirectory("/os/empty") || !VFS::RemoveDirectory("/os/empty"))
     {
-        Panic("Writing the ext2 partition failed");
+        Panic("Writing the ext2 root failed");
     }
-    if (!VFS::Open("/mnt/os/short.txt", &file) || !VFS::Truncate(&file, 6))
+    if (!VFS::Open("/os/short.txt", &file) || !VFS::Truncate(&file, 6))
     {
         Panic("Truncating an ext2 file failed");
     }
     VFS::Close(&file);
-    if (VFS::MakeDirectory("/mnt/os") || VFS::LastError() != User::SyscallErrorExists ||
-        VFS::RemoveDirectory("/mnt/os/sub") || VFS::LastError() != User::SyscallErrorNotEmpty ||
-        VFS::Link("/mnt/os/sub", "/mnt/os/sub-link") ||
+    if (VFS::MakeDirectory("/os") || VFS::LastError() != User::SyscallErrorExists ||
+        VFS::RemoveDirectory("/os/sub") || VFS::LastError() != User::SyscallErrorNotEmpty ||
+        VFS::Link("/os/sub", "/os/sub-link") ||
         VFS::LastError() != User::SyscallErrorNotPermitted ||
-        VFS::Rename("/mnt/os", "/mnt/os/sub/inside") ||
+        VFS::Rename("/os", "/os/sub/inside") ||
         VFS::LastError() != User::SyscallErrorInvalidArgument ||
-        VFS::Create("/mnt/missing/new.txt", &file) ||
-        VFS::LastError() != User::SyscallErrorNotFound)
+        VFS::Create("/missing/new.txt", &file) || VFS::LastError() != User::SyscallErrorNotFound)
     {
         Panic("An ext2 change failed with the wrong error");
     }
@@ -1311,44 +1322,40 @@ void WriteExt2FirstBoot(Ext2Data* data)
 void ChangeExt2SecondBoot(Ext2Data* data)
 {
     VFS::FileInfo info{};
-    if (!HoldsExt2Data("/mnt/os/data.txt", data) || !HoldsExt2Data("/mnt/os/data-link.txt", data) ||
-        !LinkCountIs("/mnt/os/data.txt", 2) || !LinkTargetIs("/mnt/os/to-data", "data.txt") ||
-        !ReadsAs("/mnt/os/sub/moved.txt", "moved\n") || !ReadsAs("/mnt/os/short.txt", "short\n") ||
-        VFS::IsDirectory("/mnt/os/empty") || VFS::Stat("/mnt/os/gone.txt", &info))
+    if (!HoldsExt2Data("/os/data.txt", data) || !HoldsExt2Data("/os/data-link.txt", data) ||
+        !LinkCountIs("/os/data.txt", 2) || !LinkTargetIs("/os/to-data", "data.txt") ||
+        !ReadsAs("/os/sub/moved.txt", "moved\n") || !ReadsAs("/os/short.txt", "short\n") ||
+        VFS::IsDirectory("/os/empty") || VFS::Stat("/os/gone.txt", &info))
     {
-        Panic("The ext2 partition lost what the first boot wrote");
+        Panic("The ext2 root lost what the first boot wrote");
     }
     VFS::FileHandle file{};
     uint64_t written = 0;
-    if (!VFS::Remove("/mnt/os/data.txt") || !LinkCountIs("/mnt/os/data-link.txt", 1) ||
-        !VFS::Remove("/mnt/os/to-data") || !VFS::Rename("/mnt/os/sub", "/mnt/moved-sub") ||
-        !VFS::Open("/mnt/os/short.txt", &file) || !VFS::Seek(&file, file.size) ||
+    if (!VFS::Remove("/os/data.txt") || !LinkCountIs("/os/data-link.txt", 1) ||
+        !VFS::Remove("/os/to-data") || !VFS::Rename("/os/sub", "/moved-sub") ||
+        !VFS::Open("/os/short.txt", &file) || !VFS::Seek(&file, file.size) ||
         !VFS::Write(&file, "more\n", 5, &written))
     {
-        Panic("Changing the ext2 partition again failed");
+        Panic("Changing the ext2 root again failed");
     }
     VFS::Close(&file);
-    if (!HoldsExt2Data("/mnt/os/data-link.txt", data) ||
-        !ReadsAs("/mnt/moved-sub/moved.txt", "moved\n") ||
-        !ReadsAs("/mnt/os/short.txt", "short\nmore\n"))
+    if (!HoldsExt2Data("/os/data-link.txt", data) || !ReadsAs("/moved-sub/moved.txt", "moved\n") ||
+        !ReadsAs("/os/short.txt", "short\nmore\n"))
     {
-        Panic("The ext2 partition read back different contents after the second changes");
+        Panic("The ext2 root read back different contents after the second changes");
     }
 }
 
+// The harness checks the partition after the session, which only writes to FAT16, so the root is
+// synced, and so clean, here.
 void CheckExt2(uint64_t boot_count)
 {
-    CheckExt2ReadOnly();
     const Memory::HeapObject<Ext2Data> data;
     if (!data)
     {
         Panic("No memory for the ext2 write test");
     }
     FillExt2Data(data->bytes);
-    if (VFS::Mount("ext2", "vda2", "/mnt") != VFS::MountResult::Done || VFS::IsReadOnly("/mnt"))
-    {
-        Panic("Mounting the ext2 partition read-write failed");
-    }
     if (boot_count == 1)
     {
         WriteExt2FirstBoot(&*data);
@@ -1357,9 +1364,9 @@ void CheckExt2(uint64_t boot_count)
     {
         ChangeExt2SecondBoot(&*data);
     }
-    if (VFS::Unmount("/mnt") != VFS::MountResult::Done)
+    if (!VFS::SyncAll())
     {
-        Panic("Unmounting the written ext2 partition failed");
+        Panic("Syncing the written ext2 root failed");
     }
 }
 
@@ -1425,9 +1432,14 @@ void RunStorageTests()
         }
     }
 
+    MountFat16();
     RunFileTests(boot_count);
     CheckRemount(boot_count);
     CheckExt2(boot_count);
+    if (VFS::Unmount(FatPoint) != VFS::MountResult::Done)
+    {
+        Panic("Unmounting the FAT16 partition failed");
+    }
 
     char message[96];
     if (!String::FormatTo(message, sizeof(message),

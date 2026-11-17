@@ -3,7 +3,7 @@ import re
 from smoke.cases.shell.part import Part
 from smoke.script import Lines
 
-# Symbolic links in /tmp, which holds them, unlike the FAT16 disk; tmpfs holds
+# Symbolic links in /tmp, which holds them as the ext2 root does; tmpfs holds
 # no hard links. The VFS follows links and stops loops after 40.
 LINKS_INPUT = (
     b"ln -h\nreadlink -h\n"

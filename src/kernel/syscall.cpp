@@ -353,6 +353,10 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
         return {Action::Return,
                 handlers.resolve_path(context, arguments[0], arguments[1], arguments[2])};
     }
+    if (request.number == static_cast<uint64_t>(Number::Sync) && handlers.sync != nullptr)
+    {
+        return {Action::Return, handlers.sync(context)};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

@@ -17,7 +17,7 @@ namespace
 using Filesystem::Driver;
 
 constexpr char SystemPoint[] = "/system";
-constexpr char DiskType[] = "fat16";
+constexpr char Fat16Type[] = "fat16";
 constexpr char Ext2Type[] = "ext2";
 constexpr uint32_t RootDirectoryMode = 0755;
 constexpr uint64_t RootSerialNumber = 1;
@@ -176,24 +176,29 @@ void CopyText(char* destination, size_t capacity, const char* source)
     destination[index] = '\0';
 }
 
-// Read-only in the core and left out of the tree at boot; mount names it by its partition, such
-// as vda2, and reopens it for writing.
-void RegisterExt2()
+// A driver mounted somewhere other than "/" keeps its volume; the others look for theirs on the
+// disk again.
+bool FindVolume(Filesystem::CoreDriver& driver, bool (*mount)())
 {
-    Filesystem::CoreDriver& ext2 = Filesystem::Drivers::Ext2();
     {
         Sync::SpinLockGuard guard(mount_lock);
-        if (mounts.Holds(&ext2))
+        if (mounts.Holds(&driver) && mounts.Find("/") != &driver)
         {
-            return;
+            return driver.PartitionNumber() != 0;
         }
     }
-    const bool mounted = Filesystem::Drivers::MountExt2();
-    const char* source = Filesystem::Drivers::PartitionSource(ext2.PartitionNumber());
-    Sync::SpinLockGuard guard(mount_lock);
-    if (!mounted || source == nullptr || !types.Register(Ext2Type, source, &ext2))
+    return mount();
+}
+
+// Registered under its partition's name, such as vda2, for mount; forgotten when the disk has no
+// such volume.
+void RegisterVolumeLocked(const char* type, Filesystem::CoreDriver& driver, bool found)
+    REQUIRES(mount_lock)
+{
+    const char* source = Filesystem::Drivers::PartitionSource(driver.PartitionNumber());
+    if (!found || source == nullptr || !types.Register(type, source, &driver))
     {
-        types.Unregister(&ext2);
+        types.Unregister(&driver);
     }
 }
 
@@ -244,25 +249,34 @@ bool MountBuiltIn()
 
 bool MountBlockDevice()
 {
-    const bool mounted = Filesystem::Drivers::MountDisk() &&
-                         Filesystem::Drivers::Disk().PrepareMount(Filesystem::MountMode::ReadWrite);
-    RegisterExt2();
-    Filesystem::CoreDriver* driver = &Filesystem::Drivers::Disk();
-    const char* source = Filesystem::Drivers::PartitionSource(driver->PartitionNumber());
+    Filesystem::CoreDriver& fat16 = Filesystem::Drivers::Disk();
+    Filesystem::CoreDriver& ext2 = Filesystem::Drivers::Ext2();
+    const bool fat16_found = FindVolume(fat16, Filesystem::Drivers::MountDisk);
+    const bool ext2_found = FindVolume(ext2, Filesystem::Drivers::MountExt2);
+    Filesystem::CoreDriver* root = nullptr;
+    if (fat16_found && ext2_found)
+    {
+        root = fat16.PartitionNumber() < ext2.PartitionNumber() ? &fat16 : &ext2;
+    }
+    else if (fat16_found || ext2_found)
+    {
+        root = fat16_found ? &fat16 : &ext2;
+    }
+    // An ext2 volume that refuses writes is mounted read-only instead.
+    const bool prepared = root != nullptr && root->PrepareMount(Filesystem::MountMode::ReadWrite);
     Sync::SpinLockGuard guard(mount_lock);
-    if (!mounted || source == nullptr)
+    RegisterVolumeLocked(Fat16Type, fat16, fat16_found);
+    RegisterVolumeLocked(Ext2Type, ext2, ext2_found);
+    const char* type = nullptr;
+    const char* source = nullptr;
+    const bool usable = prepared && types.Describe(root, &type, &source);
+    Driver* mounted = mounts.Find("/");
+    if ((mounted == &fat16 || mounted == &ext2) && (!usable || mounted != root))
     {
-        if (mounts.Find("/") == driver)
-        {
-            mounts.Remove("/");
-        }
-        return false;
+        mounts.Remove("/");
+        mounted = nullptr;
     }
-    if (!types.Register(DiskType, source, driver))
-    {
-        return false;
-    }
-    return mounts.Find("/") == driver || mounts.Add("/", driver);
+    return usable && (mounted == root || mounts.Add("/", root));
 }
 
 bool LoadEtc()
@@ -334,6 +348,22 @@ MountResult Unmount(const char* point)
     }
     mounts.FinishUnmount(point);
     return MountResult::Done;
+}
+
+bool DescribeRoot(const char** type, const char** source, bool* read_only)
+{
+    if (type == nullptr || source == nullptr || read_only == nullptr)
+    {
+        return false;
+    }
+    Sync::SpinLockGuard guard(mount_lock);
+    const Driver* driver = mounts.Find("/");
+    if (driver == nullptr || !types.Describe(driver, type, source))
+    {
+        return false;
+    }
+    *read_only = driver->IsMountedReadOnly();
+    return true;
 }
 
 bool DescribeMount(uint32_t index, Procfs::MountStatus* status)

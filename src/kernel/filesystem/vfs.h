@@ -14,9 +14,9 @@ struct MountStatus;
 // One tree over the mounted filesystems. At boot, with their type and source: the initramfs's
 // "system" directory at "/system" (initramfs, initramfs), the RAM filesystem's two roots at "/etc"
 // (tmpfs, etc) and "/tmp" (tmpfs, tmp), devices at "/dev" (devfs, devfs), generated process files
-// at "/proc" (procfs, procfs), and the FAT16 volume on the virtio block device at "/" (fat16 and
-// its partition's name, such as vda1). An ext2 partition is registered as ext2 and its name, such
-// as vda2, but not mounted; it is writable once mounted read-write. A path belongs to the mount
+// at "/proc" (procfs, procfs), and the virtio block device's first FAT16 or ext2 volume at "/"
+// (its type and its partition's name, such as ext2 and vda1). The disk's other volume is
+// registered the same way, such as fat16 and vda2, but not mounted. A path belongs to the mount
 // with the longest mount point that is a whole-component prefix of it, so a mount hides whatever
 // its parent filesystem has at that path. Each of these instances keeps its contents while
 // unmounted and can be mounted at one point at a time.
@@ -80,8 +80,9 @@ struct FileKey
 // The filesystems that need no disk, in the order "/" lists them: /system, /etc, /dev, /proc and
 // /tmp. Those already mounted somewhere are left alone.
 bool MountBuiltIn();
-// Mounts the block device's FAT16 volume at "/", replacing an earlier one, and registers its ext2
-// volume, unless that one is mounted.
+// Mounts the block device's first partition with a FAT16 or ext2 volume at "/", replacing an
+// earlier root, and registers each volume under its type and partition name. A volume mounted
+// elsewhere is kept; one that refuses writes becomes a read-only root.
 bool MountBlockDevice();
 // Copies the initramfs's "etc" files into /etc, so they can be changed until the next boot.
 bool LoadEtc();
@@ -97,6 +98,9 @@ MountResult Mount(const char* type, const char* source, const char* point,
 MountResult Unmount(const char* point);
 // Syncs every mounted driver, as shutting down does; false if one failed.
 bool SyncAll();
+// The type and source of the filesystem at "/", as /proc/mounts names them, and whether it is
+// mounted read-only; false with nothing there.
+bool DescribeRoot(const char** type, const char** source, bool* read_only);
 // The index-th mount, in mount order, for /proc/mounts; false past the last one.
 bool DescribeMount(uint32_t index, Procfs::MountStatus* status);
 

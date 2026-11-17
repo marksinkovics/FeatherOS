@@ -882,7 +882,7 @@ void CheckDirectories()
     struct stat note_status;
     Check(entry != nullptr && stat("/home/libcwork/note.txt", &note_status) == 0 &&
               entry->d_ino == note_status.st_ino && note_status.st_ino != 0 &&
-              note_status.st_nlink == 1 && (note_status.st_mode & 07777) == 0644,
+              note_status.st_nlink == 1 && (note_status.st_mode & 07777) == 0666,
           "d_ino is stat's st_ino");
     Check(readdir(listing) == nullptr, "readdir at the end");
     rewinddir(listing);
@@ -954,8 +954,7 @@ void CheckPathLimits()
           "readdir lists a NAME_MAX name whole");
 }
 
-// /tmp holds symbolic links, the FAT16 disk holds none, and no writable filesystem holds hard
-// links yet.
+// /tmp holds symbolic links but no hard links, and the ext2 root holds both.
 void CheckSymbolicLinks()
 {
     const int created = open("/tmp/libc-target.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -1013,8 +1012,8 @@ void CheckSymbolicLinks()
     errno = 0;
     Check(link("/tmp/libc-target.txt", "/home/libc-hard") == -1 && errno == EXDEV,
           "link across filesystems");
-    errno = 0;
-    Check(symlink("x", "/home/libc-link") == -1 && errno == EPERM, "symlink on FAT16");
+    Check(symlink("x", "/home/libc-link") == 0 && unlink("/home/libc-link") == 0,
+          "symlink on the ext2 root");
     errno = 0;
     Check(symlink("x", "/system/libc-link") == -1 && errno == EROFS,
           "symlink on a read-only filesystem");

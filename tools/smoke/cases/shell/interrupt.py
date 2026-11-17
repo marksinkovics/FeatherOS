@@ -4,6 +4,9 @@ from smoke.script import CONTROL_C, INTERRUPT_RUNNING
 # Interrupts a CPU-bound job, a sleep, programs blocked reading input, and the
 # shell's own prompt (which only discards the line).
 SHELL_INTERRUPT_INPUT = (
+    # Nothing after it writes to the disk, so the root is clean when the
+    # harness stops QEMU and runs e2fsck.
+    b"sync\n",
     b"primes 1 1000000000\n",
     INTERRUPT_RUNNING,
     # The reader of an interrupted writer sees its input end and exits too.

@@ -235,6 +235,7 @@ Differences:
   - `isatty` is true for terminals (the console, `/dev/tty` and pseudo-terminal slaves), not for the other devices in `/dev`, which are also `S_IFCHR`.
   - `mkdir` ignores its mode. `rmdir` of a path whose last component is `.` fails with `EINVAL` and of one ending in `..` with `ENOTEMPTY`, as on Linux.
   - Failures inside a disk filesystem keep their reason: a full volume gives `ENOSPC` (a `write` that fills it returns the bytes that fit, the next one fails), too many links or subdirectories `EMLINK`, a file past the filesystem's size limit `EFBIG`, a damaged volume `EIO`.
+- **`sync`** syncs every mounted filesystem before it returns (Linux's behaviour; POSIX only asks that the writes be scheduled), so the ext2 root is clean afterwards until the next change.
 - **Processes:** `getpid`, `getppid`, `getpgrp`, `getpgid`, `setsid`, `getsid` and `_exit`. The kernel starts init in a session of its own without a controlling terminal; a child joins its parent's session and controlling terminal unless it is started with `POSIX_SPAWN_SETSID`. `setsid` starts a session without a controlling terminal and fails with `EPERM` for a group leader, which every command the shell starts is. `tcgetpgrp` works only on the caller's controlling terminal (`ENOTTY` on others). `tcsetpgrp` only names a group of the caller's session there, otherwise `EPERM`. On the controlling terminal a background group's read gets `SIGTTIN`, and its `tcsetattr` or `tcsetpgrp` gets `SIGTTOU`, both of which stop the group by default; the call runs again once the group continues. A read that ignores or blocks `SIGTTIN` fails with `EIO`; a change that ignores or blocks `SIGTTOU` goes ahead, which is how a shell takes the terminal back. An orphaned group gets `EIO` instead of the signal. Writes from the background are allowed, as with `stty -tostop`. On another terminal there is no such check. Besides the console, pseudo-terminal slaves are terminals (see `stdlib.h`). `setpgid` is not provided: groups are chosen when `posix_spawn` starts the child.
 - **Sleeping:** `sleep` and `usleep`.
 - **`environ`.**
@@ -246,7 +247,7 @@ Not provided:
 - `fstatat`, `unlinkat` and the other `*at` functions but `openat`, `readlinkat`, `symlinkat` and `linkat`
 - `chmod` and `chown`
 - `getuid` and the other user and group functions
-- `ftruncate` and `fsync`
+- `ftruncate`, `fsync`, `fdatasync` and `syncfs` (`sync` covers every filesystem)
 
 ### `dirent.h`
 
@@ -349,7 +350,7 @@ Only `ioctl(fd, TIOCGWINSZ, &size)` and `ioctl(fd, TIOCSWINSZ, &size)`, which do
 
 ### `sys/mount.h`
 
-`mount(source, target, filesystemtype, mountflags, data)` and `umount(target)`, with Linux's signatures. The kernel has one instance of each filesystem, which keeps its contents while unmounted and can be mounted at one point at a time, so `filesystemtype` and `source` name an instance, as `/proc/mounts` shows them: `fat16` `vda1` (the virtio disk's first partition), `ext2` `vda2` (its second, which nothing mounts at boot), `initramfs` `initramfs`, `devfs` `devfs`, `procfs` `procfs`, and `tmpfs` `tmp` or `etc`. Differences from Linux:
+`mount(source, target, filesystemtype, mountflags, data)` and `umount(target)`, with Linux's signatures. The kernel has one instance of each filesystem, which keeps its contents while unmounted and can be mounted at one point at a time, so `filesystemtype` and `source` name an instance, as `/proc/mounts` shows them: `ext2` `vda1` (the virtio disk's first partition, the root), `fat16` `vda2` (its second, which nothing mounts at boot), `initramfs` `initramfs`, `devfs` `devfs`, `procfs` `procfs`, and `tmpfs` `tmp` or `etc`. Differences from Linux:
 
 - `mountflags` may only be 0 or `MS_RDONLY`, and `data` must be null (`EINVAL` otherwise); there is no remount, bind or move, and no `umount2` or lazy unmount. Without `MS_RDONLY` a mount is read-write, except where the filesystem cannot be written (the initramfs, `/proc`) or refuses it (an ext2 volume that was not cleanly unmounted, has errors recorded, a journal or features the kernel does not know mounts read-only with a kernel log line); `/proc/mounts` shows which. Writes to a read-only mount fail with `EROFS`.
 - An unknown type fails with `ENODEV`, a source the type does not have with `ENOENT`, and an instance mounted elsewhere, or a target that is already a mount point, with `EBUSY`. Mounting over a mount point is not stacking.

@@ -115,7 +115,7 @@ class Shell(Case):
                 return failure
         ext2_error = storage.VerifyExt2(self.args.disk)
         if ext2_error is not None:
-            return f"after the ext2 part: {ext2_error}"
+            return f"the root after the session: {ext2_error}"
         # A prompt may precede the echo on the same line.
         interrupts = len(re.findall(r"\^C\r?$", output, re.MULTILINE))
         expected_interrupts = sum(part.interrupts for part in self.parts)

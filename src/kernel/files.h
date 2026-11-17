@@ -125,6 +125,8 @@ using WorkingDirectoryCheck = bool (*)(const char* point);
 // point, SyscallErrorBusy while a file on it is open, a working directory is inside it or another
 // mount point lies inside it, and SyscallErrorInputOutput if its data could not be synced.
 uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use);
+// SyscallErrorInputOutput if a mounted filesystem could not write its changes.
+uint64_t SyncAll();
 // Fails unless the directory is empty; a link is SyscallErrorNotDirectory.
 uint64_t RemoveDirectory(const char* path);
 // Within one filesystem; replaces a file or link at to, but neither a directory nor an open file.
