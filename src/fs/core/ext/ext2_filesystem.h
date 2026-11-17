@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// The ext2 filesystem behind Ext2Type(), shared by ext2.cpp (mounting and reading),
-// allocation.cpp (groups and bitmaps) and write.cpp (changes).
+// The ext2 filesystem behind Ext2Type(), shared by ext2.cpp (mounting and reading), extent.cpp
+// (extent trees), allocation.cpp (groups and bitmaps) and write.cpp (changes).
 #ifndef FEATHERDISK_EXT_EXT2_FILESYSTEM_H
 #define FEATHERDISK_EXT_EXT2_FILESYSTEM_H
 
@@ -66,12 +66,21 @@ constexpr std::size_t NoRecord = ~std::size_t{0};
 // Where WalkDirectory found a record.
 struct RecordPlace
 {
-    std::uint32_t physical;
+    std::uint64_t physical;
     std::size_t offset;
     // The record before it in the same block, or NoRecord for the block's first.
     std::size_t previous;
     // The byte offset in the directory of the record after it: ReadDirectory's cookie.
     std::uint64_t next;
+};
+
+// count logical blocks from logical on: on consecutive blocks from physical on, or zeros when
+// physical is 0 (holes and unwritten extents). count is at least 1.
+struct BlockRun
+{
+    std::uint64_t logical;
+    std::uint64_t physical;
+    std::uint64_t count;
 };
 
 // The way to a file's logical block: i_block[root], then index[level] in each of depth indirect
@@ -182,9 +191,15 @@ private:
     Result<std::uint32_t> ReadPointer(std::uint32_t block, std::uint64_t index,
                                       std::span<std::uint8_t> scratch);
     std::optional<BlockPath> PathOf(std::uint64_t logical) const;
-    // The block holding a file's logical block, or 0 for a hole.
+    // The block holding a file's logical block, or 0 for a hole, through the block map only.
     Result<std::uint32_t> MapBlock(const Inode& inode, std::uint64_t logical,
                                    std::span<std::uint8_t> scratch);
+    // The run from logical on, through the block map (one block) or the extent tree.
+    Result<BlockRun> MapRun(const Inode& inode, std::uint64_t logical,
+                            std::span<std::uint8_t> scratch);
+    // Extent trees (extent.cpp).
+    Result<BlockRun> MapExtent(const Inode& inode, std::uint64_t logical,
+                               std::span<std::uint8_t> scratch);
     // Calls visit(entry, place) for each record from byte start on, unused ones (inode 0)
     // included, until it returns true. block receives each directory block and still holds the
     // block of the record visit stopped at; scratch serves the rest.
@@ -314,6 +329,7 @@ private:
     bool group_checksums;
     bool metadata_checksums;
     bool hashed_directories;
+    bool extents;
     std::uint32_t volume_seed;
     std::uint32_t descriptor_size;
     std::uint32_t block_size;
@@ -338,18 +354,24 @@ Result<bool> Ext2Filesystem::WalkDirectory(const Inode& directory, std::uint64_t
         return std::unexpected(Error::Corrupt);
     }
     const std::uint64_t blocks = directory.size / block_size;
+    BlockRun run = {.logical = 0, .physical = 0, .count = 0};
     for (std::uint64_t logical = start / block_size; logical < blocks; ++logical)
     {
-        const Result<std::uint32_t> physical = MapBlock(directory, logical, scratch);
-        if (!physical)
+        if (logical - run.logical >= run.count)
         {
-            return Failure(physical);
+            const Result<BlockRun> mapped = MapRun(directory, logical, scratch);
+            if (!mapped)
+            {
+                return Failure(mapped);
+            }
+            run = *mapped;
         }
-        if (*physical == 0)
+        if (run.physical == 0)
         {
             continue;
         }
-        if (const Status read = cache.Read(*physical, 0, block, block); !read)
+        const std::uint64_t physical = run.physical + (logical - run.logical);
+        if (const Status read = cache.Read(physical, 0, block, block); !read)
         {
             return Failure(read);
         }
@@ -370,7 +392,7 @@ Result<bool> Ext2Filesystem::WalkDirectory(const Inode& directory, std::uint64_t
             }
             const std::uint64_t position = logical * block_size + offset;
             const RecordPlace place = {
-                .physical = *physical,
+                .physical = physical,
                 .offset = offset,
                 .previous = previous,
                 .next = position + entry->record_length,

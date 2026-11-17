@@ -74,13 +74,10 @@ TEST_CASE("ext4 features the driver does not read yet refuse the mount")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    // Extents in mke2fs's default ext4.
-    REQUIRE(MountError(LoadExtImage("ext4")) == Error::Unsupported);
-
-    // compression, journal_dev, meta_bg, extent, mmp, ea_inode, large_dir, inline_data, encrypt
-    // and casefold, each with a superblock checksum that matches.
-    for (const std::uint32_t feature : {0x0001U, 0x0008U, 0x0010U, 0x0040U, 0x0100U, 0x0400U,
-                                        0x4000U, 0x8000U, 0x10000U, 0x20000U})
+    // compression, journal_dev, meta_bg, mmp, ea_inode, large_dir, inline_data, encrypt and
+    // casefold, each with a superblock checksum that matches.
+    for (const std::uint32_t feature :
+         {0x0001U, 0x0008U, 0x0010U, 0x0100U, 0x0400U, 0x4000U, 0x8000U, 0x10000U, 0x20000U})
     {
         INFO("feature " << feature);
         std::vector<std::uint8_t> bytes = LoadExtImage("ext4-blockmap");
@@ -386,7 +383,7 @@ TEST_CASE("inodes of ext4 groups never written read as free, whatever their tabl
 #endif
 }
 
-TEST_CASE("ext4 files flagged for extents are refused, never read as block maps")
+TEST_CASE("ext4 files flagged for extents on a volume without them are damage, not block maps")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
@@ -401,6 +398,6 @@ TEST_CASE("ext4 files flagged for extents are refused, never read as block maps"
     const NodeId big = Value(Walk(*ext4, "big.txt"));
     REQUIRE(Value(ext4->GetAttributes(big)).size == 448000);
     std::array<std::uint8_t, 16> buffer{};
-    REQUIRE(ErrorOf(ext4->Read(big, 0, buffer)) == Error::Unsupported);
+    REQUIRE(ErrorOf(ext4->Read(big, 0, buffer)) == Error::Corrupt);
 #endif
 }

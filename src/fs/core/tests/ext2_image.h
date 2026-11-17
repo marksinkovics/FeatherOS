@@ -44,6 +44,11 @@ struct RawVolume
     // s_checksum again after a deliberate change, on a volume with metadata_csum.
     void UpdateSuperblockChecksum();
     std::uint32_t InodeBlock(std::uint32_t inode, std::uint32_t index) const;
+    // The blocks of the extent tree nodes below the inode's root on the way to logical.
+    std::vector<std::uint64_t> ExtentPath(std::uint32_t inode, std::uint32_t logical) const;
+    // The block holding logical, 0 for a hole: through the extent tree, or one of the twelve
+    // direct blocks of a block map.
+    std::uint64_t FileBlock(std::uint32_t inode, std::uint32_t logical) const;
     // The named entry in the directory's first block.
     std::uint64_t EntryOffset(std::uint32_t directory, std::string_view name) const;
 };

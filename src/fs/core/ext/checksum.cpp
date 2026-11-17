@@ -3,6 +3,7 @@
 
 #include "common/crc.h"
 #include "common/little_endian.h"
+#include "ext/extent.h"
 
 #include <array>
 
@@ -168,6 +169,32 @@ bool IndexBlockChecksumMatches(std::span<const std::uint8_t> block, std::uint32_
     crc = Crc32c(crc, block.subspan(tail, 4));
     crc = Crc32c(crc, std::array<std::uint8_t, 4>{});
     return crc == Load32(block, tail + 4);
+}
+
+std::optional<std::size_t> ExtentTailOffset(std::span<const std::uint8_t> block)
+{
+    if (block.size() < ExtentHeaderSize)
+    {
+        return std::nullopt;
+    }
+    const std::size_t offset = ExtentHeaderSize + std::size_t{Load16(block, 4)} * ExtentEntrySize;
+    if (offset + ExtentTailSize > block.size())
+    {
+        return std::nullopt;
+    }
+    return offset;
+}
+
+std::uint32_t ExtentBlockChecksum(std::span<const std::uint8_t> block, std::size_t offset,
+                                  std::uint32_t inode_seed)
+{
+    return Crc32c(inode_seed, block.first(offset));
+}
+
+bool ExtentBlockChecksumMatches(std::span<const std::uint8_t> block, std::uint32_t inode_seed)
+{
+    const std::optional<std::size_t> offset = ExtentTailOffset(block);
+    return offset && ExtentBlockChecksum(block, *offset, inode_seed) == Load32(block, *offset);
 }
 
 } // namespace FeatherDisk::Ext

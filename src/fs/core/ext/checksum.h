@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 namespace FeatherDisk::Ext
@@ -41,6 +42,12 @@ bool IsIndexBlock(std::span<const std::uint8_t> block, std::uint64_t logical);
 // An index block (the root after "." and "..", or an interior node) must leave room after its
 // entries' limit for the checksum, and match it.
 bool IndexBlockChecksumMatches(std::span<const std::uint8_t> block, std::uint32_t inode_seed);
+// An extent tree block's tail follows its header's eh_max entries; nullopt when it would not fit.
+std::optional<std::size_t> ExtentTailOffset(std::span<const std::uint8_t> block);
+// What the tail at offset (from ExtentTailOffset) must hold.
+std::uint32_t ExtentBlockChecksum(std::span<const std::uint8_t> block, std::size_t offset,
+                                  std::uint32_t inode_seed);
+bool ExtentBlockChecksumMatches(std::span<const std::uint8_t> block, std::uint32_t inode_seed);
 
 } // namespace FeatherDisk::Ext
 

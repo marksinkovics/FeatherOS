@@ -73,9 +73,9 @@ constexpr std::uint32_t IncompatibleLargeDirectory = 0x4000;
 constexpr std::uint32_t IncompatibleInlineData = 0x8000;
 constexpr std::uint32_t IncompatibleEncryption = 0x10000;
 constexpr std::uint32_t IncompatibleCaseFolding = 0x20000;
-constexpr std::uint32_t IncompatibleReadable = IncompatibleFileType | IncompatibleRecover |
-                                               Incompatible64Bit | IncompatibleFlexibleGroups |
-                                               IncompatibleChecksumSeed;
+constexpr std::uint32_t IncompatibleReadable =
+    IncompatibleFileType | IncompatibleRecover | IncompatibleExtents | Incompatible64Bit |
+    IncompatibleFlexibleGroups | IncompatibleChecksumSeed;
 constexpr std::uint32_t IncompatibleWritable = IncompatibleFileType;
 
 // s_feature_ro_compat: a driver may read a volume with a bit it does not know, but not write it.

@@ -248,8 +248,8 @@ case "$case" in
         grep -Eq '^  4096 blocks of 2048 bytes, ' "$work/out" || fail "no volume statistics"
         run 0 info "$ext/ext4.img"
         grep -Eq '^  format: ext4, features: .* extent ' "$work/out" || fail "no extent feature"
-        has_line '  not mounted: cannot mount ext2: not supported by this filesystem'
-        for image in ext4-blockmap ext4-64bit ext4-gdtcsum; do
+        grep -Eq '^  8192 blocks of 1024 bytes, ' "$work/out" || fail "ext4 with extents did not mount"
+        for image in ext4 ext4-blockmap ext4-64bit ext4-gdtcsum; do
             run 0 ls "$ext/$image.img"
             has_line '-rw-r-----         17  hello.txt'
             has_line 'lrwxrwxrwx         64  slow-link -> a/b/c/a-symbolic-link-target-that-is-longer-than-sixty-bytes.txt'
@@ -266,6 +266,38 @@ case "$case" in
         run 1 cp-in "$work/ext4.img" "$work/new.txt" /new.txt
         error_has 'the volume mounted read-only'
         cmp -s "$ext/ext4-blockmap.img" "$work/ext4.img" || fail "the read-only volume changed"
+        ;;
+    ext4-extents)
+        need_ext_images
+        image="$ext/ext4-extents.img"
+        run 0 ls "$image"
+        has_line '-rw-r--r--    3145728  holes.bin'
+        has_line '-rw-r--r--     384000  fragmented.bin'
+        has_line '-rw-r--r--      40000  unwritten.bin'
+        has_line 'lrwxrwxrwx         64  slow-link -> a/b/c/a-symbolic-link-target-that-is-longer-than-sixty-bytes.txt'
+        grep -Eq '^drwxr-xr-x +[0-9]+  large$' "$work/out" || fail "large is not listed as a directory"
+        [ "$(wc -l <"$work/out")" -eq 16 ] || fail "the root should hold 16 entries"
+        run 0 ls "$image" large
+        [ "$(wc -l <"$work/out")" -eq 3000 ] || fail "large should hold 3000 entries"
+        has_line '-rw-r--r--          5  file-with-a-long-name-for-htree-02999.txt'
+        run 0 cat "$image" large/file-with-a-long-name-for-htree-01234.txt
+        printf '1234\n' | cmp -s - "$work/out" || fail "wrong file from the hashed directory"
+        run 0 cat "$image" fragmented.bin
+        awk 'BEGIN { for (block = 0; block < 400; block++) for (line = 0; line < 32; line++)
+            printf "piece %04d line %02d fragmented\n", block, line }' \
+            | cmp -s - "$work/out" || fail "wrong fragmented file"
+        # Every eighth block of holes.bin is a hole, which awk cannot print, so debugfs is the
+        # reference; without it the size and a block of text are checked.
+        run 0 cp "$image" /holes.bin "$work/holes.bin"
+        [ "$(wc -c <"$work/holes.bin")" -eq 3145728 ] || fail "wrong size of holes.bin"
+        [ "$(dd if="$work/holes.bin" bs=1024 skip=4 count=1 2>/dev/null | head -c 32)" = 'block 0004 line 00 with holes!!' ] \
+            || fail "wrong block before the first hole"
+        [ "$(dd if="$work/holes.bin" bs=1024 skip=5 count=1 2>/dev/null | tr -d '\000' | wc -c)" -eq 0 ] \
+            || fail "the first hole is not zeros"
+        debugfs_matches "$image" /holes.bin "$work/holes.bin"
+        run 0 cp "$image" /unwritten.bin "$work/unwritten.bin"
+        [ "$(wc -c <"$work/unwritten.bin")" -eq 40000 ] || fail "wrong size of unwritten.bin"
+        [ "$(tr -d '\000' <"$work/unwritten.bin")" = start ] || fail "unwritten blocks are not zeros"
         ;;
     ext2-ls)
         need_ext_images
@@ -315,9 +347,13 @@ case "$case" in
         ;;
     ext2-errors)
         need_ext_images
-        run 1 ls "$ext/ext4.img"
-        error_has 'cannot mount ext2: not supported by this filesystem'
-        error_has 'unsupported incompatible features'
+        if [ -n "$debugfs" ] && [ -x "$debugfs" ]; then
+            cp "$ext/ext4.img" "$work/inline.img"
+            "$debugfs" -w -R "feature inline_data" "$work/inline.img" >/dev/null 2>&1
+            run 1 ls "$work/inline.img"
+            error_has 'cannot mount ext2: not supported by this filesystem'
+            error_has 'unsupported incompatible features'
+        fi
         run 1 cat "$ext/1k.img" /fast-link
         error_has 'is a symbolic link'
         run 1 cp "$ext/1k.img" /pipe "$work/pipe-copy"

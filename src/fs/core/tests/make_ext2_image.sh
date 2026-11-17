@@ -3,7 +3,7 @@
 #
 # Makes the ext2 images that tests/ext2_image_tests.cpp and the fscli tests read, with mke2fs -d
 # from e2fsprogs, and fixes owners, times and link modes with debugfs so they do not depend on
-# who builds them. Every image is 8 MiB with the same contents:
+# who builds them. Every image is 8 MiB with the same contents, except ext4-extents:
 #
 #   1k          1 KiB blocks, 128-byte inodes, filetype
 #   4k          4 KiB blocks, 256-byte inodes with nanosecond times, filetype
@@ -12,7 +12,13 @@
 #   groups      1 KiB blocks, 128-byte inodes, in eight groups of 1024 blocks
 #   mbr         the 1k volume as the only partition (type 0x83) of an MBR disk, from sector 2048
 #   ext3        an ext3 volume with a clean journal
-#   ext4        an ext4 volume with extents, which the driver refuses until it reads them
+#   ext4        mke2fs's default ext4 with 1 KiB blocks: extents, 64bit, flex_bg, metadata_csum
+#   ext4-extents    the same in 32 MiB, with more: holes.bin (3 MiB, every eighth block a hole
+#               that debugfs punched: an extent tree of depth 2), fragmented.bin (400 blocks
+#               written by debugfs into the gaps of a filler directory removed again: depth 1),
+#               unwritten.bin (a written block, then 39 that debugfs fallocated, which reuse
+#               blocks holes.bin left: unwritten extents over old data) and large/ (3000 entries,
+#               a hash index of two levels after e2fsck -D)
 #   ext4-blockmap   ext4 without extents or 64bit: 1 KiB blocks, metadata_csum with
 #               metadata_csum_seed, flex_bg, huge_file, dir_nlink, extra_isize, four groups;
 #               e2fsck -D gives many/ a hash index
@@ -81,6 +87,33 @@ chmod 0640 "$source/hello.txt"
 chmod 4755 "$source/tool"
 mkfifo -m 0644 "$source/pipe"
 
+if [ "$variant" = ext4-extents ]; then
+    mkdir "$source/large" "$source/filler"
+    awk -v directory="$source/large" 'BEGIN {
+        for (number = 0; number < 3000; number++) {
+            name = sprintf("%s/file-with-a-long-name-for-htree-%05d.txt", directory, number)
+            printf "%d\n", number > name
+            close(name)
+        }
+    }'
+    awk -v directory="$source/filler" 'BEGIN {
+        for (number = 0; number < 600; number++) {
+            name = sprintf("%s/%03d", directory, number)
+            printf "%1024s", "x" > name
+            close(name)
+        }
+    }'
+    # 32 lines of 32 bytes per 1 KiB block.
+    awk 'BEGIN { for (block = 0; block < 3072; block++) for (line = 0; line < 32; line++)
+        printf "block %04d line %02d with holes!!\n", block, line }' >"$source/holes.bin"
+    awk 'BEGIN { for (block = 0; block < 400; block++) for (line = 0; line < 32; line++)
+        printf "piece %04d line %02d fragmented\n", block, line }' >"$work/fragmented.bin"
+    printf 'start\n' >"$work/unwritten.bin"
+    chmod 0755 "$source/large" "$source/filler"
+    chmod 0644 "$source/holes.bin" "$work/fragmented.bin" "$work/unwritten.bin"
+fi
+
+size=8M
 case "$variant" in
     1k | mbr) options="-t ext2 -b 1024 -I 128" ;;
     4k) options="-t ext2 -b 4096 -I 256" ;;
@@ -89,6 +122,10 @@ case "$variant" in
     groups) options="-t ext2 -b 1024 -I 128 -g 1024" ;;
     ext3) options="-t ext3 -b 1024 -I 256" ;;
     ext4) options="-t ext4 -b 1024" ;;
+    ext4-extents)
+        options="-t ext4 -b 1024 -N 6144"
+        size=32M
+        ;;
     ext4-blockmap) options="-t ext4 -b 1024 -g 2048 -O ^extent,^64bit" ;;
     ext4-64bit) options="-t ext4 -b 2048 -g 1024 -O ^extent,^64bit,^metadata_csum_seed" ;;
     ext4-gdtcsum)
@@ -105,13 +142,13 @@ volume="$work/volume.img"
 # shellcheck disable=SC2086
 if [ "$variant" = rev0 ]; then
     # e2fsprogs 1.47 replaced -r with -E revision=; older releases know only -r.
-    "$mke2fs" -q -F $options -E revision=0 -d "$source" "$volume" 8M >"$work/log" 2>&1 \
-        || "$mke2fs" -q -F $options -r 0 -d "$source" "$volume" 8M >"$work/log" 2>&1 \
+    "$mke2fs" -q -F $options -E revision=0 -d "$source" "$volume" "$size" >"$work/log" 2>&1 \
+        || "$mke2fs" -q -F $options -r 0 -d "$source" "$volume" "$size" >"$work/log" 2>&1 \
         || {
             cat "$work/log" >&2
             exit 1
         }
-elif ! "$mke2fs" -q -F $options -d "$source" "$volume" 8M >"$work/log" 2>&1; then
+elif ! "$mke2fs" -q -F $options -d "$source" "$volume" "$size" >"$work/log" 2>&1; then
     cat "$work/log" >&2
     exit 1
 fi
@@ -126,7 +163,26 @@ if [ "$variant" = ext4-64bit ]; then
     fi
 fi
 
-if [ "$variant" = ext4-blockmap ]; then
+if [ "$variant" = ext4-extents ]; then
+    {
+        awk 'BEGIN { for (number = 0; number < 600; number += 2) printf "rm /filler/%03d\n", number }'
+        printf 'write %s /fragmented.bin\n' "$work/fragmented.bin"
+        awk 'BEGIN { for (block = 5; block < 3072; block += 8) printf "punch /holes.bin %d %d\n", block, block }'
+        printf 'write %s /unwritten.bin\n' "$work/unwritten.bin"
+        printf 'fallocate /unwritten.bin 1 39\n'
+        printf 'sif /unwritten.bin size 40000\n'
+        awk 'BEGIN { for (number = 1; number < 600; number += 2) printf "rm /filler/%03d\n", number }'
+        printf 'rmdir /filler\n'
+    } >"$work/commands"
+    # rm prints an empty line, and write the inode it allocated.
+    if ! "$debugfs" -w -f "$work/commands" "$volume" >"$work/log" 2>&1 \
+        || grep -v -e '^debugfs' -e '^$' -e '^Allocated inode: ' "$work/log" >/dev/null; then
+        cat "$work/log" >&2
+        exit 1
+    fi
+fi
+
+if [ "$variant" = ext4-blockmap ] || [ "$variant" = ext4-extents ]; then
     # Exit status 1 means e2fsck changed the volume, as -D asks.
     status=0
     "$tools/e2fsck" -fyD "$volume" >"$work/log" 2>&1 || status=$?
@@ -146,7 +202,7 @@ fi
     printf 'sif /slow-link mode 0120777\n'
     case "$variant" in
         # 4000 >> 2: 1000 nanoseconds, with no extra epoch bits.
-        4k | nofiletype | ext3 | ext4-*) printf 'sif /hello.txt mtime_extra 4000\n' ;;
+        4k | nofiletype | ext3 | ext4 | ext4-*) printf 'sif /hello.txt mtime_extra 4000\n' ;;
     esac
 } >"$work/commands"
 # debugfs echoes each command after "debugfs:" and exits 0 even when one fails, so any other line

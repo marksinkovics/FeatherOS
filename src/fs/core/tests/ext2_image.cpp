@@ -197,9 +197,55 @@ std::uint32_t RawVolume::InodeBlock(std::uint32_t inode, std::uint32_t index) co
     return Load32(InodeOffset(inode) + 40 + index * 4);
 }
 
+std::vector<std::uint64_t> RawVolume::ExtentPath(std::uint32_t inode, std::uint32_t logical) const
+{
+    std::vector<std::uint64_t> path;
+    std::uint64_t node = InodeOffset(inode) + 40;
+    REQUIRE(Load16(node) == 0xF30A);
+    while (Load16(node + 6) > 0)
+    {
+        const std::uint16_t entries = Load16(node + 2);
+        REQUIRE(entries > 0);
+        std::uint64_t entry = node + 12;
+        for (std::uint16_t index = 1; index < entries && Load32(node + 12 + index * 12) <= logical;
+             ++index)
+        {
+            entry = node + 12 + index * 12;
+        }
+        const std::uint64_t child = Load32(entry + 4) | (std::uint64_t{Load16(entry + 8)} << 32);
+        path.push_back(child);
+        node = child * BlockSize();
+        REQUIRE(Load16(node) == 0xF30A);
+    }
+    return path;
+}
+
+std::uint64_t RawVolume::FileBlock(std::uint32_t inode, std::uint32_t logical) const
+{
+    if ((Load32(InodeOffset(inode) + 32) & 0x80000U) == 0)
+    {
+        REQUIRE(logical < 12);
+        return InodeBlock(inode, logical);
+    }
+    const std::vector<std::uint64_t> path = ExtentPath(inode, logical);
+    const std::uint64_t node = path.empty() ? InodeOffset(inode) + 40 : path.back() * BlockSize();
+    for (std::uint16_t index = 0; index < Load16(node + 2); ++index)
+    {
+        const std::uint64_t entry = node + 12 + std::uint64_t{index} * 12;
+        const std::uint32_t first = Load32(entry);
+        std::uint32_t length = Load16(entry + 4);
+        length = length > 32768 ? length - 32768 : length;
+        if (logical >= first && logical - first < length)
+        {
+            return ((std::uint64_t{Load16(entry + 6)} << 32) | Load32(entry + 8)) + logical - first;
+        }
+    }
+    return 0;
+}
+
 std::uint64_t RawVolume::EntryOffset(std::uint32_t directory, std::string_view name) const
 {
-    const std::uint64_t block = BlockOffset(InodeBlock(directory, 0));
+    const std::uint64_t block = FileBlock(directory, 0) * BlockSize();
     for (std::uint64_t offset = 0; offset < BlockSize();)
     {
         const std::uint16_t length = Load16(block + offset + 4);

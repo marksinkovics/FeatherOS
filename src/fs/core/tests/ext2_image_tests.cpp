@@ -124,6 +124,9 @@ struct Expected
     std::uint32_t block_size;
     // Large inodes extend the times to nanoseconds.
     bool nanoseconds;
+    std::uint64_t volume_bytes = VolumeBytes;
+    // Entries of the root beyond those every image has.
+    std::vector<std::string> more_entries = {};
 };
 
 void CheckReadOnly(Filesystem& ext2)
@@ -152,10 +155,11 @@ void CheckVolume(Filesystem& ext2, Expected expected)
 {
     const NodeId root = ext2.Root();
     REQUIRE(root == 2);
-    REQUIRE(Sorted(List(ext2, root)) ==
-            std::vector<std::string>{"a/", "big.txt", "empty.txt", "fast-link", "hard.txt",
-                                     "hello.txt", "lost+found/", "many/", "pipe", "slow-link",
-                                     "sparse.bin", "tool"});
+    std::vector<std::string> entries = {"a/",       "big.txt",   "empty.txt",   "fast-link",
+                                        "hard.txt", "hello.txt", "lost+found/", "many/",
+                                        "pipe",     "slow-link", "sparse.bin",  "tool"};
+    entries.insert(entries.end(), expected.more_entries.begin(), expected.more_entries.end());
+    REQUIRE(Sorted(List(ext2, root)) == Sorted(entries));
     const std::map<std::string, NodeType> types = Types(ext2, root);
     REQUIRE(types.at("pipe") == NodeType::Special);
     REQUIRE(types.at("fast-link") == NodeType::SymbolicLink);
@@ -264,7 +268,7 @@ void CheckVolume(Filesystem& ext2, Expected expected)
 
     const VolumeStatistics statistics = Value(ext2.Statistics());
     REQUIRE(statistics.block_size == expected.block_size);
-    REQUIRE(statistics.total_blocks * statistics.block_size == VolumeBytes);
+    REQUIRE(statistics.total_blocks * statistics.block_size == expected.volume_bytes);
     REQUIRE(statistics.free_blocks > 0);
     REQUIRE(statistics.free_blocks < statistics.total_blocks);
     REQUIRE(statistics.total_nodes > 320);
@@ -413,12 +417,35 @@ TEST_CASE("ext4 reads with CRC16 group descriptor checksums and without a journa
 #endif
 }
 
+TEST_CASE("ext4 reads mke2fs's default layout with extents")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    CheckImage("ext4", {.block_size = 1024, .nanoseconds = true});
+#endif
+}
+
+TEST_CASE("ext4 reads extent trees two levels deep, unwritten extents and a large hashed directory")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    CheckImage("ext4-extents",
+               {.block_size = 1024,
+                .nanoseconds = true,
+                .volume_bytes = 32 * 1024 * 1024,
+                .more_entries = {"fragmented.bin", "holes.bin", "large/", "unwritten.bin"}});
+#endif
+}
+
 TEST_CASE("ext3 and ext4 volumes mount read-only when asked to write, and keep every byte")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view variant : {"ext3", "ext4-blockmap", "ext4-64bit", "ext4-gdtcsum"})
+    for (const std::string_view variant :
+         {"ext3", "ext4", "ext4-extents", "ext4-blockmap", "ext4-64bit", "ext4-gdtcsum"})
     {
         INFO(variant);
         const std::vector<std::uint8_t> original = LoadExtImage(variant);
@@ -480,12 +507,8 @@ TEST_CASE("ext2 refuses volumes with incompatible features it does not support")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    const std::unique_ptr<MemoryDevice> ext4 = DeviceFrom(LoadExtImage("ext4"));
-    REQUIRE(Ext2Type().Probe(*ext4));
-    REQUIRE(ErrorOf(Ext2Type().Mount(*ext4, {.read_only = true})) == Error::Unsupported);
-
-    // Extents, meta_bg, and a bit no one has defined yet.
-    for (const std::uint32_t feature : {0x0040U, 0x0010U, 0x80000000U})
+    // meta_bg, inline_data, and a bit no one has defined yet.
+    for (const std::uint32_t feature : {0x0010U, 0x8000U, 0x80000000U})
     {
         std::vector<std::uint8_t> bytes = LoadExtImage("1k");
         RawVolume raw{bytes};
@@ -786,16 +809,32 @@ int DamageAtRandom(std::string_view variant)
     const auto inode_of = [&](std::string_view name)
     { return raw.Load32(raw.EntryOffset(2, name)); };
     // The superblock's fields, the first group descriptor, the first 40 inodes, the root and
-    // "many" directories' first blocks, and big.txt's indirect blocks.
-    const std::vector<std::pair<std::uint64_t, std::uint64_t>> regions = {
+    // "many" directories' first blocks, and big.txt's indirect blocks, or with extents the
+    // inodes and tree nodes of the files that have them.
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> regions = {
         {1024, 264},
         {raw.DescriptorOffset(), raw.DescriptorSize()},
         {raw.InodeOffset(1), std::uint64_t{40} * raw.InodeSize()},
-        {raw.BlockOffset(raw.InodeBlock(2, 0)), block_size},
-        {raw.BlockOffset(raw.InodeBlock(inode_of("many"), 0)), block_size},
-        {raw.BlockOffset(raw.InodeBlock(inode_of("big.txt"), 12)), block_size},
-        {raw.BlockOffset(raw.InodeBlock(inode_of("big.txt"), 13)), block_size},
+        {raw.FileBlock(2, 0) * block_size, block_size},
+        {raw.FileBlock(inode_of("many"), 0) * block_size, block_size},
     };
+    if ((raw.Load32(1024 + 96) & 0x40U) == 0)
+    {
+        regions.emplace_back(raw.BlockOffset(raw.InodeBlock(inode_of("big.txt"), 12)), block_size);
+        regions.emplace_back(raw.BlockOffset(raw.InodeBlock(inode_of("big.txt"), 13)), block_size);
+    }
+    else
+    {
+        for (const std::string_view name : {"holes.bin", "fragmented.bin", "large"})
+        {
+            const std::uint32_t inode = inode_of(name);
+            regions.emplace_back(raw.InodeOffset(inode), raw.InodeSize());
+            for (const std::uint64_t node : raw.ExtentPath(inode, 0))
+            {
+                regions.emplace_back(node * block_size, block_size);
+            }
+        }
+    }
     std::mt19937 generator(22);
     // One device, with each round's damage undone afterwards: building an 8 MiB device per round
     // costs more than the rounds themselves.
@@ -845,5 +884,6 @@ TEST_CASE("random damage to ext2 metadata never crashes the driver or makes it l
     REQUIRE(DamageAtRandom("1k") > 100);
     // Checksums refuse most damage to the superblock, descriptors and inodes.
     REQUIRE(DamageAtRandom("ext4-blockmap") > 20);
+    REQUIRE(DamageAtRandom("ext4-extents") > 20);
 #endif
 }

@@ -4,6 +4,7 @@
 #include "common/bytes.h"
 #include "common/little_endian.h"
 #include "ext/ext2_filesystem.h"
+#include "ext/extent.h"
 #include "ext/features.h"
 #include "fs/host.h"
 
@@ -177,6 +178,7 @@ Ext2Filesystem::Ext2Filesystem(BlockDevice& device, const Superblock& layout,
       has_file_type((layout.incompatible & IncompatibleFileType) != 0),
       group_checksums(HasGroupChecksums(layout)), metadata_checksums(HasMetadataChecksums(layout)),
       hashed_directories((layout.compatible & CompatibleDirectoryIndex) != 0),
+      extents((layout.incompatible & IncompatibleExtents) != 0),
       volume_seed(VolumeChecksumSeed(layout)), descriptor_size(layout.descriptor_size),
       block_size(layout.block_size), pointers_per_block(layout.block_size / PointerSize),
       inode_table_blocks(DivideRoundingUp(
@@ -274,8 +276,9 @@ bool Ext2Filesystem::IsDataBlock(std::uint64_t block) const
 std::uint64_t Ext2Filesystem::MaximumFileSize() const
 {
     const std::uint64_t per_block = pointers_per_block;
-    const std::uint64_t mapped_blocks =
-        DirectBlocks + per_block + per_block * per_block + per_block * per_block * per_block;
+    const std::uint64_t mapped_blocks = extents ? ExtentLogicalEnd
+                                                : DirectBlocks + per_block + per_block * per_block +
+                                                      per_block * per_block * per_block;
     std::uint64_t maximum = mapped_blocks * block_size;
     if (maximum > MaximumAllocatedBytes)
     {
@@ -507,6 +510,26 @@ Result<std::uint32_t> Ext2Filesystem::MapBlock(const Inode& inode, std::uint64_t
     return block;
 }
 
+Result<BlockRun> Ext2Filesystem::MapRun(const Inode& inode, std::uint64_t logical,
+                                        std::span<std::uint8_t> scratch)
+{
+    // Inline data puts something else in i_block, and encrypted contents need keys.
+    if ((inode.flags & (InodeInlineData | InodeEncrypted)) != 0)
+    {
+        return std::unexpected(Error::Unsupported);
+    }
+    if ((inode.flags & InodeExtents) != 0)
+    {
+        return MapExtent(inode, logical, scratch);
+    }
+    const Result<std::uint32_t> block = MapBlock(inode, logical, scratch);
+    if (!block)
+    {
+        return Failure(block);
+    }
+    return BlockRun{.logical = logical, .physical = *block, .count = 1};
+}
+
 bool Ext2Filesystem::DirectoryBlockMatches(const Inode& directory, std::uint64_t logical,
                                            std::span<const std::uint8_t> block) const
 {
@@ -547,57 +570,76 @@ Result<std::size_t> Ext2Filesystem::ReadContents(const Inode& file, std::uint64_
     const std::uint64_t remaining = file.size - offset;
     const std::size_t count =
         remaining < buffer.size() ? static_cast<std::size_t>(remaining) : buffer.size();
+    BlockRun run = {.logical = 0, .physical = 0, .count = 0};
+    const auto map = [&](std::uint64_t logical) -> Status
+    {
+        if (logical - run.logical < run.count)
+        {
+            return {};
+        }
+        const Result<BlockRun> mapped = MapRun(file, logical, scratch);
+        if (!mapped)
+        {
+            return Failure(mapped);
+        }
+        run = *mapped;
+        return {};
+    };
+    const auto physical_of = [&](std::uint64_t logical)
+    { return run.physical == 0 ? 0 : run.physical + (logical - run.logical); };
     std::size_t done = 0;
     while (done < count)
     {
         const std::uint64_t position = offset + done;
         const std::uint64_t logical = position / block_size;
         const auto within = static_cast<std::size_t>(position % block_size);
-        const Result<std::uint32_t> physical = MapBlock(file, logical, scratch);
-        if (!physical)
+        if (const Status mapped = map(logical); !mapped)
         {
-            return Failure(physical);
+            return Failure(mapped);
         }
+        const std::uint64_t physical = physical_of(logical);
         if (within == 0 && count - done >= block_size)
         {
-            // Whole blocks go straight into the caller's buffer, consecutive ones in one read.
+            // Whole blocks go straight into the caller's buffer, consecutive ones in one read,
+            // even across runs that continue each other.
             const std::size_t most = (count - done) / block_size;
-            std::size_t run = 1;
-            while (run < most)
+            std::size_t blocks = 0;
+            while (blocks < most)
             {
-                const Result<std::uint32_t> next = MapBlock(file, logical + run, scratch);
-                if (!next)
+                const std::uint64_t next = logical + blocks;
+                if (const Status mapped = map(next); !mapped)
                 {
-                    return Failure(next);
+                    return Failure(mapped);
                 }
-                if (*physical == 0 ? *next != 0
-                                   : std::uint64_t{*next} != std::uint64_t{*physical} + run)
+                const std::uint64_t next_physical = physical_of(next);
+                if (physical == 0 ? next_physical != 0 : next_physical != physical + blocks)
                 {
                     break;
                 }
-                ++run;
+                const std::uint64_t left = run.count - (next - run.logical);
+                blocks += left < most - blocks ? static_cast<std::size_t>(left) : most - blocks;
             }
-            const std::span<std::uint8_t> target = buffer.subspan(done, run * block_size);
-            if (*physical == 0)
+            const std::span<std::uint8_t> target = buffer.subspan(done, blocks * block_size);
+            if (physical == 0)
             {
                 ZeroBytes(target);
             }
-            else if (const Status read = cache.ReadUncached(*physical, target); !read)
+            else if (const Status read = cache.ReadUncached(physical, target); !read)
             {
                 return Failure(read);
             }
-            done += run * block_size;
+            done += blocks * block_size;
             continue;
         }
         const std::size_t part =
             block_size - within < count - done ? block_size - within : count - done;
-        if (*physical == 0)
+        if (physical == 0)
         {
             ZeroBytes(buffer.subspan(done, part));
         }
         else
         {
-            if (const Status read = cache.ReadUncached(*physical, scratch); !read)
+            if (const Status read = cache.ReadUncached(physical, scratch); !read)
             {
                 return Failure(read);
             }
@@ -799,8 +841,8 @@ Result<std::size_t> Ext2Filesystem::ReadLink(NodeId link, std::span<char> buffer
     }
     const std::uint64_t size = inode.size;
     const std::size_t count = size < buffer.size() ? static_cast<std::size_t>(size) : buffer.size();
-    // A target shorter than i_block is kept there ("fast"); a longer one fills the link's only
-    // block ("slow").
+    // A target shorter than i_block is kept there ("fast"), whatever i_flags say; a longer one
+    // fills the link's only block ("slow").
     if (size < BlockArrayBytes)
     {
         CopyBytes(buffer.data(), inode.blocks.data(), count);
@@ -810,16 +852,16 @@ Result<std::size_t> Ext2Filesystem::ReadLink(NodeId link, std::span<char> buffer
     {
         return std::unexpected(Error::Corrupt);
     }
-    const Result<std::uint32_t> block = MapBlock(inode, 0, buffers[0]);
-    if (!block)
+    const Result<BlockRun> run = MapRun(inode, 0, buffers[0]);
+    if (!run)
     {
-        return Failure(block);
+        return Failure(run);
     }
-    if (*block == 0)
+    if (run->physical == 0)
     {
         return std::unexpected(Error::Corrupt);
     }
-    if (const Status read = cache.ReadUncached(*block, buffers[0]); !read)
+    if (const Status read = cache.ReadUncached(run->physical, buffers[0]); !read)
     {
         return Failure(read);
     }
