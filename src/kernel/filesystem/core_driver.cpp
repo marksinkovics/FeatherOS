@@ -10,6 +10,7 @@ namespace FeatherOS::Filesystem
 namespace
 {
 
+using FeatherDisk::Error;
 using FeatherDisk::NodeId;
 using FeatherDisk::NodeType;
 using FeatherDisk::Result;
@@ -75,7 +76,66 @@ std::string_view NextComponent(const char* path, size_t* position)
 
 } // namespace
 
-bool CoreDriver::Mount(FeatherDisk::FilesystemType& new_type, FeatherDisk::BlockDevice& disk)
+uint64_t SyscallError(Error error)
+{
+    switch (error)
+    {
+    case Error::NotFound:
+        return User::SyscallErrorNotFound;
+    case Error::Exists:
+        return User::SyscallErrorExists;
+    case Error::NotDirectory:
+        return User::SyscallErrorNotDirectory;
+    case Error::IsDirectory:
+        return User::SyscallErrorIsDirectory;
+    case Error::NotEmpty:
+        return User::SyscallErrorNotEmpty;
+    case Error::NoSpace:
+        return User::SyscallErrorNoSpace;
+    case Error::ReadOnly:
+        return User::SyscallErrorReadOnly;
+    case Error::InvalidArgument:
+        return User::SyscallErrorInvalidArgument;
+    case Error::NameTooLong:
+        return User::SyscallErrorNameTooLong;
+    case Error::FileTooLarge:
+        return User::SyscallErrorFileTooLarge;
+    case Error::TooManyLinks:
+        return User::SyscallErrorTooManyLinks;
+    case Error::Busy:
+        return User::SyscallErrorBusy;
+    case Error::NotPermitted:
+        return User::SyscallErrorNotPermitted;
+    case Error::OutOfMemory:
+        return User::SyscallErrorNoMemory;
+    case Error::Unsupported:
+        return User::SyscallErrorOperationNotSupported;
+    // Linux reports a damaged ext2 volume as EIO too (EUCLEAN is ext4's).
+    case Error::Io:
+    case Error::Corrupt:
+        break;
+    }
+    return User::SyscallErrorInputOutput;
+}
+
+bool CoreDriver::Fail(Error error)
+{
+    last_error = SyscallError(error);
+    return false;
+}
+
+uint64_t CoreDriver::LastError()
+{
+    return last_error;
+}
+
+bool CoreDriver::CoreReadOnly(MountMode mode) const
+{
+    return Attributes().read_only || mode == MountMode::ReadOnly;
+}
+
+bool CoreDriver::Mount(FeatherDisk::FilesystemType& new_type, FeatherDisk::BlockDevice& disk,
+                       MountMode mode)
 {
     if (filesystem != nullptr)
     {
@@ -96,16 +156,49 @@ bool CoreDriver::Mount(FeatherDisk::FilesystemType& new_type, FeatherDisk::Block
             continue;
         }
         const Result<FeatherDisk::Filesystem*> mounted =
-            new_type.Mount(volume, {.read_only = Attributes().read_only});
+            new_type.Mount(volume, {.read_only = CoreReadOnly(mode)});
         if (mounted)
         {
             type = &new_type;
             filesystem = *mounted;
             partition_number = index + 1;
+            core_read_only = CoreReadOnly(mode);
             return true;
         }
     }
     return false;
+}
+
+bool CoreDriver::OpenForMount(MountMode mode, bool* writable)
+{
+    if (filesystem == nullptr)
+    {
+        return Fail(Error::Io);
+    }
+    const bool read_only = CoreReadOnly(mode);
+    if (read_only != core_read_only)
+    {
+        if (const FeatherDisk::Status unmounted = type->Unmount(*filesystem); !unmounted)
+        {
+            return Fail(unmounted.error());
+        }
+        filesystem = nullptr;
+        Result<FeatherDisk::Filesystem*> mounted = type->Mount(volume, {.read_only = read_only});
+        core_read_only = read_only;
+        if (!mounted && !read_only)
+        {
+            mounted = type->Mount(volume, {.read_only = true});
+            core_read_only = true;
+        }
+        if (!mounted)
+        {
+            partition_number = 0;
+            return Fail(mounted.error());
+        }
+        filesystem = *mounted;
+    }
+    *writable = filesystem->GetCapabilities().writable;
+    return true;
 }
 
 size_t CoreDriver::PartitionNumber() const
@@ -241,14 +334,18 @@ bool CoreDriver::Create(const char* path, Node* node, uint64_t* size)
 {
     std::string_view leaf;
     const Result<NodeId> parent = ResolveParent(path, &leaf);
-    if (!parent || leaf.empty())
+    if (!parent)
     {
-        return false;
+        return Fail(parent.error());
+    }
+    if (leaf.empty())
+    {
+        return Fail(Error::IsDirectory);
     }
     const Result<NodeId> created = filesystem->Create(*parent, leaf, NewFileMode);
     if (!created)
     {
-        return false;
+        return Fail(created.error());
     }
     *node = {*created, 0};
     *size = 0;
@@ -261,30 +358,32 @@ bool CoreDriver::Write(Node* node, uint64_t* size, uint64_t offset, const void* 
     *bytes_written = 0;
     if (filesystem == nullptr || offset > *size || (length != 0 && buffer == nullptr))
     {
-        return false;
+        return Fail(Error::InvalidArgument);
     }
     const Result<size_t> written = filesystem->Write(
         node->id, offset,
         std::span(static_cast<const uint8_t*>(buffer), static_cast<size_t>(length)));
     if (!written)
     {
-        return false;
+        return Fail(written.error());
     }
     *bytes_written = *written;
     if (offset + *written > *size)
     {
         *size = offset + *written;
     }
-    return *written == length;
+    // The core stops short only when the volume is full.
+    return *written == length || Fail(Error::NoSpace);
 }
 
 bool CoreDriver::Truncate(Node* node, uint64_t* size, uint64_t new_size)
 {
     if (filesystem == nullptr || new_size > *size)
     {
-        return false;
+        return Fail(Error::InvalidArgument);
     }
-    if (filesystem->Truncate(node->id, new_size))
+    const FeatherDisk::Status truncated = filesystem->Truncate(node->id, new_size);
+    if (truncated)
     {
         *size = new_size;
         return true;
@@ -295,28 +394,55 @@ bool CoreDriver::Truncate(Node* node, uint64_t* size, uint64_t new_size)
     {
         *size = attributes->size;
     }
-    return false;
+    return Fail(truncated.error());
 }
 
 bool CoreDriver::Remove(const char* path)
 {
     std::string_view leaf;
     const Result<NodeId> parent = ResolveParent(path, &leaf);
-    return parent && !leaf.empty() && filesystem->Remove(*parent, leaf);
+    if (!parent)
+    {
+        return Fail(parent.error());
+    }
+    if (leaf.empty())
+    {
+        return Fail(Error::IsDirectory);
+    }
+    const FeatherDisk::Status removed = filesystem->Remove(*parent, leaf);
+    return removed || Fail(removed.error());
 }
 
 bool CoreDriver::MakeDirectory(const char* path)
 {
     std::string_view leaf;
     const Result<NodeId> parent = ResolveParent(path, &leaf);
-    return parent && !leaf.empty() && filesystem->MakeDirectory(*parent, leaf, NewDirectoryMode);
+    if (!parent)
+    {
+        return Fail(parent.error());
+    }
+    if (leaf.empty())
+    {
+        return Fail(Error::Exists);
+    }
+    const Result<NodeId> made = filesystem->MakeDirectory(*parent, leaf, NewDirectoryMode);
+    return made || Fail(made.error());
 }
 
 bool CoreDriver::RemoveDirectory(const char* path)
 {
     std::string_view leaf;
     const Result<NodeId> parent = ResolveParent(path, &leaf);
-    return parent && !leaf.empty() && filesystem->RemoveDirectory(*parent, leaf);
+    if (!parent)
+    {
+        return Fail(parent.error());
+    }
+    if (leaf.empty())
+    {
+        return Fail(Error::Busy);
+    }
+    const FeatherDisk::Status removed = filesystem->RemoveDirectory(*parent, leaf);
+    return removed || Fail(removed.error());
 }
 
 bool CoreDriver::Rename(const char* from, const char* to)
@@ -324,22 +450,36 @@ bool CoreDriver::Rename(const char* from, const char* to)
     std::string_view from_leaf;
     std::string_view to_leaf;
     const Result<NodeId> from_parent = ResolveParent(from, &from_leaf);
-    const Result<NodeId> to_parent = ResolveParent(to, &to_leaf);
-    if (!from_parent || !to_parent || from_leaf.empty() || to_leaf.empty())
+    if (!from_parent)
     {
-        return false;
+        return Fail(from_parent.error());
+    }
+    const Result<NodeId> to_parent = ResolveParent(to, &to_leaf);
+    if (!to_parent)
+    {
+        return Fail(to_parent.error());
+    }
+    if (from_leaf.empty() || to_leaf.empty())
+    {
+        return Fail(Error::Busy);
     }
     const Result<NodeId> source = filesystem->Lookup(*from_parent, from_leaf);
     if (!source)
     {
-        return false;
+        return Fail(source.error());
     }
     const Result<NodeId> target = filesystem->Lookup(*to_parent, to_leaf);
-    if (target ? *target != *source : target.error() != FeatherDisk::Error::NotFound)
+    if (target && *target != *source)
     {
-        return false;
+        return Fail(Error::Exists);
     }
-    return filesystem->Rename(*from_parent, from_leaf, *to_parent, to_leaf).has_value();
+    if (!target && target.error() != Error::NotFound)
+    {
+        return Fail(target.error());
+    }
+    const FeatherDisk::Status renamed =
+        filesystem->Rename(*from_parent, from_leaf, *to_parent, to_leaf);
+    return renamed || Fail(renamed.error());
 }
 
 bool CoreDriver::IsDirectory(const char* path)
@@ -467,24 +607,53 @@ bool CoreDriver::ReadLink(const char* path, char* buffer, uint32_t capacity, uin
 
 bool CoreDriver::SymbolicLink(const char* path, const char* target)
 {
+    if (target == nullptr)
+    {
+        return Fail(Error::InvalidArgument);
+    }
     std::string_view leaf;
     const Result<NodeId> parent = ResolveParent(path, &leaf);
-    return target != nullptr && parent && !leaf.empty() &&
-           filesystem->SymbolicLink(*parent, leaf, target).has_value();
+    if (!parent)
+    {
+        return Fail(parent.error());
+    }
+    if (leaf.empty())
+    {
+        return Fail(Error::Exists);
+    }
+    const Result<NodeId> made = filesystem->SymbolicLink(*parent, leaf, target);
+    return made || Fail(made.error());
 }
 
 bool CoreDriver::Link(const char* from, const char* to)
 {
-    std::string_view leaf;
     const Result<NodeId> source = Resolve(from);
+    if (!source)
+    {
+        return Fail(source.error());
+    }
+    std::string_view leaf;
     const Result<NodeId> parent = ResolveParent(to, &leaf);
-    return source && parent && !leaf.empty() &&
-           filesystem->Link(*source, *parent, leaf).has_value();
+    if (!parent)
+    {
+        return Fail(parent.error());
+    }
+    if (leaf.empty())
+    {
+        return Fail(Error::Exists);
+    }
+    const FeatherDisk::Status linked = filesystem->Link(*source, *parent, leaf);
+    return linked || Fail(linked.error());
 }
 
 bool CoreDriver::Sync()
 {
-    return filesystem == nullptr || filesystem->Sync().has_value();
+    if (filesystem == nullptr)
+    {
+        return true;
+    }
+    const FeatherDisk::Status synced = filesystem->Sync();
+    return synced || Fail(synced.error());
 }
 
 } // namespace FeatherOS::Filesystem

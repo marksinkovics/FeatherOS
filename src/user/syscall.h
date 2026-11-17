@@ -241,10 +241,11 @@ inline uint64_t TerminalControl(uint64_t descriptor, uint64_t request, uint64_t 
     return Syscall(SyscallNumber::TerminalControl, descriptor, request, argument);
 }
 
-inline uint64_t Mount(const char* source, const char* target, const char* type)
+inline uint64_t Mount(const char* source, const char* target, const char* type, uint64_t flags)
 {
+    const MountRequest request = {reinterpret_cast<uint64_t>(type), flags};
     return Syscall(SyscallNumber::Mount, reinterpret_cast<uint64_t>(source),
-                   reinterpret_cast<uint64_t>(target), reinterpret_cast<uint64_t>(type));
+                   reinterpret_cast<uint64_t>(target), reinterpret_cast<uint64_t>(&request));
 }
 
 inline uint64_t Unmount(const char* target)

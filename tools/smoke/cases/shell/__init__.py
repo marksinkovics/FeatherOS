@@ -2,6 +2,7 @@ import re
 
 from smoke.boot import PANIC_MARKER
 from smoke.build_tree import ProgramBuilt
+from smoke.cases import storage
 from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
 from smoke.cases.shell import (
     calculator,
@@ -112,6 +113,9 @@ class Shell(Case):
             failure = part.check(result) if part.check else None
             if failure is not None:
                 return failure
+        ext2_error = storage.VerifyExt2(self.args.disk)
+        if ext2_error is not None:
+            return f"after the ext2 part: {ext2_error}"
         # A prompt may precede the echo on the same line.
         interrupts = len(re.findall(r"\^C\r?$", output, re.MULTILINE))
         expected_interrupts = sum(part.interrupts for part in self.parts)

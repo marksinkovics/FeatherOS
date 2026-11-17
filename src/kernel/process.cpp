@@ -2791,9 +2791,18 @@ struct MountText
     char type[User::MaximumPathLength];
 };
 
-uint64_t MountSyscall(void* context, uint64_t source, uint64_t target, uint64_t type)
+uint64_t MountSyscall(void* context, uint64_t source, uint64_t target, uint64_t request_address)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
+    User::MountRequest request = {};
+    if (!CopyFromUser(*process, request_address, &request, sizeof(request)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    if ((request.flags & ~User::MountReadOnly) != 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
     const Memory::HeapObject<MountText> names;
     const Memory::HeapObject<UserPath> target_text;
     if (!names)
@@ -2807,9 +2816,13 @@ uint64_t MountSyscall(void* context, uint64_t source, uint64_t target, uint64_t 
     }
     if (copied == 0)
     {
-        copied = CopyStringFromUser(*process, type, names->type, sizeof(names->type));
+        copied = CopyStringFromUser(*process, request.type, names->type, sizeof(names->type));
     }
-    return copied != 0 ? copied : Files::Mount(names->source, target_text->resolved, names->type);
+    const Filesystem::MountMode mode = (request.flags & User::MountReadOnly) != 0
+                                           ? Filesystem::MountMode::ReadOnly
+                                           : Filesystem::MountMode::ReadWrite;
+    return copied != 0 ? copied
+                       : Files::Mount(names->source, target_text->resolved, names->type, mode);
 }
 
 uint64_t UnmountSyscall(void* context, uint64_t target)

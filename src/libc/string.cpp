@@ -431,6 +431,9 @@ char* strerror(int error)
     case ENODEV:
         message = "No such device";
         break;
+    case EFBIG:
+        message = "File too large";
+        break;
     case ENOSPC:
         message = "No space left on device";
         break;
@@ -439,6 +442,9 @@ char* strerror(int error)
         break;
     case EROFS:
         message = "Read-only file system";
+        break;
+    case EMLINK:
+        message = "Too many links";
         break;
     case EPIPE:
         message = "Broken pipe";

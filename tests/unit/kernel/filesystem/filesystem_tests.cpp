@@ -907,6 +907,8 @@ void WriteWhole(const char* path, const std::string& contents)
 namespace
 {
 
+constexpr FeatherOS::Filesystem::MountMode ReadOnly = FeatherOS::Filesystem::MountMode::ReadOnly;
+
 // The core's 1 KiB ext2 image as the disk's second partition, after a FAT16 one; false without
 // the image.
 bool AttachExt2Image()
@@ -955,8 +957,8 @@ TEST_CASE("an ext2 partition after the FAT16 one mounts read-only by its partiti
 
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     REQUIRE(MountSource("/") == "vda1 fat16 rw");
-    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda1", "/mnt") == MountResult::NotFound);
-    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda1", "/mnt", ReadOnly) == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt", ReadOnly) == MountResult::Done);
     REQUIRE(MountSource("/mnt") == "vda2 ext2 ro");
     REQUIRE(ReadWhole("/mnt/hello.txt") == "Hello from ext2.\n");
     REQUIRE(ReadWhole("/mnt/a/b/c/deep.txt") == "deep\n");
@@ -969,8 +971,10 @@ TEST_CASE("an ext2 partition after the FAT16 one mounts read-only by its partiti
     REQUIRE(FeatherOS::VFS::IsReadOnly("/mnt/hello.txt"));
     REQUIRE(FeatherOS::VFS::IsReadOnly("/mnt/new.txt"));
     REQUIRE_FALSE(FeatherOS::VFS::Create("/mnt/new.txt", &file));
+    REQUIRE(FeatherOS::VFS::LastError() == FeatherOS::User::SyscallErrorReadOnly);
     REQUIRE_FALSE(FeatherOS::VFS::MakeDirectory("/mnt/new"));
     REQUIRE_FALSE(FeatherOS::VFS::Remove("/mnt/hello.txt"));
+    REQUIRE(FeatherOS::VFS::LastError() == FeatherOS::User::SyscallErrorReadOnly);
     REQUIRE_FALSE(FeatherOS::VFS::Open("/mnt/fast-link", &file));
     REQUIRE(FeatherOS::VFS::Open("/mnt/hello.txt", &file));
     REQUIRE_FALSE(FeatherOS::VFS::IsWritable(file));
@@ -995,7 +999,8 @@ TEST_CASE("ext2 attributes reach stat and directory entries through the core dri
         SKIP("no ext2 image from mke2fs");
     }
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == FeatherOS::VFS::MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt", ReadOnly) ==
+            FeatherOS::VFS::MountResult::Done);
 
     FileStatus status{};
     REQUIRE(FeatherOS::Files::Stat("/mnt/hello.txt", &status) == 0);
@@ -1064,7 +1069,8 @@ TEST_CASE("ext2 links are followed by the VFS walk, into and out of other mounts
         SKIP("no ext2 image from mke2fs");
     }
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == FeatherOS::VFS::MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt", ReadOnly) ==
+            FeatherOS::VFS::MountResult::Done);
     FeatherOS::Tmpfs::Reset();
     FeatherOS::Files::Table table{};
 
@@ -1106,7 +1112,7 @@ TEST_CASE("ext2 links are followed by the VFS walk, into and out of other mounts
     REQUIRE(FeatherOS::Files::ChangeDirectory("/tmp/up", working_directory) == 0);
     REQUIRE(std::string(working_directory) == "/mnt/a/b");
 
-    // The ext2 mount is read-only, and FAT16 holds no links at all.
+    // This ext2 mount is read-only, and FAT16 holds no links at all.
     REQUIRE(FeatherOS::Files::SymbolicLink("x", "/mnt/new-link") == User::SyscallErrorReadOnly);
     REQUIRE(FeatherOS::Files::Link("/mnt/hello.txt", "/mnt/hard2") == User::SyscallErrorReadOnly);
     REQUIRE(FeatherOS::Files::Remove("/mnt/fast-link") == User::SyscallErrorReadOnly);
@@ -1147,7 +1153,120 @@ TEST_CASE("ext2 names of 200 bytes and paths near PATH_MAX pass through the VFS 
     REQUIRE(std::string(entry.name) == name);
     REQUIRE(FeatherOS::VFS::Unmount("/mnt") == FeatherOS::VFS::MountResult::Done);
 }
+
+TEST_CASE("an ext2 partition mounted read-write takes changes through the file syscalls")
+{
+    namespace User = FeatherOS::User;
+    using FeatherOS::VFS::MountResult;
+    if (!AttachExt2Image())
+    {
+        SKIP("no ext2 image from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::Done);
+    REQUIRE(MountSource("/mnt") == "vda2 ext2 rw");
+    FeatherOS::Files::Table table{};
+
+    uint64_t descriptor =
+        FeatherOS::Files::Open(&table, "/mnt/new.txt", OpenWrite | OpenCreate);
+    REQUIRE_FALSE(User::IsSyscallError(descriptor));
+    REQUIRE(FeatherOS::Files::Write(&table, descriptor, "written\n", 8) == 8);
+    REQUIRE(FeatherOS::Files::Close(&table, descriptor) == 0);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/mnt/dir") == 0);
+    REQUIRE(FeatherOS::Files::Link("/mnt/new.txt", "/mnt/dir/hard.txt") == 0);
+    REQUIRE(FeatherOS::Files::SymbolicLink("../new.txt", "/mnt/dir/soft") == 0);
+    REQUIRE(FeatherOS::Files::Rename("/mnt/hello.txt", "/mnt/dir/hello.txt") == 0);
+    User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat("/mnt/dir/soft", &status) == 0);
+    REQUIRE(status.link_count == 2);
+    REQUIRE_FALSE(status.read_only);
+    REQUIRE(ReadWhole("/mnt/dir/hard.txt") == "written\n");
+    REQUIRE(ReadWhole("/mnt/dir/hello.txt") == "Hello from ext2.\n");
+
+    // Linux's answers for "." and "..", and errors that come from the core.
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/mnt/dir/.") == User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/mnt/dir/sub/..") == User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/mnt/dir/sub") == 0);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/mnt/dir/sub/..") == User::SyscallErrorNotEmpty);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/mnt/dir/sub/./") ==
+            User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Rename("/mnt/dir/.", "/mnt/elsewhere") == User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Rename("/mnt/new.txt", "/mnt/dir/..") == User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Rename("/mnt/missing/.", "/mnt/x") == User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/mnt/dir") == User::SyscallErrorNotEmpty);
+    REQUIRE(FeatherOS::Files::Link("/mnt/dir", "/mnt/dir-link") == User::SyscallErrorNotPermitted);
+    REQUIRE(FeatherOS::Files::Rename("/mnt/dir", "/mnt/dir/sub/inside") ==
+            User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/mnt/dir/sub") == 0);
+
+    // A full volume: the write that fills it is short, and the next one fails with ENOSPC.
+    descriptor = FeatherOS::Files::Open(&table, "/mnt/fill.bin", OpenWrite | OpenCreate);
+    REQUIRE_FALSE(User::IsSyscallError(descriptor));
+    const std::vector<char> chunk(1024 * 1024, 'f');
+    uint64_t result = 0;
+    for (int round = 0; round < 16; ++round)
+    {
+        result = FeatherOS::Files::Write(&table, descriptor, chunk.data(), chunk.size());
+        if (User::IsSyscallError(result) || result < chunk.size())
+        {
+            break;
+        }
+    }
+    REQUIRE(result < chunk.size());
+    REQUIRE(FeatherOS::Files::Write(&table, descriptor, chunk.data(), chunk.size()) ==
+            User::SyscallErrorNoSpace);
+    REQUIRE(FeatherOS::Files::Close(&table, descriptor) == 0);
+    REQUIRE(FeatherOS::Files::Remove("/mnt/fill.bin") == 0);
+
+    // Unmounting syncs; mounted again read-only, the changes are there and nothing changes.
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt", ReadOnly) == MountResult::Done);
+    REQUIRE(MountSource("/mnt") == "vda2 ext2 ro");
+    REQUIRE(ReadWhole("/mnt/dir/hard.txt") == "written\n");
+    REQUIRE(ReadWhole("/mnt/dir/hello.txt") == "Hello from ext2.\n");
+    char target[16] = {};
+    REQUIRE(FeatherOS::Files::ReadLink("/mnt/dir/soft", target, sizeof(target)) == 10);
+    REQUIRE(std::string(target, 10) == "../new.txt");
+    REQUIRE(FeatherOS::Files::Stat("/mnt/hello.txt", &status) == User::SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Remove("/mnt/new.txt") == User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Open(&table, "/mnt/new.txt", OpenWrite) ==
+            User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Rename("/mnt/dir/.", "/mnt/x") == User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+}
 #endif
+
+TEST_CASE("core errors become Linux's errno codes")
+{
+    namespace User = FeatherOS::User;
+    using FeatherDisk::Error;
+    using FeatherOS::Filesystem::SyscallError;
+    const std::vector<std::pair<Error, uint64_t>> expected = {
+        {Error::Io, User::SyscallErrorInputOutput},
+        {Error::Corrupt, User::SyscallErrorInputOutput},
+        {Error::NotFound, User::SyscallErrorNotFound},
+        {Error::Exists, User::SyscallErrorExists},
+        {Error::NotDirectory, User::SyscallErrorNotDirectory},
+        {Error::IsDirectory, User::SyscallErrorIsDirectory},
+        {Error::NotEmpty, User::SyscallErrorNotEmpty},
+        {Error::NoSpace, User::SyscallErrorNoSpace},
+        {Error::ReadOnly, User::SyscallErrorReadOnly},
+        {Error::InvalidArgument, User::SyscallErrorInvalidArgument},
+        {Error::NameTooLong, User::SyscallErrorNameTooLong},
+        {Error::FileTooLarge, User::SyscallErrorFileTooLarge},
+        {Error::TooManyLinks, User::SyscallErrorTooManyLinks},
+        {Error::Busy, User::SyscallErrorBusy},
+        {Error::NotPermitted, User::SyscallErrorNotPermitted},
+        {Error::OutOfMemory, User::SyscallErrorNoMemory},
+        {Error::Unsupported, User::SyscallErrorOperationNotSupported},
+    };
+    REQUIRE(expected.size() == static_cast<size_t>(Error::Unsupported) + 1);
+    for (const auto& [error, code] : expected)
+    {
+        CAPTURE(static_cast<int>(error));
+        REQUIRE(SyscallError(error) == code);
+    }
+}
 
 TEST_CASE("FAT16 creates nested directories and files inside them")
 {
@@ -1434,6 +1553,10 @@ TEST_CASE("file syscalls report why a change failed")
     REQUIRE(FeatherOS::Files::RemoveDirectory("/gone") == FeatherOS::User::SyscallErrorNotFound);
     REQUIRE(FeatherOS::Files::RemoveDirectory("/system") == FeatherOS::User::SyscallErrorReadOnly);
     REQUIRE(FeatherOS::Files::RemoveDirectory("/") == FeatherOS::User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/docs/.") ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/docs/..") == FeatherOS::User::SyscallErrorNotEmpty);
+    REQUIRE(FeatherOS::Files::Rename("/docs/.", "/other") == FeatherOS::User::SyscallErrorBusy);
     REQUIRE(FeatherOS::Files::RemoveDirectory("/docs") == 0);
     REQUIRE(FeatherOS::Files::Seek(&table, 9, 0, FeatherOS::User::SeekFromStart) ==
             FeatherOS::User::SyscallErrorBadDescriptor);

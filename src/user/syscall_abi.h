@@ -75,7 +75,7 @@ enum class SyscallNumber : uint64_t
     CreateSession = 61,    // () -> the new session's ID, the caller's process ID
     SessionId = 62,        // (process_id, or 0 for the caller) -> its session
     TerminalControl = 63,  // (descriptor, request, argument) -> the request's result
-    Mount = 64,            // (source, target, type) -> 0
+    Mount = 64,            // (source, target, request) -> 0; request points to a MountRequest
     Unmount = 65,          // (target) -> 0
     LinkStat = 66,         // (path, status) -> 0; a final symbolic link describes itself (lstat)
     ReadLink = 67,         // (path, buffer, capacity) -> bytes stored, without a terminator
@@ -160,6 +160,15 @@ constexpr uint64_t OpenNoFollow = 1U << 8;
 // component, without its terminator.
 constexpr uint64_t MaximumPathLength = 1024;
 constexpr uint64_t MaximumNameLength = 255;
+// Mount's third argument: the filesystem type's name, and MountReadOnly or 0. A filesystem that
+// refuses writes, such as an ext2 volume that was not cleanly unmounted, mounts read-only anyway.
+struct MountRequest
+{
+    uint64_t type;
+    uint64_t flags;
+};
+constexpr uint64_t MountReadOnly = 1U << 0;
+static_assert(sizeof(MountRequest) == 16, "the kernel and the C library share MountRequest");
 // Descriptors 0-2 start as the console, unless the parent passed other files there. The console
 // is a terminal: in its default mode a read returns one line, ending in '\n'. On a process's
 // controlling terminal only the foreground group may read or change the mode: another group's
@@ -440,6 +449,10 @@ constexpr uint64_t SyscallErrorInputOutput = UINT64_MAX - 46;
 constexpr uint64_t SyscallErrorUnknownFilesystemType = UINT64_MAX - 47;
 // More than MaximumSymbolicLinks links on the way, or OpenNoFollow on a link.
 constexpr uint64_t SyscallErrorLoop = UINT64_MAX - 48;
+constexpr uint64_t SyscallErrorNoSpace = UINT64_MAX - 49;
+// A file, or a directory's subdirectories, past the filesystem's link limit.
+constexpr uint64_t SyscallErrorTooManyLinks = UINT64_MAX - 50;
+constexpr uint64_t SyscallErrorFileTooLarge = UINT64_MAX - 51;
 
 constexpr bool IsSyscallError(uint64_t value)
 {

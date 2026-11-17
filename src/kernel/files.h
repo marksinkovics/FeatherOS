@@ -115,8 +115,10 @@ uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::Maxim
 // Mounts the instance of type named source at point, which must be a directory or not exist, in an
 // existing directory. SyscallErrorUnknownFilesystemType for a type nothing registered,
 // SyscallErrorNotFound for an unknown source, SyscallErrorBusy if the point is taken or the
-// instance is mounted elsewhere.
-uint64_t Mount(const char* source, const char* point, const char* type);
+// instance is mounted elsewhere, SyscallErrorInputOutput if its volume could not be reopened. A
+// filesystem that refuses writes mounts read-only whatever mode asks.
+uint64_t Mount(const char* source, const char* point, const char* type,
+               Filesystem::MountMode mode = Filesystem::MountMode::ReadWrite);
 // True if some process's working directory is point or lies inside it.
 using WorkingDirectoryCheck = bool (*)(const char* point);
 // SyscallErrorNotFound if point does not exist, SyscallErrorInvalidArgument if it is not a mount
@@ -173,7 +175,8 @@ private:
     bool open = false;
     bool tracked = false;
 };
-// Waits for any filesystem call in progress, then blocks all later ones, for shutdown.
+// Waits for any filesystem call in progress, blocks all later ones and syncs every mount, for
+// shutdown.
 void Quiesce();
 
 } // namespace FeatherOS::Files

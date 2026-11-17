@@ -16,10 +16,10 @@ struct MountStatus;
 // (tmpfs, etc) and "/tmp" (tmpfs, tmp), devices at "/dev" (devfs, devfs), generated process files
 // at "/proc" (procfs, procfs), and the FAT16 volume on the virtio block device at "/" (fat16 and
 // its partition's name, such as vda1). An ext2 partition is registered as ext2 and its name, such
-// as vda2, but not mounted. A path belongs to the mount with the longest mount point that is a
-// whole-component prefix of it, so a mount hides whatever its parent filesystem has at that path.
-// Each of these instances keeps its contents while unmounted and can be mounted at one point at a
-// time.
+// as vda2, but not mounted; it is writable once mounted read-write. A path belongs to the mount
+// with the longest mount point that is a whole-component prefix of it, so a mount hides whatever
+// its parent filesystem has at that path. Each of these instances keeps its contents while
+// unmounted and can be mounted at one point at a time.
 //
 // The calls below take physical paths, without symbolic links, ".", ".." or repeated '/', and no
 // driver follows a link: a call on a link acts on the link itself. ResolvePath turns any absolute
@@ -87,11 +87,16 @@ bool MountBlockDevice();
 bool LoadEtc();
 // point is an absolute path without ".", "..", repeated or trailing '/'. UnknownType for a type
 // nothing registered, NotFound for a source the type does not have, Busy if the point is taken or
-// the instance is mounted elsewhere.
-MountResult Mount(const char* type, const char* source, const char* point);
+// the instance is mounted elsewhere, Failed if the driver could not reopen its volume. A driver
+// that is read-only or whose volume refuses writes mounts read-only whatever mode asks; callers
+// mount one at a time.
+MountResult Mount(const char* type, const char* source, const char* point,
+                  Filesystem::MountMode mode = Filesystem::MountMode::ReadWrite);
 // Busy while one of its files is open, an operation on it is in progress or another mount point
 // lies inside it; otherwise syncs the driver and removes the mount.
 MountResult Unmount(const char* point);
+// Syncs every mounted driver, as shutting down does; false if one failed.
+bool SyncAll();
 // The index-th mount, in mount order, for /proc/mounts; false past the last one.
 bool DescribeMount(uint32_t index, Procfs::MountStatus* status);
 
@@ -115,7 +120,7 @@ bool Remove(const char* path);
 bool MakeDirectory(const char* path);
 bool IsDirectory(const char* path);
 // True where nothing can be created or changed: /system and /proc, the bare names kernel code
-// uses for the initramfs, and /dev apart from its devices.
+// uses for the initramfs, /dev apart from its devices, and read-only mounts.
 bool IsReadOnly(const char* path);
 // "/" and the mount points, which can never be removed.
 bool IsMountPoint(const char* path);
@@ -152,6 +157,11 @@ bool SymbolicLink(const char* path, const char* target);
 // Both on one filesystem.
 bool Link(const char* from, const char* to);
 bool SupportsLinks(const char* path, Filesystem::LinkKind kind);
+// Why the last Create, Write, Truncate, Remove, MakeDirectory, RemoveDirectory, Rename,
+// SymbolicLink or Link that failed did, as a User::SyscallError code: SyscallErrorReadOnly on a
+// read-only mount, otherwise what the driver says (SyscallErrorFailed when it cannot say).
+// Callers hold the file system lock across the call and this one.
+uint64_t LastError();
 
 } // namespace FeatherOS::VFS
 

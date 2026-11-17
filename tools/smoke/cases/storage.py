@@ -1,16 +1,53 @@
 import os
 import re
+import shutil
 import struct
 import subprocess
+import tempfile
+from pathlib import Path
+
+from create_test_disk import E2FSPROGS_DIRECTORIES, EXT2_START, SECTOR_SIZE
 
 from smoke.boot import PANIC_MARKER
 from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
 from smoke.script import Lines
 
 STORAGE_MESSAGE = (
-    "KERN/STORAGE: sector and FAT16 file writes and ext2 reads verified; "
-    "boot count "
+    "KERN/STORAGE: sector, FAT16 and ext2 file writes verified; boot count "
 )
+# What the STORAGE kernel test (CheckExt2 in kernel_test.cpp) leaves on the
+# ext2 partition after each boot.
+EXT2_DATA = b"".join(
+    b"feather ext2 line %05d\n" % line for line in range(1000)
+)
+EXT2_FILES = {
+    1: {
+        "/os/data.txt": EXT2_DATA,
+        "/os/data-link.txt": EXT2_DATA,
+        "/os/sub/moved.txt": b"moved\n",
+        "/os/short.txt": b"short\n",
+    },
+    2: {
+        "/os/data-link.txt": EXT2_DATA,
+        "/moved-sub/moved.txt": b"moved\n",
+        "/os/short.txt": b"short\nmore\n",
+    },
+}
+EXT2_STATS = {
+    1: {
+        "/os/data-link.txt": "Links: 2",
+        "/os/to-data": 'Fast link dest: "data.txt"',
+    },
+    2: {"/os/data-link.txt": "Links: 1"},
+}
+EXT2_LISTINGS = {
+    1: ("data.txt", "data-link.txt", "to-data", "sub", "short.txt"),
+    2: ("data-link.txt", "short.txt"),
+}
+EXT2_GONE = {
+    1: ("gone.txt", "empty", "scratch.txt"),
+    2: ("data.txt", "to-data", "sub", "gone.txt"),
+}
 PERSISTENT_FILE_LINES = 200
 # Shell commands for each STORAGE_TEST boot: the first writes notes.txt, and
 # the second must still find it after the restart.
@@ -42,7 +79,7 @@ STORAGE_SHELL_OUTPUT = {
         "cat: cannot open notes.txt",
         "rm: notes.txt: no such file",
         "\nnested hello",
-        "rmdir: docs: not an empty directory",
+        "rmdir: docs: Directory not empty",
         "\nlong name test",
         "ls: docs: no such directory",
         "0 files, ",
@@ -137,6 +174,77 @@ def VerifyDiskImage(disk_path, boot_count):
     return None
 
 
+def FindE2fsprogs(name):
+    """Homebrew's keg-only e2fsprogs first, as create_test_disk.py looks."""
+    for directory in E2FSPROGS_DIRECTORIES:
+        candidate = Path(directory) / name
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which(name) or shutil.which(name, path="/usr/sbin:/sbin")
+
+
+def Debugfs(debugfs, volume, command):
+    return subprocess.run(
+        [debugfs, "-R", command, volume], capture_output=True, check=False
+    ).stdout
+
+
+def E2fsck(volume):
+    """e2fsck -fn must find nothing to fix."""
+    e2fsck = FindE2fsprogs("e2fsck")
+    if e2fsck is None:
+        return "e2fsck not found; install e2fsprogs"
+    check = subprocess.run(
+        [e2fsck, "-fn", volume], capture_output=True, text=True, check=False
+    )
+    if check.returncode != 0:
+        return (
+            f"e2fsck -fn exited with {check.returncode}:\n"
+            f"{check.stdout}{check.stderr}"
+        )
+    return None
+
+
+def VerifyExt2Volume(volume, boot_count):
+    """debugfs, a reader independent of the kernel, must see what the guest
+    wrote."""
+    checked = E2fsck(volume)
+    if checked is not None:
+        return checked
+    debugfs = FindE2fsprogs("debugfs")
+    if debugfs is None:
+        return "debugfs not found; install e2fsprogs"
+    for path, contents in EXT2_FILES[boot_count].items():
+        if Debugfs(debugfs, volume, f"cat {path}") != contents:
+            return f"debugfs read different {path} contents"
+    for path, text in EXT2_STATS[boot_count].items():
+        if text not in Debugfs(debugfs, volume, f"stat {path}").decode():
+            return f"debugfs stat {path} does not show {text!r}"
+    listing = Debugfs(debugfs, volume, "ls -p /os").decode().splitlines()
+    names = {line.split("/")[5] for line in listing if line.count("/") >= 6}
+    missing = [name for name in EXT2_LISTINGS[boot_count] if name not in names]
+    if missing:
+        return f"debugfs does not list {missing} in /os"
+    left = [name for name in EXT2_GONE[boot_count] if name in names]
+    if left:
+        return f"debugfs still lists {left} in /os"
+    return None
+
+
+def VerifyExt2(disk_path, boot_count=None):
+    """Checks the ext2 partition, copied out of the disk image to its end:
+    with e2fsck alone without a boot count, else also what that boot of the
+    STORAGE test wrote."""
+    with tempfile.TemporaryDirectory() as work:
+        volume = Path(work) / "ext2.img"
+        with open(disk_path, "rb") as disk, volume.open("wb") as copy:
+            disk.seek(EXT2_START * SECTOR_SIZE)
+            shutil.copyfileobj(disk, copy)
+        if boot_count is None:
+            return E2fsck(str(volume))
+        return VerifyExt2Volume(str(volume), boot_count)
+
+
 class Storage(Case):
     timeout = SHELL_TIMEOUT_SECONDS
     serial_input = True
@@ -175,11 +283,14 @@ class Storage(Case):
         disk_error = VerifyDiskImage(self.args.disk, self.boot)
         if disk_error is not None:
             return f"disk image check: {disk_error}"
+        ext2_error = VerifyExt2(self.args.disk, self.boot)
+        if ext2_error is not None:
+            return f"ext2 partition check: {ext2_error}"
         return None
 
     def PassMessage(self, result):
         return (
-            "sector, FAT16, and shell file-tool writes and ext2 reads "
-            f"verified in the guest and with mtools; boot {self.boot} "
+            "sector, FAT16, ext2 and shell file-tool writes verified in the "
+            f"guest, with mtools, e2fsck and debugfs; boot {self.boot} "
             "persisted"
         )

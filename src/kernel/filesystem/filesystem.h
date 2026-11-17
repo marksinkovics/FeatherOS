@@ -60,6 +60,13 @@ enum class LinkKind : uint8_t
     Hard,
 };
 
+enum class MountMode : uint8_t
+{
+    ReadWrite,
+    // Nothing on the mount changes, whatever the driver could write.
+    ReadOnly,
+};
+
 struct Properties
 {
     // Nothing on it can be created, written or removed.
@@ -74,7 +81,10 @@ struct Properties
 class Driver
 {
 public:
-    constexpr explicit Driver(Properties properties) : properties(properties) {}
+    constexpr explicit Driver(Properties properties)
+        : properties(properties), mounted_read_only(properties.read_only)
+    {
+    }
     Driver(const Driver&) = delete;
     Driver& operator=(const Driver&) = delete;
     Driver(Driver&&) = delete;
@@ -83,6 +93,16 @@ public:
     const Properties& Attributes() const
     {
         return properties;
+    }
+
+    // The VFS calls it before adding the driver to the tree; false refuses the mount. Read-only
+    // properties keep it read-only whatever mode asks.
+    bool PrepareMount(MountMode mode);
+    // Read-only by its properties, by how it was last mounted, or because its filesystem refuses
+    // writes.
+    bool IsMountedReadOnly() const
+    {
+        return mounted_read_only;
     }
 
     virtual bool Open(const char* path, Node* node, uint64_t* size);
@@ -121,12 +141,20 @@ public:
     virtual bool Link(const char* from, const char* to);
     // Makes everything written so far durable; unmounting calls it last.
     virtual bool Sync();
+    // Why the call that just failed did, as a User::SyscallError code; drivers that cannot say
+    // give SyscallErrorFailed.
+    virtual uint64_t LastError();
 
 protected:
     ~Driver() = default;
 
+    // For drivers whose medium decides whether they take writes: reopens it for mode and sets
+    // *writable. false leaves the driver unusable until it is opened again.
+    virtual bool OpenForMount(MountMode mode, bool* writable);
+
 private:
     Properties properties;
+    bool mounted_read_only;
 };
 
 } // namespace FeatherOS::Filesystem

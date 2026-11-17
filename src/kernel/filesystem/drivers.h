@@ -18,9 +18,11 @@ const char* PartitionSource(size_t number);
 CoreDriver& Disk();
 // Mounts the first FAT16 partition on the block device as Disk().
 bool MountDisk();
-// The block device's ext2 filesystem, read-only.
+// The block device's ext2 filesystem, writable once mounted in the VFS without
+// MountMode::ReadOnly.
 CoreDriver& Ext2();
-// Mounts the first ext2 partition on the block device as Ext2().
+// Mounts the first ext2 partition on the block device as Ext2(), read-only in the core until the
+// VFS mounts it read-write, so an unmounted volume stays clean.
 bool MountExt2();
 // The initramfs's "system" directory.
 Driver& System();

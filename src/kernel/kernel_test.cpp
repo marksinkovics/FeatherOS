@@ -1100,7 +1100,7 @@ void CheckRemount(uint64_t boot_count)
     }
 }
 
-// tools/create_test_disk.py's ext2 partition, the disk's second, read-only.
+// For tools/create_test_disk.py's ext2 partition, the disk's second.
 bool ReadsAs(const char* path, const char* expected)
 {
     VFS::FileHandle file;
@@ -1154,10 +1154,12 @@ bool BigFileMatches()
     return matches;
 }
 
-void CheckExt2()
+void CheckExt2ReadOnly()
 {
-    if (VFS::Mount("ext2", "vda1", "/mnt") != VFS::MountResult::NotFound ||
-        VFS::Mount("ext2", "vda2", "/mnt") != VFS::MountResult::Done)
+    if (VFS::Mount("ext2", "vda1", "/mnt", Filesystem::MountMode::ReadOnly) !=
+            VFS::MountResult::NotFound ||
+        VFS::Mount("ext2", "vda2", "/mnt", Filesystem::MountMode::ReadOnly) !=
+            VFS::MountResult::Done)
     {
         Panic("Mounting the ext2 partition failed");
     }
@@ -1168,7 +1170,8 @@ void CheckExt2()
     }
     VFS::FileHandle file{};
     if (!VFS::IsReadOnly("/mnt/hello.txt") || VFS::Create("/mnt/new.txt", &file) ||
-        VFS::MakeDirectory("/mnt/new") || VFS::Remove("/mnt/hello.txt") ||
+        VFS::LastError() != User::SyscallErrorReadOnly || VFS::MakeDirectory("/mnt/new") ||
+        VFS::Remove("/mnt/hello.txt") || VFS::LastError() != User::SyscallErrorReadOnly ||
         VFS::Open("/mnt/fast-link", &file))
     {
         Panic("The read-only ext2 partition took a change or opened a link");
@@ -1176,6 +1179,187 @@ void CheckExt2()
     if (VFS::Unmount("/mnt") != VFS::MountResult::Done || VFS::IsDirectory("/mnt/docs"))
     {
         Panic("Unmounting the ext2 partition failed");
+    }
+}
+
+// The file the read-write checks write: 1000 lines of "feather ext2 line NNNNN\n", past the
+// 12 direct blocks of the test disk's 1 KiB blocks. tools/smoke/cases/storage.py checks it too.
+constexpr uint32_t Ext2DataLines = 1000;
+constexpr uint64_t Ext2DataLineLength = 24;
+constexpr uint64_t Ext2DataSize = Ext2DataLines * Ext2DataLineLength;
+
+struct Ext2Data
+{
+    char bytes[Ext2DataSize];
+    char read_back[Ext2DataSize];
+};
+
+void FillExt2Data(char* bytes)
+{
+    constexpr char Prefix[] = "feather ext2 line ";
+    for (uint32_t line = 0; line < Ext2DataLines; ++line)
+    {
+        char* text = bytes + line * Ext2DataLineLength;
+        for (uint32_t index = 0; index < sizeof(Prefix) - 1; ++index)
+        {
+            text[index] = Prefix[index];
+        }
+        uint32_t number = line;
+        for (uint32_t digit = 0; digit < 5; ++digit)
+        {
+            text[22 - digit] = static_cast<char>('0' + number % 10);
+            number /= 10;
+        }
+        text[23] = '\n';
+    }
+}
+
+bool WriteNew(const char* path, const char* data, uint64_t length)
+{
+    VFS::FileHandle file{};
+    if (!VFS::Create(path, &file))
+    {
+        return false;
+    }
+    uint64_t written = 0;
+    const bool done = VFS::Write(&file, data, length, &written) && written == length;
+    VFS::Close(&file);
+    return done;
+}
+
+bool HoldsExt2Data(const char* path, Ext2Data* data)
+{
+    VFS::FileHandle file{};
+    if (!VFS::Open(path, &file))
+    {
+        return false;
+    }
+    uint64_t length = 0;
+    const bool read = file.size == Ext2DataSize &&
+                      VFS::Read(&file, data->read_back, Ext2DataSize, &length) &&
+                      length == Ext2DataSize;
+    VFS::Close(&file);
+    for (uint64_t index = 0; read && index < Ext2DataSize; ++index)
+    {
+        if (data->read_back[index] != data->bytes[index])
+        {
+            return false;
+        }
+    }
+    return read;
+}
+
+bool LinkCountIs(const char* path, uint32_t count)
+{
+    VFS::FileInfo info{};
+    return VFS::Stat(path, &info) && info.link_count == count;
+}
+
+bool LinkTargetIs(const char* path, const char* expected)
+{
+    char target[16];
+    uint32_t length = 0;
+    if (!VFS::ReadLink(path, target, sizeof(target), &length) || length >= sizeof(target))
+    {
+        return false;
+    }
+    target[length] = '\0';
+    uint32_t index = 0;
+    while (expected[index] != '\0' && expected[index] == target[index])
+    {
+        ++index;
+    }
+    return expected[index] == '\0' && index == length;
+}
+
+// The first boot builds /os on the ext2 partition; the second checks it and changes it again.
+// After each boot the harness runs e2fsck -fn on the partition and reads it with debugfs.
+void WriteExt2FirstBoot(Ext2Data* data)
+{
+    constexpr char Short[] = "short\nand the rest is truncated away";
+    VFS::FileHandle file{};
+    if (!VFS::MakeDirectory("/mnt/os") ||
+        !WriteNew("/mnt/os/data.txt", data->bytes, Ext2DataSize) ||
+        !VFS::Link("/mnt/os/data.txt", "/mnt/os/data-link.txt") ||
+        !VFS::SymbolicLink("/mnt/os/to-data", "data.txt") || !VFS::MakeDirectory("/mnt/os/sub") ||
+        !WriteNew("/mnt/os/scratch.txt", "moved\n", 6) ||
+        !VFS::Rename("/mnt/os/scratch.txt", "/mnt/os/sub/moved.txt") ||
+        !WriteNew("/mnt/os/short.txt", Short, sizeof(Short) - 1) ||
+        !WriteNew("/mnt/os/gone.txt", "gone\n", 5) || !VFS::Remove("/mnt/os/gone.txt") ||
+        !VFS::MakeDirectory("/mnt/os/empty") || !VFS::RemoveDirectory("/mnt/os/empty"))
+    {
+        Panic("Writing the ext2 partition failed");
+    }
+    if (!VFS::Open("/mnt/os/short.txt", &file) || !VFS::Truncate(&file, 6))
+    {
+        Panic("Truncating an ext2 file failed");
+    }
+    VFS::Close(&file);
+    if (VFS::MakeDirectory("/mnt/os") || VFS::LastError() != User::SyscallErrorExists ||
+        VFS::RemoveDirectory("/mnt/os/sub") || VFS::LastError() != User::SyscallErrorNotEmpty ||
+        VFS::Link("/mnt/os/sub", "/mnt/os/sub-link") ||
+        VFS::LastError() != User::SyscallErrorNotPermitted ||
+        VFS::Rename("/mnt/os", "/mnt/os/sub/inside") ||
+        VFS::LastError() != User::SyscallErrorInvalidArgument ||
+        VFS::Create("/mnt/missing/new.txt", &file) ||
+        VFS::LastError() != User::SyscallErrorNotFound)
+    {
+        Panic("An ext2 change failed with the wrong error");
+    }
+}
+
+void ChangeExt2SecondBoot(Ext2Data* data)
+{
+    VFS::FileInfo info{};
+    if (!HoldsExt2Data("/mnt/os/data.txt", data) || !HoldsExt2Data("/mnt/os/data-link.txt", data) ||
+        !LinkCountIs("/mnt/os/data.txt", 2) || !LinkTargetIs("/mnt/os/to-data", "data.txt") ||
+        !ReadsAs("/mnt/os/sub/moved.txt", "moved\n") || !ReadsAs("/mnt/os/short.txt", "short\n") ||
+        VFS::IsDirectory("/mnt/os/empty") || VFS::Stat("/mnt/os/gone.txt", &info))
+    {
+        Panic("The ext2 partition lost what the first boot wrote");
+    }
+    VFS::FileHandle file{};
+    uint64_t written = 0;
+    if (!VFS::Remove("/mnt/os/data.txt") || !LinkCountIs("/mnt/os/data-link.txt", 1) ||
+        !VFS::Remove("/mnt/os/to-data") || !VFS::Rename("/mnt/os/sub", "/mnt/moved-sub") ||
+        !VFS::Open("/mnt/os/short.txt", &file) || !VFS::Seek(&file, file.size) ||
+        !VFS::Write(&file, "more\n", 5, &written))
+    {
+        Panic("Changing the ext2 partition again failed");
+    }
+    VFS::Close(&file);
+    if (!HoldsExt2Data("/mnt/os/data-link.txt", data) ||
+        !ReadsAs("/mnt/moved-sub/moved.txt", "moved\n") ||
+        !ReadsAs("/mnt/os/short.txt", "short\nmore\n"))
+    {
+        Panic("The ext2 partition read back different contents after the second changes");
+    }
+}
+
+void CheckExt2(uint64_t boot_count)
+{
+    CheckExt2ReadOnly();
+    const Memory::HeapObject<Ext2Data> data;
+    if (!data)
+    {
+        Panic("No memory for the ext2 write test");
+    }
+    FillExt2Data(data->bytes);
+    if (VFS::Mount("ext2", "vda2", "/mnt") != VFS::MountResult::Done || VFS::IsReadOnly("/mnt"))
+    {
+        Panic("Mounting the ext2 partition read-write failed");
+    }
+    if (boot_count == 1)
+    {
+        WriteExt2FirstBoot(&*data);
+    }
+    else if (boot_count == 2)
+    {
+        ChangeExt2SecondBoot(&*data);
+    }
+    if (VFS::Unmount("/mnt") != VFS::MountResult::Done)
+    {
+        Panic("Unmounting the written ext2 partition failed");
     }
 }
 
@@ -1243,11 +1427,11 @@ void RunStorageTests()
 
     RunFileTests(boot_count);
     CheckRemount(boot_count);
-    CheckExt2();
+    CheckExt2(boot_count);
 
     char message[96];
     if (!String::FormatTo(message, sizeof(message),
-                          "KERN/STORAGE: sector and FAT16 file writes and ext2 reads verified; "
+                          "KERN/STORAGE: sector, FAT16 and ext2 file writes verified; "
                           "boot count {}\n",
                           boot_count))
     {

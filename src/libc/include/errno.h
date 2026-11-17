@@ -26,9 +26,11 @@
 #define EINVAL 22
 #define EMFILE 24
 #define ENOTTY 25
+#define EFBIG 27
 #define ENOSPC 28
 #define ESPIPE 29
 #define EROFS 30
+#define EMLINK 31
 #define EPIPE 32
 #define EDOM 33
 #define ERANGE 34

@@ -66,6 +66,12 @@ constexpr int ErrorNumber(uint64_t result)
         return EXDEV;
     case User::SyscallErrorLoop:
         return ELOOP;
+    case User::SyscallErrorNoSpace:
+        return ENOSPC;
+    case User::SyscallErrorTooManyLinks:
+        return EMLINK;
+    case User::SyscallErrorFileTooLarge:
+        return EFBIG;
     case User::SyscallErrorNotSocket:
         return ENOTSOCK;
     case User::SyscallErrorFamilyNotSupported:

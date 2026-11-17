@@ -108,4 +108,31 @@ bool Driver::Sync()
     return true;
 }
 
+uint64_t Driver::LastError()
+{
+    return User::SyscallErrorFailed;
+}
+
+bool Driver::OpenForMount(MountMode /*mode*/, bool* writable)
+{
+    *writable = true;
+    return true;
+}
+
+bool Driver::PrepareMount(MountMode mode)
+{
+    if (properties.read_only)
+    {
+        mounted_read_only = true;
+        return true;
+    }
+    bool writable = false;
+    if (!OpenForMount(mode, &writable))
+    {
+        return false;
+    }
+    mounted_read_only = mode == MountMode::ReadOnly || !writable;
+    return true;
+}
+
 } // namespace FeatherOS::Filesystem

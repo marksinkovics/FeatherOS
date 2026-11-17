@@ -344,7 +344,39 @@ uint64_t CreateErrorLocked(const char* path) REQUIRES(file_system_lock)
     {
         return User::SyscallErrorReadOnly;
     }
-    return ParentExistsLocked(path) ? User::SyscallErrorFailed : User::SyscallErrorNotFound;
+    return ParentExistsLocked(path) ? VFS::LastError() : User::SyscallErrorNotFound;
+}
+
+enum class LastName : uint8_t
+{
+    Plain,
+    Dot,
+    DotDot,
+};
+
+// The last component of path as the caller wrote it, before resolving drops "." and "..".
+LastName LastNameOf(const char* path)
+{
+    uint64_t end = 0;
+    while (path[end] != '\0')
+    {
+        ++end;
+    }
+    while (end > 0 && path[end - 1] == '/')
+    {
+        --end;
+    }
+    uint64_t start = end;
+    while (start > 0 && path[start - 1] != '/')
+    {
+        --start;
+    }
+    if (end - start == 1 && path[start] == '.')
+    {
+        return LastName::Dot;
+    }
+    return end - start == 2 && path[start] == '.' && path[start + 1] == '.' ? LastName::DotDot
+                                                                            : LastName::Plain;
 }
 
 uint64_t MissingErrorLocked(const char* path) REQUIRES(file_system_lock)
@@ -668,8 +700,9 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
     slot = {file, (flags & User::OpenCloseOnExec) != 0};
     if ((flags & User::OpenTruncate) != 0 && !VFS::Truncate(&file->handle, 0))
     {
+        const uint64_t error = VFS::LastError();
         CloseSlotLocked(&slot);
-        return User::SyscallErrorFailed;
+        return error;
     }
     return descriptor;
 }
@@ -764,7 +797,7 @@ uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t l
     uint64_t bytes_written;
     const bool complete = VFS::Write(&file->handle, buffer, length, &bytes_written);
     // A short write (such as a full disk) still reports the bytes that did land.
-    return complete || bytes_written > 0 ? bytes_written : User::SyscallErrorFailed;
+    return complete || bytes_written > 0 ? bytes_written : VFS::LastError();
 }
 
 void SetPipeEnd(OpenFile* file, Pipes::Pipe* pipe, bool write_end, bool nonblocking)
@@ -1113,7 +1146,7 @@ uint64_t Remove(const char* path)
         {
             return User::SyscallErrorReadOnly;
         }
-        return VFS::Remove(path) ? 0 : User::SyscallErrorFailed;
+        return VFS::Remove(path) ? 0 : VFS::LastError();
     }
     VFS::FileHandle handle;
     if (!VFS::Open(path, &handle))
@@ -1131,7 +1164,7 @@ uint64_t Remove(const char* path)
     {
         return User::SyscallErrorBusy;
     }
-    return VFS::Remove(path) ? 0 : User::SyscallErrorFailed;
+    return VFS::Remove(path) ? 0 : VFS::LastError();
 }
 
 uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* entry)
@@ -1216,7 +1249,7 @@ uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::Maxim
     return 0;
 }
 
-uint64_t Mount(const char* source, const char* point, const char* type)
+uint64_t Mount(const char* source, const char* point, const char* type, Filesystem::MountMode mode)
 {
     if (source == nullptr || point == nullptr || type == nullptr)
     {
@@ -1244,7 +1277,7 @@ uint64_t Mount(const char* source, const char* point, const char* type)
             return User::SyscallErrorNotDirectory;
         }
     }
-    return MountError(VFS::Mount(type, source, point));
+    return MountError(VFS::Mount(type, source, point, mode));
 }
 
 uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use)
@@ -1308,10 +1341,17 @@ uint64_t RemoveDirectory(const char* path)
     {
         return walked;
     }
+    const LastName last = LastNameOf(path);
     path = resolved.Path();
     if (!VFS::IsDirectory(path))
     {
         return MissingErrorLocked(path);
+    }
+    // Linux's answers, before any other check.
+    if (last != LastName::Plain)
+    {
+        return last == LastName::Dot ? User::SyscallErrorInvalidArgument
+                                     : User::SyscallErrorNotEmpty;
     }
     if (VFS::IsReadOnly(path))
     {
@@ -1330,7 +1370,7 @@ uint64_t RemoveDirectory(const char* path)
     {
         return User::SyscallErrorNotEmpty;
     }
-    return VFS::RemoveDirectory(path) ? 0 : User::SyscallErrorFailed;
+    return VFS::RemoveDirectory(path) ? 0 : VFS::LastError();
 }
 
 uint64_t Rename(const char* from, const char* to)
@@ -1351,11 +1391,17 @@ uint64_t Rename(const char* from, const char* to)
     {
         return walked;
     }
+    const bool dot_name = LastNameOf(from) != LastName::Plain || LastNameOf(to) != LastName::Plain;
     from = resolved_from.Path();
     to = resolved_to.Path();
     if (!ExistsLocked(from))
     {
         return User::SyscallErrorNotFound;
+    }
+    // As Linux: "." and ".." name a directory in use, never an entry to move.
+    if (dot_name)
+    {
+        return User::SyscallErrorBusy;
     }
     if (VFS::IsReadOnly(from) || VFS::IsReadOnly(to))
     {
@@ -1395,7 +1441,7 @@ uint64_t Rename(const char* from, const char* to)
         }
         if (!VFS::Remove(to))
         {
-            return User::SyscallErrorFailed;
+            return VFS::LastError();
         }
     }
     VFS::FileKey target_key = {};
@@ -1411,19 +1457,20 @@ uint64_t Rename(const char* from, const char* to)
         }
         if (!VFS::Remove(to))
         {
-            return User::SyscallErrorFailed;
+            return VFS::LastError();
         }
     }
     if (VFS::Rename(from, to))
     {
         return 0;
     }
+    const uint64_t error = VFS::LastError();
     if (ExistsLocked(to))
     {
         return VFS::IsDirectory(to) && !directory ? User::SyscallErrorIsDirectory
                                                   : User::SyscallErrorExists;
     }
-    return ParentExistsLocked(to) ? User::SyscallErrorFailed : User::SyscallErrorNotFound;
+    return ParentExistsLocked(to) ? error : User::SyscallErrorNotFound;
 }
 
 uint64_t Stat(const char* path, User::FileStatus* status)
@@ -1486,7 +1533,7 @@ uint64_t SymbolicLink(const char* target, const char* path)
     {
         return refused;
     }
-    return VFS::SymbolicLink(path, target) ? 0 : User::SyscallErrorFailed;
+    return VFS::SymbolicLink(path, target) ? 0 : VFS::LastError();
 }
 
 uint64_t Link(const char* from, const char* to)
@@ -1534,7 +1581,7 @@ uint64_t Link(const char* from, const char* to)
     {
         return refused;
     }
-    return VFS::Link(from, to) ? 0 : User::SyscallErrorFailed;
+    return VFS::Link(from, to) ? 0 : VFS::LastError();
 }
 
 uint64_t ResolvePath(const char* path, char* buffer, uint64_t capacity)
@@ -1619,6 +1666,7 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
 void Quiesce() NO_THREAD_SAFETY_ANALYSIS
 {
     file_system_lock.Lock();
+    VFS::SyncAll();
 }
 
 void CloseAll(Table* table)
