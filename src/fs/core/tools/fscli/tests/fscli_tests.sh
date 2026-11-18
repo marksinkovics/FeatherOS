@@ -304,6 +304,39 @@ case "$case" in
         [ "$(wc -c <"$work/unwritten.bin")" -eq 40000 ] || fail "wrong size of unwritten.bin"
         [ "$(tr -d '\000' <"$work/unwritten.bin")" = start ] || fail "unwritten blocks are not zeros"
         ;;
+    ext-journal)
+        need_e2fsck
+        for image in ext3 ext4; do
+            cp "$ext/$image.img" "$work/$image.img"
+            target="$work/$image.img"
+            awk 'BEGIN { for (line = 0; line < 400; line++) printf "journalled line %04d of a copied-in file\n", line }' \
+                >"$work/copied.txt"
+            run 0 cp-in "$target" "$work/copied.txt" /copied.txt
+            check_clean "$target"
+            run 0 mkdir "$target" /made
+            run 0 mv "$target" /copied.txt /made/moved.txt
+            run 0 ln -s "$target" made/moved.txt /link
+            run 0 ln "$target" /made/moved.txt /made/again.txt
+            run 0 rm "$target" /hello.txt
+            check_clean "$target"
+            run 0 cat "$target" /made/again.txt
+            cmp -s "$work/copied.txt" "$work/out" || fail "wrong contents in $image after the changes"
+            run 0 readlink "$target" /link
+            has_line 'made/moved.txt'
+            run 0 ls "$target"
+            if grep -q ' hello.txt$' "$work/out"; then
+                fail "a removed file is still listed in $image"
+            fi
+            debugfs_matches "$target" /made/moved.txt "$work/copied.txt"
+            # Nothing is left for e2fsck to replay: it was neither asked to nor needed to.
+            if [ -n "$debugfs" ] && [ -x "$debugfs" ]; then
+                "$debugfs" -R "features" "$target" 2>/dev/null | grep -q needs_recovery \
+                    && fail "$image still needs journal recovery"
+                "$debugfs" -R "logdump" "$target" 2>/dev/null | grep -q 'Journal starts at block 0' \
+                    || fail "the journal of $image is not empty"
+            fi
+        done
+        ;;
     ext2-ls)
         need_ext_images
         run 0 ls "$ext/1k.img"

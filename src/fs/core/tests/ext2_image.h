@@ -4,9 +4,11 @@
 #define FEATHERDISK_TESTS_EXT2_IMAGE_H
 
 #include "ext/journal.h"
+#include "fs/filesystem.h"
 #include "tests/memory_device.h"
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -102,6 +104,41 @@ void RequireSameBytes(std::vector<std::uint8_t> ours, std::vector<std::uint8_t> 
 void RequireSameAsDebugfs(MemoryDevice& ours, MemoryDevice& theirs);
 // Replays the journal by mounting for writing, which must give a writable mount, and unmounting.
 void ReplayByMounting(MemoryDevice& device);
+
+// A volume's whole tree, to compare what a crash and its recovery left with what was committed.
+struct TreeEntry
+{
+    NodeType type;
+    // Zero for directories, which e2fsck may repack.
+    std::uint64_t size;
+    std::uint32_t links;
+    // A file's bytes (left out of files over 8 MiB, which the image's own large files are), or a
+    // symbolic link's target.
+    std::string contents;
+};
+
+using Tree = std::map<std::string, TreeEntry>;
+
+Tree TreeOf(Filesystem& filesystem);
+// Mounted read-only for the length of the call.
+Tree TreeOf(MemoryDevice& device);
+// Where the two trees first differ (names, types, sizes, links, and contents when asked), or
+// nothing when they are the same.
+std::string TreeDifference(const Tree& left, const Tree& right, bool contents = true);
+
+struct Replayed
+{
+    std::unique_ptr<MemoryDevice> ours;
+    Tree tree;
+    // Orphan entries our mount finished.
+    std::uint32_t orphans = 0;
+};
+
+// Both ways of recovering a crashed volume: mounted writable (journal replay, then orphan
+// processing) and e2fsck -fy. Each must leave a volume e2fsck -fn passes, and the two must hold
+// the same tree and the same free block and inode ranges per group. Only ours when e2fsck is
+// missing.
+Replayed ReplayBothWays(MemoryDevice& crashed, std::string_view name);
 
 } // namespace FeatherDisk::Tests
 

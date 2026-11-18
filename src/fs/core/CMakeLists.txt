@@ -185,6 +185,7 @@ add_executable(featherdisk_core_tests
     tests/ext_journal_tests.cpp
     tests/ext_journal_write_tests.cpp
     tests/ext_orphan_tests.cpp
+    tests/ext_transaction_crash_tests.cpp
     tests/ext_transaction_tests.cpp
     tests/fat_image.cpp
     tests/fat_mtools_tests.cpp

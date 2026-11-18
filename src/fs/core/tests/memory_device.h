@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <vector>
@@ -35,6 +36,13 @@ public:
     // Writes after the first count fail with Error::Io and change nothing, as if the machine
     // stopped there.
     void FailWritesAfter(std::uint64_t count);
+    // With tracking on, the writes since the last Flush are remembered, so that a copy can show
+    // the medium as if only some of them had reached it, as a drive's volatile cache may leave it
+    // after a power cut.
+    void TrackUnflushed();
+    std::size_t UnflushedCount() const;
+    // keep is asked about each unflushed write by its index, oldest first.
+    std::unique_ptr<MemoryDevice> CopyKeeping(const std::function<bool(std::size_t)>& keep) const;
 
     bool read_only = false;
     std::uint32_t flush_count = 0;
@@ -43,12 +51,21 @@ public:
     std::vector<std::uint64_t> flush_writes;
 
 private:
+    struct Unflushed
+    {
+        std::size_t offset;
+        std::vector<std::uint8_t> before;
+        std::vector<std::uint8_t> after;
+    };
+
     bool Covers(std::uint64_t first_sector, std::size_t byte_count) const;
 
     std::uint32_t sector_size;
     std::uint64_t failing_sector;
     std::uint64_t failing_single = UINT64_MAX;
     std::uint64_t write_limit = UINT64_MAX;
+    bool tracking = false;
+    std::vector<Unflushed> unflushed;
     // Not a vector: tests copy 8 MiB devices hundreds of times, and an unoptimised vector frees
     // its bytes one by one.
     std::size_t size;

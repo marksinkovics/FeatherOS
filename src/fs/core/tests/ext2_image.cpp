@@ -3,6 +3,7 @@
 
 #include "common/crc.h"
 #include "common/little_endian.h"
+#include "ext/ext2_filesystem.h"
 #include "fs/ext2.h"
 #include "tests/filesystem_helpers.h"
 
@@ -10,10 +11,13 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -39,13 +43,28 @@ std::string WorkPath(std::string_view name)
 #endif
 }
 
+// Blocks of zeros are left as holes in the file, which saves most of the writing.
 void SaveImage(MemoryDevice& device, const std::string& path)
 {
-    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    constexpr std::size_t Chunk = 4096;
+    static const std::array<std::uint8_t, Chunk> zeros{};
     const std::span<std::uint8_t> bytes = device.Bytes();
-    file.write(reinterpret_cast<const char*>(bytes.data()),
-               static_cast<std::streamsize>(bytes.size()));
-    REQUIRE(file.good());
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        for (std::size_t at = 0; at < bytes.size(); at += Chunk)
+        {
+            const std::size_t length = std::min(Chunk, bytes.size() - at);
+            const std::span<const std::uint8_t> chunk = bytes.subspan(at, length);
+            if (std::memcmp(chunk.data(), zeros.data(), length) != 0)
+            {
+                file.seekp(static_cast<std::streamoff>(at));
+                file.write(reinterpret_cast<const char*>(chunk.data()),
+                           static_cast<std::streamsize>(length));
+            }
+        }
+        REQUIRE(file.good());
+    }
+    std::filesystem::resize_file(path, bytes.size());
 }
 
 [[maybe_unused]] ToolRun Run(const std::string& command, const std::string& output)
@@ -587,6 +606,139 @@ void ReplayByMounting(MemoryDevice& device)
 {
     MountedFilesystem ext(Ext::Ext2Type(), device, false);
     REQUIRE(ext->GetCapabilities().writable);
+}
+
+namespace
+{
+
+constexpr std::uint64_t MaximumTreeContents = 8 << 20;
+
+void TreeInto(Filesystem& filesystem, NodeId directory, const std::string& path, Tree& tree)
+{
+    std::uint64_t cookie = 0;
+    DirectoryEntry entry{};
+    while (Value(filesystem.ReadDirectory(directory, cookie, entry)))
+    {
+        const std::string name(entry.name.data(), entry.name_length);
+        const Attributes attributes = Value(filesystem.GetAttributes(entry.node));
+        TreeEntry node{attributes.type,
+                       attributes.type == NodeType::Directory ? 0 : attributes.size,
+                       attributes.link_count,
+                       {}};
+        if (attributes.type == NodeType::File && attributes.size <= MaximumTreeContents)
+        {
+            node.contents = ReadAll(filesystem, entry.node);
+        }
+        else if (attributes.type == NodeType::SymbolicLink)
+        {
+            std::string target(attributes.size, '\0');
+            const std::size_t length = Value(filesystem.ReadLink(entry.node, target));
+            target.resize(length);
+            node.contents = target;
+        }
+        tree[path + name] = node;
+        if (attributes.type == NodeType::Directory)
+        {
+            TreeInto(filesystem, entry.node, path + name + "/", tree);
+        }
+    }
+}
+
+} // namespace
+
+Tree TreeOf(Filesystem& filesystem)
+{
+    Tree tree;
+    TreeInto(filesystem, filesystem.Root(), "/", tree);
+    return tree;
+}
+
+Tree TreeOf(MemoryDevice& device)
+{
+    MountedFilesystem ext(Ext::Ext2Type(), device, true);
+    return TreeOf(*ext);
+}
+
+std::string TreeDifference(const Tree& left, const Tree& right, bool contents)
+{
+    auto a = left.begin();
+    auto b = right.begin();
+    while (a != left.end() || b != right.end())
+    {
+        if (b == right.end() || (a != left.end() && a->first < b->first))
+        {
+            return "only on the left: " + a->first;
+        }
+        if (a == left.end() || b->first < a->first)
+        {
+            return "only on the right: " + b->first;
+        }
+        const TreeEntry& x = a->second;
+        const TreeEntry& y = b->second;
+        if (x.type != y.type)
+        {
+            return a->first + ": type " + std::to_string(static_cast<int>(x.type)) + " against " +
+                   std::to_string(static_cast<int>(y.type));
+        }
+        if (x.size != y.size)
+        {
+            return a->first + ": size " + std::to_string(x.size) + " against " +
+                   std::to_string(y.size);
+        }
+        if (x.links != y.links)
+        {
+            return a->first + ": links " + std::to_string(x.links) + " against " +
+                   std::to_string(y.links);
+        }
+        if (contents && x.contents != y.contents)
+        {
+            const auto difference =
+                std::mismatch(x.contents.begin(), x.contents.end(), y.contents.begin());
+            return a->first + ": contents differ at byte " +
+                   std::to_string(difference.first - x.contents.begin());
+        }
+        ++a;
+        ++b;
+    }
+    return {};
+}
+
+Replayed ReplayBothWays(MemoryDevice& crashed, std::string_view name)
+{
+    Replayed replayed;
+    replayed.ours = CopyOf(crashed);
+    {
+        MountedFilesystem ext(Ext::Ext2Type(), *replayed.ours, false);
+        REQUIRE(ext->GetCapabilities().writable);
+        const std::optional<Ext::JournalActivity> activity =
+            static_cast<Ext::Ext2Filesystem&>(*ext).Activity();
+        replayed.orphans = activity ? activity->orphans_processed : 0;
+    }
+    CheckClean(*replayed.ours, std::string(name) + "-ours");
+    replayed.tree = TreeOf(*replayed.ours);
+    if (!HaveE2fsck())
+    {
+        return replayed;
+    }
+    const std::unique_ptr<MemoryDevice> theirs = CopyOf(crashed);
+    const ToolRun fixed = FixWithE2fsck(*theirs, std::string(name) + "-theirs");
+    INFO("e2fsck -fy:\n" << fixed.output);
+    REQUIRE(fixed.status <= 1);
+    REQUIRE(fixed.output.find("hecksum") == std::string::npos);
+    REQUIRE(fixed.output.find("not clean") == std::string::npos);
+    CheckClean(*theirs, std::string(name) + "-theirs");
+    const std::string difference = TreeDifference(replayed.tree, TreeOf(*theirs));
+    INFO("tree: " << difference);
+    REQUIRE(difference.empty());
+    // e2fsck -fy also rehashes the directories it finds linear, which moves blocks, so ours goes
+    // through it as well before the free ranges are compared.
+    const std::unique_ptr<MemoryDevice> ours_fixed = CopyOf(*replayed.ours);
+    REQUIRE(FixWithE2fsck(*ours_fixed, std::string(name) + "-ours-fixed").status <= 1);
+    const std::string free_ours = FreeRangesOf(*ours_fixed, std::string(name) + "-free");
+    const std::string free_theirs = FreeRangesOf(*theirs, std::string(name) + "-free");
+    INFO("free ranges ours:\n" << free_ours << "theirs:\n" << free_theirs);
+    REQUIRE(free_ours == free_theirs);
+    return replayed;
 }
 
 } // namespace FeatherDisk::Tests

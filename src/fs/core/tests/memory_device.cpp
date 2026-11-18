@@ -61,7 +61,14 @@ Status MemoryDevice::Write(std::uint64_t first_sector, std::span<const std::uint
         return std::unexpected(Error::Io);
     }
     ++write_count;
-    std::memcpy(bytes.get() + first_sector * sector_size, data.data(), data.size());
+    std::uint8_t* const place = bytes.get() + first_sector * sector_size;
+    if (tracking)
+    {
+        unflushed.push_back({static_cast<std::size_t>(first_sector * sector_size),
+                             std::vector<std::uint8_t>(place, place + data.size()),
+                             std::vector<std::uint8_t>(data.begin(), data.end())});
+    }
+    std::memcpy(place, data.data(), data.size());
     return {};
 }
 
@@ -69,6 +76,11 @@ Status MemoryDevice::Flush()
 {
     ++flush_count;
     flush_writes.push_back(write_count);
+    // A device that stopped writing makes nothing durable.
+    if (write_count < write_limit)
+    {
+        unflushed.clear();
+    }
     return {};
 }
 
@@ -100,6 +112,36 @@ void MemoryDevice::RestoreReads()
 void MemoryDevice::FailWritesAfter(std::uint64_t count)
 {
     write_limit = count;
+}
+
+void MemoryDevice::TrackUnflushed()
+{
+    tracking = true;
+}
+
+std::size_t MemoryDevice::UnflushedCount() const
+{
+    return unflushed.size();
+}
+
+std::unique_ptr<MemoryDevice>
+MemoryDevice::CopyKeeping(const std::function<bool(std::size_t)>& keep) const
+{
+    auto copy = std::make_unique<MemoryDevice>(sector_size, size / sector_size);
+    std::memcpy(copy->bytes.get(), bytes.get(), size);
+    for (auto write = unflushed.rbegin(); write != unflushed.rend(); ++write)
+    {
+        std::memcpy(copy->bytes.get() + write->offset, write->before.data(), write->before.size());
+    }
+    for (std::size_t index = 0; index < unflushed.size(); ++index)
+    {
+        if (keep(index))
+        {
+            std::memcpy(copy->bytes.get() + unflushed[index].offset, unflushed[index].after.data(),
+                        unflushed[index].after.size());
+        }
+    }
+    return copy;
 }
 
 } // namespace FeatherDisk::Tests
