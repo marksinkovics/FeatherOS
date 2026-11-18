@@ -16,4 +16,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 811dfbf | M22 P5 s3 ext3/ext4 in the OS | - | opus | 0 | - | |
 | 1aeda8d | M22 P6 s1 jbd2 replay | - | opus | 1 | - | |
 | facf33f | M22 P6 s2 unjournalled ext4 writes | - | opus | 0 | - | |
-| (this) | M22 P6 s3 extent writes | - | opus | 0 | 4/4 | |
+| 4e75e57 | M22 P6 s3 extent writes | - | opus | 0 | 4/4 | |
