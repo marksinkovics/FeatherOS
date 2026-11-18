@@ -24,8 +24,12 @@ constexpr std::uint16_t MaximumExtentDepth = 5;
 // ee_len up to this is an extent of that many written blocks; above it, an unwritten extent
 // (allocated, reading as zeros) of ee_len - 32768 blocks.
 constexpr std::uint32_t MaximumInitializedLength = 32768;
+// Unwritten extents give up one block for the flag.
+constexpr std::uint32_t MaximumUnwrittenLength = MaximumInitializedLength - 1;
 // Logical block numbers are 32 bits.
 constexpr std::uint64_t ExtentLogicalEnd = std::uint64_t{1} << 32;
+// The root in i_block holds four entries.
+constexpr std::uint16_t RootExtentEntries = 4;
 
 struct ExtentHeader
 {
@@ -56,6 +60,13 @@ Result<ExtentHeader> ParseExtentHeader(std::span<const std::uint8_t> node);
 // The entry at index of a node whose header said it holds that many.
 Extent ExtentAt(std::span<const std::uint8_t> node, std::size_t index);
 ExtentIndex ExtentIndexAt(std::span<const std::uint8_t> node, std::size_t index);
+// The first logical block of either kind of entry.
+std::uint32_t EntryLogical(std::span<const std::uint8_t> node, std::size_t index);
+// eh_max of a tree block, as Linux sets it; the tail always fits after it.
+std::uint16_t BlockExtentEntries(std::uint32_t block_size);
+void StoreExtentHeader(std::span<std::uint8_t> node, const ExtentHeader& header);
+void StoreExtent(std::span<std::uint8_t> node, std::size_t index, const Extent& extent);
+void StoreExtentIndex(std::span<std::uint8_t> node, std::size_t index, const ExtentIndex& entry);
 
 } // namespace FeatherDisk::Ext
 

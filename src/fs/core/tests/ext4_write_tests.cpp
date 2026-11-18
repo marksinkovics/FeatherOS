@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Writes on ext4 layouts without a journal or extents (tests/make_ext2_image.sh): which volumes
+// Writes on ext4 layouts without a journal (tests/make_ext2_image.sh): which volumes
 // take them, groups that were never used, bitmaps that fail their checksums, hashed directories,
 // dir_nlink, huge_file and shared extended attribute blocks. The scenarios of ext2_write_tests.cpp
 // and ext2_tree_tests.cpp run over these layouts too.
@@ -127,7 +127,7 @@ void CheckDebugfsHas(MemoryDevice& device, std::string_view command,
 } // namespace
 #endif
 
-TEST_CASE("ext4 volumes without a journal or extents mount writable, the others read-only")
+TEST_CASE("ext4 volumes without a journal mount writable, the others read-only")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
@@ -164,14 +164,15 @@ TEST_CASE("ext4 volumes without a journal or extents mount writable, the others 
         INFO(variant);
         REQUIRE(writable(variant, unchanged));
     }
-    // A journal (and orphan_file with it), extents and a journal.
+    // A journal (and orphan_file with it), with or without extents.
     REQUIRE_FALSE(writable("ext4-blockmap", unchanged));
     REQUIRE_FALSE(writable("ext4", unchanged));
     REQUIRE_FALSE(writable("ext4-extents", unchanged));
-    // The extent feature alone, with no file using it yet.
-    REQUIRE_FALSE(
-        writable("ext4-csum", [](RawVolume& raw)
-                 { raw.Store32(IncompatibleOffset, raw.Load32(IncompatibleOffset) | 0x40U); }));
+    // Extents without a journal, also the feature alone with no file using it yet.
+    REQUIRE(writable("ext4-nojournal", unchanged));
+    REQUIRE(writable("ext4-mixed", unchanged));
+    REQUIRE(writable("ext4-csum", [](RawVolume& raw)
+                     { raw.Store32(IncompatibleOffset, raw.Load32(IncompatibleOffset) | 0x40U); }));
     // orphan_file without a journal, and quota, whose rules the driver does not keep.
     REQUIRE_FALSE(
         writable("ext4-csum", [](RawVolume& raw)

@@ -341,6 +341,9 @@ TEST_CASE("ext4 layouts without a journal or extents take files with every check
     CreateWriteAndRead("ext4-csum");
     CreateWriteAndRead("ext4-csum64");
     CreateWriteAndRead("ext4-gdtcsum");
+    // Extents, and extents beside the image's block maps.
+    CreateWriteAndRead("ext4-nojournal");
+    CreateWriteAndRead("ext4-mixed");
 #endif
 }
 
@@ -635,8 +638,8 @@ TEST_CASE("ext2 fills the volume, then frees and reuses the space")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    // ext4-csum's groups 2 and 3 start uninitialised.
-    for (const std::string_view variant : {"1k", "ext4-csum"})
+    // ext4-csum's groups 2 and 3 start uninitialised; ext4-nojournal's file takes extents.
+    for (const std::string_view variant : {"1k", "ext4-csum", "ext4-nojournal"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
@@ -722,7 +725,8 @@ TEST_CASE("ext2 sets modes, owners and times")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view variant : {"1k", "4k", "ext4-csum", "ext4-gdtcsum"})
+    for (const std::string_view variant :
+         {"1k", "4k", "ext4-csum", "ext4-gdtcsum", "ext4-nojournal"})
     {
         INFO(variant);
         const bool nanoseconds = variant != "1k";
@@ -866,8 +870,9 @@ TEST_CASE("an ext2 volume stopped after any write needs only e2fsck's routine re
     {
         SKIP("e2fsck is not installed");
     }
-    // ext4-csum adds checksums and groups whose first use writes their descriptor.
-    for (const std::string_view variant : {"1k", "ext4-csum"})
+    // ext4-csum adds checksums and groups whose first use writes their descriptor, and
+    // ext4-nojournal extents.
+    for (const std::string_view variant : {"1k", "ext4-csum", "ext4-nojournal"})
     {
         INFO(variant);
         const std::vector<std::uint8_t> original = LoadExtImage(variant);
@@ -1419,5 +1424,7 @@ TEST_CASE("random ext2 file and directory changes match a model")
     RandomChanges("ext4-csum", 2027, 800, 600 * 1024);
     RandomChanges("ext4-csum64", 2028, 500, 2 * 1024 * 1024);
     RandomChanges("ext4-gdtcsum", 2029, 400, 6 * 1024 * 1024);
+    RandomChanges("ext4-nojournal", 2030, 800, 2 * 1024 * 1024);
+    RandomChanges("ext4-mixed", 2031, 500, 6 * 1024 * 1024);
 #endif
 }

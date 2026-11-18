@@ -77,9 +77,8 @@ constexpr std::uint32_t IncompatibleCaseFolding = 0x20000;
 constexpr std::uint32_t IncompatibleReadable =
     IncompatibleFileType | IncompatibleRecover | IncompatibleExtents | Incompatible64Bit |
     IncompatibleFlexibleGroups | IncompatibleChecksumSeed;
-// Extents stay read-only until the write path allocates them, even on a volume with none yet.
-constexpr std::uint32_t IncompatibleWritable = IncompatibleFileType | Incompatible64Bit |
-                                               IncompatibleFlexibleGroups |
+constexpr std::uint32_t IncompatibleWritable = IncompatibleFileType | IncompatibleExtents |
+                                               Incompatible64Bit | IncompatibleFlexibleGroups |
                                                IncompatibleChecksumSeed;
 
 // s_feature_ro_compat: a driver may read a volume with a bit it does not know, but not write it.

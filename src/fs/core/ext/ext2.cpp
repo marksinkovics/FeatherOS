@@ -71,16 +71,12 @@ Result<Superblock> ReadSuperblock(BlockDevice& volume)
 }
 
 // Why a volume this driver reads must not be written, or nullopt. ext2 and ext4's layouts are
-// written, but not a journal (Part 6 step 4) or extents (step 3).
+// written, extents included, but not a journal (Part 6 step 4).
 std::optional<std::string_view> WriteRefusal(const Superblock& superblock)
 {
     if ((superblock.compatible & CompatibleHasJournal) != 0)
     {
         return "a journal, which writes would have to go through";
-    }
-    if ((superblock.incompatible & IncompatibleExtents) != 0)
-    {
-        return "extents, which only the read path supports";
     }
     if ((superblock.incompatible & ~IncompatibleWritable) != 0)
     {
@@ -170,6 +166,11 @@ bool Buffers::Empty() const
 std::span<std::uint8_t> Buffers::operator[](std::size_t index)
 {
     return memory.Bytes().subspan(index * size, size);
+}
+
+std::span<std::uint8_t> Buffers::Blocks(std::size_t index, std::size_t count)
+{
+    return memory.Bytes().subspan(index * size, count * size);
 }
 
 Ext2Filesystem::Ext2Filesystem(BlockDevice& device, const Superblock& layout,
@@ -279,12 +280,15 @@ bool Ext2Filesystem::IsDataBlock(std::uint64_t block) const
     return block > superblock.first_data_block && block < superblock.blocks_count;
 }
 
-std::uint64_t Ext2Filesystem::MaximumFileSize() const
+// An extent file ends a block before 2^32 blocks, as on Linux, so its last extent's end still
+// fits in 32 bits.
+std::uint64_t Ext2Filesystem::MaximumFileSize(bool extent_mapped) const
 {
     const std::uint64_t per_block = pointers_per_block;
-    const std::uint64_t mapped_blocks = extents ? ExtentLogicalEnd
-                                                : DirectBlocks + per_block + per_block * per_block +
-                                                      per_block * per_block * per_block;
+    const std::uint64_t mapped_blocks =
+        extent_mapped
+            ? ExtentLogicalEnd - 1
+            : DirectBlocks + per_block + per_block * per_block + per_block * per_block * per_block;
     std::uint64_t maximum = mapped_blocks * block_size;
     const std::uint64_t allocated_limit =
         (superblock.read_only_compatible & ReadOnlyCompatibleHugeFile) != 0
@@ -540,6 +544,17 @@ Result<BlockRun> Ext2Filesystem::MapRun(const Inode& inode, std::uint64_t logica
     return BlockRun{.logical = logical, .physical = *block, .count = 1};
 }
 
+Result<std::uint64_t> Ext2Filesystem::PhysicalBlock(const Inode& inode, std::uint64_t logical,
+                                                    std::span<std::uint8_t> scratch)
+{
+    const Result<BlockRun> run = MapRun(inode, logical, scratch);
+    if (!run)
+    {
+        return Failure(run);
+    }
+    return run->physical == 0 ? 0 : run->physical + (logical - run->logical);
+}
+
 bool Ext2Filesystem::IsIndexOf(const Inode& directory, std::uint64_t logical,
                                std::span<const std::uint8_t> block) const
 {
@@ -676,7 +691,7 @@ Capabilities Ext2Filesystem::GetCapabilities() const
         .permissions = true,
         .case_sensitive = true,
         .maximum_name_length = MaximumNameLength,
-        .maximum_file_size = MaximumFileSize(),
+        .maximum_file_size = MaximumFileSize(extents),
     };
 }
 

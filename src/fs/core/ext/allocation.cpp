@@ -310,6 +310,19 @@ Status Ext2Filesystem::WriteGroups()
 Result<std::uint32_t> Ext2Filesystem::AllocateBlock(std::uint32_t goal,
                                                     std::span<std::uint8_t> bitmap)
 {
+    const Result<AllocatedRun> run = AllocateBlocks(goal, 1, bitmap);
+    if (!run)
+    {
+        return Failure(run);
+    }
+    return run->first;
+}
+
+// The run continues only within the group of its first block, over free bits that are no group
+// metadata, so it costs one bitmap write.
+Result<AllocatedRun> Ext2Filesystem::AllocateBlocks(std::uint32_t goal, std::uint32_t wanted,
+                                                    std::span<std::uint8_t> bitmap)
+{
     if (superblock.free_blocks_count == 0)
     {
         return std::unexpected(Error::NoSpace);
@@ -358,15 +371,22 @@ Result<std::uint32_t> Ext2Filesystem::AllocateBlock(std::uint32_t goal,
         {
             return std::unexpected(Error::Corrupt);
         }
-        SetBit(bitmap, *bit);
-        --descriptor.free_blocks;
+        std::uint32_t taken = 0;
+        while (taken < wanted && *bit + taken < count && taken < descriptor.free_blocks &&
+               taken < superblock.free_blocks_count && !TestBit(bitmap, *bit + taken) &&
+               IsDataBlock(block + taken) && !IsGroupMetadata(group, block + taken))
+        {
+            SetBit(bitmap, *bit + taken);
+            ++taken;
+        }
+        descriptor.free_blocks -= taken;
         descriptor.flags = static_cast<std::uint16_t>(descriptor.flags & ~GroupBlocksUnused);
         if (const Status written = CommitBitmap(group, descriptor, true, bitmap); !written)
         {
             return Failure(written);
         }
-        --superblock.free_blocks_count;
-        return static_cast<std::uint32_t>(block);
+        superblock.free_blocks_count -= taken;
+        return AllocatedRun{.first = static_cast<std::uint32_t>(block), .count = taken};
     }
     return std::unexpected(Error::NoSpace);
 }
@@ -531,7 +551,7 @@ Status Ext2Filesystem::FreeInode(NodeId node, bool directory, std::span<std::uin
 
 // Freeing happens after nothing points to the block any more, so the bitmap may wait for the
 // next group's block or FinishFrees.
-Status Ext2Filesystem::FreeBlock(FreeCursor& cursor, std::uint32_t block)
+Status Ext2Filesystem::FreeBlock(FreeCursor& cursor, std::uint64_t block)
 {
     if (!IsDataBlock(block))
     {
@@ -572,8 +592,22 @@ Status Ext2Filesystem::FreeBlock(FreeCursor& cursor, std::uint32_t block)
     return {};
 }
 
+Status Ext2Filesystem::FreeBlocks(FreeCursor& cursor, std::uint64_t first, std::uint64_t count)
+{
+    for (std::uint64_t block = first; block < first + count; ++block)
+    {
+        if (const Status freed = FreeBlock(cursor, block); !freed)
+        {
+            return freed;
+        }
+    }
+    return {};
+}
+
 Status Ext2Filesystem::FinishFrees(FreeCursor& cursor)
 {
+    // The next free reads the bitmap again: allocations may change it in between.
+    cursor.loaded = false;
     if (!cursor.dirty)
     {
         return {};

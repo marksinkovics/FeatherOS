@@ -359,7 +359,7 @@ bool OnlyRoutineRepairs(const std::string& report, bool renames, bool indexes)
         "Salvage? no",
         "e2fsck: aborted",
     };
-    constexpr std::array<std::string_view, 10> Noise = {
+    constexpr std::array<std::string_view, 12> Noise = {
         "e2fsck ",
         "Pass ",
         "Fix? no",
@@ -371,6 +371,9 @@ bool OnlyRoutineRepairs(const std::string& report, bool renames, bool indexes)
         "check forced",
         // A 64bit volume without extents, as the ext4-csum64 image is made.
         "needs extents to access the whole disk",
+        // Offers to rebuild an extent tree with fewer nodes, which e2fsck counts as no fault.
+        "could be narrower.  Optimize? no",
+        "could be shorter.  Optimize? no",
     };
     const auto contains = [](std::string_view line, const auto& phrases)
     {

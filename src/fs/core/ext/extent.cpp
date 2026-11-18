@@ -27,6 +27,11 @@ std::span<const std::uint8_t> Entry(std::span<const std::uint8_t> node, std::siz
     return node.subspan(ExtentHeaderSize + index * ExtentEntrySize, ExtentEntrySize);
 }
 
+std::uint8_t* MutableEntry(std::span<std::uint8_t> node, std::size_t index)
+{
+    return node.subspan(ExtentHeaderSize + index * ExtentEntrySize, ExtentEntrySize).data();
+}
+
 } // namespace
 
 Result<ExtentHeader> ParseExtentHeader(std::span<const std::uint8_t> node)
@@ -74,6 +79,72 @@ ExtentIndex ExtentIndexAt(std::span<const std::uint8_t> node, std::size_t index)
     };
 }
 
+std::uint32_t EntryLogical(std::span<const std::uint8_t> node, std::size_t index)
+{
+    return Load32(Entry(node, index), 0);
+}
+
+std::uint16_t BlockExtentEntries(std::uint32_t block_size)
+{
+    return static_cast<std::uint16_t>((block_size - ExtentHeaderSize) / ExtentEntrySize);
+}
+
+void StoreExtentHeader(std::span<std::uint8_t> node, const ExtentHeader& header)
+{
+    StoreLittleEndian(node.data(), ExtentMagic);
+    StoreLittleEndian(node.data() + 2, header.entries);
+    StoreLittleEndian(node.data() + 4, header.maximum);
+    StoreLittleEndian(node.data() + 6, header.depth);
+    StoreLittleEndian(node.data() + 8, std::uint32_t{0});
+}
+
+void StoreExtent(std::span<std::uint8_t> node, std::size_t index, const Extent& extent)
+{
+    std::uint8_t* entry = MutableEntry(node, index);
+    const std::uint32_t length =
+        extent.unwritten ? extent.length + MaximumInitializedLength : extent.length;
+    StoreLittleEndian(entry, extent.logical);
+    StoreLittleEndian(entry + 4, static_cast<std::uint16_t>(length));
+    StoreLittleEndian(entry + 6, static_cast<std::uint16_t>(extent.physical >> 32));
+    StoreLittleEndian(entry + 8, static_cast<std::uint32_t>(extent.physical));
+}
+
+void StoreExtentIndex(std::span<std::uint8_t> node, std::size_t index, const ExtentIndex& entry)
+{
+    std::uint8_t* bytes = MutableEntry(node, index);
+    StoreLittleEndian(bytes, entry.logical);
+    StoreLittleEndian(bytes + 4, static_cast<std::uint32_t>(entry.child));
+    StoreLittleEndian(bytes + 8, static_cast<std::uint16_t>(entry.child >> 32));
+    StoreLittleEndian(bytes + 10, std::uint16_t{0});
+}
+
+Result<ExtentHeader> Ext2Filesystem::LoadExtentNode(const Inode& inode, std::uint64_t child,
+                                                    std::uint16_t parent_depth,
+                                                    std::span<std::uint8_t> node)
+{
+    if (!IsDataBlock(child))
+    {
+        return std::unexpected(Error::Corrupt);
+    }
+    if (const Status read = cache.Read(child, 0, node, node); !read)
+    {
+        return Failure(read);
+    }
+    const Result<ExtentHeader> header = ParseExtentHeader(node);
+    if (!header || header->depth + 1 != parent_depth ||
+        header->maximum > BlockExtentEntries(block_size))
+    {
+        return std::unexpected(Error::Corrupt);
+    }
+    if (metadata_checksums && !ExtentBlockChecksumMatches(node, inode.checksum_seed))
+    {
+        LogWithValue("ext2: extent block checksum mismatch in block ",
+                     static_cast<std::uint32_t>(child));
+        return std::unexpected(Error::Corrupt);
+    }
+    return header;
+}
+
 // The walk goes down one level per node and checks each child's depth against its parent's, so
 // a damaged index cannot loop. Every node is checked whole on the way, which costs little next to
 // reading its block: a caller maps a run of blocks per walk, not one block.
@@ -93,8 +164,6 @@ Result<BlockRun> Ext2Filesystem::MapExtent(const Inode& inode, std::uint64_t log
     }
     // The first logical block past the subtree being walked, from the next index entry above.
     std::uint64_t end = ExtentLogicalEnd;
-    const std::size_t block_entries =
-        (block_size - ExtentHeaderSize - ExtentTailSize) / ExtentEntrySize;
     while (header->depth > 0)
     {
         if (header->entries == 0)
@@ -125,28 +194,12 @@ Result<BlockRun> Ext2Filesystem::MapExtent(const Inode& inode, std::uint64_t log
             const std::uint64_t next = ExtentIndexAt(node, chosen + 1).logical;
             end = next < end ? next : end;
         }
-        const std::uint64_t child = ExtentIndexAt(node, chosen).child;
-        if (!IsDataBlock(child))
+        header = LoadExtentNode(inode, ExtentIndexAt(node, chosen).child, header->depth, scratch);
+        if (!header)
         {
-            return std::unexpected(Error::Corrupt);
+            return Failure(header);
         }
-        if (const Status read = cache.Read(child, 0, scratch, scratch); !read)
-        {
-            return Failure(read);
-        }
-        const std::uint16_t parent_depth = header->depth;
         node = scratch;
-        header = ParseExtentHeader(node);
-        if (!header || header->depth + 1 != parent_depth || header->maximum > block_entries)
-        {
-            return std::unexpected(Error::Corrupt);
-        }
-        if (metadata_checksums && !ExtentBlockChecksumMatches(node, inode.checksum_seed))
-        {
-            LogWithValue("ext2: extent block checksum mismatch in block ",
-                         static_cast<std::uint32_t>(child));
-            return std::unexpected(Error::Corrupt);
-        }
     }
 
     // The whole leaf is checked, not just the extents before the one that maps logical.

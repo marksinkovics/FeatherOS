@@ -299,7 +299,8 @@ Status Ext2Filesystem::ClearIndex(NodeId directory, Inode& inode, Buffers& buffe
     const std::span<std::uint8_t> block = buffers[DataBuffer];
     const auto convert = [&](std::uint64_t logical) -> Status
     {
-        const Result<std::uint32_t> physical = MapBlock(indexed, logical, buffers[ScratchBuffer]);
+        const Result<std::uint64_t> physical =
+            PhysicalBlock(indexed, logical, buffers[ScratchBuffer]);
         if (!physical)
         {
             return Failure(physical);
@@ -356,7 +357,8 @@ Status Ext2Filesystem::ZeroFrom(const Inode& inode, std::uint64_t position,
     {
         return {};
     }
-    const Result<std::uint32_t> physical = MapBlock(inode, position / block_size, scratch);
+    // An unwritten block reads as zeros already.
+    const Result<std::uint64_t> physical = PhysicalBlock(inode, position / block_size, scratch);
     if (!physical)
     {
         return Failure(physical);
@@ -717,11 +719,19 @@ bool Ext2Filesystem::AttributeBlockMatches(std::uint32_t block,
 
 Status Ext2Filesystem::CheckReleasable(const Inode& inode, std::span<std::uint8_t> scratch)
 {
-    if ((inode.flags & (InodeExtents | InodeInlineData)) != 0)
+    if ((inode.flags & InodeInlineData) != 0)
     {
         return std::unexpected(Error::Unsupported);
     }
-    // A block past 2^32 on a 64bit volume, which FreeBlock cannot take.
+    if ((inode.flags & InodeExtents) != 0)
+    {
+        const Result<ExtentHeader> root = ParseExtentHeader(inode.blocks);
+        if (!extents || !root || root->depth > MaximumExtentDepth)
+        {
+            return std::unexpected(Error::Corrupt);
+        }
+    }
+    // An attribute block past 2^32 on a 64bit volume, which ReleaseAttributeBlock does not take.
     if ((superblock.incompatible & Incompatible64Bit) != 0 && inode.attribute_block_high != 0)
     {
         return std::unexpected(Error::Unsupported);
@@ -759,7 +769,12 @@ Status Ext2Filesystem::ReleaseContents(const Node& node, Buffers& buffers)
         node.type == NodeType::File || node.type == NodeType::Directory ||
         (node.type == NodeType::SymbolicLink && inode.allocated_bytes > attribute_bytes);
     Status status;
-    for (std::uint32_t root = 0; root < BlockPointers && has_blocks && status; ++root)
+    if (has_blocks && (inode.flags & InodeExtents) != 0)
+    {
+        status = ReleaseExtents(inode, frees);
+    }
+    const bool block_mapped = has_blocks && (inode.flags & InodeExtents) == 0;
+    for (std::uint32_t root = 0; root < BlockPointers && block_mapped && status; ++root)
     {
         if (const std::uint32_t block = inode.Block(root); block != 0)
         {
@@ -821,6 +836,22 @@ Status Ext2Filesystem::AddEntry(NodeId directory, Inode& inode, std::optional<Re
         {
             return std::unexpected(Error::NoSpace);
         }
+        if ((inode.flags & InodeExtents) != 0)
+        {
+            ZeroBytes(block);
+            placed.record_length = static_cast<std::uint16_t>(
+                metadata_checksums ? block_size - DirectoryTailSize : block_size);
+            StoreEntry(block, 0, placed, has_file_type);
+            if (const Status appended = AppendExtentBlock(directory, inode, block, buffers);
+                !appended)
+            {
+                return appended;
+            }
+            const Timestamp now = Now();
+            inode.modify_time = now;
+            inode.change_time = now;
+            return StoreInode(directory, inode, false, scratch);
+        }
         const std::uint64_t logical = inode.size / block_size;
         MapCursor cursor = {
             .levels = {{{.block = 0, .dirty = false, .data = buffers[LevelBuffers]},
@@ -831,7 +862,7 @@ Status Ext2Filesystem::AddEntry(NodeId directory, Inode& inode, std::optional<Re
         };
         if (logical > 0)
         {
-            if (const Result<std::uint32_t> last = MapBlock(inode, logical - 1, scratch);
+            if (const Result<std::uint64_t> last = PhysicalBlock(inode, logical - 1, scratch);
                 last && *last != 0)
             {
                 cursor.goal = *last + 1;
@@ -915,7 +946,7 @@ Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
         return std::unexpected(Error::InvalidArgument);
     }
     Inode inode = node->inode;
-    if ((inode.flags & (InodeExtents | InodeInlineData)) != 0)
+    if ((inode.flags & InodeInlineData) != 0)
     {
         return std::unexpected(Error::Unsupported);
     }
@@ -923,7 +954,8 @@ Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
     {
         return std::size_t{0};
     }
-    const std::uint64_t maximum = MaximumFileSize();
+    const bool extent_mapped = (inode.flags & InodeExtents) != 0;
+    const std::uint64_t maximum = MaximumFileSize(extent_mapped);
     if (offset >= maximum)
     {
         return std::unexpected(Error::FileTooLarge);
@@ -942,6 +974,34 @@ Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
         {
             return Failure(zeroed);
         }
+    }
+    if (extent_mapped)
+    {
+        // e2fsck takes a tree below the root to end at i_size, so the size grows before blocks
+        // past it are mapped; a crash leaves a file ending in a hole.
+        const std::uint64_t size = inode.size;
+        const std::uint64_t end = offset + data.size();
+        if (end > size)
+        {
+            inode.size = end;
+            if (const Status large = SetLargeFile(end, scratch); !large)
+            {
+                return Failure(large);
+            }
+            if (const Status stored = StoreInode(file, inode, false, scratch); !stored)
+            {
+                return Failure(stored);
+            }
+        }
+        std::size_t written = 0;
+        const std::uint64_t allocated = inode.allocated_bytes;
+        const Status failure = WriteExtentFile(file, inode, offset, data, buffers, written);
+        inode.size = offset + written > size ? offset + written : size;
+        if (written == 0 && inode.allocated_bytes == allocated && end <= size)
+        {
+            return Failure(failure);
+        }
+        return FinishWrite(file, inode, offset, written, failure, scratch);
     }
 
     // Blocks go after the file's block before the write, or at the start of its inode's group.
@@ -1030,6 +1090,13 @@ Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
         return Failure(flushed);
     }
     inode.allocated_bytes += cursor.allocated * block_size;
+    return FinishWrite(file, inode, offset, written, failure, scratch);
+}
+
+Result<std::size_t> Ext2Filesystem::FinishWrite(NodeId file, Inode& inode, std::uint64_t offset,
+                                                std::size_t written, Status failure,
+                                                std::span<std::uint8_t> scratch)
+{
     if (written > 0)
     {
         if (offset + written > inode.size)
@@ -1081,11 +1148,12 @@ Status Ext2Filesystem::TruncateFile(NodeId file, std::uint64_t size)
         return std::unexpected(Error::InvalidArgument);
     }
     Inode inode = node->inode;
-    if ((inode.flags & (InodeExtents | InodeInlineData)) != 0)
+    if ((inode.flags & InodeInlineData) != 0)
     {
         return std::unexpected(Error::Unsupported);
     }
-    if (size > MaximumFileSize())
+    const bool extent_mapped = (inode.flags & InodeExtents) != 0;
+    if (size > MaximumFileSize(extent_mapped))
     {
         return std::unexpected(Error::FileTooLarge);
     }
@@ -1096,6 +1164,26 @@ Status Ext2Filesystem::TruncateFile(NodeId file, std::uint64_t size)
     if (const Status begun = BeginChange(scratch); !begun)
     {
         return begun;
+    }
+    if (size < inode.size && extent_mapped)
+    {
+        if (const Status zeroed = ZeroFrom(inode, size, scratch); !zeroed)
+        {
+            return zeroed;
+        }
+        // The blocks go before the size, which a crash leaves larger than they reach: a file
+        // ending in a hole.
+        const Status shrunk =
+            ShrinkExtents(file, inode, DivideRoundingUp(size, block_size), buffers);
+        if (shrunk)
+        {
+            const Timestamp now = Now();
+            inode.size = size;
+            inode.modify_time = now;
+            inode.change_time = now;
+        }
+        const Status stored = StoreInode(file, inode, false, scratch);
+        return !shrunk ? shrunk : stored;
     }
     if (size < inode.size)
     {

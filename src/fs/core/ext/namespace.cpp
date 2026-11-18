@@ -32,6 +32,7 @@
 #include "common/bytes.h"
 #include "common/little_endian.h"
 #include "ext/ext2_filesystem.h"
+#include "ext/extent.h"
 
 namespace FeatherDisk::Ext
 {
@@ -435,6 +436,15 @@ Result<NodeId> Ext2Filesystem::CreateNode(NodeId directory, std::string_view nam
 
     const Timestamp now = Now();
     Inode inode = NewInode(mode, now);
+    // As on Linux: files, directories and links with a block of their own; a fast link's target
+    // fills i_block instead.
+    const bool extent_mapped =
+        extents && ((mode & ModeTypeMask) == ModeRegular || is_directory || needs_block);
+    if (extent_mapped)
+    {
+        inode.flags |= InodeExtents;
+        StoreExtentHeader(inode.blocks, {.entries = 0, .maximum = RootExtentEntries, .depth = 0});
+    }
     std::uint32_t block = 0;
     Status status;
     if (needs_block)
@@ -479,7 +489,17 @@ Result<NodeId> Ext2Filesystem::CreateNode(NodeId directory, std::string_view nam
                 CopyBytes(contents.data(), target.data(), target.size());
                 inode.size = target.size();
             }
-            inode.SetBlock(0, block);
+            if (extent_mapped)
+            {
+                StoreExtentHeader(inode.blocks,
+                                  {.entries = 1, .maximum = RootExtentEntries, .depth = 0});
+                StoreExtent(inode.blocks, 0,
+                            {.logical = 0, .length = 1, .physical = block, .unwritten = false});
+            }
+            else
+            {
+                inode.SetBlock(0, block);
+            }
             inode.allocated_bytes = block_size;
             status = cache.Write(block, contents);
         }

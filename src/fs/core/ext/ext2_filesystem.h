@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // The filesystem behind Ext2Type(), Ext3Type() and Ext4Type(), shared by ext2.cpp (mounting and
 // reading), extent.cpp (extent trees), recovery.cpp (journal replay), allocation.cpp (groups and
-// bitmaps) and write.cpp (changes).
+// bitmaps), write.cpp (changes), extent_write.cpp (changes to extent trees) and namespace.cpp
+// (the directory tree).
 #ifndef FEATHERDISK_EXT_EXT2_FILESYSTEM_H
 #define FEATHERDISK_EXT_EXT2_FILESYSTEM_H
 
@@ -9,6 +10,7 @@
 #include "common/host_buffer.h"
 #include "ext/checksum.h"
 #include "ext/directory.h"
+#include "ext/extent.h"
 #include "ext/inode.h"
 #include "ext/superblock.h"
 #include "fs/filesystem.h"
@@ -49,6 +51,8 @@ public:
 
     bool Empty() const;
     std::span<std::uint8_t> operator[](std::size_t index);
+    // count consecutive buffers from index on, as one span.
+    std::span<std::uint8_t> Blocks(std::size_t index, std::size_t count);
 
 private:
     HostBuffer memory;
@@ -136,6 +140,65 @@ struct FreeCursor
     bool dirty;
 };
 
+// Blocks given out together by AllocateBlocks: count of them from first on.
+struct AllocatedRun
+{
+    std::uint32_t first;
+    std::uint32_t count;
+};
+
+constexpr std::size_t NoPosition = ~std::size_t{0};
+
+// One node on the way from an extent tree's root to a leaf, as read.
+struct ExtentLevel
+{
+    // 0 for the root, which lives in i_block.
+    std::uint64_t block;
+    std::span<std::uint8_t> node;
+    std::uint16_t entries;
+    // The index entry followed; in the leaf, the last extent starting at or before the logical
+    // block looked for, or NoPosition when it lies before them all.
+    std::size_t position;
+};
+
+// The way from the root to the leaf that maps a logical block, or would map it.
+struct ExtentPath
+{
+    // A copy of i_block, so the root reads as it was while the inode changes.
+    std::array<std::uint8_t, BlockArrayBytes> root;
+    std::array<ExtentLevel, MaximumExtentDepth + 1> levels;
+    // The root's depth: levels[0] is the root, levels[depth] the leaf.
+    std::uint16_t depth;
+    // The first logical block the leaf may not map: the next index entry's above it.
+    std::uint64_t end;
+};
+
+// The buffers of an extent tree change, by use: the nodes below the root on a path, two lists of
+// entries that may overflow a node (two blocks each), the node being written, and the bitmap of
+// the blocks being freed.
+constexpr std::size_t ExtentPathBuffers = 0;
+constexpr std::size_t ExtentListBuffers = MaximumExtentDepth;
+constexpr std::size_t ExtentOutputBuffer = ExtentListBuffers + 4;
+constexpr std::size_t ExtentFreeBuffer = ExtentOutputBuffer + 1;
+constexpr std::size_t ExtentBuffers = ExtentFreeBuffer + 1;
+
+// One change to a file's extent tree. Tree blocks it allocates and has not linked yet are freed
+// again if it fails before its commit, the one write that links them.
+struct ExtentEdit
+{
+    NodeId node;
+    Inode* inode;
+    Buffers* tree;
+    std::span<std::uint8_t> scratch;
+    std::span<std::uint8_t> bitmap;
+    FreeCursor frees;
+    // Where new tree blocks are looked for.
+    std::uint32_t goal;
+    std::array<std::uint64_t, 2 * (MaximumExtentDepth + 1)> fresh;
+    std::size_t fresh_count;
+    bool committing;
+};
+
 // Changes (everything from SetAttributes to SymbolicLink, and Sync) must not run at the same time
 // as any other operation on the mount; reads may run together. The host serialises them.
 class Ext2Filesystem final : public Filesystem
@@ -190,7 +253,8 @@ private:
     Status CheckDescriptorChecksums() const;
     std::unexpected<Error> Refused() const;
     bool IsDataBlock(std::uint64_t block) const;
-    std::uint64_t MaximumFileSize() const;
+    // Of an extent-mapped file, or of a block-mapped one.
+    std::uint64_t MaximumFileSize(bool extent_mapped) const;
     Result<InodePlace> LocateInode(NodeId node) const;
     // An inode past what its group ever used (with group checksums), which reads as free.
     bool IsUnusedInode(NodeId node) const;
@@ -208,6 +272,13 @@ private:
     // Extent trees (extent.cpp).
     Result<BlockRun> MapExtent(const Inode& inode, std::uint64_t logical,
                                std::span<std::uint8_t> scratch);
+    // Reads the child an index entry names into node and checks it: one level below
+    // parent_depth, an eh_max a block holds and, with metadata_csum, its tail.
+    Result<ExtentHeader> LoadExtentNode(const Inode& inode, std::uint64_t child,
+                                        std::uint16_t parent_depth, std::span<std::uint8_t> node);
+    // The block holding a file's logical block, or 0 for a hole or an unwritten extent.
+    Result<std::uint64_t> PhysicalBlock(const Inode& inode, std::uint64_t logical,
+                                        std::span<std::uint8_t> scratch);
     // Calls visit(entry, place) for each record from byte start on, unused ones (inode 0)
     // included, until it returns true. block receives each directory block and still holds the
     // block of the record visit stopped at; scratch serves the rest.
@@ -279,6 +350,9 @@ private:
     std::optional<std::string_view> CheckGroups() const;
     Status WriteGroups();
     Result<std::uint32_t> AllocateBlock(std::uint32_t goal, std::span<std::uint8_t> bitmap);
+    // Up to wanted consecutive blocks, the first at or after goal as AllocateBlock finds it.
+    Result<AllocatedRun> AllocateBlocks(std::uint32_t goal, std::uint32_t wanted,
+                                        std::span<std::uint8_t> bitmap);
     // In the parent's group when it has room, otherwise in the next group that does (Orlov-lite:
     // files stay near their directory).
     // Where a new directory's inode is looked for first (Orlov-lite).
@@ -286,7 +360,8 @@ private:
     Result<NodeId> AllocateInode(std::uint32_t parent_group, bool directory,
                                  std::span<std::uint8_t> bitmap, std::span<std::uint8_t> scratch);
     Status FreeInode(NodeId node, bool directory, std::span<std::uint8_t> bitmap);
-    Status FreeBlock(FreeCursor& cursor, std::uint32_t block);
+    Status FreeBlock(FreeCursor& cursor, std::uint64_t block);
+    Status FreeBlocks(FreeCursor& cursor, std::uint64_t first, std::uint64_t count);
     Status FinishFrees(FreeCursor& cursor);
 
     // Changes (write.cpp).
@@ -337,6 +412,45 @@ private:
     Status AddEntry(NodeId directory, Inode& inode, std::optional<RecordPlace> room,
                     const RawEntry& entry, Buffers& buffers);
 
+    // Extent trees (extent_write.cpp).
+    ExtentEdit BeginExtentEdit(NodeId node, Inode& inode, Buffers& tree, Buffers& buffers);
+    Status FindExtentPath(const Inode& inode, std::uint64_t logical, ExtentPath& path,
+                          Buffers& tree);
+    Result<std::uint64_t> AllocateTreeBlock(ExtentEdit& edit);
+    void ForgetFresh(ExtentEdit& edit);
+    Status WriteTreeNode(ExtentEdit& edit, std::uint64_t block, std::span<const std::uint8_t> list,
+                         std::size_t first, std::size_t count, std::uint16_t depth);
+    // Gives the node at level of path the entries list holds (laid out as a node, and possibly
+    // more than a node holds): in place, or in new blocks linked from the level above.
+    Status ReplaceExtentNode(ExtentEdit& edit, const ExtentPath& path, std::size_t level,
+                             std::span<std::uint8_t> list, std::size_t count);
+    // Maps a hole that path leads to.
+    Status InsertExtent(ExtentEdit& edit, const ExtentPath& path, const Extent& extent);
+    // Turns count blocks from logical on, inside the unwritten extent path's leaf points to,
+    // into written ones.
+    Status MarkWritten(ExtentEdit& edit, const ExtentPath& path, std::uint64_t logical,
+                       std::uint64_t count);
+    Status ShrinkExtents(NodeId node, Inode& inode, std::uint64_t keep, Buffers& buffers);
+    Status FreeExtentSubtree(const Inode& inode, std::span<const std::uint8_t> node,
+                             std::uint16_t depth, Buffers& tree, FreeCursor& frees);
+    Status ReleaseExtents(const Inode& inode, FreeCursor& frees);
+    // Writes count blocks of a file's data from logical on to blocks from physical on, taking
+    // the bytes of data that fall in them; the other bytes are read first, or zeros when fresh.
+    Status WriteDataBlocks(std::uint64_t physical, std::uint64_t logical, std::uint64_t count,
+                           std::uint64_t offset, std::span<const std::uint8_t> data, bool fresh,
+                           std::span<std::uint8_t> block);
+    // written counts the bytes that reached the file, also when a later part fails.
+    Status WriteExtentFile(NodeId file, Inode& inode, std::uint64_t offset,
+                           std::span<const std::uint8_t> data, Buffers& buffers,
+                           std::size_t& written);
+    // A directory block at the end of an extent-mapped directory, written before it is mapped.
+    Status AppendExtentBlock(NodeId directory, Inode& inode, std::span<std::uint8_t> contents,
+                             Buffers& buffers);
+
+    // The size and times after written bytes, and the inode with them.
+    Result<std::size_t> FinishWrite(NodeId file, Inode& inode, std::uint64_t offset,
+                                    std::size_t written, Status failure,
+                                    std::span<std::uint8_t> scratch);
     Result<std::size_t> WriteFile(NodeId file, std::uint64_t offset,
                                   std::span<const std::uint8_t> data);
     Status TruncateFile(NodeId file, std::uint64_t size);

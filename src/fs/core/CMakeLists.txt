@@ -28,6 +28,7 @@ add_library(featherdisk_core STATIC
     ext/checksum.cpp
     ext/directory.cpp
     ext/extent.cpp
+    ext/extent_write.cpp
     ext/ext2.cpp
     ext/features.cpp
     ext/inode.cpp
@@ -128,7 +129,8 @@ set(featherdisk_ext_image_directory "${CMAKE_CURRENT_BINARY_DIR}/ext-images")
 if (FEATHERDISK_SH AND FEATHERDISK_MKE2FS AND FEATHERDISK_DEBUGFS)
     file(MAKE_DIRECTORY "${featherdisk_ext_image_directory}")
     foreach (variant 1k 4k nofiletype rev0 groups mbr ext3 ext4 ext4-extents ext4-blockmap
-             ext4-64bit ext4-gdtcsum ext4-csum ext4-csum64 ext4-htree ext4-htree-gdtcsum)
+             ext4-64bit ext4-gdtcsum ext4-csum ext4-csum64 ext4-htree ext4-htree-gdtcsum
+             ext4-nojournal ext4-mixed)
         set(image "${featherdisk_ext_image_directory}/${variant}.img")
         add_custom_command(
             OUTPUT "${image}"
@@ -175,6 +177,7 @@ add_executable(featherdisk_core_tests
     tests/ext2_tree_tests.cpp
     tests/ext2_write_tests.cpp
     tests/ext4_extent_tests.cpp
+    tests/ext4_extent_write_tests.cpp
     tests/ext4_layout_tests.cpp
     tests/ext4_write_tests.cpp
     tests/ext_journal_tests.cpp

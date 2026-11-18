@@ -35,6 +35,11 @@
 #   ext4-htree  ext4-csum in 16 MiB with 4096 inodes and large/: 3000 empty files, a hash index of
 #               two levels after e2fsck -D
 #   ext4-htree-gdtcsum  the same with uninit_bg instead of metadata_csum
+#   ext4-nojournal  ext4-extents without the journal, which the core writes: mke2fs's default
+#               ext4 otherwise (extents, 64bit, flex_bg, metadata_csum)
+#   ext4-mixed  4 KiB blocks, metadata_csum, flex_bg, no journal, four groups, made without
+#               extents and given the feature by tune2fs afterwards: the image's files keep their
+#               block maps on a volume whose new files get extents; many/ hashed
 #
 #   sh make_ext2_image.sh <mke2fs> <debugfs> <image> <variant>
 #
@@ -107,7 +112,7 @@ if [ "$variant" = ext4-htree ] || [ "$variant" = ext4-htree-gdtcsum ]; then
     find "$source/large" -type f -exec chmod 0644 {} +
 fi
 
-if [ "$variant" = ext4-extents ]; then
+if [ "$variant" = ext4-extents ] || [ "$variant" = ext4-nojournal ]; then
     mkdir "$source/large" "$source/filler"
     awk -v directory="$source/large" 'BEGIN {
         for (number = 0; number < 3000; number++) {
@@ -163,6 +168,14 @@ case "$variant" in
         options="-t ext4 -b 1024 -N 4096 -O ^extent,^64bit,^has_journal,^metadata_csum,uninit_bg"
         size=16M
         ;;
+    ext4-nojournal)
+        options="-t ext4 -b 1024 -N 6144 -O ^has_journal"
+        size=32M
+        ;;
+    ext4-mixed)
+        options="-t ext4 -b 4096 -g 1024 -O ^extent,^64bit,^has_journal"
+        size=16M
+        ;;
     *)
         printf 'unknown variant %s\n' "$variant" >&2
         exit 2
@@ -187,7 +200,7 @@ fi
 
 tools="$(dirname "$mke2fs")"
 
-if [ "$variant" = ext4-extents ]; then
+if [ "$variant" = ext4-extents ] || [ "$variant" = ext4-nojournal ]; then
     {
         awk 'BEGIN { for (number = 0; number < 600; number += 2) printf "rm /filler/%03d\n", number }'
         printf 'write %s /fragmented.bin\n' "$work/fragmented.bin"
@@ -208,7 +221,8 @@ fi
 
 if [ "$variant" = ext4-blockmap ] || [ "$variant" = ext4-extents ] \
     || [ "$variant" = ext4-csum ] || [ "$variant" = ext4-csum64 ] \
-    || [ "$variant" = ext4-htree ] || [ "$variant" = ext4-htree-gdtcsum ]; then
+    || [ "$variant" = ext4-htree ] || [ "$variant" = ext4-htree-gdtcsum ] \
+    || [ "$variant" = ext4-nojournal ] || [ "$variant" = ext4-mixed ]; then
     # Exit status 1 means e2fsck changed the volume, as -D asks.
     status=0
     "$tools/e2fsck" -fyD "$volume" >"$work/log" 2>&1 || status=$?
@@ -223,6 +237,13 @@ if [ "$variant" = ext4-64bit ] || [ "$variant" = ext4-csum64 ]; then
     if ! "$tools/tune2fs" -O extent "$volume" >"$work/log" 2>&1 \
         || ! "$tools/resize2fs" -b "$volume" >"$work/log" 2>&1 \
         || ! "$debugfs" -w -R "feature -extent" "$volume" >"$work/log" 2>&1; then
+        cat "$work/log" >&2
+        exit 1
+    fi
+fi
+
+if [ "$variant" = ext4-mixed ]; then
+    if ! "$tools/tune2fs" -O extent "$volume" >"$work/log" 2>&1; then
         cat "$work/log" >&2
         exit 1
     fi
