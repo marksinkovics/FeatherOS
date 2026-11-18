@@ -16,7 +16,7 @@ You implement one FeatherOS step that the coordinator describes in its prompt. T
 
 ## Tests
 
-- While working: unit tests, then the affected QEMU modes on x86-64 only (`tools/check.sh --arch x86_64 --modes "<modes>"`).
+- While working: only the tests of what you change: the test binary with a Catch2 name or tag filter, and the affected QEMU mode on x86-64 only (`tools/check.sh --arch x86_64 --modes "<modes>"`). The full `./build.sh unit-test` takes minutes under ASan; run it once, before reporting.
 - Before reporting, once: `bash tools/quality.sh check` clean after building both architectures with `KERNEL_TESTS=ON`, then `tools/check.sh --arch both --modes "<modes>"`. Never run the matrix; the coordinator runs it.
 - Add tests for the new behaviour: a host unit test where the logic can be tested on the host, and a QEMU case or smoke check on both architectures.
 - On a failure, read `build/check/`, `build/<arch>/smoke-output.txt` or `build/matrix/<case>/` instead of re-running.
