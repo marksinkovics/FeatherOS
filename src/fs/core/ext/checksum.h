@@ -50,6 +50,11 @@ bool StoreIndexBlockChecksum(std::span<std::uint8_t> block, std::uint32_t inode_
 // h_checksum of an extended attribute block, seeded by the volume and the block's number.
 std::uint32_t AttributeBlockChecksum(std::uint32_t volume_seed, std::uint64_t block_number,
                                      std::span<const std::uint8_t> block);
+// An orphan file block's ob_checksum: the orphan file's inode seed, then the block's number on
+// the volume (little-endian, 64 bits), then the block's slots (all but its 8-byte tail).
+std::uint32_t OrphanBlockChecksum(std::uint32_t volume_seed, std::uint32_t orphan_inode,
+                                  std::uint32_t generation, std::uint64_t block_number,
+                                  std::span<const std::uint8_t> slots);
 // An extent tree block's tail follows its header's eh_max entries; nullopt when it would not fit.
 std::optional<std::size_t> ExtentTailOffset(std::span<const std::uint8_t> block);
 // What the tail at offset (from ExtentTailOffset) must hold.

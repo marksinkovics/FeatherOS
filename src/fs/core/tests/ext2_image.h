@@ -77,6 +77,10 @@ ToolRun PreenWithE2fsck(MemoryDevice& device, std::string_view name);
 // name of a directory, and a ".." that still names the old parent. With indexes, the blocks of a
 // hash index a directory was dropping, which stop e2fsck -n until preen mode salvages them.
 bool OnlyRoutineRepairs(const std::string& report, bool renames = false, bool indexes = false);
+// e2fsck -fy: what it repairs, orphans included, read back into the device.
+ToolRun FixWithE2fsck(MemoryDevice& device, std::string_view name);
+// The "Free blocks" and "Free inodes" line of every group in dumpe2fs's output.
+std::string FreeRangesOf(MemoryDevice& device, std::string_view name);
 // debugfs -R command over the device's bytes: what it printed on standard output.
 ToolRun RunDebugfs(MemoryDevice& device, std::string_view name, std::string_view command);
 // debugfs -w -R command, with the changed volume read back into the device.

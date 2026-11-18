@@ -43,6 +43,8 @@
 #   ext4-journal-gdtcsum  ext4 in 1 KiB blocks with CRC16 group descriptor checksums (uninit_bg)
 #               instead of metadata_csum, so its journal has 64-bit block numbers and no checksums
 #   ext4-4k     mke2fs's default ext4 in 4 KiB blocks, 16 MiB, with a journal of 1024 blocks
+#   ext3-groups ext3 in four groups of 2048 blocks (1 KiB blocks), so a file's blocks lie in more
+#               than one group; its orphans go on the s_last_orphan list
 #
 #   sh make_ext2_image.sh <mke2fs> <debugfs> <image> <variant>
 #
@@ -176,6 +178,7 @@ case "$variant" in
         options="-t ext4 -b 4096"
         size=16M
         ;;
+    ext3-groups) options="-t ext3 -b 1024 -I 256 -g 2048" ;;
     ext4-nojournal)
         options="-t ext4 -b 1024 -N 6144 -O ^has_journal"
         size=32M
@@ -267,7 +270,7 @@ fi
     printf 'sif /slow-link mode 0120777\n'
     case "$variant" in
         # 4000 >> 2: 1000 nanoseconds, with no extra epoch bits.
-        4k | nofiletype | ext3 | ext4 | ext4-*) printf 'sif /hello.txt mtime_extra 4000\n' ;;
+        4k | nofiletype | ext3 | ext3-groups | ext4 | ext4-*) printf 'sif /hello.txt mtime_extra 4000\n' ;;
     esac
 } >"$work/commands"
 # debugfs echoes each command after "debugfs:" and exits 0 even when one fails, so any other line

@@ -349,6 +349,31 @@ ToolRun PreenWithE2fsck(MemoryDevice& device, std::string_view name)
     return E2fsck(device, name, "-fp", true);
 }
 
+ToolRun FixWithE2fsck(MemoryDevice& device, std::string_view name)
+{
+    return E2fsck(device, name, "-fy", true);
+}
+
+std::string FreeRangesOf([[maybe_unused]] MemoryDevice& device,
+                         [[maybe_unused]] std::string_view name)
+{
+#ifdef FEATHERDISK_DEBUGFS
+    const std::string tool = std::string(FEATHERDISK_DEBUGFS);
+    const std::string image = WorkPath(name) + ".img";
+    const std::string output = image + ".dumpe2fs.txt";
+    SaveImage(device, image);
+    const ToolRun run =
+        Run("\"" + tool.substr(0, tool.rfind('/') + 1) + "dumpe2fs\" \"" + image +
+                "\" 2>/dev/null | grep -E '^  (Free blocks|Free inodes):' > \"" + output + "\"",
+            output);
+    std::remove(output.c_str());
+    std::remove(image.c_str());
+    return run.output;
+#else
+    return {};
+#endif
+}
+
 void CheckClean(MemoryDevice& device, std::string_view name)
 {
     const ToolRun run = RunE2fsck(device, name);

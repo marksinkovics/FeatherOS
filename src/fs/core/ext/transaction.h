@@ -161,6 +161,10 @@ struct Ext2Filesystem::JournalState
     std::size_t step_new;
     Superblock step_superblock;
     bool overflowed;
+    // The activity counters as the step began, which a rolled back step does not count.
+    std::uint32_t step_orphans_added;
+    // The last failed step overflowed with nothing else running.
+    bool overflowed_alone;
     bool aborted;
     // The superblock changed outside a step and must be in the next transaction.
     bool superblock_dirty;

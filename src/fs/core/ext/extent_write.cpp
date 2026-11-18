@@ -554,6 +554,22 @@ Status Ext2Filesystem::ShrinkExtents(NodeId node, Inode& inode, std::uint64_t ke
     }
 }
 
+Result<std::uint64_t> Ext2Filesystem::ExtentMappedEnd(const Inode& inode)
+{
+    Buffers tree(block_size, ExtentBuffers);
+    if (tree.Empty())
+    {
+        return std::unexpected(Error::OutOfMemory);
+    }
+    ExtentPath path{};
+    if (const Status found = FindExtentPath(inode, ExtentLogicalEnd - 1, path, tree); !found)
+    {
+        return Failure(found);
+    }
+    const ExtentLevel& leaf = path.levels[path.depth];
+    return leaf.entries == 0 ? std::uint64_t{0} : EndOf(ExtentAt(leaf.node, leaf.entries - 1));
+}
+
 // tree[depth] holds the nodes of each depth below the root on the way down.
 Status Ext2Filesystem::FreeExtentSubtree(const Inode& inode, std::span<const std::uint8_t> node,
                                          std::uint16_t depth, Buffers& tree, FreeCursor& frees)

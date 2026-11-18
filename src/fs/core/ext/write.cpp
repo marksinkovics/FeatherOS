@@ -47,7 +47,6 @@ constexpr std::size_t DotDotOffset = 12;
 // Three each: the indirect blocks on the way to a shrinking file's new end, as read and as cut.
 constexpr std::size_t ShrinkOriginals = 6;
 constexpr std::size_t ShrinkChanged = 9;
-constexpr std::size_t ShrinkBuffers = 12;
 
 std::uint32_t LoadPointer(std::span<const std::uint8_t> block, std::uint32_t index)
 {
@@ -92,6 +91,23 @@ void ReleaseBytes(Inode& inode, std::uint64_t bytes)
 }
 
 } // namespace
+
+Result<std::uint64_t> Ext2Filesystem::MappedEnd(const Inode& inode)
+{
+    if ((inode.flags & InodeExtents) != 0)
+    {
+        return ExtentMappedEnd(inode);
+    }
+    // An upper bound: the reach of the last tree the inode points to.
+    for (std::uint32_t root = BlockPointers; root-- > 0;)
+    {
+        if (inode.Block(root) != 0)
+        {
+            return RootFirst(root, pointers_per_block) + Span(RootDepth(root), pointers_per_block);
+        }
+    }
+    return std::uint64_t{0};
+}
 
 Timestamp Ext2Filesystem::Now() const
 {
@@ -626,12 +642,16 @@ Result<std::uint64_t> Ext2Filesystem::ShrinkIndirect(std::uint32_t block, std::u
     return freed;
 }
 
-Status Ext2Filesystem::ShrinkBlocks(NodeId node, Inode& inode, std::uint64_t size, Buffers& buffers)
+Status Ext2Filesystem::ShrinkBlocks(NodeId node, Inode& inode, std::uint64_t size, bool size_stored,
+                                    Buffers& buffers)
 {
     const std::span<std::uint8_t> scratch = buffers[ScratchBuffer];
-    if (const Status zeroed = ZeroFrom(inode, size, scratch); !zeroed)
+    if (!size_stored)
     {
-        return zeroed;
+        if (const Status zeroed = ZeroFrom(inode, size, scratch); !zeroed)
+        {
+            return zeroed;
+        }
     }
     const std::uint64_t keep = DivideRoundingUp(size, block_size);
     const std::uint64_t per_block = pointers_per_block;
@@ -671,10 +691,13 @@ Status Ext2Filesystem::ShrinkBlocks(NodeId node, Inode& inode, std::uint64_t siz
                 inode.SetBlock(root, 0);
             }
         }
-        const Timestamp now = Now();
-        inode.size = size;
-        inode.modify_time = now;
-        inode.change_time = now;
+        if (!size_stored)
+        {
+            const Timestamp now = Now();
+            inode.size = size;
+            inode.modify_time = now;
+            inode.change_time = now;
+        }
         ReleaseBytes(inode, freed * block_size);
         status = StoreInode(node, inode, false, scratch);
     }
@@ -955,7 +978,8 @@ Status Ext2Filesystem::AddEntry(NodeId directory, Inode& inode, std::optional<Re
 }
 
 Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
-                                              std::span<const std::uint8_t> data)
+                                              std::span<const std::uint8_t> data, bool keep_size,
+                                              bool zeroed)
 {
     if (IsReserved(file))
     {
@@ -1003,11 +1027,11 @@ Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
     {
         return Failure(begun);
     }
-    if (offset > inode.size)
+    if (offset > inode.size && !zeroed)
     {
-        if (const Status zeroed = ZeroFrom(inode, inode.size, scratch); !zeroed)
+        if (const Status cleared = ZeroFrom(inode, inode.size, scratch); !cleared)
         {
-            return Failure(zeroed);
+            return Failure(cleared);
         }
     }
     if (extent_mapped)
@@ -1016,7 +1040,7 @@ Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
         // past it are mapped; a crash leaves a file ending in a hole.
         const std::uint64_t size = inode.size;
         const std::uint64_t end = offset + data.size();
-        if (end > size)
+        if (end > size && !keep_size)
         {
             inode.size = end;
             if (const Status large = SetLargeFile(end, scratch); !large)
@@ -1031,12 +1055,12 @@ Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
         std::size_t written = 0;
         const std::uint64_t allocated = inode.allocated_bytes;
         const Status failure = WriteExtentFile(file, inode, offset, data, buffers, written);
-        inode.size = offset + written > size ? offset + written : size;
-        if (written == 0 && inode.allocated_bytes == allocated && end <= size)
+        inode.size = offset + written > size && !keep_size ? offset + written : size;
+        if (written == 0 && inode.allocated_bytes == allocated && (end <= size || keep_size))
         {
             return Failure(failure);
         }
-        return FinishWrite(file, inode, offset, written, failure, scratch);
+        return FinishWrite(file, inode, offset, written, failure, keep_size, scratch);
     }
 
     // Blocks go after the file's block before the write, or at the start of its inode's group.
@@ -1125,16 +1149,16 @@ Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
         return Failure(flushed);
     }
     inode.allocated_bytes += cursor.allocated * block_size;
-    return FinishWrite(file, inode, offset, written, failure, scratch);
+    return FinishWrite(file, inode, offset, written, failure, keep_size, scratch);
 }
 
 Result<std::size_t> Ext2Filesystem::FinishWrite(NodeId file, Inode& inode, std::uint64_t offset,
-                                                std::size_t written, Status failure,
+                                                std::size_t written, Status failure, bool keep_size,
                                                 std::span<std::uint8_t> scratch)
 {
     if (written > 0)
     {
-        if (offset + written > inode.size)
+        if (offset + written > inode.size && !keep_size)
         {
             inode.size = offset + written;
         }
@@ -1222,7 +1246,7 @@ Status Ext2Filesystem::TruncateFile(NodeId file, std::uint64_t size)
     }
     if (size < inode.size)
     {
-        return ShrinkBlocks(file, inode, size, buffers);
+        return ShrinkBlocks(file, inode, size, false, buffers);
     }
     // Growing leaves a hole: nothing is allocated.
     if (const Status zeroed = ZeroFrom(inode, inode.size, scratch); !zeroed)
@@ -1312,7 +1336,12 @@ Result<std::size_t> Ext2Filesystem::Write(NodeId file, std::uint64_t offset,
     {
         return Refused();
     }
-    return Journalled([&] { return WriteFile(file, offset, data); });
+    Result<std::size_t> result = Journalled([&] { return WriteFile(file, offset, data); });
+    if (!result && result.error() == Error::NoSpace && OverflowedAlone())
+    {
+        return WriteSplit(file, offset, data);
+    }
+    return result;
 }
 
 Status Ext2Filesystem::Truncate(NodeId file, std::uint64_t size)
@@ -1321,7 +1350,12 @@ Status Ext2Filesystem::Truncate(NodeId file, std::uint64_t size)
     {
         return Refused();
     }
-    return Journalled([&] { return TruncateFile(file, size); });
+    const Status result = Journalled([&] { return TruncateFile(file, size); });
+    if (!result && result.error() == Error::NoSpace && OverflowedAlone())
+    {
+        return TruncateSplit(file, size);
+    }
+    return result;
 }
 
 Status Ext2Filesystem::Sync()

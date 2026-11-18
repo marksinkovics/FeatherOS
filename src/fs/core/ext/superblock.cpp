@@ -76,6 +76,7 @@ Superblock DecodeSuperblock(std::span<const std::uint8_t, SuperblockSize> bytes)
         .backup_groups = {},
         .journal_inode = 0,
         .last_orphan = 0,
+        .orphan_file_inode = 0,
         .log_groups_per_flex = 0,
         .checksum_matches = true,
     };
@@ -116,6 +117,7 @@ Superblock DecodeSuperblock(std::span<const std::uint8_t, SuperblockSize> bytes)
         superblock.backup_groups = {Load32(raw + 588), Load32(raw + 592)};
         superblock.journal_inode = Load32(raw + 224);
         superblock.last_orphan = Load32(raw + 232);
+        superblock.orphan_file_inode = Load32(raw + 640);
         superblock.log_groups_per_flex = raw[372];
         if (HasMetadataChecksums(superblock))
         {
@@ -208,6 +210,7 @@ void EncodeSuperblockState(const Superblock& superblock,
     {
         StoreLittleEndian(raw + SuperblockIncompatibleOffset, superblock.incompatible);
         StoreLittleEndian(raw + 100, superblock.read_only_compatible);
+        StoreLittleEndian(raw + 232, superblock.last_orphan);
     }
     if ((superblock.incompatible & Incompatible64Bit) != 0)
     {

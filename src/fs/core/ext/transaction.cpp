@@ -415,7 +415,8 @@ std::uint64_t BlockSet::At(std::size_t index) const
 Ext2Filesystem::JournalState::JournalState(std::uint32_t block_size)
     : log{}, first(0), end(0), head(0), used(0), sequence(0), limits{}, step(block_size),
       running(block_size), committed(block_size), step_new(0), step_superblock{}, overflowed(false),
-      aborted(false), superblock_dirty(false), activity{}
+      step_orphans_added(0), overflowed_alone(false), aborted(false), superblock_dirty(false),
+      activity{}
 {
 }
 
@@ -644,7 +645,14 @@ Status Ext2Filesystem::BeginStep()
     journal->step_superblock = superblock;
     journal->step_new = 0;
     journal->overflowed = false;
+    journal->overflowed_alone = false;
+    journal->step_orphans_added = journal->activity.orphans_added;
     return {};
+}
+
+bool Ext2Filesystem::OverflowedAlone() const
+{
+    return journal != nullptr && journal->overflowed_alone && !journal->aborted;
 }
 
 Status Ext2Filesystem::EndStep()
@@ -746,6 +754,7 @@ void Ext2Filesystem::AbortStep()
     state.step_freed_groups.Clear();
     state.step_new = 0;
     state.overflowed = false;
+    state.activity.orphans_added = state.step_orphans_added;
 }
 
 Error Ext2Filesystem::FailStep(Error error, bool may_retry, bool& retry)
@@ -768,6 +777,7 @@ Error Ext2Filesystem::FailStep(Error error, bool may_retry, bool& retry)
     }
     if (overflow)
     {
+        state.overflowed_alone = true;
         return Error::NoSpace;
     }
     NoteError(error);

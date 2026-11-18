@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <vector>
 
 namespace FeatherDisk::Tests
 {
@@ -38,6 +39,8 @@ public:
     bool read_only = false;
     std::uint32_t flush_count = 0;
     std::uint64_t write_count = 0;
+    // write_count at each Flush, which marks where a commit or checkpoint reached the device.
+    std::vector<std::uint64_t> flush_writes;
 
 private:
     bool Covers(std::uint64_t first_sector, std::size_t byte_count) const;

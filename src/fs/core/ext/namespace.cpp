@@ -337,7 +337,8 @@ Status Ext2Filesystem::CheckOutside(NodeId directory, NodeId moving, Buffers& bu
 // With no links and a deletion time, e2fsck counts an inode free whatever it still points to, so
 // it is written so before its blocks and itself go back to the bitmaps. A directory's ".." stops
 // linking its parent at that point too, and only then leaves the parent's count.
-Status Ext2Filesystem::DropLink(NodeId node, const Node& loaded, NodeId parent, Buffers& buffers)
+Status Ext2Filesystem::DropLink(NodeId node, const Node& loaded, NodeId parent, Buffers& buffers,
+                                std::optional<OrphanedInode>* orphaned)
 {
     Inode inode = loaded.inode;
     const Timestamp now = Now();
@@ -347,6 +348,23 @@ Status Ext2Filesystem::DropLink(NodeId node, const Node& loaded, NodeId parent, 
     {
         --inode.link_count;
         return StoreInode(node, inode, false, buffers[ScratchBuffer]);
+    }
+    // Without links and listed as an orphan, the inode keeps its contents until ReleaseSplit has
+    // freed them in steps of their own.
+    if (!directory && orphaned != nullptr)
+    {
+        inode.link_count = 0;
+        const Result<OrphanEntry> entry = AddOrphan(node, inode);
+        if (!entry)
+        {
+            return Failure(entry);
+        }
+        if (const Status stored = StoreInode(node, inode, false, buffers[ScratchBuffer]); !stored)
+        {
+            return stored;
+        }
+        *orphaned = OrphanedInode{.node = node, .entry = *entry};
+        return {};
     }
     // An empty directory's two links, its entry and its own ".", go together.
     inode.link_count = 0;
@@ -570,7 +588,8 @@ Result<NodeId> Ext2Filesystem::CreateNode(NodeId directory, std::string_view nam
     return Failure(status);
 }
 
-Status Ext2Filesystem::RemoveNode(NodeId directory, std::string_view name, bool directory_wanted)
+Status Ext2Filesystem::RemoveNode(NodeId directory, std::string_view name, bool directory_wanted,
+                                  std::optional<OrphanedInode>* orphaned)
 {
     if (IsDots(name))
     {
@@ -671,7 +690,7 @@ Status Ext2Filesystem::RemoveNode(NodeId directory, std::string_view name, bool 
             return stored;
         }
     }
-    return DropLink(target, *node, directory, buffers);
+    return DropLink(target, *node, directory, buffers, orphaned);
 }
 
 Status Ext2Filesystem::LinkNode(NodeId node, NodeId directory, std::string_view name)
@@ -760,7 +779,8 @@ Status Ext2Filesystem::LinkNode(NodeId node, NodeId directory, std::string_view 
 }
 
 Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_name,
-                                  NodeId to_directory, std::string_view to_name)
+                                  NodeId to_directory, std::string_view to_name,
+                                  std::optional<OrphanedInode>* orphaned)
 {
     if (IsDots(from_name) || IsDots(to_name))
     {
@@ -1027,7 +1047,7 @@ Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_n
     {
         return Failure(existing);
     }
-    return DropLink(replaced_inode, *existing, to_directory, buffers);
+    return DropLink(replaced_inode, *existing, to_directory, buffers, orphaned);
 }
 
 Result<NodeId> Ext2Filesystem::Create(NodeId directory, std::string_view name, std::uint32_t mode)
@@ -1086,7 +1106,24 @@ Status Ext2Filesystem::Remove(NodeId directory, std::string_view name)
     {
         return Refused();
     }
-    return Journalled([&] { return RemoveNode(directory, name, false); });
+    const Status plain = Journalled([&] { return RemoveNode(directory, name, false); });
+    if (plain || plain.error() != Error::NoSpace || !OverflowedAlone())
+    {
+        return plain;
+    }
+    std::optional<OrphanedInode> orphaned;
+    const Status first = Journalled(
+        [&]
+        {
+            orphaned.reset();
+            return RemoveNode(directory, name, false, &orphaned);
+        });
+    if (!first || !orphaned)
+    {
+        return first;
+    }
+    NoteSplit();
+    return ReleaseSplit(orphaned->node, orphaned->entry);
 }
 
 Status Ext2Filesystem::RemoveDirectory(NodeId directory, std::string_view name)
@@ -1105,7 +1142,25 @@ Status Ext2Filesystem::Rename(NodeId from_directory, std::string_view from_name,
     {
         return Refused();
     }
-    return Journalled([&] { return RenameNode(from_directory, from_name, to_directory, to_name); });
+    const Status plain =
+        Journalled([&] { return RenameNode(from_directory, from_name, to_directory, to_name); });
+    if (plain || plain.error() != Error::NoSpace || !OverflowedAlone())
+    {
+        return plain;
+    }
+    std::optional<OrphanedInode> orphaned;
+    const Status first = Journalled(
+        [&]
+        {
+            orphaned.reset();
+            return RenameNode(from_directory, from_name, to_directory, to_name, &orphaned);
+        });
+    if (!first || !orphaned)
+    {
+        return first;
+    }
+    NoteSplit();
+    return ReleaseSplit(orphaned->node, orphaned->entry);
 }
 
 Status Ext2Filesystem::Link(NodeId node, NodeId directory, std::string_view name)

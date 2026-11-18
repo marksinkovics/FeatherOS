@@ -38,6 +38,9 @@ constexpr std::size_t BitmapBuffer = 2;
 // Three: the indirect blocks a MapCursor holds, or those FreeTree walks.
 constexpr std::size_t LevelBuffers = 3;
 constexpr std::size_t ChangeBuffers = 6;
+// What ShrinkBlocks takes: three each for the indirect blocks as read and as cut, and the six of a
+// change.
+constexpr std::size_t ShrinkBuffers = 12;
 
 // A warning for the host's log: message, then a detail or value as eight hexadecimal digits.
 void LogWarning(std::string_view message, std::string_view detail);
@@ -197,6 +200,33 @@ struct ExtentEdit
     std::array<std::uint64_t, 2 * (MaximumExtentDepth + 1)> fresh;
     std::size_t fresh_count;
     bool committing;
+};
+
+// The tail of an orphan file block: ob_magic, then ob_checksum, both little-endian.
+constexpr std::uint32_t OrphanBlockMagic = 0x0B10CA04;
+constexpr std::size_t OrphanTailSize = 8;
+std::size_t OrphansPerBlock(std::uint32_t block_size);
+
+// Where an inode is listed as one a crash may leave unfinished: a slot of the orphan file (its
+// logical block and the slot in it), or the s_last_orphan list.
+enum class OrphanPlace : std::uint8_t
+{
+    File,
+    List,
+};
+
+struct OrphanEntry
+{
+    OrphanPlace place;
+    std::uint64_t logical;
+    std::size_t slot;
+};
+
+// An unlinked inode whose release a split change leaves to ReleaseSplit.
+struct OrphanedInode
+{
+    NodeId node;
+    OrphanEntry entry;
 };
 
 // In blocks: the footprint a transaction reaches before the next change commits it, the most one
@@ -415,6 +445,9 @@ private:
     Status BeginStep();
     Status EndStep();
     void AbortStep();
+    // The step that just failed overflowed the transaction with nothing else running in it, so
+    // the change may be split into several.
+    bool OverflowedAlone() const;
     // Rolls a failed step back. retry is set when the change should run again, now alone;
     // otherwise the result is the error to report.
     Error FailStep(Error error, bool may_retry, bool& retry);
@@ -434,6 +467,39 @@ private:
     void AbortJournal(std::string_view why);
     // Runs change as one step of a transaction (or plainly on a volume without a journal).
     template <typename Change> auto Journalled(Change change) -> decltype(change());
+
+    // Orphans and split changes (orphan.cpp).
+    bool HasOrphanFile() const;
+    void NoteSplit();
+    // The orphan file's inode, checked to be a regular file of whole blocks.
+    Result<Inode> LoadOrphanFile(std::span<std::uint8_t> scratch);
+    // Its logical block's place on the volume; Corrupt for a hole.
+    Result<std::uint64_t> OrphanBlockPlace(const Inode& file, std::uint64_t logical,
+                                           std::span<std::uint8_t> scratch);
+    bool OrphanBlockMatches(const Inode& file, std::uint64_t place,
+                            std::span<const std::uint8_t> block) const;
+    void StoreOrphanTail(const Inode& file, std::uint64_t place,
+                         std::span<std::uint8_t> block) const;
+    Result<OrphanEntry> AddOrphan(NodeId node, Inode& inode);
+    Status RemoveOrphan(NodeId node, Inode& inode, const OrphanEntry& entry);
+    // Clears orphan_present when no slot holds an inode.
+    Status UpdateOrphanPresent();
+    Status CheckOrphans(Buffers& buffers);
+    Status ProcessOrphans();
+    Status ProcessOrphan(NodeId node, const OrphanEntry& entry);
+    // The end of what an inode maps: no block at or past it is mapped.
+    Result<std::uint64_t> MappedEnd(const Inode& inode);
+    Status ShrinkTo(NodeId node, Inode& inode, std::uint64_t keep, Buffers& buffers);
+    // Frees the blocks from keep on in steps of ever fewer blocks; the step that reaches keep
+    // also removes entry, when there is one.
+    Status ShrinkSplit(NodeId node, std::uint64_t keep, const OrphanEntry* entry);
+    Status ShrinkPiece(NodeId node, std::uint64_t keep, const OrphanEntry* entry);
+    Status ReleaseSplit(NodeId node, const OrphanEntry& entry);
+    Status FinishRelease(NodeId node, const OrphanEntry& entry);
+    Status TruncateSplit(NodeId file, std::uint64_t size);
+    Result<std::size_t> WriteSplit(NodeId file, std::uint64_t offset,
+                                   std::span<const std::uint8_t> data);
+    Status FinishWriteSplit(NodeId file, std::uint64_t size, const OrphanEntry& entry);
 
     // Changes (write.cpp).
     Timestamp Now() const;
@@ -474,7 +540,9 @@ private:
     Result<std::uint64_t> ShrinkIndirect(std::uint32_t block, std::uint32_t depth,
                                          std::uint64_t first, std::uint64_t keep,
                                          std::uint32_t level, Buffers& buffers, FreeCursor& frees);
-    Status ShrinkBlocks(NodeId node, Inode& inode, std::uint64_t size, Buffers& buffers);
+    // size_stored: the inode already holds the new size, and the last block is already zeroed.
+    Status ShrinkBlocks(NodeId node, Inode& inode, std::uint64_t size, bool size_stored,
+                        Buffers& buffers);
     Status ReleaseAttributeBlock(std::uint32_t block, FreeCursor& frees,
                                  std::span<std::uint8_t> scratch);
     // The header Linux requires (magic, one block) and, with metadata_csum, the checksum.
@@ -507,6 +575,8 @@ private:
     Status FreeExtentSubtree(const Inode& inode, std::span<const std::uint8_t> node,
                              std::uint16_t depth, Buffers& tree, FreeCursor& frees);
     Status ReleaseExtents(const Inode& inode, FreeCursor& frees);
+    // One past the last logical block an extent-mapped file maps; 0 for none.
+    Result<std::uint64_t> ExtentMappedEnd(const Inode& inode);
     // Writes count blocks of a file's data from logical on to blocks from physical on, taking
     // the bytes of data that fall in them; the other bytes are read first, or zeros when fresh.
     Status WriteDataBlocks(std::uint64_t physical, std::uint64_t logical, std::uint64_t count,
@@ -521,11 +591,15 @@ private:
                              Buffers& buffers);
 
     // The size and times after written bytes, and the inode with them.
+    // keep_size: the size stays as it is, for a piece of a split write whose orphan entry stands in
+    // for it.
     Result<std::size_t> FinishWrite(NodeId file, Inode& inode, std::uint64_t offset,
-                                    std::size_t written, Status failure,
+                                    std::size_t written, Status failure, bool keep_size,
                                     std::span<std::uint8_t> scratch);
+    // zeroed: what lay between the old end and the write is zeroed already, by an earlier piece.
     Result<std::size_t> WriteFile(NodeId file, std::uint64_t offset,
-                                  std::span<const std::uint8_t> data);
+                                  std::span<const std::uint8_t> data, bool keep_size = false,
+                                  bool zeroed = false);
     Status TruncateFile(NodeId file, std::uint64_t size);
     Status ChangeAttributes(NodeId node, const AttributeChanges& changes);
 
@@ -557,12 +631,16 @@ private:
     Status CheckOutside(NodeId directory, NodeId moving, Buffers& buffers);
     // One link fewer for a node whose entry is gone; the last frees it, and a directory's last
     // also takes its ".." out of parent's count.
-    Status DropLink(NodeId node, const Node& loaded, NodeId parent, Buffers& buffers);
+    // With orphaned, the last link of a file or link takes it to the orphan list instead of
+    // releasing it in this step.
+    Status DropLink(NodeId node, const Node& loaded, NodeId parent, Buffers& buffers,
+                    std::optional<OrphanedInode>* orphaned = nullptr);
     Result<NodeId> CreateNode(NodeId directory, std::string_view name, std::uint16_t mode,
                               std::string_view target);
-    Status RemoveNode(NodeId directory, std::string_view name, bool directory_wanted);
+    Status RemoveNode(NodeId directory, std::string_view name, bool directory_wanted,
+                      std::optional<OrphanedInode>* orphaned = nullptr);
     Status RenameNode(NodeId from_directory, std::string_view from_name, NodeId to_directory,
-                      std::string_view to_name);
+                      std::string_view to_name, std::optional<OrphanedInode>* orphaned = nullptr);
     Status LinkNode(NodeId node, NodeId directory, std::string_view name);
 
     BlockDevice& volume;

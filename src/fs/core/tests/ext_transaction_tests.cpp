@@ -484,14 +484,16 @@ TEST_CASE("ext3 and ext4 volumes with an internal journal mount writable, the ot
              raw.Store32(SuperblockStart + 100, raw.Load32(SuperblockStart + 100) | 0x10000U);
              UpdateSuperblock(bytes);
          }},
-        {"orphan inodes left by a crash (s_last_orphan)",
+        {"a free inode on the orphan list (s_last_orphan)",
          [](std::vector<std::uint8_t>& bytes)
          {
              const std::unique_ptr<MemoryDevice> device = DeviceFrom(bytes);
-             REQUIRE(ChangeWithDebugfs(*device, "transaction-last-orphan", "ssv last_orphan 15")
+             const std::uint32_t last = RawVolume{bytes}.InodeCount();
+             REQUIRE(ChangeWithDebugfs(*device, "transaction-last-orphan",
+                                       "ssv last_orphan " + std::to_string(last))
                          .status == 0);
              bytes = BytesOf(*device);
-             REQUIRE(RawVolume{bytes}.Load32(SuperblockStart + 232) == 15);
+             REQUIRE(RawVolume{bytes}.Load32(SuperblockStart + 232) == last);
          }},
         {"journal inode that is a directory",
          [](std::vector<std::uint8_t>& bytes)
@@ -505,6 +507,11 @@ TEST_CASE("ext3 and ext4 volumes with an internal journal mount writable, the ot
         for (const Case& refusal : refusals)
         {
             INFO(variant << ": " << refusal.name);
+            // With the orphan file and nothing in it, the flag is cleared by a writable mount.
+            if (variant == "ext4" && refusal.name.starts_with("orphans left by another system"))
+            {
+                continue;
+            }
             std::vector<std::uint8_t> bytes = LoadExtImage(variant);
             refusal.change(bytes);
             const std::unique_ptr<MemoryDevice> device = DeviceFrom(bytes);
@@ -1183,11 +1190,12 @@ TEST_CASE("a change that overflows the transaction commits what runs and retries
         const char* name;
     };
     // Freed blocks are dropped, not written, so a transaction that frees a file's blocks holds few:
-    // the limit of three blocks is what a truncation or removal does not fit in, a name in a
-    // hashed directory with checksums needs its index blocks converted, and a write maps blocks.
+    // one block (the superblock) is what even the first piece of a split truncation or removal
+    // does not fit in, a name in a hashed directory with checksums needs its index
+    // blocks converted, and a write maps blocks.
     for (const Case& which :
-         {Case{"ext3", 3, "a 2 MiB write"}, Case{"ext3", 3, "a truncation"},
-          Case{"ext3", 3, "a removal"}, Case{"ext4-extents", 7, "a name in a hashed directory"}})
+         {Case{"ext3", 3, "a 2 MiB write"}, Case{"ext3", 1, "a truncation"},
+          Case{"ext3", 1, "a removal"}, Case{"ext4-extents", 7, "a name in a hashed directory"}})
     {
         INFO(which.image << ": " << which.name);
         std::vector<std::uint8_t> original = LoadExtImage(which.image);

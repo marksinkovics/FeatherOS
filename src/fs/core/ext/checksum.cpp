@@ -247,6 +247,16 @@ std::uint32_t AttributeBlockChecksum(std::uint32_t volume_seed, std::uint64_t bl
     return Crc32c(crc, block.subspan(AttributeChecksumOffset + 4));
 }
 
+std::uint32_t OrphanBlockChecksum(std::uint32_t volume_seed, std::uint32_t orphan_inode,
+                                  std::uint32_t generation, std::uint64_t block_number,
+                                  std::span<const std::uint8_t> slots)
+{
+    std::array<std::uint8_t, 8> number{};
+    StoreLittleEndian(number.data(), block_number);
+    const std::uint32_t seed = InodeChecksumSeed(volume_seed, orphan_inode, generation);
+    return Crc32c(Crc32c(seed, number), slots);
+}
+
 std::optional<std::size_t> ExtentTailOffset(std::span<const std::uint8_t> block)
 {
     if (block.size() < ExtentHeaderSize)

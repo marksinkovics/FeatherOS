@@ -34,6 +34,7 @@ add_library(featherdisk_core STATIC
     ext/inode.cpp
     ext/journal.cpp
     ext/namespace.cpp
+    ext/orphan.cpp
     ext/recovery.cpp
     ext/superblock.cpp
     ext/transaction.cpp
@@ -131,7 +132,7 @@ if (FEATHERDISK_SH AND FEATHERDISK_MKE2FS AND FEATHERDISK_DEBUGFS)
     file(MAKE_DIRECTORY "${featherdisk_ext_image_directory}")
     foreach (variant 1k 4k nofiletype rev0 groups mbr ext3 ext4 ext4-extents ext4-blockmap
              ext4-64bit ext4-gdtcsum ext4-csum ext4-csum64 ext4-htree ext4-htree-gdtcsum
-             ext4-nojournal ext4-mixed ext4-journal-gdtcsum ext4-4k)
+             ext4-nojournal ext4-mixed ext4-journal-gdtcsum ext4-4k ext3-groups)
         set(image "${featherdisk_ext_image_directory}/${variant}.img")
         add_custom_command(
             OUTPUT "${image}"
@@ -183,6 +184,7 @@ add_executable(featherdisk_core_tests
     tests/ext4_write_tests.cpp
     tests/ext_journal_tests.cpp
     tests/ext_journal_write_tests.cpp
+    tests/ext_orphan_tests.cpp
     tests/ext_transaction_tests.cpp
     tests/fat_image.cpp
     tests/fat_mtools_tests.cpp

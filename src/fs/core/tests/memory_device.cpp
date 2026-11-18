@@ -68,6 +68,7 @@ Status MemoryDevice::Write(std::uint64_t first_sector, std::span<const std::uint
 Status MemoryDevice::Flush()
 {
     ++flush_count;
+    flush_writes.push_back(write_count);
     return {};
 }
 

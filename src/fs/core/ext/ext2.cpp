@@ -72,12 +72,18 @@ Result<Superblock> ReadSuperblock(BlockDevice& volume)
 
 // Why a volume this driver reads must not be written, or nullopt. ext2 and ext4's layouts are
 // written, extents and an internal journal included; StartJournal refuses the journals it cannot
-// write.
+// write, and CheckOrphans the orphans it cannot trust. A volume without a journal has nothing to
+// finish orphans with.
 std::optional<std::string_view> WriteRefusal(const Superblock& superblock)
 {
-    const std::uint32_t orphan_file =
-        (superblock.compatible & CompatibleHasJournal) != 0 ? CompatibleOrphanFile : 0;
-    if ((superblock.compatible & CompatibleHasJournal) != 0 && superblock.last_orphan != 0)
+    const bool journalled = (superblock.compatible & CompatibleHasJournal) != 0;
+    const std::uint32_t orphan_file = journalled ? CompatibleOrphanFile : 0;
+    // Only a mount with a journal and the orphan file keeps orphan_present right.
+    const std::uint32_t orphan_present =
+        journalled && (superblock.compatible & CompatibleOrphanFile) != 0
+            ? ReadOnlyCompatibleOrphanPresent
+            : 0;
+    if (!journalled && superblock.last_orphan != 0)
     {
         return "orphan inodes are left to finish; run e2fsck";
     }
@@ -85,7 +91,7 @@ std::optional<std::string_view> WriteRefusal(const Superblock& superblock)
     {
         return "incompatible features the write path does not keep";
     }
-    if ((superblock.read_only_compatible & ~ReadOnlyCompatibleWritable) != 0)
+    if ((superblock.read_only_compatible & ~(ReadOnlyCompatibleWritable | orphan_present)) != 0)
     {
         return "unknown read-only compatible features";
     }
@@ -251,6 +257,21 @@ Status Ext2Filesystem::Initialize()
     }
     if ((superblock.compatible & CompatibleHasJournal) != 0)
     {
+        // Before anything is written: a volume whose orphans cannot be trusted stays untouched.
+        Buffers orphans(block_size, ChangeBuffers);
+        if (orphans.Empty())
+        {
+            return std::unexpected(Error::OutOfMemory);
+        }
+        if (const Status checked = CheckOrphans(orphans); !checked)
+        {
+            if (checked.error() != Error::Corrupt)
+            {
+                return checked;
+            }
+            read_only = true;
+            return {};
+        }
         if (const Status started = StartJournal(); !started)
         {
             return started;
@@ -260,7 +281,11 @@ Status Ext2Filesystem::Initialize()
             return {};
         }
     }
-    return MarkMounted();
+    if (const Status marked = MarkMounted(); !marked || read_only || journal == nullptr)
+    {
+        return marked;
+    }
+    return ProcessOrphans();
 }
 
 Status Ext2Filesystem::CheckDescriptorChecksums() const
