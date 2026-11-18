@@ -143,11 +143,16 @@ using FeatherDisk::Tests::CheckClean;
 using FeatherDisk::Tests::CopyOf;
 using FeatherDisk::Tests::DeviceFrom;
 using FeatherDisk::Tests::ErrorOf;
+using FeatherDisk::Tests::JournalOffset;
+using FeatherDisk::Tests::JournalSuperblockOf;
 using FeatherDisk::Tests::LoadExtImage;
 using FeatherDisk::Tests::MemoryDevice;
 using FeatherDisk::Tests::MountedFilesystem;
 using FeatherDisk::Tests::RawVolume;
 using FeatherDisk::Tests::ReadAll;
+using FeatherDisk::Tests::ReplayByMounting;
+using FeatherDisk::Tests::RequireSameAsDebugfs;
+using FeatherDisk::Tests::RequireSameBytes;
 using FeatherDisk::Tests::RunDebugfs;
 using FeatherDisk::Tests::ScriptWithDebugfs;
 using FeatherDisk::Tests::Value;
@@ -175,8 +180,6 @@ constexpr std::array<JournalCase, 6> Cases = {{
     {.image = "ext4-64bit", .open = "jo -c -v 2"},
     {.image = "ext4-blockmap", .open = "jo -c"},
 }};
-
-JournalSuperblock JournalSuperblockOf(MemoryDevice& device);
 
 std::vector<std::uint8_t> TextBlock(std::uint32_t size, std::string_view text)
 {
@@ -259,31 +262,6 @@ Journalled MakeJournalled(const JournalCase& journal_case)
     return made;
 }
 
-std::uint32_t JournalInode(const RawVolume& raw)
-{
-    return raw.Load32(SuperblockStart + 224);
-}
-
-// Byte offset of the journal's block n: through the extent tree, or a block map's direct and
-// single indirect blocks.
-std::uint64_t JournalOffset(const RawVolume& raw, std::uint32_t n)
-{
-    const std::uint32_t inode = JournalInode(raw);
-    if (n < 12 || (raw.Load32(raw.InodeOffset(inode) + 32) & 0x80000U) != 0)
-    {
-        return raw.FileBlock(inode, n) * raw.BlockSize();
-    }
-    REQUIRE(n - 12 < raw.BlockSize() / 4);
-    return raw.BlockOffset(raw.Load32(raw.BlockOffset(raw.InodeBlock(inode, 12)) + (n - 12) * 4));
-}
-
-JournalSuperblock JournalSuperblockOf(MemoryDevice& device)
-{
-    std::vector<std::uint8_t> bytes = BytesOf(device);
-    const RawVolume raw{bytes};
-    return DecodeJournalSuperblock(std::span(bytes).subspan(JournalOffset(raw, 0), 1024));
-}
-
 struct LogBlock
 {
     std::uint32_t position;
@@ -350,46 +328,6 @@ bool SameBlock(MemoryDevice& device, const std::vector<std::uint8_t>& other, std
                       device.Bytes().begin() + static_cast<std::ptrdiff_t>(block * block_size));
 }
 
-void RequireSameBytes(std::vector<std::uint8_t> ours, std::vector<std::uint8_t> theirs)
-{
-    REQUIRE(ours.size() == theirs.size());
-    const auto difference = std::mismatch(ours.begin(), ours.end(), theirs.begin());
-    INFO("first difference at byte " << (difference.first - ours.begin()));
-    REQUIRE(difference.first == ours.end());
-}
-
-// debugfs's journal_run also writes s_wtime, s_lastcheck, s_kbytes_written and their high bytes,
-// and the superblock checksum over them; everything else must match.
-void RequireSameAsDebugfs(MemoryDevice& ours, MemoryDevice& theirs)
-{
-    std::vector<std::uint8_t> left = BytesOf(ours);
-    std::vector<std::uint8_t> right = BytesOf(theirs);
-    constexpr std::array<std::pair<std::uint64_t, std::uint64_t>, 5> Written = {{
-        {48, 4},
-        {64, 4},
-        {376, 8},
-        {0x274, 4},
-        {1020, 4},
-    }};
-    for (const auto& [offset, length] : Written)
-    {
-        for (std::uint64_t index = 0; index < length; ++index)
-        {
-            left[SuperblockStart + offset + index] = 0;
-            right[SuperblockStart + offset + index] = 0;
-        }
-    }
-    RequireSameBytes(std::move(left), std::move(right));
-}
-
-// Replays by mounting for writing; the recovered volume mounts read-only, since writes through
-// the journal come later.
-void Replay(MemoryDevice& device)
-{
-    MountedFilesystem ext(Ext2Type(), device, false);
-    REQUIRE_FALSE(ext->GetCapabilities().writable);
-}
-
 void CheckEmptyJournal(MemoryDevice& device, std::uint32_t sequence)
 {
     std::vector<std::uint8_t> bytes = BytesOf(device);
@@ -421,7 +359,7 @@ TEST_CASE("a writable mount replays committed jbd2 transactions as debugfs does"
         const std::unique_ptr<MemoryDevice> expected = CopyOf(*made.device);
         REQUIRE(ChangeWithDebugfs(*expected, "journal-run", "jr").status == 0);
 
-        Replay(*made.device);
+        ReplayByMounting(*made.device);
         RequireSameAsDebugfs(*made.device, *expected);
         CheckClean(*made.device, "journal-replayed");
         // Transactions 1 to 4 were replayed, so the journal waits for 6: 5 never committed.
@@ -440,7 +378,7 @@ TEST_CASE("a writable mount replays committed jbd2 transactions as debugfs does"
         }
         // Clean now: another writable mount changes nothing.
         const std::vector<std::uint8_t> recovered = BytesOf(*made.device);
-        Replay(*made.device);
+        ReplayByMounting(*made.device);
         CheckUnchanged(*made.device, recovered);
     }
 #endif
@@ -464,7 +402,7 @@ TEST_CASE("a read-only mount reads a volume whose journal needs recovery as it i
 
         // A device that refuses writes mounts read-only the same way.
         made.device->read_only = true;
-        Replay(*made.device);
+        ReplayByMounting(*made.device);
         CheckUnchanged(*made.device, made.original);
     }
 #endif
@@ -538,7 +476,7 @@ TEST_CASE("a jbd2 checksum that does not match in the torn tail only ends the lo
         made.device->Bytes()[JournalOffset(raw, FindLogBlock(made.original, made.first + 4,
                                                              JournalDescriptorBlock)) +
                              size - 5] ^= 0x20U;
-        Replay(*made.device);
+        ReplayByMounting(*made.device);
         CheckClean(*made.device, "journal-torn-checksum");
         CheckEmptyJournal(*made.device, made.first + 5);
         REQUIRE(BlockText(*made.device, made.spare[1], size) == "written again after its revoke");
@@ -556,7 +494,7 @@ TEST_CASE("a jbd2 checksum that does not match in the torn tail only ends the lo
         made.device->Bytes()[JournalOffset(again, FindLogBlock(made.original, made.first + 1,
                                                                JournalCommitBlock)) +
                              100] ^= 0x20U;
-        Replay(*made.device);
+        ReplayByMounting(*made.device);
         CheckClean(*made.device, "journal-async-commit");
         CheckEmptyJournal(*made.device, made.first + 2);
         REQUIRE(BlockText(*made.device, made.hello_block, size) == NewHello);
@@ -712,7 +650,7 @@ TEST_CASE("an empty journal that needs recovery is only marked recovered")
         const std::uint32_t sequence = JournalSuperblockOf(*device).sequence;
         const std::unique_ptr<MemoryDevice> expected = CopyOf(*device);
         REQUIRE(ChangeWithDebugfs(*expected, "journal-run-empty", "jr").status == 0);
-        Replay(*device);
+        ReplayByMounting(*device);
         RequireSameAsDebugfs(*device, *expected);
         CheckEmptyJournal(*device, sequence + 1);
         CheckClean(*device, "journal-empty");
@@ -730,7 +668,7 @@ TEST_CASE("a replay stopped at any write replays again to the same volume")
         INFO(journal_case.image << " " << journal_case.open);
         const Journalled made = MakeJournalled(journal_case);
         const std::unique_ptr<MemoryDevice> whole = CopyOf(*made.device);
-        Replay(*whole);
+        ReplayByMounting(*whole);
         const std::uint64_t writes = whole->write_count;
         REQUIRE(writes > 4);
         // The journal superblock's sequence moves on with each recovery that finds the log empty.
@@ -750,7 +688,7 @@ TEST_CASE("a replay stopped at any write replays again to the same volume")
             stopped->FailWritesAfter(allowed);
             REQUIRE(ErrorOf(Ext2Type().Mount(*stopped, {.read_only = false})) == Error::Io);
             const std::unique_ptr<MemoryDevice> again = CopyOf(*stopped);
-            Replay(*again);
+            ReplayByMounting(*again);
             RequireSameBytes(without_sequence(*again), without_sequence(*whole));
         }
     }
@@ -793,7 +731,7 @@ TEST_CASE("a log that wraps past the end of the journal replays in order")
             journal, made.device->Bytes().subspan(JournalOffset(raw, 0), made.block_size));
         const std::unique_ptr<MemoryDevice> expected = CopyOf(*made.device);
         REQUIRE(ChangeWithDebugfs(*expected, "journal-run-wrapped", "jr").status == 0);
-        Replay(*made.device);
+        ReplayByMounting(*made.device);
         RequireSameAsDebugfs(*made.device, *expected);
         CheckEmptyJournal(*made.device, made.first + 5);
         CheckClean(*made.device, "journal-wrapped");

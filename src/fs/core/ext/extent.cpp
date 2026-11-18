@@ -126,7 +126,7 @@ Result<ExtentHeader> Ext2Filesystem::LoadExtentNode(const Inode& inode, std::uin
     {
         return std::unexpected(Error::Corrupt);
     }
-    if (const Status read = cache.Read(child, 0, node, node); !read)
+    if (const Status read = ReadMetadata(child, 0, node, node); !read)
     {
         return Failure(read);
     }

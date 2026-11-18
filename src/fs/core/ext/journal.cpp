@@ -14,12 +14,15 @@ constexpr std::size_t SuperblockMaximumLengthOffset = 16;
 constexpr std::size_t SuperblockFirstOffset = 20;
 constexpr std::size_t SuperblockSequenceOffset = 24;
 constexpr std::size_t SuperblockStartOffset = 28;
+constexpr std::size_t SuperblockCompatibleOffset = 36;
 constexpr std::size_t SuperblockIncompatibleOffset = 40;
 constexpr std::size_t SuperblockUuidOffset = 48;
 constexpr std::size_t SuperblockChecksumTypeOffset = 80;
 constexpr std::size_t SuperblockChecksumOffset = 252;
 // h_chksum[0] of a commit block, after h_chksum_type, h_chksum_size and two bytes of padding.
 constexpr std::size_t CommitChecksumOffset = 16;
+constexpr std::size_t CommitSecondsOffset = 48;
+constexpr std::size_t CommitNanosecondsOffset = 56;
 constexpr std::size_t RevokeCountOffset = 12;
 constexpr std::size_t RevokeHeaderSize = 16;
 constexpr std::size_t FirstRevokeCapacity = 64;
@@ -38,6 +41,26 @@ std::uint32_t ChecksumWithout(std::uint32_t seed, std::span<const std::uint8_t> 
     std::uint32_t crc = Crc32c(seed, bytes.first(offset));
     crc = Crc32c(crc, Zeros);
     return Crc32c(crc, bytes.subspan(offset + Zeros.size()));
+}
+
+void StoreBigEndian16(std::uint8_t* bytes, std::uint16_t value)
+{
+    bytes[0] = static_cast<std::uint8_t>(value >> 8);
+    bytes[1] = static_cast<std::uint8_t>(value);
+}
+
+void StoreBigEndian64(std::uint8_t* bytes, std::uint64_t value)
+{
+    StoreBigEndian32(bytes, static_cast<std::uint32_t>(value >> 32));
+    StoreBigEndian32(bytes + 4, static_cast<std::uint32_t>(value));
+}
+
+void ZeroBlock(std::span<std::uint8_t> block)
+{
+    for (std::uint8_t& byte : block)
+    {
+        byte = 0;
+    }
 }
 
 std::size_t HashOf(std::uint64_t block, std::size_t capacity)
@@ -81,6 +104,7 @@ JournalSuperblock DecodeJournalSuperblock(std::span<const std::uint8_t> block)
         .first = LoadBigEndian32(raw + SuperblockFirstOffset),
         .sequence = LoadBigEndian32(raw + SuperblockSequenceOffset),
         .start = LoadBigEndian32(raw + SuperblockStartOffset),
+        .compatible = 0,
         .incompatible = 0,
         .checksum_type = 0,
         .uuid = {},
@@ -91,6 +115,7 @@ JournalSuperblock DecodeJournalSuperblock(std::span<const std::uint8_t> block)
     {
         return superblock;
     }
+    superblock.compatible = LoadBigEndian32(raw + SuperblockCompatibleOffset);
     superblock.incompatible = LoadBigEndian32(raw + SuperblockIncompatibleOffset);
     superblock.checksum_type = raw[SuperblockChecksumTypeOffset];
     for (std::size_t index = 0; index < JournalUuidSize; ++index)
@@ -157,6 +182,19 @@ void EncodeJournalPosition(const JournalSuperblock& superblock, std::span<std::u
     StoreBigEndian32(block.data() + SuperblockStartOffset, superblock.start);
     if (JournalHasChecksums(superblock.incompatible))
     {
+        StoreBigEndian32(
+            block.data() + SuperblockChecksumOffset,
+            ChecksumWithout(~0U, block.first(JournalSuperblockSize), SuperblockChecksumOffset));
+    }
+}
+
+void EncodeJournalFeatures(const JournalSuperblock& superblock, std::span<std::uint8_t> block)
+{
+    StoreBigEndian32(block.data() + SuperblockCompatibleOffset, superblock.compatible);
+    StoreBigEndian32(block.data() + SuperblockIncompatibleOffset, superblock.incompatible);
+    if (JournalHasChecksums(superblock.incompatible))
+    {
+        block[SuperblockChecksumTypeOffset] = JournalChecksumCrc32c;
         StoreBigEndian32(
             block.data() + SuperblockChecksumOffset,
             ChecksumWithout(~0U, block.first(JournalSuperblockSize), SuperblockChecksumOffset));
@@ -249,6 +287,196 @@ bool JournalTagMatches(const JournalTag& tag, std::uint32_t incompatible, std::u
         return crc == tag.checksum;
     }
     return (crc & 0xFFFFU) == tag.checksum;
+}
+
+void StoreJournalHeader(std::span<std::uint8_t> block, std::uint32_t block_type,
+                        std::uint32_t sequence)
+{
+    StoreBigEndian32(block.data(), JournalMagic);
+    StoreBigEndian32(block.data() + 4, block_type);
+    StoreBigEndian32(block.data() + 8, sequence);
+}
+
+bool EscapeJournalBlock(std::span<std::uint8_t> copy)
+{
+    if (LoadBigEndian32(copy.data()) != JournalMagic)
+    {
+        return false;
+    }
+    for (std::size_t index = 0; index < 4; ++index)
+    {
+        copy[index] = 0;
+    }
+    return true;
+}
+
+std::uint32_t JournalTagChecksum(std::uint32_t seed, std::uint32_t sequence,
+                                 std::span<const std::uint8_t> copy)
+{
+    std::array<std::uint8_t, 4> raw_sequence{};
+    StoreBigEndian32(raw_sequence.data(), sequence);
+    return Crc32c(Crc32c(seed, raw_sequence), copy);
+}
+
+std::size_t JournalTagsPerDescriptor(std::uint32_t block_size, std::uint32_t incompatible)
+{
+    const std::size_t tail = JournalHasChecksums(incompatible) ? JournalTailSize : 0;
+    const std::size_t tag = JournalTagSize(incompatible);
+    // After n tags, n * tag + the UUID are used; another goes in while a tag, a UUID and the tail
+    // still fit in what is left, which first fails for n = (size - header - UUID - tag - UUID -
+    // tail) / tag.
+    const std::size_t reserve = JournalHeaderSize + 2 * JournalUuidSize + tail;
+    const std::size_t count = block_size > reserve ? (block_size - reserve) / tag : 0;
+    return count == 0 ? 1 : count;
+}
+
+std::size_t JournalRevokesPerBlock(std::uint32_t block_size, std::uint32_t incompatible)
+{
+    const std::size_t tail = JournalHasChecksums(incompatible) ? JournalTailSize : 0;
+    const std::size_t record = (incompatible & JournalIncompatible64Bit) != 0 ? 8 : 4;
+    return (block_size - RevokeHeaderSize - tail) / record;
+}
+
+JournalDescriptorWriter::JournalDescriptorWriter(
+    std::span<std::uint8_t> block, std::uint32_t incompatible, std::uint32_t sequence,
+    std::span<const std::uint8_t, JournalUuidSize> uuid)
+    : block(block), incompatible(incompatible), uuid{},
+      capacity(JournalTagsPerDescriptor(static_cast<std::uint32_t>(block.size()), incompatible)),
+      count(0), offset(JournalHeaderSize), last(0)
+{
+    for (std::size_t index = 0; index < JournalUuidSize; ++index)
+    {
+        this->uuid[index] = uuid[index];
+    }
+    ZeroBlock(block);
+    StoreJournalHeader(block, JournalDescriptorBlock, sequence);
+}
+
+bool JournalDescriptorWriter::Add(std::uint64_t home, bool escaped, std::uint32_t checksum)
+{
+    if (count == capacity)
+    {
+        return false;
+    }
+    const bool version3 = (incompatible & JournalIncompatibleChecksumV3) != 0;
+    std::uint8_t* raw = block.data() + offset;
+    std::uint16_t flags = escaped ? JournalTagEscaped : 0;
+    if (count != 0)
+    {
+        flags |= JournalTagSameUuid;
+    }
+    StoreBigEndian32(raw, static_cast<std::uint32_t>(home));
+    if ((incompatible & JournalIncompatible64Bit) != 0)
+    {
+        StoreBigEndian32(raw + 8, static_cast<std::uint32_t>(home >> 32));
+    }
+    if (version3)
+    {
+        StoreBigEndian32(raw + 4, flags);
+        StoreBigEndian32(raw + 12, checksum);
+    }
+    else
+    {
+        if ((incompatible & JournalIncompatibleChecksumV2) != 0)
+        {
+            StoreBigEndian16(raw + 4, static_cast<std::uint16_t>(checksum));
+        }
+        StoreBigEndian16(raw + 6, flags);
+    }
+    last = offset;
+    offset += JournalTagSize(incompatible);
+    if (count == 0)
+    {
+        for (std::size_t index = 0; index < JournalUuidSize; ++index)
+        {
+            block[offset + index] = uuid[index];
+        }
+        offset += JournalUuidSize;
+    }
+    ++count;
+    return true;
+}
+
+std::size_t JournalDescriptorWriter::Count() const
+{
+    return count;
+}
+
+void JournalDescriptorWriter::Finish(std::uint32_t seed)
+{
+    if (count != 0)
+    {
+        // The low byte of the flags, which both layouts keep at byte 7 of the tag.
+        block[last + 7] = static_cast<std::uint8_t>(block[last + 7] | JournalTagLast);
+    }
+    if (JournalHasChecksums(incompatible))
+    {
+        const std::size_t tail = block.size() - JournalTailSize;
+        StoreBigEndian32(block.data() + tail, ChecksumWithout(seed, block, tail));
+    }
+}
+
+JournalRevokeWriter::JournalRevokeWriter(std::span<std::uint8_t> block, std::uint32_t incompatible,
+                                         std::uint32_t sequence)
+    : bytes(block), incompatible(incompatible),
+      capacity(JournalRevokesPerBlock(static_cast<std::uint32_t>(block.size()), incompatible)),
+      count(0)
+{
+    ZeroBlock(block);
+    StoreJournalHeader(block, JournalRevokeBlock, sequence);
+    StoreBigEndian32(block.data() + RevokeCountOffset, RevokeHeaderSize);
+}
+
+bool JournalRevokeWriter::Add(std::uint64_t block)
+{
+    if (count == capacity)
+    {
+        return false;
+    }
+    const bool wide = (incompatible & JournalIncompatible64Bit) != 0;
+    const std::size_t record = wide ? 8 : 4;
+    std::uint8_t* raw = bytes.data() + RevokeHeaderSize + count * record;
+    if (wide)
+    {
+        StoreBigEndian64(raw, block);
+    }
+    else
+    {
+        StoreBigEndian32(raw, static_cast<std::uint32_t>(block));
+    }
+    ++count;
+    StoreBigEndian32(bytes.data() + RevokeCountOffset,
+                     static_cast<std::uint32_t>(RevokeHeaderSize + count * record));
+    return true;
+}
+
+std::size_t JournalRevokeWriter::Count() const
+{
+    return count;
+}
+
+void JournalRevokeWriter::Finish(std::uint32_t seed)
+{
+    if (JournalHasChecksums(incompatible))
+    {
+        const std::size_t tail = bytes.size() - JournalTailSize;
+        StoreBigEndian32(bytes.data() + tail, ChecksumWithout(seed, bytes, tail));
+    }
+}
+
+void EncodeCommitBlock(std::span<std::uint8_t> block, std::uint32_t incompatible,
+                       std::uint32_t seed, std::uint32_t sequence, std::int64_t seconds,
+                       std::uint32_t nanoseconds)
+{
+    ZeroBlock(block);
+    StoreJournalHeader(block, JournalCommitBlock, sequence);
+    StoreBigEndian64(block.data() + CommitSecondsOffset, static_cast<std::uint64_t>(seconds));
+    StoreBigEndian32(block.data() + CommitNanosecondsOffset, nanoseconds);
+    if (JournalHasChecksums(incompatible))
+    {
+        StoreBigEndian32(block.data() + CommitChecksumOffset,
+                         ChecksumWithout(seed, block, CommitChecksumOffset));
+    }
 }
 
 bool SequenceBefore(std::uint32_t first, std::uint32_t second)

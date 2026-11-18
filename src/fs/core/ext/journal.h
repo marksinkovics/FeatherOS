@@ -31,6 +31,12 @@ constexpr std::uint32_t JournalSuperblockVersion1 = 3;
 constexpr std::uint32_t JournalSuperblockVersion2 = 4;
 constexpr std::uint32_t JournalRevokeBlock = 5;
 
+// s_feature_compat: the v1 crc32 commit block checksums, which recovery ignores and a writable
+// mount turns off.
+constexpr std::uint32_t JournalCompatibleChecksum = 0x01;
+// What mke2fs and the kernel accept as a journal (JBD2_MIN_JOURNAL_BLOCKS).
+constexpr std::uint32_t MinimumJournalBlocks = 1024;
+
 // s_feature_incompat; version 1 superblocks have no features.
 constexpr std::uint32_t JournalIncompatibleRevoke = 0x01;
 constexpr std::uint32_t JournalIncompatible64Bit = 0x02;
@@ -73,6 +79,7 @@ struct JournalSuperblock
     // The first transaction the log holds, which starts at block start; 0 when the log is empty.
     std::uint32_t sequence;
     std::uint32_t start;
+    std::uint32_t compatible;
     std::uint32_t incompatible;
     std::uint8_t checksum_type;
     std::array<std::uint8_t, JournalUuidSize> uuid;
@@ -90,6 +97,9 @@ Status CheckJournalSuperblock(const JournalSuperblock& superblock, std::uint32_t
                               std::uint64_t journal_blocks);
 // Stores sequence and start, and the checksum again when the journal has checksums.
 void EncodeJournalPosition(const JournalSuperblock& superblock, std::span<std::uint8_t> block);
+// Stores compatible and incompatible, the checksum type that checksums v2 or v3 need, and the
+// superblock's checksum again.
+void EncodeJournalFeatures(const JournalSuperblock& superblock, std::span<std::uint8_t> block);
 
 bool JournalHasChecksums(std::uint32_t incompatible);
 // What every block checksum starts from: the CRC32C of the journal's UUID.
@@ -128,6 +138,71 @@ bool JournalCommitMatches(std::span<const std::uint8_t> block, std::uint32_t see
 // data is the block as the journal holds it, escaped.
 bool JournalTagMatches(const JournalTag& tag, std::uint32_t incompatible, std::uint32_t seed,
                        std::uint32_t sequence, std::span<const std::uint8_t> data);
+
+// The first twelve bytes of every block but the superblock's: the magic, the type, the sequence.
+void StoreJournalHeader(std::span<std::uint8_t> block, std::uint32_t block_type,
+                        std::uint32_t sequence);
+// Zeroes the copy's first four bytes when they are JournalMagic, so that no block of the log can
+// be taken for one of its own; true when it did, which its tag must say.
+bool EscapeJournalBlock(std::span<std::uint8_t> copy);
+// The CRC32C of the sequence (big-endian), then of the copy as the log holds it, escaped, from
+// seed; JournalTagMatches checks it, 16 bits of it with checksums v2.
+std::uint32_t JournalTagChecksum(std::uint32_t seed, std::uint32_t sequence,
+                                 std::span<const std::uint8_t> copy);
+// As jbd2's writer packs a descriptor: a tag is added while the room left after the previous one
+// is at least a tag, a UUID and the tail, and the first tag is followed by the UUID.
+std::size_t JournalTagsPerDescriptor(std::uint32_t block_size, std::uint32_t incompatible);
+std::size_t JournalRevokesPerBlock(std::uint32_t block_size, std::uint32_t incompatible);
+
+// Builds a descriptor block of one transaction; Add is called once per block the log will hold
+// after it.
+class JournalDescriptorWriter
+{
+public:
+    JournalDescriptorWriter(std::span<std::uint8_t> block, std::uint32_t incompatible,
+                            std::uint32_t sequence,
+                            std::span<const std::uint8_t, JournalUuidSize> uuid);
+
+    // False when the block is full. The checksum is ignored without checksums v2 or v3, and keeps
+    // its low 16 bits with v2; without 64-bit block numbers home must fit 32 bits.
+    bool Add(std::uint64_t home, bool escaped, std::uint32_t checksum);
+    std::size_t Count() const;
+    // Marks the last tag, and stores the tail with checksums v2 or v3.
+    void Finish(std::uint32_t seed);
+
+private:
+    std::span<std::uint8_t> block;
+    std::uint32_t incompatible;
+    std::array<std::uint8_t, JournalUuidSize> uuid;
+    std::size_t capacity;
+    std::size_t count;
+    std::size_t offset;
+    std::size_t last;
+};
+
+class JournalRevokeWriter
+{
+public:
+    JournalRevokeWriter(std::span<std::uint8_t> block, std::uint32_t incompatible,
+                        std::uint32_t sequence);
+
+    bool Add(std::uint64_t block);
+    std::size_t Count() const;
+    // Stores the tail with checksums v2 or v3.
+    void Finish(std::uint32_t seed);
+
+private:
+    std::span<std::uint8_t> bytes;
+    std::uint32_t incompatible;
+    std::size_t capacity;
+    std::size_t count;
+};
+
+// A whole commit block, zeroed but for what is stored: with checksums v2 or v3 its checksum, which
+// covers the block with that field zero.
+void EncodeCommitBlock(std::span<std::uint8_t> block, std::uint32_t incompatible,
+                       std::uint32_t seed, std::uint32_t sequence, std::int64_t seconds,
+                       std::uint32_t nanoseconds);
 
 // Sequence numbers wrap, so they compare by their difference, as jbd2's tid_gt does.
 bool SequenceBefore(std::uint32_t first, std::uint32_t second);

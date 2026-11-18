@@ -370,7 +370,7 @@ Result<Inode> Ext2Filesystem::LoadInode(NodeId node, std::span<std::uint8_t> scr
     if (metadata_checksums)
     {
         // The checksum covers the whole inode, so its block is read whole.
-        if (const Status read = cache.Read(place->block, 0, scratch, scratch); !read)
+        if (const Status read = ReadMetadata(place->block, 0, scratch, scratch); !read)
         {
             return Failure(read);
         }
@@ -396,8 +396,9 @@ Result<Inode> Ext2Filesystem::LoadInode(NodeId node, std::span<std::uint8_t> scr
         }
         bytes = whole.first(length);
     }
-    else if (const Status read = cache.Read(place->block, place->offset,
-                                            std::span<std::uint8_t>(copy.data(), length), scratch);
+    else if (const Status read =
+                 ReadMetadata(place->block, place->offset,
+                              std::span<std::uint8_t>(copy.data(), length), scratch);
              !read)
     {
         return Failure(read);
@@ -437,7 +438,7 @@ Result<std::uint32_t> Ext2Filesystem::ReadPointer(std::uint32_t block, std::uint
                                                   std::span<std::uint8_t> scratch)
 {
     std::array<std::uint8_t, PointerSize> raw{};
-    if (const Status read = cache.Read(block, index * PointerSize, raw, scratch); !read)
+    if (const Status read = ReadMetadata(block, index * PointerSize, raw, scratch); !read)
     {
         return Failure(read);
     }
@@ -893,7 +894,7 @@ Result<std::size_t> Ext2Filesystem::ReadLink(NodeId link, std::span<char> buffer
     {
         return std::unexpected(Error::Corrupt);
     }
-    if (const Status read = cache.ReadUncached(run->physical, buffers[0]); !read)
+    if (const Status read = ReadMetadata(run->physical, 0, buffers[0], buffers[0]); !read)
     {
         return Failure(read);
     }

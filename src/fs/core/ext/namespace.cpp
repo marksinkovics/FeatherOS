@@ -146,7 +146,7 @@ Result<NameSearch> Ext2Filesystem::SearchDirectory(const Inode& directory, std::
 Status Ext2Filesystem::DropRecord(const Inode& directory, const RecordPlace& place,
                                   std::uint32_t inode, std::span<std::uint8_t> block)
 {
-    if (const Status read = cache.Read(place.physical, 0, block, block); !read)
+    if (const Status read = ReadMetadata(place.physical, 0, block, block); !read)
     {
         return read;
     }
@@ -184,7 +184,7 @@ Status Ext2Filesystem::RewriteRecord(const Inode& directory, const RecordPlace& 
                                      std::uint32_t inode, std::uint32_t replacement,
                                      std::uint8_t file_type, std::span<std::uint8_t> block)
 {
-    if (const Status read = cache.Read(place.physical, 0, block, block); !read)
+    if (const Status read = ReadMetadata(place.physical, 0, block, block); !read)
     {
         return read;
     }
@@ -501,7 +501,7 @@ Result<NodeId> Ext2Filesystem::CreateNode(NodeId directory, std::string_view nam
                 inode.SetBlock(0, block);
             }
             inode.allocated_bytes = block_size;
-            status = cache.Write(block, contents);
+            status = WriteMetadata(block, contents);
         }
         else
         {

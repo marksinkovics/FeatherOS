@@ -364,6 +364,12 @@ private:
     Status FreeBlocks(FreeCursor& cursor, std::uint64_t first, std::uint64_t count);
     Status FinishFrees(FreeCursor& cursor);
 
+    // Block access (transaction.cpp): metadata is what a journal would hold, data goes in place.
+    Status ReadMetadata(std::uint64_t block, std::size_t offset, std::span<std::uint8_t> out,
+                        std::span<std::uint8_t> scratch);
+    Status WriteMetadata(std::uint64_t first_block, std::span<const std::uint8_t> bytes);
+    Status WriteData(std::uint64_t first_block, std::span<const std::uint8_t> bytes);
+
     // Changes (write.cpp).
     Timestamp Now() const;
     bool IsReserved(NodeId node) const;
@@ -555,7 +561,7 @@ Result<bool> Ext2Filesystem::WalkDirectory(const Inode& directory, std::uint64_t
             continue;
         }
         const std::uint64_t physical = run.physical + (logical - run.logical);
-        if (const Status read = cache.Read(physical, 0, block, block); !read)
+        if (const Status read = ReadMetadata(physical, 0, block, block); !read)
         {
             return Failure(read);
         }

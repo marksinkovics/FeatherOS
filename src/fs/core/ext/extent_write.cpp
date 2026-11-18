@@ -232,7 +232,7 @@ Status Ext2Filesystem::WriteTreeNode(ExtentEdit& edit, std::uint64_t block,
         StoreLittleEndian(out.data() + tail,
                           ExtentBlockChecksum(out, tail, edit.inode->checksum_seed));
     }
-    return cache.Write(block, out);
+    return WriteMetadata(block, out);
 }
 
 Status Ext2Filesystem::ReplaceExtentNode(ExtentEdit& edit, const ExtentPath& path,
@@ -633,7 +633,7 @@ Status Ext2Filesystem::WriteDataBlocks(std::uint64_t physical, std::uint64_t log
                 ++whole;
             }
             if (const Status written =
-                    cache.Write(physical + index, data.subspan(start - offset, whole * block_size));
+                    WriteData(physical + index, data.subspan(start - offset, whole * block_size));
                 !written)
             {
                 return written;
@@ -652,7 +652,7 @@ Status Ext2Filesystem::WriteDataBlocks(std::uint64_t physical, std::uint64_t log
         const std::uint64_t from = start > offset ? start : offset;
         const std::uint64_t to = Smaller(start + block_size, data_end);
         CopyBytes(block.data() + (from - start), data.data() + (from - offset), to - from);
-        if (const Status written = cache.Write(physical + index, block); !written)
+        if (const Status written = WriteData(physical + index, block); !written)
         {
             return written;
         }

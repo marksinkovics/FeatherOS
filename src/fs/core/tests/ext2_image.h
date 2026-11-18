@@ -3,6 +3,7 @@
 #ifndef FEATHERDISK_TESTS_EXT2_IMAGE_H
 #define FEATHERDISK_TESTS_EXT2_IMAGE_H
 
+#include "ext/journal.h"
 #include "tests/memory_device.h"
 
 #include <cstdint>
@@ -84,6 +85,19 @@ ToolRun ChangeWithDebugfs(MemoryDevice& device, std::string_view name, std::stri
 // the device. "%N" in the script names a file holding files[N] (N a single digit).
 ToolRun ScriptWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view script,
                           const std::vector<std::vector<std::uint8_t>>& files);
+
+// The journal's inode (8), where block n of the journal lies, and its superblock.
+std::uint32_t JournalInode(const RawVolume& raw);
+std::uint64_t JournalOffset(const RawVolume& raw, std::uint32_t n);
+Ext::JournalSuperblock JournalSuperblockOf(MemoryDevice& device);
+
+void RequireSameBytes(std::vector<std::uint8_t> ours, std::vector<std::uint8_t> theirs);
+// debugfs's journal_run also writes s_wtime, s_lastcheck, s_kbytes_written and their high bytes,
+// and the superblock checksum over them; everything else must match.
+void RequireSameAsDebugfs(MemoryDevice& ours, MemoryDevice& theirs);
+// Replays the journal by mounting for writing, which must give a read-only mount (until the core
+// writes through journals).
+void ReplayByMounting(MemoryDevice& device);
 
 } // namespace FeatherDisk::Tests
 

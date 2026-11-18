@@ -40,6 +40,8 @@
 #   ext4-mixed  4 KiB blocks, metadata_csum, flex_bg, no journal, four groups, made without
 #               extents and given the feature by tune2fs afterwards: the image's files keep their
 #               block maps on a volume whose new files get extents; many/ hashed
+#   ext4-journal-gdtcsum  ext4 in 1 KiB blocks with CRC16 group descriptor checksums (uninit_bg)
+#               instead of metadata_csum, so its journal has 64-bit block numbers and no checksums
 #
 #   sh make_ext2_image.sh <mke2fs> <debugfs> <image> <variant>
 #
@@ -168,6 +170,7 @@ case "$variant" in
         options="-t ext4 -b 1024 -N 4096 -O ^extent,^64bit,^has_journal,^metadata_csum,uninit_bg"
         size=16M
         ;;
+    ext4-journal-gdtcsum) options="-t ext4 -b 1024 -O ^metadata_csum,uninit_bg" ;;
     ext4-nojournal)
         options="-t ext4 -b 1024 -N 6144 -O ^has_journal"
         size=32M

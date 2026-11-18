@@ -3,6 +3,8 @@
 
 #include "common/crc.h"
 #include "common/little_endian.h"
+#include "fs/ext2.h"
+#include "tests/filesystem_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -230,8 +232,36 @@ std::uint64_t RawVolume::FileBlock(std::uint32_t inode, std::uint32_t logical) c
 {
     if ((Load32(InodeOffset(inode) + 32) & 0x80000U) == 0)
     {
-        REQUIRE(logical < 12);
-        return InodeBlock(inode, logical);
+        if (logical < 12)
+        {
+            return InodeBlock(inode, logical);
+        }
+        // Through the single, double and triple indirect blocks.
+        const std::uint64_t per_block = BlockSize() / 4;
+        std::uint64_t index = logical - 12;
+        std::uint64_t reach = 1;
+        for (std::uint32_t level = 1; level <= 3; ++level)
+        {
+            reach *= per_block;
+            if (index >= reach)
+            {
+                index -= reach;
+                continue;
+            }
+            std::uint64_t block = InodeBlock(inode, 11 + level);
+            for (std::uint64_t span = reach / per_block; span != 0; span /= per_block)
+            {
+                if (block == 0)
+                {
+                    return 0;
+                }
+                block = Load32(block * BlockSize() + (index / span) * 4);
+                index %= span;
+            }
+            return block;
+        }
+        FAIL("block " << logical << " is past the triple indirect block");
+        return 0;
     }
     const std::vector<std::uint64_t> path = ExtentPath(inode, logical);
     const std::uint64_t node = path.empty() ? InodeOffset(inode) + 40 : path.back() * BlockSize();
@@ -454,6 +484,59 @@ ToolRun ScriptWithDebugfs(MemoryDevice& device, std::string_view name, std::stri
         std::remove(path.c_str());
     }
     return run;
+}
+
+std::uint32_t JournalInode(const RawVolume& raw)
+{
+    return raw.Load32(1024 + 224);
+}
+
+std::uint64_t JournalOffset(const RawVolume& raw, std::uint32_t n)
+{
+    return raw.FileBlock(JournalInode(raw), n) * raw.BlockSize();
+}
+
+Ext::JournalSuperblock JournalSuperblockOf(MemoryDevice& device)
+{
+    std::vector<std::uint8_t> bytes = BytesOf(device);
+    const RawVolume raw{bytes};
+    return Ext::DecodeJournalSuperblock(std::span(bytes).subspan(JournalOffset(raw, 0), 1024));
+}
+
+void RequireSameBytes(std::vector<std::uint8_t> ours, std::vector<std::uint8_t> theirs)
+{
+    REQUIRE(ours.size() == theirs.size());
+    const auto difference = std::mismatch(ours.begin(), ours.end(), theirs.begin());
+    INFO("first difference at byte " << (difference.first - ours.begin()));
+    REQUIRE(difference.first == ours.end());
+}
+
+void RequireSameAsDebugfs(MemoryDevice& ours, MemoryDevice& theirs)
+{
+    std::vector<std::uint8_t> left = BytesOf(ours);
+    std::vector<std::uint8_t> right = BytesOf(theirs);
+    constexpr std::array<std::pair<std::uint64_t, std::uint64_t>, 5> Written = {{
+        {48, 4},
+        {64, 4},
+        {376, 8},
+        {0x274, 4},
+        {1020, 4},
+    }};
+    for (const auto& [offset, length] : Written)
+    {
+        for (std::uint64_t index = 0; index < length; ++index)
+        {
+            left[1024 + offset + index] = 0;
+            right[1024 + offset + index] = 0;
+        }
+    }
+    RequireSameBytes(std::move(left), std::move(right));
+}
+
+void ReplayByMounting(MemoryDevice& device)
+{
+    MountedFilesystem ext(Ext::Ext2Type(), device, false);
+    REQUIRE_FALSE(ext->GetCapabilities().writable);
 }
 
 } // namespace FeatherDisk::Tests

@@ -175,7 +175,7 @@ Status Ext2Filesystem::LoadBlockBitmap(std::uint32_t group, std::span<std::uint8
     {
         return std::unexpected(Error::Corrupt);
     }
-    if (const Status read = cache.Read(descriptor.block_bitmap, 0, bitmap, bitmap); !read)
+    if (const Status read = ReadMetadata(descriptor.block_bitmap, 0, bitmap, bitmap); !read)
     {
         return read;
     }
@@ -203,7 +203,7 @@ Status Ext2Filesystem::LoadInodeBitmap(std::uint32_t group, std::span<std::uint8
     {
         return std::unexpected(Error::Corrupt);
     }
-    if (const Status read = cache.Read(descriptor.inode_bitmap, 0, bitmap, bitmap); !read)
+    if (const Status read = ReadMetadata(descriptor.inode_bitmap, 0, bitmap, bitmap); !read)
     {
         return read;
     }
@@ -223,7 +223,7 @@ Status Ext2Filesystem::CommitBitmap(std::uint32_t group, GroupDescriptor descrip
 {
     const GroupDescriptor before = Group(group);
     const std::uint64_t place = blocks ? descriptor.block_bitmap : descriptor.inode_bitmap;
-    if (const Status written = cache.Write(place, bitmap); !written)
+    if (const Status written = WriteMetadata(place, bitmap); !written)
     {
         return written;
     }
@@ -292,9 +292,9 @@ Status Ext2Filesystem::WriteGroups()
     const std::uint64_t first = dirty_descriptors_first;
     const std::uint64_t count = dirty_descriptors_end - first;
     if (const Status written =
-            cache.Write(superblock.first_data_block + 1 + first,
-                        descriptors.subspan(static_cast<std::size_t>(first * block_size),
-                                            static_cast<std::size_t>(count * block_size)));
+            WriteMetadata(superblock.first_data_block + 1 + first,
+                          descriptors.subspan(static_cast<std::size_t>(first * block_size),
+                                              static_cast<std::size_t>(count * block_size)));
         !written)
     {
         return written;

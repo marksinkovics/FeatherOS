@@ -117,7 +117,7 @@ Status Ext2Filesystem::WriteSuperblock(std::span<std::uint8_t> scratch)
     // not compare), and e2fsck recounts what is free whenever it falls back on one.
     const std::uint64_t block = SuperblockOffset / block_size;
     const std::size_t offset = SuperblockOffset % block_size;
-    if (const Status read = cache.Read(block, 0, scratch, scratch); !read)
+    if (const Status read = ReadMetadata(block, 0, scratch, scratch); !read)
     {
         return read;
     }
@@ -128,7 +128,7 @@ Status Ext2Filesystem::WriteSuperblock(std::span<std::uint8_t> scratch)
     {
         StoreSuperblockChecksum(bytes);
     }
-    return cache.Write(block, scratch);
+    return WriteMetadata(block, scratch);
 }
 
 Status Ext2Filesystem::MarkMounted()
@@ -222,7 +222,7 @@ Status Ext2Filesystem::StoreInode(NodeId node, const Inode& inode, bool fresh,
     {
         return Failure(place);
     }
-    if (const Status read = cache.Read(place->block, 0, scratch, scratch); !read)
+    if (const Status read = ReadMetadata(place->block, 0, scratch, scratch); !read)
     {
         return read;
     }
@@ -241,7 +241,7 @@ Status Ext2Filesystem::StoreInode(NodeId node, const Inode& inode, bool fresh,
                            InodeChecksumSeed(volume_seed, static_cast<std::uint32_t>(node),
                                              LoadLittleEndian<std::uint32_t>(slot.data() + 100)));
     }
-    return cache.Write(place->block, scratch);
+    return WriteMetadata(place->block, scratch);
 }
 
 // The feature goes on before the inode that needs it, as on Linux.
@@ -273,7 +273,7 @@ Status Ext2Filesystem::WriteDirectoryBlock(const Inode& directory, std::uint64_t
             StoreDirectoryTail(block, directory.checksum_seed);
         }
     }
-    return cache.Write(physical, block);
+    return WriteMetadata(physical, block);
 }
 
 // A name added to a hashed directory would have to go into the leaf its hash picks, so the
@@ -309,7 +309,7 @@ Status Ext2Filesystem::ClearIndex(NodeId directory, Inode& inode, Buffers& buffe
         {
             return {};
         }
-        if (const Status read = cache.Read(*physical, 0, block, block); !read)
+        if (const Status read = ReadMetadata(*physical, 0, block, block); !read)
         {
             return read;
         }
@@ -372,7 +372,7 @@ Status Ext2Filesystem::ZeroFrom(const Inode& inode, std::uint64_t position,
         return read;
     }
     ZeroBytes(scratch.subspan(within));
-    return cache.Write(*physical, scratch);
+    return WriteData(*physical, scratch);
 }
 
 Result<std::uint32_t> Ext2Filesystem::AllocateFor(MapCursor& cursor, std::span<std::uint8_t> bitmap)
@@ -394,7 +394,7 @@ Status Ext2Filesystem::ReleaseLevels(MapCursor& cursor, std::uint32_t from)
         MapCursor::Level& held = cursor.levels[level];
         if (held.block != 0 && held.dirty)
         {
-            if (const Status written = cache.Write(held.block, held.data); !written)
+            if (const Status written = WriteMetadata(held.block, held.data); !written)
             {
                 return written;
             }
@@ -454,7 +454,7 @@ Result<std::uint32_t> Ext2Filesystem::ResolveForWrite(Inode& inode, MapCursor& c
             {
                 return Failure(released);
             }
-            if (const Status read = cache.Read(block, 0, held.data, held.data); !read)
+            if (const Status read = ReadMetadata(block, 0, held.data, held.data); !read)
             {
                 return Failure(read);
             }
@@ -499,7 +499,7 @@ Result<std::uint64_t> Ext2Filesystem::FreeTree(std::uint32_t block, std::uint32_
     if (depth > 0)
     {
         const std::span<std::uint8_t> pointers = buffers[LevelBuffers + depth - 1];
-        if (const Status read = cache.Read(block, 0, pointers, pointers); !read)
+        if (const Status read = ReadMetadata(block, 0, pointers, pointers); !read)
         {
             return Failure(read);
         }
@@ -536,7 +536,7 @@ Result<std::uint64_t> Ext2Filesystem::ShrinkIndirect(std::uint32_t block, std::u
     }
     const std::span<std::uint8_t> original = buffers[ShrinkOriginals + level];
     const std::span<std::uint8_t> changed = buffers[ShrinkChanged + level];
-    if (const Status read = cache.Read(block, 0, original, original); !read)
+    if (const Status read = ReadMetadata(block, 0, original, original); !read)
     {
         return Failure(read);
     }
@@ -572,7 +572,7 @@ Result<std::uint64_t> Ext2Filesystem::ShrinkIndirect(std::uint32_t block, std::u
     {
         return freed;
     }
-    if (const Status written = cache.Write(block, changed); !written)
+    if (const Status written = WriteMetadata(block, changed); !written)
     {
         return Failure(written);
     }
@@ -684,7 +684,7 @@ Status Ext2Filesystem::ReleaseAttributeBlock(std::uint32_t block, FreeCursor& fr
     {
         return std::unexpected(Error::Corrupt);
     }
-    if (const Status read = cache.Read(block, 0, scratch, scratch); !read)
+    if (const Status read = ReadMetadata(block, 0, scratch, scratch); !read)
     {
         return read;
     }
@@ -702,7 +702,7 @@ Status Ext2Filesystem::ReleaseAttributeBlock(std::uint32_t block, FreeCursor& fr
             StoreLittleEndian(scratch.data() + AttributeChecksum,
                               AttributeBlockChecksum(volume_seed, block, scratch));
         }
-        return cache.Write(block, scratch);
+        return WriteMetadata(block, scratch);
     }
     return FreeBlock(frees, block);
 }
@@ -744,7 +744,7 @@ Status Ext2Filesystem::CheckReleasable(const Inode& inode, std::span<std::uint8_
     {
         return std::unexpected(Error::Corrupt);
     }
-    if (const Status read = cache.Read(inode.attribute_block, 0, scratch, scratch); !read)
+    if (const Status read = ReadMetadata(inode.attribute_block, 0, scratch, scratch); !read)
     {
         return read;
     }
@@ -802,7 +802,7 @@ Status Ext2Filesystem::AddEntry(NodeId directory, Inode& inode, std::optional<Re
     if (room)
     {
         // The new record takes a record's slack, or a whole unused record.
-        if (const Status read = cache.Read(room->physical, 0, block, block); !read)
+        if (const Status read = ReadMetadata(room->physical, 0, block, block); !read)
         {
             return read;
         }
@@ -1051,7 +1051,7 @@ Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
             }
             ZeroBytes(block);
             CopyBytes(block.data() + within, chunk.data(), part);
-            failure = cache.Write(*fresh, block);
+            failure = WriteData(*fresh, block);
             if (!failure)
             {
                 break;
@@ -1061,7 +1061,7 @@ Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
         }
         else if (part == block_size)
         {
-            failure = cache.Write(physical, chunk);
+            failure = WriteData(physical, chunk);
         }
         else
         {
@@ -1069,7 +1069,7 @@ Result<std::size_t> Ext2Filesystem::WriteFile(NodeId file, std::uint64_t offset,
             if (failure)
             {
                 CopyBytes(block.data() + within, chunk.data(), part);
-                failure = cache.Write(physical, block);
+                failure = WriteData(physical, block);
             }
         }
         if (!failure)
