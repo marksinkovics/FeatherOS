@@ -23,22 +23,31 @@ You are the coordinator. Subagents write the code; you choose the work, review i
 
 - The next unit is the next part not marked `(done)` in the milestone in progress, or the next step within it.
 - A part that is too big for one subagent (a rough guide: more than about 15 files or more than one subsystem) gets split into steps. Read enough of the code to split it sensibly, or use the `Plan` agent for a large part. Write the step list into that part's roadmap text (`steps: 1 ..., 2 ..., 3 ...`) so it survives a cleared conversation, and include that edit in the first step's commit.
-- Pick the model and effort per step. What counts is a working, bug-free result, and the cost comes second: subagents were 94% of usage when every step ran on Opus at `high`/`xhigh`.
-  - `sonnet` at `medium`: mechanical work (renames, moving code, docs, tests for existing behaviour, small programs, tooling).
-  - `sonnet` at `high`: new code with a clear plan in one subsystem.
-  - `opus` at `high`: design-heavy or risky steps, such as on-disk write paths, concurrency, memory management, ABI changes, and path resolution.
-  - `opus` at `xhigh`: only where a subtle bug would corrupt data or hang both architectures and the step has no simpler shape.
-  - If a Sonnet step fails both fix rounds, retry it once on Opus before stopping.
+- Pick the model and effort per step. Sonnet is the default: general-purpose subagents were 86% of usage when most steps ran on Opus at `high`.
+  - `sonnet` at `medium`: mechanical work (renames, moving code, docs, tests for existing behaviour, small programs, tooling, test-disk and harness changes).
+  - `sonnet` at `high` (the agent's default): everything else, including read-only filesystem code, parsers, and wiring an existing core feature into the kernel.
+  - Risky steps (code that writes on-disk structures, crash ordering, concurrency, memory management or ABI changes): designed on Opus (section 1b), implemented on `sonnet` at `high`.
+  - Never `xhigh`. If a Sonnet step fails both fix rounds, retry it once on Opus before stopping.
+
+## 1b. Design (risky steps only)
+
+- Run the `Plan` agent with `model: "opus"`. It reads the code and writes the design to `docs/design/<milestone>-<part>-<step>.md`; give it the roadmap line range, the earlier steps' decisions, and this list of what the design must contain:
+  - the files, types and function signatures, and which existing code they build on
+  - the on-disk or in-memory layout, and every invariant the code must keep, numbered (`I1`, `I2`, ...)
+  - for write paths, the exact order of writes and what a crash at each point leaves
+  - the edge cases, and the errors returned for each
+  - the acceptance tests, numbered (`T1`, ...), each checked by an outside oracle where one exists (`e2fsck -fn`, `debugfs`, mtools, a model, a byte comparison), and for each invariant the test that fails when it is broken
+- Review the design before implementing: every roadmap requirement covered, every invariant has a test, nothing settles a question that belongs to the user. Fix gaps by sending them back to the same Plan agent.
+- The design file is committed with the step.
 
 ## 2. Spawn the subagent
 
-`Agent` with `subagent_type: "general-purpose"` and the chosen `model` and `effort`. No worktree isolation. The prompt has to stand on its own, because the agent doesn't see this conversation. Include:
+`Agent` with `subagent_type: "step-worker"` (`.claude/agents/step-worker.md`: Sonnet at `high`, with the standing rules, test cadence, docs and report format). Pass `model`/`effort` only to move off that default. No worktree isolation. The prompt has to stand on its own, because the agent doesn't see this conversation, but leave out what the agent file already says. Include:
 
 1. **Task:** the milestone, part and step, quoted from the roadmap, plus the decisions already made in earlier steps (files and types it should build on).
-2. **Rules:** follow `CLAUDE.md` (read it first), including the lint-before-test workflow, the header/source split, minimal comments, both architectures, and `GUARDED_BY`/`REQUIRES` annotations. Never run `git commit`, `git add`, `git stash`, `git checkout`, `git reset` or any other git command that writes. Don't start a background shell that outlives the task.
-3. **Tests:** before reporting, get `bash tools/quality.sh check` clean and pass `tools/check.sh --arch both --modes "<affected modes>"`. If the step finishes a part, also run `tools/check.sh --arch both --matrix`. Add tests for the new behaviour: a unit test where the logic can be tested on the host, and a QEMU case or smoke check on both architectures.
-4. **Docs:** at the end, follow `.claude/skills/finish-step/SKILL.md` for this step: update the roadmap text, CLAUDE.md Status, and `development.md`/`posix.md` where relevant.
-5. **Report:** keep it under 40 lines: the files changed and why, the test commands with their results, anything different from the plan, open questions or decisions that belong to the user, and a proposed commit message.
+2. **Where to read:** the roadmap line range for this part and the earlier summaries it builds on (`grep -n` for them), so the agent doesn't read the whole milestone section.
+3. **Tests:** the affected QEMU modes. The agent never runs the matrix.
+4. **For risky steps:** the design file path. Tell the agent to implement it as written, to implement every test `T1`... it names, to report any departure from it with the reason, and to run a mutation check: for each invariant `I1`..., break it on purpose, run the test that should catch it, record which test failed, and undo the change. The report lists `I<n>: caught by T<m>` or `I<n>: not caught`.
 
 Wait for the completion notification. Don't predict its result and don't poll it.
 
@@ -52,14 +61,19 @@ Wait for the completion notification. Don't predict its result and don't poll it
   - one architecture skipped
   - tests that don't actually check the new behaviour
   - docs left out of date
+- For a risky step, also check the diff against the design: every invariant visible in the code, every `T<n>` present and asserting what the design says, the departures justified, and every invariant caught in the mutation check. An invariant that is not caught is a missing test; send it back.
 - Run `bash tools/quality.sh check` yourself.
 - If the agent said tests passed but you have doubts, read `build/check/` or `build/<arch>/smoke-output.txt`. Re-run tests through the `test-runner` agent only if the evidence is missing.
-- If there's a problem, use `SendMessage` to send it back to the **same** subagent with the specifics. Allow at most two such rounds per step.
+- If the step finishes a part, run the matrix through `test-runner` (Haiku): `tools/check.sh --arch both --matrix`.
+- If a test fails, give `test-diagnoser` (Sonnet) the failing cases and log paths from `test-runner`. If its confidence is low, or its fix doesn't work, run it once more with `model: "opus"`.
+- If there's a problem, use `SendMessage` to send it back to the **same** subagent with the specifics (for a test failure, the diagnoser's cause, evidence and fix). Allow at most two such rounds per step, and re-run only the failing cases afterwards through `test-runner`.
 
 ## 4. Commit
 
 - Stage only the files this step changed, by path (`git add <paths>`, never `git add -A` with stray files around). Build output and scratch files must not be staged.
 - Commit with the Angular message. Scope is the subsystem (`fs`, `vfs`, `kernel`, `libc`, `user`, `tools`, `docs`, ...).
+- Add a row to `.claude/skills/autopilot/quality-log.md` and commit it with the step.
+- When a review, a test failure or a later step finds a bug that an earlier committed step introduced, note it in that step's row under "Later bugs". This column is what tells whether the cheaper models cost quality.
 - Print one line: the commit hash, the subject, and the tests that passed.
 - Stop the finished subagent's leftover background tasks, if it has any.
 
