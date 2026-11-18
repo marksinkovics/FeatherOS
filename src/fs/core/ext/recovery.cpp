@@ -17,6 +17,7 @@
 #include "common/little_endian.h"
 #include "ext/ext2_filesystem.h"
 #include "ext/journal.h"
+#include "ext/transaction.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -26,40 +27,24 @@
 namespace FeatherDisk::Ext
 {
 
-struct Ext2Filesystem::JournalLog
+void Ext2Filesystem::JournalLog::Restart()
 {
-    Inode inode;
-    JournalSuperblock header;
-    std::uint32_t seed;
-    // The journal's blocks that the last one read belongs to.
-    BlockRun run;
-    RevokeTable revokes;
-    // The first transaction not replayed.
-    std::uint32_t end;
-    // The next block of a walk, and how many it may still read: a log is never longer than the
-    // ring, and one that seems to be is going round it.
-    std::uint32_t position;
-    std::uint64_t remaining;
+    position = header.start;
+    remaining = std::uint64_t{header.maximum_length} - header.first + 1;
+}
 
-    void Restart()
+Result<std::uint32_t> Ext2Filesystem::JournalLog::Advance()
+{
+    if (remaining == 0)
     {
-        position = header.start;
-        remaining = std::uint64_t{header.maximum_length} - header.first + 1;
+        LogWarning("ext2: ", "the journal's log runs round the whole ring");
+        return std::unexpected(Error::Corrupt);
     }
-
-    Result<std::uint32_t> Advance()
-    {
-        if (remaining == 0)
-        {
-            LogWarning("ext2: ", "the journal's log runs round the whole ring");
-            return std::unexpected(Error::Corrupt);
-        }
-        --remaining;
-        const std::uint32_t current = position;
-        position = current + 1 == header.maximum_length ? header.first : current + 1;
-        return current;
-    }
-};
+    --remaining;
+    const std::uint32_t current = position;
+    position = current + 1 == header.maximum_length ? header.first : current + 1;
+    return current;
+}
 
 Status Ext2Filesystem::RecoverJournal()
 {
@@ -136,16 +121,22 @@ Status Ext2Filesystem::RecoverJournal()
     return {};
 }
 
-Status Ext2Filesystem::OpenJournal(JournalLog& log, Buffers& buffers)
+Status Ext2Filesystem::OpenJournal(JournalLog& log, Buffers& buffers, bool report)
 {
     if ((superblock.compatible & CompatibleHasJournal) == 0)
     {
-        LogWarning("ext2: cannot recover: ", "needs_recovery without a journal");
+        if (report)
+        {
+            LogWarning("ext2: cannot recover: ", "needs_recovery without a journal");
+        }
         return std::unexpected(Error::Unsupported);
     }
     if (superblock.journal_inode == 0)
     {
-        LogWarning("ext2: cannot recover: ", "the journal is on another device");
+        if (report)
+        {
+            LogWarning("ext2: cannot recover: ", "the journal is on another device");
+        }
         return std::unexpected(Error::Unsupported);
     }
     const Result<Node> node = LoadNode(superblock.journal_inode, buffers[2]);
@@ -156,7 +147,10 @@ Status Ext2Filesystem::OpenJournal(JournalLog& log, Buffers& buffers)
         {
             return std::unexpected(error);
         }
-        LogWithValue("ext2: the journal inode is not a file: ", superblock.journal_inode);
+        if (report)
+        {
+            LogWithValue("ext2: the journal inode is not a file: ", superblock.journal_inode);
+        }
         return std::unexpected(Error::Corrupt);
     }
     log.inode = node->inode;
@@ -169,6 +163,10 @@ Status Ext2Filesystem::OpenJournal(JournalLog& log, Buffers& buffers)
             CheckJournalSuperblock(log.header, block_size, log.inode.size / block_size);
         !checked)
     {
+        if (!report)
+        {
+            return checked;
+        }
         if (checked.error() == Error::Unsupported)
         {
             LogWithValue("ext2: cannot recover: unknown journal features ",

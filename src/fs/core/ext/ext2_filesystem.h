@@ -199,13 +199,37 @@ struct ExtentEdit
     bool committing;
 };
 
+// In blocks: the footprint a transaction reaches before the next change commits it, the most one
+// transaction may hold, and the most the committed layer holds before a checkpoint.
+struct JournalLimits
+{
+    std::uint32_t soft;
+    std::uint32_t hard;
+    std::uint32_t committed;
+};
+
+struct JournalActivity
+{
+    std::uint32_t transactions;
+    std::uint32_t checkpoints;
+    std::uint32_t wraps;
+    std::uint32_t retries;
+    std::uint32_t splits;
+    std::uint32_t largest_transaction;
+    std::uint32_t orphans_added;
+    std::uint32_t orphans_processed;
+    std::uint32_t next_sequence;
+    std::uint32_t head;
+    bool aborted;
+};
+
 // Changes (everything from SetAttributes to SymbolicLink, and Sync) must not run at the same time
 // as any other operation on the mount; reads may run together. The host serialises them.
 class Ext2Filesystem final : public Filesystem
 {
 public:
     Ext2Filesystem(BlockDevice& device, const Superblock& layout, bool mounted_read_only);
-    ~Ext2Filesystem() = default;
+    ~Ext2Filesystem();
 
     // Constructed in memory from Host::Allocate; the core has no <new> for the global form.
     static void* operator new(std::size_t size, void* place) noexcept;
@@ -215,6 +239,14 @@ public:
     // clears needs_recovery (recovery.cpp). Mount runs it on a read-only instance for a mount
     // asked to write, then mounts the recovered volume.
     Status RecoverJournal();
+    // Commits what is running, writes the log home, empties it and clears needs_recovery
+    // (transaction.cpp). ExtFilesystemType::Unmount runs it after Sync; the mount stays as it was
+    // when it fails.
+    Status CloseJournal();
+    // What the journal did so far, for tests: nullopt without one.
+    std::optional<JournalActivity> Activity() const;
+    // Only lowers the limits, for tests.
+    void LimitJournal(const JournalLimits& limits);
 
     Capabilities GetCapabilities() const override;
     NodeId Root() const override;
@@ -298,6 +330,7 @@ private:
 
     // Journal replay (recovery.cpp).
     struct JournalLog;
+    struct JournalState;
     enum class LogPass : std::uint8_t
     {
         // Finds the end of the log: the first transaction without a valid commit.
@@ -313,7 +346,8 @@ private:
         // A descriptor, revoke or block checksum that does not match.
         bool mismatch;
     };
-    Status OpenJournal(JournalLog& log, Buffers& buffers);
+    // Without report, a journal that cannot be used is not logged.
+    Status OpenJournal(JournalLog& log, Buffers& buffers, bool report = true);
     Result<std::uint64_t> LogBlockPlace(JournalLog& log, std::uint32_t position,
                                         std::span<std::uint8_t> scratch);
     Status ReadLogBlock(JournalLog& log, std::uint32_t position, std::span<std::uint8_t> out,
@@ -364,11 +398,42 @@ private:
     Status FreeBlocks(FreeCursor& cursor, std::uint64_t first, std::uint64_t count);
     Status FinishFrees(FreeCursor& cursor);
 
-    // Block access (transaction.cpp): metadata is what a journal would hold, data goes in place.
+    // Block access and transactions (transaction.cpp): metadata goes through the journal's layers
+    // when there is one, data in place.
     Status ReadMetadata(std::uint64_t block, std::size_t offset, std::span<std::uint8_t> out,
                         std::span<std::uint8_t> scratch);
     Status WriteMetadata(std::uint64_t first_block, std::span<const std::uint8_t> bytes);
     Status WriteData(std::uint64_t first_block, std::span<const std::uint8_t> bytes);
+    // Opens the journal of a writable mount before MarkMounted; a volume whose journal cannot be
+    // written mounts read-only, with a log line.
+    Status StartJournal();
+    void DestroyJournal();
+    // The committed layer, then the device.
+    Status ReadCommitted(std::uint64_t block, std::span<std::uint8_t> out);
+    // The ring blocks a transaction with that many copies and revokes takes.
+    std::uint32_t Footprint(std::size_t blocks, std::size_t revokes) const;
+    Status BeginStep();
+    Status EndStep();
+    void AbortStep();
+    // Rolls a failed step back. retry is set when the change should run again, now alone;
+    // otherwise the result is the error to report.
+    Error FailStep(Error error, bool may_retry, bool& retry);
+    bool CommitDue() const;
+    Status NoteFreedBlock(std::uint32_t group, std::uint64_t block);
+    // A group's block bitmap as the committed state has it, which a block freed since stays in
+    // use in until the freeing commits.
+    Status LoadCommittedBlockBitmap(std::uint32_t group, std::span<std::uint8_t> bitmap,
+                                    std::span<std::uint8_t> scratch);
+    bool GroupFrozen(std::uint32_t group) const;
+    Status CommitTransaction();
+    Status Checkpoint();
+    Status WriteJournalPosition(std::uint32_t start, std::uint32_t sequence, Buffers& buffers);
+    Result<std::uint64_t> NextLogPlace(std::span<std::uint8_t> scratch);
+    Status WriteRevokeBlocks(Buffers& buffers);
+    Status WriteDescriptorGroups(Buffers& buffers);
+    void AbortJournal(std::string_view why);
+    // Runs change as one step of a transaction (or plainly on a volume without a journal).
+    template <typename Change> auto Journalled(Change change) -> decltype(change());
 
     // Changes (write.cpp).
     Timestamp Now() const;
@@ -376,6 +441,8 @@ private:
     // Marks the volume not clean on disk before the first change after a mount or Sync.
     Status BeginChange(std::span<std::uint8_t> scratch);
     Status WriteSuperblock(std::span<std::uint8_t> scratch);
+    // The superblock's block with the state in memory, from the layers or, direct, the device.
+    Status EncodeSuperblockBlock(std::span<std::uint8_t> block, bool direct);
     Status MarkMounted();
     // Sets the error state, and stops writes unless s_errors says continue.
     void NoteError(Error error);
@@ -526,6 +593,8 @@ private:
     std::uint32_t pointers_per_block;
     std::uint64_t inode_table_blocks;
     std::uint64_t descriptor_blocks;
+    // Non-null only on a writable mount with a usable internal journal.
+    JournalState* journal = nullptr;
 };
 
 template <typename Visit>
@@ -607,6 +676,52 @@ Result<bool> Ext2Filesystem::WalkDirectory(const Inode& directory, std::uint64_t
         }
     }
     return false;
+}
+
+template <typename Change> auto Ext2Filesystem::Journalled(Change change) -> decltype(change())
+{
+    if (read_only)
+    {
+        return Refused();
+    }
+    if (journal == nullptr)
+    {
+        return Noted(change());
+    }
+    for (bool may_retry = true;; may_retry = false)
+    {
+        if (const Status begun = BeginStep(); !begun)
+        {
+            return std::unexpected(begun.error());
+        }
+        auto result = change();
+        std::optional<Error> failure;
+        if (!result)
+        {
+            failure = result.error();
+        }
+        else if (const Status ended = EndStep(); !ended)
+        {
+            failure = ended.error();
+        }
+        if (!failure)
+        {
+            if (CommitDue())
+            {
+                if (const Status committed = CommitTransaction(); !committed)
+                {
+                    return std::unexpected(committed.error());
+                }
+            }
+            return result;
+        }
+        bool retry = false;
+        const Error reported = FailStep(*failure, may_retry, retry);
+        if (!retry)
+        {
+            return std::unexpected(reported);
+        }
+    }
 }
 
 } // namespace FeatherDisk::Ext

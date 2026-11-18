@@ -515,19 +515,44 @@ void RequireSameAsDebugfs(MemoryDevice& ours, MemoryDevice& theirs)
 {
     std::vector<std::uint8_t> left = BytesOf(ours);
     std::vector<std::uint8_t> right = BytesOf(theirs);
-    constexpr std::array<std::pair<std::uint64_t, std::uint64_t>, 5> Written = {{
+    // A writable mount also counts itself in s_mtime and s_mnt_count.
+    constexpr std::array<std::pair<std::uint64_t, std::uint64_t>, 7> Written = {{
+        {44, 4},
         {48, 4},
+        {52, 2},
         {64, 4},
         {376, 8},
         {0x274, 4},
         {1020, 4},
     }};
-    for (const auto& [offset, length] : Written)
+    constexpr std::array<std::pair<std::uint64_t, std::uint64_t>, 4> JournalFeatures = {{
+        {0x24, 4},
+        {0x28, 4},
+        {0x50, 1},
+        {0xFC, 4},
+    }};
+    for (std::vector<std::uint8_t>* bytes : {&left, &right})
     {
-        for (std::uint64_t index = 0; index < length; ++index)
+        for (const auto& [offset, length] : Written)
         {
-            left[1024 + offset + index] = 0;
-            right[1024 + offset + index] = 0;
+            for (std::uint64_t index = 0; index < length; ++index)
+            {
+                (*bytes)[1024 + offset + index] = 0;
+            }
+        }
+        // And sets the journal's features as a writer needs them: s_feature_compat,
+        // s_feature_incompat, s_checksum_type and s_checksum.
+        const RawVolume raw{*bytes};
+        if ((raw.Load32(1024 + 92) & 0x4U) != 0)
+        {
+            const std::uint64_t journal = JournalOffset(raw, 0);
+            for (const auto& [offset, length] : JournalFeatures)
+            {
+                for (std::uint64_t index = 0; index < length; ++index)
+                {
+                    (*bytes)[journal + offset + index] = 0;
+                }
+            }
         }
     }
     RequireSameBytes(std::move(left), std::move(right));
@@ -536,7 +561,7 @@ void RequireSameAsDebugfs(MemoryDevice& ours, MemoryDevice& theirs)
 void ReplayByMounting(MemoryDevice& device)
 {
     MountedFilesystem ext(Ext::Ext2Type(), device, false);
-    REQUIRE_FALSE(ext->GetCapabilities().writable);
+    REQUIRE(ext->GetCapabilities().writable);
 }
 
 } // namespace FeatherDisk::Tests

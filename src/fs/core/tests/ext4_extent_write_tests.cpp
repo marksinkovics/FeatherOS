@@ -202,7 +202,7 @@ TEST_CASE("ext4 with extents and no journal mounts writable and gives new nodes 
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view variant : {"ext4-nojournal", "ext4-mixed"})
+    for (const std::string_view variant : {"ext4-nojournal", "ext4-mixed", "ext4-extents"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
@@ -388,96 +388,104 @@ TEST_CASE("ext4 turns unwritten extents written as data reaches them, never show
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage("ext4-nojournal"));
+    for (const std::string_view variant : {"ext4-nojournal", "ext4-extents"})
     {
-        // The filler takes the single free blocks between the image's files first, so debugfs
-        // finds a long run.
-        MountedFilesystem ext4(Ext2Type(), *device);
-        const NodeId filler = Value(ext4->Create(ext4->Root(), "filler.bin", 0644));
-        REQUIRE(WriteAt(*ext4, filler, 0, Pattern(2 * 1024 * 1024)) == 2 * 1024 * 1024);
-        const NodeId file = Value(ext4->Create(ext4->Root(), "allocated.bin", 0644));
-        REQUIRE(WriteAt(*ext4, file, 0, "start") == 5);
-    }
-    // 2000 blocks debugfs allocates unwritten, their old contents 0xA5 everywhere, and a size
-    // that covers 1500 of them.
-    REQUIRE(ChangeWithDebugfs(*device, "fallocate", "fallocate /allocated.bin 1 2000").ran);
-    REQUIRE(ChangeWithDebugfs(*device, "fallocate-size", "sif /allocated.bin size 1536000").ran);
-    {
-        std::vector<std::uint8_t> bytes = BytesOf(*device);
-        for (const DumpedEntry& extent : Leaves(*device, "/allocated.bin"))
+        INFO(variant);
+        const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
         {
-            if (extent.unwritten)
+            // The filler takes the single free blocks between the image's files first, so debugfs
+            // finds a long run.
+            MountedFilesystem ext4(Ext2Type(), *device);
+            const NodeId filler = Value(ext4->Create(ext4->Root(), "filler.bin", 0644));
+            REQUIRE(WriteAt(*ext4, filler, 0, Pattern(2 * 1024 * 1024)) == 2 * 1024 * 1024);
+            const NodeId file = Value(ext4->Create(ext4->Root(), "allocated.bin", 0644));
+            REQUIRE(WriteAt(*ext4, file, 0, "start") == 5);
+        }
+        // 2000 blocks debugfs allocates unwritten, their old contents 0xA5 everywhere, and a size
+        // that covers 1500 of them.
+        REQUIRE(ChangeWithDebugfs(*device, "fallocate", "fallocate /allocated.bin 1 2000").ran);
+        REQUIRE(
+            ChangeWithDebugfs(*device, "fallocate-size", "sif /allocated.bin size 1536000").ran);
+        {
+            std::vector<std::uint8_t> bytes = BytesOf(*device);
+            for (const DumpedEntry& extent : Leaves(*device, "/allocated.bin"))
             {
-                std::fill_n(bytes.begin() +
-                                static_cast<std::ptrdiff_t>(extent.physical * BlockSize),
-                            extent.length * BlockSize, std::uint8_t{0xA5});
+                if (extent.unwritten)
+                {
+                    std::fill_n(bytes.begin() +
+                                    static_cast<std::ptrdiff_t>(extent.physical * BlockSize),
+                                extent.length * BlockSize, std::uint8_t{0xA5});
+                }
             }
+            std::copy(bytes.begin(), bytes.end(), device->Bytes().begin());
         }
-        std::copy(bytes.begin(), bytes.end(), device->Bytes().begin());
-    }
-    std::string model = "start";
-    model.resize(1536000, '\0');
-    {
-        MountedFilesystem ext4(Ext2Type(), *device);
-        const NodeId file = Value(Walk(*ext4, "allocated.bin"));
-        REQUIRE(ReadAll(*ext4, file) == model);
-        // Inside one block in the middle: three extents of one, with zeros around the bytes.
-        REQUIRE(WriteAt(*ext4, file, 700 * BlockSize + 100, "middle") == 6);
-        Overwrite(model, 700 * BlockSize + 100, "middle");
-        REQUIRE(ReadAll(*ext4, file) == model);
-        // Front to back from block 1: the written part grows, the unwritten one shrinks.
-        for (std::uint64_t offset = BlockSize; offset < 300 * BlockSize; offset += 1500)
+        std::string model = "start";
+        model.resize(1536000, '\0');
         {
-            const std::string piece = Pattern(1500);
-            REQUIRE(WriteAt(*ext4, file, offset, piece) == piece.size());
-            Overwrite(model, offset, piece);
+            MountedFilesystem ext4(Ext2Type(), *device);
+            const NodeId file = Value(Walk(*ext4, "allocated.bin"));
+            REQUIRE(ReadAll(*ext4, file) == model);
+            // Inside one block in the middle: three extents of one, with zeros around the bytes.
+            REQUIRE(WriteAt(*ext4, file, 700 * BlockSize + 100, "middle") == 6);
+            Overwrite(model, 700 * BlockSize + 100, "middle");
+            REQUIRE(ReadAll(*ext4, file) == model);
+            // Front to back from block 1: the written part grows, the unwritten one shrinks.
+            for (std::uint64_t offset = BlockSize; offset < 300 * BlockSize; offset += 1500)
+            {
+                const std::string piece = Pattern(1500);
+                REQUIRE(WriteAt(*ext4, file, offset, piece) == piece.size());
+                Overwrite(model, offset, piece);
+            }
+            // Across the written block and into the unwritten ones on both sides.
+            const std::string across = Pattern(5000);
+            REQUIRE(WriteAt(*ext4, file, 698 * BlockSize + 10, across) == across.size());
+            Overwrite(model, 698 * BlockSize + 10, across);
+            // Past the size, into blocks still unwritten, then past them into a hole.
+            REQUIRE(WriteAt(*ext4, file, 1800 * BlockSize + 1, "beyond") == 6);
+            Overwrite(model, 1800 * BlockSize + 1, "beyond");
+            REQUIRE(WriteAt(*ext4, file, 2100 * BlockSize, "hole") == 4);
+            Overwrite(model, 2100 * BlockSize, "hole");
+            REQUIRE(ReadAll(*ext4, file) == model);
+            REQUIRE(model.find('\xA5') == std::string::npos);
         }
-        // Across the written block and into the unwritten ones on both sides.
-        const std::string across = Pattern(5000);
-        REQUIRE(WriteAt(*ext4, file, 698 * BlockSize + 10, across) == across.size());
-        Overwrite(model, 698 * BlockSize + 10, across);
-        // Past the size, into blocks still unwritten, then past them into a hole.
-        REQUIRE(WriteAt(*ext4, file, 1800 * BlockSize + 1, "beyond") == 6);
-        Overwrite(model, 1800 * BlockSize + 1, "beyond");
-        REQUIRE(WriteAt(*ext4, file, 2100 * BlockSize, "hole") == 4);
-        Overwrite(model, 2100 * BlockSize, "hole");
-        REQUIRE(ReadAll(*ext4, file) == model);
-        REQUIRE(model.find('\xA5') == std::string::npos);
-    }
-    CheckClean(*device, "extent-unwritten");
-    CheckDebugfsCat(*device, "/allocated.bin", model);
-    const std::vector<DumpedEntry> leaves = Leaves(*device, "/allocated.bin");
-    REQUIRE(std::count_if(leaves.begin(), leaves.end(),
-                          [](const DumpedEntry& entry) { return entry.unwritten; }) >= 3);
-    // Blocks 1 to 299, written front to back, are one written extent by now.
-    REQUIRE(std::any_of(
-        leaves.begin(), leaves.end(), [](const DumpedEntry& entry)
-        { return !entry.unwritten && entry.logical <= 1 && entry.logical + entry.length >= 300; }));
-    {
-        // Truncating inside an unwritten extent and then removing the file.
-        MountedFilesystem ext4(Ext2Type(), *device);
-        const NodeId file = Value(Walk(*ext4, "allocated.bin"));
-        const std::uint32_t free = FreeBlocks(*ext4);
-        Succeeds(ext4->Truncate(file, 1000 * BlockSize + 10));
-        model.resize(1000 * BlockSize + 10);
-        REQUIRE(ReadAll(*ext4, file) == model);
-        REQUIRE(FreeBlocks(*ext4) >= free + 1000);
-    }
-    CheckClean(*device, "extent-unwritten-truncated");
-    {
-        MountedFilesystem ext4(Ext2Type(), *device);
-        // unwritten.bin: one written block, then 39 unwritten ones of one block each.
-        const NodeId image_file = Value(Walk(*ext4, "unwritten.bin"));
-        std::string image_model = ReadAll(*ext4, image_file);
-        for (const std::uint64_t offset : {std::uint64_t{BlockSize + 3}, std::uint64_t{20000}})
+        CheckClean(*device, "extent-unwritten");
+        CheckDebugfsCat(*device, "/allocated.bin", model);
+        const std::vector<DumpedEntry> leaves = Leaves(*device, "/allocated.bin");
+        REQUIRE(std::count_if(leaves.begin(), leaves.end(),
+                              [](const DumpedEntry& entry) { return entry.unwritten; }) >= 3);
+        // Blocks 1 to 299, written front to back, are one written extent by now.
+        REQUIRE(std::any_of(leaves.begin(), leaves.end(),
+                            [](const DumpedEntry& entry)
+                            {
+                                return !entry.unwritten && entry.logical <= 1 &&
+                                       entry.logical + entry.length >= 300;
+                            }));
         {
-            REQUIRE(WriteAt(*ext4, image_file, offset, "x") == 1);
-            Overwrite(image_model, offset, "x");
+            // Truncating inside an unwritten extent and then removing the file.
+            MountedFilesystem ext4(Ext2Type(), *device);
+            const NodeId file = Value(Walk(*ext4, "allocated.bin"));
+            const std::uint32_t free = FreeBlocks(*ext4);
+            Succeeds(ext4->Truncate(file, 1000 * BlockSize + 10));
+            model.resize(1000 * BlockSize + 10);
+            REQUIRE(ReadAll(*ext4, file) == model);
+            REQUIRE(FreeBlocks(*ext4) >= free + 1000);
         }
-        REQUIRE(ReadAll(*ext4, image_file) == image_model);
-        Succeeds(ext4->Remove(ext4->Root(), "allocated.bin"));
+        CheckClean(*device, "extent-unwritten-truncated");
+        {
+            MountedFilesystem ext4(Ext2Type(), *device);
+            // unwritten.bin: one written block, then 39 unwritten ones of one block each.
+            const NodeId image_file = Value(Walk(*ext4, "unwritten.bin"));
+            std::string image_model = ReadAll(*ext4, image_file);
+            for (const std::uint64_t offset : {std::uint64_t{BlockSize + 3}, std::uint64_t{20000}})
+            {
+                REQUIRE(WriteAt(*ext4, image_file, offset, "x") == 1);
+                Overwrite(image_model, offset, "x");
+            }
+            REQUIRE(ReadAll(*ext4, image_file) == image_model);
+            Succeeds(ext4->Remove(ext4->Root(), "allocated.bin"));
+        }
+        CheckClean(*device, "extent-unwritten-removed");
     }
-    CheckClean(*device, "extent-unwritten-removed");
 #endif
 }
 
@@ -486,67 +494,71 @@ TEST_CASE("ext4 truncates extent trees at many points and grows them with holes"
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage("ext4-nojournal"));
-    std::string text;
-    std::string other;
-    std::uint32_t free = 0;
-    NodeId file = 0;
+    for (const std::string_view variant : {"ext4-nojournal", "ext4-extents"})
     {
-        MountedFilesystem ext4(Ext2Type(), *device);
-        free = FreeBlocks(*ext4);
-        file = Value(ext4->Create(ext4->Root(), "shrinking.bin", 0644));
-        const NodeId partner = Value(ext4->Create(ext4->Root(), "partner.bin", 0644));
-        Interleave(*ext4, file, partner, 420, text, other);
-        // A longer extent at the end, then one more interleaved block.
-        const std::string run = Pattern(30 * BlockSize);
-        REQUIRE(WriteAt(*ext4, file, text.size(), run) == run.size());
-        text += run;
-    }
-    REQUIRE(TreeDepth(*device, "/shrinking.bin") == 2);
-    // Inside the long extent, at its start, inside a leaf, at a leaf's first block, in the first
-    // leaf, inside the first block, and to nothing.
-    for (const std::uint64_t size :
-         {std::uint64_t{text.size() - 3 * BlockSize - 17}, std::uint64_t{420 * BlockSize},
-          std::uint64_t{300 * BlockSize + 5}, std::uint64_t{168 * BlockSize},
-          std::uint64_t{50 * BlockSize}, std::uint64_t{1}, std::uint64_t{0}})
-    {
-        INFO("size " << size);
+        INFO(variant);
+        const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
+        std::string text;
+        std::string other;
+        std::uint32_t free = 0;
+        NodeId file = 0;
         {
             MountedFilesystem ext4(Ext2Type(), *device);
-            const std::uint32_t before = FreeBlocks(*ext4);
-            Succeeds(ext4->Truncate(file, size));
-            REQUIRE(Value(ext4->GetAttributes(file)).size == size);
-            REQUIRE(ReadAll(*ext4, file) == text.substr(0, size));
-            REQUIRE(FreeBlocks(*ext4) >= before);
+            free = FreeBlocks(*ext4);
+            file = Value(ext4->Create(ext4->Root(), "shrinking.bin", 0644));
+            const NodeId partner = Value(ext4->Create(ext4->Root(), "partner.bin", 0644));
+            Interleave(*ext4, file, partner, 420, text, other);
+            // A longer extent at the end, then one more interleaved block.
+            const std::string run = Pattern(30 * BlockSize);
+            REQUIRE(WriteAt(*ext4, file, text.size(), run) == run.size());
+            text += run;
         }
-        CheckClean(*device, "extent-truncate");
-        CheckDebugfsCat(*device, "/shrinking.bin", text.substr(0, size));
+        REQUIRE(TreeDepth(*device, "/shrinking.bin") == 2);
+        // Inside the long extent, at its start, inside a leaf, at a leaf's first block, in the
+        // first leaf, inside the first block, and to nothing.
+        for (const std::uint64_t size :
+             {std::uint64_t{text.size() - 3 * BlockSize - 17}, std::uint64_t{420 * BlockSize},
+              std::uint64_t{300 * BlockSize + 5}, std::uint64_t{168 * BlockSize},
+              std::uint64_t{50 * BlockSize}, std::uint64_t{1}, std::uint64_t{0}})
+        {
+            INFO("size " << size);
+            {
+                MountedFilesystem ext4(Ext2Type(), *device);
+                const std::uint32_t before = FreeBlocks(*ext4);
+                Succeeds(ext4->Truncate(file, size));
+                REQUIRE(Value(ext4->GetAttributes(file)).size == size);
+                REQUIRE(ReadAll(*ext4, file) == text.substr(0, size));
+                REQUIRE(FreeBlocks(*ext4) >= before);
+            }
+            CheckClean(*device, "extent-truncate");
+            CheckDebugfsCat(*device, "/shrinking.bin", text.substr(0, size));
+        }
+        REQUIRE(RootHeader(*device, file) == std::array<std::uint16_t, 3>{0, 4, 0});
+        {
+            MountedFilesystem ext4(Ext2Type(), *device);
+            // Growing allocates nothing; what was cut off reads as zeros.
+            REQUIRE(WriteAt(*ext4, file, 0, text.substr(0, 5000)) == 5000);
+            Succeeds(ext4->Truncate(file, 3000));
+            const std::uint32_t before = FreeBlocks(*ext4);
+            Succeeds(ext4->Truncate(file, 1024 * 1024));
+            REQUIRE(FreeBlocks(*ext4) == before);
+            REQUIRE(ReadAll(*ext4, file) ==
+                    text.substr(0, 3000) + std::string(1024 * 1024 - 3000, '\0'));
+            REQUIRE(WriteAt(*ext4, file, 1024 * 1024, "tail") == 4);
+            REQUIRE(ErrorOf(ext4->Truncate(file, std::uint64_t{1} << 50)) == Error::FileTooLarge);
+            // The image's tree two levels deep, cut in its middle and then emptied.
+            const NodeId holes = Value(Walk(*ext4, "holes.bin"));
+            const std::string holes_text = ReadAll(*ext4, holes);
+            Succeeds(ext4->Truncate(holes, 1500 * BlockSize + 3));
+            REQUIRE(ReadAll(*ext4, holes) == holes_text.substr(0, 1500 * BlockSize + 3));
+            Succeeds(ext4->Truncate(holes, 0));
+            Succeeds(ext4->Remove(ext4->Root(), "partner.bin"));
+            Succeeds(ext4->Remove(ext4->Root(), "shrinking.bin"));
+            Succeeds(ext4->Remove(ext4->Root(), "holes.bin"));
+            REQUIRE(FreeBlocks(*ext4) > free);
+        }
+        CheckClean(*device, "extent-truncate-grow");
     }
-    REQUIRE(RootHeader(*device, file) == std::array<std::uint16_t, 3>{0, 4, 0});
-    {
-        MountedFilesystem ext4(Ext2Type(), *device);
-        // Growing allocates nothing; what was cut off reads as zeros.
-        REQUIRE(WriteAt(*ext4, file, 0, text.substr(0, 5000)) == 5000);
-        Succeeds(ext4->Truncate(file, 3000));
-        const std::uint32_t before = FreeBlocks(*ext4);
-        Succeeds(ext4->Truncate(file, 1024 * 1024));
-        REQUIRE(FreeBlocks(*ext4) == before);
-        REQUIRE(ReadAll(*ext4, file) ==
-                text.substr(0, 3000) + std::string(1024 * 1024 - 3000, '\0'));
-        REQUIRE(WriteAt(*ext4, file, 1024 * 1024, "tail") == 4);
-        REQUIRE(ErrorOf(ext4->Truncate(file, std::uint64_t{1} << 50)) == Error::FileTooLarge);
-        // The image's tree two levels deep, cut in its middle and then emptied.
-        const NodeId holes = Value(Walk(*ext4, "holes.bin"));
-        const std::string holes_text = ReadAll(*ext4, holes);
-        Succeeds(ext4->Truncate(holes, 1500 * BlockSize + 3));
-        REQUIRE(ReadAll(*ext4, holes) == holes_text.substr(0, 1500 * BlockSize + 3));
-        Succeeds(ext4->Truncate(holes, 0));
-        Succeeds(ext4->Remove(ext4->Root(), "partner.bin"));
-        Succeeds(ext4->Remove(ext4->Root(), "shrinking.bin"));
-        Succeeds(ext4->Remove(ext4->Root(), "holes.bin"));
-        REQUIRE(FreeBlocks(*ext4) > free);
-    }
-    CheckClean(*device, "extent-truncate-grow");
 #endif
 }
 
@@ -555,7 +567,7 @@ TEST_CASE("ext4 directories on extents grow to thousands of entries and lose has
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view variant : {"ext4-nojournal", "ext4-mixed"})
+    for (const std::string_view variant : {"ext4-nojournal", "ext4-mixed", "ext4-extents"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
@@ -602,17 +614,21 @@ TEST_CASE("ext4 directories on extents grow to thousands of entries and lose has
         CheckClean(*device, std::string(variant) + "-wide-removed");
     }
     // large/ of ext4-nojournal: 3000 entries with a two-level hash index over an extent tree.
-    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage("ext4-nojournal"));
+    for (const std::string_view variant : {"ext4-nojournal", "ext4-extents"})
     {
-        MountedFilesystem ext4(Ext2Type(), *device);
-        const NodeId large = Value(Walk(*ext4, "large"));
-        for (int number = 0; number < 200; ++number)
+        INFO(variant);
+        const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
         {
-            Value(ext4->Create(large, NumberedName("added", number, 100), 0644));
+            MountedFilesystem ext4(Ext2Type(), *device);
+            const NodeId large = Value(Walk(*ext4, "large"));
+            for (int number = 0; number < 200; ++number)
+            {
+                Value(ext4->Create(large, NumberedName("added", number, 100), 0644));
+            }
+            REQUIRE(List(*ext4, large).size() == 3200);
         }
-        REQUIRE(List(*ext4, large).size() == 3200);
+        CheckClean(*device, "extent-large-directory");
     }
-    CheckClean(*device, "extent-large-directory");
 #endif
 }
 
@@ -731,11 +747,11 @@ TEST_CASE("random writes and truncations of one extent file match a model")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view variant : {"ext4-nojournal", "ext4-mixed"})
+    for (const std::string_view variant : {"ext4-nojournal", "ext4-mixed", "ext4-extents"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
-        std::mt19937 random(variant == "ext4-mixed" ? 77 : 78);
+        std::mt19937 random(variant == "ext4-mixed" ? 77 : variant == "ext4-extents" ? 79 : 78);
         std::string model;
         {
             auto ext4 = std::make_unique<MountedFilesystem>(Ext2Type(), *device);

@@ -29,13 +29,22 @@ namespace FeatherDisk::Ext
 // in sparse files read as zeros.
 //
 // A mount asked for writing creates, writes, truncates and removes files, makes and removes
-// directories, renames, makes symbolic and hard links and sets attributes, on plain ext2 only. It
-// falls back to read-only, with a log line saying why, for a journal or any ext4 feature, unknown
-// read-only compatible or compatible features, a volume that was not cleanly unmounted or has
-// errors recorded, inconsistent group descriptors or a device that refuses writes;
-// GetCapabilities tells. Damage found while writing records errors in the superblock and, unless
-// s_errors says continue, stops further writes. Every caller counts as root, so the reserved
-// blocks are used too, and new files belong to user and group 0.
+// directories, renames, makes symbolic and hard links and sets attributes, on ext2 and on ext3 and
+// ext4 layouts (extents, 64bit, flex_bg, checksums, hashed directories). A volume with an internal
+// journal is written through it, in ordered mode: every change is one jbd2 transaction of
+// metadata blocks (file data goes to its place first), which commits at Sync, at unmount, when it
+// has grown to a quarter of the journal and, when the next change arrives, after 5 seconds; the
+// host should call Sync every few seconds, which the core has no timer for. A change too big for
+// one transaction even alone fails with Error::NoSpace and changes nothing. After an I/O error in
+// the journal, this mount writes nothing more. needs_recovery stays set while the volume is
+// mounted and goes at unmount. It falls back to read-only, with a log line saying why, for a
+// journal on another device, of version 1 or shorter than 1024 blocks, or with features it
+// does not know, any other feature whose rules it does not keep (meta_bg, inline_data, bigalloc,
+// quota, orphans still to finish, ...), unknown read-only compatible or compatible features, a
+// volume that was not cleanly unmounted or has errors recorded, inconsistent group descriptors or
+// a device that refuses writes; GetCapabilities tells. Damage found while writing records errors
+// in the superblock and, unless s_errors says continue, stops further writes. Every caller counts
+// as root, so the reserved blocks are used too, and new files belong to user and group 0.
 //
 // Changes (writing operations and Sync) must not run at the same time as any other operation
 // on the same mount; reads may run together, since the metadata cache's lock covers only copying.

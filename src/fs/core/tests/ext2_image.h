@@ -93,10 +93,10 @@ Ext::JournalSuperblock JournalSuperblockOf(MemoryDevice& device);
 
 void RequireSameBytes(std::vector<std::uint8_t> ours, std::vector<std::uint8_t> theirs);
 // debugfs's journal_run also writes s_wtime, s_lastcheck, s_kbytes_written and their high bytes,
-// and the superblock checksum over them; everything else must match.
+// and the superblock checksum over them; a writable mount counts itself in s_mtime and s_mnt_count
+// and sets the journal's features and checksum. Everything else must match.
 void RequireSameAsDebugfs(MemoryDevice& ours, MemoryDevice& theirs);
-// Replays the journal by mounting for writing, which must give a read-only mount (until the core
-// writes through journals).
+// Replays the journal by mounting for writing, which must give a writable mount, and unmounting.
 void ReplayByMounting(MemoryDevice& device);
 
 } // namespace FeatherDisk::Tests

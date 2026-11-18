@@ -36,7 +36,9 @@ Status MemoryDevice::Read(std::uint64_t first_sector, std::span<std::uint8_t> bu
     {
         return std::unexpected(Error::InvalidArgument);
     }
-    if (first_sector + buffer.size() / sector_size > failing_sector)
+    if (first_sector + buffer.size() / sector_size > failing_sector ||
+        (failing_single >= first_sector &&
+         failing_single - first_sector < buffer.size() / sector_size))
     {
         return std::unexpected(Error::Io);
     }
@@ -82,6 +84,16 @@ std::span<std::uint8_t> MemoryDevice::Bytes()
 void MemoryDevice::FailReadsFrom(std::uint64_t sector)
 {
     failing_sector = std::min(sector, failing_sector);
+}
+
+void MemoryDevice::FailReadsAt(std::uint64_t sector)
+{
+    failing_single = sector;
+}
+
+void MemoryDevice::RestoreReads()
+{
+    failing_single = UINT64_MAX;
 }
 
 void MemoryDevice::FailWritesAfter(std::uint64_t count)

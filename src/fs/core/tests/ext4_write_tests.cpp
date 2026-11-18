@@ -127,7 +127,7 @@ void CheckDebugfsHas(MemoryDevice& device, std::string_view command,
 } // namespace
 #endif
 
-TEST_CASE("ext4 volumes without a journal mount writable, the others read-only")
+TEST_CASE("ext4 volumes mount writable, but for features whose rules the driver does not keep")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
@@ -165,9 +165,9 @@ TEST_CASE("ext4 volumes without a journal mount writable, the others read-only")
         REQUIRE(writable(variant, unchanged));
     }
     // A journal (and orphan_file with it), with or without extents.
-    REQUIRE_FALSE(writable("ext4-blockmap", unchanged));
-    REQUIRE_FALSE(writable("ext4", unchanged));
-    REQUIRE_FALSE(writable("ext4-extents", unchanged));
+    REQUIRE(writable("ext4-blockmap", unchanged));
+    REQUIRE(writable("ext4", unchanged));
+    REQUIRE(writable("ext4-extents", unchanged));
     // Extents without a journal, also the feature alone with no file using it yet.
     REQUIRE(writable("ext4-nojournal", unchanged));
     REQUIRE(writable("ext4-mixed", unchanged));

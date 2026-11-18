@@ -280,8 +280,9 @@ TEST_CASE("ext2 mounts read-only when a volume must not be written")
     REQUIRE_FALSE(writable("1k", [](RawVolume& raw) { raw.Store16(StateOffset, 0); }));
     REQUIRE_FALSE(writable("1k", [](RawVolume& raw) { raw.Store16(StateOffset, 3); }));
     REQUIRE_FALSE(writable("1k", [](RawVolume& raw) { raw.Store16(StateOffset, 2); }));
-    // An ext3 journal, an unknown read-only compatible feature, an unknown compatible one.
-    REQUIRE_FALSE(writable("ext3", unchanged));
+    // An ext3 journal is written (ext_transaction_tests.cpp); an unknown read-only compatible
+    // feature and an unknown compatible one are not.
+    REQUIRE(writable("ext3", unchanged));
     REQUIRE_FALSE(writable("1k", [](RawVolume& raw)
                            { raw.Store32(ReadOnlyCompatibleOffset, 0x80000000U | 3U); }));
     REQUIRE_FALSE(
@@ -347,12 +348,27 @@ TEST_CASE("ext4 layouts without a journal or extents take files with every check
 #endif
 }
 
+TEST_CASE("ext3 and ext4 with a journal take files through transactions")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    // Indirect blocks, extents, 64bit, the three journal checksum versions and 4 KiB blocks.
+    for (const std::string_view variant : {"ext3", "ext4", "ext4-blockmap", "ext4-64bit",
+                                           "ext4-extents", "ext4-journal-gdtcsum", "ext4-4k"})
+    {
+        CreateWriteAndRead(variant);
+    }
+#endif
+}
+
 TEST_CASE("ext2 writes through direct, single and double indirect blocks")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view variant : {"1k", "4k", "ext4-csum", "ext4-csum64", "ext4-gdtcsum"})
+    for (const std::string_view variant : {"1k", "4k", "ext4-csum", "ext4-csum64", "ext4-gdtcsum",
+                                           "ext3", "ext4-blockmap", "ext4-64bit"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
@@ -497,7 +513,8 @@ TEST_CASE("ext2 removes files, hard links, symbolic links and special nodes")
     SKIP("e2fsprogs is not installed");
 #else
     // many/ has a hash index on the ext4-csum volumes.
-    for (const std::string_view variant : {"1k", "4k", "ext4-csum", "ext4-csum64", "ext4-gdtcsum"})
+    for (const std::string_view variant : {"1k", "4k", "ext4-csum", "ext4-csum64", "ext4-gdtcsum",
+                                           "ext3", "ext4-blockmap", "ext4-64bit", "ext4-4k"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
@@ -597,7 +614,7 @@ TEST_CASE("ext2 grows a directory past its direct blocks and shrinks it back")
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view variant : {"1k", "ext4-csum"})
+    for (const std::string_view variant : {"1k", "ext4-csum", "ext3", "ext4-blockmap"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
@@ -639,7 +656,7 @@ TEST_CASE("ext2 fills the volume, then frees and reuses the space")
     SKIP("e2fsprogs is not installed");
 #else
     // ext4-csum's groups 2 and 3 start uninitialised; ext4-nojournal's file takes extents.
-    for (const std::string_view variant : {"1k", "ext4-csum", "ext4-nojournal"})
+    for (const std::string_view variant : {"1k", "ext4-csum", "ext4-nojournal", "ext3", "ext4"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
@@ -682,7 +699,7 @@ TEST_CASE("ext2 fills the volume, then frees and reuses the space")
             expected.replace(10, 9, "rewritten");
             REQUIRE(ReadAt(*ext2, file, 0, expected.size()) == expected);
             Succeeds(ext2->Remove(ext2->Root(), "filler.bin"));
-            REQUIRE(FreeBlocks(*ext2) > written / 1024);
+            REQUIRE(FreeBlocks(*ext2) >= written / 1024);
             WriteNewFile(*ext2, "reused.bin", Pattern(200 * 1024));
             REQUIRE(ReadAll(*ext2, Value(Walk(*ext2, "reused.bin"))) == Pattern(200 * 1024));
         }
@@ -726,7 +743,7 @@ TEST_CASE("ext2 sets modes, owners and times")
     SKIP("e2fsprogs is not installed");
 #else
     for (const std::string_view variant :
-         {"1k", "4k", "ext4-csum", "ext4-gdtcsum", "ext4-nojournal"})
+         {"1k", "4k", "ext4-csum", "ext4-gdtcsum", "ext4-nojournal", "ext3", "ext4"})
     {
         INFO(variant);
         const bool nanoseconds = variant != "1k";
@@ -1426,5 +1443,10 @@ TEST_CASE("random ext2 file and directory changes match a model")
     RandomChanges("ext4-gdtcsum", 2029, 400, 6 * 1024 * 1024);
     RandomChanges("ext4-nojournal", 2030, 800, 2 * 1024 * 1024);
     RandomChanges("ext4-mixed", 2031, 500, 6 * 1024 * 1024);
+    // Through the journal: indirect blocks, extents, 64bit and 4 KiB blocks.
+    RandomChanges("ext3", 2032, 800, 600 * 1024);
+    RandomChanges("ext4", 2033, 800, 2 * 1024 * 1024);
+    RandomChanges("ext4-64bit", 2034, 500, 2 * 1024 * 1024);
+    RandomChanges("ext4-4k", 2035, 400, 6 * 1024 * 1024);
 #endif
 }

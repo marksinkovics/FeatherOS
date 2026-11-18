@@ -42,6 +42,7 @@
 #               block maps on a volume whose new files get extents; many/ hashed
 #   ext4-journal-gdtcsum  ext4 in 1 KiB blocks with CRC16 group descriptor checksums (uninit_bg)
 #               instead of metadata_csum, so its journal has 64-bit block numbers and no checksums
+#   ext4-4k     mke2fs's default ext4 in 4 KiB blocks, 16 MiB, with a journal of 1024 blocks
 #
 #   sh make_ext2_image.sh <mke2fs> <debugfs> <image> <variant>
 #
@@ -171,6 +172,10 @@ case "$variant" in
         size=16M
         ;;
     ext4-journal-gdtcsum) options="-t ext4 -b 1024 -O ^metadata_csum,uninit_bg" ;;
+    ext4-4k)
+        options="-t ext4 -b 4096"
+        size=16M
+        ;;
     ext4-nojournal)
         options="-t ext4 -b 1024 -N 6144 -O ^has_journal"
         size=32M

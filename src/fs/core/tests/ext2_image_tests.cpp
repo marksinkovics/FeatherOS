@@ -451,28 +451,6 @@ TEST_CASE("ext4 reads extent trees two levels deep, unwritten extents and a larg
 #endif
 }
 
-TEST_CASE("ext3 and ext4 volumes mount read-only when asked to write, and keep every byte")
-{
-#ifndef FEATHERDISK_EXT_IMAGES
-    SKIP("e2fsprogs is not installed");
-#else
-    // A journal or extents; ext4-gdtcsum has neither and is written (ext4_write_tests.cpp).
-    for (const std::string_view variant :
-         {"ext3", "ext4", "ext4-extents", "ext4-blockmap", "ext4-64bit"})
-    {
-        INFO(variant);
-        const std::vector<std::uint8_t> original = LoadExtImage(variant);
-        const std::unique_ptr<MemoryDevice> device = DeviceFrom(original);
-        {
-            MountedFilesystem ext2(Ext2Type(), *device, false);
-            CheckReadOnly(*ext2);
-        }
-        REQUIRE(std::memcmp(device->Bytes().data(), original.data(), original.size()) == 0);
-        REQUIRE(device->flush_count == 0);
-    }
-#endif
-}
-
 TEST_CASE("a read-only ext2 mount changes nothing on the volume")
 {
 #ifndef FEATHERDISK_EXT_IMAGES

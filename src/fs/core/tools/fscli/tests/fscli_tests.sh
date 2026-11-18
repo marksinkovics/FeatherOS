@@ -261,12 +261,16 @@ case "$case" in
             awk 'BEGIN { for (line = 0; line < 12800; line++) printf "line %05d of a file with indirect\n", line }' \
                 | cmp -s - "$work/out" || fail "wrong file over indirect blocks in $image"
         done
-        # A journal and ext4 features keep the volume read-only, byte for byte.
-        cp "$ext/ext4-blockmap.img" "$work/ext4.img"
-        printf 'new\n' >"$work/new.txt"
-        run 1 cp-in "$work/ext4.img" "$work/new.txt" /new.txt
-        error_has 'the volume mounted read-only'
-        cmp -s "$ext/ext4-blockmap.img" "$work/ext4.img" || fail "the read-only volume changed"
+        # A journal on another device keeps the volume read-only, byte for byte.
+        if [ -n "$debugfs" ] && [ -x "$debugfs" ]; then
+            cp "$ext/ext4-blockmap.img" "$work/ext4.img"
+            "$debugfs" -w -R "ssv journal_inum 0" "$work/ext4.img" >/dev/null 2>&1
+            cp "$work/ext4.img" "$work/ext4-before.img"
+            printf 'new\n' >"$work/new.txt"
+            run 1 cp-in "$work/ext4.img" "$work/new.txt" /new.txt
+            error_has 'the volume mounted read-only'
+            cmp -s "$work/ext4-before.img" "$work/ext4.img" || fail "the read-only volume changed"
+        fi
         ;;
     ext4-extents)
         need_ext_images
@@ -402,10 +406,13 @@ case "$case" in
         error_has 'No such file or directory'
         run 1 cp-in "$work/1k.img" "$work" /x
         error_has 'not a regular file'
-        cp "$ext/ext3.img" "$work/ext3.img"
-        run 1 cp-in "$work/ext3.img" "$work/small.txt" /small.txt
-        error_has 'the volume mounted read-only'
-        error_has 'journal'
+        if [ -n "$debugfs" ] && [ -x "$debugfs" ]; then
+            cp "$ext/ext3.img" "$work/ext3.img"
+            "$debugfs" -w -R "ssv journal_inum 0" "$work/ext3.img" >/dev/null 2>&1
+            run 1 cp-in "$work/ext3.img" "$work/small.txt" /small.txt
+            error_has 'the volume mounted read-only'
+            error_has 'journal'
+        fi
         run 2 cp-in "$work/1k.img" "$work/small.txt"
         check_clean "$work/1k.img"
         ;;

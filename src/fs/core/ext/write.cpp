@@ -23,6 +23,7 @@
 #include "common/bytes.h"
 #include "common/little_endian.h"
 #include "ext/ext2_filesystem.h"
+#include "ext/transaction.h"
 #include "fs/host.h"
 
 namespace FeatherDisk::Ext
@@ -110,25 +111,36 @@ bool Ext2Filesystem::IsReserved(NodeId node) const
     return node != RootInode && node < superblock.first_inode;
 }
 
-Status Ext2Filesystem::WriteSuperblock(std::span<std::uint8_t> scratch)
+Status Ext2Filesystem::EncodeSuperblockBlock(std::span<std::uint8_t> block, bool direct)
 {
-    // Only the primary copy is written, as Linux's ext2 does: the backups in later groups keep
-    // the geometry and features, which no change here touches but large_file (which e2fsck does
-    // not compare), and e2fsck recounts what is free whenever it falls back on one.
-    const std::uint64_t block = SuperblockOffset / block_size;
+    const std::uint64_t number = SuperblockOffset / block_size;
     const std::size_t offset = SuperblockOffset % block_size;
-    if (const Status read = ReadMetadata(block, 0, scratch, scratch); !read)
+    if (const Status read =
+            direct ? cache.Read(number, 0, block, block) : ReadMetadata(number, 0, block, block);
+        !read)
     {
         return read;
     }
     const std::span<std::uint8_t, SuperblockSize> bytes =
-        scratch.subspan(offset).first<SuperblockSize>();
+        block.subspan(offset).first<SuperblockSize>();
     EncodeSuperblockState(superblock, bytes);
     if (metadata_checksums)
     {
         StoreSuperblockChecksum(bytes);
     }
-    return WriteMetadata(block, scratch);
+    return {};
+}
+
+// Only the primary copy is written, as Linux's ext2 does: the backups in later groups keep the
+// geometry and features, which no change here touches but large_file (which e2fsck does not
+// compare), and e2fsck recounts what is free whenever it falls back on one.
+Status Ext2Filesystem::WriteSuperblock(std::span<std::uint8_t> scratch)
+{
+    if (const Status encoded = EncodeSuperblockBlock(scratch, false); !encoded)
+    {
+        return encoded;
+    }
+    return WriteMetadata(SuperblockOffset / block_size, scratch);
 }
 
 Status Ext2Filesystem::MarkMounted()
@@ -151,13 +163,26 @@ Status Ext2Filesystem::MarkMounted()
     superblock.free_inodes_count = static_cast<std::uint32_t>(free_inodes);
     ++superblock.mount_count;
     superblock.mount_time = static_cast<std::uint32_t>(Now().seconds);
-    superblock.state = static_cast<std::uint16_t>(superblock.state & ~StateClean);
-    const Status written = WriteSuperblock(buffers[0]);
+    // With a journal the volume stays clean for what it holds; needs_recovery says it is mounted.
+    if (journal != nullptr)
+    {
+        superblock.incompatible |= IncompatibleRecover;
+    }
+    else
+    {
+        superblock.state = static_cast<std::uint16_t>(superblock.state & ~StateClean);
+    }
+    Status written = EncodeSuperblockBlock(buffers[0], true);
+    if (written)
+    {
+        written = cache.Write(SuperblockOffset / block_size, buffers[0]);
+    }
     if (!written && written.error() == Error::ReadOnly)
     {
         LogWarning("ext2: mounted read-only: ", "the device is read-only");
         superblock = before;
         read_only = true;
+        DestroyJournal();
         return {};
     }
     if (!written)
@@ -175,7 +200,7 @@ Status Ext2Filesystem::BeginChange(std::span<std::uint8_t> scratch)
     {
         return Refused();
     }
-    if (!superblock_clean)
+    if (journal != nullptr || !superblock_clean)
     {
         return {};
     }
@@ -205,6 +230,16 @@ void Ext2Filesystem::NoteError(Error error)
     {
         LogWarning("ext2: damage found; ", "no more writes until e2fsck has run");
         read_only = true;
+    }
+    if (journal != nullptr)
+    {
+        // The state reaches the disk with the transaction that carries the superblock.
+        journal->superblock_dirty = true;
+        if (!journal->aborted)
+        {
+            [[maybe_unused]] const Status committed = CommitTransaction();
+        }
+        return;
     }
     Buffers buffers(block_size, 1);
     if (!buffers.Empty())
@@ -1267,7 +1302,7 @@ Status Ext2Filesystem::SetAttributes(NodeId node, const AttributeChanges& change
     {
         return Refused();
     }
-    return Noted(ChangeAttributes(node, changes));
+    return Journalled([&] { return ChangeAttributes(node, changes); });
 }
 
 Result<std::size_t> Ext2Filesystem::Write(NodeId file, std::uint64_t offset,
@@ -1277,7 +1312,7 @@ Result<std::size_t> Ext2Filesystem::Write(NodeId file, std::uint64_t offset,
     {
         return Refused();
     }
-    return Noted(WriteFile(file, offset, data));
+    return Journalled([&] { return WriteFile(file, offset, data); });
 }
 
 Status Ext2Filesystem::Truncate(NodeId file, std::uint64_t size)
@@ -1286,7 +1321,7 @@ Status Ext2Filesystem::Truncate(NodeId file, std::uint64_t size)
     {
         return Refused();
     }
-    return Noted(TruncateFile(file, size));
+    return Journalled([&] { return TruncateFile(file, size); });
 }
 
 Status Ext2Filesystem::Sync()
@@ -1294,6 +1329,24 @@ Status Ext2Filesystem::Sync()
     if (!writable_mount)
     {
         return {};
+    }
+    if (journal != nullptr)
+    {
+        if (journal->aborted)
+        {
+            return {};
+        }
+        if (journal->running.Count() == 0 && journal->revokes.Count() == 0 &&
+            !journal->superblock_dirty)
+        {
+            if (const Status flushed = volume.Flush(); !flushed)
+            {
+                AbortJournal("a flush failed");
+                return flushed;
+            }
+            return {};
+        }
+        return CommitTransaction();
     }
     if (!superblock_clean)
     {

@@ -68,8 +68,8 @@ Partitions are numbered from 1, as `info` lists them. Without a number, fscli us
 disk if it holds a filesystem, otherwise the first partition that does. `ls` shows each entry's
 type and permissions, its size and its name, and where a symbolic link points. Symbolic links
 are not followed. A copied-in file keeps the host file's permission bits and belongs to user
-and group 0. A volume that cannot be written (an ext2 volume with errors or a journal, say)
-mounts read-only, and the commands that write then fail. FAT16 holds no links.
+and group 0. A volume that cannot be written (an ext2 volume with errors or a journal on another device,
+say) mounts read-only, and the commands that write then fail. FAT16 holds no links.
 Filesystems: fat16, ext2.
 
 exit status: 0 on success, 1 when an operation fails, 2 for a usage error

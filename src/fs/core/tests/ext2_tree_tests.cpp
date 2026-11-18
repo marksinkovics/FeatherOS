@@ -239,6 +239,11 @@ TEST_CASE("ext2 makes nested and wide directories and removes empty ones")
     MakeAndRemoveDirectories("ext4-gdtcsum");
     MakeAndRemoveDirectories("ext4-nojournal");
     MakeAndRemoveDirectories("ext4-mixed");
+    MakeAndRemoveDirectories("ext3");
+    MakeAndRemoveDirectories("ext4");
+    MakeAndRemoveDirectories("ext4-blockmap");
+    MakeAndRemoveDirectories("ext4-64bit");
+    MakeAndRemoveDirectories("ext4-4k");
 #endif
 }
 
@@ -447,6 +452,10 @@ TEST_CASE("ext2 renames files and directories as POSIX rename does")
     RenameAll("ext4-csum");
     RenameAll("ext4-csum64");
     RenameAll("ext4-nojournal");
+    RenameAll("ext3");
+    RenameAll("ext4");
+    RenameAll("ext4-blockmap");
+    RenameAll("ext4-64bit");
 #endif
 }
 
@@ -456,7 +465,7 @@ TEST_CASE("ext2 stores short symbolic links in the inode and long ones in a bloc
     SKIP("e2fsprogs is not installed");
 #else
     for (const std::string_view variant :
-         {"1k", "4k", "ext4-csum", "ext4-gdtcsum", "ext4-nojournal"})
+         {"1k", "4k", "ext4-csum", "ext4-gdtcsum", "ext4-nojournal", "ext3", "ext4"})
     {
         INFO(variant);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
@@ -512,7 +521,9 @@ TEST_CASE("ext2 stores short symbolic links in the inode and long ones in a bloc
                         {"Type: symlink", "Fast link dest: \"" + target_of(59) + "\""});
         // A slow link's block in an extent on volumes with them.
         CheckDebugfsHas(*device, "stat /link-60",
-                        {"Type: symlink", variant == "ext4-nojournal" ? "EXTENTS:" : "TOTAL: 1"});
+                        {"Type: symlink", variant == "ext4-nojournal" || variant == "ext4"
+                                              ? "EXTENTS:"
+                                              : "TOTAL: 1"});
         CheckDebugfsHas(*device, "cat /link-1023", {target_of(1023)});
         {
             MountedFilesystem ext2(Ext2Type(), *device, true);

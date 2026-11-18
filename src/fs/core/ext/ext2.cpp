@@ -71,12 +71,15 @@ Result<Superblock> ReadSuperblock(BlockDevice& volume)
 }
 
 // Why a volume this driver reads must not be written, or nullopt. ext2 and ext4's layouts are
-// written, extents included, but not a journal (Part 6 step 4).
+// written, extents and an internal journal included; StartJournal refuses the journals it cannot
+// write.
 std::optional<std::string_view> WriteRefusal(const Superblock& superblock)
 {
-    if ((superblock.compatible & CompatibleHasJournal) != 0)
+    const std::uint32_t orphan_file =
+        (superblock.compatible & CompatibleHasJournal) != 0 ? CompatibleOrphanFile : 0;
+    if ((superblock.compatible & CompatibleHasJournal) != 0 && superblock.last_orphan != 0)
     {
-        return "a journal, which writes would have to go through";
+        return "orphan inodes are left to finish; run e2fsck";
     }
     if ((superblock.incompatible & ~IncompatibleWritable) != 0)
     {
@@ -86,7 +89,7 @@ std::optional<std::string_view> WriteRefusal(const Superblock& superblock)
     {
         return "unknown read-only compatible features";
     }
-    if ((superblock.compatible & ~CompatibleWritable) != 0)
+    if ((superblock.compatible & ~(CompatibleWritable | orphan_file)) != 0)
     {
         return "compatible features whose rules it does not keep";
     }
@@ -245,6 +248,17 @@ Status Ext2Filesystem::Initialize()
         LogWarning("ext2: mounted read-only: ", *reason);
         read_only = true;
         return {};
+    }
+    if ((superblock.compatible & CompatibleHasJournal) != 0)
+    {
+        if (const Status started = StartJournal(); !started)
+        {
+            return started;
+        }
+        if (read_only)
+        {
+            return {};
+        }
     }
     return MarkMounted();
 }
@@ -1049,6 +1063,10 @@ Status ExtFilesystemType::Unmount(Filesystem& filesystem)
     if (const Status synced = ext2.Sync(); !synced)
     {
         return synced;
+    }
+    if (const Status closed = ext2.CloseJournal(); !closed)
+    {
+        return closed;
     }
     ext2.~Ext2Filesystem();
     Host::Free(&ext2);

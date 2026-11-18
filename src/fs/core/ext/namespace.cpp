@@ -1036,8 +1036,13 @@ Result<NodeId> Ext2Filesystem::Create(NodeId directory, std::string_view name, s
     {
         return Refused();
     }
-    return Noted(CreateNode(
-        directory, name, static_cast<std::uint16_t>(ModeRegular | (mode & ModePermissions)), {}));
+    return Journalled(
+        [&]
+        {
+            return CreateNode(directory, name,
+                              static_cast<std::uint16_t>(ModeRegular | (mode & ModePermissions)),
+                              {});
+        });
 }
 
 Result<NodeId> Ext2Filesystem::MakeDirectory(NodeId directory, std::string_view name,
@@ -1047,8 +1052,13 @@ Result<NodeId> Ext2Filesystem::MakeDirectory(NodeId directory, std::string_view 
     {
         return Refused();
     }
-    return Noted(CreateNode(
-        directory, name, static_cast<std::uint16_t>(ModeDirectory | (mode & ModePermissions)), {}));
+    return Journalled(
+        [&]
+        {
+            return CreateNode(directory, name,
+                              static_cast<std::uint16_t>(ModeDirectory | (mode & ModePermissions)),
+                              {});
+        });
 }
 
 Result<NodeId> Ext2Filesystem::SymbolicLink(NodeId directory, std::string_view name,
@@ -1066,7 +1076,8 @@ Result<NodeId> Ext2Filesystem::SymbolicLink(NodeId directory, std::string_view n
     {
         return std::unexpected(Error::InvalidArgument);
     }
-    return Noted(CreateNode(directory, name, ModeSymbolicLink | LinkPermissions, target));
+    return Journalled(
+        [&] { return CreateNode(directory, name, ModeSymbolicLink | LinkPermissions, target); });
 }
 
 Status Ext2Filesystem::Remove(NodeId directory, std::string_view name)
@@ -1075,7 +1086,7 @@ Status Ext2Filesystem::Remove(NodeId directory, std::string_view name)
     {
         return Refused();
     }
-    return Noted(RemoveNode(directory, name, false));
+    return Journalled([&] { return RemoveNode(directory, name, false); });
 }
 
 Status Ext2Filesystem::RemoveDirectory(NodeId directory, std::string_view name)
@@ -1084,7 +1095,7 @@ Status Ext2Filesystem::RemoveDirectory(NodeId directory, std::string_view name)
     {
         return Refused();
     }
-    return Noted(RemoveNode(directory, name, true));
+    return Journalled([&] { return RemoveNode(directory, name, true); });
 }
 
 Status Ext2Filesystem::Rename(NodeId from_directory, std::string_view from_name,
@@ -1094,7 +1105,7 @@ Status Ext2Filesystem::Rename(NodeId from_directory, std::string_view from_name,
     {
         return Refused();
     }
-    return Noted(RenameNode(from_directory, from_name, to_directory, to_name));
+    return Journalled([&] { return RenameNode(from_directory, from_name, to_directory, to_name); });
 }
 
 Status Ext2Filesystem::Link(NodeId node, NodeId directory, std::string_view name)
@@ -1103,7 +1114,7 @@ Status Ext2Filesystem::Link(NodeId node, NodeId directory, std::string_view name
     {
         return Refused();
     }
-    return Noted(LinkNode(node, directory, name));
+    return Journalled([&] { return LinkNode(node, directory, name); });
 }
 
 } // namespace FeatherDisk::Ext

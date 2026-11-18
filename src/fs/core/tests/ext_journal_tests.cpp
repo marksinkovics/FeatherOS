@@ -376,10 +376,10 @@ TEST_CASE("a writable mount replays committed jbd2 transactions as debugfs does"
             REQUIRE(ReadAll(*ext, hello) == NewHello);
             REQUIRE(Value(ext->GetAttributes(hello)).mode == 0600);
         }
-        // Clean now: another writable mount changes nothing.
-        const std::vector<std::uint8_t> recovered = BytesOf(*made.device);
+        // Clean now: another writable mount changes nothing but what a mount writes about itself.
+        const std::unique_ptr<MemoryDevice> recovered = CopyOf(*made.device);
         ReplayByMounting(*made.device);
-        CheckUnchanged(*made.device, recovered);
+        RequireSameAsDebugfs(*made.device, *recovered);
     }
 #endif
 }
@@ -402,7 +402,10 @@ TEST_CASE("a read-only mount reads a volume whose journal needs recovery as it i
 
         // A device that refuses writes mounts read-only the same way.
         made.device->read_only = true;
-        ReplayByMounting(*made.device);
+        {
+            MountedFilesystem ext(Ext2Type(), *made.device, false);
+            REQUIRE_FALSE(ext->GetCapabilities().writable);
+        }
         CheckUnchanged(*made.device, made.original);
     }
 #endif
@@ -668,10 +671,19 @@ TEST_CASE("a replay stopped at any write replays again to the same volume")
         INFO(journal_case.image << " " << journal_case.open);
         const Journalled made = MakeJournalled(journal_case);
         const std::unique_ptr<MemoryDevice> whole = CopyOf(*made.device);
-        ReplayByMounting(*whole);
-        const std::uint64_t writes = whole->write_count;
+        // The writes of a mount that replays: the recovery's and then the mount's own, as many as
+        // there are before Mount returns.
+        std::uint64_t writes = 0;
+        {
+            const FeatherDisk::Result<FeatherDisk::Filesystem*> mounted =
+                Ext2Type().Mount(*whole, {.read_only = false});
+            REQUIRE(mounted.has_value());
+            writes = whole->write_count;
+            Succeeds(Ext2Type().Unmount(**mounted));
+        }
         REQUIRE(writes > 4);
-        // The journal superblock's sequence moves on with each recovery that finds the log empty.
+        // The journal superblock's sequence moves on with each recovery that finds the log empty,
+        // and every mount counts itself in the superblock.
         const auto without_sequence = [](MemoryDevice& device)
         {
             std::vector<std::uint8_t> bytes = BytesOf(device);
@@ -679,6 +691,12 @@ TEST_CASE("a replay stopped at any write replays again to the same volume")
             const std::uint64_t journal = JournalOffset(raw, 0);
             std::fill_n(bytes.begin() + static_cast<std::ptrdiff_t>(journal + 24), 4, 0);
             std::fill_n(bytes.begin() + static_cast<std::ptrdiff_t>(journal + 252), 4, 0);
+            for (const std::array<std::uint64_t, 2> range :
+                 {std::array<std::uint64_t, 2>{44, 4}, {48, 4}, {52, 2}, {1020, 4}})
+            {
+                std::fill_n(bytes.begin() + static_cast<std::ptrdiff_t>(1024 + range[0]), range[1],
+                            0);
+            }
             return bytes;
         };
         for (std::uint64_t allowed = 0; allowed < writes; ++allowed)

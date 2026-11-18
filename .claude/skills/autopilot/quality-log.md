@@ -17,4 +17,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 1aeda8d | M22 P6 s1 jbd2 replay | - | opus | 1 | - | |
 | facf33f | M22 P6 s2 unjournalled ext4 writes | - | opus | 0 | - | |
 | 4e75e57 | M22 P6 s3 extent writes | - | opus | 0 | 4/4 | |
-| (this) | M22 P6 s4a jbd2 encoders and routing | opus | sonnet | 0 | 3/3 | |
+| a98a6de | M22 P6 s4a jbd2 encoders and routing | opus | sonnet | 0 | 3/3 | |
+| (this) | M22 P6 s4b jbd2 transactions | opus | sonnet | 1 | 18/18 | |

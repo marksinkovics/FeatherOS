@@ -349,18 +349,42 @@ Result<AllocatedRun> Ext2Filesystem::AllocateBlocks(std::uint32_t goal, std::uin
         {
             return Failure(loaded);
         }
+        // A block freed in a transaction that has not committed stays taken as far as the
+        // committed state goes, so that a replay never lets the old copy of its contents
+        // overwrite what the new owner writes: the search skips what either bitmap marks.
+        const bool frozen = GroupFrozen(group);
+        std::span<std::uint8_t> search = bitmap;
+        Buffers committed_view(block_size, frozen ? 3 : 0);
+        if (frozen)
+        {
+            if (committed_view.Empty())
+            {
+                return std::unexpected(Error::OutOfMemory);
+            }
+            if (const Status loaded =
+                    LoadCommittedBlockBitmap(group, committed_view[0], committed_view[1]);
+                !loaded)
+            {
+                return Failure(loaded);
+            }
+            search = committed_view[2];
+            for (std::size_t index = 0; index < block_size; ++index)
+            {
+                search[index] = bitmap[index] | committed_view[0][index];
+            }
+        }
         std::uint32_t count = BlocksInGroup(group);
         if (group_first + count > MappableEnd)
         {
             count = static_cast<std::uint32_t>(MappableEnd - group_first);
         }
         const std::uint32_t start = step == 0 && goal_bit < count ? goal_bit : 0;
-        std::optional<std::uint32_t> bit = FindClearBit(bitmap, start, count);
+        std::optional<std::uint32_t> bit = FindClearBit(search, start, count);
         if (!bit && start > 0)
         {
-            bit = FindClearBit(bitmap, 0, start);
+            bit = FindClearBit(search, 0, start);
         }
-        if (!bit && count < BlocksInGroup(group))
+        if (!bit && (count < BlocksInGroup(group) || frozen))
         {
             continue;
         }
@@ -373,7 +397,7 @@ Result<AllocatedRun> Ext2Filesystem::AllocateBlocks(std::uint32_t goal, std::uin
         }
         std::uint32_t taken = 0;
         while (taken < wanted && *bit + taken < count && taken < descriptor.free_blocks &&
-               taken < superblock.free_blocks_count && !TestBit(bitmap, *bit + taken) &&
+               taken < superblock.free_blocks_count && !TestBit(search, *bit + taken) &&
                IsDataBlock(block + taken) && !IsGroupMetadata(group, block + taken))
         {
             SetBit(bitmap, *bit + taken);
@@ -583,6 +607,10 @@ Status Ext2Filesystem::FreeBlock(FreeCursor& cursor, std::uint64_t block)
     if (!TestBit(cursor.bitmap, bit) || descriptor.free_blocks >= BlocksInGroup(group))
     {
         return std::unexpected(Error::Corrupt);
+    }
+    if (const Status noted = NoteFreedBlock(group, block); !noted)
+    {
+        return noted;
     }
     ClearBit(cursor.bitmap, bit);
     cursor.dirty = true;

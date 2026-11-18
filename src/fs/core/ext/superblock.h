@@ -50,9 +50,12 @@ constexpr std::uint32_t CompatibleResizeInode = 0x0010;
 constexpr std::uint32_t CompatibleDirectoryIndex = 0x0020;
 // Backups of the superblock only in group 0 and the two groups s_backup_bgs names.
 constexpr std::uint32_t CompatibleSparseSuper2 = 0x0200;
-constexpr std::uint32_t CompatibleWritable = CompatibleDirectoryPreallocation |
-                                             CompatibleExtendedAttributes | CompatibleResizeInode |
-                                             CompatibleDirectoryIndex | CompatibleSparseSuper2;
+// An orphan file (s_orphan_file_inum), which only matters while orphan_present is set; kept when
+// the volume has a journal.
+constexpr std::uint32_t CompatibleOrphanFile = 0x1000;
+constexpr std::uint32_t CompatibleWritable =
+    CompatibleDirectoryPreallocation | CompatibleHasJournal | CompatibleExtendedAttributes |
+    CompatibleResizeInode | CompatibleDirectoryIndex | CompatibleSparseSuper2;
 
 // s_feature_incompat: a driver must refuse a volume with a bit it does not know.
 constexpr std::uint32_t IncompatibleCompression = 0x0001;
@@ -151,6 +154,8 @@ struct Superblock
     std::array<std::uint32_t, 2> backup_groups;
     // s_journal_inum: 0 when the journal is on another device.
     std::uint32_t journal_inode;
+    // s_last_orphan: the head of the list of inodes a crash left to finish; 0 when empty.
+    std::uint32_t last_orphan;
     // flex_bg packs the bitmaps and inode tables of 2^log_groups_per_flex groups together.
     std::uint32_t log_groups_per_flex;
     // Without metadata_csum always true; with it, whether s_checksum matches the bytes.
@@ -188,7 +193,8 @@ bool LooksLikeExt(const Superblock& superblock);
 // Error::Corrupt for a layout that contradicts itself or does not fit in volume_bytes.
 Status CheckSuperblock(const Superblock& superblock, std::uint64_t volume_bytes);
 // Stores what a mounted volume changes: the free counts, mount and write times, mount count,
-// state and, from revision 1, the read-only compatible features. Every other byte is kept.
+// state and, from revision 1, the incompatible and read-only compatible features. Every other
+// byte is kept.
 void EncodeSuperblockState(const Superblock& superblock,
                            std::span<std::uint8_t, SuperblockSize> bytes);
 // s_checksum over the other bytes, for a volume with metadata_csum.

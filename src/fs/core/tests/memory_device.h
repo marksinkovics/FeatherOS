@@ -28,6 +28,9 @@ public:
     std::span<std::uint8_t> Bytes();
     // Reads of this sector and later ones fail with Error::Io.
     void FailReadsFrom(std::uint64_t sector);
+    // Reads that include this sector fail with Error::Io until RestoreReads.
+    void FailReadsAt(std::uint64_t sector);
+    void RestoreReads();
     // Writes after the first count fail with Error::Io and change nothing, as if the machine
     // stopped there.
     void FailWritesAfter(std::uint64_t count);
@@ -41,6 +44,7 @@ private:
 
     std::uint32_t sector_size;
     std::uint64_t failing_sector;
+    std::uint64_t failing_single = UINT64_MAX;
     std::uint64_t write_limit = UINT64_MAX;
     // Not a vector: tests copy 8 MiB devices hundreds of times, and an unoptimised vector frees
     // its bytes one by one.
