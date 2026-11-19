@@ -3,7 +3,6 @@ TIMER_STARTED_MESSAGE = "KERN/I: Timer started at 100 Hz"
 SHELL_BANNER = "FeatherOS shell. Type 'help' for commands."
 VFS_MESSAGE = "KERN/I: VFS: hello.txt read passed"
 ROOT_MESSAGE = "KERN/I: VFS: / is vda1 ext4, read-write"
-ROOT_FILE_MESSAGE = "KERN/I: VFS: /BLOCK.TXT read passed"
 ELF_LOAD_MESSAGE = "KERN/I: ELF64: test image loaded into user address space"
 USER_MODE_MESSAGES = {
     "x86_64": "KERN/I: ELF64: ring 3 console and exit syscalls passed",

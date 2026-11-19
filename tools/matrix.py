@@ -102,6 +102,7 @@ CASES = [
     *Both(39, "ext3_root", ROOT_TEST=ON, KERNEL_ROOT="vda3"),
     *Both(41, "unusable_root", ROOT_TEST=ON, KERNEL_ROOT="vda9"),
     *Both(43, "ext2_root", ROOT_TEST=ON, KERNEL_ROOT="vda4"),
+    *Both(45, "empty_ext4_root", ROOT_TEST=ON, KERNEL_ROOT="vda1"),
 ]
 
 

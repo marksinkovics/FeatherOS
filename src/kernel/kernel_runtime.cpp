@@ -286,39 +286,6 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
         KernelTest::RunStorageTests();
     }
 #endif
-
-    constexpr char expected_contents[] = "FeatherOS root volume OK";
-    VFS::FileInfo file_info;
-    VFS::FileHandle file;
-    if (!VFS::Stat("/BLOCK.TXT", &file_info) || file_info.size != sizeof(expected_contents) - 1)
-    {
-        Panic("VFS could not stat /BLOCK.TXT");
-    }
-    if (!VFS::Open("/BLOCK.TXT", &file))
-    {
-        Panic("VFS could not open /BLOCK.TXT");
-    }
-
-    char contents[sizeof(expected_contents) - 1];
-    uint64_t bytes_read;
-    if (!VFS::Read(&file, contents, sizeof(contents), &bytes_read) ||
-        bytes_read != sizeof(contents))
-    {
-        Panic("VFS could not read /BLOCK.TXT");
-    }
-    for (size_t index = 0; index < sizeof(contents); ++index)
-    {
-        if (contents[index] != expected_contents[index])
-        {
-            Panic("VFS returned invalid /BLOCK.TXT data");
-        }
-    }
-    if (!VFS::Seek(&file, 0))
-    {
-        Panic("VFS could not seek in /BLOCK.TXT");
-    }
-    VFS::Close(&file);
-    logger.Info("VFS: /BLOCK.TXT read passed");
 }
 
 void LogCpuProtections(KLogger& logger)

@@ -24,3 +24,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | d43b5ea | M22 P6 s5 ext3/ext4 read-write in the OS, writeback task | opus | sonnet | 0 | 3/3 (I5 by T13, not host T5) | |
 | abc862e | M22 P6b s1 root= and ext3/ext4 roots | - | sonnet | 0 | - | |
 | 5caa991 | M22 P6b s2 ext4 root on the test disk, ext2 at vda4 | - | sonnet | 0 | - | |
+| (this) | M29 P1 root without test files | - | sonnet | 0 | - | |

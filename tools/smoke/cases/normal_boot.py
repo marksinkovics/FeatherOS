@@ -9,7 +9,6 @@ from smoke.boot import (
     PANIC_MARKER,
     QEMU_CPU_COUNT,
     READY_MESSAGE,
-    ROOT_FILE_MESSAGE,
     ROOT_MESSAGE,
     SHELL_BANNER,
     SMP_MESSAGE,
@@ -65,8 +64,6 @@ class NormalBoot(BootToShell):
             return "kernel did not read a file through the VFS"
         if ROOT_MESSAGE not in output:
             return "the ext4 root was not mounted read-write"
-        if ROOT_FILE_MESSAGE not in output:
-            return "kernel did not read a file from the root filesystem"
         if ELF_LOAD_MESSAGE not in output:
             return "kernel did not load the ELF into a user address space"
         if SHELL_BANNER not in output:

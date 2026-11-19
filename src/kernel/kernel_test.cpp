@@ -1467,6 +1467,18 @@ bool SamplesMatch()
            ListsWith("/samples/docs", 1, "nested", User::ModeDirectory);
 }
 
+// The test disk's root holds BLOCK.TXT; the kernel itself reads no file from the root.
+void CheckRootFile()
+{
+    constexpr char Contents[] = "FeatherOS root volume OK";
+    VFS::FileInfo info{};
+    if (!VFS::Stat("/BLOCK.TXT", &info) || info.size != sizeof(Contents) - 1 ||
+        !ReadsAs("/BLOCK.TXT", Contents))
+    {
+        Panic("The root's /BLOCK.TXT read back different contents");
+    }
+}
+
 // The root's journal gets the changes and is not closed here: the first boot's shell session stops
 // the machine, so the second boot's root mount replays what only the writeback task committed.
 void CheckRoot(uint64_t boot_count, Ext2Data* data)
@@ -1716,6 +1728,7 @@ void RunStorageTests()
         Panic("No memory for the ext2, ext3 and ext4 write tests");
     }
     FillExt2Data(data->bytes);
+    CheckRootFile();
     CheckRoot(boot_count, &*data);
     CheckExt3AndExt2(boot_count, &*data);
     CheckRemount(boot_count, &*data);
