@@ -215,6 +215,17 @@ def Debugfs(debugfs, volume, command):
     ).stdout
 
 
+def RunDebugfsWrite(debugfs, volume, commands_file):
+    """Runs debugfs -w over a command file, failing on any error."""
+    done = subprocess.run(
+        [debugfs, "-w", "-f", commands_file, volume],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout
+
+
 def DebugfsMessages(debugfs, volume, command):
     """What debugfs prints for the command, errors included."""
     done = subprocess.run(

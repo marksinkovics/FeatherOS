@@ -7,6 +7,7 @@ from smoke.cases.network import Network
 from smoke.cases.normal_boot import NormalBoot
 from smoke.cases.panic import Panic
 from smoke.cases.power import Power
+from smoke.cases.root import RootOption
 from smoke.cases.scheduler import Scheduler
 from smoke.cases.shell import Shell
 from smoke.cases.smp import Smp
@@ -55,6 +56,13 @@ def AddArguments(parser):
         "boot again",
     )
     parser.add_argument(
+        "--expect-root",
+        metavar="vdaN",
+        help="The kernel was given root=vdaN: expect that ext3 or ext4 "
+        "partition mounted and written, or a warning and the default root "
+        "for any other name",
+    )
+    parser.add_argument(
         "--expect-storage-boot",
         type=int,
         default=0,
@@ -70,6 +78,8 @@ def Select(parser, args):
     ]
     if args.expect_power:
         chosen.append(Power)
+    if args.expect_root:
+        chosen.append(RootOption)
     if args.expect_storage_boot:
         chosen.append(Storage)
     if len(chosen) > 1:

@@ -22,3 +22,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 8249ec3 | M22 P6 s4c orphans and split changes | opus | sonnet | 0 | 2/2 | |
 | 49696ba | M22 P6 s4d crash, model and fscli tests, step 4 docs | opus | sonnet | 0 | 3/3 | |
 | (this) | M22 P6 s5 ext3/ext4 read-write in the OS, writeback task | opus | sonnet | 0 | 3/3 (I5 by T13, not host T5) | |
+| (this) | M22 P6b s1 root= and ext3/ext4 roots | - | sonnet | 0 | - | |

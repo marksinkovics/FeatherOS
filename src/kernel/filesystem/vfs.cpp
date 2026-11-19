@@ -249,38 +249,93 @@ bool MountBuiltIn()
     return true;
 }
 
-bool MountBlockDevice()
+size_t ChooseRoot(const size_t* partitions, size_t count, size_t requested)
 {
-    Filesystem::CoreDriver& fat16 = Filesystem::Drivers::Disk();
-    Filesystem::CoreDriver& ext2 = Filesystem::Drivers::Ext2();
-    Filesystem::CoreDriver& ext3 = Filesystem::Drivers::Ext3();
-    Filesystem::CoreDriver& ext4 = Filesystem::Drivers::Ext4();
-    const bool fat16_found = FindVolume(fat16, Filesystem::Drivers::MountDisk);
-    const bool ext2_found = FindVolume(ext2, Filesystem::Drivers::MountExt2);
-    // Never the root before Part 6b.
-    const bool ext3_found = FindVolume(ext3, Filesystem::Drivers::MountExt3);
-    const bool ext4_found = FindVolume(ext4, Filesystem::Drivers::MountExt4);
-    Filesystem::CoreDriver* root = nullptr;
-    if (fat16_found && ext2_found)
+    size_t chosen = NoRoot;
+    for (size_t index = 0; index < count; ++index)
     {
-        root = fat16.PartitionNumber() < ext2.PartitionNumber() ? &fat16 : &ext2;
+        if (partitions[index] == 0)
+        {
+            continue;
+        }
+        if (requested != 0)
+        {
+            if (partitions[index] == requested)
+            {
+                return index;
+            }
+        }
+        else if (chosen == NoRoot || partitions[index] < partitions[chosen])
+        {
+            chosen = index;
+        }
     }
-    else if (fat16_found || ext2_found)
+    return chosen;
+}
+
+bool MountBlockDevice(size_t requested, bool* honored)
+{
+    Filesystem::CoreDriver* const candidates[] = {
+        &Filesystem::Drivers::Disk(),
+        &Filesystem::Drivers::Ext2(),
+        &Filesystem::Drivers::Ext3(),
+        &Filesystem::Drivers::Ext4(),
+    };
+    bool (*const mount_volume[])() = {
+        Filesystem::Drivers::MountDisk,
+        Filesystem::Drivers::MountExt2,
+        Filesystem::Drivers::MountExt3,
+        Filesystem::Drivers::MountExt4,
+    };
+    constexpr size_t Count = sizeof(candidates) / sizeof(candidates[0]);
+    size_t partitions[Count];
+    const auto find_volumes = [&]
     {
-        root = fat16_found ? &fat16 : &ext2;
+        for (size_t index = 0; index < Count; ++index)
+        {
+            partitions[index] = FindVolume(*candidates[index], mount_volume[index])
+                                    ? candidates[index]->PartitionNumber()
+                                    : 0;
+        }
+    };
+    find_volumes();
+    // A volume that refuses writes is mounted read-only instead.
+    size_t chosen = ChooseRoot(partitions, Count, requested);
+    bool prepared =
+        chosen != NoRoot && candidates[chosen]->PrepareMount(Filesystem::MountMode::ReadWrite);
+    if (honored != nullptr)
+    {
+        *honored = requested == 0 || prepared;
     }
-    // An ext2 volume that refuses writes is mounted read-only instead.
-    const bool prepared = root != nullptr && root->PrepareMount(Filesystem::MountMode::ReadWrite);
+    if (requested != 0 && !prepared)
+    {
+        // A failed reopen forgets the volume.
+        size_t others[Count];
+        for (size_t index = 0; index < Count; ++index)
+        {
+            partitions[index] = candidates[index]->PartitionNumber();
+            others[index] = index == chosen ? 0 : partitions[index];
+        }
+        chosen = ChooseRoot(others, Count, 0);
+        prepared =
+            chosen != NoRoot && candidates[chosen]->PrepareMount(Filesystem::MountMode::ReadWrite);
+    }
+    Filesystem::CoreDriver* const root = chosen == NoRoot ? nullptr : candidates[chosen];
     Sync::SpinLockGuard guard(mount_lock);
-    RegisterVolumeLocked(Fat16Type, fat16, fat16_found);
-    RegisterVolumeLocked(Ext2Type, ext2, ext2_found);
-    RegisterVolumeLocked(Ext3Type, ext3, ext3_found);
-    RegisterVolumeLocked(Ext4Type, ext4, ext4_found);
+    RegisterVolumeLocked(Fat16Type, *candidates[0], partitions[0] != 0);
+    RegisterVolumeLocked(Ext2Type, *candidates[1], partitions[1] != 0);
+    RegisterVolumeLocked(Ext3Type, *candidates[2], partitions[2] != 0);
+    RegisterVolumeLocked(Ext4Type, *candidates[3], partitions[3] != 0);
     const char* type = nullptr;
     const char* source = nullptr;
     const bool usable = prepared && types.Describe(root, &type, &source);
     Driver* mounted = mounts.Find("/");
-    if ((mounted == &fat16 || mounted == &ext2) && (!usable || mounted != root))
+    bool was_disk = false;
+    for (Filesystem::CoreDriver* candidate : candidates)
+    {
+        was_disk = was_disk || mounted == candidate;
+    }
+    if (was_disk && (!usable || mounted != root))
     {
         mounts.Remove("/");
         mounted = nullptr;

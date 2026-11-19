@@ -4,6 +4,7 @@
 #include "kernel/arch/keyboard.h"
 #include "kernel/arch/rtc.h"
 #include "kernel/arch/serial.h"
+#include "kernel/boot_options.h"
 #include "kernel/console.h"
 #include "kernel/elf/elf_loader.h"
 #include "kernel/filesystem/initramfs.h"
@@ -244,11 +245,28 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     const char* root_type = nullptr;
     const char* root_source = nullptr;
     bool root_read_only = false;
-    if (!VFS::MountBlockDevice() || !VFS::DescribeRoot(&root_type, &root_source, &root_read_only))
+    const BootOptions::Root requested = BootOptions::SelectedRoot();
+    bool honored = true;
+    if (!VFS::MountBlockDevice(requested.partition, &honored) ||
+        !VFS::DescribeRoot(&root_type, &root_source, &root_read_only))
     {
-        Panic("No FAT16 or ext2 root filesystem on the disk");
+        Panic("No FAT16, ext2, ext3 or ext4 root filesystem on the disk");
     }
     char message[96];
+    if (requested.request == BootOptions::RootRequest::Malformed)
+    {
+        logger.Warning("VFS: root= is not a partition such as vda1, using the default root");
+    }
+    else if (!honored)
+    {
+        if (!String::FormatTo(message, sizeof(message),
+                              "VFS: root=vda{} is not a usable partition, using the default root",
+                              requested.partition))
+        {
+            Panic("Root warning formatting failed");
+        }
+        logger.Warning(message);
+    }
     if (!String::FormatTo(message, sizeof(message), "VFS: / is {} {}, {}", root_source, root_type,
                           root_read_only ? "read-only: the volume refused writes" : "read-write"))
     {

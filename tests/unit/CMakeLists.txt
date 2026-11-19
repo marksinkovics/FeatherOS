@@ -54,6 +54,7 @@ add_executable(featheros_unit_tests
     support/scheduler_stubs.cpp
     support/terminal_device.cpp
     kernel/input/keyboard_tests.cpp
+    kernel/boot_options_tests.cpp
     kernel/kernel_test/kernel_test_mode_tests.cpp
     kernel/klogger/klogger_tests.cpp
     kernel/memory/memory_map_tests.cpp
@@ -144,6 +145,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/term.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/input.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/keyboard.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/boot_options.cpp"
     "${FEATHEROS_ROOT}/src/kernel/kernel_test_mode.cpp"
     "${FEATHEROS_ROOT}/src/kernel/network/address.cpp"
     "${FEATHEROS_ROOT}/src/kernel/network/arp.cpp"

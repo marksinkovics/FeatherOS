@@ -28,6 +28,8 @@ _usage() {
     printf 'BUILD_TYPE=Release builds at -O2 (Swift -O) in build/<arch>-release; the default, Debug, at -O0 -g\n'
     printf '(Swift -Onone) in build/<arch>. OUT_DIR puts the ISO, disk image and logs elsewhere than the build folder.\n'
     printf 'KERNEL_TESTS=ON builds the kernel test hooks (test, smoke, test-all and any *_TEST kernel toggle turn it on).\n'
+    printf 'ROOT=vdaN puts root=vdaN on the kernel command line, naming the root partition (FAT16, ext2, ext3 or ext4);\n'
+    printf 'ROOT_TEST=ON boots with it (vda4 by default) and checks the root.\n'
     printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, benchmark,\n'
     printf '         debug, all, clean, fullclean\n'
 }
@@ -101,6 +103,22 @@ _kernel_test_mode() {
     if ((${#modes[@]} == 1)); then
         printf '%s\n' "${modes[0]}"
     fi
+}
+
+_kernel_command_line() {
+    local test_mode="$1"
+    local root="${ROOT:-}"
+    local -a words=()
+    if [ -z "$root" ] && _is_on "${ROOT_TEST:-OFF}"; then
+        root=vda4
+    fi
+    if [ -n "$root" ]; then
+        words+=("root=$root")
+    fi
+    if [ -n "$test_mode" ]; then
+        words+=("test=$test_mode")
+    fi
+    printf '%s' "${words[*]}"
 }
 
 _aarch64_firmware() {
@@ -352,8 +370,10 @@ iso() {
     rm -rf "$iso_root"
     mkdir -p "$iso_root/EFI/BOOT"
     cp "$SCRIPT_DIR/configs/$ARCH/limine.conf" "$iso_root/limine.conf"
-    if [ -n "$test_mode" ]; then
-        printf '\n    cmdline: test=%s\n' "$test_mode" >>"$iso_root/limine.conf"
+    local command_line
+    command_line=$(_kernel_command_line "$test_mode")
+    if [ -n "$command_line" ]; then
+        printf '\n    cmdline: %s\n' "$command_line" >>"$iso_root/limine.conf"
     fi
     cp "$build_dir/kernel.elf" "$build_dir/initramfs.tar" "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" \
         "$iso_root/"
@@ -500,6 +520,9 @@ smoke_test() {
     fi
     if [[ -n "${POWER_TEST:-}" ]]; then
         smoke_args+=(--expect-power "$POWER_TEST")
+    fi
+    if _is_on "${ROOT_TEST:-OFF}"; then
+        smoke_args+=(--expect-root "${ROOT:-vda4}")
     fi
 
     iso_path=$(_kernel_iso)

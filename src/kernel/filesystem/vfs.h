@@ -4,6 +4,7 @@
 #include "kernel/filesystem/filesystem.h"
 #include "kernel/filesystem/mount_table.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace FeatherOS::Procfs
@@ -14,11 +15,11 @@ struct MountStatus;
 // One tree over the mounted filesystems. At boot, with their type and source: the initramfs's
 // "system" directory at "/system" (initramfs, initramfs), the RAM filesystem's two roots at "/etc"
 // (tmpfs, etc) and "/tmp" (tmpfs, tmp), devices at "/dev" (devfs, devfs), generated process files
-// at "/proc" (procfs, procfs), and the virtio block device's first FAT16 or ext2 volume at "/"
-// (its type and its partition's name, such as ext2 and vda1). The disk's other volume is
-// registered the same way, such as fat16 and vda2, but not mounted. A path belongs to the mount
-// with the longest mount point that is a whole-component prefix of it, so a mount hides whatever
-// its parent filesystem has at that path. Each of these instances keeps its contents while
+// at "/proc" (procfs, procfs), and one of the virtio block device's FAT16, ext2, ext3 or ext4
+// volumes at "/" (its type and its partition's name, such as ext2 and vda1). The disk's other
+// volumes are registered the same way, such as fat16 and vda2, but not mounted. A path belongs to
+// the mount with the longest mount point that is a whole-component prefix of it, so a mount hides
+// whatever its parent filesystem has at that path. Each of these instances keeps its contents while
 // unmounted and can be mounted at one point at a time.
 //
 // The calls below take physical paths, without symbolic links, ".", ".." or repeated '/', and no
@@ -80,11 +81,16 @@ struct FileKey
 // The filesystems that need no disk, in the order "/" lists them: /system, /etc, /dev, /proc and
 // /tmp. Those already mounted somewhere are left alone.
 bool MountBuiltIn();
-// Mounts the block device's first partition with a FAT16 or ext2 volume at "/", replacing an
-// earlier root, and registers each FAT16, ext2, ext3 and ext4 volume under its type and partition
-// name; ext3 and ext4 are never the root before Part 6b. A volume mounted elsewhere is kept; one
-// that refuses writes becomes a read-only root.
-bool MountBlockDevice();
+// The index of the root among volumes whose partition numbers are given, 0 for none: the one with
+// number requested if that is not 0, else the lowest number; NoRoot if there is none.
+constexpr size_t NoRoot = SIZE_MAX;
+size_t ChooseRoot(const size_t* partitions, size_t count, size_t requested);
+// Mounts a partition with a FAT16, ext2, ext3 or ext4 volume at "/", replacing an earlier root,
+// and registers each such volume under its type and partition name. The root is partition number
+// requested if that is not 0 and the volume mounts, else the lowest-numbered one; *honored says
+// whether requested was used (true for 0). A volume mounted elsewhere is kept; one that refuses
+// writes becomes a read-only root; a journal needing recovery is replayed.
+bool MountBlockDevice(size_t requested = 0, bool* honored = nullptr);
 // Copies the initramfs's "etc" files into /etc, so they can be changed until the next boot.
 bool LoadEtc();
 // point is an absolute path without ".", "..", repeated or trailing '/'. UnknownType for a type

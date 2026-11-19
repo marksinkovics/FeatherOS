@@ -1294,6 +1294,155 @@ TEST_CASE("DetachAll closes journals and keeps the mounts")
     REQUIRE(Copy(ext4_start) == closed);
 }
 
+namespace
+{
+
+std::string RootDescription();
+
+void SwapPartitionEntries(size_t first, size_t second)
+{
+    uint8_t* table = disk[0].data() + 446;
+    std::array<uint8_t, 16> saved{};
+    std::memcpy(saved.data(), table + 16 * first, saved.size());
+    std::memcpy(table + 16 * first, table + 16 * second, saved.size());
+    std::memcpy(table + 16 * second, saved.data(), saved.size());
+}
+
+} // namespace
+
+TEST_CASE("root= puts an ext4 volume at /, written, synced and closed like any mount")
+{
+    using FeatherOS::VFS::MountResult;
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+
+    bool honored = false;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(4, &honored));
+    REQUIRE(honored);
+    REQUIRE(RootDescription() == "vda4 ext4 rw");
+    REQUIRE(MountSource("/") == "vda4 ext4 rw");
+    REQUIRE(ReadWhole("/hello.txt") == "Hello from ext2.\n");
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt") == MountResult::Busy);
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda1", "/fat") == MountResult::Done);
+    REQUIRE(ReadWhole("/fat/BLOCK.TXT") == "fat contents");
+    REQUIRE(FeatherOS::VFS::Unmount("/fat") == MountResult::Done);
+
+    WriteAndClose("/root.txt", "on the root\n");
+    REQUIRE(NeedsRecovery(ext4_start));
+    const std::vector<Sector> before_pass = Copy(ext4_start);
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    const CoreView lost = MountCopy(FeatherDisk::Ext::Ext4Type(), before_pass, "root.txt");
+    REQUIRE(lost.contents == "<missing>");
+    const CoreView kept =
+        MountCopy(FeatherDisk::Ext::Ext4Type(), Copy(ext4_start), "root.txt");
+    REQUIRE(kept.contents == "on the root\n");
+
+    REQUIRE(FeatherOS::VFS::DetachAll());
+    REQUIRE_FALSE(NeedsRecovery(ext4_start));
+    REQUIRE(MountSource("/") == "vda4 ext4 rw");
+    REQUIRE(ReadWhole("/root.txt") == "on the root\n");
+}
+
+TEST_CASE("root= replays the journal of an ext3 root that needs recovery")
+{
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(3));
+    REQUIRE(RootDescription() == "vda3 ext3 rw");
+    WriteAndClose("/lost.txt", "kept by the journal\n");
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    const std::vector<Sector> crashed = Copy(ext3_start);
+    REQUIRE(FeatherOS::VFS::DetachAll());
+    REQUIRE_FALSE(NeedsRecovery(ext3_start));
+
+    std::copy(crashed.begin(), crashed.end(), disk.begin() + ext3_start);
+    REQUIRE(NeedsRecovery(ext3_start));
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(3));
+    REQUIRE(RootDescription() == "vda3 ext3 rw");
+    REQUIRE(ReadWhole("/lost.txt") == "kept by the journal\n");
+}
+
+TEST_CASE("without root= the lowest-numbered of the four types is the root")
+{
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    SwapPartitionEntries(0, 3);
+    bool honored = false;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(0, &honored));
+    REQUIRE(honored);
+    REQUIRE(RootDescription() == "vda1 ext4 rw");
+    REQUIRE(ReadWhole("/hello.txt") == "Hello from ext2.\n");
+
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(4, &honored));
+    REQUIRE(honored);
+    REQUIRE(RootDescription() == "vda4 fat16 rw");
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda1", "/mnt") ==
+            FeatherOS::VFS::MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == FeatherOS::VFS::MountResult::Done);
+
+    SwapPartitionEntries(0, 3);
+    SwapPartitionEntries(0, 2);
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(RootDescription() == "vda1 ext3 rw");
+}
+
+TEST_CASE("a root= that names no usable partition falls back to the default root")
+{
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    bool honored = true;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(9, &honored));
+    REQUIRE_FALSE(honored);
+    REQUIRE(RootDescription() == "vda1 fat16 rw");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(5, &honored));
+    REQUIRE_FALSE(honored);
+    REQUIRE(RootDescription() == "vda1 fat16 rw");
+
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(2, &honored));
+    REQUIRE(honored);
+    REQUIRE(RootDescription() == "vda2 ext2 rw");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(0, &honored));
+    REQUIRE(honored);
+    REQUIRE(RootDescription() == "vda1 fat16 rw");
+}
+
+TEST_CASE("an ext4 root the core refuses to write is mounted read-only")
+{
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    State(ext3_start) |= ErrorsBit;
+    const std::vector<Sector> before = Copy(ext3_start);
+    bool honored = false;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(3, &honored));
+    REQUIRE(honored);
+    REQUIRE(RootDescription() == "vda3 ext3 ro");
+    FeatherOS::VFS::FileHandle file{};
+    REQUIRE_FALSE(FeatherOS::VFS::Create("/new.txt", &file));
+    REQUIRE(FeatherOS::VFS::LastError() == FeatherOS::User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::VFS::DetachAll());
+    REQUIRE(Copy(ext3_start) == before);
+}
+
 TEST_CASE("a failed unmount keeps the mount; an aborted journal then unmounts")
 {
     using FeatherOS::VFS::MountResult;

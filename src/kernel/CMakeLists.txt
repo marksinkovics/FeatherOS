@@ -125,6 +125,7 @@ set(SRC
     ${SRCROOT}/elf/elf_loader.cpp
     ${SRCROOT}/input/input.cpp
     ${SRCROOT}/input/keyboard.cpp
+    ${SRCROOT}/boot_options.cpp
     ${SRCROOT}/kernel_runtime.cpp
     ${SRCROOT}/kernel.cpp
 )
