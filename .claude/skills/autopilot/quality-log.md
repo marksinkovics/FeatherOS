@@ -25,4 +25,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | abc862e | M22 P6b s1 root= and ext3/ext4 roots | - | sonnet | 0 | - | |
 | 5caa991 | M22 P6b s2 ext4 root on the test disk, ext2 at vda4 | - | sonnet | 0 | - | |
 | 8bca671 | M29 P1 root without test files | - | sonnet | 0 | - | |
-| (this) | fix: virtio-blk poll timeout (flush flake) | - | opus | 0 | - | |
+| 9d7885c | fix: virtio-blk poll timeout (flush flake) | - | opus | 0 | - | |
+| (this) | fix: smoke top Ctrl+Z race | - | sonnet | 0 | - | |

@@ -72,6 +72,8 @@ def Run(command, case, arch, session_path):
     # was typed, and when that key is due once the line's echo ended.
     control_from = None
     control_due = None
+    # How often a fresh TypeWhen's text had appeared when it came up.
+    fresh_seen = None
     output_closed = False
     timed_out = False
     while process.poll() is None:
@@ -120,12 +122,17 @@ def Run(command, case, arch, session_path):
         prompt_count = len(LINE_PROMPT.findall(clean_output))
         case.OnOutput(session, clean_output)
         try:
-            while (
-                pending_lines
-                and isinstance(pending_lines[0], (TypeWhen, WaitFor))
-                and pending_lines[0].text in clean_output
+            while pending_lines and isinstance(
+                pending_lines[0], (TypeWhen, WaitFor)
             ):
-                line = pending_lines.pop(0)
+                line = pending_lines[0]
+                appearances = clean_output.count(line.text)
+                if line.fresh and fresh_seen is None:
+                    fresh_seen = appearances
+                if appearances <= (fresh_seen if line.fresh else 0):
+                    break
+                pending_lines.pop(0)
+                fresh_seen = None
                 if isinstance(line, TypeWhen):
                     Type(process, line.keys)
             # A whole line at a time: QEMU takes bytes from the pipe only as
@@ -137,6 +144,12 @@ def Run(command, case, arch, session_path):
             ):
                 Type(process, pending_lines.pop(0))
                 lines_sent += 1
+                if (
+                    pending_lines
+                    and isinstance(pending_lines[0], (TypeWhen, WaitFor))
+                    and pending_lines[0].fresh
+                ):
+                    fresh_seen = clean_output.count(pending_lines[0].text)
                 markers_before_end = {
                     marker: clean_output.count(marker) for marker in markers
                 }

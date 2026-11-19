@@ -35,7 +35,7 @@ SHELL_STOP_INPUT = (
     TypeWhen('"/tmp/stop.txt" [New]', b":wq\n"),
     b"upper < /tmp/stop.txt\n",
     b"top\n",
-    SUSPEND_RUNNING,
+    TypeWhen("; q quits", CONTROL_Z, fresh=True),
     b"fg\n",
     TypeWhen("; q quits", b"q"),
     # The shell redraws its prompt from the row's start, which does not count
