@@ -154,6 +154,12 @@ public:
     // Writes everything the driver holds back and flushes the device.
     virtual Status Sync();
 
+    // Makes everything durable, leaves the medium as an unmounted volume would be and refuses
+    // writes from then on; reads go on. An instance that writes nothing (mounted read-only, fell
+    // back, aborted) writes nothing and succeeds. On failure the filesystem is as Sync or the
+    // journal's close left it. Default: Error::Unsupported.
+    virtual Status MakeReadOnly();
+
 protected:
     // Only the filesystem's own type frees it, in FilesystemType::Unmount.
     ~Filesystem() = default;

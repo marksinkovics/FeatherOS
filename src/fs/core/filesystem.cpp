@@ -69,4 +69,9 @@ Status Filesystem::Sync()
     return {};
 }
 
+Status Filesystem::MakeReadOnly()
+{
+    return std::unexpected(Error::Unsupported);
+}
+
 } // namespace FeatherDisk

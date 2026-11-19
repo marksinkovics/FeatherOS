@@ -303,6 +303,7 @@ public:
                                 std::string_view target) override;
     Result<std::size_t> ReadLink(NodeId link, std::span<char> buffer) override;
     Status Sync() override;
+    Status MakeReadOnly() override;
 
 private:
     struct InodePlace

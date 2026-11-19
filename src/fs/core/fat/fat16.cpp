@@ -235,6 +235,7 @@ public:
     Status Rename(NodeId from_directory, std::string_view from_name, NodeId to_directory,
                   std::string_view to_name) override;
     Status Sync() override;
+    Status MakeReadOnly() override;
 
 private:
     Status ReadSector(std::uint64_t sector, Sector& buffer);
@@ -1782,6 +1783,16 @@ Status Fat16Filesystem::Rename(NodeId from_directory, std::string_view from_name
 Status Fat16Filesystem::Sync()
 {
     return volume.Flush();
+}
+
+Status Fat16Filesystem::MakeReadOnly()
+{
+    if (const Status flushed = volume.Flush(); !flushed)
+    {
+        return flushed;
+    }
+    read_only = true;
+    return {};
 }
 
 std::string_view Fat16FilesystemType::Name() const

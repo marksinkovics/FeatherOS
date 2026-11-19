@@ -650,6 +650,46 @@ TEST_CASE("FAT16 sync and unmount flush the device")
     REQUIRE(ReadAll(*again, Lookup(*again, "kept.txt")) == "kept");
 }
 
+TEST_CASE("FAT16 MakeReadOnly flushes once, refuses writes and keeps reads and a later mount")
+{
+    Fat16Image image;
+    image.AddRootFile("contents");
+    MemoryDevice& device = image.Device();
+    FeatherDisk::Filesystem* filesystem = Value(Fat16Type().Mount(device, {}));
+    WriteNewFile(*filesystem, "first.txt", "first");
+    const std::uint32_t flushes = device.flush_count;
+    const std::uint64_t writes = device.write_count;
+    Succeeds(filesystem->MakeReadOnly());
+    REQUIRE(device.flush_count == flushes + 1);
+    REQUIRE(device.write_count == writes);
+    REQUIRE_FALSE(filesystem->GetCapabilities().writable);
+    const NodeId root = filesystem->Root();
+    REQUIRE(ReadAll(*filesystem, Lookup(*filesystem, "first.txt")) == "first");
+    REQUIRE(ReadAll(*filesystem, Lookup(*filesystem, "BLOCK.TXT")) == "contents");
+    REQUIRE(ErrorOf(filesystem->Create(root, "second.txt", 0644)) == Error::ReadOnly);
+    REQUIRE(ErrorOf(filesystem->Write(Lookup(*filesystem, "first.txt"), 0, Bytes("x"))) ==
+            Error::ReadOnly);
+    REQUIRE(ErrorOf(filesystem->Remove(root, "first.txt")) == Error::ReadOnly);
+    Succeeds(filesystem->MakeReadOnly());
+    Succeeds(Fat16Type().Unmount(*filesystem));
+    REQUIRE(device.write_count == writes);
+
+    MountedFilesystem again(Fat16Type(), device);
+    WriteNewFile(*again, "second.txt", "second");
+    REQUIRE(ReadAll(*again, Lookup(*again, "first.txt")) == "first");
+    REQUIRE(ReadAll(*again, Lookup(*again, "second.txt")) == "second");
+}
+
+TEST_CASE("FAT16 MakeReadOnly on a read-only mount writes nothing")
+{
+    Fat16Image image;
+    image.AddRootFile("contents");
+    MountedFilesystem fat(Fat16Type(), image.Device(), true);
+    Succeeds(fat->MakeReadOnly());
+    REQUIRE(image.Device().write_count == 0);
+    REQUIRE(ReadAll(*fat, Lookup(*fat, "BLOCK.TXT")) == "contents");
+}
+
 TEST_CASE("FAT16 mounts a partition through a volume")
 {
     Fat16Image image;

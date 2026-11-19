@@ -175,3 +175,24 @@ TEST_CASE("mtools reads back what FAT16 wrote")
     REQUIRE(docs.find("My Plans.txt") != std::string::npos);
 #endif
 }
+
+TEST_CASE("mtools reads a FAT16 volume written before and after MakeReadOnly and a remount")
+{
+#ifndef FEATHERDISK_MTOOLS_IMAGE
+    SKIP("mtools is not installed");
+#else
+    std::unique_ptr<MemoryDevice> device = LoadImage();
+    FeatherDisk::Filesystem* fat = Value(Fat16Type().Mount(*device, {}));
+    WriteNewFile(*fat, "before.txt", "before\n");
+    Succeeds(fat->MakeReadOnly());
+    Succeeds(Fat16Type().Unmount(*fat));
+    {
+        MountedFilesystem again(Fat16Type(), *device);
+        WriteNewFile(*again, "after.txt", "after\n");
+    }
+    const std::string image = std::string(FEATHERDISK_TEST_OUTPUT) + "/fat16-remount.img";
+    SaveImage(*device, image);
+    REQUIRE(Mtools(FEATHERDISK_MTYPE, image, "\"::before.txt\"") == "before\n");
+    REQUIRE(Mtools(FEATHERDISK_MTYPE, image, "\"::after.txt\"") == "after\n");
+#endif
+}

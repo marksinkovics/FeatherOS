@@ -1104,6 +1104,29 @@ constinit ExtFilesystemType ext4_type("ext4");
 
 } // namespace
 
+Status Ext2Filesystem::MakeReadOnly()
+{
+    if (!writable_mount)
+    {
+        read_only = true;
+        return {};
+    }
+    if (const Status synced = Sync(); !synced)
+    {
+        return synced;
+    }
+    if (const Status closed = CloseJournal(); !closed)
+    {
+        return closed;
+    }
+    if (journal == nullptr)
+    {
+        writable_mount = false;
+    }
+    read_only = true;
+    return {};
+}
+
 FilesystemType& Ext2Type()
 {
     return ext2_type;
