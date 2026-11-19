@@ -28,7 +28,7 @@ _usage() {
     printf 'BUILD_TYPE=Release builds at -O2 (Swift -O) in build/<arch>-release; the default, Debug, at -O0 -g\n'
     printf '(Swift -Onone) in build/<arch>. OUT_DIR puts the ISO, disk image and logs elsewhere than the build folder.\n'
     printf 'KERNEL_TESTS=ON builds the kernel test hooks (test, smoke, test-all and any *_TEST kernel toggle turn it on).\n'
-    printf 'ROOT=vdaN puts root=vdaN on the kernel command line, naming the root partition (FAT16, ext2, ext3 or ext4);\n'
+    printf 'KERNEL_ROOT=vdaN puts root=vdaN on the kernel command line, naming the root partition (FAT16, ext2, ext3 or ext4);\n'
     printf 'ROOT_TEST=ON boots with it (vda3 by default) and checks the root.\n'
     printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, benchmark,\n'
     printf '         debug, all, clean, fullclean\n'
@@ -107,7 +107,7 @@ _kernel_test_mode() {
 
 _kernel_command_line() {
     local test_mode="$1"
-    local root="${ROOT:-}"
+    local root="${KERNEL_ROOT:-}"
     local -a words=()
     if [ -z "$root" ] && _is_on "${ROOT_TEST:-OFF}"; then
         root=vda3
@@ -522,7 +522,7 @@ smoke_test() {
         smoke_args+=(--expect-power "$POWER_TEST")
     fi
     if _is_on "${ROOT_TEST:-OFF}"; then
-        smoke_args+=(--expect-root "${ROOT:-vda3}")
+        smoke_args+=(--expect-root "${KERNEL_ROOT:-vda3}")
     fi
 
     iso_path=$(_kernel_iso)

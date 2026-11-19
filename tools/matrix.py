@@ -99,9 +99,9 @@ CASES = [
     *Both(35, "network", NETWORK_TEST=ON),
     # Optimization can expose what -O0 hides, such as a missing volatile.
     *Both(37, "shell_release", SHELL_TEST=ON, build_type="Release"),
-    *Both(39, "ext3_root", ROOT_TEST=ON, ROOT="vda3"),
-    *Both(41, "unusable_root", ROOT_TEST=ON, ROOT="vda9"),
-    *Both(43, "ext2_root", ROOT_TEST=ON, ROOT="vda4"),
+    *Both(39, "ext3_root", ROOT_TEST=ON, KERNEL_ROOT="vda3"),
+    *Both(41, "unusable_root", ROOT_TEST=ON, KERNEL_ROOT="vda9"),
+    *Both(43, "ext2_root", ROOT_TEST=ON, KERNEL_ROOT="vda4"),
 ]
 
 
@@ -109,7 +109,13 @@ def Environment(arch, build_type, settings=None, out_dir=None):
     environment = os.environ.copy()
     for toggle in TOGGLES:
         environment[toggle] = "OFF"
-    for key in ("POWER_TEST", "QEMU_CPU", "DISK_LAYOUT", "OUT_DIR", "ROOT"):
+    for key in (
+        "POWER_TEST",
+        "QEMU_CPU",
+        "DISK_LAYOUT",
+        "OUT_DIR",
+        "KERNEL_ROOT",
+    ):
         environment.pop(key, None)
     environment.update(settings or {})
     environment["ARCH"] = arch
