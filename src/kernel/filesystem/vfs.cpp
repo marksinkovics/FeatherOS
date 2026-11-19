@@ -361,6 +361,50 @@ bool LoadEtc()
     return true;
 }
 
+bool UseRootEtc()
+{
+    const char* type = nullptr;
+    const char* source = nullptr;
+    bool read_only = true;
+    if (!DescribeRoot(&type, &source, &read_only) || read_only)
+    {
+        return false;
+    }
+    Driver* const ram_copy = &Filesystem::Drivers::Etc();
+    bool was_mounted = false;
+    {
+        Sync::SpinLockGuard guard(mount_lock);
+        was_mounted = mounts.Find("/etc") == ram_copy && mounts.Remove("/etc");
+    }
+    bool done = IsDirectory("/etc") || MakeDirectory("/etc");
+    char name[Initramfs::NameCapacity];
+    Initramfs::File archive_file;
+    for (uint32_t index = 0; done && Initramfs::ReadDirectory("etc", index, name, &archive_file);
+         ++index)
+    {
+        char path[sizeof("/etc/") + Initramfs::NameCapacity];
+        CopyText(path, sizeof(path), "/etc/");
+        CopyText(path + sizeof("/etc/") - 1, Initramfs::NameCapacity, name);
+        FileInfo info;
+        if (Stat(path, &info))
+        {
+            continue;
+        }
+        FileHandle file{};
+        uint64_t written = 0;
+        done =
+            Create(path, &file) && (Write(&file, archive_file.data, archive_file.size, &written) &&
+                                    written == archive_file.size);
+        Close(&file);
+    }
+    if (!done && was_mounted)
+    {
+        Sync::SpinLockGuard guard(mount_lock);
+        mounts.Add("/etc", ram_copy);
+    }
+    return done;
+}
+
 MountResult Mount(const char* type, const char* source, const char* point,
                   Filesystem::MountMode mode)
 {

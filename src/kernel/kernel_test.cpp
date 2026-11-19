@@ -6,6 +6,7 @@
 #include "kernel/cpu.h"
 #include "kernel/exception.h"
 #include "kernel/filesystem/drivers.h"
+#include "kernel/filesystem/initramfs.h"
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/vfs.h"
 #include "kernel/memory/heap.h"
@@ -1502,6 +1503,97 @@ void CheckRoot(uint64_t boot_count, Ext2Data* data)
     }
 }
 
+// The initramfs's default of /etc/<name> followed by suffix.
+bool EtcFileIs(const char* name, const char* suffix)
+{
+    char path[sizeof("/etc/") + Initramfs::NameCapacity];
+    if (!String::FormatTo(path, sizeof(path), "/etc/{}", name))
+    {
+        return false;
+    }
+    uint64_t suffix_length = 0;
+    while (suffix[suffix_length] != '\0')
+    {
+        ++suffix_length;
+    }
+    Initramfs::File archive;
+    VFS::FileHandle file{};
+    if (!Initramfs::Open("etc", name, &archive) || !VFS::Open(path, &file))
+    {
+        return false;
+    }
+    bool same = file.size == archive.size + suffix_length;
+    char chunk[64];
+    uint64_t offset = 0;
+    uint64_t count = 0;
+    while (same && VFS::Read(&file, chunk, sizeof(chunk), &count) && count != 0)
+    {
+        for (uint64_t index = 0; index < count; ++index, ++offset)
+        {
+            const uint64_t past = offset < archive.size ? 0 : offset - archive.size;
+            if (past >= suffix_length && offset >= archive.size)
+            {
+                same = false;
+                break;
+            }
+            const char expected =
+                offset < archive.size ? static_cast<char>(archive.data[offset]) : suffix[past];
+            same = same && chunk[index] == expected;
+        }
+    }
+    VFS::Close(&file);
+    return same && offset == archive.size + suffix_length;
+}
+
+bool AppendTo(const char* path, const char* text)
+{
+    VFS::FileHandle file{};
+    uint64_t length = 0;
+    while (text[length] != '\0')
+    {
+        ++length;
+    }
+    uint64_t written = 0;
+    const bool done = VFS::Open(path, &file) && VFS::Seek(&file, file.size) &&
+                      VFS::Write(&file, text, length, &written) && written == length;
+    VFS::Close(&file);
+    return done;
+}
+
+// /etc is the root's own directory, not the RAM copy; hosts and resolv.conf keep an edit of the
+// first boot, and a default deleted on the second comes back at the next UseRootEtc.
+void CheckEtc(uint64_t boot_count)
+{
+    constexpr char FirstEdit[] = "# storage test boot 1\n";
+    constexpr char SecondEdit[] = "# storage test boot 2\n";
+    if (VFS::IsMountPoint("/etc") || !VFS::IsDirectory("/etc") || VFS::IsReadOnly("/etc/hosts"))
+    {
+        Panic("/etc is not the writable root's directory");
+    }
+    if (boot_count == 1)
+    {
+        if (!EtcFileIs("hosts", "") || !EtcFileIs("resolv.conf", "") ||
+            !AppendTo("/etc/hosts", FirstEdit) || !AppendTo("/etc/resolv.conf", FirstEdit))
+        {
+            Panic("The root's /etc does not hold the defaults or took no edit");
+        }
+    }
+    else if (boot_count == 2)
+    {
+        if (!EtcFileIs("hosts", FirstEdit) || !EtcFileIs("resolv.conf", FirstEdit))
+        {
+            Panic("The root's /etc lost the first boot's edits");
+        }
+        VFS::FileInfo info;
+        if (!VFS::Remove("/etc/resolv.conf") || VFS::Stat("/etc/resolv.conf", &info) ||
+            !VFS::UseRootEtc() || !EtcFileIs("resolv.conf", "") || !EtcFileIs("hosts", FirstEdit) ||
+            !AppendTo("/etc/hosts", SecondEdit))
+        {
+            Panic("A deleted /etc default did not come back or an edit was overwritten");
+        }
+    }
+}
+
 void CheckRootReadOnly(const char* kept, Ext2Data* data)
 {
     if (VFS::Mount("ext4", "vda2", "/", Filesystem::MountMode::ReadOnly) !=
@@ -1541,7 +1633,7 @@ void CheckRemount(uint64_t boot_count, Ext2Data* data)
     }
     for (const char* point : InnerPoints)
     {
-        if (VFS::Unmount(point) != VFS::MountResult::Done)
+        if (VFS::IsMountPoint(point) && VFS::Unmount(point) != VFS::MountResult::Done)
         {
             Panic("Storage test could not unmount a filesystem inside /");
         }
@@ -1566,7 +1658,8 @@ void CheckRemount(uint64_t boot_count, Ext2Data* data)
     {
         Panic("Mounting the root read-write again failed");
     }
-    if (!VFS::MountBuiltIn() || VFS::Mount("fat16", "vda2", FatPoint) != VFS::MountResult::Done)
+    if (!VFS::MountBuiltIn() || VFS::Mount("fat16", "vda2", FatPoint) != VFS::MountResult::Done ||
+        !VFS::UseRootEtc())
     {
         Panic("Storage test could not mount the filesystems inside / again");
     }
@@ -1730,6 +1823,7 @@ void RunStorageTests()
     FillExt2Data(data->bytes);
     CheckRootFile();
     CheckRoot(boot_count, &*data);
+    CheckEtc(boot_count);
     CheckExt3AndExt2(boot_count, &*data);
     CheckRemount(boot_count, &*data);
     if (VFS::Unmount(FatPoint) != VFS::MountResult::Done)

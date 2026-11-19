@@ -23,6 +23,7 @@ from smoke.boot import PANIC_MARKER, ROOT_MESSAGE
 from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
 from smoke.script import Lines
 
+ETC_DEFAULTS = Path(__file__).resolve().parents[3] / "initramfs" / "etc"
 STORAGE_MESSAGE = (
     "KERN/STORAGE: sector, FAT16, ext2, ext3 and ext4 file writes verified; "
     "boot count "
@@ -385,8 +386,28 @@ def VerifyJournalled(disk_path, boot_count):
             elif NeedsRecovery(volume):
                 return f"{name}: needs recovery after the second boot"
             failure = VerifyExtVolume(str(volume), boot_count, name)
+            if failure is None and name == "ext4":
+                failure = VerifyRootEtc(debugfs, str(volume), boot_count)
         if failure is not None:
             return f"{name}: {failure}"
+    return None
+
+
+def VerifyRootEtc(debugfs, volume, boot_count):
+    """The root's own /etc holds the initramfs defaults, the first boot's edit
+    in hosts and resolv.conf, and after the second boot the restored default
+    resolv.conf and the second edit in hosts."""
+    first = b"# storage test boot 1\n"
+    second = b"# storage test boot 2\n"
+    hosts = (ETC_DEFAULTS / "hosts").read_bytes() + first
+    resolv = (ETC_DEFAULTS / "resolv.conf").read_bytes()
+    if boot_count == 1:
+        resolv += first
+    else:
+        hosts += second
+    for name, expected in (("hosts", hosts), ("resolv.conf", resolv)):
+        if Debugfs(debugfs, volume, f"cat /etc/{name}") != expected:
+            return f"debugfs read a different /etc/{name}"
     return None
 
 

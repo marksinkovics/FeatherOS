@@ -280,6 +280,19 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     {
         logger.Info(message);
     }
+    if (root_read_only)
+    {
+        logger.Info("VFS: /etc is the initramfs's RAM copy: the root is read-only");
+    }
+    else if (VFS::UseRootEtc())
+    {
+        logger.Info("VFS: /etc is the root's own directory");
+    }
+    else
+    {
+        logger.Warning(
+            "VFS: /etc is the initramfs's RAM copy: the root's /etc could not be filled");
+    }
 #if defined(FEATHEROS_KERNEL_TESTS)
     if (KernelTest::Selected(KernelTest::Mode::Storage))
     {

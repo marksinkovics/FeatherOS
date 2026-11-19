@@ -139,6 +139,7 @@ class NamedRoot(Case):
             if self.name == EMPTY_ROOT and names - {
                 ".",
                 "..",
+                "etc",
                 "lost+found",
                 "rootwrite.txt",
             }:
@@ -147,13 +148,20 @@ class NamedRoot(Case):
                 )
             if self.name != EMPTY_ROOT and names.intersection(TEST_FILES):
                 return "the root holds test files the boot should not need"
+            for name in ("hosts", "resolv.conf"):
+                if (
+                    storage.Debugfs(debugfs, str(volume), f"cat /etc/{name}")
+                    != (storage.ETC_DEFAULTS / name).read_bytes()
+                ):
+                    return f"the root's /etc/{name} is not the default"
         return None
 
     def PassMessage(self, result):
         return (
             f"{self.type} root {self.name} without test files mounted "
-            "read-write, shell started in /, written from "
-            "the shell, closed by shutdown, and clean under e2fsck and debugfs"
+            "read-write with the defaults copied into its /etc, shell "
+            "started in /, written from the shell, closed by shutdown, and "
+            "clean under e2fsck and debugfs"
         )
 
 

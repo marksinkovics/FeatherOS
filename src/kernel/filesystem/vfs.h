@@ -93,6 +93,9 @@ size_t ChooseRoot(const size_t* partitions, size_t count, size_t requested);
 bool MountBlockDevice(size_t requested = 0, bool* honored = nullptr);
 // Copies the initramfs's "etc" files into /etc, so they can be changed until the next boot.
 bool LoadEtc();
+// Never overwrites a file the root's /etc has. Callable again after the root is mounted anew.
+// False, with /etc as it was, for a read-only root or when the copy failed.
+bool UseRootEtc();
 // point is an absolute path without ".", "..", repeated or trailing '/'. UnknownType for a type
 // nothing registered, NotFound for a source the type does not have, Busy if the point is taken or
 // the instance is mounted elsewhere, Failed if the driver could not reopen its volume. A driver
