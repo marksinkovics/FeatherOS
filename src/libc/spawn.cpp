@@ -18,7 +18,7 @@ namespace
 constexpr int SignalSegmentationFault = 11;
 constexpr uint64_t PollMilliseconds = 10;
 // posix_spawnp's search list when PATH is not set.
-constexpr char DefaultSearchPath[] = "/system:/bin";
+constexpr char DefaultSearchPath[] = "/bin:/system";
 // The kernel's limit on running children per process.
 constexpr size_t MaximumChildren = 16;
 

@@ -11,18 +11,19 @@ import uuid
 import zlib
 from pathlib import Path
 
-DISK_SIZE = 64 * 1024 * 1024
+DISK_SIZE = 160 * 1024 * 1024
 SECTOR_SIZE = 512
 DISK_SECTORS = DISK_SIZE // SECTOR_SIZE
-# Each partition ends where the next starts: the root's ext4 (31 MiB), FAT16
-# (16 MiB) from 32 MiB, ext3 (4 MiB) from 48 MiB and ext2 (8 MiB) from 52 MiB,
-# which leaves the last 4 MiB free in both layouts. An MBR holds no more than
-# these four.
+# Each partition ends where the next starts: the root's ext4 (127 MiB, which
+# holds every program of a Debug build, about 75 MB), FAT16 (16 MiB) from
+# 128 MiB, ext3 (4 MiB) from 144 MiB and ext2 (8 MiB) from 148 MiB, which
+# leaves the last 4 MiB free in both layouts. An MBR holds no more than these
+# four.
 ROOT_START = 2048
-FAT16_START = 65536
-EXT3_START = 98304
-EXT2_START = 106496
-EXT2_END = 122880
+FAT16_START = 262144
+EXT3_START = 294912
+EXT2_START = 303104
+EXT2_END = 319488
 FAT16_CLUSTER_SECTORS = 4
 FAT16_PARTITION_TYPE = 0x06
 LINUX_PARTITION_TYPE = 0x83
@@ -48,8 +49,9 @@ EXT2_TIME = 1767225600
 LONG_NAME_FILE = "Read Me First.txt"
 LONG_NAME_CONTENTS = b"Long names from mtools work.\n"
 # The root's directories besides lost+found: the shell starts in /home, and
-# PATH ends with /bin.
-ROOT_DIRECTORIES = ("home", "bin")
+# the build's programs go to /bin and /sbin.
+ROOT_DIRECTORIES = ("home", "bin", "sbin")
+PROGRAM_MODE = 0o755
 # The ext4 root's /samples, which the STORAGE kernel test and the shell part
 # ext4.py read; everything on the root belongs to user and group 0. extents.bin
 # is 2 MiB of 1 KiB blocks in which every fourth block is zeros, which mke2fs
@@ -274,12 +276,22 @@ def finish_tree(source):
     return sorted(str(path.relative_to(source)) for path in source.rglob("*"))
 
 
-def make_root_tree(source, block_file):
+def install_programs(source, programs):
+    for directory in ("bin", "sbin"):
+        for program in sorted((programs / directory).iterdir()):
+            target = source / directory / program.name
+            target.write_bytes(program.read_bytes())
+            target.chmod(PROGRAM_MODE)
+
+
+def make_root_tree(source, block_file, programs):
     """The root's staging directory."""
     (source / "BLOCK.TXT").write_bytes(Path(block_file).read_bytes())
     (source / "BLOCK.TXT").chmod(0o644)
     for directory in ROOT_DIRECTORIES:
         (source / directory).mkdir()
+    if programs is not None:
+        install_programs(source, programs)
     write_files(source / SAMPLES, EXT4_FILES, EXT4_LINKS)
     return finish_tree(source)
 
@@ -325,7 +337,7 @@ def run_mke2fs(
         )
 
 
-def make_root_volume(volume_path, sector_count, block_file):
+def make_root_volume(volume_path, sector_count, block_file, programs):
     """ext4 with mke2fs's default features (extents, 64bit, flex_bg,
     metadata_csum, ...); 1 KiB blocks and 256-byte inodes whatever the host's
     mke2fs.conf says for small volumes."""
@@ -333,10 +345,10 @@ def make_root_volume(volume_path, sector_count, block_file):
     mke2fs = find_mke2fs()
     with tempfile.TemporaryDirectory() as source_name:
         source = Path(source_name)
-        names = make_root_tree(source, block_file)
+        names = make_root_tree(source, block_file, programs)
         run_mke2fs(
             mke2fs,
-            ("-t", "ext4", "-b", "1024", "-I", "256"),
+            ("-t", "ext4", "-b", "1024", "-I", "256", "-J", "size=1"),
             "FEATHEROS",
             EXT4_VOLUME_UUID,
             source,
@@ -462,6 +474,12 @@ def main():
         "file", help="File to copy into the root directory as BLOCK.TXT"
     )
     parser.add_argument(
+        "--programs",
+        type=Path,
+        help="Directory whose bin/ and sbin/ files go to the root's /bin "
+        "and /sbin",
+    )
+    parser.add_argument(
         "--layout",
         choices=("mbr", "gpt"),
         default="mbr",
@@ -484,7 +502,7 @@ def main():
 
     with tempfile.TemporaryDirectory() as work:
         volume = Path(work) / "root.img"
-        make_root_volume(volume, root_sectors, args.file)
+        make_root_volume(volume, root_sectors, args.file, args.programs)
         copy_volume(volume, image, ROOT_START)
         volume = Path(work) / "ext3.img"
         make_ext3_volume(volume, ext3_sectors)

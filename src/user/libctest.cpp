@@ -131,7 +131,8 @@ int LocalStatic()
 void CheckArguments(int argc, char** argv)
 {
     Check(argc == 3, "argc");
-    Check(strcmp(argv[0], "libctest") == 0, "argv[0]");
+    // A program found in /bin gets its path, one from /system its bare name.
+    Check(strcmp(argv[0], "libctest") == 0 || strcmp(argv[0], "/bin/libctest") == 0, "argv[0]");
     Check(strcmp(argv[1], "one") == 0, "argv[1]");
     Check(strcmp(argv[2], "two words") == 0, "quoted argv[2]");
     Check(argv[argc] == nullptr, "argv terminator");
@@ -502,7 +503,7 @@ void CheckEnvironment()
     // init.conf sets these, and the shell passes them on.
     const char* home = getenv("HOME");
     Check(home != nullptr && strcmp(home, "/home") == 0, "inherited HOME");
-    Check(EnvironHas("PATH=/system:/bin"), "inherited PATH in environ");
+    Check(EnvironHas("PATH=/bin:/system"), "inherited PATH in environ");
     Check(getenv("NOT_SET") == nullptr, "missing variable");
 
     Check(setenv("FEATHER", "os", 0) == 0 && strcmp(getenv("FEATHER"), "os") == 0, "setenv");
@@ -522,7 +523,7 @@ void CheckEnvironment()
     errno = 0;
     Check(setenv("LARGE", large, 1) == -1 && errno == ENOMEM, "setenv past the size limit");
     Check(unsetenv("FEATHER") == 0 && getenv("FEATHER") == nullptr &&
-              EnvironHas("PATH=/system:/bin"),
+              EnvironHas("PATH=/bin:/system"),
           "unsetenv");
     Check(unsetenv("FEATHER") == 0, "unsetenv a missing variable");
 }
@@ -1300,10 +1301,10 @@ void CheckDiskPrograms()
           "posix_spawn of a relative path");
     Check(SpawnAndWait("disk-echo", true) == ENOENT, "posix_spawnp of a program outside PATH");
     Check(setenv("PATH", "::/nowhere:/tmp/", 1) == 0 && SpawnAndWait("disk-echo", true) == 0 &&
-              SpawnAndWait("echo", true) == ENOENT && setenv("PATH", "/system:/bin", 1) == 0,
+              SpawnAndWait("echo", true) == ENOENT && setenv("PATH", "/bin:/system", 1) == 0,
           "posix_spawnp searches PATH");
     Check(unsetenv("PATH") == 0 && SpawnAndWait("echo", true) == 0 &&
-              setenv("PATH", "/system:/bin", 1) == 0,
+              setenv("PATH", "/bin:/system", 1) == 0,
           "posix_spawnp without PATH");
     Check(SpawnAndWait("/system/hello.txt", false) == ENOEXEC &&
               SpawnAndWait("hello.txt", true) == ENOEXEC,

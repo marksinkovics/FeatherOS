@@ -16,7 +16,7 @@ int main(int argc, char** argv)
 }
 ```
 
-Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. The build places it in `/system` as `/system/<name>`, where the shell finds it by name. A copy anywhere else runs too, by its path (`/tmp/tool`, `./tool`) or by name from a directory in `PATH`, which is `/system:/bin`. Every program in `src/user/` is written this way, except `test_program`, a kernel self-test that defines `_start` itself.
+Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. The build places it in `/system` as `/system/<name>` and in the test disk's root as `/bin/<name>`, where the shell finds it by name. A copy anywhere else runs too, by its path (`/tmp/tool`, `./tool`) or by name from a directory in `PATH`, which is `/bin:/system`. Every program in `src/user/` is written this way, except `test_program`, a kernel self-test that defines `_start` itself.
 
 **Startup.** The C library's `_start` does four things before `main`:
 - copies the arguments to writable memory, since the kernel maps them read-only
@@ -24,7 +24,7 @@ Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS`
 - runs `.preinit_array` and `.init_array`, which include C++ static constructors and `__attribute__((constructor))` functions
 - calls `exit(main(argc, argv))`
 
-`argv[0]` is the path the program was started with, or its name for a program in `/system`.
+`argv[0]` is the path the program was started with, or its name for a program in `/system`. The test disk's root also holds every program in `/bin`, which `PATH` lists first, so the shell runs those, with `argv[0]` set to `/bin/<name>`.
 
 **Exit.** `exit` runs `atexit` handlers and C++ static destructors, newest first. It then runs `.fini_array`, flushes the stdio streams, and passes the low 8 bits of the status to the kernel. `abort` raises `SIGABRT`, so a handler runs first, and ends the program with it even if the handler returns.
 
@@ -264,7 +264,7 @@ Not provided:
 - **Arguments:** the kernel always makes the path its `argv[0]`, or the bare name for a program in `/system`.
 - **Errors:** the path or an argument containing a double quote fails with `EINVAL`. A command line or environment over the limits fails with `E2BIG`; the path counts toward the 1023-character command line (16 words at most), and must resolve to at most 1023 characters with components of at most `NAME_MAX` (`ENAMETOOLONG`). A path of up to about 1000 characters therefore fits as an argument.
 - **Console:** by default the child takes the console until it exits.
-- **PATH:** `posix_spawnp` runs the first regular file it finds in the directories of the caller's `PATH`, or `/system:/bin` when `PATH` is unset; empty entries are skipped rather than meaning the working directory. A file name holding a `/` is used as it is. Unlike `execvp`, a file that is not a program is not run as a shell script; `posix_spawnp` returns `ENOEXEC`.
+- **PATH:** `posix_spawnp` runs the first regular file it finds in the directories of the caller's `PATH`, or `/bin:/system` when `PATH` is unset; empty entries are skipped rather than meaning the working directory. A file name holding a `/` is used as it is. Unlike `execvp`, a file that is not a program is not run as a shell script; `posix_spawnp` returns `ENOEXEC`.
 
 **Attributes.** The supported flags are:
 

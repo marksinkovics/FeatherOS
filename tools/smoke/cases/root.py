@@ -12,7 +12,7 @@ from create_test_disk import (
     SECTOR_SIZE,
 )
 
-from smoke.boot import PANIC_MARKER, SHELL_BANNER
+from smoke.boot import PANIC_MARKER, RESCUE_INIT_MESSAGE, SHELL_BANNER
 from smoke.cases import storage
 from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
 from smoke.cases.normal_boot import NormalBoot
@@ -20,15 +20,16 @@ from smoke.script import Lines
 
 # The partitions of the test disk that root= can name instead of the default
 # root: the partition's range and its type. vda3 and vda4 boot as they are,
-# with no /home, /bin or /BLOCK.TXT; vda1 is made into a new ext4 volume with
-# nothing but lost+found first.
+# with no /home, /bin, /sbin or /BLOCK.TXT; vda1 is made into a new ext4
+# volume with nothing but lost+found first.
 ROOT_VOLUMES = {
     "vda1": ("ext4", ROOT_START, FAT16_START),
     "vda3": ("ext3", EXT3_START, EXT2_START),
     "vda4": ("ext2", EXT2_START, EXT2_END),
 }
 EMPTY_ROOT = "vda1"
-# The empty root's /etc/init.conf is garbage: init must use /system/init.conf.
+# The empty root's /etc/init.conf and /sbin/init are garbage: the kernel must
+# start /system/init, which must use /system/init.conf.
 BROKEN_INIT_CONF = b"\xff\x00 not a service\nrespawn\n\x01\x02\n"
 INIT_FALLBACK = (
     "init: /etc/init.conf is missing or lists no service; "
@@ -38,7 +39,7 @@ WRITTEN = b"written on the root\n"
 WORKING_DIRECTORY = re.compile(r"^/\r?$", re.MULTILINE)
 TMP_DIRECTORY = re.compile(r"^/tmp\r?$", re.MULTILINE)
 HOME_IS_ROOT = re.compile(r"^HOME=/\r?$", re.MULTILINE)
-TEST_FILES = ("BLOCK.TXT", "home", "bin", "samples")
+TEST_FILES = ("BLOCK.TXT", "home", "bin", "sbin", "samples")
 FALLBACK_WARNING = "KERN/W: VFS: root={} is not a usable partition, "
 
 
@@ -104,7 +105,10 @@ class NamedRoot(Case):
         broken = Path(work) / "init.conf"
         broken.write_bytes(BROKEN_INIT_CONF)
         commands = Path(work) / "commands"
-        commands.write_text(f"mkdir /etc\nwrite {broken} /etc/init.conf\n")
+        commands.write_text(
+            f"mkdir /etc\nwrite {broken} /etc/init.conf\n"
+            f"mkdir /sbin\nwrite {broken} /sbin/init\n"
+        )
         storage.RunDebugfsWrite(debugfs, str(volume), str(commands))
 
     def Script(self, session):
@@ -125,6 +129,8 @@ class NamedRoot(Case):
             return f"expected {expected!r}{result.limit_note}"
         if PANIC_MARKER in output:
             return "the kernel panicked"
+        if RESCUE_INIT_MESSAGE not in output:
+            return "the kernel did not fall back to /system/init"
         if SHELL_BANNER not in output:
             return "the shell did not start"
         if WORKING_DIRECTORY.search(output) is None:
@@ -176,6 +182,7 @@ class NamedRoot(Case):
                 "etc",
                 "lost+found",
                 "rootwrite.txt",
+                "sbin",
             }:
                 return (
                     f"the new root holds more than it should: {sorted(names)}"
@@ -196,10 +203,13 @@ class NamedRoot(Case):
     def PassMessage(self, result):
         return (
             f"{self.type} root {self.name} without test files mounted "
-            "read-write with the defaults copied into its /etc, shell "
+            "read-write with the defaults copied into its /etc, "
+            "/system/init as its init, the shell "
             "started in / with HOME=/ and cd returning there, "
             + (
-                "init using /system/init.conf over a broken /etc/init.conf, "
+                "init using /system/init.conf over a broken "
+                "/etc/init.conf and the kernel starting /system/init over a "
+                "broken /sbin/init, "
                 if self.name == EMPTY_ROOT
                 else ""
             )

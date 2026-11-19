@@ -266,8 +266,10 @@ _image_inputs() {
     # The initramfs holds /system, where each program is a file named after it, as "ls", and /etc.
     local root_dir="$build_dir/initramfs"
     local system_dir="$root_dir/system"
-    rm -rf "$root_dir" "$build_dir/system"
-    mkdir -p "$system_dir"
+    # The programs the test disk's root gets in /bin, and init in /sbin (tools/create_test_disk.py).
+    local disk_programs_dir="$build_dir/disk-programs"
+    rm -rf "$root_dir" "$build_dir/system" "$disk_programs_dir"
+    mkdir -p "$system_dir" "$disk_programs_dir/bin" "$disk_programs_dir/sbin"
     cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/etc/init.conf" \
         "$SCRIPT_DIR/initramfs/sample.json" "$SCRIPT_DIR/initramfs/http-request.txt" \
         "$SCRIPT_DIR/initramfs/http-response.txt" "$system_dir/"
@@ -280,7 +282,9 @@ _image_inputs() {
     for program in "${programs[@]}"; do
         local name="${program##*/}"
         "$ARCH-elf-strip" --strip-all -o "$system_dir/${name%-"$ARCH".elf}" "$program"
+        cp "$system_dir/${name%-"$ARCH".elf}" "$disk_programs_dir/bin/"
     done
+    mv "$disk_programs_dir/bin/init" "$disk_programs_dir/sbin/init"
     python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$system_dir/badelf"
     # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
     export COPYFILE_DISABLE=1
@@ -362,7 +366,8 @@ iso() {
     fi
     mkdir -p "$out_dir"
     python3 "$SCRIPT_DIR/tools/create_test_disk.py" "$out_dir/virtio-disk.img" \
-        "$SCRIPT_DIR/initramfs/block.txt" --layout "${DISK_LAYOUT:-mbr}"
+        "$SCRIPT_DIR/initramfs/block.txt" --programs "$build_dir/disk-programs" \
+        --layout "${DISK_LAYOUT:-mbr}"
 
     local iso_root="$out_dir/iso_root"
     local iso_path

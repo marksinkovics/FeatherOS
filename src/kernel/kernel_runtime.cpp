@@ -44,6 +44,9 @@ namespace FeatherOS::KernelRuntime
 namespace
 {
 
+constexpr char RootInit[] = "/sbin/init";
+constexpr char RescueInit[] = "init";
+
 Framebuffer framebuffer;
 Term terms[Console::Count];
 
@@ -454,11 +457,19 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     }
 #endif
 
-    // init starts and supervises the services in /init.conf; restart it if it ever exits.
+    // init starts and supervises the services in /etc/init.conf; restart it if it ever exits.
     for (;;)
     {
         Process::ProcessId init;
-        if (Process::Spawn("init", nullptr, 0, 0, &init) != Process::SpawnStatus::Started)
+        if (Process::Spawn(RootInit, nullptr, 0, 0, &init) == Process::SpawnStatus::Started)
+        {
+            logger.Info("Init: starting /sbin/init from the root");
+        }
+        else if (Process::Spawn(RescueInit, nullptr, 0, 0, &init) == Process::SpawnStatus::Started)
+        {
+            logger.Info("Init: starting /system/init from the initramfs");
+        }
+        else
         {
             Panic("Could not start init");
         }

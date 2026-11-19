@@ -35,7 +35,7 @@ EXPECTED_PROGRAMS_OUTPUT = (
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
     # env prints the variables init sets, which the shell passes on.
-    "PATH=/system:/bin",
+    "PATH=/bin:/system",
     "HOME=/home",
     "hello feather os",
     "upper> ",

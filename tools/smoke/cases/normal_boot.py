@@ -4,6 +4,7 @@ from smoke.boot import (
     ELF_LOAD_MESSAGE,
     ETC_MESSAGE,
     EXPECTED_ARCHITECTURE,
+    INIT_MESSAGE,
     NETWORK_DHCP_MESSAGE,
     NETWORK_IPV6_MESSAGE,
     NETWORK_MESSAGE,
@@ -67,6 +68,8 @@ class NormalBoot(BootToShell):
             return "the ext4 root was not mounted read-write"
         if ETC_MESSAGE not in output:
             return "/etc is not the root's own directory"
+        if INIT_MESSAGE not in output:
+            return "the kernel did not start /sbin/init from the root"
         if ELF_LOAD_MESSAGE not in output:
             return "kernel did not load the ELF into a user address space"
         if SHELL_BANNER not in output:
