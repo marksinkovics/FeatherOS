@@ -580,7 +580,8 @@ unit_test() {
     fi
     cmake --fresh -S "$SCRIPT_DIR/tests/unit" -B "$unit_build_dir" -G Ninja "${cmake_args[@]}"
     cmake --build "$unit_build_dir" --parallel
-    ctest --test-dir "$unit_build_dir" --output-on-failure
+    ctest --test-dir "$unit_build_dir" --output-on-failure \
+        --parallel "${CTEST_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 }
 
 __exit() {

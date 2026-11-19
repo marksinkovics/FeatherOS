@@ -518,39 +518,77 @@ std::unique_ptr<MemoryDevice> Prepared(std::string_view variant)
 
 } // namespace
 
-TEST_CASE("a journalled volume stopped after any write recovers to a committed state")
+namespace
+{
+
+// The two default layouts are cut at every write; the others, which differ in the log's format
+// and checksums, at every third. One test case each, so that CTest runs them side by side.
+[[maybe_unused]] void StopAfterEveryWrite(std::string_view variant, std::uint64_t stride,
+                                          std::uint64_t first)
+{
+    INFO(variant);
+    const Scenario scenario = MakeScenario();
+    const std::unique_ptr<MemoryDevice> base = Prepared(variant);
+    const Reference reference = RunReference(*base, scenario, std::nullopt);
+    const std::size_t block_size = BlockSizeOf(*base);
+    REQUIRE(reference.total > 200);
+    for (std::uint64_t cut = first; cut < reference.total; cut += stride)
+    {
+        INFO("stopped after write " << cut << " of " << reference.total);
+        const Crashed crashed = RunCrashed(*base, scenario, cut, std::nullopt);
+        const Replayed replayed = ReplayBothWays(*crashed.device, "crash-every-write");
+        RequireCommittedState(replayed.tree, reference.trees, crashed.synced, block_size);
+        RequireNoStaleFill(replayed.tree);
+        RequireLossyRecovery(crashed, cut, reference.trees, block_size);
+    }
+}
+
+} // namespace
+
+TEST_CASE("a journalled volume stopped after any write recovers to a committed state: ext3")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    // The two default layouts are cut at every write; the others, which differ in the log's
-    // format and checksums, at every third.
-    struct Layout
-    {
-        std::string_view variant;
-        std::uint64_t stride;
-        std::uint64_t first;
-    };
-    const Scenario scenario = MakeScenario();
-    for (const Layout& layout :
-         {Layout{"ext3", 1, 0}, Layout{"ext4", 1, 0}, Layout{"ext4-blockmap-v2", 3, 1},
-          Layout{"ext4-journal-gdtcsum", 3, 2}, Layout{"ext4-64bit", 3, 0}})
-    {
-        INFO(layout.variant);
-        const std::unique_ptr<MemoryDevice> base = Prepared(layout.variant);
-        const Reference reference = RunReference(*base, scenario, std::nullopt);
-        const std::size_t block_size = BlockSizeOf(*base);
-        REQUIRE(reference.total > 200);
-        for (std::uint64_t cut = layout.first; cut < reference.total; cut += layout.stride)
-        {
-            INFO("stopped after write " << cut << " of " << reference.total);
-            const Crashed crashed = RunCrashed(*base, scenario, cut, std::nullopt);
-            const Replayed replayed = ReplayBothWays(*crashed.device, "crash-every-write");
-            RequireCommittedState(replayed.tree, reference.trees, crashed.synced, block_size);
-            RequireNoStaleFill(replayed.tree);
-            RequireLossyRecovery(crashed, cut, reference.trees, block_size);
-        }
-    }
+    StopAfterEveryWrite("ext3", 1, 0);
+#endif
+}
+
+TEST_CASE("a journalled volume stopped after any write recovers to a committed state: ext4")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    StopAfterEveryWrite("ext4", 1, 0);
+#endif
+}
+
+TEST_CASE(
+    "a journalled volume stopped after any write recovers to a committed state: ext4-blockmap-v2")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    StopAfterEveryWrite("ext4-blockmap-v2", 3, 1);
+#endif
+}
+
+TEST_CASE("a journalled volume stopped after any write recovers to a committed state: "
+          "ext4-journal-gdtcsum")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    StopAfterEveryWrite("ext4-journal-gdtcsum", 3, 2);
+#endif
+}
+
+TEST_CASE("a journalled volume stopped after any write recovers to a committed state: ext4-64bit")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    StopAfterEveryWrite("ext4-64bit", 3, 0);
 #endif
 }
 

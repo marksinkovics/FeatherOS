@@ -995,9 +995,12 @@ TEST_CASE("a block freed in a transaction is not allocated again before it commi
     }
 }
 
-TEST_CASE("the log wraps and is checkpointed, and copies of it taken on the way replay")
+namespace
 {
-    for (const std::string_view image : {"ext3", "ext4", "ext4-4k"})
+
+// One test case per image, so that CTest runs them side by side.
+void WrapAndCheckpoint(std::string_view image)
+{
     {
         INFO(image);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
@@ -1082,6 +1085,23 @@ TEST_CASE("the log wraps and is checkpointed, and copies of it taken on the way 
             ++index;
         }
     }
+}
+
+} // namespace
+
+TEST_CASE("the log wraps and is checkpointed, and copies of it taken on the way replay: ext3")
+{
+    WrapAndCheckpoint("ext3");
+}
+
+TEST_CASE("the log wraps and is checkpointed, and copies of it taken on the way replay: ext4")
+{
+    WrapAndCheckpoint("ext4");
+}
+
+TEST_CASE("the log wraps and is checkpointed, and copies of it taken on the way replay: ext4-4k")
+{
+    WrapAndCheckpoint("ext4-4k");
 }
 
 TEST_CASE("a transaction commits when it grows, and each commit and checkpoint costs two flushes")
