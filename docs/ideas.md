@@ -82,6 +82,8 @@ Moved out of M11 to keep it focused; each can come back as a milestone of its ow
 ## Storage
 
 - **File timestamps** set from the RTC, and shown by `ls`.
+- **`/sbin` for administrative programs.** Since M29 Part 3 only `init` is in `/sbin`. Programs for the administrator (`mount`, `umount`, `shutdown`, `reboot`, `sync`, `net`, `dhcp`) would move there, with `/sbin` in the default `PATH`; it pairs with users and permissions ("Security").
+- **Services added beside the defaults.** `/etc/init.conf` replaces `/system/init.conf` as a whole (M29 Part 2). launchd's way instead merges directories: the built-in services, plus the administrator's in `/etc/init.d/`, plus a list that turns built-in ones off.
 - **Several volumes of one filesystem type at once.** Each filesystem type has one driver instance (`Drivers::Ext4()` and the rest), so with an ext4 root no second ext4 volume can be mounted. Drivers would become per-volume objects, created when a partition is found and registered by partition, which changes `drivers.cpp` and `VFS::TypeRegistry`.
 - **Atomic rename onto an existing file.** `rename` removes the target first and then moves the source, so a crash between the two loses the target. On ext3 and ext4 both changes fit in one jbd2 transaction; FAT16 cannot be made atomic.
 - **Higher descriptor limits:** 32 descriptors per process and 64 open disk files system-wide, mostly fixed-size tables.
