@@ -125,6 +125,14 @@ using WorkingDirectoryCheck = bool (*)(const char* point);
 // point, SyscallErrorBusy while a file on it is open, a working directory is inside it or another
 // mount point lies inside it, and SyscallErrorInputOutput if its data could not be synced.
 uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use);
+// Changes the mode of the mount at point; it follows links, and the mount's own mode only changes,
+// not the mounts inside it. SyscallErrorInvalidArgument if point is not a mount point or is /dev,
+// SyscallErrorNotFound if it does not exist, SyscallErrorBusy while a file on it is open for
+// writing (to read-only) or when the remount would replay a journal and any file on it is open,
+// SyscallErrorReadOnly for read-write on /system, /proc or a filesystem that refuses writes, and
+// SyscallErrorInputOutput if it could not be made read-only (it stays mounted and refusing
+// writes if its journal aborted).
+uint64_t Remount(const char* point, Filesystem::MountMode mode);
 // SyscallErrorInputOutput if a mounted filesystem could not write its changes.
 uint64_t SyncAll();
 // What the writeback task calls: syncs the mounts that want it, SyscallErrorInputOutput if one

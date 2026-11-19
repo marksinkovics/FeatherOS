@@ -400,6 +400,8 @@ uint64_t MountError(VFS::MountResult result)
         return User::SyscallErrorNoMemory;
     case VFS::MountResult::Failed:
         return User::SyscallErrorInputOutput;
+    case VFS::MountResult::ReadOnly:
+        return User::SyscallErrorReadOnly;
     case VFS::MountResult::Invalid:
         break;
     }
@@ -1303,6 +1305,39 @@ uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use)
         return User::SyscallErrorBusy;
     }
     const VFS::MountResult result = VFS::Unmount(point);
+    return result == VFS::MountResult::NotFound ? User::SyscallErrorInvalidArgument
+                                                : MountError(result);
+}
+
+uint64_t Remount(const char* point, Filesystem::MountMode mode)
+{
+    if (point == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(file_system_lock);
+    Resolved resolved;
+    const uint64_t walked = resolved.Walk(point, VFS::Follow::All);
+    if (walked != 0)
+    {
+        return walked;
+    }
+    point = resolved.Path();
+    if (!VFS::IsMountPoint(point))
+    {
+        return ExistsLocked(point) ? User::SyscallErrorInvalidArgument : User::SyscallErrorNotFound;
+    }
+    const Filesystem::Driver* mounted = VFS::MountedAt(point);
+    VFS::OpenFiles open = {};
+    for (uint32_t index = 0; index < disk_file_count; ++index)
+    {
+        if (disk_files[index].key.filesystem == mounted)
+        {
+            open.any = true;
+            open.writer = open.writer || disk_files[index].writer;
+        }
+    }
+    const VFS::MountResult result = VFS::Remount(point, mode, open);
     return result == VFS::MountResult::NotFound ? User::SyscallErrorInvalidArgument
                                                 : MountError(result);
 }

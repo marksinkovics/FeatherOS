@@ -72,9 +72,17 @@ public:
     bool Detach() override;
     bool SyncsInBackground() const override;
     uint64_t LastError() override;
+    // True while the volume is mounted read-only with a journal that needs recovery, which a
+    // read-write remount would replay.
+    bool RemountReplays() override;
 
 protected:
     bool OpenForMount(MountMode mode, bool* writable) override;
+    // Read-only makes the core refuse writes in place; read-write reopens a core that was
+    // read-only as a fresh mount does. A core that refuses writes after being asked for them stays
+    // as it is.
+    bool ReopenForRemount(MountMode mode, bool* writable) override;
+    bool RefusesWrites() const override;
 
 private:
     bool Fail(FeatherDisk::Error error);

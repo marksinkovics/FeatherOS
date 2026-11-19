@@ -2,6 +2,8 @@
 
 #include "kernel/klogger.h"
 
+#include "fs/ext2.h"
+
 #include <array>
 #include <span>
 #include <stddef.h>
@@ -20,6 +22,7 @@ using FeatherDisk::Result;
 constexpr size_t MaximumPartitions = 16;
 constexpr uint32_t NewFileMode = 0666;
 constexpr uint32_t NewDirectoryMode = 0777;
+constexpr uint32_t IncompatibleNeedsRecovery = 0x4;
 
 constinit KLogger logger;
 
@@ -202,6 +205,65 @@ bool CoreDriver::OpenForMount(MountMode mode, bool* writable)
         filesystem = *mounted;
     }
     *writable = filesystem->GetCapabilities().writable;
+    return true;
+}
+
+bool CoreDriver::RefusesWrites() const
+{
+    return filesystem != nullptr && !core_read_only && !filesystem->GetCapabilities().writable;
+}
+
+bool CoreDriver::RemountReplays()
+{
+    if (!core_read_only || filesystem == nullptr)
+    {
+        return false;
+    }
+    const Result<FeatherDisk::Ext::ExtFeatures> features =
+        FeatherDisk::Ext::DescribeFeatures(volume);
+    return features && (features->incompatible & IncompatibleNeedsRecovery) != 0;
+}
+
+bool CoreDriver::ReopenForRemount(MountMode mode, bool* writable)
+{
+    if (filesystem == nullptr)
+    {
+        return Fail(Error::Io);
+    }
+    const bool refusing = RefusesWrites();
+    if (mode == MountMode::ReadOnly)
+    {
+        *writable = false;
+        if (core_read_only || refusing)
+        {
+            return true;
+        }
+        if (const FeatherDisk::Status closed = filesystem->MakeReadOnly(); !closed)
+        {
+            return Fail(closed.error());
+        }
+        core_read_only = true;
+        return true;
+    }
+    if (refusing)
+    {
+        last_error = User::SyscallErrorReadOnly;
+        *writable = false;
+        return true;
+    }
+    if (!core_read_only)
+    {
+        *writable = true;
+        return true;
+    }
+    if (!OpenForMount(MountMode::ReadWrite, writable))
+    {
+        return false;
+    }
+    if (!*writable)
+    {
+        last_error = User::SyscallErrorReadOnly;
+    }
     return true;
 }
 

@@ -1863,6 +1863,359 @@ TEST_CASE("the periodic sync leaves a written ext2 root clean and consistent")
     on_write = nullptr;
     REQUIRE(FeatherOS::Files::SyncAll() == 0);
 }
+namespace
+{
+
+constexpr FeatherOS::Filesystem::MountMode ReadWrite = FeatherOS::Filesystem::MountMode::ReadWrite;
+
+uint64_t CreateFile(const char* path)
+{
+    FeatherOS::Files::Table table{};
+    const uint64_t descriptor = FeatherOS::Files::Open(&table, path, OpenWrite | OpenCreate);
+    if (!FeatherOS::User::IsSyscallError(descriptor))
+    {
+        FeatherOS::Files::Close(&table, descriptor);
+        return 0;
+    }
+    return descriptor;
+}
+
+bool MountExt4AtMnt(uint32_t* ext4_start)
+{
+    uint32_t ext3_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, ext4_start))
+    {
+        return false;
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt") == FeatherOS::VFS::MountResult::Done);
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("remount switches an ext4 mount between read-only and read-write")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace User = FeatherOS::User;
+    uint32_t start = 0;
+    if (!MountExt4AtMnt(&start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    WriteAndClose("/mnt/r.txt", "remount\n");
+    REQUIRE(NeedsRecovery(start));
+
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadOnly) == 0);
+    REQUIRE(MountSource("/mnt") == "vda4 ext4 ro");
+    REQUIRE_FALSE(NeedsRecovery(start));
+    REQUIRE(CreateFile("/mnt/new.txt") == User::SyscallErrorReadOnly);
+    REQUIRE(ReadWhole("/mnt/r.txt") == "remount\n");
+    REQUIRE(ReadWhole("/mnt/hello.txt") == "Hello from ext2.\n");
+
+    const std::vector<Sector> snapshot = disk;
+    for (int pass = 0; pass < 3; ++pass)
+    {
+        REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    }
+    REQUIRE(FeatherOS::Files::SyncAll() == 0);
+    REQUIRE(FeatherOS::VFS::DetachAll());
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadOnly) == 0);
+    REQUIRE(disk == snapshot);
+
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadWrite) == 0);
+    REQUIRE(MountSource("/mnt") == "vda4 ext4 rw");
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadWrite) == 0);
+    WriteAndClose("/mnt/w.txt", "again\n");
+    REQUIRE(NeedsRecovery(start));
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+    REQUIRE_FALSE(NeedsRecovery(start));
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt", ReadOnly) == MountResult::Done);
+    REQUIRE(ReadWhole("/mnt/r.txt") == "remount\n");
+    REQUIRE(ReadWhole("/mnt/w.txt") == "again\n");
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+}
+
+namespace
+{
+
+// The root remounted read-only and back, with /etc as the root's own directory; /etc is the
+// tmpfs again after.
+void CheckRootRemount(const char* description, const std::function<bool()>& marked_clean)
+{
+    namespace User = FeatherOS::User;
+    REQUIRE(RootDescription() == std::string(description) + " rw");
+    REQUIRE(FeatherOS::VFS::UseRootEtc());
+    WriteAndClose("/etc/kept.txt", "etc\n");
+    WriteAndClose("/data.txt", "data\n");
+
+    REQUIRE(FeatherOS::Files::Remount("/", ReadOnly) == 0);
+    REQUIRE(RootDescription() == std::string(description) + " ro");
+    REQUIRE(marked_clean());
+    REQUIRE(CreateFile("/etc/new.txt") == User::SyscallErrorReadOnly);
+    REQUIRE(CreateFile("/new.txt") == User::SyscallErrorReadOnly);
+    REQUIRE(CreateFile("/tmp/new.txt") == 0);
+    REQUIRE(FeatherOS::Files::Remove("/tmp/new.txt") == 0);
+    REQUIRE(ReadWhole("/etc/kept.txt") == "etc\n");
+    REQUIRE(ReadWhole("/data.txt") == "data\n");
+
+    const std::vector<Sector> snapshot = disk;
+    REQUIRE(FeatherOS::VFS::DetachAll());
+    REQUIRE(disk == snapshot);
+
+    REQUIRE(FeatherOS::Files::Remount("/", ReadWrite) == 0);
+    REQUIRE(RootDescription() == std::string(description) + " rw");
+    WriteAndClose("/etc/second.txt", "back\n");
+    REQUIRE(ReadWhole("/etc/second.txt") == "back\n");
+    REQUIRE(FeatherOS::VFS::DetachAll());
+    REQUIRE(MountSource("/etc").empty());
+    REQUIRE(FeatherOS::VFS::Mount("tmpfs", "etc", "/etc") == FeatherOS::VFS::MountResult::Done);
+}
+
+} // namespace
+
+TEST_CASE("the ext2 root remounts read-only and back, and /etc follows it")
+{
+    const uint32_t start = AttachExt2Root();
+    if (start == 0)
+    {
+        SKIP("no ext2 image from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    CheckRootRemount("vda1 ext2", [&] { return State(start) == 1; });
+}
+
+TEST_CASE("the ext4 root remounts read-only and back, and /etc follows it")
+{
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(4));
+    CheckRootRemount("vda4 ext4", [&] { return !NeedsRecovery(ext4_start); });
+}
+
+TEST_CASE("remount refuses while a file on the mount is open for writing")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace User = FeatherOS::User;
+    uint32_t start = 0;
+    if (!MountExt4AtMnt(&start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    FeatherOS::Files::Table table{};
+    const uint64_t writer = FeatherOS::Files::Open(&table, "/mnt/f.txt", OpenWrite | OpenCreate);
+    REQUIRE_FALSE(User::IsSyscallError(writer));
+    REQUIRE(FeatherOS::Files::Write(&table, writer, "held\n", 5) == 5);
+
+    const std::vector<Sector> snapshot = disk;
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadOnly) == User::SyscallErrorBusy);
+    REQUIRE(disk == snapshot);
+    REQUIRE(MountSource("/mnt") == "vda4 ext4 rw");
+    REQUIRE(FeatherOS::Files::Write(&table, writer, "more\n", 5) == 5);
+    REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
+
+    const uint64_t reader = FeatherOS::Files::Open(&table, "/mnt/f.txt", OpenRead);
+    REQUIRE_FALSE(User::IsSyscallError(reader));
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadOnly) == 0);
+    REQUIRE(MountSource("/mnt") == "vda4 ext4 ro");
+    char contents[16] = {};
+    REQUIRE(FeatherOS::Files::Read(&table, reader, contents, sizeof(contents)) == 10);
+    REQUIRE(std::string(contents, 10) == "held\nmore\n");
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadWrite) == 0);
+    REQUIRE(FeatherOS::Files::Close(&table, reader) == 0);
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+}
+
+TEST_CASE("a remount to read-write that the core refuses gives EROFS and writes nothing")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace User = FeatherOS::User;
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    State(ext3_start) |= ErrorsBit;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext3", "vda3", "/mnt") == MountResult::Done);
+    REQUIRE(MountSource("/mnt") == "vda3 ext3 ro");
+    std::vector<Sector> snapshot = disk;
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadWrite) == User::SyscallErrorReadOnly);
+    REQUIRE(MountSource("/mnt") == "vda3 ext3 ro");
+    REQUIRE(CreateFile("/mnt/new.txt") == User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadWrite) == User::SyscallErrorReadOnly);
+    REQUIRE(disk == snapshot);
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+
+    // An ext2 volume that was not cleanly unmounted.
+    State(DiskSectorCount) = 0;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::Done);
+    REQUIRE(MountSource("/mnt") == "vda2 ext2 ro");
+    snapshot = disk;
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadWrite) == User::SyscallErrorReadOnly);
+    REQUIRE(MountSource("/mnt") == "vda2 ext2 ro");
+    REQUIRE(disk == snapshot);
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+
+    // A clean volume mounted read-only takes writes after a remount.
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt", ReadOnly) == MountResult::Done);
+    REQUIRE(MountSource("/mnt") == "vda4 ext4 ro");
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadWrite) == 0);
+    REQUIRE(MountSource("/mnt") == "vda4 ext4 rw");
+    WriteAndClose("/mnt/now.txt", "writable\n");
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+}
+
+TEST_CASE("an aborted journal shows read-only in /proc/mounts and stays that way")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace User = FeatherOS::User;
+    for (const bool abort_in_sync : {false, true})
+    {
+        INFO(std::string("abort in a periodic sync: ") + (abort_in_sync ? "yes" : "no"));
+        uint32_t start = 0;
+        if (!MountExt4AtMnt(&start))
+        {
+            SKIP("no ext images from mke2fs");
+        }
+        WriteAndClose("/mnt/kept.txt", "committed\n");
+        REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+        WriteAndClose("/mnt/lost.txt", "running\n");
+        {
+            const WriteFailureGuard guard;
+            writes_fail = true;
+            if (abort_in_sync)
+            {
+                REQUIRE(FeatherOS::Files::SyncPeriodic() == User::SyscallErrorInputOutput);
+            }
+            else
+            {
+                // Changes fill the running transaction until one of them has to commit it.
+                uint64_t result = 0;
+                for (int index = 0; result == 0 && index < 4000; ++index)
+                {
+                    result = FeatherOS::Files::MakeDirectory(
+                        ("/mnt/directory-" + std::to_string(index)).c_str());
+                }
+                REQUIRE(result != 0);
+            }
+            REQUIRE(MountSource("/mnt") == "vda4 ext4 ro");
+            REQUIRE(CreateFile("/mnt/more.txt") == User::SyscallErrorReadOnly);
+        }
+
+        const uint32_t flushes = flush_count;
+        REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+        REQUIRE(flush_count == flushes);
+        const std::vector<Sector> snapshot = disk;
+        REQUIRE(FeatherOS::Files::Remount("/mnt", ReadWrite) == User::SyscallErrorReadOnly);
+        REQUIRE(MountSource("/mnt") == "vda4 ext4 ro");
+        REQUIRE(FeatherOS::Files::Remount("/mnt", ReadOnly) == 0);
+        REQUIRE(disk == snapshot);
+        REQUIRE(NeedsRecovery(start));
+
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+        REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt") == MountResult::Done);
+        REQUIRE(MountSource("/mnt") == "vda4 ext4 rw");
+        REQUIRE(ReadWhole("/mnt/kept.txt") == "committed\n");
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+    }
+}
+
+TEST_CASE("a failed close keeps the mount and shows it read-only")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace User = FeatherOS::User;
+    uint32_t start = 0;
+    if (!MountExt4AtMnt(&start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    WriteAndClose("/mnt/p.txt", "pending\n");
+    {
+        const WriteFailureGuard guard;
+        writes_fail = true;
+        REQUIRE(FeatherOS::Files::Remount("/mnt", ReadOnly) == User::SyscallErrorInputOutput);
+        REQUIRE(MountSource("/mnt") == "vda4 ext4 ro");
+    }
+    const std::vector<Sector> snapshot = disk;
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadOnly) == 0);
+    REQUIRE(disk == snapshot);
+    REQUIRE(NeedsRecovery(start));
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+}
+
+TEST_CASE("a remount to read-write that replays the journal waits for open files")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace User = FeatherOS::User;
+    uint32_t start = 0;
+    if (!MountExt4AtMnt(&start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    WriteAndClose("/mnt/lost.txt", "replayed\n");
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    const std::vector<Sector> crashed = Copy(start);
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+    std::copy(crashed.begin(), crashed.end(), disk.begin() + start);
+    REQUIRE(NeedsRecovery(start));
+
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt", ReadOnly) == MountResult::Done);
+    FeatherOS::VFS::FileInfo info{};
+    REQUIRE_FALSE(FeatherOS::VFS::Stat("/mnt/lost.txt", &info));
+    const std::vector<Sector> snapshot = disk;
+
+    FeatherOS::Files::Table table{};
+    const uint64_t reader = FeatherOS::Files::Open(&table, "/mnt/hello.txt", OpenRead);
+    REQUIRE_FALSE(User::IsSyscallError(reader));
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadWrite) == User::SyscallErrorBusy);
+    REQUIRE(MountSource("/mnt") == "vda4 ext4 ro");
+    REQUIRE(disk == snapshot);
+    REQUIRE(FeatherOS::Files::Close(&table, reader) == 0);
+
+    REQUIRE(FeatherOS::Files::Remount("/mnt", ReadWrite) == 0);
+    REQUIRE(MountSource("/mnt") == "vda4 ext4 rw");
+    REQUIRE(ReadWhole("/mnt/lost.txt") == "replayed\n");
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+}
+
+TEST_CASE("FAT16 remounts read-only with a flush and back")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace User = FeatherOS::User;
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(4));
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda1", "/fat") == MountResult::Done);
+    WriteAndClose("/fat/FIRST.TXT", "first");
+
+    const uint32_t flushes = flush_count;
+    REQUIRE(FeatherOS::Files::Remount("/fat", ReadOnly) == 0);
+    REQUIRE(flush_count == flushes + 1);
+    REQUIRE(MountSource("/fat") == "vda1 fat16 ro");
+    REQUIRE(CreateFile("/fat/SECOND.TXT") == User::SyscallErrorReadOnly);
+    REQUIRE(ReadWhole("/fat/FIRST.TXT") == "first");
+    REQUIRE(ReadWhole("/fat/BLOCK.TXT") == "fat contents");
+
+    REQUIRE(FeatherOS::Files::Remount("/fat", ReadWrite) == 0);
+    REQUIRE(MountSource("/fat") == "vda1 fat16 rw");
+    WriteAndClose("/fat/SECOND.TXT", "second");
+    REQUIRE(ReadWhole("/fat/FIRST.TXT") == "first");
+    REQUIRE(FeatherOS::VFS::Unmount("/fat") == MountResult::Done);
+}
+
 #endif
 
 TEST_CASE("core errors become Linux's errno codes")

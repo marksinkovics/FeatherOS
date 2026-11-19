@@ -129,6 +129,42 @@ bool Driver::OpenForMount(MountMode /*mode*/, bool* writable)
     return true;
 }
 
+bool Driver::ReopenForRemount(MountMode /*mode*/, bool* writable)
+{
+    *writable = true;
+    return true;
+}
+
+bool Driver::RefusesWrites() const
+{
+    return false;
+}
+
+bool Driver::RemountReplays()
+{
+    return false;
+}
+
+void Driver::RefreshMode()
+{
+    if (RefusesWrites())
+    {
+        mounted_read_only = true;
+    }
+}
+
+bool Driver::Remount(MountMode mode)
+{
+    bool writable = false;
+    if (!ReopenForRemount(mode, &writable))
+    {
+        RefreshMode();
+        return false;
+    }
+    mounted_read_only = mode == MountMode::ReadOnly || !writable;
+    return mode == MountMode::ReadOnly || writable;
+}
+
 bool Driver::PrepareMount(MountMode mode)
 {
     if (properties.read_only)

@@ -679,3 +679,39 @@ TEST_CASE("unmounting /tmp waits for its users, and mounting it again keeps its 
     REQUIRE(FeatherOS::Files::Mount("tmp", "/tmp", "tmpfs") == SyscallErrorBusy);
     REQUIRE(FeatherOS::Files::Remove("/tmp/mounted.txt") == 0);
 }
+
+TEST_CASE("remount changes /tmp, and answers for the mounts that cannot change")
+{
+    namespace User = FeatherOS::User;
+    using FeatherOS::Files::Remount;
+    using FeatherOS::Filesystem::MountMode;
+    REQUIRE(FeatherOS::Files::MakeDirectory("/tmp/inside") == 0);
+    REQUIRE(Remount("/tmp/inside", MountMode::ReadOnly) == User::SyscallErrorInvalidArgument);
+    REQUIRE(Remount("/no/such", MountMode::ReadOnly) == User::SyscallErrorNotFound);
+    REQUIRE(Remount("/system", MountMode::ReadOnly) == 0);
+    REQUIRE(Remount("/system", MountMode::ReadWrite) == User::SyscallErrorReadOnly);
+    REQUIRE(Remount("/proc", MountMode::ReadOnly) == 0);
+    REQUIRE(Remount("/proc", MountMode::ReadWrite) == User::SyscallErrorReadOnly);
+    REQUIRE(Remount("/dev", MountMode::ReadOnly) == User::SyscallErrorInvalidArgument);
+    REQUIRE(Remount("/dev", MountMode::ReadWrite) == User::SyscallErrorInvalidArgument);
+
+    FeatherOS::Files::Table table{};
+    const uint64_t writer =
+        FeatherOS::Files::Open(&table, "/tmp/kept.txt", OpenWrite | OpenCreate | OpenTruncate);
+    REQUIRE_FALSE(User::IsSyscallError(writer));
+    REQUIRE(FeatherOS::Files::Write(&table, writer, "kept", 4) == 4);
+    REQUIRE(Remount("/tmp", MountMode::ReadOnly) == User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
+
+    REQUIRE(Remount("/tmp", MountMode::ReadOnly) == 0);
+    REQUIRE(Remount("/tmp", MountMode::ReadOnly) == 0);
+    REQUIRE(FeatherOS::Files::Open(&table, "/tmp/new.txt", OpenWrite | OpenCreate) ==
+            User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Remove("/tmp/kept.txt") == User::SyscallErrorReadOnly);
+    REQUIRE(ReadAll("/tmp/kept.txt") == "kept");
+    REQUIRE(Remount("/tmp", MountMode::ReadWrite) == 0);
+    REQUIRE(Remount("/tmp", MountMode::ReadWrite) == 0);
+    REQUIRE(ReadAll("/tmp/kept.txt") == "kept");
+    REQUIRE(FeatherOS::Files::Remove("/tmp/kept.txt") == 0);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/tmp/inside") == 0);
+}

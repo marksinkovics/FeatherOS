@@ -107,6 +107,21 @@ MountResult Mount(const char* type, const char* source, const char* point,
 // lies inside it; otherwise detaches the driver (a journalled volume is closed, so the medium is
 // clean) and removes the mount, which Failed leaves in place.
 MountResult Unmount(const char* point);
+// Which files are open on one mount, as Files counts them.
+struct OpenFiles
+{
+    bool any;
+    bool writer;
+};
+// Changes the mode of the mount at point only, not of those inside it. NotFound: no mount there.
+// Invalid: /dev. ReadOnly: read-write asked of /system, /proc or a medium that refuses writes (a
+// refusal after mounting is final until the next mount); read-only asked of those gives Done.
+// Busy: the mount is being unmounted, a writer is open (to read-only), or any file is open when
+// the remount would replay a journal. Failed: the medium could not be made read-only; the mount
+// stays, read-only if it now refuses writes. Callers hold the file system lock.
+MountResult Remount(const char* point, Filesystem::MountMode mode, OpenFiles open = {});
+// The driver mounted exactly at point, for comparing only; null if none.
+const Filesystem::Driver* MountedAt(const char* point);
 // Syncs every mounted driver; false if one failed.
 bool SyncAll();
 // Syncs every mounted driver that wants it in the background; false if one failed. Callers hold

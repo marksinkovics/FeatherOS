@@ -22,6 +22,8 @@ enum class MountResult : uint8_t
     Full,
     // The driver could not sync, so the mount stays.
     Failed,
+    // A remount to read-write of what refuses writes.
+    ReadOnly,
 };
 
 // Mount points are absolute paths without "." or "..", repeated '/' or a trailing '/', such as

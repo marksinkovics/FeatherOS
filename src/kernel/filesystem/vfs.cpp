@@ -58,6 +58,7 @@ bool Refuse(uint64_t error)
 
 bool Changed(Driver* driver, bool done)
 {
+    driver->RefreshMode();
     if (!done)
     {
         last_error = driver->LastError();
@@ -456,6 +457,59 @@ MountResult Unmount(const char* point)
     }
     mounts.FinishUnmount(point);
     return MountResult::Done;
+}
+
+MountResult Remount(const char* point, Filesystem::MountMode mode, OpenFiles open)
+{
+    if (point == nullptr)
+    {
+        return MountResult::Invalid;
+    }
+    Driver* driver = nullptr;
+    {
+        Sync::SpinLockGuard guard(mount_lock);
+        driver = mounts.AcquirePoint(point);
+        if (driver == nullptr)
+        {
+            return mounts.Find(point) != nullptr ? MountResult::Busy : MountResult::NotFound;
+        }
+    }
+    MountResult result = MountResult::Done;
+    const Filesystem::Properties& properties = driver->Attributes();
+    const bool read_only_mode = mode == Filesystem::MountMode::ReadOnly;
+    if (properties.devices)
+    {
+        result = MountResult::Invalid;
+    }
+    else if (properties.read_only)
+    {
+        result = read_only_mode ? MountResult::Done : MountResult::ReadOnly;
+    }
+    else if (read_only_mode && open.writer)
+    {
+        result = MountResult::Busy;
+    }
+    else if (!read_only_mode && open.any && driver->RemountReplays())
+    {
+        result = MountResult::Busy;
+    }
+    else if (!driver->Remount(mode))
+    {
+        result = driver->LastError() == User::SyscallErrorReadOnly ? MountResult::ReadOnly
+                                                                   : MountResult::Failed;
+    }
+    Release(driver);
+    return result;
+}
+
+const Filesystem::Driver* MountedAt(const char* point)
+{
+    if (point == nullptr)
+    {
+        return nullptr;
+    }
+    Sync::SpinLockGuard guard(mount_lock);
+    return mounts.Find(point);
 }
 
 bool DescribeRoot(const char** type, const char** source, bool* read_only)
@@ -953,18 +1007,35 @@ template <typename Call> bool ForEachMount(Call call)
 
 bool SyncAll()
 {
-    return ForEachMount([](Driver& driver) { return driver.Sync(); });
+    return ForEachMount(
+        [](Driver& driver)
+        {
+            const bool synced = driver.Sync();
+            driver.RefreshMode();
+            return synced;
+        });
 }
 
 bool SyncPeriodic()
 {
-    return ForEachMount([](Driver& driver)
-                        { return !driver.SyncsInBackground() || driver.Sync(); });
+    return ForEachMount(
+        [](Driver& driver)
+        {
+            const bool synced = !driver.SyncsInBackground() || driver.Sync();
+            driver.RefreshMode();
+            return synced;
+        });
 }
 
 bool DetachAll()
 {
-    return ForEachMount([](Driver& driver) { return driver.Detach(); });
+    return ForEachMount(
+        [](Driver& driver)
+        {
+            const bool detached = driver.Detach();
+            driver.RefreshMode();
+            return detached;
+        });
 }
 
 bool SupportsLinks(const char* path, Filesystem::LinkKind kind)

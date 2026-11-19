@@ -104,6 +104,15 @@ public:
     {
         return mounted_read_only;
     }
+    // Changes a mounted driver's mode as a fresh mount of that mode would set it. The VFS handles
+    // read-only properties and devices first. false: LastError says why, SyscallErrorReadOnly when
+    // read-write was asked of a medium that refuses writes, which leaves it mounted read-only.
+    bool Remount(MountMode mode);
+    // After any call that may have made the medium refuse writes: the mount is read-only from
+    // then on.
+    void RefreshMode();
+    // A read-write Remount would replay a journal, changing what open files read.
+    virtual bool RemountReplays();
 
     virtual bool Open(const char* path, Node* node, uint64_t* size);
     // Any file, directory or link, "" for the root; links are not followed.
@@ -157,6 +166,10 @@ protected:
     // For drivers whose medium decides whether they take writes: reopens it for mode and sets
     // *writable. false leaves the driver unusable until it is opened again.
     virtual bool OpenForMount(MountMode mode, bool* writable);
+    // Reopens or switches the medium for a remount to mode and sets *writable.
+    virtual bool ReopenForRemount(MountMode mode, bool* writable);
+    // The medium was asked to take writes and no longer does.
+    virtual bool RefusesWrites() const;
 
 private:
     Properties properties;
