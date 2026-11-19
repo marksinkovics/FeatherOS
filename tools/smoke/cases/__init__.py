@@ -58,7 +58,7 @@ def AddArguments(parser):
     parser.add_argument(
         "--expect-root",
         metavar="vdaN",
-        help="The kernel was given root=vdaN: expect that ext3 or ext4 "
+        help="The kernel was given root=vdaN: expect that ext2 or ext3 "
         "partition mounted and written, or a warning and the default root "
         "for any other name",
     )

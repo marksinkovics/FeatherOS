@@ -1076,7 +1076,7 @@ void MountFat16()
     }
 }
 
-// For the root's /samples, which tools/create_test_disk.py fills.
+// For the files tools/create_test_disk.py puts on the disk.
 bool ReadsAs(const char* path, const char* expected)
 {
     VFS::FileHandle file;
@@ -1096,8 +1096,8 @@ bool ReadsAs(const char* path, const char* expected)
     return read && index == length && expected[index] == '\0';
 }
 
-// Lines of "extN line NNNNN\n", past what direct blocks reach: the root's /samples/big.txt and the
-// ext3 partition's big.txt.
+// Lines of "extN line NNNNN\n", past what direct blocks reach: the ext2 and ext3 partitions'
+// big.txt.
 bool BigFileMatches(const char* path, const char (&prefix)[11], uint32_t lines)
 {
     constexpr uint64_t LineLength = 16;
@@ -1127,73 +1127,6 @@ bool BigFileMatches(const char* path, const char (&prefix)[11], uint32_t lines)
     }
     VFS::Close(&file);
     return matches;
-}
-
-void CheckExt2ReadOnly()
-{
-    if (VFS::Mount("ext2", "vda2", "/", Filesystem::MountMode::ReadOnly) !=
-            VFS::MountResult::NotFound ||
-        VFS::Mount("ext2", "vda1", "/", Filesystem::MountMode::ReadOnly) != VFS::MountResult::Done)
-    {
-        Panic("Mounting the root read-only failed");
-    }
-    if (!ReadsAs("/samples/hello.txt", "Hello from the ext2 partition.\n") ||
-        !ReadsAs("/samples/docs/notes/deep.txt", "nested ext2 file\n") ||
-        !BigFileMatches("/samples/big.txt", "ext2 line ", 5000))
-    {
-        Panic("The ext2 root read back different contents");
-    }
-    VFS::FileHandle file{};
-    if (!VFS::IsReadOnly("/samples/hello.txt") || VFS::Create("/samples/new.txt", &file) ||
-        VFS::LastError() != User::SyscallErrorReadOnly || VFS::MakeDirectory("/samples/new") ||
-        VFS::Remove("/samples/hello.txt") || VFS::LastError() != User::SyscallErrorReadOnly ||
-        VFS::Open("/samples/fast-link", &file))
-    {
-        Panic("The read-only ext2 root took a change or opened a link");
-    }
-    if (VFS::Unmount("/") != VFS::MountResult::Done || VFS::IsDirectory("/samples/docs"))
-    {
-        Panic("Unmounting the read-only root failed");
-    }
-}
-
-// Nothing runs yet, so once the other mounts are out of the way the root can be unmounted, mounted
-// read-only and read-write again, and the FAT16 file written before must still be there.
-void CheckRemount(uint64_t boot_count)
-{
-    constexpr const char* InnerPoints[] = {"/system", "/etc", "/dev", "/proc", "/tmp", FatPoint};
-    constexpr char RootFile[] = "/BLOCK.TXT";
-    if (VFS::Unmount("/") != VFS::MountResult::Busy)
-    {
-        Panic("Unmounting / with mounts inside it did not fail busy");
-    }
-    for (const char* point : InnerPoints)
-    {
-        if (VFS::Unmount(point) != VFS::MountResult::Done)
-        {
-            Panic("Storage test could not unmount a filesystem inside /");
-        }
-    }
-    VFS::FileHandle file;
-    if (!VFS::Open(RootFile, &file) || VFS::Unmount("/") != VFS::MountResult::Busy)
-    {
-        Panic("Unmounting / with an open file did not fail busy");
-    }
-    VFS::Close(&file);
-    if (VFS::Unmount("/") != VFS::MountResult::Done || VFS::Open(RootFile, &file))
-    {
-        Panic("Unmounting the root failed");
-    }
-    CheckExt2ReadOnly();
-    if (VFS::Mount("ext2", "vda1", "/") != VFS::MountResult::Done || VFS::IsReadOnly(RootFile))
-    {
-        Panic("Mounting the root read-write again failed");
-    }
-    if (!VFS::MountBuiltIn() || VFS::Mount("fat16", "vda2", FatPoint) != VFS::MountResult::Done)
-    {
-        Panic("Storage test could not mount the filesystems inside / again");
-    }
-    CheckPersistentFile(boot_count);
 }
 
 // The file the read-write checks write: 1000 lines of "feather ext2 line NNNNN\n", past the
@@ -1377,34 +1310,6 @@ void ChangeVolumeSecondBoot(const char* root, Ext2Data* data)
     }
 }
 
-// The root is synced here, and so clean, whatever the session does next. The second boot also finds
-// the file the first boot's shell session wrote, which only the writeback task synced.
-void CheckExt2(uint64_t boot_count)
-{
-    const Memory::HeapObject<Ext2Data> data;
-    if (!data)
-    {
-        Panic("No memory for the ext2 write test");
-    }
-    FillExt2Data(data->bytes);
-    if (boot_count == 1)
-    {
-        WriteVolumeFirstBoot("", &*data);
-    }
-    else if (boot_count == 2)
-    {
-        if (!ReadsAs("/periodic.txt", "periodic ext2\n") || !VFS::Remove("/periodic.txt"))
-        {
-            Panic("The ext2 root lost the file the first boot's writeback synced");
-        }
-        ChangeVolumeSecondBoot("", &*data);
-    }
-    if (!VFS::SyncAll())
-    {
-        Panic("Syncing the written ext2 root failed");
-    }
-}
-
 bool SameText(const char* left, const char* right)
 {
     while (*left != '\0' && *left == *right)
@@ -1536,7 +1441,7 @@ void CheckReadOnlyBeforeReplay(const char* type, const char* source, const char*
         !VFS::Stat(Join(point, "/os/data.txt").text, &info) ||
         VFS::Unmount(point) != VFS::MountResult::Done)
     {
-        Panic("A read-only ext3 or ext4 mount replayed its journal or took a change");
+        Panic("A read-only ext3 mount replayed its journal or took a change");
     }
 }
 
@@ -1551,31 +1456,160 @@ void CheckReplayedFile(const char* root, const char* text)
     }
 }
 
-// The disk's third and fourth partitions, ext3 and ext4, mounted read-write; the first boot writes
-// both and unmounts, the second finds the first boot's shell session's changes by replaying the
-// journals. The originals (hello.txt, big.txt, docs, link, extents.bin) are never changed.
-void CheckExt3AndExt4(uint64_t boot_count)
+// The ext4 root's /samples (tools/create_test_disk.py): the ext4 test files, the depth-2 extent
+// file among them.
+bool SamplesMatch()
+{
+    return ReadsAs("/samples/hello.txt", "Hello from the ext4 partition.\n") &&
+           ReadsAs("/samples/docs/nested/deep.txt", "nested ext4 file\n") &&
+           ExtentFileMatches("/samples/extents.bin") &&
+           LinkTargetIs("/samples/link", "docs/nested/deep.txt") &&
+           ListsWith("/samples/docs", 1, "nested", User::ModeDirectory);
+}
+
+// The root's journal gets the changes and is not closed here: the first boot's shell session stops
+// the machine, so the second boot's root mount replays what only the writeback task committed.
+void CheckRoot(uint64_t boot_count, Ext2Data* data)
+{
+    if (!SamplesMatch())
+    {
+        Panic("The ext4 root read back different contents");
+    }
+    if (boot_count == 1)
+    {
+        WriteVolumeFirstBoot("", data);
+    }
+    else if (boot_count == 2)
+    {
+        CheckReplayedFile("", "periodic ext4\n");
+        ChangeVolumeSecondBoot("", data);
+    }
+    if (!VFS::SyncAll())
+    {
+        Panic("Syncing the written ext4 root failed");
+    }
+}
+
+void CheckRootReadOnly(const char* kept, Ext2Data* data)
+{
+    if (VFS::Mount("ext4", "vda2", "/", Filesystem::MountMode::ReadOnly) !=
+            VFS::MountResult::NotFound ||
+        VFS::Mount("ext2", "vda1", "/", Filesystem::MountMode::ReadOnly) !=
+            VFS::MountResult::NotFound ||
+        VFS::Mount("ext4", "vda1", "/", Filesystem::MountMode::ReadOnly) != VFS::MountResult::Done)
+    {
+        Panic("Mounting the root read-only failed");
+    }
+    if (!MountedAs("/", "ext4", "vda1", true) || !SamplesMatch() ||
+        (kept != nullptr && !HoldsExt2Data(kept, data)))
+    {
+        Panic("The ext4 root read back different contents");
+    }
+    VFS::FileHandle file{};
+    if (!RefusesChanges("/samples") || VFS::Open("/samples/link", &file))
+    {
+        Panic("The read-only ext4 root took a change or opened a link");
+    }
+    if (VFS::Unmount("/") != VFS::MountResult::Done || VFS::IsDirectory("/samples/docs"))
+    {
+        Panic("Unmounting the read-only root failed");
+    }
+}
+
+// Nothing runs yet, so once the other mounts are out of the way the root can be unmounted, mounted
+// read-only and read-write again, and the FAT16 file written before must still be there. The
+// root's changes of this boot are there too: unmounting the ext4 root closed its journal.
+void CheckRemount(uint64_t boot_count, Ext2Data* data)
+{
+    constexpr const char* InnerPoints[] = {"/system", "/etc", "/dev", "/proc", "/tmp", FatPoint};
+    constexpr char RootFile[] = "/BLOCK.TXT";
+    if (VFS::Unmount("/") != VFS::MountResult::Busy)
+    {
+        Panic("Unmounting / with mounts inside it did not fail busy");
+    }
+    for (const char* point : InnerPoints)
+    {
+        if (VFS::Unmount(point) != VFS::MountResult::Done)
+        {
+            Panic("Storage test could not unmount a filesystem inside /");
+        }
+    }
+    VFS::FileHandle file;
+    if (!VFS::Open(RootFile, &file) || VFS::Unmount("/") != VFS::MountResult::Busy)
+    {
+        Panic("Unmounting / with an open file did not fail busy");
+    }
+    VFS::Close(&file);
+    if (VFS::Unmount("/") != VFS::MountResult::Done || VFS::Open(RootFile, &file))
+    {
+        Panic("Unmounting the root failed");
+    }
+    const char* kept = nullptr;
+    if (boot_count == 1 || boot_count == 2)
+    {
+        kept = boot_count == 1 ? "/os/data.txt" : "/os/data-link.txt";
+    }
+    CheckRootReadOnly(kept, data);
+    if (VFS::Mount("ext4", "vda1", "/") != VFS::MountResult::Done || VFS::IsReadOnly(RootFile))
+    {
+        Panic("Mounting the root read-write again failed");
+    }
+    if (!VFS::MountBuiltIn() || VFS::Mount("fat16", "vda2", FatPoint) != VFS::MountResult::Done)
+    {
+        Panic("Storage test could not mount the filesystems inside / again");
+    }
+    CheckPersistentFile(boot_count);
+}
+
+// The ext2 partition's files, which tools/create_test_disk.py makes.
+bool Ext2FilesMatch()
+{
+    return ReadsAs("/ext2/hello.txt", "Hello from the ext2 partition.\n") &&
+           ReadsAs("/ext2/docs/notes/deep.txt", "nested ext2 file\n") &&
+           BigFileMatches("/ext2/big.txt", "ext2 line ", 5000) &&
+           LinkTargetIs("/ext2/fast-link", "hello.txt");
+}
+
+void CheckExt2ReadOnly()
+{
+    VFS::FileHandle file{};
+    if (VFS::Mount("ext2", "vda4", "/ext2", Filesystem::MountMode::ReadOnly) !=
+            VFS::MountResult::Done ||
+        !MountedAs("/ext2", "ext2", "vda4", true) || !Ext2FilesMatch() ||
+        !RefusesChanges("/ext2") || VFS::Open("/ext2/fast-link", &file) ||
+        VFS::Unmount("/ext2") != VFS::MountResult::Done || VFS::IsDirectory("/ext2/docs"))
+    {
+        Panic("A read-only ext2 mount took a change or opened a link");
+    }
+}
+
+// The disk's third and fourth partitions, ext3 and ext2, mounted read-write; the first boot writes
+// both and unmounts, the second finds the first boot's shell session's changes (ext2 synced by the
+// writeback task, ext3 by replaying its journal). The originals are never changed.
+void CheckExt3AndExt2(uint64_t boot_count, Ext2Data* data)
 {
     if (VFS::Mount("ext2", "vda3", "/ext3") != VFS::MountResult::NotFound ||
         VFS::Mount("ext4", "vda3", "/ext3") != VFS::MountResult::NotFound ||
-        VFS::Mount("ext3", "vda4", "/ext3") != VFS::MountResult::NotFound ||
-        VFS::Mount("ext4", "vda1", "/ext3") != VFS::MountResult::NotFound)
+        VFS::Mount("ext3", "vda4", "/ext2") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext4", "vda4", "/ext2") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext2", "vda1", "/ext2") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext3", "vda1", "/ext2") != VFS::MountResult::NotFound)
     {
-        Panic("Mounting an ext3 or ext4 partition by the wrong type did not fail");
+        Panic("Mounting an ext2, ext3 or ext4 partition by the wrong type did not fail");
     }
     if (boot_count == 2)
     {
         CheckReadOnlyBeforeReplay("ext3", "vda3", "/ext3");
-        CheckReadOnlyBeforeReplay("ext4", "vda4", "/ext4");
     }
+    CheckExt2ReadOnly();
     if (VFS::Mount("ext3", "vda3", "/ext3") != VFS::MountResult::Done ||
-        VFS::Mount("ext4", "vda4", "/ext4") != VFS::MountResult::Done)
+        VFS::Mount("ext2", "vda4", "/ext2") != VFS::MountResult::Done)
     {
-        Panic("Mounting the ext3 and ext4 partitions failed");
+        Panic("Mounting the ext3 and ext2 partitions failed");
     }
-    if (!MountedAs("/ext3", "ext3", "vda3", false) || !MountedAs("/ext4", "ext4", "vda4", false))
+    if (!MountedAs("/ext3", "ext3", "vda3", false) || !MountedAs("/ext2", "ext2", "vda4", false))
     {
-        Panic("An ext3 or ext4 partition did not mount writable");
+        Panic("An ext3 or ext2 partition did not mount writable");
     }
     if (!ReadsAs("/ext3/hello.txt", "Hello from the ext3 partition.\n") ||
         !ReadsAs("/ext3/docs/readme.txt", "ext3 subdirectory file\n") ||
@@ -1585,48 +1619,30 @@ void CheckExt3AndExt4(uint64_t boot_count)
     {
         Panic("The ext3 partition read back different contents");
     }
-    if (!ReadsAs("/ext4/hello.txt", "Hello from the ext4 partition.\n") ||
-        !ReadsAs("/ext4/docs/nested/deep.txt", "nested ext4 file\n") ||
-        !ExtentFileMatches("/ext4/extents.bin") ||
-        !LinkTargetIs("/ext4/link", "docs/nested/deep.txt") ||
-        !ListsWith("/ext4/docs", 1, "nested", User::ModeDirectory))
+    if (!Ext2FilesMatch())
     {
-        Panic("The ext4 partition read back different contents");
+        Panic("The ext2 partition read back different contents");
     }
 
-    const Memory::HeapObject<Ext2Data> data;
-    if (!data)
-    {
-        Panic("No memory for the ext3 and ext4 write test");
-    }
-    FillExt2Data(data->bytes);
     if (boot_count == 1)
     {
-        WriteVolumeFirstBoot("/ext3", &*data);
-        WriteVolumeFirstBoot("/ext4", &*data);
+        WriteVolumeFirstBoot("/ext3", data);
+        WriteVolumeFirstBoot("/ext2", data);
     }
     else if (boot_count == 2)
     {
         CheckReplayedFile("/ext3", "periodic ext3\n");
-        CheckReplayedFile("/ext4", "periodic ext4\n");
-        ChangeVolumeSecondBoot("/ext3", &*data);
-        ChangeVolumeSecondBoot("/ext4", &*data);
+        if (!ReadsAs("/ext2/periodic.txt", "periodic ext2\n") || !VFS::Remove("/ext2/periodic.txt"))
+        {
+            Panic("The ext2 partition lost the file the first boot's writeback synced");
+        }
+        ChangeVolumeSecondBoot("/ext3", data);
+        ChangeVolumeSecondBoot("/ext2", data);
     }
     if (VFS::Unmount("/ext3") != VFS::MountResult::Done ||
-        VFS::Unmount("/ext4") != VFS::MountResult::Done || VFS::IsDirectory("/ext4/docs"))
+        VFS::Unmount("/ext2") != VFS::MountResult::Done || VFS::IsDirectory("/ext2/docs"))
     {
-        Panic("Unmounting the ext3 and ext4 partitions failed");
-    }
-    if (boot_count == 1 || boot_count == 2)
-    {
-        const char* kept = boot_count == 1 ? "/ext4/os/data.txt" : "/ext4/os/data-link.txt";
-        if (VFS::Mount("ext4", "vda4", "/ext4", Filesystem::MountMode::ReadOnly) !=
-                VFS::MountResult::Done ||
-            !MountedAs("/ext4", "ext4", "vda4", true) || !HoldsExt2Data(kept, &*data) ||
-            VFS::Unmount("/ext4") != VFS::MountResult::Done)
-        {
-            Panic("Remounting the ext4 partition read-only failed");
-        }
+        Panic("Unmounting the ext3 and ext2 partitions failed");
     }
 }
 
@@ -1694,9 +1710,15 @@ void RunStorageTests()
 
     MountFat16();
     RunFileTests(boot_count);
-    CheckRemount(boot_count);
-    CheckExt2(boot_count);
-    CheckExt3AndExt4(boot_count);
+    const Memory::HeapObject<Ext2Data> data;
+    if (!data)
+    {
+        Panic("No memory for the ext2, ext3 and ext4 write tests");
+    }
+    FillExt2Data(data->bytes);
+    CheckRoot(boot_count, &*data);
+    CheckExt3AndExt2(boot_count, &*data);
+    CheckRemount(boot_count, &*data);
     if (VFS::Unmount(FatPoint) != VFS::MountResult::Done)
     {
         Panic("Unmounting the FAT16 partition failed");

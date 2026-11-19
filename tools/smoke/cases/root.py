@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from create_test_disk import EXT3_START, EXT4_END, EXT4_START, SECTOR_SIZE
+from create_test_disk import EXT2_END, EXT2_START, EXT3_START, SECTOR_SIZE
 
 from smoke.boot import PANIC_MARKER, SHELL_BANNER
 from smoke.cases import storage
@@ -10,12 +10,12 @@ from smoke.cases.normal_boot import NormalBoot
 from smoke.script import Lines
 
 BLOCK_FILE = Path(__file__).resolve().parents[3] / "initramfs" / "block.txt"
-# The journalled partitions of the test disk as root= names them: the
-# partition's range and its type. Their root files are added before the boot,
-# since the kernel reads /BLOCK.TXT from whatever root it mounts.
+# The partitions of the test disk that root= can name instead of the default
+# root: the partition's range and its type. Their root files are added before
+# the boot, since the kernel reads /BLOCK.TXT from whatever root it mounts.
 ROOT_VOLUMES = {
-    "vda3": ("ext3", EXT3_START, EXT4_START),
-    "vda4": ("ext4", EXT4_START, EXT4_END),
+    "vda3": ("ext3", EXT3_START, EXT2_START),
+    "vda4": ("ext2", EXT2_START, EXT2_END),
 }
 ROOT_DIRECTORIES = ("home", "bin")
 WRITTEN = b"written on the root\n"
@@ -24,14 +24,14 @@ FALLBACK_WARNING = "KERN/W: VFS: root={} is not a usable partition, "
 
 def RootOption(args):
     if args.expect_root in ROOT_VOLUMES:
-        return JournalledRoot(args)
+        return NamedRoot(args)
     return UnusableRoot(args)
 
 
-class JournalledRoot(Case):
-    """root=vdaN names an ext3 or ext4 partition: it is mounted read-write at
-    /, the shell writes a file, and shutdown closes the journal, which e2fsck
-    and debugfs then check on a copy."""
+class NamedRoot(Case):
+    """root=vdaN names an ext2 or ext3 partition: it is mounted read-write at
+    /, the shell writes a file, and shutdown closes the journal or marks the
+    volume clean, which e2fsck and debugfs then check on a copy."""
 
     timeout = SHELL_TIMEOUT_SECONDS
     serial_input = True
@@ -94,6 +94,8 @@ class JournalledRoot(Case):
             )
             if storage.NeedsRecovery(volume):
                 return "the shutdown did not close the root's journal"
+            if not storage.IsMarkedClean(volume):
+                return "the shutdown did not mark the root clean"
             checked = storage.E2fsck(str(volume))
             if checked is not None:
                 return checked

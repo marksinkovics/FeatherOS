@@ -8,10 +8,11 @@ from pathlib import Path
 
 from create_test_disk import (
     E2FSPROGS_DIRECTORIES,
+    EXT2_END,
+    EXT2_FILES,
+    EXT2_START,
     EXT3_FILES,
     EXT3_START,
-    EXT4_END,
-    EXT4_START,
     FAT16_START,
     ROOT_START,
     SECTOR_SIZE,
@@ -26,11 +27,12 @@ STORAGE_MESSAGE = (
     "KERN/STORAGE: sector, FAT16, ext2, ext3 and ext4 file writes verified; "
     "boot count "
 )
-# The journalled partitions: the kernel test (WriteVolumeFirstBoot and
-# ChangeVolumeSecondBoot in kernel_test.cpp) writes them as it does the root.
+# The journalled partitions: the ext4 root and ext3. The kernel test
+# (WriteVolumeFirstBoot and ChangeVolumeSecondBoot in kernel_test.cpp) writes
+# both the same way; the root is still mounted when the harness looks.
 JOURNALLED_PARTITIONS = {
-    "ext3": (EXT3_START, EXT4_START),
-    "ext4": (EXT4_START, EXT4_END),
+    "ext3": (EXT3_START, EXT2_START),
+    "ext4": (ROOT_START, FAT16_START),
 }
 # The superblock sits 1024 bytes into a volume: s_state at 0x3A (1 is clean)
 # and the incompatible features at 0x60, where bit 0x4 is needs_recovery.
@@ -40,12 +42,13 @@ NEEDS_RECOVERY = 0x4
 REPLAYED = re.compile(
     r"ext2: journal recovered; transactions replayed: 0x([0-9a-fA-F]+)"
 )
-# What the STORAGE kernel test (CheckExt2 in kernel_test.cpp) leaves on the
-# ext2 root after each boot.
+# What the STORAGE kernel test (WriteVolumeFirstBoot and
+# ChangeVolumeSecondBoot in kernel_test.cpp) leaves on each volume after each
+# boot.
 EXT2_DATA = b"".join(
     b"feather ext2 line %05d\n" % line for line in range(1000)
 )
-EXT2_FILES = {
+WRITTEN_FILES = {
     1: {
         "/os/data.txt": EXT2_DATA,
         "/os/data-link.txt": EXT2_DATA,
@@ -77,21 +80,21 @@ PERSISTENT_FILE_LINES = 200
 # Shell commands for each STORAGE_TEST boot, in /home on the FAT16 partition,
 # which nothing mounts at boot: the first writes notes.txt, and the second must
 # still find it after the restart. sync is FAT16's device flush, since it has
-# no periodic sync. The first boot then writes a file on the root and on the
-# ext3 and ext4 partitions, with no sync or umount, and sleeps past the
+# no periodic sync. The first boot then writes a file on the ext4 root and on
+# the ext3 and ext2 partitions, with no sync or umount, and sleeps past the
 # writeback task's 5 s: the harness stops QEMU after that, so only the
-# periodic sync can have made the root clean and put the two journalled
-# changes in their logs.
+# periodic sync can have made ext2 clean and put the two journalled changes in
+# their logs.
 FAT16_SHELL_SETUP = b"mount -t fat16 vda2 /fat\ncd /fat/home\n"
 STORAGE_SHELL_INPUT = {
     1: FAT16_SHELL_SETUP + b"write notes.txt first line\n"
     b"write -a notes.txt second line\n"
     b"cat notes.txt\nmkdir docs\nwrite docs/plan.txt nested hello\n"
     b'cat "/fat/read me first.txt"\nwrite "My Plans.txt" long name test\n'
-    b"sync\nmount -t ext3 vda3 /ext3\nmount -t ext4 vda4 /ext4\n"
-    b"write /periodic.txt periodic ext2\n"
+    b"sync\nmount -t ext3 vda3 /ext3\nmount -t ext2 vda4 /ext2\n"
+    b"write /periodic.txt periodic ext4\n"
     b"write /ext3/periodic.txt periodic ext3\n"
-    b"write /ext4/periodic.txt periodic ext4\nsleep 8\nls docs\nls\n",
+    b"write /ext2/periodic.txt periodic ext2\nsleep 8\nls docs\nls\n",
     2: FAT16_SHELL_SETUP + b"cat notes.txt\nrm notes.txt\ncat notes.txt\n"
     b"rm notes.txt\n"
     b"cat docs/plan.txt\nrmdir docs\nrm docs/plan.txt\nrmdir docs\n"
@@ -260,7 +263,7 @@ def VerifyExtVolume(volume, boot_count, name="ext2"):
     debugfs = FindE2fsprogs("debugfs")
     if debugfs is None:
         return "debugfs not found; install e2fsprogs"
-    files = dict(EXT2_FILES[boot_count])
+    files = dict(WRITTEN_FILES[boot_count])
     expected_names = list(EXT2_LISTINGS[boot_count])
     text = f"periodic {name}\n".encode()
     if boot_count == 1:
@@ -310,54 +313,75 @@ def IsMarkedClean(volume):
 
 
 def VerifyExt2(disk_path, boot_count=None):
-    """Checks the root's ext2 partition, copied out of the disk image: with
-    e2fsck alone without a boot count, else also what that boot of the STORAGE
-    test wrote, and that the volume is marked clean, which the writeback task
-    does within 5 s of the shell session's last change."""
+    """Checks the ext2 partition, copied out of the disk image: with e2fsck and
+    the original files alone without a boot count (after the shell session),
+    else also what that boot of the STORAGE test wrote. The volume must be
+    marked clean: the writeback task did within 5 s of the shell session's last
+    change, and the kernel test unmounted it."""
+    debugfs = FindE2fsprogs("debugfs")
+    if debugfs is None:
+        return "debugfs not found; install e2fsprogs"
     with tempfile.TemporaryDirectory() as work:
-        volume = Path(work) / "root.img"
-        with open(disk_path, "rb") as disk, volume.open("wb") as copy:
-            disk.seek(ROOT_START * SECTOR_SIZE)
-            copy.write(disk.read((FAT16_START - ROOT_START) * SECTOR_SIZE))
-        if boot_count is None:
-            return E2fsck(str(volume))
+        volume = Path(work) / "ext2.img"
+        volume.write_bytes(PartitionBytes(disk_path, EXT2_START, EXT2_END))
         if not IsMarkedClean(volume):
-            return "the root is not marked clean"
-        return VerifyExtVolume(str(volume), boot_count)
+            return "the ext2 partition is not marked clean"
+        if boot_count is not None:
+            return VerifyExtVolume(str(volume), boot_count)
+        checked = E2fsck(str(volume))
+        if checked is not None:
+            return checked
+        if (
+            Debugfs(debugfs, str(volume), "cat /hello.txt")
+            != EXT2_FILES["hello.txt"]
+        ):
+            return "debugfs read a different /hello.txt"
+        if not NotFound(debugfs, str(volume), "/made"):
+            return "/made is still there"
+    return None
+
+
+def ReplayOnCopy(volume):
+    """What a mount that takes writes does: e2fsck -fy replays the journal."""
+    e2fsck = FindE2fsprogs("e2fsck")
+    if e2fsck is None:
+        return "e2fsck not found; install e2fsprogs"
+    repaired = subprocess.run(
+        [e2fsck, "-fy", str(volume)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if repaired.returncode not in (0, 1):
+        return (
+            f"e2fsck -fy exited with {repaired.returncode}:\n{repaired.stdout}"
+        )
+    return None
 
 
 def VerifyJournalled(disk_path, boot_count):
-    """Checks the ext3 and ext4 partitions on copies. After the first boot the
-    shell session stopped them mounted: the change the writeback task
-    committed is only in the log, so e2fsck -fy replays it on the copy. After
-    the second, the kernel test replayed it and unmounted, so they are clean
-    as they are."""
+    """Checks the ext4 root and ext3 on copies. After the first boot the shell
+    session stopped both mounted: the change the writeback task committed is
+    only in the log, so e2fsck -fy replays it on the copy. After the second,
+    the kernel test replayed ext3's and unmounted it, so it is clean as it is;
+    the root is mounted again, with needs_recovery set."""
     debugfs = FindE2fsprogs("debugfs")
-    e2fsck = FindE2fsprogs("e2fsck")
-    if debugfs is None or e2fsck is None:
+    if debugfs is None:
         return "e2fsprogs not found; install it"
     for name, (first, end) in JOURNALLED_PARTITIONS.items():
         with tempfile.TemporaryDirectory() as work:
             volume = Path(work) / f"{name}.img"
             volume.write_bytes(PartitionBytes(disk_path, first, end))
-            if boot_count == 1:
-                if not NeedsRecovery(volume):
-                    return f"{name} was stopped mounted but needs no recovery"
-                if not NotFound(debugfs, str(volume), "/periodic.txt"):
-                    return (
-                        f"{name}: /periodic.txt is on disk before the replay"
-                    )
-                repaired = subprocess.run(
-                    [e2fsck, "-fy", str(volume)],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                if repaired.returncode not in (0, 1):
-                    return (
-                        f"{name}: e2fsck -fy exited with "
-                        f"{repaired.returncode}:\n{repaired.stdout}"
-                    )
+            if boot_count == 1 and not NeedsRecovery(volume):
+                return f"{name} was stopped mounted but needs no recovery"
+            if boot_count == 1 and not NotFound(
+                debugfs, str(volume), "/periodic.txt"
+            ):
+                return f"{name}: /periodic.txt is on disk before the replay"
+            if boot_count == 1 or name == "ext4":
+                failure = ReplayOnCopy(volume)
+                if failure is not None:
+                    return f"{name}: {failure}"
             elif NeedsRecovery(volume):
                 return f"{name}: needs recovery after the second boot"
             failure = VerifyExtVolume(str(volume), boot_count, name)
@@ -367,19 +391,40 @@ def VerifyJournalled(disk_path, boot_count):
 
 
 def VerifyJournalledClean(disk_path):
-    """After the shell session, which unmounts both: nothing to recover,
-    e2fsck -fn finds nothing, and the session's file is there and what it
-    removed is not."""
+    """After the shell session: ext3 was unmounted, so nothing to recover; the
+    root is still mounted, so its log is replayed on the copy first. e2fsck -fn
+    then finds nothing, the session's file is there and what it removed is
+    not."""
     debugfs = FindE2fsprogs("debugfs")
     if debugfs is None:
         return "debugfs not found; install e2fsprogs"
     extents = b"".join(ext4_block(block) for block in range(2048))
-    for name, (first, end) in JOURNALLED_PARTITIONS.items():
+    # The partition's range, where the session removed its files, and a file
+    # it must not have changed.
+    expected = {
+        "ext3": (
+            EXT3_START,
+            EXT2_START,
+            "",
+            ("/big.txt", EXT3_FILES["big.txt"]),
+        ),
+        "ext4": (
+            ROOT_START,
+            FAT16_START,
+            "/samples",
+            ("/samples/extents.bin", extents),
+        ),
+    }
+    for name, (first, end, prefix, original) in expected.items():
         with tempfile.TemporaryDirectory() as work:
             volume = Path(work) / f"{name}.img"
             volume.write_bytes(PartitionBytes(disk_path, first, end))
-            if NeedsRecovery(volume):
+            if name == "ext3" and NeedsRecovery(volume):
                 return f"{name} needs recovery after the unmount"
+            if name == "ext4":
+                failure = ReplayOnCopy(volume)
+                if failure is not None:
+                    return f"{name}: {failure}"
             checked = E2fsck(str(volume))
             if checked is not None:
                 return f"{name}: {checked}"
@@ -389,13 +434,8 @@ def VerifyJournalledClean(disk_path):
             ):
                 return f"{name}: debugfs read a different /shell.txt"
             for gone in ("/made", "/copy.bin"):
-                if not NotFound(debugfs, str(volume), gone):
-                    return f"{name}: {gone} is still there"
-            original = (
-                ("/extents.bin", extents)
-                if name == "ext4"
-                else ("/big.txt", EXT3_FILES["big.txt"])
-            )
+                if not NotFound(debugfs, str(volume), prefix + gone):
+                    return f"{name}: {prefix + gone} is still there"
             if (
                 Debugfs(debugfs, str(volume), f"cat {original[0]}")
                 != original[1]
@@ -405,8 +445,7 @@ def VerifyJournalledClean(disk_path):
 
 
 def CheckSecondBoot(output):
-    """The root was left clean without a final sync, and each journalled
-    partition's journal was replayed by a writable mount."""
+    """The root's and ext3's journals were replayed by writable mounts."""
     if ROOT_MESSAGE not in output:
         return f"the root did not mount read-write: expected {ROOT_MESSAGE!r}"
     replayed = [int(count, 16) for count in REPLAYED.findall(output)]
@@ -455,10 +494,10 @@ class Storage(Case):
             return f"disk image check: {disk_error}"
         ext2_error = VerifyExt2(self.args.disk, self.boot)
         if ext2_error is not None:
-            return f"ext2 root check: {ext2_error}"
+            return f"ext2 check: {ext2_error}"
         journalled_error = VerifyJournalled(self.args.disk, self.boot)
         if journalled_error is not None:
-            return f"ext3/ext4 check: {journalled_error}"
+            return f"ext4 root and ext3 check: {journalled_error}"
         if self.boot == 2:
             return CheckSecondBoot(output)
         return None
@@ -467,5 +506,5 @@ class Storage(Case):
         return (
             "sector, FAT16, ext2 and shell file-tool writes verified in the "
             "guest, with mtools, e2fsck and debugfs, and the writeback task "
-            f"synced ext2, ext3 and ext4; boot {self.boot} persisted"
+            f"synced the ext4 root, ext3 and ext2; boot {self.boot} persisted"
         )

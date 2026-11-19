@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from create_test_disk import EXT4_END, EXT4_START, FAT16_START, ROOT_START
+from create_test_disk import EXT2_END, EXT2_START, FAT16_START, ROOT_START
 
 from smoke.boot import PANIC_MARKER, SHELL_BANNER
 from smoke.cases import storage
@@ -22,10 +22,11 @@ POWER_MESSAGES = {
 }
 
 
-# The root and the ext4 partition, which the script writes before the command.
+# The ext4 root and the ext2 partition, which the script writes before the
+# command.
 POWER_VOLUMES = (
     ("root", ROOT_START, FAT16_START),
-    ("ext4", EXT4_START, EXT4_END),
+    ("ext2", EXT2_START, EXT2_END),
 )
 
 
@@ -41,7 +42,7 @@ class Power(Case):
 
     def Script(self, session):
         return Lines(
-            b"mount -t ext4 vda4 /mnt\n"
+            b"mount -t ext2 vda4 /mnt\n"
             + f"write /mnt/power.txt before {self.kind}\n".encode()
             + f"write /power.txt before {self.kind}\n".encode()
             + f"{self.kind}\n".encode()
@@ -71,10 +72,10 @@ class Power(Case):
         return self.VerifyVolumes()
 
     def VerifyVolumes(self):
-        """The shutdown closed the ext4 journal and synced the root, so both
-        hold the files and e2fsck -fn finds nothing. A rebooted root was
-        mounted read-write again, which clears its clean bit until the next
-        writeback pass."""
+        """The shutdown closed the root's journal and synced ext2, so both hold
+        the files and e2fsck -fn finds nothing. A rebooted root was mounted
+        read-write again, which sets needs_recovery until the next unmount, so
+        its copy is replayed first."""
         debugfs = storage.FindE2fsprogs("debugfs")
         if debugfs is None:
             return "debugfs not found; install e2fsprogs"
@@ -85,14 +86,17 @@ class Power(Case):
                 volume.write_bytes(
                     storage.PartitionBytes(self.args.disk, first, end)
                 )
-                if name == "ext4" and storage.NeedsRecovery(volume):
-                    return f"the {name} journal was not closed"
-                if (
-                    name == "root"
-                    and self.shuts_down
-                    and not storage.IsMarkedClean(volume)
-                ):
-                    return "the root was not marked clean by the shutdown"
+                if name == "ext2" and not storage.IsMarkedClean(volume):
+                    return "the ext2 partition was not marked clean"
+                if name == "root" and self.shuts_down:
+                    if storage.NeedsRecovery(volume):
+                        return "the root's journal was not closed"
+                    if not storage.IsMarkedClean(volume):
+                        return "the root was not marked clean by the shutdown"
+                elif name == "root":
+                    replayed = storage.ReplayOnCopy(volume)
+                    if replayed is not None:
+                        return f"root: {replayed}"
                 checked = storage.E2fsck(str(volume))
                 if checked is not None:
                     return f"{name}: {checked}"
@@ -104,6 +108,6 @@ class Power(Case):
     def PassMessage(self, result):
         outcome = "powered off" if self.shuts_down else "booted again"
         return (
-            f"{self.kind} stopped processes, closed the journal, flushed the "
+            f"{self.kind} stopped processes, closed the journals, flushed the "
             f"disk, and {outcome}"
         )

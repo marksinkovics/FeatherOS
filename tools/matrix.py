@@ -99,8 +99,9 @@ CASES = [
     *Both(35, "network", NETWORK_TEST=ON),
     # Optimization can expose what -O0 hides, such as a missing volatile.
     *Both(37, "shell_release", SHELL_TEST=ON, build_type="Release"),
-    *Both(39, "ext4_root", ROOT_TEST=ON, ROOT="vda4"),
+    *Both(39, "ext3_root", ROOT_TEST=ON, ROOT="vda3"),
     *Both(41, "unusable_root", ROOT_TEST=ON, ROOT="vda9"),
+    *Both(43, "ext2_root", ROOT_TEST=ON, ROOT="vda4"),
 ]
 
 

@@ -19,13 +19,13 @@ EXPECTED_MOUNTS_OUTPUT = (
 )
 # The disk's and /tmp's lines from the three listings, in order.
 MOUNT_LINE = re.compile(
-    r"^(vda1 / ext2 rw 0 0|tmp /tmp tmpfs rw 0 0)\r?$", re.MULTILINE
+    r"^(vda1 / ext4 rw 0 0|tmp /tmp tmpfs rw 0 0)\r?$", re.MULTILINE
 )
 
 
 def Check(result):
     lines = MOUNT_LINE.findall(result.output)
-    disk = "vda1 / ext2 rw 0 0"
+    disk = "vda1 / ext4 rw 0 0"
     tmp = "tmp /tmp tmpfs rw 0 0"
     # Mount order: /tmp before the disk at boot, gone after umount, last once
     # mounted again.

@@ -64,7 +64,7 @@ class NormalBoot(BootToShell):
         if VFS_MESSAGE not in output:
             return "kernel did not read a file through the VFS"
         if ROOT_MESSAGE not in output:
-            return "the ext2 root was not mounted read-write"
+            return "the ext4 root was not mounted read-write"
         if ROOT_FILE_MESSAGE not in output:
             return "kernel did not read a file from the root filesystem"
         if ELF_LOAD_MESSAGE not in output:

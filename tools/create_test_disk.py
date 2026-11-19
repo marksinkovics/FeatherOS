@@ -14,15 +14,15 @@ from pathlib import Path
 DISK_SIZE = 64 * 1024 * 1024
 SECTOR_SIZE = 512
 DISK_SECTORS = DISK_SIZE // SECTOR_SIZE
-# Each partition ends where the next starts: the root's ext2 (31 MiB), FAT16
-# (16 MiB) from 32 MiB, ext3 (4 MiB) from 48 MiB and ext4 (8 MiB) from 52 MiB,
+# Each partition ends where the next starts: the root's ext4 (31 MiB), FAT16
+# (16 MiB) from 32 MiB, ext3 (4 MiB) from 48 MiB and ext2 (8 MiB) from 52 MiB,
 # which leaves the last 4 MiB free in both layouts. An MBR holds no more than
 # these four.
 ROOT_START = 2048
 FAT16_START = 65536
 EXT3_START = 98304
-EXT4_START = 106496
-EXT4_END = 122880
+EXT2_START = 106496
+EXT2_END = 122880
 FAT16_CLUSTER_SECTORS = 4
 FAT16_PARTITION_TYPE = 0x06
 LINUX_PARTITION_TYPE = 0x83
@@ -42,7 +42,7 @@ EXT2_VOLUME_UUID = "6f2d7e52-3c8e-4d4b-9a51-7a0e5b1c2d04"
 EXT3_VOLUME_UUID = "6f2d7e52-3c8e-4d4b-9a51-7a0e5b1c2d05"
 EXT4_VOLUME_UUID = "6f2d7e52-3c8e-4d4b-9a51-7a0e5b1c2d06"
 EXT3_PARTITION_GUID = uuid.UUID("6F2D7E52-3C8E-4D4B-9A51-7A0E5B1C2D07")
-EXT4_PARTITION_GUID = uuid.UUID("6F2D7E52-3C8E-4D4B-9A51-7A0E5B1C2D08")
+EXT2_PARTITION_GUID = uuid.UUID("6F2D7E52-3C8E-4D4B-9A51-7A0E5B1C2D08")
 EXT2_TIME = 1767225600
 # mtools writes this file with a VFAT long name, which the kernel must read.
 LONG_NAME_FILE = "Read Me First.txt"
@@ -50,41 +50,11 @@ LONG_NAME_CONTENTS = b"Long names from mtools work.\n"
 # The root's directories besides lost+found: the shell starts in /home, and
 # PATH ends with /bin.
 ROOT_DIRECTORIES = ("home", "bin")
-# Files under /samples, which the STORAGE kernel test and the shell smoke test
-# read. big.txt is past 64 KiB, so it needs an indirect block.
+# The ext4 root's /samples, which the STORAGE kernel test and the shell part
+# ext4.py read; everything on the root belongs to user and group 0. extents.bin
+# is 2 MiB of 1 KiB blocks in which every fourth block is zeros, which mke2fs
+# leaves out as a hole, so its 512 extents need an extent tree of depth 2.
 SAMPLES = "samples"
-EXT2_FILES = {
-    "hello.txt": b"Hello from the ext2 partition.\n",
-    "big.txt": b"".join(b"ext2 line %05d\n" % line for line in range(5000)),
-    "docs/notes/deep.txt": b"nested ext2 file\n",
-    "a-file-name-longer-than-sixty-three-characters-that-fat16-cannot-hold"
-    ".txt": b"long ext2 name\n",
-}
-# Under 60 bytes a link's target lives in its inode; a longer one takes a
-# block of its own.
-EXT2_LINKS = {
-    "fast-link": "hello.txt",
-    "slow-link": "docs/notes/" + "../notes/" * 5 + "deep.txt",
-}
-# Owners and modes, which `ls -l` in the shell test shows: whatever builds
-# the image, /samples and everything in it belong to user and group 1000, the
-# rest to 0, files are 0644, directories 0755 and links 0777, and hello.txt is
-# 0640, owned by group 100.
-EXT2_OWNER = 1000
-EXT2_SPECIAL_MODES = {"hello.txt": 0o640}
-EXT2_SPECIAL_GROUPS = {"hello.txt": 100}
-# The ext3 and ext4 partitions, which FeatherOS mounts read-only and must not
-# write: the STORAGE kernel test and the shell part ext4.py read them, and
-# everything on them belongs to user and group 0. big.txt needs an indirect
-# block; extents.bin is 2 MiB of 1 KiB blocks in which every fourth block is
-# zeros, which mke2fs leaves out as a hole, so its 512 extents need an extent
-# tree of depth 2.
-EXT3_FILES = {
-    "hello.txt": b"Hello from the ext3 partition.\n",
-    "big.txt": b"".join(b"ext3 line %05d\n" % line for line in range(3000)),
-    "docs/readme.txt": b"ext3 subdirectory file\n",
-}
-EXT3_LINKS = {"link": "docs/readme.txt"}
 EXT4_BLOCK_SIZE = 1024
 EXT4_EXTENT_BLOCKS = 2048
 EXT4_HOLE_EVERY = 4
@@ -107,6 +77,37 @@ EXT4_FILES = {
     "docs/nested/deep.txt": b"nested ext4 file\n",
 }
 EXT4_LINKS = {"link": "docs/nested/deep.txt"}
+# The ext2 partition, which the STORAGE kernel test and the shell part ext2.py
+# read and write. big.txt is past 64 KiB, so it needs an indirect block.
+EXT2_FILES = {
+    "hello.txt": b"Hello from the ext2 partition.\n",
+    "big.txt": b"".join(b"ext2 line %05d\n" % line for line in range(5000)),
+    "docs/notes/deep.txt": b"nested ext2 file\n",
+    "a-file-name-longer-than-sixty-three-characters-that-fat16-cannot-hold"
+    ".txt": b"long ext2 name\n",
+}
+# Under 60 bytes a link's target lives in its inode; a longer one takes a
+# block of its own.
+EXT2_LINKS = {
+    "fast-link": "hello.txt",
+    "slow-link": "docs/notes/" + "../notes/" * 5 + "deep.txt",
+}
+# Owners and modes, which `ls -l` in the shell test shows: whatever builds
+# the image, everything on the ext2 partition belongs to user and group 1000
+# except lost+found, files are 0644, directories 0755 and links 0777, and
+# hello.txt is 0640, owned by group 100.
+EXT2_OWNER = 1000
+EXT2_SPECIAL_MODES = {"hello.txt": 0o640}
+EXT2_SPECIAL_GROUPS = {"hello.txt": 100}
+# The ext3 partition, which FeatherOS mounts read-write: the STORAGE kernel
+# test and the shell part ext4.py read it, and everything on it belongs to user
+# and group 0. big.txt needs an indirect block.
+EXT3_FILES = {
+    "hello.txt": b"Hello from the ext3 partition.\n",
+    "big.txt": b"".join(b"ext3 line %05d\n" % line for line in range(3000)),
+    "docs/readme.txt": b"ext3 subdirectory file\n",
+}
+EXT3_LINKS = {"link": "docs/readme.txt"}
 E2FSPROGS_DIRECTORIES = (
     "/opt/homebrew/opt/e2fsprogs/sbin",
     "/usr/local/opt/e2fsprogs/sbin",
@@ -218,11 +219,8 @@ def find_debugfs(mke2fs):
     return found
 
 
-def root_owner_of(name):
-    if name != SAMPLES and not name.startswith(SAMPLES + "/"):
-        return 0, 0
-    inner = name[len(SAMPLES) + 1 :]
-    return EXT2_OWNER, EXT2_SPECIAL_GROUPS.get(inner, EXT2_OWNER)
+def ext2_owner_of(name):
+    return EXT2_OWNER, EXT2_SPECIAL_GROUPS.get(name, EXT2_OWNER)
 
 
 def set_owners(debugfs, volume_path, names, links, owner_of, environment):
@@ -282,7 +280,7 @@ def make_root_tree(source, block_file):
     (source / "BLOCK.TXT").chmod(0o644)
     for directory in ROOT_DIRECTORIES:
         (source / directory).mkdir()
-    write_files(source / SAMPLES, EXT2_FILES, EXT2_LINKS, EXT2_SPECIAL_MODES)
+    write_files(source / SAMPLES, EXT4_FILES, EXT4_LINKS)
     return finish_tree(source)
 
 
@@ -327,7 +325,10 @@ def run_mke2fs(
         )
 
 
-def make_ext2_volume(volume_path, sector_count, block_file):
+def make_root_volume(volume_path, sector_count, block_file):
+    """ext4 with mke2fs's default features (extents, 64bit, flex_bg,
+    metadata_csum, ...); 1 KiB blocks and 256-byte inodes whatever the host's
+    mke2fs.conf says for small volumes."""
     environment = dict(os.environ, E2FSPROGS_FAKE_TIME=str(EXT2_TIME))
     mke2fs = find_mke2fs()
     with tempfile.TemporaryDirectory() as source_name:
@@ -335,44 +336,64 @@ def make_ext2_volume(volume_path, sector_count, block_file):
         names = make_root_tree(source, block_file)
         run_mke2fs(
             mke2fs,
-            ("-t", "ext2", "-b", "1024", "-I", "128"),
+            ("-t", "ext4", "-b", "1024", "-I", "256"),
             "FEATHEROS",
+            EXT4_VOLUME_UUID,
+            source,
+            volume_path,
+            sector_count,
+            environment,
+        )
+    links = {f"{SAMPLES}/{name}" for name in EXT4_LINKS}
+    set_owners(
+        find_debugfs(mke2fs),
+        volume_path,
+        names,
+        links,
+        lambda name: (0, 0),
+        environment,
+    )
+
+
+def make_ext2_volume(volume_path, sector_count):
+    environment = dict(os.environ, E2FSPROGS_FAKE_TIME=str(EXT2_TIME))
+    mke2fs = find_mke2fs()
+    with tempfile.TemporaryDirectory() as source_name:
+        source = Path(source_name)
+        write_files(source, EXT2_FILES, EXT2_LINKS, EXT2_SPECIAL_MODES)
+        names = finish_tree(source)
+        run_mke2fs(
+            mke2fs,
+            ("-t", "ext2", "-b", "1024", "-I", "128"),
+            "FEATHEREXT2",
             EXT2_VOLUME_UUID,
             source,
             volume_path,
             sector_count,
             environment,
         )
-    links = {f"{SAMPLES}/{name}" for name in EXT2_LINKS}
     set_owners(
         find_debugfs(mke2fs),
         volume_path,
         names,
-        links,
-        root_owner_of,
+        set(EXT2_LINKS),
+        ext2_owner_of,
         environment,
     )
 
 
-def make_journalled_volume(volume_path, sector_count, kind):
-    """ext3, or ext4 with mke2fs's default features (extents, 64bit, flex_bg,
-    metadata_csum, ...); 1 KiB blocks and 256-byte inodes whatever the host's
-    mke2fs.conf says for small volumes."""
-    files, links, label, volume_uuid = {
-        "ext3": (EXT3_FILES, EXT3_LINKS, "FEATHEREXT3", EXT3_VOLUME_UUID),
-        "ext4": (EXT4_FILES, EXT4_LINKS, "FEATHEREXT4", EXT4_VOLUME_UUID),
-    }[kind]
+def make_ext3_volume(volume_path, sector_count):
     environment = dict(os.environ, E2FSPROGS_FAKE_TIME=str(EXT2_TIME))
     mke2fs = find_mke2fs()
     with tempfile.TemporaryDirectory() as source_name:
         source = Path(source_name)
-        write_files(source, files, links)
+        write_files(source, EXT3_FILES, EXT3_LINKS)
         names = finish_tree(source)
         run_mke2fs(
             mke2fs,
-            ("-t", kind, "-b", "1024", "-I", "256"),
-            label,
-            volume_uuid,
+            ("-t", "ext3", "-b", "1024", "-I", "256"),
+            "FEATHEREXT3",
+            EXT3_VOLUME_UUID,
             source,
             volume_path,
             sector_count,
@@ -382,7 +403,7 @@ def make_journalled_volume(volume_path, sector_count, kind):
         find_debugfs(mke2fs),
         volume_path,
         names,
-        set(links),
+        set(EXT3_LINKS),
         lambda name: (0, 0),
         environment,
     )
@@ -433,8 +454,8 @@ def copy_volume(volume, disk_path, start):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Create a small MBR or GPT disk with the root's ext2 "
-        "partition, then FAT16, ext3 and ext4 partitions."
+        description="Create a small MBR or GPT disk with the root's ext4 "
+        "partition, then FAT16, ext3 and ext2 partitions."
     )
     parser.add_argument("image", help="Output raw disk image")
     parser.add_argument(
@@ -449,12 +470,12 @@ def main():
     args = parser.parse_args()
 
     # GPT's backup table in the disk's last sectors stays clear of the free
-    # space after ext4.
-    assert EXT4_END <= DISK_SECTORS - GPT_TABLE_SECTORS - 1
+    # space after ext2.
+    assert EXT2_END <= DISK_SECTORS - GPT_TABLE_SECTORS - 1
     root_sectors = FAT16_START - ROOT_START
     fat16_sectors = EXT3_START - FAT16_START
-    ext3_sectors = EXT4_START - EXT3_START
-    ext4_sectors = EXT4_END - EXT4_START
+    ext3_sectors = EXT2_START - EXT3_START
+    ext2_sectors = EXT2_END - EXT2_START
 
     image = Path(args.image).resolve()
     image.parent.mkdir(parents=True, exist_ok=True)
@@ -463,15 +484,14 @@ def main():
 
     with tempfile.TemporaryDirectory() as work:
         volume = Path(work) / "root.img"
-        make_ext2_volume(volume, root_sectors, args.file)
+        make_root_volume(volume, root_sectors, args.file)
         copy_volume(volume, image, ROOT_START)
-        for kind, start, sectors in (
-            ("ext3", EXT3_START, ext3_sectors),
-            ("ext4", EXT4_START, ext4_sectors),
-        ):
-            volume = Path(work) / f"{kind}.img"
-            make_journalled_volume(volume, sectors, kind)
-            copy_volume(volume, image, start)
+        volume = Path(work) / "ext3.img"
+        make_ext3_volume(volume, ext3_sectors)
+        copy_volume(volume, image, EXT3_START)
+        volume = Path(work) / "ext2.img"
+        make_ext2_volume(volume, ext2_sectors)
+        copy_volume(volume, image, EXT2_START)
     make_fat16_volume(image, fat16_sectors)
 
     with image.open("r+b") as disk_file:
@@ -497,15 +517,15 @@ def main():
                         LINUX_FILESYSTEM_TYPE,
                         EXT3_PARTITION_GUID,
                         EXT3_START,
-                        EXT4_START - 1,
+                        EXT2_START - 1,
                         "FEATHEREXT3",
                     ),
                     (
                         LINUX_FILESYSTEM_TYPE,
-                        EXT4_PARTITION_GUID,
-                        EXT4_START,
-                        EXT4_END - 1,
-                        "FEATHEREXT4",
+                        EXT2_PARTITION_GUID,
+                        EXT2_START,
+                        EXT2_END - 1,
+                        "FEATHEREXT2",
                     ),
                 ),
             )
@@ -515,7 +535,7 @@ def main():
                 mbr_entry(LINUX_PARTITION_TYPE, ROOT_START, root_sectors),
                 mbr_entry(FAT16_PARTITION_TYPE, FAT16_START, fat16_sectors),
                 mbr_entry(LINUX_PARTITION_TYPE, EXT3_START, ext3_sectors),
-                mbr_entry(LINUX_PARTITION_TYPE, EXT4_START, ext4_sectors),
+                mbr_entry(LINUX_PARTITION_TYPE, EXT2_START, ext2_sectors),
             )
 
 
