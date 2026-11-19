@@ -127,6 +127,9 @@ using WorkingDirectoryCheck = bool (*)(const char* point);
 uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use);
 // SyscallErrorInputOutput if a mounted filesystem could not write its changes.
 uint64_t SyncAll();
+// What the writeback task calls: syncs the mounts that want it, SyscallErrorInputOutput if one
+// failed.
+uint64_t SyncPeriodic();
 // Fails unless the directory is empty; a link is SyscallErrorNotDirectory.
 uint64_t RemoveDirectory(const char* path);
 // Within one filesystem; replaces a file or link at to, but neither a directory nor an open file.
@@ -177,9 +180,9 @@ private:
     bool open = false;
     bool tracked = false;
 };
-// Waits for any filesystem call in progress, blocks all later ones and syncs every mount, for
-// shutdown.
-void Quiesce();
+// Waits for any filesystem call in progress, blocks all later ones and detaches every mount (a
+// journalled volume is closed), for shutdown; false if one did not close cleanly.
+bool Quiesce();
 
 } // namespace FeatherOS::Files
 

@@ -8,13 +8,19 @@
 #include "kernel/filesystem/vfs.h"
 #include "kernel/storage/block_device.h"
 
+#include "fs/block_device.h"
+#include "fs/ext2.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <map>
+#include <span>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -34,6 +40,8 @@ constexpr uint32_t DataStartSector = RootDirectorySector + RootDirectorySectors;
 
 std::vector<std::array<uint8_t, FeatherOS::BlockDevice::SectorSize>> disk;
 uint32_t flush_count = 0;
+bool writes_fail = false;
+std::function<void(uint64_t, const void*)> on_write;
 
 void WriteLittleEndian16(uint8_t* destination, uint16_t value)
 {
@@ -178,9 +186,13 @@ bool ReadSector(uint64_t sector, void* buffer)
 
 bool WriteSector(uint64_t sector, const void* buffer)
 {
-    if (buffer == nullptr || sector >= disk.size())
+    if (buffer == nullptr || sector >= disk.size() || writes_fail)
     {
         return false;
+    }
+    if (on_write)
+    {
+        on_write(sector, buffer);
     }
     std::memcpy(disk[sector].data(), buffer, SectorSize);
     return true;
@@ -902,6 +914,16 @@ void WriteWhole(const char* path, const std::string& contents)
     REQUIRE(written == contents.size());
 }
 
+void WriteAndClose(const char* path, const std::string& contents)
+{
+    FeatherOS::VFS::FileHandle file{};
+    REQUIRE(FeatherOS::VFS::Create(path, &file));
+    uint64_t written = 0;
+    REQUIRE(FeatherOS::VFS::Write(&file, contents.data(), contents.size(), &written));
+    REQUIRE(written == contents.size());
+    FeatherOS::VFS::Close(&file);
+}
+
 } // namespace
 
 #if defined(FEATHEROS_EXT2_TEST_IMAGE)
@@ -996,17 +1018,157 @@ TEST_CASE("an ext2 partition after the FAT16 one mounts read-only by its partiti
     REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::UnknownType);
 }
 
-TEST_CASE("ext3 and ext4 partitions register by their variant and mount only read-only")
+namespace
+{
+
+using Sector = std::array<uint8_t, FeatherOS::BlockDevice::SectorSize>;
+
+// Superblock fields of the volume starting at sector start, which sit in the superblock's sector.
+constexpr size_t SuperblockSector = 2;
+constexpr size_t StateOffset = 0x3A;
+constexpr size_t IncompatibleOffset = 0x60;
+constexpr uint8_t NeedsRecoveryBit = 0x4;
+constexpr uint8_t ErrorsBit = 2;
+
+bool NeedsRecovery(uint32_t start)
+{
+    return (disk[start + SuperblockSector][IncompatibleOffset] & NeedsRecoveryBit) != 0;
+}
+
+uint8_t& State(uint32_t start)
+{
+    return disk[start + SuperblockSector][StateOffset];
+}
+
+std::vector<Sector> Copy(uint32_t start)
+{
+    return {disk.begin() + start, disk.end()};
+}
+
+bool AttachJournalledVolumes(uint32_t* ext3_start, uint32_t* ext4_start)
+{
+    if (!AttachExt2Image())
+    {
+        return false;
+    }
+    *ext3_start = static_cast<uint32_t>(disk.size());
+    if (!AppendExtImage(FEATHEROS_EXT3_TEST_IMAGE, 2))
+    {
+        return false;
+    }
+    *ext4_start = static_cast<uint32_t>(disk.size());
+    return AppendExtImage(FEATHEROS_EXT4_TEST_IMAGE, 3);
+}
+
+class CopiedPartition final : public FeatherDisk::BlockDevice
+{
+public:
+    explicit CopiedPartition(std::vector<Sector> sectors) : sectors(std::move(sectors)) {}
+
+    uint32_t SectorSize() const override
+    {
+        return FeatherOS::BlockDevice::SectorSize;
+    }
+
+    uint64_t SectorCount() const override
+    {
+        return sectors.size();
+    }
+
+    FeatherDisk::Status Read(uint64_t first_sector, std::span<uint8_t> buffer) override
+    {
+        for (size_t offset = 0; offset < buffer.size(); offset += SectorSize())
+        {
+            const uint64_t sector = first_sector + offset / SectorSize();
+            if (sector >= sectors.size())
+            {
+                return std::unexpected(FeatherDisk::Error::Io);
+            }
+            std::memcpy(buffer.data() + offset, sectors[sector].data(), SectorSize());
+        }
+        return {};
+    }
+
+    FeatherDisk::Status Write(uint64_t first_sector, std::span<const uint8_t> data) override
+    {
+        for (size_t offset = 0; offset < data.size(); offset += SectorSize())
+        {
+            const uint64_t sector = first_sector + offset / SectorSize();
+            if (sector >= sectors.size())
+            {
+                return std::unexpected(FeatherDisk::Error::Io);
+            }
+            std::memcpy(sectors[sector].data(), data.data() + offset, SectorSize());
+        }
+        return {};
+    }
+
+    FeatherDisk::Status Flush() override
+    {
+        return {};
+    }
+
+private:
+    std::vector<Sector> sectors;
+};
+
+struct WriteFailureGuard
+{
+    ~WriteFailureGuard()
+    {
+        writes_fail = false;
+        on_write = nullptr;
+    }
+};
+
+bool NoWorkingDirectory(const char* /*point*/)
+{
+    return false;
+}
+
+// What the core makes of a copy of the volume when it is asked to write: whether it takes writes
+// and the contents of name in the root, or "<missing>".
+struct CoreView
+{
+    bool writable;
+    std::string contents;
+};
+
+CoreView MountCopy(FeatherDisk::FilesystemType& type, std::vector<Sector> sectors,
+                   const char* name)
+{
+    CopiedPartition device(std::move(sectors));
+    const FeatherDisk::Result<FeatherDisk::Filesystem*> mounted =
+        type.Mount(device, {.read_only = false});
+    REQUIRE(mounted);
+    FeatherDisk::Filesystem& filesystem = **mounted;
+    CoreView view{filesystem.GetCapabilities().writable, "<missing>"};
+    if (const auto found = filesystem.Lookup(filesystem.Root(), name))
+    {
+        const auto attributes = filesystem.GetAttributes(*found);
+        REQUIRE(attributes);
+        std::string bytes(attributes->size, '\0');
+        const auto read = filesystem.Read(
+            *found, 0, {reinterpret_cast<uint8_t*>(bytes.data()), bytes.size()});
+        REQUIRE(read);
+        view.contents = bytes;
+    }
+    REQUIRE(type.Unmount(filesystem));
+    return view;
+}
+
+} // namespace
+
+TEST_CASE("ext3 and ext4 partitions register by their variant and mount read-write")
 {
     using FeatherOS::VFS::MountResult;
     namespace User = FeatherOS::User;
-    if (!AttachExt2Image())
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
     {
         SKIP("no ext images from mke2fs");
     }
-    const auto ext3_start = static_cast<std::ptrdiff_t>(disk.size());
-    REQUIRE(AppendExtImage(FEATHEROS_EXT3_TEST_IMAGE, 2));
-    REQUIRE(AppendExtImage(FEATHEROS_EXT4_TEST_IMAGE, 3));
 
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     REQUIRE(MountSource("/") == "vda1 fat16 rw");
@@ -1014,25 +1176,150 @@ TEST_CASE("ext3 and ext4 partitions register by their variant and mount only rea
     REQUIRE(FeatherOS::VFS::Mount("ext4", "vda3", "/mnt") == MountResult::NotFound);
     REQUIRE(FeatherOS::VFS::Mount("ext3", "vda4", "/mnt") == MountResult::NotFound);
     REQUIRE(FeatherOS::VFS::Mount("ext4", "vda2", "/mnt") == MountResult::NotFound);
-    const std::vector<std::array<uint8_t, FeatherOS::BlockDevice::SectorSize>> before(
-        disk.begin() + ext3_start, disk.end());
-    for (const auto& [type, source] : {std::pair{"ext3", "vda3"}, std::pair{"ext4", "vda4"}})
+    for (const auto& [type, source, start] :
+         {std::tuple{"ext3", "vda3", ext3_start}, std::tuple{"ext4", "vda4", ext4_start}})
     {
         INFO(type);
+        const std::string description = std::string(source) + " " + type;
+        REQUIRE_FALSE(NeedsRecovery(start));
         REQUIRE(FeatherOS::VFS::Mount(type, source, "/mnt") == MountResult::Done);
-        REQUIRE(MountSource("/mnt") == std::string(source) + " " + type + " ro");
+        REQUIRE(MountSource("/mnt") == description + " rw");
         REQUIRE(ReadWhole("/mnt/hello.txt") == "Hello from ext2.\n");
-        REQUIRE(ReadWhole("/mnt/a/b/c/deep.txt") == "deep\n");
-        char target[32] = {};
-        REQUIRE(FeatherOS::Files::ReadLink("/mnt/fast-link", target, sizeof(target)) == 14);
-        FeatherOS::VFS::FileHandle file{};
-        REQUIRE_FALSE(FeatherOS::VFS::Create("/mnt/new.txt", &file));
-        REQUIRE(FeatherOS::VFS::LastError() == User::SyscallErrorReadOnly);
-        REQUIRE(FeatherOS::Files::Remove("/mnt/hello.txt") == User::SyscallErrorReadOnly);
-        REQUIRE(FeatherOS::Files::MakeDirectory("/mnt/new") == User::SyscallErrorReadOnly);
+        FeatherOS::Files::Table table{};
+        const uint64_t descriptor =
+            FeatherOS::Files::Open(&table, "/mnt/new.txt", OpenWrite | OpenCreate);
+        REQUIRE_FALSE(User::IsSyscallError(descriptor));
+        REQUIRE(FeatherOS::Files::Write(&table, descriptor, "written\n", 8) == 8);
+        REQUIRE(FeatherOS::Files::Close(&table, descriptor) == 0);
+        REQUIRE(FeatherOS::Files::MakeDirectory("/mnt/dir") == 0);
+        REQUIRE(FeatherOS::Files::Link("/mnt/new.txt", "/mnt/dir/hard.txt") == 0);
+        REQUIRE(FeatherOS::Files::SymbolicLink("../new.txt", "/mnt/dir/soft") == 0);
+        REQUIRE(NeedsRecovery(start));
         REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+        REQUIRE_FALSE(NeedsRecovery(start));
+
+        REQUIRE(FeatherOS::VFS::Mount(type, source, "/mnt") == MountResult::Done);
+        REQUIRE(MountSource("/mnt") == description + " rw");
+        REQUIRE(ReadWhole("/mnt/dir/hard.txt") == "written\n");
+        char link_target[16] = {};
+        REQUIRE(FeatherOS::Files::ReadLink("/mnt/dir/soft", link_target, sizeof(link_target)) ==
+                10);
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+
+        const std::vector<Sector> before = Copy(start);
+        REQUIRE(FeatherOS::VFS::Mount(type, source, "/mnt", ReadOnly) == MountResult::Done);
+        REQUIRE(MountSource("/mnt") == description + " ro");
+        REQUIRE(ReadWhole("/mnt/dir/hard.txt") == "written\n");
+        char target[16] = {};
+        REQUIRE(FeatherOS::Files::ReadLink("/mnt/dir/soft", target, sizeof(target)) == 10);
+        REQUIRE(FeatherOS::Files::Remove("/mnt/new.txt") == User::SyscallErrorReadOnly);
+        REQUIRE(FeatherOS::Files::MakeDirectory("/mnt/more") == User::SyscallErrorReadOnly);
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+        REQUIRE(Copy(start) == before);
     }
-    REQUIRE(std::equal(before.begin(), before.end(), disk.begin() + ext3_start, disk.end()));
+}
+
+TEST_CASE("a journalled volume the core refuses mounts read-only and stays untouched")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace User = FeatherOS::User;
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    State(ext3_start) |= ErrorsBit;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    const std::vector<Sector> before = Copy(ext3_start);
+
+    REQUIRE(FeatherOS::VFS::Mount("ext3", "vda3", "/mnt") == MountResult::Done);
+    REQUIRE(MountSource("/mnt") == "vda3 ext3 ro");
+    FeatherOS::Files::Table table{};
+    REQUIRE(FeatherOS::Files::Open(&table, "/mnt/new.txt", OpenWrite | OpenCreate) ==
+            User::SyscallErrorReadOnly);
+    REQUIRE(ReadWhole("/mnt/hello.txt") == "Hello from ext2.\n");
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+    REQUIRE(Copy(ext3_start) == before);
+}
+
+TEST_CASE("the periodic sync commits a journalled change a stop would otherwise lose")
+{
+    using FeatherOS::VFS::MountResult;
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt") == MountResult::Done);
+    WriteAndClose("/mnt/p.txt", "periodic\n");
+    const std::vector<Sector> before_pass = Copy(ext4_start);
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    const std::vector<Sector> after_pass = Copy(ext4_start);
+
+    const CoreView lost = MountCopy(FeatherDisk::Ext::Ext4Type(), before_pass, "p.txt");
+    REQUIRE(lost.writable);
+    REQUIRE(lost.contents == "<missing>");
+    const CoreView kept = MountCopy(FeatherDisk::Ext::Ext4Type(), after_pass, "p.txt");
+    REQUIRE(kept.writable);
+    REQUIRE(kept.contents == "periodic\n");
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+}
+
+TEST_CASE("DetachAll closes journals and keeps the mounts")
+{
+    using FeatherOS::VFS::MountResult;
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt") == MountResult::Done);
+    WriteAndClose("/mnt/p.txt", "detached\n");
+    REQUIRE(NeedsRecovery(ext4_start));
+
+    REQUIRE(FeatherOS::VFS::DetachAll());
+    REQUIRE_FALSE(NeedsRecovery(ext4_start));
+    REQUIRE(MountSource("/mnt") == "vda4 ext4 rw");
+    REQUIRE(MountSource("/") == "vda1 fat16 rw");
+    REQUIRE(ReadWhole("/mnt/p.txt") == "detached\n");
+    const std::vector<Sector> closed = Copy(ext4_start);
+    REQUIRE(FeatherOS::VFS::DetachAll());
+    REQUIRE(Copy(ext4_start) == closed);
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+    REQUIRE(Copy(ext4_start) == closed);
+}
+
+TEST_CASE("a failed unmount keeps the mount; an aborted journal then unmounts")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace User = FeatherOS::User;
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt") == MountResult::Done);
+    FeatherOS::VFS::FileHandle file{};
+    REQUIRE(FeatherOS::VFS::Open("/mnt/hello.txt", &file));
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Busy);
+    FeatherOS::VFS::Close(&file);
+
+    WriteAndClose("/mnt/p.txt", "lost\n");
+    const WriteFailureGuard guard;
+    writes_fail = true;
+    REQUIRE(FeatherOS::Files::Unmount("/mnt", NoWorkingDirectory) == User::SyscallErrorInputOutput);
+    REQUIRE(MountSource("/mnt") == "vda4 ext4 rw");
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+    REQUIRE(MountSource("/mnt").empty());
+    writes_fail = false;
+    REQUIRE(NeedsRecovery(ext4_start));
 }
 
 TEST_CASE("ext2 attributes reach stat and directory entries through the core driver")
@@ -1357,6 +1644,75 @@ TEST_CASE("the first partition's ext2 volume becomes the root, read-only if it r
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     REQUIRE(RootDescription() == "vda1 fat16 rw");
     REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::UnknownType);
+}
+
+TEST_CASE("an idle periodic sync writes nothing")
+{
+    using FeatherOS::VFS::MountResult;
+    const uint32_t ext2_start = AttachExt2Root();
+    uint32_t ext4_start = 0;
+    if (ext2_start == 0 || !AppendExtImage(FEATHEROS_EXT3_TEST_IMAGE, 2))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    ext4_start = static_cast<uint32_t>(disk.size());
+    REQUIRE(AppendExtImage(FEATHEROS_EXT4_TEST_IMAGE, 3));
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(RootDescription() == "vda1 ext2 rw");
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt") == MountResult::Done);
+    REQUIRE(MountSource("/mnt") == "vda4 ext4 rw");
+    WriteAndClose("/root.txt", "root\n");
+    WriteAndClose("/mnt/p.txt", "periodic\n");
+
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    const std::vector<Sector> settled = disk;
+    for (int pass = 0; pass < 3; ++pass)
+    {
+        REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+        REQUIRE(disk == settled);
+    }
+    REQUIRE(State(ext2_start) == 1);
+    REQUIRE(NeedsRecovery(ext4_start));
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+    REQUIRE(FeatherOS::Files::SyncAll() == 0);
+}
+
+TEST_CASE("the periodic sync leaves a written ext2 root clean and consistent")
+{
+    const uint32_t start = AttachExt2Root();
+    if (start == 0)
+    {
+        SKIP("no ext2 image from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(RootDescription() == "vda1 ext2 rw");
+    WriteAndClose("/new.txt", "periodic root\n");
+    REQUIRE(State(start) == 0);
+    const std::vector<Sector> unclean = Copy(start);
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    REQUIRE(State(start) == 1);
+    const std::vector<Sector> clean = Copy(start);
+
+    const CoreView refused = MountCopy(FeatherDisk::Ext::Ext2Type(), unclean, "new.txt");
+    REQUIRE_FALSE(refused.writable);
+    const CoreView taken = MountCopy(FeatherDisk::Ext::Ext2Type(), clean, "new.txt");
+    REQUIRE(taken.writable);
+    REQUIRE(taken.contents == "periodic root\n");
+
+    const WriteFailureGuard guard;
+    std::vector<std::pair<uint64_t, uint8_t>> first_write;
+    on_write = [&](uint64_t sector, const void* data) {
+        if (first_write.empty())
+        {
+            first_write.emplace_back(sector, static_cast<const uint8_t*>(data)[StateOffset]);
+        }
+    };
+    WriteAndClose("/second.txt", "second\n");
+    REQUIRE(first_write.size() == 1);
+    REQUIRE(first_write[0].first == start + SuperblockSector);
+    REQUIRE(first_write[0].second == 0);
+    on_write = nullptr;
+    REQUIRE(FeatherOS::Files::SyncAll() == 0);
 }
 #endif
 
@@ -1875,4 +2231,16 @@ TEST_CASE("unmounting the disk flushes it, and mounting it again shows the same 
     REQUIRE(FeatherOS::VFS::Mount("fat16", "vda1", "/") == MountResult::Done);
     REQUIRE(FeatherOS::VFS::Mount("fat16", "vda1", "/mnt") == MountResult::Busy);
     REQUIRE(ReadWhole("/kept.txt") == "kept");
+}
+
+TEST_CASE("the periodic sync leaves FAT16 alone")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(MountSource("/") == "vda1 fat16 rw");
+    REQUIRE(MountSource("/mnt").empty());
+    WriteAndClose("/periodic.txt", "fat\n");
+    const uint32_t flushes = flush_count;
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    REQUIRE(flush_count == flushes);
 }

@@ -28,6 +28,7 @@
 #include "kernel/string/format.h"
 #include "kernel/storage/block_device.h"
 #include "kernel/time/timer.h"
+#include "kernel/writeback.h"
 #include "kernel/memory/virtual_memory.h"
 #include "user/calendar.h"
 #include "user/syscall_abi.h"
@@ -441,6 +442,7 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     // Secondary CPUs start their timers at the boot CPU's rate.
     StartSecondaryCpus(logger, boot_info.smp);
     StartNetwork(logger, boot_info);
+    Writeback::Start();
     logger.Info("Kernel initialization complete");
     if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
     {

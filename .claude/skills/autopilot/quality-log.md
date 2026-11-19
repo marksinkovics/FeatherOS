@@ -20,4 +20,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | a98a6de | M22 P6 s4a jbd2 encoders and routing | opus | sonnet | 0 | 3/3 | |
 | e3d549f | M22 P6 s4b jbd2 transactions | opus | sonnet | 1 | 18/18 | |
 | 8249ec3 | M22 P6 s4c orphans and split changes | opus | sonnet | 0 | 2/2 | |
-| (this) | M22 P6 s4d crash, model and fscli tests, step 4 docs | opus | sonnet | 0 | 3/3 | |
+| 49696ba | M22 P6 s4d crash, model and fscli tests, step 4 docs | opus | sonnet | 0 | 3/3 | |
+| (this) | M22 P6 s5 ext3/ext4 read-write in the OS, writeback task | opus | sonnet | 0 | 3/3 (I5 by T13, not host T5) | |

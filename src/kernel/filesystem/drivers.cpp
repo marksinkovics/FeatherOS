@@ -438,11 +438,9 @@ constexpr const char* PartitionSources[] = {
 };
 
 constinit CoreDriver disk_driver(Writable);
-constinit CoreDriver ext2_driver(Writable);
-// The core writes journalled volumes now, but nothing in the kernel syncs them every few seconds
-// yet (M22 Part 6 step 5), so they stay read-only, whatever mount asks.
-constinit CoreDriver ext3_driver(ReadOnly);
-constinit CoreDriver ext4_driver(ReadOnly);
+constinit CoreDriver ext2_driver(Writable, {.periodic_sync = true});
+constinit CoreDriver ext3_driver(Writable, {.periodic_sync = true, .close_on_detach = true});
+constinit CoreDriver ext4_driver(Writable, {.periodic_sync = true, .close_on_detach = true});
 constinit ArchiveDriver system_driver("system");
 constinit DeviceDriver device_driver;
 constinit ProcDriver proc_driver;

@@ -16,6 +16,12 @@ namespace FeatherOS::Filesystem
 // The User::SyscallError code for a core error, as Linux's errno for the same failure.
 uint64_t SyscallError(FeatherDisk::Error error);
 
+struct CoreOptions
+{
+    bool periodic_sync = false;
+    bool close_on_detach = false;
+};
+
 // A filesystem from the shared core (src/fs/core/) as a VFS driver. Paths are walked one
 // component at a time with the core's Lookup, a core error becomes a failure that LastError
 // explains, and a handle's node ID is the core's. Like the core's drivers, it expects one
@@ -23,7 +29,10 @@ uint64_t SyscallError(FeatherDisk::Error error);
 class CoreDriver final : public Driver
 {
 public:
-    constexpr explicit CoreDriver(Properties properties) : Driver(properties) {}
+    constexpr explicit CoreDriver(Properties properties, CoreOptions options = {})
+        : Driver(properties), options(options)
+    {
+    }
 
     // Mounts the first partition of disk that type accepts, once the filesystem mounted before
     // is unmounted. Read-only properties or mode mount it read-only; a VFS mount asking for
@@ -58,6 +67,10 @@ public:
     bool SymbolicLink(const char* path, const char* target) override;
     bool Link(const char* from, const char* to) override;
     bool Sync() override;
+    // Unmounts the core, which closes a journal, and reopens it read-only, for the volumes that
+    // ask for it; a plain Sync for the rest.
+    bool Detach() override;
+    bool SyncsInBackground() const override;
     uint64_t LastError() override;
 
 protected:
@@ -73,6 +86,7 @@ private:
     FeatherDisk::Result<FeatherDisk::NodeId> Resolve(const char* path);
     bool IsKind(FeatherDisk::NodeId node, FeatherDisk::NodeType type);
 
+    CoreOptions options;
     FeatherDisk::Partition::Volume volume;
     FeatherDisk::FilesystemType* type = nullptr;
     FeatherDisk::Filesystem* filesystem = nullptr;

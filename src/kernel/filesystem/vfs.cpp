@@ -257,7 +257,7 @@ bool MountBlockDevice()
     Filesystem::CoreDriver& ext4 = Filesystem::Drivers::Ext4();
     const bool fat16_found = FindVolume(fat16, Filesystem::Drivers::MountDisk);
     const bool ext2_found = FindVolume(ext2, Filesystem::Drivers::MountExt2);
-    // Never the root: only FAT16 and ext2 are written yet.
+    // Never the root before Part 6b.
     const bool ext3_found = FindVolume(ext3, Filesystem::Drivers::MountExt3);
     const bool ext4_found = FindVolume(ext4, Filesystem::Drivers::MountExt4);
     Filesystem::CoreDriver* root = nullptr;
@@ -348,9 +348,9 @@ MountResult Unmount(const char* point)
             return begun;
         }
     }
-    const bool synced = driver->Sync();
+    const bool detached = driver->Detach();
     Sync::SpinLockGuard guard(mount_lock);
-    if (!synced)
+    if (!detached)
     {
         mounts.CancelUnmount(point);
         return MountResult::Failed;
@@ -823,9 +823,12 @@ uint64_t LastError()
     return last_error;
 }
 
-bool SyncAll()
+namespace
 {
-    bool synced = true;
+
+template <typename Call> bool ForEachMount(Call call)
+{
+    bool done = true;
     for (uint32_t index = 0; index < MountTable::Capacity; ++index)
     {
         Driver* driver = nullptr;
@@ -840,11 +843,29 @@ bool SyncAll()
         }
         if (driver != nullptr)
         {
-            synced = driver->Sync() && synced;
+            done = call(*driver) && done;
             Release(driver);
         }
     }
-    return synced;
+    return done;
+}
+
+} // namespace
+
+bool SyncAll()
+{
+    return ForEachMount([](Driver& driver) { return driver.Sync(); });
+}
+
+bool SyncPeriodic()
+{
+    return ForEachMount([](Driver& driver)
+                        { return !driver.SyncsInBackground() || driver.Sync(); });
+}
+
+bool DetachAll()
+{
+    return ForEachMount([](Driver& driver) { return driver.Detach(); });
 }
 
 bool SupportsLinks(const char* path, Filesystem::LinkKind kind)

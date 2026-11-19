@@ -6,8 +6,8 @@ from smoke.script import Lines
 # The root is ext2 (tools/create_test_disk.py). Everything in /samples belongs
 # to user and group 1000, hello.txt is 0640 in group 100, and every time is
 # 2026-01-01. The part first mounts the FAT16 partition, vda2, read-only at
-# /mnt, then writes in /samples and leaves it as it was; the shell case syncs
-# and then has e2fsck check the root.
+# /mnt, then writes in /samples and leaves it as it was; the shell case's last
+# part syncs the root and then has e2fsck check it.
 LONG_EXT2_NAME = (
     b"a-file-name-longer-than-sixty-three-characters"
     b"-that-fat16-cannot-hold.txt"

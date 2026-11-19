@@ -82,8 +82,8 @@ struct FileKey
 bool MountBuiltIn();
 // Mounts the block device's first partition with a FAT16 or ext2 volume at "/", replacing an
 // earlier root, and registers each FAT16, ext2, ext3 and ext4 volume under its type and partition
-// name; ext3 and ext4 are never the root. A volume mounted elsewhere is kept; one that refuses
-// writes becomes a read-only root.
+// name; ext3 and ext4 are never the root before Part 6b. A volume mounted elsewhere is kept; one
+// that refuses writes becomes a read-only root.
 bool MountBlockDevice();
 // Copies the initramfs's "etc" files into /etc, so they can be changed until the next boot.
 bool LoadEtc();
@@ -95,10 +95,16 @@ bool LoadEtc();
 MountResult Mount(const char* type, const char* source, const char* point,
                   Filesystem::MountMode mode = Filesystem::MountMode::ReadWrite);
 // Busy while one of its files is open, an operation on it is in progress or another mount point
-// lies inside it; otherwise syncs the driver and removes the mount.
+// lies inside it; otherwise detaches the driver (a journalled volume is closed, so the medium is
+// clean) and removes the mount, which Failed leaves in place.
 MountResult Unmount(const char* point);
-// Syncs every mounted driver, as shutting down does; false if one failed.
+// Syncs every mounted driver; false if one failed.
 bool SyncAll();
+// Syncs every mounted driver that wants it in the background; false if one failed. Callers hold
+// the file system lock.
+bool SyncPeriodic();
+// Detaches every mounted driver without removing it, as shutting down does; false if one failed.
+bool DetachAll();
 // The type and source of the filesystem at "/", as /proc/mounts names them, and whether it is
 // mounted read-only; false with nothing there.
 bool DescribeRoot(const char** type, const char** source, bool* read_only);

@@ -20,7 +20,10 @@ void Shutdown(Action action, uint64_t caller_process)
         Console::WriteLine("KERN/W: Shutdown: some processes did not stop");
     }
     // No filesystem call can start after this, and none is half done.
-    Files::Quiesce();
+    if (!Files::Quiesce())
+    {
+        Console::WriteLine("KERN/W: Shutdown: a filesystem did not close cleanly");
+    }
     Console::WriteLine(BlockDevice::Flush() ? "KERN/I: Shutdown: disk flushed"
                                             : "KERN/W: Shutdown: disk flush failed");
     Console::WriteLine(action == Action::PowerOff ? "KERN/I: Powering off" : "KERN/I: Restarting");

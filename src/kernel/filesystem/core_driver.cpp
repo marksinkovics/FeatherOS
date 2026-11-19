@@ -1,5 +1,7 @@
 #include "core_driver.h"
 
+#include "kernel/klogger.h"
+
 #include <array>
 #include <span>
 #include <stddef.h>
@@ -18,6 +20,8 @@ using FeatherDisk::Result;
 constexpr size_t MaximumPartitions = 16;
 constexpr uint32_t NewFileMode = 0666;
 constexpr uint32_t NewDirectoryMode = 0777;
+
+constinit KLogger logger;
 
 // The core's special nodes (devices, FIFOs, sockets) do not say which kind they are, so they
 // report no type.
@@ -654,6 +658,35 @@ bool CoreDriver::Sync()
     }
     const FeatherDisk::Status synced = filesystem->Sync();
     return synced || Fail(synced.error());
+}
+
+bool CoreDriver::Detach()
+{
+    if (!options.close_on_detach || filesystem == nullptr || core_read_only)
+    {
+        return Sync();
+    }
+    if (const FeatherDisk::Status closed = type->Unmount(*filesystem); !closed)
+    {
+        return Fail(closed.error());
+    }
+    filesystem = nullptr;
+    core_read_only = true;
+    const Result<FeatherDisk::Filesystem*> reopened = type->Mount(volume, {.read_only = true});
+    if (!reopened)
+    {
+        partition_number = 0;
+        logger.Error("ext: filesystem could not be reopened read-only");
+        return true;
+    }
+    filesystem = *reopened;
+    return true;
+}
+
+bool CoreDriver::SyncsInBackground() const
+{
+    return options.periodic_sync && filesystem != nullptr && !core_read_only &&
+           filesystem->GetCapabilities().writable;
 }
 
 } // namespace FeatherOS::Filesystem

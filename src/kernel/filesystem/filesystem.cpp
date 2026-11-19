@@ -108,6 +108,16 @@ bool Driver::Sync()
     return true;
 }
 
+bool Driver::Detach()
+{
+    return Sync();
+}
+
+bool Driver::SyncsInBackground() const
+{
+    return false;
+}
+
 uint64_t Driver::LastError()
 {
     return User::SyscallErrorFailed;

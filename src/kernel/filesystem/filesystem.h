@@ -139,8 +139,14 @@ public:
     virtual bool SymbolicLink(const char* path, const char* target);
     // A second name, to, for the file at from; to must not exist.
     virtual bool Link(const char* from, const char* to);
-    // Makes everything written so far durable; unmounting calls it last.
+    // Makes everything written so far durable.
     virtual bool Sync();
+    // Makes everything durable and leaves the medium as an unmounted volume would be. The VFS
+    // calls it when it removes the mount and at shutdown. false: the mount stays (LastError says
+    // why).
+    virtual bool Detach();
+    // Wants Sync every Writeback::IntervalSeconds while mounted.
+    virtual bool SyncsInBackground() const;
     // Why the call that just failed did, as a User::SyscallError code; drivers that cannot say
     // give SyscallErrorFailed.
     virtual uint64_t LastError();
