@@ -21,7 +21,8 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | e3d549f | M22 P6 s4b jbd2 transactions | opus | sonnet | 1 | 18/18 | |
 | 8249ec3 | M22 P6 s4c orphans and split changes | opus | sonnet | 0 | 2/2 | |
 | 49696ba | M22 P6 s4d crash, model and fscli tests, step 4 docs | opus | sonnet | 0 | 3/3 | |
-| d43b5ea | M22 P6 s5 ext3/ext4 read-write in the OS, writeback task | opus | sonnet | 0 | 3/3 (I5 by T13, not host T5) | |
+| d43b5ea | M22 P6 s5 ext3/ext4 read-write in the OS, writeback task | opus | sonnet | 0 | 3/3 (I5 by T13, not host T5) | (older: virtio-blk 10^7-poll timeout aborted journals on slow flushes) |
 | abc862e | M22 P6b s1 root= and ext3/ext4 roots | - | sonnet | 0 | - | |
 | 5caa991 | M22 P6b s2 ext4 root on the test disk, ext2 at vda4 | - | sonnet | 0 | - | |
-| (this) | M29 P1 root without test files | - | sonnet | 0 | - | |
+| 8bca671 | M29 P1 root without test files | - | sonnet | 0 | - | |
+| (this) | fix: virtio-blk poll timeout (flush flake) | - | opus | 0 | - | |

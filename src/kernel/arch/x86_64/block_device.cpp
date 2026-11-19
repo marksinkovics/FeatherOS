@@ -3,6 +3,7 @@
 #include "pci.h"
 #include "port_io.h"
 
+#include "kernel/klogger.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/sync/spinlock.h"
 
@@ -46,6 +47,10 @@ constexpr uint32_t RequestFlush = 4;
 constexpr uint32_t FeatureReadOnly = 1U << 5;
 constexpr uint32_t FeatureFlush = 1U << 9;
 constexpr uint8_t RequestStatusPending = 0xFF;
+// A flush completes only once QEMU has synced the image file, which under host load takes tens of
+// milliseconds or more, so the limit must be far above any slow answer. Without a clock that runs
+// with interrupts off it counts `pause` polls: seconds on hardware, minutes under TCG.
+constexpr uint64_t PollLimit = uint64_t{1} << 31;
 
 struct __attribute__((packed)) Descriptor
 {
@@ -75,6 +80,10 @@ uint64_t capacity_sectors = 0;
 // One request buffer serves every caller, so requests from different CPUs take turns.
 constinit Sync::SpinLock device_lock;
 uint16_t available_index_value GUARDED_BY(device_lock) = 0;
+// A request the device still holds after the limit would later complete as the next one, so the
+// queue is not used again.
+bool failed GUARDED_BY(device_lock) = false;
+constinit KLogger logger;
 bool read_only = false;
 bool flush_supported = false;
 bool initialized = false;
@@ -117,6 +126,10 @@ void ConfigureDescriptor(uint16_t index, uint64_t address, uint32_t length, uint
 // Hands the prepared request to the device and polls until it completes.
 bool SubmitLocked() REQUIRES(device_lock)
 {
+    if (failed)
+    {
+        return false;
+    }
     auto* available_index =
         reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 2);
     auto* available_ring =
@@ -133,10 +146,16 @@ bool SubmitLocked() REQUIRES(device_lock)
     *available_index = available_index_value;
     PortIo::Write16(device_io_base + VirtioQueueNotify, QueueIndex);
 
-    uint64_t attempts = 0;
-    while (*used_index != expected_used_index && attempts < 10000000)
+    uint64_t polls = 0;
+    while (*used_index != expected_used_index)
     {
-        ++attempts;
+        if (++polls == PollLimit)
+        {
+            failed = true;
+            logger.Error("virtio-blk: the device stopped answering; the disk is not used again");
+            return false;
+        }
+        asm volatile("pause" ::: "memory");
     }
     asm volatile("lfence" ::: "memory");
     return *used_index == expected_used_index && used_elements[used_slot].id == 0 &&

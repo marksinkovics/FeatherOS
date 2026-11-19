@@ -2,6 +2,7 @@
 
 #include "virtio_mmio.h"
 
+#include "kernel/klogger.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/sync/spinlock.h"
 
@@ -49,6 +50,9 @@ constexpr uint32_t RequestFlush = 4;
 constexpr uint32_t FeatureReadOnly = 1U << 5;
 constexpr uint32_t FeatureFlush = 1U << 9;
 constexpr uint8_t RequestStatusPending = 0xFF;
+// A flush completes only once QEMU has synced the image file, which under host load takes tens of
+// milliseconds or more; a budget of 10^7 polls, about 50 ms under TCG, once ran out during one.
+constexpr uint64_t TimeoutSeconds = 30;
 
 struct __attribute__((packed)) Descriptor
 {
@@ -79,6 +83,10 @@ uint64_t capacity_sectors = 0;
 // One request buffer serves every caller, so requests from different CPUs take turns.
 constinit Sync::SpinLock device_lock;
 uint16_t available_index_value GUARDED_BY(device_lock) = 0;
+// A request the device still holds after the timeout would later complete as the next one, so the
+// queue is not used again.
+bool failed GUARDED_BY(device_lock) = false;
+constinit KLogger logger;
 bool read_only = false;
 bool flush_supported = false;
 bool initialized = false;
@@ -147,9 +155,28 @@ bool InitializeQueue()
     return true;
 }
 
+// The generic timer's counter runs with interrupts masked, unlike the scheduler's tick count.
+uint64_t CounterNow()
+{
+    uint64_t count;
+    asm volatile("isb; mrs %0, cntvct_el0" : "=r"(count)::"memory");
+    return count;
+}
+
+uint64_t CounterFrequency()
+{
+    uint64_t frequency;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+    return frequency;
+}
+
 // Hands the prepared request to the device and polls until it completes.
 bool SubmitLocked() REQUIRES(device_lock)
 {
+    if (failed)
+    {
+        return false;
+    }
     auto* status = queue_virtual_address + StatusOffset;
     auto* available_index =
         reinterpret_cast<volatile uint16_t*>(queue_virtual_address + AvailableOffset + 2);
@@ -167,10 +194,17 @@ bool SubmitLocked() REQUIRES(device_lock)
     *available_index = available_index_value;
     Registers()[VirtioQueueNotify / 4] = 0;
 
-    uint64_t attempts = 0;
-    while (*used_index != expected_used_index && attempts < 10000000)
+    const uint64_t start = CounterNow();
+    const uint64_t timeout = TimeoutSeconds * CounterFrequency();
+    while (*used_index != expected_used_index)
     {
-        ++attempts;
+        if (CounterNow() - start >= timeout)
+        {
+            failed = true;
+            logger.Error("virtio-blk: the device stopped answering; the disk is not used again");
+            return false;
+        }
+        asm volatile("yield" ::: "memory");
     }
     asm volatile("dmb oshld" ::: "memory");
     return *used_index == expected_used_index && used_elements[used_slot].id == 0 && *status == 0;
