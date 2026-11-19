@@ -82,14 +82,9 @@ Moved out of M11 to keep it focused; each can come back as a milestone of its ow
 ## Storage
 
 - **File timestamps** set from the RTC, and shown by `ls`.
-- **A persistent `/etc`.** Since M10 Part 10, `/etc` is a RAM copy of the initramfs's `etc/` (`VFS::LoadEtc` into tmpfs's second root). That is a stopgap with real limits. Edits to `hosts` or `resolv.conf` are lost at every reboot. Every boot copies the files into the heap, and they share `/tmp`'s 128 entries and 4 MiB. Only files directly in `etc/` are copied, not subdirectories. The only way to change the defaults is to rebuild the initramfs. Better options, roughly in order of effort:
-  - `/etc` on the disk, filled from the initramfs only on a first boot or when a file is missing.
-  - An overlay mount, where reads fall through to the initramfs and the first write copies the file up to the disk, so deleting the disk copy restores the default.
-  - A separate configuration partition.
-
-  Each one needs a fallback for boots without a disk, which the QEMU tests do today.
-- **Periodic sync of the root.** Since M22 Part 4b the root is ext2, whose superblock stays not clean until `sync`, an unmount or a shutdown writes the free counts back, so a machine stopped from outside after a change boots with a read-only root until the host runs `e2fsck`. A kernel task that syncs a few seconds after the last change (as Linux's writeback does) would shrink that window; ext3/ext4 journals (M22 Part 6) remove it.
-- **A `root=` kernel argument** choosing the root partition, instead of the first one with a FAT16 or ext2 volume.
+- **Several volumes of one filesystem type at once.** Each filesystem type has one driver instance (`Drivers::Ext4()` and the rest), so with an ext4 root no second ext4 volume can be mounted. Drivers would become per-volume objects, created when a partition is found and registered by partition, which changes `drivers.cpp` and `VFS::TypeRegistry`.
+- **Atomic rename onto an existing file.** `rename` removes the target first and then moves the source, so a crash between the two loses the target. On ext3 and ext4 both changes fit in one jbd2 transaction; FAT16 cannot be made atomic.
+- **Higher descriptor limits:** 32 descriptors per process and 64 open disk files system-wide, mostly fixed-size tables.
 - **FeatherFS:** a filesystem of our own design with journaling, so files survive a crash in the middle of a write.
 - **Page cache:** keep recently read disk blocks in memory so repeated reads don't go to the disk.
 

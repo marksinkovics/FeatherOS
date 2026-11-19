@@ -1084,6 +1084,17 @@ The QEMU matrix (`tests/test_boot_matrix.py`, 38 cases) took 30 minutes (1825 s 
 - `tools/smoke_test.py` is a thin entry point and no file under `tools/smoke/` is much past 400 lines.
 - The matrix runs its cases side by side on both targets and passes, with the time measured before and after in this section.
 
+### 29. The Root As A System Disk
+
+Since M22 the root is ext4 on the disk, read-write and journalled, but the system still lives in the initramfs: programs, `init.conf` and `/etc` come from it, `/etc` is a RAM copy whose edits are lost at reboot (since M10 Part 10, `VFS::LoadEtc` into tmpfs's second root, sharing `/tmp`'s 128 entries and 4 MiB), and the kernel panics without the test file `/BLOCK.TXT` on the root. This milestone makes the root hold the system, with the initramfs as the built-in defaults and a rescue fallback when the disk is missing or broken. Developed on `feat/disk` after M22, at the user's request.
+
+- **Part 1: a root without test files.** The boot checks no file on the root: the `/BLOCK.TXT` read moves out of `kernel_runtime.cpp` into the `STORAGE` kernel test, and a root without `/home` starts the shell in `/`. A boot with a freshly made ext4 root that holds only `lost+found` reaches the shell.
+- **Part 2: persistent `/etc` and `/etc/init.conf`.** `/etc` is the root's own directory when the root is writable: at boot, each file of the initramfs's `etc/` that the root's `/etc` lacks is copied there (a first boot fills it, a deleted file comes back as the default), and nothing is overwritten. `init.conf` moves into the initramfs's `etc/`, so `init` reads `/etc/init.conf`; `/system/init.conf` stays in the initramfs as the built-in copy that `init` falls back to when `/etc/init.conf` is missing or does not parse. Without a disk, or with a read-only root, `/etc` stays the tmpfs copy as today. Edits to `hosts`, `resolv.conf` and `init.conf` survive a reboot, checked by `STORAGE`'s two boots.
+- **Part 3: programs from the root's `/bin`.** The build installs the programs into the test disk's `/bin` (`tools/create_test_disk.py`'s staging tree), `PATH` becomes `/bin:/system`, and the kernel starts `/bin/init` when the root has it, else `/system/init`, so the initramfs remains the rescue system. A program on the root runs ahead of the initramfs's copy, and deleting it falls back to the built-in one.
+- **Part 4: mount state.** `mount -o remount,ro` and `remount,rw` (libc `MS_REMOUNT`) change a mounted filesystem's mode, the root's too, with the same rules as a fresh mount (a remount to read-write replays nothing a read-only one could not; ext3/ext4 close their journal on the way to read-only). `/proc/mounts` shows `ro` once a filesystem refuses writes after an I/O error or a journal abort, instead of `rw`.
+
+**Complete when:** on both targets, a boot from the ext4 root runs `init` and the programs from the root's `/bin`, reads `/etc` from the root and keeps its edits across reboots, boots a root with no test files, and still boots from the initramfs alone when the disk is missing; the root can be remounted read-only and back; `e2fsck -fn` finds no errors after each case.
+
 ## Architecture Boundaries
 
 - Keep framebuffer terminal, logging API, panic/assert API, VFS, syscall definitions, and scheduler policy architecture-neutral when possible.
