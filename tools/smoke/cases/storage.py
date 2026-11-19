@@ -395,17 +395,23 @@ def VerifyJournalled(disk_path, boot_count):
 
 def VerifyRootEtc(debugfs, volume, boot_count):
     """The root's own /etc holds the initramfs defaults, the first boot's edit
-    in hosts and resolv.conf, and after the second boot the restored default
-    resolv.conf and the second edit in hosts."""
+    in hosts, resolv.conf and init.conf, and after the second boot the
+    restored default resolv.conf and the second edit in hosts and init.conf."""
     first = b"# storage test boot 1\n"
     second = b"# storage test boot 2\n"
     hosts = (ETC_DEFAULTS / "hosts").read_bytes() + first
     resolv = (ETC_DEFAULTS / "resolv.conf").read_bytes()
+    init = (ETC_DEFAULTS / "init.conf").read_bytes() + first
     if boot_count == 1:
         resolv += first
     else:
         hosts += second
-    for name, expected in (("hosts", hosts), ("resolv.conf", resolv)):
+        init += second
+    for name, expected in (
+        ("hosts", hosts),
+        ("resolv.conf", resolv),
+        ("init.conf", init),
+    ):
         if Debugfs(debugfs, volume, f"cat /etc/{name}") != expected:
             return f"debugfs read a different /etc/{name}"
     return None

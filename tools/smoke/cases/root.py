@@ -28,8 +28,16 @@ ROOT_VOLUMES = {
     "vda4": ("ext2", EXT2_START, EXT2_END),
 }
 EMPTY_ROOT = "vda1"
+# The empty root's /etc/init.conf is garbage: init must use /system/init.conf.
+BROKEN_INIT_CONF = b"\xff\x00 not a service\nrespawn\n\x01\x02\n"
+INIT_FALLBACK = (
+    "init: /etc/init.conf is missing or lists no service; "
+    "using /system/init.conf"
+)
 WRITTEN = b"written on the root\n"
 WORKING_DIRECTORY = re.compile(r"^/\r?$", re.MULTILINE)
+TMP_DIRECTORY = re.compile(r"^/tmp\r?$", re.MULTILINE)
+HOME_IS_ROOT = re.compile(r"^HOME=/\r?$", re.MULTILINE)
 TEST_FILES = ("BLOCK.TXT", "home", "bin", "samples")
 FALLBACK_WARNING = "KERN/W: VFS: root={} is not a usable partition, "
 
@@ -84,13 +92,24 @@ class NamedRoot(Case):
                 capture_output=True,
                 check=True,
             )
+            self.BreakInitConf(work, volume)
             with open(self.args.disk, "r+b") as disk:
                 disk.seek(self.first * SECTOR_SIZE)
                 disk.write(volume.read_bytes())
 
+    def BreakInitConf(self, work, volume):
+        debugfs = storage.FindE2fsprogs("debugfs")
+        if debugfs is None:
+            raise RuntimeError("debugfs not found; install e2fsprogs")
+        broken = Path(work) / "init.conf"
+        broken.write_bytes(BROKEN_INIT_CONF)
+        commands = Path(work) / "commands"
+        commands.write_text(f"mkdir /etc\nwrite {broken} /etc/init.conf\n")
+        storage.RunDebugfsWrite(debugfs, str(volume), str(commands))
+
     def Script(self, session):
         return Lines(
-            b"pwd\n"
+            b"pwd\ncd /tmp\npwd\ncd\npwd\nenv\n"
             b"write /rootwrite.txt written on the root\n"
             b"cat /rootwrite.txt\n"
             b"shutdown\n"
@@ -110,6 +129,21 @@ class NamedRoot(Case):
             return "the shell did not start"
         if WORKING_DIRECTORY.search(output) is None:
             return "the shell did not start in /"
+        moved = TMP_DIRECTORY.search(output)
+        if (
+            moved is None
+            or WORKING_DIRECTORY.search(output, moved.end()) is None
+        ):
+            return "cd without an argument did not go to / (HOME)"
+        if HOME_IS_ROOT.search(output) is None:
+            return "init did not set HOME=/ on a root without /home"
+        broken = self.name == EMPTY_ROOT
+        if broken != (INIT_FALLBACK in output):
+            return (
+                "init did not fall back to /system/init.conf"
+                if broken
+                else "init did not read /etc/init.conf"
+            )
         if "KERN/I: Powering off" not in output:
             return f"the system did not power off{result.limit_note}"
         if not result.exited_by_itself:
@@ -148,10 +182,13 @@ class NamedRoot(Case):
                 )
             if self.name != EMPTY_ROOT and names.intersection(TEST_FILES):
                 return "the root holds test files the boot should not need"
-            for name in ("hosts", "resolv.conf"):
+            for name in ("hosts", "resolv.conf", "init.conf"):
+                expected = (storage.ETC_DEFAULTS / name).read_bytes()
+                if broken and name == "init.conf":
+                    expected = BROKEN_INIT_CONF
                 if (
                     storage.Debugfs(debugfs, str(volume), f"cat /etc/{name}")
-                    != (storage.ETC_DEFAULTS / name).read_bytes()
+                    != expected
                 ):
                     return f"the root's /etc/{name} is not the default"
         return None
@@ -160,8 +197,14 @@ class NamedRoot(Case):
         return (
             f"{self.type} root {self.name} without test files mounted "
             "read-write with the defaults copied into its /etc, shell "
-            "started in /, written from the shell, closed by shutdown, and "
-            "clean under e2fsck and debugfs"
+            "started in / with HOME=/ and cd returning there, "
+            + (
+                "init using /system/init.conf over a broken /etc/init.conf, "
+                if self.name == EMPTY_ROOT
+                else ""
+            )
+            + "written from the shell, closed by shutdown, and clean under "
+            "e2fsck and debugfs"
         )
 
 

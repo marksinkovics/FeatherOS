@@ -4,9 +4,11 @@
 namespace
 {
 
-constexpr char Help[] = "usage: env\n"
-                        "Prints the environment, one NAME=value per line. Programs inherit it\n"
-                        "from the shell, which gets it from the env lines in /system/init.conf.\n";
+constexpr char Help[] =
+    "usage: env\n"
+    "Prints the environment, one NAME=value per line. Programs inherit it\n"
+    "from the shell, which gets it from init: the env lines in /etc/init.conf and\n"
+    "HOME.\n";
 
 void WriteText(const char* text)
 {

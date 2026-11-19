@@ -268,7 +268,7 @@ _image_inputs() {
     local system_dir="$root_dir/system"
     rm -rf "$root_dir" "$build_dir/system"
     mkdir -p "$system_dir"
-    cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" \
+    cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/etc/init.conf" \
         "$SCRIPT_DIR/initramfs/sample.json" "$SCRIPT_DIR/initramfs/http-request.txt" \
         "$SCRIPT_DIR/initramfs/http-response.txt" "$system_dir/"
     cp -R "$SCRIPT_DIR/initramfs/etc" "$root_dir/"

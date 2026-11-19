@@ -5,6 +5,7 @@
 #include <string.h>
 #include <spawn.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -15,11 +16,13 @@ using namespace FeatherOS::User::Init;
 namespace
 {
 
-constexpr char ConfigPath[] = "/system/init.conf";
+constexpr char ConfigPath[] = "/etc/init.conf";
+constexpr char BuiltInConfigPath[] = "/system/init.conf";
 constexpr char FallbackConfig[] = "console /dev/tty1 shell\n";
 constexpr uint64_t MaximumConfigSize = 2048;
 constexpr uint64_t PollMilliseconds = 200;
 
+const char* current_path = ConfigPath;
 char config[MaximumConfigSize];
 Service services[MaximumServices];
 uint32_t service_count = 0;
@@ -35,9 +38,9 @@ void Report(const char* message, const Service& service)
     printf("init: %s%s\n", message, service.command);
 }
 
-uint64_t ReadConfig()
+uint64_t ReadConfig(const char* path)
 {
-    const int descriptor = open(ConfigPath, O_RDONLY);
+    const int descriptor = open(path, O_RDONLY);
     if (descriptor < 0)
     {
         return 0;
@@ -59,7 +62,7 @@ uint64_t ReadConfig()
 void IgnoreLine(uint64_t line_number)
 {
     printf("init: ignoring line %llu of %s\n", static_cast<unsigned long long>(line_number),
-           ConfigPath);
+           current_path);
 }
 
 void ListEnvironment()
@@ -124,6 +127,52 @@ void ParseConfig(const char* text, uint64_t length)
     }
 }
 
+bool LoadConfig(const char* path)
+{
+    current_path = path;
+    const uint64_t length = ReadConfig(path);
+    if (length != 0)
+    {
+        ParseConfig(config, length);
+    }
+    if (service_count != 0)
+    {
+        return true;
+    }
+    environment[0] = '\0';
+    environment_used = 0;
+    environment_count = 0;
+    return false;
+}
+
+bool HasVariable(const char* name)
+{
+    const size_t length = strlen(name);
+    for (uint64_t offset = 0; environment[offset] != '\0';)
+    {
+        if (strncmp(environment + offset, name, length) == 0 && environment[offset + length] == '=')
+        {
+            return true;
+        }
+        offset += strlen(environment + offset) + 1;
+    }
+    return false;
+}
+
+// As login does: the home directory when there is one, else the root. A HOME line in the
+// configuration wins.
+void SetHome()
+{
+    if (HasVariable("HOME"))
+    {
+        return;
+    }
+    struct stat status{};
+    const bool has_home = stat("/home", &status) == 0 && S_ISDIR(status.st_mode);
+    AppendVariable(environment, sizeof(environment), &environment_used, &environment_count,
+                   has_home ? "HOME=/home" : "HOME=/");
+}
+
 // A console service leads its own session on its terminal, so Ctrl+C stops at it; respawned
 // services run in the background, without a terminal.
 void Start(Service* service)
@@ -185,9 +234,11 @@ uint64_t MillisecondsSinceBoot()
 } // namespace
 
 constexpr char Help[] = "usage: init\n"
-                        "The first process: starts the services in /system/init.conf, with\n"
-                        "its env variables, and restarts those that exit. The kernel runs it\n"
-                        "at boot.";
+                        "The first process: starts the services in /etc/init.conf, or in the\n"
+                        "built-in /system/init.conf when that is missing or lists none, with\n"
+                        "its env variables (HOME is /home when it exists, else /, unless the\n"
+                        "file sets it), and restarts those that exit. The kernel runs it at\n"
+                        "boot.";
 
 int main(int argc, char** argv)
 {
@@ -196,16 +247,17 @@ int main(int argc, char** argv)
         puts(Help);
         return 0;
     }
-    const uint64_t length = ReadConfig();
-    if (length == 0)
+    if (!LoadConfig(ConfigPath))
     {
-        printf("init: cannot read %s; starting the shell\n", ConfigPath);
-        ParseConfig(FallbackConfig, sizeof(FallbackConfig) - 1);
+        printf("init: %s is missing or lists no service; using %s\n", ConfigPath,
+               BuiltInConfigPath);
+        if (!LoadConfig(BuiltInConfigPath))
+        {
+            printf("init: cannot use %s; starting the shell\n", BuiltInConfigPath);
+            ParseConfig(FallbackConfig, sizeof(FallbackConfig) - 1);
+        }
     }
-    else
-    {
-        ParseConfig(config, length);
-    }
+    SetHome();
     ListEnvironment();
 
     // One-shot services run in order and keep the console while they do.

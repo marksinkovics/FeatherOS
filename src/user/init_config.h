@@ -5,9 +5,9 @@
 
 #include <stdint.h>
 
-// /system/init.conf: one service per line as "<policy> <command line>", "console <terminal>
-// <command line>", or "env NAME=value" for a variable in every service's environment. '#' starts
-// a comment line.
+// /etc/init.conf (built-in copy /system/init.conf): one service per line as "<policy> <command
+// line>", "console <terminal> <command line>", or "env NAME=value" for a variable in every
+// service's environment. '#' starts a comment line.
 namespace FeatherOS::User::Init
 {
 

@@ -34,9 +34,9 @@ EXPECTED_PROGRAMS_OUTPUT = (
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
-    # env prints the variables init.conf sets, which the shell passes on.
-    "HOME=/home",
+    # env prints the variables init sets, which the shell passes on.
     "PATH=/system:/bin",
+    "HOME=/home",
     "hello feather os",
     "upper> ",
     "MIXED CASE",

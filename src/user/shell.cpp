@@ -746,7 +746,12 @@ void ChangeDirectoryCommand(const char* argument)
         --length;
     }
     path[length] = '\0';
-    const char* target = length == 0 ? "/home" : path;
+    const char* target = length == 0 ? getenv("HOME") : path;
+    if (target == nullptr)
+    {
+        puts("cd: HOME not set");
+        return;
+    }
     if (chdir(target) != 0)
     {
         printf("cd: %s: no such directory\n", target);
@@ -760,7 +765,7 @@ constexpr char Help[] =
     "Runs programs and waits for each one: a name is looked up in the directories\n"
     "of PATH, and a name with a / is a file. Type help for the commands;\n"
     "Ctrl+C stops the running command. The prompt shows the working directory,\n"
-    "which cd changes (cd alone returns to /home) and programs inherit. A command's\n"
+    "which cd changes (cd alone goes to $HOME) and programs inherit. A command's\n"
     "input and output can be redirected: < file, > file, >> file, 2> file, 2>&1;\n"
     "a | b connects one command's output to the next one's input, and a trailing &\n"
     "runs a command in the background. Ctrl+Z stops the running command: jobs\n"

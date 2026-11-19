@@ -27,4 +27,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 8bca671 | M29 P1 root without test files | - | sonnet | 0 | - | |
 | 9d7885c | fix: virtio-blk poll timeout (flush flake) | - | opus | 0 | - | |
 | 88ccb3e | fix: smoke top Ctrl+Z race | - | sonnet | 0 | - | |
-| (this) | M29 P2 s1 /etc on the root | - | sonnet | 0 | - | |
+| 3a3d8d1 | M29 P2 s1 /etc on the root | - | sonnet | 0 | - | |
+| (this) | M29 P2 s2 /etc/init.conf, HOME, cd | - | sonnet | 0 | - | |

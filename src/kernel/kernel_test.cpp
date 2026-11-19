@@ -1560,8 +1560,8 @@ bool AppendTo(const char* path, const char* text)
     return done;
 }
 
-// /etc is the root's own directory, not the RAM copy; hosts and resolv.conf keep an edit of the
-// first boot, and a default deleted on the second comes back at the next UseRootEtc.
+// /etc is the root's own directory, not the RAM copy; hosts, resolv.conf and init.conf keep an edit
+// of the first boot, and a default deleted on the second comes back at the next UseRootEtc.
 void CheckEtc(uint64_t boot_count)
 {
     constexpr char FirstEdit[] = "# storage test boot 1\n";
@@ -1573,21 +1573,23 @@ void CheckEtc(uint64_t boot_count)
     if (boot_count == 1)
     {
         if (!EtcFileIs("hosts", "") || !EtcFileIs("resolv.conf", "") ||
-            !AppendTo("/etc/hosts", FirstEdit) || !AppendTo("/etc/resolv.conf", FirstEdit))
+            !EtcFileIs("init.conf", "") || !AppendTo("/etc/hosts", FirstEdit) ||
+            !AppendTo("/etc/resolv.conf", FirstEdit) || !AppendTo("/etc/init.conf", FirstEdit))
         {
             Panic("The root's /etc does not hold the defaults or took no edit");
         }
     }
     else if (boot_count == 2)
     {
-        if (!EtcFileIs("hosts", FirstEdit) || !EtcFileIs("resolv.conf", FirstEdit))
+        if (!EtcFileIs("hosts", FirstEdit) || !EtcFileIs("resolv.conf", FirstEdit) ||
+            !EtcFileIs("init.conf", FirstEdit))
         {
             Panic("The root's /etc lost the first boot's edits");
         }
         VFS::FileInfo info;
         if (!VFS::Remove("/etc/resolv.conf") || VFS::Stat("/etc/resolv.conf", &info) ||
             !VFS::UseRootEtc() || !EtcFileIs("resolv.conf", "") || !EtcFileIs("hosts", FirstEdit) ||
-            !AppendTo("/etc/hosts", SecondEdit))
+            !AppendTo("/etc/hosts", SecondEdit) || !AppendTo("/etc/init.conf", SecondEdit))
         {
             Panic("A deleted /etc default did not come back or an edit was overwritten");
         }
