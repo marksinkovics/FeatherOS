@@ -31,8 +31,9 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 5c81254 | M29 P2 s2 /etc/init.conf, HOME, cd | - | sonnet | 0 | - | |
 | c1ad0b4 | M29 P3 programs from /bin, /sbin/init | - | sonnet | 0 | - | |
 | 58e5484 | M29 P4 s1 core MakeReadOnly | opus | sonnet | 0 | 3/3 (I5 only via deeper guards) | |
-| 2a35e93 | M29 P4 s2 kernel VFS remount | opus | sonnet | 0 | 3/3 | |
+| 2a35e93 | M29 P4 s2 kernel VFS remount | opus | sonnet | 0 | 3/3 | test fixture read a freed initramfs (UseRootEtc); null core reachable by remount |
 | 56770ed | M29 P4 s3 MS_REMOUNT, STORAGE/SHELL, docs | opus | sonnet | 0 | 2/2 | |
 | 7b83d66 | fix: failed remount reopen leaves a safe mount | - | sonnet | 0 | 1/1 | (M29 P4 s2: null core reachable by remount) |
 | ef0c7e3 | M30 P1 s1 growable fd and disk tables, ENFILE | opus | sonnet | 0 | 6/6 (2 by tests beyond the design) | |
-| (this) | M30 P1 s2 RLIMIT_NOFILE, ulimit | opus | sonnet | 0 | 2/2 | |
+| f903174 | M30 P1 s2 RLIMIT_NOFILE, ulimit | opus | sonnet | 0 | 2/2 | |
+| (this) | fix: remount test mounts its own initramfs | - | claude | 0 | - | |

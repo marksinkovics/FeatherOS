@@ -2340,6 +2340,9 @@ void CheckRootRemount(const char* description, const std::function<bool()>& mark
 {
     namespace User = FeatherOS::User;
     REQUIRE(RootDescription() == std::string(description) + " rw");
+    // UseRootEtc reads the initramfs, which would otherwise be an earlier test's freed archive.
+    const std::vector<uint8_t> archive = MakeTarArchive("etc/hosts", "127.0.0.1 localhost\n");
+    REQUIRE(FeatherOS::Initramfs::Mount(archive.data(), archive.size()));
     REQUIRE(FeatherOS::VFS::UseRootEtc());
     WriteAndClose("/etc/kept.txt", "etc\n");
     WriteAndClose("/data.txt", "data\n");
