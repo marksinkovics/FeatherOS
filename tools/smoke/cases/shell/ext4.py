@@ -5,11 +5,10 @@ from smoke.script import Lines
 
 # The root is ext4 and /samples holds its test files
 # (tools/create_test_disk.py). Its one instance is the root, so no second ext4
-# mounts and the root cannot be mounted read-only from the shell. The part
-# writes in /samples and undoes it but for /shell.txt. ext3 (vda3) mounts
-# read-write at /mnt, and the shell case's checks (VerifyJournalledClean) find
-# /shell.txt on both: ext3's journal closed by umount, the root's committed by
-# the interrupt part's sync.
+# mounts. The part writes in /samples and undoes it but for /shell.txt. ext3
+# (vda3) mounts read-write at /mnt, and the shell case's checks
+# (VerifyJournalledClean) find /shell.txt on both: ext3's journal closed by
+# umount, the root's committed by the interrupt part's sync.
 EXT4_INPUT = (
     b"mount -t ext2 vda1 /mnt\n"
     b"ls -l /samples\n"

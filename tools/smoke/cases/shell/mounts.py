@@ -24,7 +24,8 @@ MOUNT_LINE = re.compile(
 
 
 def Check(result):
-    lines = MOUNT_LINE.findall(result.output)
+    end = result.output.find(EXPECTED_MOUNTS_OUTPUT[-1])
+    lines = MOUNT_LINE.findall(result.output[: end if end >= 0 else None])
     disk = "vda1 / ext4 rw 0 0"
     tmp = "tmp /tmp tmpfs rw 0 0"
     # Mount order: /tmp before the disk at boot, gone after umount, last once

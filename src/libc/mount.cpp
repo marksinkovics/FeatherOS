@@ -10,13 +10,19 @@ using FeatherOS::LibC::Check;
 int mount(const char* source, const char* target, const char* filesystemtype,
           unsigned long mountflags, const void* data)
 {
-    if (source == nullptr || target == nullptr || filesystemtype == nullptr ||
-        (mountflags & ~static_cast<unsigned long>(MS_RDONLY)) != 0 || data != nullptr)
+    constexpr unsigned long Known = MS_RDONLY | MS_REMOUNT;
+    const bool remount = (mountflags & MS_REMOUNT) != 0;
+    if (target == nullptr || (mountflags & ~Known) != 0 || data != nullptr ||
+        (!remount && (source == nullptr || filesystemtype == nullptr)))
     {
         errno = EINVAL;
         return -1;
     }
-    const uint64_t flags = (mountflags & MS_RDONLY) != 0 ? FeatherOS::User::MountReadOnly : 0;
+    uint64_t flags = (mountflags & MS_RDONLY) != 0 ? FeatherOS::User::MountReadOnly : 0;
+    if (remount)
+    {
+        flags |= FeatherOS::User::MountRemount;
+    }
     return Check<int>(FeatherOS::User::Mount(source, target, filesystemtype, flags));
 }
 

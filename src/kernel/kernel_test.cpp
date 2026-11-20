@@ -1,5 +1,6 @@
 #include "kernel_test.h"
 
+#include "fs/partition.h"
 #include "kernel/arch/cpu_features.h"
 #include "kernel/arch/serial.h"
 #include "kernel/console.h"
@@ -19,6 +20,7 @@
 #include "kernel/process.h"
 #include "kernel/scheduler.h"
 #include "kernel/storage/block_device.h"
+#include "kernel/storage/core_block_device.h"
 #include "kernel/string/format.h"
 #include "kernel/string/memory_functions.h"
 #include "kernel/terminal/terminal.h"
@@ -1668,6 +1670,87 @@ void CheckRemount(uint64_t boot_count, Ext2Data* data)
     CheckPersistentFile(boot_count);
 }
 
+bool RefusesCreate(const char* point)
+{
+    char path[32];
+    VFS::FileHandle file{};
+    return String::FormatTo(path, sizeof(path), "{}/remount-new.txt", point) &&
+           !VFS::Create(path, &file) && VFS::LastError() == User::SyscallErrorReadOnly;
+}
+
+// The partition's superblock, 1024 bytes in, names needs_recovery (incompatible feature 0x4).
+bool PartitionNeedsRecovery(size_t number)
+{
+    FeatherDisk::Partition::Range ranges[16] = {};
+    const size_t count = FeatherDisk::Partition::Find(BlockDevice::CoreDevice(), ranges);
+    uint8_t sector[BlockDevice::SectorSize];
+    if (number == 0 || number > count ||
+        !BlockDevice::ReadSector(ranges[number - 1].first_sector + 2, sector))
+    {
+        Panic("Could not read the root's superblock");
+    }
+    constexpr uint32_t IncompatOffset = 0x60;
+    constexpr uint8_t NeedsRecoveryBit = 0x4;
+    return (sector[IncompatOffset] & NeedsRecoveryBit) != 0;
+}
+
+bool RemountTo(const char* point, Filesystem::MountMode mode, bool read_only, const char* type,
+               const char* source)
+{
+    return VFS::Remount(point, mode) == VFS::MountResult::Done &&
+           MountedAs(point, type, source, read_only);
+}
+
+// At the end of the storage test's mounts: the root and /fat change mode in place, the root's
+// journal is closed on the way to read-only, and only the root's own /etc follows it.
+void CheckRootRemount(uint64_t boot_count)
+{
+    constexpr char RemountFile[] = "/os/remount.txt";
+    constexpr char Text[] = "remounted\n";
+    VFS::FileHandle file{};
+    VFS::Remove(RemountFile);
+    if (!RemountTo("/", Filesystem::MountMode::ReadOnly, true, "ext4", "vda1") ||
+        PartitionNeedsRecovery(1))
+    {
+        Panic("The root's read-only remount left its journal needing recovery");
+    }
+    if (!RefusesChanges("/samples") || !RefusesCreate("/etc") || !RefusesCreate("/") ||
+        VFS::IsMountPoint("/etc"))
+    {
+        Panic("The read-only root or its /etc took a change");
+    }
+    const bool tmp_created = VFS::Create("/tmp/remount.txt", &file);
+    VFS::Close(&file);
+    if (!tmp_created || !VFS::Remove("/tmp/remount.txt"))
+    {
+        Panic("/tmp refused a change while the root was read-only");
+    }
+    if (!RemountTo("/", Filesystem::MountMode::ReadWrite, false, "ext4", "vda1") ||
+        !WriteNew(RemountFile, Text, sizeof(Text) - 1))
+    {
+        Panic("The root did not remount read-write");
+    }
+    if (!RemountTo("/", Filesystem::MountMode::ReadOnly, true, "ext4", "vda1") ||
+        PartitionNeedsRecovery(1) || !ReadsAs(RemountFile, Text) || !SamplesMatch() ||
+        VFS::Create(RemountFile, &file))
+    {
+        Panic("The root read back wrong after a read-only remount");
+    }
+    if (!RemountTo("/", Filesystem::MountMode::ReadWrite, false, "ext4", "vda1") ||
+        !VFS::Remove(RemountFile) || VFS::IsReadOnly("/etc/hosts"))
+    {
+        Panic("The root did not remount read-write again");
+    }
+    if (!RemountTo(FatPoint, Filesystem::MountMode::ReadOnly, true, "fat16", "vda2") ||
+        !RefusesCreate(FatPoint) ||
+        !RemountTo(FatPoint, Filesystem::MountMode::ReadWrite, false, "fat16", "vda2") ||
+        !RemountTo(FatPoint, Filesystem::MountMode::ReadWrite, false, "fat16", "vda2"))
+    {
+        Panic("The FAT16 partition did not remount");
+    }
+    CheckPersistentFile(boot_count);
+}
+
 // The ext2 partition's files, which tools/create_test_disk.py makes.
 bool Ext2FilesMatch()
 {
@@ -1828,6 +1911,7 @@ void RunStorageTests()
     CheckEtc(boot_count);
     CheckExt3AndExt2(boot_count, &*data);
     CheckRemount(boot_count, &*data);
+    CheckRootRemount(boot_count);
     if (VFS::Unmount(FatPoint) != VFS::MountResult::Done)
     {
         Panic("Unmounting the FAT16 partition failed");

@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "kernel/syscall.h"
+#include "user/syscall_abi.h"
 
 namespace
 {
@@ -424,6 +425,19 @@ TEST_CASE("syscall duplicate, descriptor-flags and file-status-flags pass three 
     REQUIRE(output.last_arguments[2] == 0x1000);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::GetSocketOption), WriteOnly, &output)
                 .action == Action::Invalid);
+}
+
+TEST_CASE("syscall mount passes a remount's null source and its request through")
+{
+    OutputTarget output;
+    REQUIRE(FeatherOS::User::MountRemount == 32);
+    REQUIRE((FeatherOS::User::MountRemount & FeatherOS::User::MountReadOnly) == 0);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Mount, 0, 0x20, 0x30), AllHandlers,
+                                         &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0);
+    REQUIRE(output.last_arguments[1] == 0x20);
+    REQUIRE(output.last_arguments[2] == 0x30);
 }
 
 TEST_CASE("syscall signal-return is left to the architecture code")

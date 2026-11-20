@@ -163,12 +163,15 @@ constexpr uint64_t MaximumPathLength = 1024;
 constexpr uint64_t MaximumNameLength = 255;
 // Mount's third argument: the filesystem type's name, and MountReadOnly or 0. A filesystem that
 // refuses writes, such as an ext2 volume that was not cleanly unmounted, mounts read-only anyway.
+// With MountRemount only the target and MountReadOnly count (source and type may be null): the
+// mount at target changes its mode.
 struct MountRequest
 {
     uint64_t type;
     uint64_t flags;
 };
 constexpr uint64_t MountReadOnly = 1U << 0;
+constexpr uint64_t MountRemount = 1U << 5;
 static_assert(sizeof(MountRequest) == 16, "the kernel and the C library share MountRequest");
 // Descriptors 0-2 start as the console, unless the parent passed other files there. The console
 // is a terminal: in its default mode a read returns one line, ending in '\n'. On a process's

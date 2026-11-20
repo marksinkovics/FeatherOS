@@ -31,4 +31,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 5c81254 | M29 P2 s2 /etc/init.conf, HOME, cd | - | sonnet | 0 | - | |
 | c1ad0b4 | M29 P3 programs from /bin, /sbin/init | - | sonnet | 0 | - | |
 | 58e5484 | M29 P4 s1 core MakeReadOnly | opus | sonnet | 0 | 3/3 (I5 only via deeper guards) | |
-| (this) | M29 P4 s2 kernel VFS remount | opus | sonnet | 0 | 3/3 | |
+| 2a35e93 | M29 P4 s2 kernel VFS remount | opus | sonnet | 0 | 3/3 | |
+| (this) | M29 P4 s3 MS_REMOUNT, STORAGE/SHELL, docs | opus | sonnet | 0 | 2/2 | |

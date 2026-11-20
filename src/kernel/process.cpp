@@ -2799,12 +2799,20 @@ uint64_t MountSyscall(void* context, uint64_t source, uint64_t target, uint64_t 
     {
         return User::SyscallErrorBadAddress;
     }
-    if ((request.flags & ~User::MountReadOnly) != 0)
+    if ((request.flags & ~(User::MountReadOnly | User::MountRemount)) != 0)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    const Memory::HeapObject<MountText> names;
+    const Filesystem::MountMode mode = (request.flags & User::MountReadOnly) != 0
+                                           ? Filesystem::MountMode::ReadOnly
+                                           : Filesystem::MountMode::ReadWrite;
     const Memory::HeapObject<UserPath> target_text;
+    if ((request.flags & User::MountRemount) != 0)
+    {
+        const uint64_t copied = CopyPathFromUser(*process, target, target_text);
+        return copied != 0 ? copied : Files::Remount(target_text->resolved, mode);
+    }
+    const Memory::HeapObject<MountText> names;
     if (!names)
     {
         return User::SyscallErrorNoMemory;
@@ -2818,9 +2826,6 @@ uint64_t MountSyscall(void* context, uint64_t source, uint64_t target, uint64_t 
     {
         copied = CopyStringFromUser(*process, request.type, names->type, sizeof(names->type));
     }
-    const Filesystem::MountMode mode = (request.flags & User::MountReadOnly) != 0
-                                           ? Filesystem::MountMode::ReadOnly
-                                           : Filesystem::MountMode::ReadWrite;
     return copied != 0 ? copied
                        : Files::Mount(names->source, target_text->resolved, names->type, mode);
 }

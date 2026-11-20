@@ -85,7 +85,8 @@ PERSISTENT_FILE_LINES = 200
 # the ext3 and ext2 partitions, with no sync or umount, and sleeps past the
 # writeback task's 5 s: the harness stops QEMU after that, so only the
 # periodic sync can have made ext2 clean and put the two journalled changes in
-# their logs.
+# their logs. The second boot ends by remounting the root read-only, which
+# closes its journal, so the harness finds the root clean.
 FAT16_SHELL_SETUP = b"mount -t fat16 vda2 /fat\ncd /fat/home\n"
 STORAGE_SHELL_INPUT = {
     1: FAT16_SHELL_SETUP + b"write notes.txt first line\n"
@@ -99,7 +100,10 @@ STORAGE_SHELL_INPUT = {
     2: FAT16_SHELL_SETUP + b"cat notes.txt\nrm notes.txt\ncat notes.txt\n"
     b"rm notes.txt\n"
     b"cat docs/plan.txt\nrmdir docs\nrm docs/plan.txt\nrmdir docs\n"
-    b'cat "my plans.txt"\nrm "MY PLANS.TXT"\nsync\nls docs\nls\n',
+    b'cat "my plans.txt"\nrm "MY PLANS.TXT"\nsync\n'
+    b"mount -o remount,ro /\nwrite /remount.txt x\ngrep vda1 /proc/mounts\n"
+    b"mount -o remount,rw /\nwrite /remount.txt remounted\n"
+    b"mount -o remount,ro /\ngrep vda1 /proc/mounts\nls docs\nls\n",
 }
 NOTES_CONTENTS = b"first line\nsecond line\n"
 PLAN_CONTENTS = b"nested hello\n"
@@ -122,6 +126,8 @@ STORAGE_SHELL_OUTPUT = {
         "\nnested hello",
         "rmdir: docs: Directory not empty",
         "\nlong name test",
+        "write: cannot open /remount.txt: Read-only file system",
+        "vda1 / ext4 ro 0 0",
         "ls: docs: no such directory",
         "0 files, ",
     ),
@@ -364,8 +370,9 @@ def VerifyJournalled(disk_path, boot_count):
     """Checks the ext4 root and ext3 on copies. After the first boot the shell
     session stopped both mounted: the change the writeback task committed is
     only in the log, so e2fsck -fy replays it on the copy. After the second,
-    the kernel test replayed ext3's and unmounted it, so it is clean as it is;
-    the root is mounted again, with needs_recovery set."""
+    the kernel test replayed ext3's and unmounted it, and the shell remounted
+    the root read-only, which closed its journal: both are clean as they are,
+    and e2fsck -fn passes without a replay."""
     debugfs = FindE2fsprogs("debugfs")
     if debugfs is None:
         return "e2fsprogs not found; install it"
@@ -379,15 +386,20 @@ def VerifyJournalled(disk_path, boot_count):
                 debugfs, str(volume), "/periodic.txt"
             ):
                 return f"{name}: /periodic.txt is on disk before the replay"
-            if boot_count == 1 or name == "ext4":
+            if boot_count == 1:
                 failure = ReplayOnCopy(volume)
                 if failure is not None:
                     return f"{name}: {failure}"
-            elif NeedsRecovery(volume):
-                return f"{name}: needs recovery after the second boot"
+            elif NeedsRecovery(volume) or not IsMarkedClean(volume):
+                return f"{name}: not clean after the second boot"
             failure = VerifyExtVolume(str(volume), boot_count, name)
             if failure is None and name == "ext4":
                 failure = VerifyRootEtc(debugfs, str(volume), boot_count)
+            if failure is None and name == "ext4" and boot_count == 2:
+                if Debugfs(debugfs, str(volume), "cat /remount.txt") != (
+                    b"remounted\n"
+                ):
+                    failure = "debugfs read a different /remount.txt"
         if failure is not None:
             return f"{name}: {failure}"
     return None
