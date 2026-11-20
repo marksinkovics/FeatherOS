@@ -36,4 +36,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 7b83d66 | fix: failed remount reopen leaves a safe mount | - | sonnet | 0 | 1/1 | (M29 P4 s2: null core reachable by remount) |
 | ef0c7e3 | M30 P1 s1 growable fd and disk tables, ENFILE | opus | sonnet | 0 | 6/6 (2 by tests beyond the design) | |
 | f903174 | M30 P1 s2 RLIMIT_NOFILE, ulimit | opus | sonnet | 0 | 2/2 | |
-| (this) | fix: remount test mounts its own initramfs | - | claude | 0 | - | |
+| 98e6719 | fix: remount test mounts its own initramfs | - | claude | 0 | - | |
+| (this) | M30 P2 s1 core rename crash tests | opus | sonnet | 0 | 3/3 | |

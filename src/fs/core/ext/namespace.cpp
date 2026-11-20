@@ -929,6 +929,12 @@ Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_n
     {
         return begun;
     }
+    // The order below is what a crash without a journal leaves behind: the new record is written
+    // before the old name is dropped, and the replaced inode is released last, so after any
+    // write to_name names an allocated inode, the old one or the moving one, at worst with a
+    // leaked inode for e2fsck. With a journal all of it is one transaction, but for the release
+    // that ReleaseSplit moves to the orphan list when a transaction cannot hold it.
+
     // Only a new record changes what a hash index would have to say.
     if (!replaced)
     {

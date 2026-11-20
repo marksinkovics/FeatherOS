@@ -484,6 +484,24 @@ ToolRun RunDebugfs(MemoryDevice& device, std::string_view name, std::string_view
     return Debugfs(device, name, CommandOption(command), false);
 }
 
+ToolRun InspectWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view command)
+{
+    return Debugfs(device, name, "-c " + CommandOption(command), false);
+}
+
+std::optional<std::uint32_t> InodeOfPath(MemoryDevice& device, std::string_view name,
+                                         std::string_view path)
+{
+    const ToolRun run = InspectWithDebugfs(device, name, "stat " + std::string(path));
+    constexpr std::string_view Prefix = "Inode: ";
+    if (run.output.compare(0, Prefix.size(), Prefix) != 0)
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(
+        std::strtoul(run.output.c_str() + Prefix.size(), nullptr, 10));
+}
+
 ToolRun ChangeWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view command)
 {
     return Debugfs(device, name, CommandOption(command), true);

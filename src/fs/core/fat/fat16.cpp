@@ -1731,7 +1731,9 @@ Status Fat16Filesystem::Rename(NodeId from_directory, std::string_view from_name
                 return std::unexpected(Error::NotEmpty);
             }
         }
-        // FAT cannot swap entries at once, so a crash after this leaves only the source's name.
+        // The one non-atomic window of a replacing rename: a crash from here to CreateEntry
+        // leaves the source's name, with its data, and no target. Creating the new entry first
+        // would leave two entries over one cluster chain, which fsck.fat cannot tell apart.
         if (const Status removed = RemoveEntry(existing); !removed)
         {
             return removed;

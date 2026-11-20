@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -85,6 +86,13 @@ ToolRun FixWithE2fsck(MemoryDevice& device, std::string_view name);
 std::string FreeRangesOf(MemoryDevice& device, std::string_view name);
 // debugfs -R command over the device's bytes: what it printed on standard output.
 ToolRun RunDebugfs(MemoryDevice& device, std::string_view name, std::string_view command);
+// debugfs -c -R command: opened without the allocation bitmaps, whose checksums a volume stopped
+// in the middle of a change may fail, which makes debugfs refuse the volume otherwise.
+ToolRun InspectWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view command);
+// The inode debugfs's stat finds for path, without following a final symbolic link; nothing when
+// the path does not exist.
+std::optional<std::uint32_t> InodeOfPath(MemoryDevice& device, std::string_view name,
+                                         std::string_view path);
 // debugfs -w -R command, with the changed volume read back into the device.
 ToolRun ChangeWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view command);
 // debugfs -w -f over a script of commands, one per line, with the changed volume read back into

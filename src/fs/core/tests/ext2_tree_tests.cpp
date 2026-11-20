@@ -439,6 +439,123 @@ void RenameAll(std::string_view variant)
     CheckClean(*device, std::string(variant) + "-rename-again");
 }
 
+// The inode of the entry called name in debugfs's "ls -p": /inode/mode/uid/gid/name/size/.
+std::uint32_t EntryInode(const std::string& listing, std::string_view name)
+{
+    std::size_t start = 0;
+    while (start < listing.size())
+    {
+        std::size_t end = listing.find('\n', start);
+        end = end == std::string::npos ? listing.size() : end;
+        std::vector<std::string> fields;
+        std::size_t from = start;
+        for (std::size_t at = start; at <= end; ++at)
+        {
+            if (at == end || listing[at] == '/')
+            {
+                fields.push_back(listing.substr(from, at - from));
+                from = at + 1;
+            }
+        }
+        if (fields.size() >= 6 && fields[5] == name)
+        {
+            return static_cast<std::uint32_t>(std::stoul(fields[1]));
+        }
+        start = end + 1;
+    }
+    return 0;
+}
+
+void RenameCounts(std::string_view variant)
+{
+    INFO(variant);
+    const std::string name(variant);
+    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(variant));
+
+    NodeId replaced = 0;
+    {
+        MountedFilesystem ext2(Ext2Type(), *device);
+        WriteNewFile(*ext2, "count-new.txt", "new\n");
+        replaced = WriteNewFile(*ext2, "count-old.txt", "old\n");
+        const std::uint64_t free_inodes = FreeInodes(*ext2);
+        Succeeds(ext2->Rename(ext2->Root(), "count-new.txt", ext2->Root(), "count-old.txt"));
+        REQUIRE(FreeInodes(*ext2) == free_inodes + 1);
+    }
+    CheckClean(*device, name + "-count-file");
+    {
+        const ToolRun run = RunDebugfs(*device, "tree", "stat <" + std::to_string(replaced) + ">");
+        INFO(run.output);
+        if (run.ran)
+        {
+            REQUIRE(run.output.find("Links: 0") != std::string::npos);
+            const std::size_t at = run.output.find("dtime:");
+            REQUIRE(at != std::string::npos);
+            REQUIRE(run.output.compare(at, 17, "dtime: 0x00000000") != 0);
+        }
+    }
+
+    {
+        MountedFilesystem ext2(Ext2Type(), *device);
+        const NodeId root = ext2->Root();
+        const NodeId shared = WriteNewFile(*ext2, "share-1.txt", "shared\n");
+        Succeeds(ext2->Link(shared, root, "share-2.txt"));
+        Succeeds(ext2->Link(shared, root, "share-3.txt"));
+        WriteNewFile(*ext2, "share-other.txt", "other\n");
+        REQUIRE(Links(*ext2, shared) == 3);
+        const std::uint64_t free_inodes = FreeInodes(*ext2);
+        Succeeds(ext2->Rename(root, "share-other.txt", root, "share-3.txt"));
+        REQUIRE(FreeInodes(*ext2) == free_inodes);
+        REQUIRE(Links(*ext2, shared) == 2);
+        REQUIRE(ReadAll(*ext2, Value(Walk(*ext2, "share-3.txt"))) == "other\n");
+        Succeeds(ext2->Sync());
+        const std::uint64_t writes = device->write_count;
+        Succeeds(ext2->Rename(root, "share-1.txt", root, "share-2.txt"));
+        Succeeds(ext2->Sync());
+        REQUIRE(device->write_count == writes);
+        REQUIRE(Links(*ext2, shared) == 2);
+        REQUIRE(Value(Walk(*ext2, "share-1.txt")) == shared);
+        REQUIRE(Value(Walk(*ext2, "share-2.txt")) == shared);
+        REQUIRE(FreeInodes(*ext2) == free_inodes);
+    }
+    CheckClean(*device, name + "-count-hard");
+
+    NodeId from_parent = 0;
+    NodeId to_parent = 0;
+    {
+        MountedFilesystem ext2(Ext2Type(), *device);
+        const NodeId root = ext2->Root();
+        from_parent = Value(ext2->MakeDirectory(root, "count-from", 0755));
+        to_parent = Value(ext2->MakeDirectory(root, "count-to", 0755));
+        const NodeId moving = Value(ext2->MakeDirectory(from_parent, "moving", 0755));
+        Value(ext2->MakeDirectory(moving, "sub", 0755));
+        Value(ext2->MakeDirectory(to_parent, "empty", 0755));
+        REQUIRE(Links(*ext2, from_parent) == 3);
+        REQUIRE(Links(*ext2, to_parent) == 3);
+        const std::uint64_t free_inodes = FreeInodes(*ext2);
+        Succeeds(ext2->Rename(from_parent, "moving", to_parent, "empty"));
+        REQUIRE(Value(ext2->Lookup(moving, "..")) == to_parent);
+        REQUIRE(Links(*ext2, from_parent) == 2);
+        REQUIRE(Links(*ext2, to_parent) == 3);
+        REQUIRE(Links(*ext2, moving) == 3);
+        REQUIRE(FreeInodes(*ext2) == free_inodes + 1);
+    }
+    CheckClean(*device, name + "-count-directory");
+    {
+        const auto debugfs = [&](std::string_view command)
+        { return RunDebugfs(*device, "tree", command); };
+        const ToolRun from = debugfs("stat /count-from");
+        const ToolRun to = debugfs("stat /count-to");
+        const ToolRun listing = debugfs("ls -p /count-to/empty");
+        if (from.ran)
+        {
+            INFO(from.output << to.output << listing.output);
+            REQUIRE(from.output.find("Links: 2") != std::string::npos);
+            REQUIRE(to.output.find("Links: 3") != std::string::npos);
+            REQUIRE(EntryInode(listing.output, "..") == to_parent);
+        }
+    }
+}
+
 } // namespace
 #endif
 
@@ -456,6 +573,12 @@ TEST_CASE("ext2 renames files and directories as POSIX rename does")
     RenameAll("ext4");
     RenameAll("ext4-blockmap");
     RenameAll("ext4-64bit");
+    for (const std::string_view variant :
+         {"1k", "nofiletype", "ext4-csum", "ext4-csum64", "ext4-nojournal", "ext3", "ext4",
+          "ext4-blockmap", "ext4-64bit"})
+    {
+        RenameCounts(variant);
+    }
 #endif
 }
 

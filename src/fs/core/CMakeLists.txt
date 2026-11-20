@@ -173,6 +173,7 @@ endif ()
 add_executable(featherdisk_core_tests
     tests/block_cache_tests.cpp
     tests/common_tests.cpp
+    tests/crash_helpers.cpp
     tests/ext2_format_tests.cpp
     tests/ext2_image.cpp
     tests/ext2_image_tests.cpp
@@ -186,6 +187,7 @@ add_executable(featherdisk_core_tests
     tests/ext_journal_write_tests.cpp
     tests/ext_orphan_tests.cpp
     tests/ext_remount_tests.cpp
+    tests/ext_rename_crash_tests.cpp
     tests/ext_transaction_crash_tests.cpp
     tests/ext_transaction_tests.cpp
     tests/fat_image.cpp
