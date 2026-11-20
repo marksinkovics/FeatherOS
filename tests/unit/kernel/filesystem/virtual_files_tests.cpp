@@ -8,6 +8,7 @@
 #include "kernel/memory/heap.h"
 #include "kernel/random.h"
 #include "kernel/terminal/terminal.h"
+#include "support/heap_failure.h"
 #include "support/terminal_device.h"
 
 #include <algorithm>
@@ -20,6 +21,12 @@
 // The kernel heap and random source, which the host tests do not build.
 namespace FeatherOS::Memory
 {
+
+namespace Testing
+{
+std::size_t failing_zeroed_count = 0;
+std::size_t failing_zeroed_size = 0;
+} // namespace Testing
 
 void* Allocate(size_t size)
 {
@@ -34,6 +41,11 @@ bool Deallocate(void* pointer)
 
 void* AllocateZeroed(size_t count, size_t size)
 {
+    if (Testing::failing_zeroed_count != 0 && count == Testing::failing_zeroed_count &&
+        size == Testing::failing_zeroed_size)
+    {
+        return nullptr;
+    }
     return std::calloc(count, size);
 }
 

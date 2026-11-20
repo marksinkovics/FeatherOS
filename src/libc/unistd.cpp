@@ -511,7 +511,7 @@ long sysconf(int name)
 {
     if (name == _SC_OPEN_MAX)
     {
-        return static_cast<long>(FeatherOS::User::MaximumDescriptors);
+        return static_cast<long>(FeatherOS::User::DefaultDescriptorLimit);
     }
     if (name == _SC_PAGESIZE)
     {

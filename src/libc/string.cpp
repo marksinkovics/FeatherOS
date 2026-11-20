@@ -419,6 +419,9 @@ char* strerror(int error)
     case EINVAL:
         message = "Invalid argument";
         break;
+    case ENFILE:
+        message = "Too many open files in system";
+        break;
     case EMFILE:
         message = "Too many open files";
         break;

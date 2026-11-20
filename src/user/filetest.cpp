@@ -126,7 +126,7 @@ void CheckInitramfsAndLimits()
     Check(RemoveFile(InitramfsFile) == SyscallErrorReadOnly, "removing from the initramfs");
 
     // The console holds descriptors 0-2.
-    constexpr uint64_t FileDescriptors = MaximumDescriptors - 3;
+    constexpr uint64_t FileDescriptors = DefaultDescriptorLimit - 3;
     uint64_t descriptors[FileDescriptors];
     descriptors[0] = archive_file;
     bool all_opened = true;

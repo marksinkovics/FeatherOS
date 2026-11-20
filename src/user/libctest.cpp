@@ -1715,7 +1715,7 @@ void CheckProcessAccounting()
 {
     const long cpus = sysconf(_SC_NPROCESSORS_ONLN);
     Check(cpus >= 1 && sysconf(_SC_NPROCESSORS_CONF) == cpus && sysconf(_SC_PAGESIZE) == 4096 &&
-              sysconf(_SC_OPEN_MAX) == 32,
+              sysconf(_SC_OPEN_MAX) == 256,
           "sysconf");
     errno = 0;
     Check(sysconf(9999) == -1 && errno == EINVAL, "sysconf with an unknown name");

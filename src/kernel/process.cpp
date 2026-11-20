@@ -2540,15 +2540,43 @@ int16_t TerminalPollEvents(ProcessRecord* process, uint64_t descriptor)
     return static_cast<int16_t>(User::PollWritable | (readable ? User::PollReadable : 0));
 }
 
+// Poll's entries live on the heap, since their number follows the descriptor limit and the kernel
+// stack is 16 KiB.
+struct PollBuffer
+{
+    explicit PollBuffer(uint64_t size)
+        : entries(size == 0 ? nullptr : static_cast<User::PollDescriptor*>(Memory::Allocate(size)))
+    {
+    }
+    ~PollBuffer()
+    {
+        if (entries != nullptr)
+        {
+            Memory::Deallocate(entries);
+        }
+    }
+    PollBuffer(const PollBuffer&) = delete;
+    PollBuffer& operator=(const PollBuffer&) = delete;
+
+    User::PollDescriptor* entries;
+};
+
 uint64_t PollSyscall(void* context, uint64_t descriptors, uint64_t count, uint64_t milliseconds)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    if (count > User::MaximumPollDescriptors)
+    User::ResourceLimits limits = {};
+    Files::DescriptorLimits(&process->files, nullptr, &limits);
+    if (count > limits.current)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    User::PollDescriptor entries[User::MaximumPollDescriptors];
     const uint64_t size = count * sizeof(User::PollDescriptor);
+    const PollBuffer buffer(size);
+    if (count != 0 && buffer.entries == nullptr)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    User::PollDescriptor* entries = buffer.entries;
     if (!UserRangeWritable(*process, descriptors, size) ||
         !CopyFromUser(*process, descriptors, entries, size))
     {
@@ -3281,11 +3309,8 @@ bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
         status->pages = process->program.mapped_page_count;
     }
     status->page_limit = process->program.page_limit;
-    status->open_files = 0;
-    for (const Files::Slot& slot : process->files.slots)
-    {
-        status->open_files += slot.file != nullptr ? 1 : 0;
-    }
+    // Only reads through /proc get here, and they run under the filesystem lock.
+    status->open_files = Files::CountOpenLocked(&process->files);
     status->cpu_milliseconds = TicksToMilliseconds(run_ticks);
     status->last_cpu = last_cpu;
     status->start_milliseconds = TicksToMilliseconds(process->start_tick);
@@ -3618,13 +3643,13 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
         inherited_from = parent_record;
     }
     // The parent is the caller, which cannot change its descriptors while it waits here.
-    if (inherited_from != nullptr)
+    const bool descriptors_ready = inherited_from != nullptr
+                                       ? Files::Inherit(&process->files, &inherited_from->files)
+                                       : Files::OpenConsole(&process->files, ConsoleTerminal());
+    if (!descriptors_ready)
     {
-        Files::Inherit(&process->files, &inherited_from->files);
-    }
-    else
-    {
-        Files::OpenConsole(&process->files, ConsoleTerminal());
+        RemoveProcess(process);
+        return SpawnStatus::NoResources;
     }
     if (inherited_from != nullptr && IsSessionLeader(*process))
     {

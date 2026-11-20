@@ -32,7 +32,9 @@ constexpr uint64_t KnownFlags = User::OpenRead | User::OpenWrite | User::OpenCre
                                 User::OpenTruncate | User::OpenAppend | User::OpenCloseOnExec |
                                 User::OpenNonBlocking | User::OpenNoControllingTerminal |
                                 User::OpenNoFollow;
-constexpr uint32_t MaximumOpenDiskFiles = 64;
+constexpr uint32_t InitialOpenDiskFiles = 64;
+constexpr uint32_t MaximumOpenDiskFiles = 1024;
+constexpr uint32_t InitialDescriptors = 32;
 // Linux's permissions for terminals, pipes and sockets.
 constexpr uint32_t TerminalMode = 0620;
 constexpr uint32_t PipeMode = 0600;
@@ -51,7 +53,10 @@ struct DiskFileUse
 // Filesystem updates span many sectors; one lock keeps them from interleaving. It also guards
 // the descriptor tables and open-file references.
 constinit Sync::Mutex file_system_lock;
-DiskFileUse disk_files[MaximumOpenDiskFiles] GUARDED_BY(file_system_lock);
+// A heap array that doubles from InitialOpenDiskFiles to MaximumOpenDiskFiles; nothing holds a
+// pointer into it across a call that adds an entry.
+DiskFileUse* disk_files GUARDED_BY(file_system_lock) = nullptr;
+uint32_t disk_file_capacity GUARDED_BY(file_system_lock) = 0;
 uint32_t disk_file_count GUARDED_BY(file_system_lock) = 0;
 // Every process's console descriptors share this one, which is never freed.
 OpenFile console = {{},    nullptr, 1,       Kind::Terminal, true,   true,
@@ -69,6 +74,38 @@ DiskFileUse* FindUse(const VFS::FileKey& key) REQUIRES(file_system_lock)
     return nullptr;
 }
 
+uint64_t GrowDiskFilesLocked() REQUIRES(file_system_lock)
+{
+    const uint32_t capacity =
+        disk_file_capacity == 0 ? InitialOpenDiskFiles : disk_file_capacity * 2;
+    auto* grown = static_cast<DiskFileUse*>(Memory::AllocateZeroed(capacity, sizeof(DiskFileUse)));
+    if (grown == nullptr)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    for (uint32_t index = 0; index < disk_file_count; ++index)
+    {
+        grown[index] = disk_files[index];
+    }
+    if (disk_files != nullptr)
+    {
+        Memory::Deallocate(disk_files);
+    }
+    disk_files = grown;
+    disk_file_capacity = capacity;
+    return 0;
+}
+
+// Room for one more distinct file, so an open can check before it creates anything.
+uint64_t ReserveUseLocked() REQUIRES(file_system_lock)
+{
+    if (disk_file_count == MaximumOpenDiskFiles)
+    {
+        return User::SyscallErrorTooManyFilesInSystem;
+    }
+    return disk_file_count == disk_file_capacity ? GrowDiskFilesLocked() : 0;
+}
+
 uint64_t AddUse(const VFS::FileKey& key, bool writable) REQUIRES(file_system_lock)
 {
     DiskFileUse* use = FindUse(key);
@@ -81,9 +118,10 @@ uint64_t AddUse(const VFS::FileKey& key, bool writable) REQUIRES(file_system_loc
         ++use->readers;
         return 0;
     }
-    if (disk_file_count == MaximumOpenDiskFiles)
+    const uint64_t reserved = ReserveUseLocked();
+    if (reserved != 0)
     {
-        return User::SyscallErrorTooManyOpenFiles;
+        return reserved;
     }
     disk_files[disk_file_count++] = {key, writable ? 0U : 1U, writable};
     return 0;
@@ -110,9 +148,9 @@ void DropUse(const VFS::FileKey& key, bool writable) REQUIRES(file_system_lock)
     }
 }
 
-Slot* FindSlot(Table* table, uint64_t descriptor)
+Slot* FindSlot(Table* table, uint64_t descriptor) REQUIRES(file_system_lock)
 {
-    if (table == nullptr || descriptor >= User::MaximumDescriptors ||
+    if (table == nullptr || descriptor >= table->capacity ||
         table->slots[descriptor].file == nullptr)
     {
         return nullptr;
@@ -121,7 +159,7 @@ Slot* FindSlot(Table* table, uint64_t descriptor)
 }
 
 // A file descriptor, not the console.
-OpenFile* FindFile(Table* table, uint64_t descriptor)
+OpenFile* FindFile(Table* table, uint64_t descriptor) REQUIRES(file_system_lock)
 {
     Slot* slot = FindSlot(table, descriptor);
     return slot == nullptr || slot->file->kind != Kind::File ? nullptr : slot->file;
@@ -173,16 +211,64 @@ void CloseSlotLocked(Slot* slot) REQUIRES(file_system_lock)
     slot->close_on_exec = false;
 }
 
-uint64_t FreeSlotLocked(const Table* table, uint64_t minimum) REQUIRES(file_system_lock)
+// The array grows to the next power of two that holds needed slots, but not past the soft limit;
+// callers check needed against it first. Slot pointers into the table do not survive this.
+uint64_t GrowLocked(Table* table, uint64_t needed) REQUIRES(file_system_lock)
 {
-    for (uint64_t descriptor = minimum; descriptor < User::MaximumDescriptors; ++descriptor)
+    if (needed <= table->capacity)
+    {
+        return 0;
+    }
+    uint32_t size = InitialDescriptors;
+    while (size < needed)
+    {
+        size *= 2;
+    }
+    if (size > table->soft_limit)
+    {
+        size = table->soft_limit;
+    }
+    auto* grown = static_cast<Slot*>(Memory::AllocateZeroed(size, sizeof(Slot)));
+    if (grown == nullptr)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    for (uint32_t index = 0; index < table->capacity; ++index)
+    {
+        grown[index] = table->slots[index];
+    }
+    if (table->slots != nullptr)
+    {
+        Memory::Deallocate(table->slots);
+    }
+    table->slots = grown;
+    table->capacity = size;
+    return 0;
+}
+
+// The lowest free descriptor at or above minimum and below the soft limit, growing the table when
+// none is free; the result stays free until the caller fills it.
+uint64_t FreeSlotLocked(Table* table, uint64_t minimum) REQUIRES(file_system_lock)
+{
+    if (minimum >= table->soft_limit)
+    {
+        return User::SyscallErrorTooManyOpenFiles;
+    }
+    const uint64_t end = table->capacity < table->soft_limit ? table->capacity : table->soft_limit;
+    for (uint64_t descriptor = minimum; descriptor < end; ++descriptor)
     {
         if (table->slots[descriptor].file == nullptr)
         {
             return descriptor;
         }
     }
-    return User::SyscallErrorTooManyOpenFiles;
+    if (table->capacity >= table->soft_limit)
+    {
+        return User::SyscallErrorTooManyOpenFiles;
+    }
+    const uint64_t descriptor = minimum > table->capacity ? minimum : table->capacity;
+    const uint64_t grown = GrowLocked(table, descriptor + 1);
+    return grown == 0 ? descriptor : grown;
 }
 
 // Anything at path, a link included.
@@ -571,10 +657,16 @@ bool IsTerminalDevice(const VFS::FileHandle& handle)
 
 } // namespace
 
-void OpenConsole(Table* table, Terminals::Terminal* terminal)
+bool OpenConsole(Table* table, Terminals::Terminal* terminal)
 {
     Sync::MutexGuard guard(file_system_lock);
     console.terminal = terminal;
+    table->soft_limit = User::DefaultDescriptorLimit;
+    table->hard_limit = User::MaximumDescriptorLimit;
+    if (GrowLocked(table, User::StandardError + 1) != 0)
+    {
+        return false;
+    }
     for (uint64_t descriptor = User::StandardInput; descriptor <= User::StandardError; ++descriptor)
     {
         if (table->slots[descriptor].file != nullptr)
@@ -583,28 +675,80 @@ void OpenConsole(Table* table, Terminals::Terminal* terminal)
         }
         table->slots[descriptor] = {&console, false};
     }
+    return true;
 }
 
-void Inherit(Table* child, const Table* parent)
+bool Inherit(Table* child, const Table* parent)
 {
     Sync::MutexGuard guard(file_system_lock);
-    for (uint64_t descriptor = 0; descriptor < User::MaximumDescriptors; ++descriptor)
+    child->soft_limit = parent->soft_limit;
+    child->hard_limit = parent->hard_limit;
+    uint32_t span = 0;
+    for (uint32_t descriptor = 0; descriptor < parent->capacity; ++descriptor)
     {
         const Slot& slot = parent->slots[descriptor];
-        if (slot.file == nullptr || slot.close_on_exec)
+        if (slot.file != nullptr && !slot.close_on_exec)
         {
-            child->slots[descriptor] = {nullptr, false};
-            continue;
+            span = descriptor + 1;
         }
-        ++slot.file->references;
-        child->slots[descriptor] = {slot.file, false};
     }
+    if (span == 0)
+    {
+        return true;
+    }
+    uint32_t size = InitialDescriptors;
+    while (size < span)
+    {
+        size *= 2;
+    }
+    auto* slots = static_cast<Slot*>(Memory::AllocateZeroed(size, sizeof(Slot)));
+    if (slots == nullptr)
+    {
+        return false;
+    }
+    for (uint32_t descriptor = 0; descriptor < span; ++descriptor)
+    {
+        const Slot& slot = parent->slots[descriptor];
+        if (slot.file != nullptr && !slot.close_on_exec)
+        {
+            ++slot.file->references;
+            slots[descriptor] = {slot.file, false};
+        }
+    }
+    child->slots = slots;
+    child->capacity = size;
+    return true;
+}
+
+uint64_t DescriptorLimits(Table* table, const User::ResourceLimits* requested,
+                          User::ResourceLimits* previous)
+{
+    Sync::MutexGuard guard(file_system_lock);
+    if (previous != nullptr)
+    {
+        *previous = {table->soft_limit, table->hard_limit};
+    }
+    if (requested == nullptr)
+    {
+        return 0;
+    }
+    if (requested->current > requested->maximum)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    if (requested->maximum > User::MaximumDescriptorLimit)
+    {
+        return User::SyscallErrorNotPermitted;
+    }
+    table->soft_limit = static_cast<uint32_t>(requested->current);
+    table->hard_limit = static_cast<uint32_t>(requested->maximum);
+    return 0;
 }
 
 Kind KindOf(const Table* table, uint64_t descriptor)
 {
     Sync::MutexGuard guard(file_system_lock);
-    if (table == nullptr || descriptor >= User::MaximumDescriptors ||
+    if (table == nullptr || descriptor >= table->capacity ||
         table->slots[descriptor].file == nullptr)
     {
         return Kind::None;
@@ -653,6 +797,11 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
         if ((flags & User::OpenCreate) == 0)
         {
             return User::SyscallErrorNotFound;
+        }
+        const uint64_t reserved = ReserveUseLocked();
+        if (reserved != 0)
+        {
+            return reserved;
         }
         if (!VFS::Create(path, &handle))
         {
@@ -1024,25 +1173,34 @@ uint64_t Close(Table* table, uint64_t descriptor)
 
 uint64_t Duplicate(Table* table, uint64_t descriptor, uint64_t target, uint64_t flags)
 {
-    if ((flags & ~(User::DuplicateExact | User::DuplicateCloseOnExec)) != 0 ||
-        target >= User::MaximumDescriptors)
+    if ((flags & ~(User::DuplicateExact | User::DuplicateCloseOnExec)) != 0)
     {
         return User::SyscallErrorInvalidArgument;
     }
     Sync::MutexGuard guard(file_system_lock);
-    Slot* source = FindSlot(table, descriptor);
+    const Slot* source = FindSlot(table, descriptor);
     if (source == nullptr)
     {
         return User::SyscallErrorBadDescriptor;
     }
-    const bool close_on_exec = (flags & User::DuplicateCloseOnExec) != 0;
+    OpenFile* const file = source->file;
+    const bool exact = (flags & User::DuplicateExact) != 0;
+    if (target >= table->soft_limit)
+    {
+        return exact ? User::SyscallErrorBadDescriptor : User::SyscallErrorInvalidArgument;
+    }
     uint64_t result = target;
-    if ((flags & User::DuplicateExact) != 0)
+    if (exact)
     {
         // As in dup2, the same descriptor stays as it is.
         if (target == descriptor)
         {
             return target;
+        }
+        const uint64_t grown = GrowLocked(table, target + 1);
+        if (grown != 0)
+        {
+            return grown;
         }
         if (table->slots[target].file != nullptr)
         {
@@ -1057,8 +1215,8 @@ uint64_t Duplicate(Table* table, uint64_t descriptor, uint64_t target, uint64_t 
             return result;
         }
     }
-    ++source->file->references;
-    table->slots[result] = {source->file, close_on_exec};
+    ++file->references;
+    table->slots[result] = {file, (flags & User::DuplicateCloseOnExec) != 0};
     return result;
 }
 
@@ -1119,10 +1277,15 @@ uint64_t StatusFlags(Table* table, uint64_t descriptor, bool set, uint64_t value
 uint64_t CountOpen(const Table* table)
 {
     Sync::MutexGuard guard(file_system_lock);
+    return CountOpenLocked(table);
+}
+
+uint64_t CountOpenLocked(const Table* table)
+{
     uint64_t count = 0;
-    for (const Slot& slot : table->slots)
+    for (uint32_t descriptor = 0; descriptor < table->capacity; ++descriptor)
     {
-        count += slot.file != nullptr ? 1 : 0;
+        count += table->slots[descriptor].file != nullptr ? 1 : 0;
     }
     return count;
 }
@@ -1723,14 +1886,38 @@ void CloseAll(Table* table)
         return;
     }
     Sync::MutexGuard guard(file_system_lock);
-    for (Slot& slot : table->slots)
+    for (uint32_t descriptor = 0; descriptor < table->capacity; ++descriptor)
     {
-        if (slot.file != nullptr)
+        if (table->slots[descriptor].file != nullptr)
         {
-            CloseSlotLocked(&slot);
+            CloseSlotLocked(&table->slots[descriptor]);
         }
     }
+    if (table->slots != nullptr)
+    {
+        Memory::Deallocate(table->slots);
+    }
+    table->slots = nullptr;
+    table->capacity = 0;
 }
+
+#ifdef FEATHEROS_HOST_TEST
+bool ResetDiskFileTable()
+{
+    Sync::MutexGuard guard(file_system_lock);
+    if (disk_file_count != 0)
+    {
+        return false;
+    }
+    if (disk_files != nullptr)
+    {
+        Memory::Deallocate(disk_files);
+    }
+    disk_files = nullptr;
+    disk_file_capacity = 0;
+    return true;
+}
+#endif
 
 ProgramFile::~ProgramFile()
 {

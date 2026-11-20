@@ -26,6 +26,8 @@ constexpr int ErrorNumber(uint64_t result)
         return EINTR;
     case User::SyscallErrorTooManyOpenFiles:
         return EMFILE;
+    case User::SyscallErrorTooManyFilesInSystem:
+        return ENFILE;
     case User::SyscallErrorBusy:
         return EBUSY;
     case User::SyscallErrorWouldBlock:

@@ -8,6 +8,8 @@
 #include "kernel/filesystem/vfs.h"
 #include "kernel/storage/block_device.h"
 
+#include "support/heap_failure.h"
+
 #include "fs/block_device.h"
 #include "fs/ext2.h"
 
@@ -84,7 +86,7 @@ void AddRootFile(const std::string& contents)
     WriteLittleEndian16(fat + 6, 0xFFF8);
 }
 
-void MakeFat16Disk(const std::string& contents)
+void FormatFat16(uint32_t root_directory_sectors)
 {
     disk.assign(DiskSectorCount, {});
 
@@ -101,14 +103,53 @@ void MakeFat16Disk(const std::string& contents)
     boot[13] = 1;
     WriteLittleEndian16(boot + 14, 1);
     boot[16] = 1;
-    WriteLittleEndian16(boot + 17, 16);
+    WriteLittleEndian16(boot + 17, static_cast<uint16_t>(root_directory_sectors * 16));
     WriteLittleEndian16(boot + 19, PartitionSectorCount);
     boot[21] = 0xF8;
     WriteLittleEndian16(boot + 22, FatSizeSectors);
     boot[510] = 0x55;
     boot[511] = 0xAA;
+}
 
+void MakeFat16Disk(const std::string& contents)
+{
+    FormatFat16(RootDirectorySectors);
     AddRootFile(contents);
+}
+
+// Files /F0000.TXT, /F0001.TXT and so on, of two bytes each ('A' + n % 26, 'a' + n % 26), in a root
+// directory that holds them all.
+constexpr uint32_t ManyFilesCount = 1025;
+constexpr uint32_t ManyFilesRootSectors = 80;
+
+std::string ManyFileName(uint32_t number)
+{
+    char name[16];
+    std::snprintf(name, sizeof(name), "/F%04u.TXT", number);
+    return name;
+}
+
+void MakeManyFilesDisk()
+{
+    FormatFat16(ManyFilesRootSectors);
+    const uint32_t root_sector = PartitionStart + 1 + FatSizeSectors;
+    const uint32_t data_sector = root_sector + ManyFilesRootSectors;
+    uint8_t* fat = disk[PartitionStart + 1].data();
+    for (uint32_t number = 0; number < ManyFilesCount; ++number)
+    {
+        uint8_t* entry = disk[root_sector + number / 16].data() + (number % 16) * 32;
+        char short_name[12];
+        std::snprintf(short_name, sizeof(short_name), "F%04u   TXT", number);
+        std::memcpy(entry, short_name, 11);
+        entry[11] = 0x20;
+        const uint32_t cluster = 2 + number;
+        WriteLittleEndian16(entry + 26, static_cast<uint16_t>(cluster));
+        WriteLittleEndian32(entry + 28, 2);
+        WriteLittleEndian16(fat + cluster * 2, 0xFFF8);
+        uint8_t* data = disk[data_sector + number].data();
+        data[0] = static_cast<uint8_t>('A' + number % 26);
+        data[1] = static_cast<uint8_t>('a' + number % 26);
+    }
 }
 
 void WriteOctal(char* field, size_t field_size, uint64_t value)
@@ -564,27 +605,238 @@ using FeatherOS::User::OpenWrite;
 
 } // namespace
 
-TEST_CASE("file descriptors start at 3 and are limited per process")
+TEST_CASE("file descriptors start at 3, and the table grows to the soft limit")
 {
+    using namespace FeatherOS;
     MakeFat16Disk("contents");
-    REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    FeatherOS::Files::Table table{};
-    FeatherOS::Files::OpenConsole(&table, nullptr);
+    REQUIRE(VFS::MountBlockDevice());
+    Files::Table table{};
+    REQUIRE(Files::OpenConsole(&table, nullptr));
+    REQUIRE(table.capacity == 32);
     std::vector<uint64_t> descriptors;
-    for (uint64_t index = 0; index < FeatherOS::User::MaximumDescriptors - 3; ++index)
+    for (uint64_t index = 0; index < User::DefaultDescriptorLimit - 3; ++index)
     {
-        const uint64_t descriptor = FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead);
-        REQUIRE(descriptor == FeatherOS::User::StandardError + 1 + index);
+        const uint64_t descriptor = Files::Open(&table, "/BLOCK.TXT", OpenRead);
+        REQUIRE(descriptor == User::StandardError + 1 + index);
         descriptors.push_back(descriptor);
     }
-    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead) ==
-            FeatherOS::User::SyscallErrorTooManyOpenFiles);
-    REQUIRE(FeatherOS::Files::Close(&table, descriptors[4]) == 0);
-    REQUIRE(FeatherOS::Files::Open(&table, "/BLOCK.TXT", OpenRead) == descriptors[4]);
-    FeatherOS::Files::CloseAll(&table);
-    REQUIRE(FeatherOS::Files::Close(&table, descriptors[0]) ==
-            FeatherOS::User::SyscallErrorBadDescriptor);
-    REQUIRE(FeatherOS::Files::Close(&table, 0) == FeatherOS::User::SyscallErrorBadDescriptor);
+    REQUIRE(table.capacity == User::DefaultDescriptorLimit);
+    REQUIRE(Files::Open(&table, "/BLOCK.TXT", OpenRead) == User::SyscallErrorTooManyOpenFiles);
+    REQUIRE(Files::CountOpen(&table) == User::DefaultDescriptorLimit);
+    REQUIRE(Files::Close(&table, 100) == 0);
+    REQUIRE(Files::Open(&table, "/BLOCK.TXT", OpenRead) == 100);
+    Files::CloseAll(&table);
+    REQUIRE(table.slots == nullptr);
+    REQUIRE(table.capacity == 0);
+    REQUIRE(Files::Close(&table, 0) == User::SyscallErrorBadDescriptor);
+    REQUIRE(Files::Close(&table, descriptors[0]) == User::SyscallErrorBadDescriptor);
+}
+
+TEST_CASE("descriptor numbers are bounded by the soft limit, lookups by the capacity")
+{
+    using namespace FeatherOS;
+    MakeFat16Disk("contents");
+    REQUIRE(VFS::MountBlockDevice());
+    Files::Table table{};
+    REQUIRE(Files::OpenConsole(&table, nullptr));
+    const uint64_t file = Files::Open(&table, "/BLOCK.TXT", OpenRead);
+    REQUIRE(file == 3);
+    REQUIRE(Files::Duplicate(&table, file, 200, 0) == 200);
+    REQUIRE(table.capacity == 256);
+    REQUIRE(Files::Duplicate(&table, file, 255, User::DuplicateExact) == 255);
+    REQUIRE(Files::Duplicate(&table, file, 256, User::DuplicateExact) ==
+            User::SyscallErrorBadDescriptor);
+    REQUIRE(Files::Duplicate(&table, file, 256, 0) == User::SyscallErrorInvalidArgument);
+    REQUIRE(Files::Duplicate(&table, file, 900, User::DuplicateExact) ==
+            User::SyscallErrorBadDescriptor);
+    REQUIRE(Files::Close(&table, 5000) == User::SyscallErrorBadDescriptor);
+    REQUIRE(Files::KindOf(&table, 1ULL << 40) == Files::Kind::None);
+    REQUIRE(Files::KindOf(&table, 255) == Files::Kind::File);
+    REQUIRE(Files::KindOf(&table, 256) == Files::Kind::None);
+    Files::CloseAll(&table);
+}
+
+TEST_CASE("an exact duplicate far above the capacity grows the table to the limit")
+{
+    using namespace FeatherOS;
+    MakeFat16Disk("contents");
+    REQUIRE(VFS::MountBlockDevice());
+    Files::Table table{};
+    REQUIRE(Files::OpenConsole(&table, nullptr));
+    const User::ResourceLimits raised = {1024, 1024};
+    REQUIRE(Files::DescriptorLimits(&table, &raised, nullptr) == 0);
+    const uint64_t file = Files::Open(&table, "/BLOCK.TXT", OpenRead);
+    REQUIRE(table.capacity == 32);
+    REQUIRE(Files::Duplicate(&table, file, 900, User::DuplicateExact) == 900);
+    REQUIRE(table.capacity == 1024);
+    REQUIRE(Files::KindOf(&table, file) == Files::Kind::File);
+    REQUIRE(Files::Duplicate(&table, file, 1023, 0) == 1023);
+    REQUIRE(Files::Duplicate(&table, file, 1024, User::DuplicateExact) ==
+            User::SyscallErrorBadDescriptor);
+    Files::CloseAll(&table);
+}
+
+TEST_CASE("the descriptor limits are read, lowered, raised and checked")
+{
+    using namespace FeatherOS;
+    MakeFat16Disk("contents");
+    REQUIRE(VFS::MountBlockDevice());
+    Files::Table table{};
+    REQUIRE(Files::OpenConsole(&table, nullptr));
+    User::ResourceLimits limits = {};
+    REQUIRE(Files::DescriptorLimits(&table, nullptr, &limits) == 0);
+    REQUIRE(limits.current == 256);
+    REQUIRE(limits.maximum == 1024);
+
+    for (uint64_t index = 3; index <= 50; ++index)
+    {
+        REQUIRE(Files::Open(&table, "/BLOCK.TXT", OpenRead) == index);
+    }
+    const User::ResourceLimits lowered = {40, 1024};
+    REQUIRE(Files::DescriptorLimits(&table, &lowered, &limits) == 0);
+    REQUIRE(limits.current == 256);
+    REQUIRE(Files::Open(&table, "/BLOCK.TXT", OpenRead) == User::SyscallErrorTooManyOpenFiles);
+    char byte[1];
+    for (uint64_t index = 41; index <= 50; ++index)
+    {
+        REQUIRE(Files::Read(&table, index, byte, 1) == 1);
+        REQUIRE(Files::Close(&table, index) == 0);
+    }
+    REQUIRE(Files::Open(&table, "/BLOCK.TXT", OpenRead) == User::SyscallErrorTooManyOpenFiles);
+    REQUIRE(Files::Close(&table, 10) == 0);
+    REQUIRE(Files::Open(&table, "/BLOCK.TXT", OpenRead) == 10);
+
+    const User::ResourceLimits wider = {300, 1024};
+    REQUIRE(Files::DescriptorLimits(&table, &wider, nullptr) == 0);
+    uint64_t last = 0;
+    for (;;)
+    {
+        const uint64_t descriptor = Files::Open(&table, "/BLOCK.TXT", OpenRead);
+        if (User::IsSyscallError(descriptor))
+        {
+            REQUIRE(descriptor == User::SyscallErrorTooManyOpenFiles);
+            break;
+        }
+        last = descriptor;
+    }
+    REQUIRE(last == 299);
+    REQUIRE(table.capacity == 300);
+
+    const User::ResourceLimits soft_above_hard = {500, 400};
+    const User::ResourceLimits hard_above_ceiling = {10, 2000};
+    const User::ResourceLimits infinite = {10, UINT64_MAX};
+    REQUIRE(Files::DescriptorLimits(&table, &soft_above_hard, nullptr) ==
+            User::SyscallErrorInvalidArgument);
+    REQUIRE(Files::DescriptorLimits(&table, &hard_above_ceiling, nullptr) ==
+            User::SyscallErrorNotPermitted);
+    REQUIRE(Files::DescriptorLimits(&table, &infinite, nullptr) == User::SyscallErrorNotPermitted);
+    REQUIRE(Files::DescriptorLimits(&table, nullptr, &limits) == 0);
+    REQUIRE(limits.current == 300);
+    REQUIRE(limits.maximum == 1024);
+    const User::ResourceLimits low_hard = {10, 100};
+    const User::ResourceLimits high_again = {10, 1024};
+    REQUIRE(Files::DescriptorLimits(&table, &low_hard, nullptr) == 0);
+    REQUIRE(Files::DescriptorLimits(&table, &high_again, nullptr) == 0);
+    REQUIRE(Files::DescriptorLimits(&table, nullptr, &limits) == 0);
+    REQUIRE(limits.current == 10);
+    REQUIRE(limits.maximum == 1024);
+    Files::CloseAll(&table);
+}
+
+TEST_CASE("a child inherits the open descriptors that are not close-on-exec, and the limits")
+{
+    using namespace FeatherOS;
+    MakeFat16Disk("contents");
+    REQUIRE(VFS::MountBlockDevice());
+    Files::Table parent{};
+    REQUIRE(Files::OpenConsole(&parent, nullptr));
+    const User::ResourceLimits limits = {300, 1024};
+    REQUIRE(Files::DescriptorLimits(&parent, &limits, nullptr) == 0);
+    REQUIRE(Files::Open(&parent, "/BLOCK.TXT", OpenRead | User::OpenCloseOnExec) == 3);
+    const uint64_t shared = Files::Open(&parent, "/BLOCK.TXT", OpenRead);
+    REQUIRE(Files::Duplicate(&parent, shared, 200, 0) == 200);
+    REQUIRE(parent.capacity == 256);
+
+    Files::Table child{};
+    REQUIRE(Files::Inherit(&child, &parent));
+    REQUIRE(child.capacity == 256);
+    REQUIRE(child.soft_limit == 300);
+    REQUIRE(child.hard_limit == 1024);
+    REQUIRE(Files::KindOf(&child, 0) == Files::Kind::Terminal);
+    REQUIRE(Files::KindOf(&child, 2) == Files::Kind::Terminal);
+    REQUIRE(Files::KindOf(&child, 3) == Files::Kind::None);
+    REQUIRE(Files::KindOf(&child, 200) == Files::Kind::File);
+    REQUIRE(Files::CountOpen(&child) == 5);
+    char text[3] = {};
+    REQUIRE(Files::Read(&child, 200, text, 3) == 3);
+    REQUIRE(Files::Read(&parent, 200, text, 3) == 3);
+    REQUIRE(std::string(text, 3) == "ten");
+    Files::CloseAll(&parent);
+    Files::CloseAll(&child);
+    REQUIRE(Files::Remove("/BLOCK.TXT") == 0);
+}
+
+TEST_CASE("a pipe's two ends can straddle a growth of the table")
+{
+    using namespace FeatherOS;
+    MakeFat16Disk("contents");
+    REQUIRE(VFS::MountBlockDevice());
+    Files::Table table{};
+    REQUIRE(Files::OpenConsole(&table, nullptr));
+    for (uint64_t index = 3; index < 31; ++index)
+    {
+        REQUIRE(Files::Open(&table, "/BLOCK.TXT", OpenRead) == index);
+    }
+    uint64_t read_end = 0;
+    uint64_t write_end = 0;
+    REQUIRE(Files::CreatePipe(&table, 0, &read_end, &write_end) == 0);
+    REQUIRE(read_end == 31);
+    REQUIRE(write_end == 32);
+    REQUIRE(table.capacity == 64);
+    REQUIRE(Files::Write(&table, write_end, "ok", 2) == 2);
+    char text[2] = {};
+    REQUIRE(Files::Read(&table, read_end, text, 2) == 2);
+    REQUIRE(std::string(text, 2) == "ok");
+    REQUIRE(Files::KindOf(&table, 3) == Files::Kind::File);
+    Files::CloseAll(&table);
+}
+
+TEST_CASE("a table that cannot grow fails with no memory and keeps what it has")
+{
+    using namespace FeatherOS;
+    MakeFat16Disk("contents");
+    REQUIRE(VFS::MountBlockDevice());
+    Files::Table table{};
+    REQUIRE(Files::OpenConsole(&table, nullptr));
+    for (uint64_t index = 3; index < 32; ++index)
+    {
+        REQUIRE(Files::Open(&table, "/BLOCK.TXT", OpenRead) == index);
+    }
+    {
+        const Memory::Testing::FailZeroedAllocations fail(64, sizeof(Files::Slot));
+        REQUIRE(Files::Open(&table, "/BLOCK.TXT", OpenRead) == User::SyscallErrorNoMemory);
+        REQUIRE(Files::Duplicate(&table, 3, 40, User::DuplicateExact) ==
+                User::SyscallErrorNoMemory);
+        uint64_t read_end = 0;
+        uint64_t write_end = 0;
+        REQUIRE(Files::CreatePipe(&table, 0, &read_end, &write_end) == User::SyscallErrorNoMemory);
+        REQUIRE(table.capacity == 32);
+    }
+    REQUIRE(Files::CountOpen(&table) == 32);
+    REQUIRE(Files::Open(&table, "/BLOCK.TXT", OpenRead) == 32);
+    REQUIRE(table.capacity == 64);
+
+    Files::Table child{};
+    {
+        const Memory::Testing::FailZeroedAllocations fail(64, sizeof(Files::Slot));
+        REQUIRE_FALSE(Files::Inherit(&child, &table));
+        REQUIRE(child.slots == nullptr);
+        REQUIRE(child.capacity == 0);
+    }
+    REQUIRE(Files::Inherit(&child, &table));
+    Files::CloseAll(&child);
+    Files::CloseAll(&table);
+    REQUIRE(Files::Remove("/BLOCK.TXT") == 0);
 }
 
 TEST_CASE("file descriptors validate flags and access modes")
@@ -685,6 +937,148 @@ TEST_CASE("disk files allow one writer or many readers, and open files cannot be
     FeatherOS::Files::CloseAll(&first);
     REQUIRE(FeatherOS::Files::Remove("/BLOCK.TXT") == 0);
     REQUIRE(FeatherOS::Files::Remove("/BLOCK.TXT") == FeatherOS::User::SyscallErrorNotFound);
+}
+
+TEST_CASE("a full system-wide disk table gives ENFILE, and only for a file not open yet")
+{
+    using namespace FeatherOS;
+    MakeManyFilesDisk();
+    REQUIRE(VFS::MountBlockDevice());
+    Files::Table first{};
+    Files::Table second{};
+    REQUIRE(Files::OpenConsole(&first, nullptr));
+    REQUIRE(Files::OpenConsole(&second, nullptr));
+    const User::ResourceLimits limits = {1024, 1024};
+    REQUIRE(Files::DescriptorLimits(&first, &limits, nullptr) == 0);
+    REQUIRE(Files::DescriptorLimits(&second, &limits, nullptr) == 0);
+
+    std::vector<uint64_t> first_files;
+    for (uint32_t number = 0; number < 600; ++number)
+    {
+        first_files.push_back(Files::Open(&first, ManyFileName(number).c_str(), OpenRead));
+        REQUIRE_FALSE(User::IsSyscallError(first_files.back()));
+    }
+    for (uint32_t number = 600; number < 1024; ++number)
+    {
+        REQUIRE_FALSE(User::IsSyscallError(Files::Open(&second, ManyFileName(number).c_str(), OpenRead)));
+    }
+    const std::string last = ManyFileName(1024);
+    REQUIRE(Files::Open(&second, last.c_str(), OpenRead) == User::SyscallErrorTooManyFilesInSystem);
+
+    REQUIRE_FALSE(User::IsSyscallError(Files::Open(&second, ManyFileName(0).c_str(), OpenRead)));
+
+    User::FileStatus status;
+    REQUIRE(Files::Open(&second, "/NEWFILE.TXT", OpenWrite | OpenCreate) ==
+            User::SyscallErrorTooManyFilesInSystem);
+    REQUIRE(Files::Stat("/NEWFILE.TXT", &status) == User::SyscallErrorNotFound);
+
+    REQUIRE(Files::Close(&first, first_files[5]) == 0);
+    REQUIRE_FALSE(User::IsSyscallError(Files::Open(&second, last.c_str(), OpenRead)));
+    Files::CloseAll(&first);
+    Files::CloseAll(&second);
+}
+
+TEST_CASE("the disk-file table grows and keeps every entry and every open file's offset")
+{
+    using namespace FeatherOS;
+    REQUIRE(Files::ResetDiskFileTable());
+    MakeManyFilesDisk();
+    REQUIRE(VFS::MountBlockDevice());
+    Files::Table table{};
+    REQUIRE(Files::OpenConsole(&table, nullptr));
+    const User::ResourceLimits limits = {1024, 1024};
+    REQUIRE(Files::DescriptorLimits(&table, &limits, nullptr) == 0);
+
+    std::vector<uint64_t> descriptors;
+    const uint64_t writer = Files::Open(&table, ManyFileName(0).c_str(), OpenWrite);
+    REQUIRE_FALSE(User::IsSyscallError(writer));
+    descriptors.push_back(writer);
+    const auto check_all_busy = [&descriptors]
+    {
+        for (uint32_t number = 0; number < descriptors.size(); ++number)
+        {
+            REQUIRE(Files::Remove(ManyFileName(number).c_str()) == User::SyscallErrorBusy);
+        }
+        REQUIRE(Files::Remount("/", Filesystem::MountMode::ReadOnly) == User::SyscallErrorBusy);
+    };
+    const auto open_up_to = [&](uint32_t count)
+    {
+        while (descriptors.size() < count)
+        {
+            const auto number = static_cast<uint32_t>(descriptors.size());
+            const uint64_t descriptor = Files::Open(&table, ManyFileName(number).c_str(), OpenRead);
+            REQUIRE_FALSE(User::IsSyscallError(descriptor));
+            char first[1];
+            REQUIRE(Files::Read(&table, descriptor, first, 1) == 1);
+            REQUIRE(first[0] == 'A' + static_cast<char>(number % 26));
+            descriptors.push_back(descriptor);
+        }
+    };
+    open_up_to(64);
+    check_all_busy();
+    open_up_to(65);
+    check_all_busy();
+    open_up_to(129);
+    check_all_busy();
+    open_up_to(300);
+    check_all_busy();
+    for (uint32_t number = 1; number < descriptors.size(); ++number)
+    {
+        char second[1];
+        REQUIRE(Files::Read(&table, descriptors[number], second, 1) == 1);
+        REQUIRE(second[0] == 'a' + static_cast<char>(number % 26));
+    }
+
+    Files::CloseAll(&table);
+    REQUIRE(Files::Remount("/", Filesystem::MountMode::ReadOnly) == 0);
+}
+
+TEST_CASE("a disk table that cannot grow gives no memory and creates nothing")
+{
+    using namespace FeatherOS;
+    REQUIRE(Files::ResetDiskFileTable());
+    MakeManyFilesDisk();
+    REQUIRE(VFS::MountBlockDevice());
+    Files::Table table{};
+    REQUIRE(Files::OpenConsole(&table, nullptr));
+    for (uint32_t number = 0; number < 64; ++number)
+    {
+        REQUIRE_FALSE(User::IsSyscallError(Files::Open(&table, ManyFileName(number).c_str(), OpenRead)));
+    }
+    {
+        const Memory::Testing::FailZeroedAllocations fail(128, 24);
+        User::FileStatus status;
+        REQUIRE(Files::Open(&table, ManyFileName(64).c_str(), OpenRead) ==
+                User::SyscallErrorNoMemory);
+        REQUIRE(Files::Open(&table, "/NEWFILE.TXT", OpenWrite | OpenCreate) ==
+                User::SyscallErrorNoMemory);
+        REQUIRE(Files::Stat("/NEWFILE.TXT", &status) == User::SyscallErrorNotFound);
+        REQUIRE(Files::CountOpen(&table) == 3 + 64);
+        REQUIRE_FALSE(User::IsSyscallError(Files::Open(&table, ManyFileName(3).c_str(), OpenRead)));
+    }
+    REQUIRE_FALSE(User::IsSyscallError(Files::Open(&table, ManyFileName(64).c_str(), OpenRead)));
+    Files::CloseAll(&table);
+}
+
+TEST_CASE("every open disk file counts, however many are open, for a remount's busy check")
+{
+    using namespace FeatherOS;
+    MakeManyFilesDisk();
+    REQUIRE(VFS::MountBlockDevice());
+    Files::Table table{};
+    REQUIRE(Files::OpenConsole(&table, nullptr));
+    for (uint32_t number = 0; number < 70; ++number)
+    {
+        REQUIRE_FALSE(User::IsSyscallError(Files::Open(&table, ManyFileName(number).c_str(), OpenRead)));
+    }
+    const uint64_t writer = Files::Open(&table, "/tmp/held.txt", OpenWrite | OpenCreate);
+    REQUIRE_FALSE(User::IsSyscallError(writer));
+    REQUIRE(Files::Remount("/tmp", Filesystem::MountMode::ReadOnly) == User::SyscallErrorBusy);
+    REQUIRE(Files::Close(&table, writer) == 0);
+    REQUIRE(Files::Remount("/tmp", Filesystem::MountMode::ReadOnly) == 0);
+    REQUIRE(Files::Remount("/tmp", Filesystem::MountMode::ReadWrite) == 0);
+    REQUIRE(Files::Remove("/tmp/held.txt") == 0);
+    Files::CloseAll(&table);
 }
 
 TEST_CASE("directory listing skips deleted entries and names files as NAME.EXT")
@@ -2712,9 +3106,9 @@ TEST_CASE("dup2 replaces its target, and duplicates can be close-on-exec")
             FeatherOS::User::SyscallErrorInvalidArgument);
     REQUIRE(FeatherOS::Files::Duplicate(&table, 20, 0, 0) ==
             FeatherOS::User::SyscallErrorBadDescriptor);
-    REQUIRE(FeatherOS::Files::Duplicate(&table, file, FeatherOS::User::MaximumDescriptors,
+    REQUIRE(FeatherOS::Files::Duplicate(&table, file, FeatherOS::User::DefaultDescriptorLimit,
                                         FeatherOS::User::DuplicateExact) ==
-            FeatherOS::User::SyscallErrorInvalidArgument);
+            FeatherOS::User::SyscallErrorBadDescriptor);
     REQUIRE(FeatherOS::Files::Duplicate(&table, file, 0, 8) ==
             FeatherOS::User::SyscallErrorInvalidArgument);
     REQUIRE(FeatherOS::Files::CountOpen(&table) == 5);

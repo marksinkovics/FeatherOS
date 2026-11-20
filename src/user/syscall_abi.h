@@ -180,11 +180,21 @@ static_assert(sizeof(MountRequest) == 16, "the kernel and the C library share Mo
 // once the group continues), or SyscallErrorInputOutput when the caller ignores or blocks
 // SIGTTIN or its group is orphaned; a change that ignores or blocks SIGTTOU goes ahead. "/dev/tty"
 // opens the caller's controlling terminal. A new descriptor
-// gets the lowest free number.
+// gets the lowest free number below the soft descriptor limit.
 constexpr uint64_t StandardInput = 0;
 constexpr uint64_t StandardOutput = 1;
 constexpr uint64_t StandardError = 2;
-constexpr uint64_t MaximumDescriptors = 32;
+// A process's table starts at DefaultDescriptorLimit descriptors (its soft limit) and grows on
+// demand; the hard limit starts at MaximumDescriptorLimit, which is also its ceiling.
+constexpr uint64_t DefaultDescriptorLimit = 256;
+constexpr uint64_t MaximumDescriptorLimit = 1024;
+// RLIMIT_NOFILE's number, and the pair of limits laid out as struct rlimit.
+constexpr uint64_t ResourceOpenFiles = 7;
+struct ResourceLimits
+{
+    uint64_t current;
+    uint64_t maximum;
+};
 // Duplicate flags: replace exactly the target descriptor, as dup2 does, rather than taking the
 // lowest free one at or above it; and mark the new descriptor close-on-exec.
 constexpr uint64_t DuplicateExact = 1U << 0;
@@ -230,7 +240,8 @@ constexpr uint64_t SocketShutdownBoth = 2;
 
 // Poll takes an array of these, laid out as struct pollfd, and fills in returned_events. A
 // negative descriptor is skipped; one that is not open reports PollInvalid. PollError, PollHangUp
-// and PollInvalid are reported whether asked for or not.
+// and PollInvalid are reported whether asked for or not. At most the soft descriptor limit of
+// entries; more fail with SyscallErrorInvalidArgument.
 struct PollDescriptor
 {
     int32_t descriptor;
@@ -243,7 +254,6 @@ constexpr int16_t PollWritable = 0x4;
 constexpr int16_t PollError = 0x8;
 constexpr int16_t PollHangUp = 0x10;
 constexpr int16_t PollInvalid = 0x20;
-constexpr uint64_t MaximumPollDescriptors = 64;
 // Poll's milliseconds: wait until a descriptor has events.
 constexpr uint64_t PollForever = UINT64_MAX;
 
@@ -457,6 +467,9 @@ constexpr uint64_t SyscallErrorNoSpace = UINT64_MAX - 49;
 // A file, or a directory's subdirectories, past the filesystem's link limit.
 constexpr uint64_t SyscallErrorTooManyLinks = UINT64_MAX - 50;
 constexpr uint64_t SyscallErrorFileTooLarge = UINT64_MAX - 51;
+// More disk files open in the system than the kernel tracks (as ENFILE); a process at its own
+// descriptor limit gets SyscallErrorTooManyOpenFiles.
+constexpr uint64_t SyscallErrorTooManyFilesInSystem = UINT64_MAX - 52;
 
 constexpr bool IsSyscallError(uint64_t value)
 {

@@ -47,16 +47,34 @@ struct Slot
     bool close_on_exec;
 };
 
-// A zero-filled table has no descriptors at all, not even the console.
+// The slots are a heap array that starts at 32 entries the first time something is put in it and
+// doubles, but never past the soft limit in force or User::MaximumDescriptorLimit, and is freed by
+// CloseAll. A new descriptor gets a number below the soft limit; lowering the limit closes
+// nothing. A zero-filled table has no descriptors at all, not even the console, and limits of 0
+// until OpenConsole or Inherit sets them. Everything here runs under the filesystem lock.
 struct Table
 {
-    Slot slots[User::MaximumDescriptors];
+    Table() = default;
+    Table(const Table&) = delete;
+    Table& operator=(const Table&) = delete;
+
+    Slot* slots = nullptr;
+    uint32_t capacity = 0;
+    uint32_t soft_limit = User::DefaultDescriptorLimit;
+    uint32_t hard_limit = User::MaximumDescriptorLimit;
 };
 
-// Puts the console, whose terminal is console, at descriptors 0, 1, and 2.
-void OpenConsole(Table* table, Terminals::Terminal* console);
-// Gives child every descriptor of parent that is not close-on-exec.
-void Inherit(Table* child, const Table* parent);
+// Puts the console, whose terminal is console, at descriptors 0, 1, and 2, and gives the table the
+// default limits. False if the table could not be allocated.
+bool OpenConsole(Table* table, Terminals::Terminal* console);
+// Gives child every descriptor of parent that is not close-on-exec, and parent's limits. False,
+// with child empty and nothing shared, if the child's table could not be allocated.
+bool Inherit(Table* child, const Table* parent);
+// Stores the table's limits in previous and then, if requested is not null, sets them:
+// SyscallErrorInvalidArgument if soft is above hard, and SyscallErrorNotPermitted if hard is above
+// User::MaximumDescriptorLimit.
+uint64_t DescriptorLimits(Table* table, const User::ResourceLimits* requested,
+                          User::ResourceLimits* previous);
 // Reads and writes on terminals go through the process instead of this table.
 Kind KindOf(const Table* table, uint64_t descriptor);
 // "/dev/tty" opens controlling_terminal, or fails with SyscallErrorNoDevice if it is null.
@@ -76,7 +94,8 @@ uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
               Pipes::InterruptCheck interrupted = nullptr);
 uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t length,
                Pipes::InterruptCheck interrupted = nullptr);
-// Puts a new pipe's read end and write end at the two lowest free descriptors.
+// Puts a new pipe's read end and write end at the two lowest free descriptors. A full table fails
+// with SyscallErrorTooManyOpenFiles, and one that cannot grow with SyscallErrorNoMemory.
 uint64_t CreatePipe(Table* table, uint64_t flags, uint64_t* read_end, uint64_t* write_end);
 // Puts a new socket at the lowest free descriptor.
 uint64_t CreateSocket(Table* table, uint64_t family, uint64_t type, uint64_t protocol);
@@ -93,8 +112,11 @@ uint64_t FindSocket(Table* table, uint64_t descriptor, Network::Sockets::Socket*
 // offset is signed, added to the origin whence names; returns the new offset.
 uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset, uint64_t whence);
 uint64_t Close(Table* table, uint64_t descriptor);
-// With User::DuplicateExact, makes target name descriptor's file, closing what target named;
-// otherwise uses the lowest free descriptor at or above target. Returns the new descriptor.
+// With User::DuplicateExact, makes target name descriptor's file, closing what target named, and
+// fails with SyscallErrorBadDescriptor for a target at or above the soft limit; otherwise uses the
+// lowest free descriptor at or above target, and fails with SyscallErrorInvalidArgument for a
+// target at or above the soft limit and SyscallErrorTooManyOpenFiles when none is free. Returns
+// the new descriptor.
 uint64_t Duplicate(Table* table, uint64_t descriptor, uint64_t target, uint64_t flags);
 // Returns the descriptor's User::Descriptor* flags, after setting them to value if set is true.
 uint64_t DescriptorFlags(Table* table, uint64_t descriptor, bool set, uint64_t value);
@@ -102,6 +124,8 @@ uint64_t DescriptorFlags(Table* table, uint64_t descriptor, bool set, uint64_t v
 // the last two from value if set is true; value's access flags are ignored.
 uint64_t StatusFlags(Table* table, uint64_t descriptor, bool set, uint64_t value);
 uint64_t CountOpen(const Table* table);
+// For a caller that already holds the filesystem lock, as every read through /proc does.
+uint64_t CountOpenLocked(const Table* table);
 // A file or a symbolic link, not followed.
 uint64_t Remove(const char* path);
 uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* entry);
@@ -176,8 +200,8 @@ public:
     ProgramFile& operator=(const ProgramFile&) = delete;
 
     // 0, or SyscallErrorNotFound, SyscallErrorIsDirectory, SyscallErrorNotExecutable for a device
-    // or an empty file, SyscallErrorBusy while it is open for writing, or
-    // SyscallErrorTooManyOpenFiles.
+    // or an empty file, SyscallErrorBusy while it is open for writing,
+    // SyscallErrorTooManyFilesInSystem or SyscallErrorNoMemory.
     uint64_t Open(const char* path);
     uint64_t Size() const;
     // Fills the whole buffer or fails.
@@ -188,6 +212,10 @@ private:
     bool open = false;
     bool tracked = false;
 };
+#ifdef FEATHEROS_HOST_TEST
+// Frees the disk-file table, if no file is open, so a test sees it grow from its first size.
+bool ResetDiskFileTable();
+#endif
 // Waits for any filesystem call in progress, blocks all later ones and detaches every mount (a
 // journalled volume is closed), for shutdown; false if one did not close cleanly.
 bool Quiesce();
