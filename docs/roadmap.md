@@ -1101,6 +1101,26 @@ Since M22 the root is ext4 on the disk, read-write and journalled, but the syste
 
 **Complete when:** on both targets, a boot from the ext4 root runs `/sbin/init` and the programs from the root's `/bin`, reads `/etc` from the root and keeps its edits across reboots, boots a root with no test files, and still boots from the initramfs alone when the disk is missing; the root can be remounted read-only and back; `e2fsck -fn` finds no errors after each case.
 
+### 30. Storage And System Services
+
+M29 made the ext4 root the system disk; this milestone removes the limits that came with it and gives the administrator's programs and services their own places. Planned on `feat/disk` after M29, at the user's request, and merged into `main` with M22 and M29.
+
+- **Part 1: higher descriptor and open-file limits.** 32 descriptors per process and 64 open disk files system-wide come from fixed-size tables (`Files`' `disk_files`, the process descriptor table, `poll`'s 64). Raise them to at least 256 per process and 1024 open disk files, growing on demand where a table can, with `RLIMIT_NOFILE` (`getrlimit`/`setrlimit` in libc) as the per-process cap; `EMFILE` and `ENFILE` as today at the limits. Tests: host tests for the tables, `libctest` opening past the old limits, a QEMU check on both architectures.
+- **Part 2: atomic rename onto an existing file.** `rename` removes the target first and then moves the source, so a crash between the two loses the target. On ext2, ext3 and ext4 the core replaces the directory entry in place (the target's inode is released after), and on ext3/ext4 both changes go into one jbd2 transaction; tmpfs swaps in memory. FAT16 cannot be made atomic and keeps today's order (documented). Tests: the core's crash tests cut every write of a replacing rename and check the target is the old or the new file, never missing (`e2fsck -fn`, `debugfs`); `libctest` and a shell check.
+- **Part 3: `/sbin` for administrative programs.** `mount`, `umount`, `shutdown`, `reboot`, `sync`, `net` and `dhcp` move to `/sbin` (on the root, as `init` since M29 Part 3) and stay in `/system` as the rescue copies; the default `PATH` becomes `/bin:/sbin:/system`. `init.conf` and the tests name them by `PATH`. Users and permissions stay out of scope (`docs/ideas.md`, "Security").
+- **Part 4: services added beside the defaults.** Instead of `/etc/init.conf` replacing `/system/init.conf` as a whole, `init` merges: the built-in services of `/system/init.conf`, plus one file per service in `/etc/init.d/` (the administrator's), minus the built-in ones named in `/etc/init.disabled`, as launchd merges its directories; `env` lines merge the same way (a later one wins). A file that does not parse is skipped with a message, not the whole set. Tests: `ROOT_TEST`/`STORAGE` add and disable a service across a reboot.
+- **Part 5: several volumes of one filesystem type at once.** Each type has one driver instance (`Drivers::Ext4()` and the rest), so with an ext4 root no second ext4 volume can be mounted. Drivers become per-volume objects created when a partition is found, registered by partition in `VFS::TypeRegistry` (`drivers.cpp`, `type_registry.cpp`, `mount_table.cpp`, `/proc/mounts`), and the "one instance per filesystem" limit goes. Tests: two ext4 volumes on the test disk mounted at once, written and checked by `e2fsck -fn`.
+- **Part 6: a page cache.** Recently read disk blocks stay in kernel memory, so repeated reads don't go to the disk: one cache below every block-device filesystem (shared with or replacing the core's `common/block_cache.cpp` for the kernel), write-through for now so the crash ordering of ext2's write-through and jbd2's ordered mode is unchanged, sized from free memory and shrunk under memory pressure. Tests: host tests for hit, eviction and invalidation, a QEMU check that a second read of a large file does no disk reads, and the crash tests unchanged.
+
+**Complete when:** on both targets, a process can hold more than 32 descriptors, a crash during a replacing rename on ext3/ext4 never loses the target, the administrative programs run from `/sbin`, services in `/etc/init.d/` start beside the built-in ones and can disable them across reboots, two ext4 volumes are mounted at once, repeated reads hit the page cache, and `e2fsck -fn` finds no errors after each case.
+
+### 31. FeatherFS And The Feather Disk Split (Planned, Not Started)
+
+Deferred by the user after M29; to be planned in detail when it starts.
+
+- **FeatherFS:** a filesystem of our own design with journaling, so files survive a crash in the middle of a write, in the shared core beside FAT16 and ext.
+- **The Feather Disk split:** `src/fs/core/` (namespace `FeatherDisk`, MIT OR Apache-2.0) moves to its own repository by a subtree split, for the planned Mac and Windows ext app, and FeatherOS takes it back as a dependency.
+
 ## Architecture Boundaries
 
 - Keep framebuffer terminal, logging API, panic/assert API, VFS, syscall definitions, and scheduler policy architecture-neutral when possible.
