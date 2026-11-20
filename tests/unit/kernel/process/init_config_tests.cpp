@@ -126,6 +126,7 @@ using FeatherOS::User::Init::AddBuiltIn;
 using FeatherOS::User::Init::AddServiceFile;
 using FeatherOS::User::Init::Configuration;
 using FeatherOS::User::Init::DisableBuiltIns;
+using FeatherOS::User::Init::EnsureConsole;
 using FeatherOS::User::Init::FileResult;
 using FeatherOS::User::Init::Reporter;
 
@@ -348,6 +349,28 @@ TEST_CASE("an /etc/init.d file that does not fit is skipped and changes nothing"
                 &messages) == FileResult::NoRoom);
     REQUIRE(Variables(*crowded) == before);
     REQUIRE(crowded->service_count == 1);
+}
+
+TEST_CASE("init adds a shell on tty1 when no console service is left")
+{
+    Messages messages;
+    const auto config = Load("once echo a\nrespawn dhcp\nconsole /dev/tty2 shell\n", &messages);
+    const std::string list = "shell\n";
+    DisableBuiltIns(config.get(), list.data(), list.size(), ReporterFor(&messages));
+    REQUIRE(EnsureConsole(config.get(), ReporterFor(&messages)));
+    REQUIRE(Commands(*config) == Strings{"echo a", "dhcp", "shell"});
+    REQUIRE(config->services[2].terminal == std::string("/dev/tty1"));
+    REQUIRE_FALSE(EnsureConsole(config.get(), ReporterFor(&messages)));
+    REQUIRE(config->service_count == 3);
+}
+
+TEST_CASE("init adds nothing when a console exists, even an /etc/init.d one on another terminal")
+{
+    Messages messages;
+    const auto config = Load("once echo a\n", &messages);
+    REQUIRE(Add(config.get(), "console /dev/tty3 vi\n", &messages) == FileResult::Merged);
+    REQUIRE_FALSE(EnsureConsole(config.get(), ReporterFor(&messages)));
+    REQUIRE(Commands(*config) == Strings{"echo a", "vi"});
 }
 
 TEST_CASE("ProgramName takes the first word without its directory")

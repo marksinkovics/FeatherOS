@@ -114,6 +114,9 @@ uint32_t DisableBuiltIns(Configuration* config, const char* text, uint64_t lengt
 FileResult AddServiceFile(Configuration* config, const char* text, uint64_t length,
                           const Reporter& reporter);
 
+// Adds a shell on /dev/tty1 when no console service exists; true if it did.
+bool EnsureConsole(Configuration* config, const Reporter& reporter);
+
 // Counts a restart at now (milliseconds since boot); false once the service exits too often.
 bool AllowRestart(Service* service, uint64_t now);
 

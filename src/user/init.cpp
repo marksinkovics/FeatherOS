@@ -309,6 +309,10 @@ int main(int argc, char** argv)
     }
     LoadDisabled();
     LoadServiceFiles();
+    if (EnsureConsole(&configuration, reporter))
+    {
+        puts("init: no console service; starting a shell on /dev/tty1");
+    }
     struct stat retired{};
     if (stat(RetiredConfigPath, &retired) == 0)
     {

@@ -386,6 +386,21 @@ uint32_t DisableBuiltIns(Configuration* config, const char* text, uint64_t lengt
     return removed;
 }
 
+bool EnsureConsole(Configuration* config, const Reporter& reporter)
+{
+    for (uint32_t index = 0; index < config->service_count; ++index)
+    {
+        if (IsConsole(config->services[index]))
+        {
+            return false;
+        }
+    }
+    constexpr char Fallback[] = "console /dev/tty1 shell\n";
+    const uint32_t before = config->service_count;
+    AddBuiltIn(config, Fallback, sizeof(Fallback) - 1, reporter);
+    return config->service_count != before;
+}
+
 FileResult AddServiceFile(Configuration* config, const char* text, uint64_t length,
                           const Reporter& reporter)
 {

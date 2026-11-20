@@ -37,6 +37,9 @@ GOOD_SERVICE = (
     b"# root-service-marker\nonce grep root-service-marker /etc/init.d/good\n"
 )
 SERVICE_MARKER = "# root-service-marker"
+# Every built-in console is disabled, so init must start a shell on tty1.
+DISABLED_CONSOLES = b"/dev/tty1\n/dev/tty2\n/dev/tty3\n/dev/tty4\n"
+NO_CONSOLE = "init: no console service; starting a shell on /dev/tty1"
 SERVICE_SKIPPED = "init: /etc/init.d/broken: does not parse; skipped"
 WRITTEN = b"written on the root\n"
 WORKING_DIRECTORY = re.compile(r"^/\r?$", re.MULTILINE)
@@ -109,9 +112,12 @@ class NamedRoot(Case):
         broken.write_bytes(BROKEN_SERVICE)
         good = Path(work) / "good"
         good.write_bytes(GOOD_SERVICE)
+        disabled = Path(work) / "disabled"
+        disabled.write_bytes(DISABLED_CONSOLES)
         commands = Path(work) / "commands"
         commands.write_text(
             f"mkdir /etc\nmkdir /etc/init.d\n"
+            f"write {disabled} /etc/init.disabled\n"
             f"write {broken} /etc/init.d/broken\n"
             f"write {good} /etc/init.d/good\n"
             f"mkdir /sbin\nwrite {broken} /sbin/init\n"
@@ -163,6 +169,12 @@ class NamedRoot(Case):
                 "built-in ones"
                 if broken
                 else "init started an /etc/init.d service on a root without"
+            )
+        if broken != (NO_CONSOLE in output):
+            return (
+                "init did not start a tty1 shell with every console disabled"
+                if broken
+                else "init added a shell with consoles configured"
             )
         if "KERN/I: Powering off" not in output:
             return f"the system did not power off{result.limit_note}"
