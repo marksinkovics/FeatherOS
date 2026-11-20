@@ -12,6 +12,7 @@
 
 #include "fs/block_device.h"
 #include "fs/ext2.h"
+#include "fs/fat.h"
 
 #include <algorithm>
 #include <array>
@@ -20,6 +21,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <set>
 #include <span>
 #include <string>
 #include <tuple>
@@ -1321,6 +1323,149 @@ void WriteAndClose(const char* path, const std::string& contents)
 
 } // namespace
 
+namespace
+{
+
+struct WriteFailureGuard
+{
+    ~WriteFailureGuard()
+    {
+        writes_fail = false;
+        on_write = nullptr;
+    }
+};
+
+// What rename onto an existing name does under base, on a filesystem that is mounted and writable.
+void CheckReplacementRules(const std::string& base, bool links, bool hard_links)
+{
+    namespace Files = FeatherOS::Files;
+    namespace User = FeatherOS::User;
+    const auto path = [&](const char* name) { return base + "/" + name; };
+    const auto rename = [&](const char* from, const char* to) {
+        return Files::Rename(path(from).c_str(), path(to).c_str());
+    };
+    const auto put = [&](const char* name, const std::string& bytes) {
+        WriteAndClose(path(name).c_str(), bytes);
+    };
+    const auto kind = [&](const char* name) {
+        User::FileStatus status{};
+        REQUIRE(Files::LinkStat(path(name).c_str(), &status) == 0);
+        return status.mode & User::ModeTypeMask;
+    };
+    const auto missing = [&](const char* name) {
+        User::FileStatus status{};
+        return Files::LinkStat(path(name).c_str(), &status) == User::SyscallErrorNotFound;
+    };
+    const auto make_directory = [&](const char* name) {
+        REQUIRE(Files::MakeDirectory(path(name).c_str()) == 0);
+    };
+    REQUIRE(Files::MakeDirectory(base.c_str()) == 0);
+    make_directory("sub");
+
+    put("a", "A");
+    put("b", "B");
+    REQUIRE(rename("a", "b") == 0);
+    REQUIRE(ReadWhole(path("b").c_str()) == "A");
+    REQUIRE(missing("a"));
+    put("c", "C");
+    put("sub/b", "old");
+    REQUIRE(rename("c", "sub/b") == 0);
+    REQUIRE(ReadWhole(path("sub/b").c_str()) == "C");
+    REQUIRE(missing("c"));
+    REQUIRE(rename("b", "b") == 0);
+
+    if (links)
+    {
+        REQUIRE(Files::SymbolicLink("b", path("ln").c_str()) == 0);
+        put("f", "F");
+        REQUIRE(rename("f", "ln") == 0);
+        REQUIRE(kind("ln") == User::ModeRegular);
+        REQUIRE(ReadWhole(path("ln").c_str()) == "F");
+        REQUIRE(Files::SymbolicLink("nowhere", path("ln2").c_str()) == 0);
+        put("g", "G");
+        REQUIRE(rename("ln2", "g") == 0);
+        REQUIRE(kind("g") == User::ModeSymbolicLink);
+        REQUIRE(Files::SymbolicLink("nowhere", path("ln3").c_str()) == 0);
+        REQUIRE(Files::SymbolicLink("somewhere", path("ln4").c_str()) == 0);
+        REQUIRE(rename("ln3", "ln4") == 0);
+        REQUIRE(kind("ln4") == User::ModeSymbolicLink);
+        make_directory("by-link");
+        REQUIRE(rename("by-link", "ln4") == User::SyscallErrorNotDirectory);
+    }
+
+    make_directory("empty");
+    make_directory("full");
+    make_directory("full/in");
+    put("full/child", "child");
+    put("x", "X");
+    uint64_t writes = 0;
+    on_write = [&](uint64_t /*sector*/, const void* /*data*/) { ++writes; };
+    const WriteFailureGuard guard;
+    REQUIRE(rename("x", "empty") == User::SyscallErrorIsDirectory);
+    REQUIRE(rename("empty", "x") == User::SyscallErrorNotDirectory);
+    REQUIRE(rename("empty", "full") == User::SyscallErrorNotEmpty);
+    REQUIRE(rename("full/in", "full") == User::SyscallErrorNotEmpty);
+    REQUIRE(rename("full", "full/in/deeper") == User::SyscallErrorInvalidArgument);
+    REQUIRE(rename("x", "nodir/x") == User::SyscallErrorNotFound);
+    REQUIRE(rename("missing", "x") == User::SyscallErrorNotFound);
+    REQUIRE(writes == 0);
+    REQUIRE(ReadWhole(path("x").c_str()) == "X");
+    REQUIRE(ReadWhole(path("full/child").c_str()) == "child");
+
+    if (hard_links)
+    {
+        REQUIRE(Files::Link(path("x").c_str(), path("x2").c_str()) == 0);
+        writes = 0;
+        REQUIRE(rename("x", "x2") == 0);
+        REQUIRE(rename("x2", "x") == 0);
+        REQUIRE(writes == 0);
+        User::FileStatus status{};
+        REQUIRE(Files::Stat(path("x").c_str(), &status) == 0);
+        REQUIRE(status.link_count == 2);
+        REQUIRE(Files::Stat(path("x2").c_str(), &status) == 0);
+        REQUIRE(Files::Remove(path("x2").c_str()) == 0);
+    }
+    on_write = nullptr;
+
+    make_directory("p1");
+    make_directory("p1/d");
+    make_directory("sub/e");
+    User::FileStatus before{};
+    User::FileStatus after{};
+    REQUIRE(Files::Stat(path("p1").c_str(), &before) == 0);
+    REQUIRE(rename("p1/d", "sub/e") == 0);
+    REQUIRE(Files::Stat(path("p1").c_str(), &after) == 0);
+    if (hard_links)
+    {
+        REQUIRE(after.link_count + 1 == before.link_count);
+    }
+    REQUIRE(kind("sub/e") == User::ModeDirectory);
+    REQUIRE(missing("p1/d"));
+    make_directory("r1");
+    make_directory("r2");
+    REQUIRE(rename("r1", "r2") == 0);
+    REQUIRE(missing("r1"));
+    REQUIRE(kind("r2") == User::ModeDirectory);
+
+    put("s2", "S");
+    put("t2", "T");
+    FeatherOS::Files::Table table{};
+    const uint64_t target = Files::Open(&table, path("t2").c_str(), OpenRead);
+    REQUIRE_FALSE(User::IsSyscallError(target));
+    REQUIRE(rename("s2", "t2") == User::SyscallErrorBusy);
+    REQUIRE(Files::Close(&table, target) == 0);
+    REQUIRE(ReadWhole(path("t2").c_str()) == "T");
+    REQUIRE(ReadWhole(path("s2").c_str()) == "S");
+    const uint64_t source = Files::Open(&table, path("s2").c_str(), OpenRead);
+    REQUIRE_FALSE(User::IsSyscallError(source));
+    REQUIRE(rename("s2", "t2") == User::SyscallErrorBusy);
+    REQUIRE(Files::Close(&table, source) == 0);
+    REQUIRE(rename("s2", "t2") == 0);
+    REQUIRE(ReadWhole(path("t2").c_str()) == "S");
+}
+
+} // namespace
+
 #if defined(FEATHEROS_EXT2_TEST_IMAGE)
 namespace
 {
@@ -1505,15 +1650,6 @@ public:
 
 private:
     std::vector<Sector> sectors;
-};
-
-struct WriteFailureGuard
-{
-    ~WriteFailureGuard()
-    {
-        writes_fail = false;
-        on_write = nullptr;
-    }
 };
 
 bool NoWorkingDirectory(const char* /*point*/)
@@ -2680,6 +2816,182 @@ TEST_CASE("FAT16 remounts read-only with a flush and back")
     REQUIRE(FeatherOS::VFS::Unmount("/fat") == MountResult::Done);
 }
 
+namespace
+{
+
+using Recorded = std::vector<std::pair<uint64_t, Sector>>;
+
+// What the target name holds on a copy of base after each prefix of writes; "<missing>" for none.
+std::set<std::string> TargetsAfterPrefixes(FeatherDisk::FilesystemType& type,
+                                           const std::vector<Sector>& base, const Recorded& writes,
+                                           const char* source, const char* target)
+{
+    std::set<std::string> seen;
+    for (size_t count = 0; count <= writes.size(); ++count)
+    {
+        std::vector<Sector> copy = base;
+        for (size_t index = 0; index < count; ++index)
+        {
+            copy[writes[index].first] = writes[index].second;
+        }
+        const std::string held = MountCopy(type, copy, target).contents;
+        INFO("after " << count << " of " << writes.size() << " writes");
+        if (held == "<missing>")
+        {
+            REQUIRE(MountCopy(type, copy, source).contents == "new");
+        }
+        else
+        {
+            REQUIRE((held == "old" || held == "new"));
+        }
+        seen.insert(held);
+    }
+    return seen;
+}
+
+struct UnmountGuard
+{
+    UnmountGuard() = default;
+    UnmountGuard(const UnmountGuard&) = delete;
+    UnmountGuard& operator=(const UnmountGuard&) = delete;
+
+    ~UnmountGuard()
+    {
+        FeatherOS::VFS::Unmount("/mnt");
+    }
+};
+
+void RecordWrites(Recorded* writes, uint32_t start)
+{
+    on_write = [writes, start](uint64_t sector, const void* data) {
+        Sector copy;
+        std::memcpy(copy.data(), data, copy.size());
+        writes->emplace_back(sector - start, copy);
+    };
+}
+
+} // namespace
+
+TEST_CASE("a replacing rename on ext2 is one core call: the target is old or new after every write")
+{
+    using FeatherOS::VFS::MountResult;
+    if (!AttachExt2Image())
+    {
+        SKIP("no ext2 image from mke2fs");
+    }
+    const uint32_t start = DiskSectorCount;
+    const UnmountGuard unmounter;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::Done);
+    WriteAndClose("/mnt/dst.txt", "old");
+    WriteAndClose("/mnt/src.txt", "new");
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    const std::vector<Sector> base = Copy(start);
+
+    const WriteFailureGuard guard;
+    Recorded writes;
+    RecordWrites(&writes, start);
+    REQUIRE(FeatherOS::Files::Rename("/mnt/src.txt", "/mnt/dst.txt") == 0);
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    on_write = nullptr;
+    REQUIRE(writes.size() > 1);
+
+    const std::set<std::string> seen = TargetsAfterPrefixes(
+        FeatherDisk::Ext::Ext2Type(), base, writes, "src.txt", "dst.txt");
+    REQUIRE(seen == std::set<std::string>{"old", "new"});
+}
+
+TEST_CASE("a replacing rename on ext4 is one core call: the target is old or new after every write")
+{
+    const UnmountGuard unmounter;
+    uint32_t start = 0;
+    if (!MountExt4AtMnt(&start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    WriteAndClose("/mnt/dst.txt", "old");
+    WriteAndClose("/mnt/src.txt", "new");
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    const std::vector<Sector> base = Copy(start);
+
+    const WriteFailureGuard guard;
+    Recorded writes;
+    RecordWrites(&writes, start);
+    REQUIRE(FeatherOS::Files::Rename("/mnt/src.txt", "/mnt/dst.txt") == 0);
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    on_write = nullptr;
+    REQUIRE(writes.size() > 1);
+
+    const std::set<std::string> seen = TargetsAfterPrefixes(
+        FeatherDisk::Ext::Ext4Type(), base, writes, "src.txt", "dst.txt");
+    REQUIRE(seen == std::set<std::string>{"old", "new"});
+}
+
+TEST_CASE("FAT16's replacing rename may lose the target in a crash but never the source")
+{
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    WriteAndClose("/dst.txt", "old");
+    WriteAndClose("/src.txt", "new");
+    const std::vector<Sector> base = Copy(PartitionStart);
+
+    const WriteFailureGuard guard;
+    Recorded writes;
+    RecordWrites(&writes, PartitionStart);
+    REQUIRE(FeatherOS::Files::Rename("/src.txt", "/dst.txt") == 0);
+    on_write = nullptr;
+    REQUIRE(writes.size() > 1);
+
+    const std::set<std::string> seen = TargetsAfterPrefixes(
+        FeatherDisk::Fat::Fat16Type(), base, writes, "src.txt", "dst.txt");
+    REQUIRE(seen.contains("old"));
+    REQUIRE(seen.contains("new"));
+    REQUIRE(seen.contains("<missing>"));
+}
+
+TEST_CASE("rename onto an existing name follows one set of rules on ext2, ext3, ext4, FAT16 and tmpfs")
+{
+    using FeatherOS::VFS::MountResult;
+    const UnmountGuard unmounter;
+    uint32_t ext4_start = 0;
+    if (!MountExt4AtMnt(&ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    SECTION("ext4")
+    {
+        CheckReplacementRules("/mnt/r", true, true);
+    }
+    SECTION("ext3")
+    {
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+        REQUIRE(FeatherOS::VFS::Mount("ext3", "vda3", "/mnt") == MountResult::Done);
+        CheckReplacementRules("/mnt/r", true, true);
+    }
+    SECTION("ext2")
+    {
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+        REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt") == MountResult::Done);
+        CheckReplacementRules("/mnt/r", true, true);
+        WriteAndClose("/mnt/r/old", "old");
+        WriteAndClose("/mnt/r/new", "new");
+        const WriteFailureGuard guard;
+        writes_fail = true;
+        REQUIRE(FeatherOS::Files::Rename("/mnt/r/new", "/mnt/r/old") ==
+                FeatherOS::User::SyscallErrorInputOutput);
+        writes_fail = false;
+    }
+    SECTION("FAT16")
+    {
+        CheckReplacementRules("/r", false, false);
+    }
+    SECTION("tmpfs")
+    {
+        FeatherOS::Tmpfs::Reset();
+        CheckReplacementRules("/tmp/r", true, false);
+    }
+}
+
 #endif
 
 TEST_CASE("core errors become Linux's errno codes")
@@ -2807,15 +3119,16 @@ TEST_CASE("FAT16 renames files and directories, keeping their data")
 
     REQUIRE_FALSE(FeatherOS::VFS::Rename("/docs", "/docs/archive/inner"));
     REQUIRE_FALSE(FeatherOS::VFS::Rename("/docs", "/DOCS/inner"));
-    REQUIRE_FALSE(FeatherOS::VFS::Rename("/C.TXT", "/BLOCK.TXT"));
     REQUIRE_FALSE(FeatherOS::VFS::Rename("/C.TXT", "/missing/c.txt"));
     REQUIRE_FALSE(FeatherOS::VFS::Rename("/C.TXT", "/bad:name"));
     REQUIRE_FALSE(FeatherOS::VFS::Rename("/gone", "/here"));
     REQUIRE_FALSE(FeatherOS::VFS::Rename("/docs/..", "/up"));
     REQUIRE(ReadWhole("/C.TXT") == "c");
+    REQUIRE(FeatherOS::VFS::Rename("/C.TXT", "/BLOCK.TXT"));
+    REQUIRE(ReadWhole("/BLOCK.TXT") == "c");
 }
 
-TEST_CASE("rename replaces files and refuses directories, open files, and other filesystems")
+TEST_CASE("rename replaces files and empty directories, and refuses open files and other filesystems")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
@@ -2843,7 +3156,9 @@ TEST_CASE("rename replaces files and refuses directories, open files, and other 
             FeatherOS::User::SyscallErrorNotDirectory);
     REQUIRE(FeatherOS::Files::Rename("/block.txt", "/docs") ==
             FeatherOS::User::SyscallErrorIsDirectory);
-    REQUIRE(FeatherOS::Files::Rename("/docs", "/other") == FeatherOS::User::SyscallErrorExists);
+    REQUIRE(FeatherOS::Files::Rename("/docs", "/other") == 0);
+    REQUIRE(Sorted(ListDiskRoot()) == std::vector<std::string>{"block.txt", "other/"});
+    REQUIRE(FeatherOS::Files::MakeDirectory("/docs") == 0);
     REQUIRE(FeatherOS::Files::Rename("/block.txt", "/missing/block.txt") ==
             FeatherOS::User::SyscallErrorNotFound);
 

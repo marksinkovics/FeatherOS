@@ -1037,6 +1037,137 @@ void CheckSymbolicLinks()
           "remove the link test's files");
 }
 
+bool Put(const char* path, const char* text)
+{
+    const int descriptor = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    const size_t length = strlen(text);
+    return descriptor >= 0 && write(descriptor, text, length) == static_cast<ssize_t>(length) &&
+           close(descriptor) == 0;
+}
+
+bool Holds(const char* path, const char* text)
+{
+    char contents[64];
+    const int descriptor = open(path, O_RDONLY);
+    if (descriptor < 0)
+    {
+        return false;
+    }
+    const ssize_t length = read(descriptor, contents, sizeof(contents) - 1);
+    close(descriptor);
+    return length >= 0 && static_cast<size_t>(length) == strlen(text) &&
+           memcmp(contents, text, static_cast<size_t>(length)) == 0;
+}
+
+struct Named
+{
+    char text[PATH_MAX];
+};
+
+Named Join(const char* base, const char* name)
+{
+    Named path;
+    snprintf(path.text, sizeof(path.text), "%s/%s", base, name);
+    return path;
+}
+
+// Rename onto an existing name replaces it in one step; base is on a writable filesystem.
+void CheckRenameIn(const char* base, bool hard_links)
+{
+    struct stat status;
+    struct stat parent_before;
+    struct stat parent_after;
+    Check(mkdir(base, 0755) == 0, "mkdir for the rename checks");
+    Check(Put(Join(base, "old").text, "old") && Put(Join(base, "new").text, "new") &&
+              rename(Join(base, "new").text, Join(base, "old").text) == 0 &&
+              Holds(Join(base, "old").text, "new"),
+          "rename onto a file replaces it");
+    errno = 0;
+    Check(stat(Join(base, "new").text, &status) == -1 && errno == ENOENT,
+          "the renamed name is gone");
+
+    Check(symlink("nowhere", Join(base, "link").text) == 0 && Put(Join(base, "plain").text, "p") &&
+              rename(Join(base, "plain").text, Join(base, "link").text) == 0 &&
+              lstat(Join(base, "link").text, &status) == 0 && S_ISREG(status.st_mode) &&
+              Holds(Join(base, "link").text, "p"),
+          "rename onto a symbolic link replaces the link");
+
+    if (hard_links)
+    {
+        Check(link(Join(base, "old").text, Join(base, "twin").text) == 0 &&
+                  rename(Join(base, "old").text, Join(base, "twin").text) == 0 &&
+                  stat(Join(base, "old").text, &status) == 0 && status.st_nlink == 2 &&
+                  stat(Join(base, "twin").text, &status) == 0 && status.st_nlink == 2 &&
+                  unlink(Join(base, "twin").text) == 0,
+              "rename onto its own hard link changes nothing");
+    }
+
+    Check(mkdir(Join(base, "empty").text, 0755) == 0 && mkdir(Join(base, "full").text, 0755) == 0 &&
+              mkdir(Join(base, "full/in").text, 0755) == 0 && Put(Join(base, "file").text, "f"),
+          "directories for the rename checks");
+    errno = 0;
+    Check(rename(Join(base, "file").text, Join(base, "empty").text) == -1 && errno == EISDIR,
+          "a file onto a directory");
+    errno = 0;
+    Check(rename(Join(base, "empty").text, Join(base, "file").text) == -1 && errno == ENOTDIR,
+          "a directory onto a file");
+    errno = 0;
+    Check(rename(Join(base, "empty").text, Join(base, "full").text) == -1 && errno == ENOTEMPTY,
+          "a directory onto a non-empty one");
+    errno = 0;
+    Check(rename(Join(base, "full/in").text, Join(base, "full").text) == -1 && errno == ENOTEMPTY,
+          "a directory onto its parent");
+    errno = 0;
+    Check(rename(Join(base, "full").text, Join(base, "full/in/deeper").text) == -1 &&
+              errno == EINVAL,
+          "a directory into its own subtree");
+    Check(Holds(Join(base, "file").text, "f"), "a refused rename changes nothing");
+
+    Check(mkdir(Join(base, "from").text, 0755) == 0 &&
+              mkdir(Join(base, "from/dir").text, 0755) == 0 &&
+              mkdir(Join(base, "empty/inner").text, 0755) == 0 &&
+              stat(Join(base, "from").text, &parent_before) == 0,
+          "directories to move");
+    Check(rename(Join(base, "from/dir").text, Join(base, "empty/inner").text) == 0 &&
+              stat(Join(base, "from").text, &parent_after) == 0 &&
+              stat(Join(base, "empty/inner/..").text, &status) == 0 && S_ISDIR(status.st_mode),
+          "a directory onto an empty directory");
+    if (hard_links)
+    {
+        Check(parent_after.st_nlink + 1 == parent_before.st_nlink,
+              "the old parent loses the moved directory's link");
+    }
+
+    Check(Put(Join(base, "target").text, "t") && Put(Join(base, "source").text, "s"),
+          "files for an open target");
+    const int target = open(Join(base, "target").text, O_RDONLY);
+    Check(target >= 0, "open the target");
+    errno = 0;
+    Check(rename(Join(base, "source").text, Join(base, "target").text) == -1 && errno == EBUSY,
+          "an open target is busy");
+    Check(close(target) == 0 && Holds(Join(base, "target").text, "t") &&
+              rename(Join(base, "source").text, Join(base, "target").text) == 0 &&
+              Holds(Join(base, "target").text, "s"),
+          "the target replaces once closed");
+
+    const char* const names[] = {"old",   "link", "file",    "target", "empty/inner",
+                                 "empty", "from", "full/in", "full"};
+    for (const char* name : names)
+    {
+        const Named path = Join(base, name);
+        Check(lstat(path.text, &status) == 0 &&
+                  (S_ISDIR(status.st_mode) ? rmdir(path.text) : unlink(path.text)) == 0,
+              "remove a rename check's file");
+    }
+    Check(rmdir(base) == 0, "remove the rename checks' directory");
+}
+
+void CheckRename()
+{
+    CheckRenameIn("/home/libc-rename", true);
+    CheckRenameIn("/tmp/libc-rename", false);
+}
+
 bool FileContains(const char* path, const char* text)
 {
     FILE* file = fopen(path, "r");
@@ -3608,6 +3739,7 @@ int main(int argc, char** argv)
     CheckDirectories();
     CheckPathLimits();
     CheckSymbolicLinks();
+    CheckRename();
     CheckVirtualFiles();
     CheckAddressNames();
     CheckTime();

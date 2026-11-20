@@ -1631,44 +1631,53 @@ uint64_t Rename(const char* from, const char* to)
             return User::SyscallErrorBusy;
         }
     }
-    if (IsLinkLocked(to))
+    VFS::FileInfo target = {};
+    if (VFS::Stat(to, &target))
     {
+        const uint32_t target_type = target.mode & User::ModeTypeMask;
         if (directory)
         {
-            return User::SyscallErrorNotDirectory;
+            VFS::FileInfo source = {};
+            if (target_type != User::ModeDirectory)
+            {
+                return User::SyscallErrorNotDirectory;
+            }
+            if (!VFS::Stat(from, &source))
+            {
+                return User::SyscallErrorNotFound;
+            }
+            if (target.node != source.node)
+            {
+                const Memory::HeapObject<Filesystem::DirectoryEntry> entry;
+                if (!entry)
+                {
+                    return User::SyscallErrorNoMemory;
+                }
+                if (VFS::ReadDirectory(to, 0, &*entry))
+                {
+                    return User::SyscallErrorNotEmpty;
+                }
+            }
         }
-        if (!VFS::Remove(to))
+        else if (target_type == User::ModeDirectory)
         {
-            return VFS::LastError();
+            return User::SyscallErrorIsDirectory;
         }
-    }
-    VFS::FileKey target_key = {};
-    if (FileKeyLocked(to, &target_key) && (directory || target_key != source_key))
-    {
-        if (directory)
+        else if (target_type != User::ModeSymbolicLink)
         {
-            return User::SyscallErrorNotDirectory;
-        }
-        if (FindUse(target_key) != nullptr)
-        {
-            return User::SyscallErrorBusy;
-        }
-        if (!VFS::Remove(to))
-        {
-            return VFS::LastError();
+            VFS::FileKey target_key = {};
+            if (FileKeyLocked(to, &target_key) && target_key != source_key &&
+                FindUse(target_key) != nullptr)
+            {
+                return User::SyscallErrorBusy;
+            }
         }
     }
     if (VFS::Rename(from, to))
     {
         return 0;
     }
-    const uint64_t error = VFS::LastError();
-    if (ExistsLocked(to))
-    {
-        return VFS::IsDirectory(to) && !directory ? User::SyscallErrorIsDirectory
-                                                  : User::SyscallErrorExists;
-    }
-    return ParentExistsLocked(to) ? error : User::SyscallErrorNotFound;
+    return ParentExistsLocked(to) ? VFS::LastError() : User::SyscallErrorNotFound;
 }
 
 uint64_t Stat(const char* path, User::FileStatus* status)

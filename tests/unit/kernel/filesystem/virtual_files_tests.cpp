@@ -258,6 +258,122 @@ TEST_CASE("tmpfs renames move nodes, but never into themselves")
     REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "gone", "here"));
 }
 
+namespace
+{
+
+std::vector<std::string> Sorted(std::vector<std::string> names)
+{
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+std::string Contents(uint32_t node)
+{
+    std::string bytes(FeatherOS::Tmpfs::Size(node), '\0');
+    uint64_t count = 0;
+    REQUIRE(FeatherOS::Tmpfs::Read(node, 0, bytes.data(), bytes.size(), &count));
+    return bytes;
+}
+
+uint32_t Put(const char* path, const std::string& bytes)
+{
+    uint32_t node = 0;
+    uint64_t count = 0;
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, path, &node));
+    REQUIRE(FeatherOS::Tmpfs::Write(node, 0, bytes.data(), bytes.size(), &count));
+    return node;
+}
+
+} // namespace
+
+TEST_CASE("tmpfs replaces a file, a link or an empty directory, and returns the old node's bytes")
+{
+    FeatherOS::Tmpfs::Reset();
+    Put("old.txt", std::string(1000, 'o'));
+    const uint32_t fresh = Put("new.txt", "new");
+    const uint64_t before = FeatherOS::Tmpfs::UsedBytes();
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "new.txt", "old.txt"));
+    uint32_t found = 0;
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "old.txt", &found));
+    REQUIRE(found == fresh);
+    REQUIRE(Contents(found) == "new");
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Find(Tmp, "new.txt", &found));
+    REQUIRE(FeatherOS::Tmpfs::UsedBytes() <= before - 1000);
+    REQUIRE(List("/tmp") == std::vector<std::string>{"old.txt"});
+
+    uint32_t link = 0;
+    REQUIRE(FeatherOS::Tmpfs::SymbolicLink(Tmp, "ln", "old.txt", &link));
+    Put("plain", "plain");
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "plain", "ln"));
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "ln", &found));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::IsLinkNode(found));
+    REQUIRE(Contents(found) == "plain");
+
+    REQUIRE(FeatherOS::Tmpfs::SymbolicLink(Tmp, "ln2", "x", &link));
+    Put("target", "t");
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "ln2", "target"));
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "target", &found));
+    REQUIRE(FeatherOS::Tmpfs::IsLinkNode(found));
+
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "from"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "from/inner"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "to"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "to/empty"));
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "from/inner", "to/empty"));
+    REQUIRE(FeatherOS::Tmpfs::IsDirectory(Tmp, "to/empty"));
+    REQUIRE(List("/tmp/from").empty());
+    REQUIRE(List("/tmp/to") == std::vector<std::string>{"empty/"});
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "to/empty", "to/empty"));
+}
+
+TEST_CASE("a refused tmpfs rename leaves both nodes and every byte as they were")
+{
+    FeatherOS::Tmpfs::Reset();
+    const uint32_t file = Put("file", "file bytes");
+    const uint32_t other = Put("other", "other bytes");
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "full"));
+    Put("full/child", "child");
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "empty"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "full/in"));
+    const uint64_t used = FeatherOS::Tmpfs::UsedBytes();
+    const std::vector<std::string> root = List("/tmp");
+
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "empty", "full"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "file", "full"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "file", "empty"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "empty", "file"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "full/in", "full"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "full", "full/in/deeper"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "file", ""));
+
+    uint32_t found = 0;
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "file", &found));
+    REQUIRE(found == file);
+    REQUIRE(Contents(found) == "file bytes");
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "other", &found));
+    REQUIRE(found == other);
+    REQUIRE(Contents(found) == "other bytes");
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "full/child", &found));
+    REQUIRE(Contents(found) == "child");
+    REQUIRE(FeatherOS::Tmpfs::UsedBytes() == used);
+    REQUIRE(Sorted(List("/tmp")) == Sorted(root));
+    REQUIRE(Sorted(List("/tmp/full")) == std::vector<std::string>{"child", "in/"});
+}
+
+TEST_CASE("a tmpfs replacement frees its entry, so a full table takes another create")
+{
+    FeatherOS::Tmpfs::Reset();
+    uint32_t node = 0;
+    for (uint32_t index = 0; index < FeatherOS::Tmpfs::MaximumEntries; ++index)
+    {
+        REQUIRE(FeatherOS::Tmpfs::Create(Tmp, ("f" + std::to_string(index)).c_str(), &node));
+    }
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "one-too-many", &node));
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "f1", "f2"));
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, "one-more", &node));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "and-one-too-many", &node));
+}
+
 TEST_CASE("tmpfs stops at its node and byte limits")
 {
     FeatherOS::Tmpfs::Reset();

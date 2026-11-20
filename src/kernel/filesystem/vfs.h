@@ -169,7 +169,8 @@ bool IsDevice(const FileHandle& file);
 bool DeviceNode(const FileHandle& file, uint32_t* node);
 bool RemoveDirectory(const char* path);
 bool SameFilesystem(const char* left, const char* right);
-// Within one filesystem; to must not exist, unless it names from in another case on the disk.
+// Within one filesystem. An existing to of the same kind (a directory only if empty) is replaced
+// by the one driver call; the caller has made the kind and open-file checks.
 bool Rename(const char* from, const char* to);
 // Lists a directory, such as "/", "/home/docs", or "/system": first the mount points directly
 // inside it, then its own entries. False past the last entry.

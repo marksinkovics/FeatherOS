@@ -47,7 +47,9 @@ bool Remove(Root root, const char* path);
 bool MakeDirectory(Root root, const char* path);
 // Only an empty directory can be removed, and never the root.
 bool RemoveDirectory(Root root, const char* path);
-// Fails if to exists, or would put a directory inside itself. Open files keep their node.
+// A name onto itself changes nothing. An existing to of the same kind (a directory only if empty)
+// is freed once every check has passed. Fails if the move would put a directory inside itself.
+// Open files keep their node.
 bool Rename(Root root, const char* from, const char* to);
 bool IsDirectory(Root root, const char* path);
 bool ReadDirectory(Root root, const char* path, uint32_t index, Filesystem::DirectoryEntry* entry);

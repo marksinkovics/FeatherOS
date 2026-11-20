@@ -23,6 +23,9 @@ EXT4_INPUT = (
     b"wc -c /samples/copy.bin\n"
     b"rm /samples/copy.bin\nrm /samples/soft\nrm /samples/hard.txt\n"
     b"rm /samples/made/renamed.txt\nrmdir /samples/made\n"
+    b"write /samples/t.txt old target\nwrite /samples/s.txt new target\n"
+    b"mv /samples/s.txt /samples/t.txt\ncat /samples/t.txt\nls /samples\n"
+    b"rm /samples/t.txt\n"
     b"write /shell.txt shell wrote ext4\n"
     b"mount -t ext3 vda3 /mnt\ngrep /mnt /proc/mounts\ncat /mnt/link\n"
     b"wc -c /mnt/big.txt\nwrite /mnt/shell.txt shell wrote ext3\n"
@@ -36,6 +39,7 @@ EXPECTED_EXT4_OUTPUT = (
     "\nshell wrote this",
     "rmdir: /samples/made: Directory not empty",
     "2097152 /samples/copy.bin",
+    "\nnew target",
     "vda3 /mnt ext3 rw 0 0",
     "\next3 subdirectory file",
     "48000 /mnt/big.txt",
@@ -51,12 +55,17 @@ LINES = tuple(
         r"^-rw-rw-rw- +2 +0 +0 +17 \S+ \S+ renamed\.txt\r?$",
     )
 )
+REPLACED_LISTING = re.compile(r"> ls /samples\r?\n(?:(?!> ).*\r?\n)+")
+REPLACED_NAME = re.compile(r"^s\.txt\r?$", re.MULTILINE)
 
 
 def Check(result):
     for line in LINES:
         if line.search(result.output) is None:
             return f"the ext4 root did not show {line.pattern!r}"
+    listing = REPLACED_LISTING.search(result.output)
+    if listing is None or REPLACED_NAME.search(listing.group(0)) is not None:
+        return "mv onto an existing file left its source name in /samples"
     return None
 
 

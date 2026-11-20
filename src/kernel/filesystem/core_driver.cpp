@@ -565,15 +565,6 @@ bool CoreDriver::Rename(const char* from, const char* to)
     {
         return Fail(source.error());
     }
-    const Result<NodeId> target = filesystem->Lookup(*to_parent, to_leaf);
-    if (target && *target != *source)
-    {
-        return Fail(Error::Exists);
-    }
-    if (!target && target.error() != Error::NotFound)
-    {
-        return Fail(target.error());
-    }
     const FeatherDisk::Status renamed =
         filesystem->Rename(*from_parent, from_leaf, *to_parent, to_leaf);
     return renamed || Fail(renamed.error());

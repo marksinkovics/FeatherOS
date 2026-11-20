@@ -235,6 +235,18 @@ bool HasData(uint32_t node)
     return node < MaximumNodes && nodes[node].used && !nodes[node].directory;
 }
 
+bool HasChild(uint32_t directory)
+{
+    for (uint32_t child = RootCount; child < MaximumNodes; ++child)
+    {
+        if (nodes[child].used && nodes[child].parent == directory)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 bool Find(Root root, const char* path, uint32_t* node)
@@ -358,17 +370,10 @@ bool MakeDirectory(Root root, const char* path)
 bool RemoveDirectory(Root root, const char* path)
 {
     uint32_t node;
-    uint32_t child;
-    if (path == nullptr || !Lookup(root, path, &node) || IsRoot(node) || !nodes[node].directory)
+    if (path == nullptr || !Lookup(root, path, &node) || IsRoot(node) || !nodes[node].directory ||
+        HasChild(node))
     {
         return false;
-    }
-    for (child = RootCount; child < MaximumNodes; ++child)
-    {
-        if (nodes[child].used && nodes[child].parent == node)
-        {
-            return false;
-        }
     }
     nodes[node].used = false;
     return true;
@@ -381,7 +386,7 @@ bool Rename(Root root, const char* from, const char* to)
     const char* name;
     uint32_t existing;
     if (from == nullptr || to == nullptr || !Lookup(root, from, &node) || IsRoot(node) ||
-        !LookupParent(root, to, &parent, &name) || Lookup(root, to, &existing))
+        !LookupParent(root, to, &parent, &name))
     {
         return false;
     }
@@ -391,6 +396,21 @@ bool Rename(Root root, const char* from, const char* to)
         {
             return false;
         }
+    }
+    const bool replaces = Lookup(root, to, &existing);
+    if (replaces)
+    {
+        if (existing == node)
+        {
+            return true;
+        }
+        if (IsRoot(existing) || nodes[existing].directory != nodes[node].directory ||
+            (nodes[existing].directory && HasChild(existing)))
+        {
+            return false;
+        }
+        FreeData(nodes[existing]);
+        nodes[existing].used = false;
     }
     uint32_t length = 0;
     for (; name[length] != '\0'; ++length)

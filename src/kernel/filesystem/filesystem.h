@@ -130,7 +130,8 @@ public:
     virtual bool Remove(const char* path);
     virtual bool MakeDirectory(const char* path);
     virtual bool RemoveDirectory(const char* path);
-    // Both paths are on this filesystem.
+    // Both paths are on this filesystem. An existing to of the same kind (a directory only if
+    // empty) is replaced as part of the same change.
     virtual bool Rename(const char* from, const char* to);
     virtual bool IsDirectory(const char* path);
     virtual bool ReadDirectory(const char* path, uint32_t index, DirectoryEntry* entry);
