@@ -19,11 +19,23 @@ constexpr std::uint8_t ProtectiveMbrType = 0xEE;
 constexpr std::uint8_t Fat16Type = 0x06;
 constexpr std::uint8_t Fat16LbaType = 0x0E;
 constexpr std::uint8_t LinuxType = 0x83;
+constexpr std::uint32_t FirstLogicalNumber = 5;
+constexpr std::uint32_t MaximumEbrReads = 64;
 constexpr std::uint64_t GptHeaderSector = 1;
 constexpr std::uint32_t GptHeaderMinimumSize = 92;
 constexpr std::uint32_t GptMinimumEntrySize = 128;
 // The UEFI specification requires room for at least 128 entries; more is unusual.
 constexpr std::uint32_t GptMaximumEntryCount = 1024;
+
+bool IsExtendedType(std::uint8_t type)
+{
+    return type == 0x05 || type == 0x0F || type == 0x85;
+}
+
+bool IsFilesystemType(std::uint8_t type)
+{
+    return type == Fat16Type || type == Fat16LbaType || type == LinuxType;
+}
 
 std::uint32_t Load32(const std::uint8_t* bytes)
 {
@@ -130,10 +142,15 @@ std::size_t FindGpt(BlockDevice& device, std::span<std::uint8_t> sector, std::sp
         const std::uint64_t last = Load64(raw + 40);
         if (used && ValidRange(first, last, disk_sectors) && found < ranges.size())
         {
-            ranges[found++] = {first, last - first + 1};
+            ranges[found++] = {first, last - first + 1, entry + 1};
         }
     }
     return crc == entries_crc ? found : 0;
+}
+
+const std::uint8_t* MbrEntryAt(std::span<const std::uint8_t> sector, std::uint32_t index)
+{
+    return sector.data() + MbrPartitionTable + static_cast<std::size_t>(index) * MbrEntrySize;
 }
 
 // sector receives sector 0.
@@ -145,14 +162,51 @@ Scheme ReadMbr(BlockDevice& device, std::span<std::uint8_t> sector)
     }
     for (std::uint32_t index = 0; index < MbrEntryCount; ++index)
     {
-        const std::uint8_t* entry =
-            sector.data() + MbrPartitionTable + static_cast<std::size_t>(index) * MbrEntrySize;
-        if (entry[4] == ProtectiveMbrType)
+        if (MbrEntryAt(sector, index)[4] == ProtectiveMbrType)
         {
             return Scheme::Gpt;
         }
     }
     return Scheme::Mbr;
+}
+
+// sector is one sector's worth of scratch space.
+std::size_t FindLogicals(BlockDevice& device, std::span<std::uint8_t> sector, Range container,
+                         std::span<Range> ranges, std::size_t found)
+{
+    const std::uint64_t disk_sectors = device.SectorCount();
+    const std::uint64_t container_last = container.first_sector + container.sector_count - 1;
+    std::uint64_t record = container.first_sector;
+    std::uint32_t number = FirstLogicalNumber;
+    for (std::uint32_t reads = 0; reads < MaximumEbrReads && found < ranges.size(); ++reads)
+    {
+        if (!device.Read(record, sector) || sector[510] != 0x55 || sector[511] != 0xAA)
+        {
+            break;
+        }
+        const std::uint8_t* logical = MbrEntryAt(sector, 0);
+        const std::uint64_t count = Load32(logical + 12);
+        if (count != 0 && !IsExtendedType(logical[4]))
+        {
+            const std::uint64_t first = record + Load32(logical + 8);
+            if (IsFilesystemType(logical[4]) && first > record &&
+                first + count - 1 <= container_last &&
+                ValidRange(first, first + count - 1, disk_sectors))
+            {
+                ranges[found++] = {first, count, number};
+            }
+            ++number;
+        }
+        const std::uint8_t* link = MbrEntryAt(sector, 1);
+        const std::uint64_t next = container.first_sector + Load32(link + 8);
+        if (!IsExtendedType(link[4]) || Load32(link + 12) == 0 || next <= record ||
+            next > container_last)
+        {
+            break;
+        }
+        record = next;
+    }
+    return found;
 }
 
 bool ValidSectorSize(std::uint32_t sector_size)
@@ -193,23 +247,33 @@ std::size_t Find(BlockDevice& device, std::span<Range> ranges)
     {
         return FindGpt(device, sector, ranges);
     }
-    const std::uint8_t* mbr = sector.data();
     const std::uint64_t disk_sectors = device.SectorCount();
     std::size_t found = 0;
-    for (std::uint32_t index = 0; index < MbrEntryCount && found < ranges.size(); ++index)
+    bool seen_extended = false;
+    bool has_container = false;
+    Range container = {};
+    for (std::uint32_t index = 0; index < MbrEntryCount; ++index)
     {
-        const std::uint8_t* entry =
-            mbr + MbrPartitionTable + static_cast<std::size_t>(index) * MbrEntrySize;
+        const std::uint8_t* entry = MbrEntryAt(sector, index);
         const std::uint64_t first = Load32(entry + 8);
         const std::uint64_t count = Load32(entry + 12);
         const std::uint8_t type = entry[4];
-        if ((type == Fat16Type || type == Fat16LbaType || type == LinuxType) && count != 0 &&
-            ValidRange(first, first + count - 1, disk_sectors))
+        const bool valid = count != 0 && ValidRange(first, first + count - 1, disk_sectors);
+        if (IsExtendedType(type))
         {
-            ranges[found++] = {first, count};
+            if (!seen_extended)
+            {
+                seen_extended = true;
+                has_container = valid;
+                container = {first, count, index + 1};
+            }
+        }
+        else if (IsFilesystemType(type) && valid && found < ranges.size())
+        {
+            ranges[found++] = {first, count, index + 1};
         }
     }
-    return found;
+    return has_container ? FindLogicals(device, sector, container, ranges, found) : found;
 }
 
 } // namespace FeatherDisk::Partition

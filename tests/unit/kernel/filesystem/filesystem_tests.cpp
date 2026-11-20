@@ -1253,6 +1253,26 @@ TEST_CASE("the disk's FAT16 mount skips a Linux partition listed before it")
     REQUIRE(FeatherOS::VFS::Mount("ext2", "vda1", "/mnt") == MountResult::UnknownType);
 }
 
+TEST_CASE("a FAT16 volume in an extended partition is vda5")
+{
+    MakeFat16Disk("logical contents");
+    disk.insert(disk.begin() + 1, 2, {});
+    uint8_t* table = disk[0].data() + 446;
+    table[4] = 0x05;
+    WriteLittleEndian32(table + 8, 1);
+    WriteLittleEndian32(table + 12, 5002);
+    uint8_t* ebr = disk[1].data();
+    ebr[446 + 4] = 0x06;
+    WriteLittleEndian32(ebr + 446 + 8, 2);
+    WriteLittleEndian32(ebr + 446 + 12, PartitionSectorCount);
+    ebr[510] = 0x55;
+    ebr[511] = 0xAA;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(ReadWhole("/BLOCK.TXT") == "logical contents");
+    REQUIRE(FeatherOS::Filesystem::Drivers::Disk().PartitionNumber() == 5);
+    REQUIRE(MountSource("/") == "vda5 fat16 rw");
+}
+
 TEST_CASE("disk sources are named as Linux names the first virtio disk's partitions")
 {
     using FeatherOS::Filesystem::Drivers::PartitionSource;

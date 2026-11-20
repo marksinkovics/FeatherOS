@@ -1736,8 +1736,12 @@ bool PartitionNeedsRecovery(size_t number)
     FeatherDisk::Partition::Range ranges[16] = {};
     const size_t count = FeatherDisk::Partition::Find(BlockDevice::CoreDevice(), ranges);
     uint8_t sector[BlockDevice::SectorSize];
-    if (number == 0 || number > count ||
-        !BlockDevice::ReadSector(ranges[number - 1].first_sector + 2, sector))
+    size_t index = 0;
+    while (index < count && ranges[index].number != number)
+    {
+        ++index;
+    }
+    if (index == count || !BlockDevice::ReadSector(ranges[index].first_sector + 2, sector))
     {
         Panic("Could not read the root's superblock");
     }

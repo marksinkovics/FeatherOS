@@ -20,6 +20,22 @@ void SetMbrEntry(MemoryDevice& device, std::size_t index, std::uint8_t type, std
     device.Sector(0)[511] = 0xAA;
 }
 
+void WriteEbr(MemoryDevice& device, std::uint64_t sector, MbrEntry logical, MbrEntry next)
+{
+    std::span<std::uint8_t> bytes = device.Sector(sector);
+    std::fill(bytes.begin(), bytes.end(), 0);
+    const MbrEntry entries[2] = {logical, next};
+    for (std::size_t index = 0; index < 2; ++index)
+    {
+        std::uint8_t* entry = bytes.data() + 446 + index * 16;
+        entry[4] = entries[index].type;
+        StoreLittleEndian(entry + 8, entries[index].first);
+        StoreLittleEndian(entry + 12, entries[index].count);
+    }
+    bytes[510] = 0x55;
+    bytes[511] = 0xAA;
+}
+
 std::uint32_t Crc32(const std::uint8_t* bytes, std::size_t length)
 {
     std::uint32_t crc = 0xFFFFFFFFU;

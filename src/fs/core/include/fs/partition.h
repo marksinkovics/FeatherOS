@@ -15,6 +15,9 @@ struct Range
 {
     std::uint64_t first_sector;
     std::uint64_t sector_count;
+    // Linux's partition number: an MBR primary's slot (1 to 4), a logical's place from 5 in chain
+    // order, a GPT entry's index plus one. Gaps are normal.
+    std::uint32_t number = 0;
 };
 
 enum class Scheme : std::uint8_t
@@ -29,11 +32,22 @@ enum class Scheme : std::uint8_t
 // filesystem on the whole device probes for one first.
 Scheme Identify(BlockDevice& device);
 
-// Partitions that may hold a filesystem, in table order: the used entries of a GUID partition
-// table, whatever their type, when the MBR is protective, otherwise the MBR's FAT16 (0x06, 0x0E)
-// and Linux (0x83) entries. Callers probe each for the filesystem they want. A GPT whose header
-// or entry array fails its CRC32 check yields none rather than falling back to the MBR. Returns
-// how many were stored, at most ranges.size().
+// Partitions that may hold a filesystem: the used entries of a GUID partition table, whatever
+// their type, when the MBR is protective (numbered by entry; no extended partitions are read),
+// otherwise the MBR's FAT16 (0x06, 0x0E) and Linux (0x83) entries. Callers probe each for the
+// filesystem they want. A GPT whose header or entry array fails its CRC32 check yields none
+// rather than falling back to the MBR.
+//
+// The MBR's first extended entry (0x05, 0x0F, 0x85) is a container that is never listed; its
+// chain of extended boot records is walked after the primaries, which come in slot order. In each
+// record entry 0 is a logical partition whose start is relative to that record's sector and
+// entry 1 links to the next record, relative to the container's first sector. A logical must lie
+// after its record and inside the container and the disk; a link must lie strictly after the
+// record that holds it. Anything else, an unreadable record or one without the 0x55AA signature
+// ends the chain and keeps what was found. At most 64 records are read. A logical of any type
+// takes the next number from 5, listed or not, as in Linux.
+//
+// Returns how many were stored, at most ranges.size().
 std::size_t Find(BlockDevice& device, std::span<Range> ranges);
 
 // One partition of a device as a device of its own, whose sector 0 is the partition's first.

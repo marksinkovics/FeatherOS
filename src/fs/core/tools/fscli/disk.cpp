@@ -123,11 +123,14 @@ MountedVolume::Open(BlockDevice& device, std::optional<std::uint32_t> partition,
     }
     if (partition)
     {
-        if (*partition == 0 || *partition > layout.partitions.size())
+        for (const Partition::Range& range : layout.partitions)
         {
-            return std::unexpected("has no partition " + std::to_string(*partition));
+            if (range.number == *partition)
+            {
+                return Open(device, range, options);
+            }
         }
-        return Open(device, layout.partitions[*partition - 1], options);
+        return std::unexpected("has no partition " + std::to_string(*partition));
     }
     for (const Partition::Range& range : layout.partitions)
     {

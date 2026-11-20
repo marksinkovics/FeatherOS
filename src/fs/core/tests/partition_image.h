@@ -23,6 +23,19 @@ constexpr Guid LinuxFilesystemType = {0xAF, 0x3D, 0xC6, 0x0F, 0x83, 0x84, 0x72, 
 void SetMbrEntry(MemoryDevice& device, std::size_t index, std::uint8_t type, std::uint32_t first,
                  std::uint32_t count);
 
+// A partition table entry's raw fields; for an extended boot record the start is relative, to the
+// record's own sector for entry 0 and to the container's first sector for entry 1.
+struct MbrEntry
+{
+    std::uint8_t type = 0;
+    std::uint32_t first = 0;
+    std::uint32_t count = 0;
+};
+
+// An extended boot record at sector: entry 0 the logical, entry 1 the link, the fields stored as
+// given, and the signature. An empty entry leaves its slot zero.
+void WriteEbr(MemoryDevice& device, std::uint64_t sector, MbrEntry logical, MbrEntry next = {});
+
 // Written independently of the code under test: bit by bit, without its masking trick.
 std::uint32_t Crc32(const std::uint8_t* bytes, std::size_t length);
 

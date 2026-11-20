@@ -386,10 +386,9 @@ int Info(const std::vector<std::string_view>& arguments)
         std::printf("no partitions or filesystems found\n");
         return ExitSuccess;
     }
-    for (std::size_t index = 0; index < layout.partitions.size(); ++index)
+    for (const Partition::Range& range : layout.partitions)
     {
-        const Partition::Range& range = layout.partitions[index];
-        std::printf("partition %zu: start %llu, %llu sectors (%s), ", index + 1,
+        std::printf("partition %u: start %llu, %llu sectors (%s), ", range.number,
                     static_cast<unsigned long long>(range.first_sector),
                     static_cast<unsigned long long>(range.sector_count),
                     FormatBytes(range.sector_count * disk.SectorSize()).c_str());

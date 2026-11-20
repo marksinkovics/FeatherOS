@@ -157,6 +157,10 @@ bool CoreDriver::Mount(FeatherDisk::FilesystemType& new_type, FeatherDisk::Block
     const size_t count = FeatherDisk::Partition::Find(disk, partitions);
     for (size_t index = 0; index < count; ++index)
     {
+        if (partitions[index].number > MaximumPartitions)
+        {
+            continue;
+        }
         volume.Assign(disk, partitions[index]);
         if (!new_type.Probe(volume))
         {
@@ -168,7 +172,7 @@ bool CoreDriver::Mount(FeatherDisk::FilesystemType& new_type, FeatherDisk::Block
         {
             type = &new_type;
             filesystem = *mounted;
-            partition_number = index + 1;
+            partition_number = partitions[index].number;
             core_read_only = CoreReadOnly(mode);
             return true;
         }

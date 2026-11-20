@@ -38,7 +38,7 @@ public:
     // is unmounted. Read-only properties or mode mount it read-only; a VFS mount asking for
     // another mode reopens it so.
     bool Mount(FeatherDisk::FilesystemType& type, FeatherDisk::BlockDevice& disk, MountMode mode);
-    // The mounted partition's place in Partition::Find's list, from 1; 0 with nothing mounted.
+    // The mounted partition's number (Partition::Range::number, from 1); 0 with nothing mounted.
     size_t PartitionNumber() const;
     bool Statistics(FeatherDisk::VolumeStatistics* statistics);
 
