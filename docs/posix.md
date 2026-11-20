@@ -46,7 +46,8 @@ These come from the kernel and apply everywhere below.
 | Environment | 1 KiB and at most 32 variables |
 | Path | 1023 characters (`PATH_MAX` 1024 with the terminator), each name at most 255 (`NAME_MAX`) |
 | Symbolic links | 40 followed per path, then `ELOOP` |
-| Open files per process | 16 descriptors, plus the console's 0, 1 and 2 |
+| Open files per process | 256 descriptors (`RLIMIT_NOFILE`'s soft limit, which `setrlimit` raises to 1024), the console's 0, 1 and 2 included |
+| Open files system-wide | 1024 distinct disk, `/tmp` and `/etc` files (`ENFILE` past that); any number of descriptors share one |
 | Running children per process | 16 |
 | Memory per process | 16384 pages (64 MiB), including the image and stack |
 | Clocks | the wall clock counts whole seconds; the monotonic clock counts milliseconds |
@@ -82,7 +83,7 @@ The `is*` classifiers, `tolower` and `toupper`, for ASCII only, since `"C"` is t
 
 ### `limits.h`
 
-The compiler's own limits, plus `LLONG_MIN`, `LLONG_MAX` and `ULLONG_MAX` where it leaves them out, and the kernel's: `PATH_MAX` 1024 (a path with its terminator, the size of the kernel's path buffers), `NAME_MAX` 255 (one component, as `d_name` holds it with its terminator), `PIPE_BUF` 512 and `OPEN_MAX` 32, and the C library's `PTHREAD_KEYS_MAX` 128 and `PTHREAD_DESTRUCTOR_ITERATIONS` 4. FAT16 names stay at most 63 ASCII characters within `NAME_MAX`.
+The compiler's own limits, plus `LLONG_MIN`, `LLONG_MAX` and `ULLONG_MAX` where it leaves them out, and the kernel's: `PATH_MAX` 1024 (a path with its terminator, the size of the kernel's path buffers), `NAME_MAX` 255 (one component, as `d_name` holds it with its terminator), `PIPE_BUF` 512 (there is no `OPEN_MAX`, as in glibc: ask `sysconf(_SC_OPEN_MAX)`), and the C library's `PTHREAD_KEYS_MAX` 128 and `PTHREAD_DESTRUCTOR_ITERATIONS` 4. FAT16 names stay at most 63 ASCII characters within `NAME_MAX`.
 
 ### `errno.h`
 
@@ -215,7 +216,7 @@ Differences:
 
 - **Descriptors:**
   - `read`, `write`, `close` and `lseek`.
-  - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC O_NONBLOCK O_NOCTTY O_NOFOLLOW`. The lowest free descriptor is used, out of 32. A session leader without a controlling terminal takes the first terminal it opens unless it passes `O_NOCTTY`. A symbolic link in the last component is followed, and `O_CREAT` through a dangling one creates its target, as on Linux; `O_NOFOLLOW` makes it fail with `ELOOP` instead (its value is Linux's generic `0400000`, which is Linux's on x86-64 but not on AArch64, where FeatherOS uses the same value). `O_CREAT | O_EXCL` fails with `EEXIST` on any link, a dangling one too.
+  - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC O_NONBLOCK O_NOCTTY O_NOFOLLOW`. The lowest free descriptor below the soft `RLIMIT_NOFILE` limit is used (`EMFILE` when none is free, `ENFILE` when a new file would be the 1025th tracked system-wide). A session leader without a controlling terminal takes the first terminal it opens unless it passes `O_NOCTTY`. A symbolic link in the last component is followed, and `O_CREAT` through a dangling one creates its target, as on Linux; `O_NOFOLLOW` makes it fail with `ELOOP` instead (its value is Linux's generic `0400000`, which is Linux's on x86-64 but not on AArch64, where FeatherOS uses the same value). `O_CREAT | O_EXCL` fails with `EEXIST` on any link, a dangling one too.
   - `openat` does what `open` does for an absolute path, or a relative one with `AT_FDCWD`. Directories cannot be opened, so a relative path with any other descriptor fails with `ENOTDIR`, or `EBADF` when the descriptor is not open. `readlinkat`, `symlinkat` and `linkat` follow the same rule; `linkat` takes `AT_SYMLINK_FOLLOW` (it follows `from` through `realpath`), and `fcntl.h` defines `AT_SYMLINK_NOFOLLOW` too, though no function takes it yet.
   - `dup` and `dup2` share the open file, its offset and its `O_APPEND` and `O_NONBLOCK` flags. `fcntl` supports `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD` and `F_SETFD` (`FD_CLOEXEC`), and `F_GETFL` and `F_SETFL`, which reports the access mode and changes `O_APPEND` and `O_NONBLOCK`, ignoring other flags as Linux does. Locks are not provided.
   - `O_NONBLOCK` makes a pipe or socket call that would wait fail with `EAGAIN` instead; on files it changes nothing. A terminal's flags cannot change (`EINVAL`), since every process shares the console's open file; raw mode with `VMIN` 0 reads it without waiting.
@@ -239,7 +240,7 @@ Differences:
 - **Processes:** `getpid`, `getppid`, `getpgrp`, `getpgid`, `setsid`, `getsid` and `_exit`. The kernel starts init in a session of its own without a controlling terminal; a child joins its parent's session and controlling terminal unless it is started with `POSIX_SPAWN_SETSID`. `setsid` starts a session without a controlling terminal and fails with `EPERM` for a group leader, which every command the shell starts is. `tcgetpgrp` works only on the caller's controlling terminal (`ENOTTY` on others). `tcsetpgrp` only names a group of the caller's session there, otherwise `EPERM`. On the controlling terminal a background group's read gets `SIGTTIN`, and its `tcsetattr` or `tcsetpgrp` gets `SIGTTOU`, both of which stop the group by default; the call runs again once the group continues. A read that ignores or blocks `SIGTTIN` fails with `EIO`; a change that ignores or blocks `SIGTTOU` goes ahead, which is how a shell takes the terminal back. An orphaned group gets `EIO` instead of the signal. Writes from the background are allowed, as with `stty -tostop`. On another terminal there is no such check. Besides the console, pseudo-terminal slaves are terminals (see `stdlib.h`). `setpgid` is not provided: groups are chosen when `posix_spawn` starts the child.
 - **Sleeping:** `sleep` and `usleep`.
 - **`environ`.**
-- **`sysconf`:** `_SC_NPROCESSORS_ONLN` and `_SC_NPROCESSORS_CONF` (the same, from `/proc/stat`), `_SC_PAGESIZE` and `_SC_OPEN_MAX`; other names fail with `EINVAL`.
+- **`sysconf`:** `_SC_NPROCESSORS_ONLN` and `_SC_NPROCESSORS_CONF` (the same, from `/proc/stat`), `_SC_PAGESIZE` and `_SC_OPEN_MAX` (the soft `RLIMIT_NOFILE` limit, through `getrlimit`); other names fail with `EINVAL`.
 - **`sbrk`:** moves the end of the heap that `malloc` also uses. A negative increment returns the whole pages above the new end to the kernel, and going below the heap's start fails with `EINVAL`. `malloc` never lowers the break below memory a program got from `sbrk` itself. `brk` is not provided.
 
 Not provided:
@@ -359,6 +360,15 @@ Only `ioctl(fd, TIOCGWINSZ, &size)` and `ioctl(fd, TIOCSWINSZ, &size)`, which do
 - `umount` fails with `EINVAL` for a path that is not a mount point and `ENOENT` for one that does not exist. It fails with `EBUSY` while a file on the mount is open, a process's working directory is inside it, or another mount point lies inside it, so `/` can never be unmounted from a running shell. Terminal descriptors from `/dev` (`/dev/tty`, `/dev/ttyN`, `/dev/pts/N`) do not keep `/dev` busy. The filesystem's data is flushed to the device first, and an ext3 or ext4 journal is closed, leaving the partition clean.
 - There are no users, so neither call fails with `EPERM`.
 
+### `sys/resource.h`
+
+`getrlimit` and `setrlimit` with `struct rlimit`, `rlim_t` and `RLIM_INFINITY`, for `RLIMIT_NOFILE` (7) only; any other resource fails with `EINVAL`, a bad pointer with `EFAULT`. The limits belong to the process, so its threads share them, and `posix_spawn` hands them to the child.
+
+- The soft limit starts at 256 and the hard limit at 1024, which is also the ceiling: `setrlimit` can lower either limit and raise the hard limit again as far as 1024, with no users to ask. A soft limit above the hard one fails with `EINVAL`, a hard limit above 1024 (`RLIM_INFINITY` included) with `EPERM`. A soft limit of 0 is allowed.
+- Lowering the soft limit closes nothing: descriptors at or above it keep working, but no new descriptor gets a number at or above it (`EMFILE`), `dup2` to such a number fails with `EBADF`, `fcntl(F_DUPFD)` with such a minimum with `EINVAL`, and `poll` takes at most that many entries.
+- There is no `getrusage`, `prlimit` or other resource (`RLIMIT_STACK`, `RLIMIT_AS` and the rest), and no `RLIM_SAVED_*`.
+- The shell's `ulimit -n` prints the soft limit, `ulimit -n N` sets it, `ulimit -Hn` and `ulimit -Hn N` do the same for the hard limit, and a soft limit above the hard one asks for the hard limit to rise with it (`ulimit -n 2000` fails with `Operation not permitted`).
+
 ### `sys/socket.h`, `netinet/in.h`, `arpa/inet.h`, `netinet/ip_icmp.h`, `netinet/icmp6.h`, `sys/time.h`
 
 Sockets are descriptors: `read`, `write`, `close`, `dup`, `fstat` (`S_IFSOCK`), `poll` and inheritance work on them as on files.
@@ -372,7 +382,7 @@ Sockets are descriptors: `read`, `write`, `close`, `dup`, `fstat` (`S_IFSOCK`), 
 
 ### `poll.h`
 
-`poll` with Linux's `struct pollfd` and `POLLIN`, `POLLOUT`, `POLLERR`, `POLLHUP` and `POLLNVAL`, for at most 64 descriptors; a negative timeout waits until one is ready, and a signal ends the wait with `EINTR`. Files are always ready; pipes, sockets and the console report as described in [development.md](development.md). Console input counts as soon as a key is waiting, so a canonical read may still wait for the end of the line. `select`, `ppoll` and `epoll` are not provided.
+`poll` with Linux's `struct pollfd` and `POLLIN`, `POLLOUT`, `POLLERR`, `POLLHUP` and `POLLNVAL`, for at most as many descriptors as the soft `RLIMIT_NOFILE` limit (more fail with `EINVAL`, as on Linux); a negative timeout waits until one is ready, and a signal ends the wait with `EINTR`. Files are always ready; pipes, sockets and the console report as described in [development.md](development.md). Console input counts as soon as a key is waiting, so a canonical read may still wait for the end of the line. `select`, `ppoll` and `epoll` are not provided.
 
 ### `netdb.h`
 

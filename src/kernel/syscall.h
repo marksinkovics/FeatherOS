@@ -134,6 +134,8 @@ struct Handlers
     uint64_t (*resolve_path)(void* context, uint64_t path, uint64_t buffer,
                              uint64_t capacity) = nullptr;
     uint64_t (*sync)(void* context) = nullptr;
+    uint64_t (*resource_limit)(void* context, uint64_t resource, uint64_t requested,
+                               uint64_t previous) = nullptr;
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

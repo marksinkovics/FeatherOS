@@ -16,7 +16,6 @@
 
 // The kernel's limits, as POSIX names them. PATH_MAX counts the terminator; NAME_MAX does not.
 #define PIPE_BUF 512
-#define OPEN_MAX 32
 #define PATH_MAX 1024
 #define NAME_MAX 255
 

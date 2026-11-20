@@ -196,6 +196,13 @@ inline uint64_t SyncFilesystems()
     return Syscall(SyscallNumber::Sync);
 }
 
+inline uint64_t ResourceLimit(uint64_t resource, const ResourceLimits* requested,
+                              ResourceLimits* previous)
+{
+    return Syscall(SyscallNumber::ResourceLimit, resource, reinterpret_cast<uint64_t>(requested),
+                   reinterpret_cast<uint64_t>(previous));
+}
+
 inline uint64_t StatDescriptor(uint64_t descriptor, FileStatus* status)
 {
     return Syscall(SyscallNumber::StatDescriptor, descriptor, reinterpret_cast<uint64_t>(status));

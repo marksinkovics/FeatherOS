@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/reboot.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -511,7 +512,8 @@ long sysconf(int name)
 {
     if (name == _SC_OPEN_MAX)
     {
-        return static_cast<long>(FeatherOS::User::DefaultDescriptorLimit);
+        rlimit limits = {};
+        return getrlimit(RLIMIT_NOFILE, &limits) != 0 ? -1 : static_cast<long>(limits.rlim_cur);
     }
     if (name == _SC_PAGESIZE)
     {

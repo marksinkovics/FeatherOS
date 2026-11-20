@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/reboot.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -723,6 +724,50 @@ int RunCommand(const char* line)
     return started == stage_count ? status : NotStarted;
 }
 
+// A built-in, because the limit must change the shell's own, which its commands inherit.
+void LimitCommand(const char* arguments)
+{
+    char text[64];
+    snprintf(text, sizeof(text), "%s", arguments);
+    char* option = strtok(text, " ");
+    char* value = option == nullptr ? nullptr : strtok(nullptr, " ");
+    const bool hard = option != nullptr && strcmp(option, "-Hn") == 0;
+    const bool valid =
+        option != nullptr && (hard || strcmp(option, "-n") == 0) && strtok(nullptr, " ") == nullptr;
+    if (!valid)
+    {
+        puts("usage: ulimit -n [limit], ulimit -Hn [limit]");
+        return;
+    }
+    rlimit limits = {};
+    if (getrlimit(RLIMIT_NOFILE, &limits) != 0)
+    {
+        printf("ulimit: %s\n", strerror(errno));
+        return;
+    }
+    if (value == nullptr)
+    {
+        printf("%lu\n", hard ? limits.rlim_max : limits.rlim_cur);
+        return;
+    }
+    char* end = nullptr;
+    const unsigned long wanted = strtoul(value, &end, 10);
+    if (*value == '-' || end == value || *end != '\0')
+    {
+        puts("ulimit: invalid number");
+        return;
+    }
+    (hard ? limits.rlim_max : limits.rlim_cur) = wanted;
+    if (!hard && wanted > limits.rlim_max)
+    {
+        limits.rlim_max = wanted;
+    }
+    if (setrlimit(RLIMIT_NOFILE, &limits) != 0)
+    {
+        printf("ulimit: %s\n", strerror(errno));
+    }
+}
+
 // A built-in, because only the shell's own working directory should change. One pair of double
 // quotes around the directory is dropped, as program arguments drop theirs.
 void ChangeDirectoryCommand(const char* argument)
@@ -830,6 +875,11 @@ int main(int argc, char** argv)
             ChangeDirectoryCommand(command + 2);
             continue;
         }
+        if (strcmp(command, "ulimit") == 0 || strncmp(command, "ulimit ", 7) == 0)
+        {
+            LimitCommand(command + 6);
+            continue;
+        }
         if (strcmp(command, "shutdown") == 0 || strcmp(command, "reboot") == 0)
         {
             // Returns only if the kernel refuses.
@@ -892,7 +942,7 @@ int main(int argc, char** argv)
                  "vi [file], script [-c command] [file], stty, ping [-6] [-c count] <host>, "
                  "host [-4|-6] <name>, net, dhcp, "
                  "top [-n "
-                 "count], cd [dir], pwd, "
+                 "count], cd [dir], pwd, ulimit -n|-Hn [limit], "
                  "jobs, "
                  "fg [n], bg [n], wait, history, "
                  "exit, "

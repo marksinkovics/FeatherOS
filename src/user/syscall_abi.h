@@ -83,6 +83,7 @@ enum class SyscallNumber : uint64_t
     Link = 69,             // (from, to) -> 0; a second name for a file, on the same filesystem
     ResolvePath = 70,      // (path, buffer, capacity) -> length of the path without links
     Sync = 71,             // () -> 0 once every mounted filesystem has written its changes
+    ResourceLimit = 72,    // (resource, new_limits, old_limits) -> 0; either pointer may be null
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec, and joins its

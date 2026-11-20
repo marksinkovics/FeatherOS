@@ -14,6 +14,9 @@ LIMITS_INPUT = (
     b"cp /system/aslr /tmp/aslr\n/tmp/aslr\ncd /tmp\n./aslr\ncd\n"
     b"cp /system/memtest /bin/memtest\n/bin/memtest exhaust\n"
     b"/bin/nothing\n/system/hello.txt\n/tmp\n"
+    # The descriptor limits: read, raise, refused changes, and back to 256.
+    b"ulimit -n\nulimit -n 300\nulimit -n\nulimit -Hn\nulimit -n 2000\n"
+    b"ulimit -Hn 100\nulimit -x\nulimit -n 256\nulimit -n\n"
 )
 EXPECTED_LIMITS_OUTPUT = (
     "memtest: stack and heap ok",
@@ -27,6 +30,16 @@ EXPECTED_LIMITS_OUTPUT = (
     "shell: /bin/nothing: No such file or directory",
     "shell: /system/hello.txt: Exec format error",
     "shell: /tmp: Is a directory",
+    "ulimit: Operation not permitted",
+    "ulimit: Invalid argument",
+    "usage: ulimit -n [limit], ulimit -Hn [limit]",
+)
+ULIMIT_OUTPUT = re.compile(
+    r"^256\r?$(?s:.*?)^300\r?$(?s:.*?)^1024\r?$"
+    r"(?s:.*?)^ulimit: Operation not permitted\r?$"
+    r"(?s:.*?)^ulimit: Invalid argument\r?$"
+    r"(?s:.*?)^usage: ulimit(?s:.*?)^256\r?$",
+    re.MULTILINE,
 )
 EXHAUST_OUTPUT = re.compile(
     r"^memtest: page limit reached after (\d+) heap pages, twice\r?$",
@@ -55,6 +68,8 @@ def Check(result):
         len(set(field)) != len(field) for field in zip(*layouts)
     ):
         return f"aslr runs did not get distinct layouts: {layouts}"
+    if ULIMIT_OUTPUT.search(result.output) is None:
+        return "ulimit did not print its limits and refusals in order"
     return None
 
 

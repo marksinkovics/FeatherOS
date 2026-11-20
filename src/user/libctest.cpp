@@ -26,6 +26,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/reboot.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -2964,6 +2965,172 @@ void CheckDescriptors()
           "removing the descriptor test files");
 }
 
+void RemoveLimitFiles(int count)
+{
+    char name[40];
+    for (int index = 0; index < count; ++index)
+    {
+        snprintf(name, sizeof(name), "/tmp/libctest-limit-%d", index);
+        unlink(name);
+    }
+}
+
+int FillDescriptors(int* opened, int count)
+{
+    for (;;)
+    {
+        const int copy = dup(STDOUT_FILENO);
+        if (copy < 0)
+        {
+            return count;
+        }
+        opened[count++] = copy;
+    }
+}
+
+void CheckDescriptorLimits()
+{
+    constexpr int Files = 80;
+    rlimit limits = {};
+    Check(getrlimit(RLIMIT_NOFILE, &limits) == 0 && limits.rlim_cur == 256 &&
+              limits.rlim_max == 1024 && sysconf(_SC_OPEN_MAX) == 256,
+          "the default descriptor limits");
+
+    int opened[320];
+    int count = 0;
+    char name[40];
+    for (; count < Files; ++count)
+    {
+        snprintf(name, sizeof(name), "/tmp/libctest-limit-%d", count);
+        opened[count] = open(name, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        if (opened[count] < 0)
+        {
+            break;
+        }
+    }
+    Check(count == Files, "80 distinct files open at once");
+    errno = 0;
+    count = FillDescriptors(opened, count);
+    Check(errno == EMFILE && opened[count - 1] == 255, "dup stops at the soft limit");
+
+    limits = {300, 1024};
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0 && sysconf(_SC_OPEN_MAX) == 300,
+          "setrlimit raises the soft limit");
+    errno = 0;
+    count = FillDescriptors(opened, count);
+    Check(errno == EMFILE && opened[count - 1] == 299, "dup reaches the new soft limit");
+    errno = 0;
+    Check(dup2(STDOUT_FILENO, 300) == -1 && errno == EBADF &&
+              fcntl(STDOUT_FILENO, F_DUPFD, 300) == -1 && errno == EINVAL,
+          "dup2 and F_DUPFD at the soft limit");
+
+    limits = {2000, 2000};
+    errno = 0;
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == -1 && errno == EPERM, "a hard limit above 1024");
+    limits = {RLIM_INFINITY, RLIM_INFINITY};
+    errno = 0;
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == -1 && errno == EPERM, "an unlimited hard limit");
+    limits = {400, 300};
+    errno = 0;
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == -1 && errno == EINVAL,
+          "a soft limit above the hard");
+    limits = {};
+    Check(getrlimit(RLIMIT_NOFILE, &limits) == 0 && limits.rlim_cur == 300 &&
+              limits.rlim_max == 1024,
+          "a refused setrlimit changes nothing");
+    errno = 0;
+    Check(getrlimit(99, &limits) == -1 && errno == EINVAL && getrlimit(3, &limits) == -1 &&
+              errno == EINVAL && setrlimit(99, &limits) == -1 && errno == EINVAL,
+          "another resource");
+    errno = 0;
+    Check(getrlimit(RLIMIT_NOFILE, reinterpret_cast<rlimit*>(KernelAddress)) == -1 &&
+              errno == EFAULT &&
+              setrlimit(RLIMIT_NOFILE, reinterpret_cast<const rlimit*>(KernelAddress)) == -1 &&
+              errno == EFAULT,
+          "a bad rlimit pointer");
+
+    // Lowering the soft limit closes nothing.
+    for (int index = count - 50; index < count; ++index)
+    {
+        close(opened[index]);
+    }
+    count -= 50;
+    limits = {100, 1024};
+    errno = 0;
+    char byte = 0;
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0 && dup(STDOUT_FILENO) == -1 && errno == EMFILE &&
+              write(opened[count - 1], &byte, 0) == 0 && sysconf(_SC_OPEN_MAX) == 100,
+          "no new descriptor above a lowered soft limit, the old ones keep working");
+    for (int index = 0; index < count; ++index)
+    {
+        close(opened[index]);
+    }
+    RemoveLimitFiles(Files);
+    limits = {256, 1024};
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0, "restoring the descriptor limits");
+}
+
+void CheckLimitInheritance()
+{
+    int pipe_ends[2] = {-1, -1};
+    rlimit limits = {300, 1024};
+    Check(pipe2(pipe_ends, O_CLOEXEC) == 0 && setrlimit(RLIMIT_NOFILE, &limits) == 0 &&
+              dup2(pipe_ends[1], 280) == 280,
+          "a pipe's write end at descriptor 280");
+    pid_t child = 0;
+    char* arguments[] = {const_cast<char*>("libctest"), const_cast<char*>("rlimit-child"), nullptr};
+    const bool spawned = posix_spawn(&child, "libctest", nullptr, nullptr, arguments, environ) == 0;
+    close(pipe_ends[1]);
+    close(280);
+    char reply[4] = {};
+    size_t length = 0;
+    ssize_t got = 1;
+    while (got > 0 && length < sizeof(reply) - 1)
+    {
+        got = read(pipe_ends[0], reply + length, sizeof(reply) - 1 - length);
+        length += got > 0 ? static_cast<size_t>(got) : 0;
+    }
+    int status = -1;
+    Check(spawned && strcmp(reply, "ok") == 0 && waitpid(child, &status, 0) == child &&
+              WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "a child inherits the limits and descriptor 280");
+    close(pipe_ends[0]);
+    limits = {256, 1024};
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0, "restoring the limits after the child");
+}
+
+int RunLimitChild()
+{
+    rlimit limits = {};
+    const bool inherited = getrlimit(RLIMIT_NOFILE, &limits) == 0 && limits.rlim_cur == 300 &&
+                           limits.rlim_max == 1024 && fcntl(280, F_GETFD) == 0;
+    const char* answer = inherited ? "ok" : "no";
+    return write(280, answer, 2) == 2 && inherited ? 0 : 1;
+}
+
+void CheckPollLimit()
+{
+    int pipe_ends[2] = {-1, -1};
+    Check(pipe(pipe_ends) == 0 && write(pipe_ends[1], "x", 1) == 1, "a ready pipe");
+    pollfd entries[257];
+    for (pollfd& entry : entries)
+    {
+        entry = {pipe_ends[0], POLLIN, 0};
+    }
+    Check(poll(entries, 65, 0) == 65 && poll(entries, 256, 0) == 256, "poll past 64 entries");
+    errno = 0;
+    Check(poll(entries, 257, 0) == -1 && errno == EINVAL, "poll above the soft limit");
+    rlimit limits = {16, 1024};
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0 && poll(entries, 16, 0) == 16,
+          "poll at a lowered limit");
+    errno = 0;
+    Check(poll(entries, 17, 0) == -1 && errno == EINVAL, "poll above a lowered soft limit");
+    limits = {256, 1024};
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0, "restoring the limits after poll");
+    close(pipe_ends[0]);
+    close(pipe_ends[1]);
+}
+
 // Everything a descriptor yields until its end, up to size - 1 bytes.
 size_t ReadToEnd(int descriptor, char* text, size_t size)
 {
@@ -3387,6 +3554,10 @@ int main(int argc, char** argv)
     {
         return RunBackgroundChild(argv[1]);
     }
+    if (argc == 2 && strcmp(argv[1], "rlimit-child") == 0)
+    {
+        return RunLimitChild();
+    }
     if (argc == 2 && strcmp(argv[1], "window-size") == 0)
     {
         return RunWindowSizeChild();
@@ -3452,6 +3623,9 @@ int main(int argc, char** argv)
     CheckBackgroundTerminal();
     CheckProcessAccounting();
     CheckDescriptors();
+    CheckDescriptorLimits();
+    CheckLimitInheritance();
+    CheckPollLimit();
     CheckPipes();
     CheckNonBlockingPipes();
     CheckNonBlockingSockets();

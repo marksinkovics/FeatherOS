@@ -357,6 +357,12 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return, handlers.sync(context)};
     }
+    if (request.number == static_cast<uint64_t>(Number::ResourceLimit) &&
+        handlers.resource_limit != nullptr)
+    {
+        return {Action::Return,
+                handlers.resource_limit(context, arguments[0], arguments[1], arguments[2])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

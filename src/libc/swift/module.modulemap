@@ -109,6 +109,10 @@ module FeatherLibC [system] {
         header "../include/sys/reboot.h"
         export *
     }
+    module sys_resource {
+        header "../include/sys/resource.h"
+        export *
+    }
     module sys_socket {
         header "../include/sys/socket.h"
         export *

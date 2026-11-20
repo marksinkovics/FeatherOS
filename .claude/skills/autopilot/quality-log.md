@@ -34,4 +34,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 2a35e93 | M29 P4 s2 kernel VFS remount | opus | sonnet | 0 | 3/3 | |
 | 56770ed | M29 P4 s3 MS_REMOUNT, STORAGE/SHELL, docs | opus | sonnet | 0 | 2/2 | |
 | 7b83d66 | fix: failed remount reopen leaves a safe mount | - | sonnet | 0 | 1/1 | (M29 P4 s2: null core reachable by remount) |
-| (this) | M30 P1 s1 growable fd and disk tables, ENFILE | opus | sonnet | 0 | 6/6 (2 by tests beyond the design) | |
+| ef0c7e3 | M30 P1 s1 growable fd and disk tables, ENFILE | opus | sonnet | 0 | 6/6 (2 by tests beyond the design) | |
+| (this) | M30 P1 s2 RLIMIT_NOFILE, ulimit | opus | sonnet | 0 | 2/2 | |

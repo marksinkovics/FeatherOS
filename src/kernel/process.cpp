@@ -3037,6 +3037,33 @@ uint64_t SyncSyscall(void* /*context*/)
     return Files::SyncAll();
 }
 
+uint64_t ResourceLimitSyscall(void* context, uint64_t resource, uint64_t requested,
+                              uint64_t previous)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    if (resource != User::ResourceOpenFiles)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    User::ResourceLimits wanted = {};
+    if (requested != 0 && !CopyFromUser(*process, requested, &wanted, sizeof(wanted)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    if (previous != 0 && !UserRangeWritable(*process, previous, sizeof(User::ResourceLimits)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    User::ResourceLimits old = {};
+    const uint64_t result = Files::DescriptorLimits(
+        &process->files, requested != 0 ? &wanted : nullptr, previous != 0 ? &old : nullptr);
+    if (previous != 0 && !CopyToUser(*process, previous, &old, sizeof(old)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    return result;
+}
+
 uint64_t ResolvePathSyscall(void* context, uint64_t path, uint64_t buffer, uint64_t capacity)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
@@ -3155,6 +3182,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     .link = LinkSyscall,
     .resolve_path = ResolvePathSyscall,
     .sync = SyncSyscall,
+    .resource_limit = ResourceLimitSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
