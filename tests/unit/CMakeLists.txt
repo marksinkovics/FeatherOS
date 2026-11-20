@@ -42,6 +42,7 @@ add_executable(featheros_unit_tests
     kernel/filesystem/virtual_files_tests.cpp
     kernel/elf/elf_loader_tests.cpp
     kernel/framebuffer/framebuffer_tests.cpp
+    kernel/framebuffer/graphics_mode_tests.cpp
     kernel/input/input_tests.cpp
     kernel/network/address_tests.cpp
     kernel/network/arp_tests.cpp
@@ -155,6 +156,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/elf/elf_loader.cpp"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/font.c"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/framebuffer.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/framebuffer/graphics_mode.cpp"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/term.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/input.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/keyboard.cpp"

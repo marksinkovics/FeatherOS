@@ -2,7 +2,10 @@
 
 #include "kernel/arch/serial.h"
 #include "kernel/cpu.h"
+#include "kernel/files.h"
 #include "kernel/filesystem/devices.h"
+#include "kernel/framebuffer/framebuffer.h"
+#include "kernel/framebuffer/graphics_mode.h"
 #include "kernel/framebuffer/term.h"
 #include "kernel/input/input.h"
 #include "kernel/network/interface.h"
@@ -36,6 +39,10 @@ Screen screens[Count] = {{0, nullptr}, {1, nullptr}, {2, nullptr}, {3, nullptr}}
 constinit Sync::SpinLock display_lock;
 // Changes under display_lock.
 uint32_t shown_console GUARDED_BY(display_lock) = 0;
+// Which open file has taken which console's screen.
+GraphicsMode::Owners owners GUARDED_BY(display_lock);
+// Set once in Initialize, before any program runs.
+Framebuffer* display_framebuffer = nullptr;
 
 constinit Sync::SpinLock status_lock;
 constinit Scheduler::WaitQueue status_waiters;
@@ -263,6 +270,11 @@ uint64_t StatusTaskMain(void*)
     }
 }
 
+void ReleaseOwner(const void* owner)
+{
+    ReleaseDisplay(owner);
+}
+
 } // namespace
 
 Terminals::Terminal* Terminal()
@@ -275,13 +287,19 @@ Terminals::Terminal* Terminal(uint32_t console)
     return console < Count ? &console_terminals[console] : nullptr;
 }
 
-void Initialize(Term* terms)
+void Initialize(Term* terms, Framebuffer* framebuffer)
 {
     Devices::SetConsoles(terminal_pointers, Count);
     Input::SetConsoleSwitch(Show);
     if (terms == nullptr)
     {
         return;
+    }
+    display_framebuffer = framebuffer;
+    if (framebuffer != nullptr)
+    {
+        Devices::SetFramebuffer(true);
+        Files::SetFramebufferRelease(ReleaseOwner);
     }
     for (uint32_t console = 0; console < Count; ++console)
     {
@@ -335,6 +353,74 @@ void Show(uint32_t console)
 uint32_t Shown()
 {
     return __atomic_load_n(&shown_console, __ATOMIC_ACQUIRE);
+}
+
+uint32_t IndexOf(const Terminals::Terminal* terminal)
+{
+    for (uint32_t console = 0; console < Count; ++console)
+    {
+        if (terminal != nullptr && terminal == &console_terminals[console])
+        {
+            return console;
+        }
+    }
+    return Count;
+}
+
+void DisplaySize(uint32_t* width, uint32_t* height)
+{
+    *width = display_framebuffer == nullptr ? 0 : display_framebuffer->GetWidth();
+    *height = display_framebuffer == nullptr ? 0 : display_framebuffer->GetHeight();
+}
+
+uint64_t AcquireDisplay(uint32_t console, const void* owner)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    if (console >= Count || screens[console].term == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    const uint64_t acquired = owners.Acquire(console, owner);
+    if (acquired == 0)
+    {
+        screens[console].term->SetGraphics(true);
+    }
+    return acquired;
+}
+
+uint64_t ReleaseDisplay(const void* owner)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    const uint32_t console = owners.Release(owner);
+    if (console == Count)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    screens[console].term->SetGraphics(false);
+    return 0;
+}
+
+bool OwnsDisplay(const void* owner)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    return owners.ConsoleOf(owner) != Count;
+}
+
+bool PresentRow(const void* owner, uint32_t screen_x, uint32_t y, const uint32_t* pixels,
+                uint32_t count)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    const uint32_t console = owners.ConsoleOf(owner);
+    if (console == Count)
+    {
+        return false;
+    }
+    if (screens[console].term->Shown())
+    {
+        display_framebuffer->presentRow(screen_x, y, pixels, count);
+        display_framebuffer->draw(y, 1);
+    }
+    return true;
 }
 
 void NotifyStatusChanged()

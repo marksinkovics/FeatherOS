@@ -72,6 +72,7 @@ constexpr uint32_t InitialDescriptors = 32;
 constexpr uint32_t TerminalMode = 0620;
 constexpr uint32_t PipeMode = 0600;
 constexpr uint32_t SocketMode = 0777;
+constexpr uint32_t FramebufferMode = 0660;
 
 // Disk, /tmp and /etc files open anywhere in the system, keyed by their filesystem and node. A VFS
 // handle caches the file's size and where its data starts, so a second writer, or removing an
@@ -88,6 +89,7 @@ struct DiskFileUse
 DiskFileUse* disk_files GUARDED_BY(table_lock) = nullptr;
 uint32_t disk_file_capacity GUARDED_BY(table_lock) = 0;
 uint32_t disk_file_count GUARDED_BY(table_lock) = 0;
+FramebufferRelease framebuffer_release GUARDED_BY(table_lock) = nullptr;
 // Every process's console descriptors share this one, which is never freed.
 OpenFile console = {{},    nullptr, 1,       Kind::Terminal, true,   true,
                     false, false,   nullptr, nullptr,        nullptr};
@@ -221,6 +223,15 @@ OpenFile* DropReferenceLocked(OpenFile* file) REQUIRES(table_lock)
         Memory::Deallocate(file);
         return nullptr;
     }
+    if (file->kind == Kind::Framebuffer)
+    {
+        if (framebuffer_release != nullptr)
+        {
+            framebuffer_release(file);
+        }
+        Memory::Deallocate(file);
+        return nullptr;
+    }
     if (file->kind == Kind::Socket)
     {
         Network::Sockets::Close(file->socket);
@@ -322,6 +333,11 @@ void Unpin(OpenFile* file) EXCLUDES(held_volume, table_lock)
         last = DropReferenceLocked(file);
     }
     FinishClose(last);
+}
+
+bool Inheritable(const Slot& slot)
+{
+    return slot.file != nullptr && !slot.close_on_exec && slot.file->kind != Kind::Framebuffer;
 }
 
 // The array grows to the next power of two that holds needed slots, but not past the soft limit;
@@ -716,6 +732,11 @@ uint64_t OpenDeviceLocked(Table* table, uint64_t flags, uint32_t node,
     case Devices::Device::Console:
         terminal = Devices::ConsoleOf(node);
         break;
+    case Devices::Device::Framebuffer:
+        terminal = nullptr;
+        kind = Kind::Framebuffer;
+        flags |= User::OpenCloseOnExec;
+        break;
     default:
         return User::SyscallErrorNotFound;
     }
@@ -774,7 +795,7 @@ uint64_t NewNameError(const char* path, Filesystem::LinkKind kind)
     return VFS::SupportsLinks(path, kind) ? 0 : User::SyscallErrorNotPermitted;
 }
 
-bool IsTerminalDevice(const VFS::FileHandle& handle)
+bool IsSpecialDevice(const VFS::FileHandle& handle)
 {
     uint32_t node;
     if (!VFS::DeviceNode(handle, &node))
@@ -784,7 +805,8 @@ bool IsTerminalDevice(const VFS::FileHandle& handle)
     const Devices::Device device = Devices::DeviceOf(node);
     return device == Devices::Device::ControllingTerminal ||
            device == Devices::Device::PseudoTerminalMaster ||
-           device == Devices::Device::PseudoTerminalSlave || device == Devices::Device::Console;
+           device == Devices::Device::PseudoTerminalSlave || device == Devices::Device::Console ||
+           device == Devices::Device::Framebuffer;
 }
 
 } // namespace
@@ -828,8 +850,7 @@ bool Inherit(Table* child, const Table* parent)
     uint32_t span = 0;
     for (uint32_t descriptor = 0; descriptor < parent->capacity; ++descriptor)
     {
-        const Slot& slot = parent->slots[descriptor];
-        if (slot.file != nullptr && !slot.close_on_exec)
+        if (Inheritable(parent->slots[descriptor]))
         {
             span = descriptor + 1;
         }
@@ -851,7 +872,7 @@ bool Inherit(Table* child, const Table* parent)
     for (uint32_t descriptor = 0; descriptor < span; ++descriptor)
     {
         const Slot& slot = parent->slots[descriptor];
-        if (slot.file != nullptr && !slot.close_on_exec)
+        if (Inheritable(slot))
         {
             ++slot.file->references;
             slots[descriptor] = {slot.file, false};
@@ -964,7 +985,7 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
     }
     Pause("open.created");
     uint32_t node;
-    if (IsTerminalDevice(handle) && VFS::DeviceNode(handle, &node))
+    if (IsSpecialDevice(handle) && VFS::DeviceNode(handle, &node))
     {
         VFS::Close(&handle);
         Sync::MutexGuard guard(table_lock);
@@ -1048,6 +1069,10 @@ uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
               Pipes::InterruptCheck interrupted)
 {
     const Kind kind = KindOf(table, descriptor);
+    if (kind == Kind::Framebuffer)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
     if (kind == Kind::PseudoTerminalMaster)
     {
         bool nonblocking = false;
@@ -1091,6 +1116,10 @@ uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t l
                Pipes::InterruptCheck interrupted)
 {
     const Kind kind = KindOf(table, descriptor);
+    if (kind == Kind::Framebuffer)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
     if (kind == Kind::PseudoTerminalMaster)
     {
         bool nonblocking = false;
@@ -1222,11 +1251,41 @@ int16_t PollEvents(Table* table, uint64_t descriptor)
         return Network::Sockets::PollEvents(file->socket);
     case Kind::PseudoTerminalMaster:
         return PseudoTerminals::PollMaster(file->pair);
+    case Kind::Framebuffer:
+        return 0;
     default:
         // Files never make a reader or writer wait.
         return static_cast<int16_t>((file->readable ? User::PollReadable : 0) |
                                     (file->writable ? User::PollWritable : 0));
     }
+}
+
+void SetFramebufferRelease(FramebufferRelease release)
+{
+    Sync::MutexGuard guard(table_lock);
+    framebuffer_release = release;
+}
+
+uint64_t HoldFramebuffer(Table* table, uint64_t descriptor, const void** owner)
+{
+    Sync::MutexGuard guard(table_lock);
+    const Slot* slot = FindSlot(table, descriptor);
+    if (slot == nullptr)
+    {
+        return User::SyscallErrorBadDescriptor;
+    }
+    if (slot->file->kind != Kind::Framebuffer)
+    {
+        return User::SyscallErrorNotTerminal;
+    }
+    ++slot->file->references;
+    *owner = slot->file;
+    return 0;
+}
+
+void DropFramebuffer(const void* owner)
+{
+    Unpin(const_cast<OpenFile*>(static_cast<const OpenFile*>(owner)));
 }
 
 uint64_t FindTerminal(Table* table, uint64_t descriptor, Terminals::Terminal** terminal)
@@ -2050,6 +2109,10 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
             return 0;
         case Kind::PseudoTerminalMaster:
             *status = UnmountedStatus(file->pair, User::ModeCharacterDevice | TerminalMode,
+                                      User::FileType::Device, 0, false);
+            return 0;
+        case Kind::Framebuffer:
+            *status = UnmountedStatus(file, User::ModeCharacterDevice | FramebufferMode,
                                       User::FileType::Device, 0, false);
             return 0;
         case Kind::File:

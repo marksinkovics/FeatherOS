@@ -10,7 +10,7 @@ set(FEATHEROS_PROGRAMS
     fptest:fptest libctest:libctest kill:kill ps:ps top:top keys:keys clear:clear vi:vi threads:threads cp:cp mv:mv touch:touch head:head tail:tail wc:wc
     grep:grep sort:sort ping:ping dhcp:dhcp net:net host:host nc:nc fetch:fetch httpd:httpd
     ntp:ntp echod:echod script:script stty:stty cppbench:cppbench cxxtest:cxxtest mount:mount
-    umount:umount ln:ln readlink:readlink sync:sync
+    umount:umount ln:ln readlink:readlink sync:sync fbtest:fbtest
 )
 # Programs that define _start themselves instead of linking the C library's, which calls main.
 # The kernel's own tests run test_program and read the raw arguments block.

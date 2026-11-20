@@ -66,6 +66,11 @@ public:
     // keeps its text, and is repainted whole once shown again.
     void SetShown(bool shown);
     bool Shown() const;
+    // In graphics mode a program owns the screen: the terminal still takes text into its cells
+    // but draws nothing, neither text nor status bar, and the screen is blank until a present.
+    // Leaving it repaints the whole console once it is shown.
+    void SetGraphics(bool graphics);
+    bool Graphics() const;
 
 private:
     static const uint32_t StatusRow = 0;
@@ -87,6 +92,7 @@ private:
 
     Framebuffer* m_framebuffer;
     bool m_shown = true;
+    bool m_graphics = false;
     uint8_t m_buffer[FeatherOS::TermConfig::Row][FeatherOS::TermConfig::Column];
     uint8_t m_attributes[FeatherOS::TermConfig::Row][FeatherOS::TermConfig::Column];
     // Characters and attributes currently rendered in the framebuffer's back buffer.
@@ -135,6 +141,7 @@ private:
     void MoveCursor(uint32_t row, uint32_t column);
     void ClearCells(uint32_t row, uint32_t first_column, uint32_t end_column);
     void SwitchScreen(bool alternate);
+    void Blank();
     void Scroll();
     void ApplyPendingScroll();
     void DrawCell(uint32_t row, uint32_t column);

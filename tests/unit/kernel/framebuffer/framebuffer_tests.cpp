@@ -10,8 +10,12 @@ extern "C"
 #include "kernel/framebuffer/font.h"
 }
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -444,4 +448,301 @@ TEST_CASE("the alternate screen keeps the main screen to come back to")
     terminal.Print("\x1b[?1049hgone");
     terminal.ResetModes();
     REQUIRE(row_text(2) == "> vi  ");
+}
+
+namespace
+{
+
+limine_framebuffer FormatFramebuffer(uint8_t* pixels, uint64_t width, uint64_t height,
+                                     const PixelFormat& format)
+{
+    limine_framebuffer framebuffer{};
+    framebuffer.address = pixels;
+    framebuffer.width = width;
+    framebuffer.height = height;
+    framebuffer.pitch = width * format.bytes_per_pixel;
+    framebuffer.bpp = static_cast<uint16_t>(format.bytes_per_pixel * 8);
+    framebuffer.memory_model = LIMINE_FRAMEBUFFER_RGB;
+    framebuffer.red_mask_size = format.red_size;
+    framebuffer.red_mask_shift = format.red_shift;
+    framebuffer.green_mask_size = format.green_size;
+    framebuffer.green_mask_shift = format.green_shift;
+    framebuffer.blue_mask_size = format.blue_size;
+    framebuffer.blue_mask_shift = format.blue_shift;
+    return framebuffer;
+}
+
+constexpr PixelFormat Xrgb8888 = {4, 8, 16, 8, 8, 8, 0};
+constexpr PixelFormat Bgrx8888 = {4, 8, 0, 8, 8, 8, 16};
+constexpr PixelFormat Rgb888 = {3, 8, 16, 8, 8, 8, 0};
+constexpr PixelFormat Rgb565 = {2, 5, 11, 6, 5, 5, 0};
+constexpr PixelFormat AllFormats[] = {Xrgb8888, Bgrx8888, Rgb888, Rgb565};
+
+std::vector<uint8_t> Packed(const PixelFormat& format, std::vector<uint32_t> colors)
+{
+    std::vector<uint8_t> bytes(colors.size() * format.bytes_per_pixel, 0xEE);
+    PackRow(format, colors.data(), bytes.data(), static_cast<uint32_t>(colors.size()));
+    return bytes;
+}
+
+} // namespace
+
+TEST_CASE("colors convert to each pixel format as computed by hand")
+{
+    REQUIRE(PackColor(Xrgb8888, 0x00123456) == 0x00123456);
+    REQUIRE(PackColor(Bgrx8888, 0x00123456) == 0x00563412);
+    REQUIRE(PackColor(Rgb888, 0x00123456) == 0x00123456);
+    REQUIRE(PackColor(Rgb565, 0x00123456) == 0x11AA);
+    REQUIRE(Packed(Xrgb8888, {0x00123456}) == std::vector<uint8_t>{0x56, 0x34, 0x12, 0x00});
+    REQUIRE(Packed(Bgrx8888, {0x00123456}) == std::vector<uint8_t>{0x12, 0x34, 0x56, 0x00});
+    REQUIRE(Packed(Rgb888, {0x00123456}) == std::vector<uint8_t>{0x56, 0x34, 0x12});
+    REQUIRE(Packed(Rgb565, {0x00123456}) == std::vector<uint8_t>{0xAA, 0x11});
+    REQUIRE(Packed(Rgb565, {0x00FFFFFF, 0x00000000}) == std::vector<uint8_t>{0xFF, 0xFF, 0, 0});
+}
+
+TEST_CASE("a row, a pixel and a present convert alike in every format")
+{
+    constexpr uint32_t count = 256;
+    std::vector<uint32_t> colors(count);
+    uint32_t seed = 12345;
+    for (uint32_t& color : colors)
+    {
+        seed = seed * 1664525 + 1013904223;
+        color = seed & 0x00FFFFFF;
+    }
+    for (const PixelFormat& format : AllFormats)
+    {
+        INFO("bytes per pixel " << format.bytes_per_pixel << " red shift "
+                                << static_cast<int>(format.red_shift));
+        std::vector<uint8_t> expected;
+        for (const uint32_t color : colors)
+        {
+            const uint32_t pixel = PackColor(format, color);
+            for (uint32_t byte = 0; byte < format.bytes_per_pixel; ++byte)
+            {
+                expected.push_back(static_cast<uint8_t>(pixel >> (8 * byte)));
+            }
+        }
+        REQUIRE(Packed(format, colors) == expected);
+
+        std::vector<uint8_t> hardware(expected.size());
+        limine_framebuffer descriptor = FormatFramebuffer(hardware.data(), count, 1, format);
+        auto framebuffer = std::make_unique<Framebuffer>();
+        REQUIRE(framebuffer->init(&descriptor));
+        for (uint32_t x = 0; x < count; ++x)
+        {
+            framebuffer->drawPixel(x, 0, colors[x]);
+        }
+        framebuffer->draw();
+        REQUIRE(hardware == expected);
+
+        framebuffer->clear(0xFFFFFF);
+        framebuffer->presentRow(0, 0, colors.data(), count);
+        framebuffer->draw();
+        REQUIRE(hardware == expected);
+    }
+}
+
+TEST_CASE("only an exact XRGB8888 present passes the high byte on")
+{
+    const std::vector<uint32_t> colors = {0xFF123456, 0xAB000001};
+    REQUIRE(Packed(Bgrx8888, colors) == std::vector<uint8_t>{0x12, 0x34, 0x56, 0x00, 0x00, 0x00,
+                                                             0x01, 0x00});
+    REQUIRE(Packed(Rgb888, colors) == std::vector<uint8_t>{0x56, 0x34, 0x12, 0x01, 0x00, 0x00});
+    // Exact XRGB8888 is copied, so the hardware's unused byte gets it.
+    REQUIRE(Packed(Xrgb8888, colors) == std::vector<uint8_t>{0x56, 0x34, 0x12, 0xFF, 0x01, 0x00,
+                                                             0x00, 0xAB});
+}
+
+TEST_CASE("a present row never writes outside the screen")
+{
+    constexpr uint32_t width = 64;
+    constexpr uint32_t height = 4;
+    constexpr uint8_t canary = 0xA5;
+    std::vector<uint8_t> hardware(width * height * 4);
+    limine_framebuffer descriptor = FormatFramebuffer(hardware.data(), width, height, Xrgb8888);
+    auto framebuffer = std::make_unique<Framebuffer>();
+    REQUIRE(framebuffer->init(&descriptor));
+    std::vector<uint32_t> colors(32);
+    for (uint32_t index = 0; index < colors.size(); ++index)
+    {
+        colors[index] = 0x00010000 * (index + 1);
+    }
+
+    struct Case
+    {
+        int64_t x;
+        uint32_t y;
+        uint32_t first_column;
+        uint32_t drawn;
+        uint32_t first_color;
+    };
+    const Case cases[] = {
+        {0, 0, 0, 32, 0},
+        {-5, 0, 0, 27, 5},
+        {60, 1, 60, 4, 0},
+        {64, 2, 0, 0, 0},
+        {-32, 3, 0, 0, 0},
+        {-31, 3, 0, 1, 31},
+        {INT64_MIN, 0, 0, 0, 0},
+        {INT64_MAX, 0, 0, 0, 0},
+        {0, height, 0, 0, 0},
+        {0, UINT32_MAX, 0, 0, 0},
+    };
+    for (const Case& test : cases)
+    {
+        INFO("x " << test.x << " y " << test.y);
+        framebuffer->clear(0xA5A5A5);
+        framebuffer->presentRow(test.x, test.y, colors.data(),
+                                static_cast<uint32_t>(colors.size()));
+        framebuffer->draw();
+        for (uint32_t row = 0; row < height; ++row)
+        {
+            for (uint32_t column = 0; column < width; ++column)
+            {
+                const uint8_t* pixel = hardware.data() + (row * width + column) * 4;
+                if (row == test.y && column >= test.first_column &&
+                    column < test.first_column + test.drawn)
+                {
+                    const uint32_t color = colors[test.first_color + column - test.first_column];
+                    REQUIRE(pixel[2] == ((color >> 16) & 0xFF));
+                    REQUIRE(pixel[0] == 0);
+                }
+                else
+                {
+                    REQUIRE(pixel[0] == canary);
+                    REQUIRE(pixel[1] == canary);
+                    REQUIRE(pixel[2] == canary);
+                    REQUIRE(pixel[3] == 0);
+                }
+            }
+        }
+    }
+}
+
+namespace
+{
+
+struct TestScreen
+{
+    static constexpr uint64_t Width = 320;
+    static constexpr uint64_t Height = 112;
+
+    TestScreen()
+    {
+        descriptor = MakeFramebuffer(pixels.data(), Width, Height, Width * 4, 32);
+        REQUIRE(framebuffer.init(&descriptor));
+    }
+
+    std::array<uint8_t, Width * Height * 4> pixels{};
+    limine_framebuffer descriptor{};
+    Framebuffer framebuffer;
+};
+
+bool AllBlack(const TestScreen& screen)
+{
+    return std::all_of(screen.pixels.begin(), screen.pixels.end(),
+                       [](uint8_t byte) { return byte == 0; });
+}
+
+void FeedConsole(FeatherOS::Term& terminal)
+{
+    terminal.SetStatus("shell", "1/4  Mon Oct 19 9:36 PM");
+    terminal.Print("> ");
+    terminal.SetCursorVisible(true);
+    for (int line = 0; line < 200; ++line)
+    {
+        terminal.PrintLn(("line " + std::to_string(line)).c_str());
+    }
+    terminal.SetStatus("upper", "2/4  Mon Oct 19 9:37 PM");
+    terminal.Print("done");
+}
+
+} // namespace
+
+TEST_CASE("a terminal in graphics mode takes text and draws nothing")
+{
+    auto screen = std::make_unique<TestScreen>();
+    FeatherOS::Term terminal;
+    terminal.Init(&screen->framebuffer);
+    terminal.SetStatus("shell", "1/4");
+    terminal.Print("before\n> ");
+    REQUIRE_FALSE(AllBlack(*screen));
+
+    terminal.SetGraphics(true);
+    REQUIRE(terminal.Graphics());
+    REQUIRE(AllBlack(*screen));
+    FeedConsole(terminal);
+    REQUIRE(AllBlack(*screen));
+    REQUIRE(terminal.CharacterAt(0, 1) == 'u');
+
+    terminal.SetGraphics(false);
+    REQUIRE_FALSE(terminal.Graphics());
+    auto reference_screen = std::make_unique<TestScreen>();
+    FeatherOS::Term reference;
+    reference.Init(&reference_screen->framebuffer);
+    reference.SetStatus("shell", "1/4");
+    reference.Print("before\n> ");
+    FeedConsole(reference);
+    REQUIRE_FALSE(AllBlack(*screen));
+    REQUIRE(screen->pixels == reference_screen->pixels);
+}
+
+TEST_CASE("a hidden terminal in graphics mode blanks the screen when shown")
+{
+    auto screen = std::make_unique<TestScreen>();
+    FeatherOS::Term first;
+    FeatherOS::Term second;
+    first.Init(&screen->framebuffer);
+    second.Init(&screen->framebuffer);
+    second.SetShown(false);
+    first.SetStatus("first", "");
+    first.Print("first console");
+    const auto first_pixels = screen->pixels;
+
+    second.SetGraphics(true);
+    second.Print("second");
+    second.SetStatus("second", "");
+    REQUIRE(screen->pixels == first_pixels);
+
+    first.SetShown(false);
+    second.SetShown(true);
+    REQUIRE(AllBlack(*screen));
+    second.Print(" more");
+    REQUIRE(AllBlack(*screen));
+
+    second.SetShown(false);
+    first.SetShown(true);
+    REQUIRE(screen->pixels == first_pixels);
+    first.SetShown(false);
+    second.SetShown(true);
+    REQUIRE(AllBlack(*screen));
+
+    second.SetGraphics(false);
+    REQUIRE_FALSE(AllBlack(*screen));
+    auto reference_screen = std::make_unique<TestScreen>();
+    FeatherOS::Term reference;
+    reference.Init(&reference_screen->framebuffer);
+    reference.SetStatus("second", "");
+    reference.Print("second more");
+    REQUIRE(screen->pixels == reference_screen->pixels);
+}
+
+TEST_CASE("a hidden terminal leaving graphics mode waits to be shown")
+{
+    auto screen = std::make_unique<TestScreen>();
+    FeatherOS::Term first;
+    FeatherOS::Term second;
+    first.Init(&screen->framebuffer);
+    second.Init(&screen->framebuffer);
+    second.SetGraphics(true);
+    second.SetShown(false);
+    first.SetShown(true);
+    first.Print("text");
+    const auto first_pixels = screen->pixels;
+    second.SetGraphics(false);
+    REQUIRE(screen->pixels == first_pixels);
+    first.SetShown(false);
+    second.SetShown(true);
+    REQUIRE_FALSE(screen->pixels == first_pixels);
 }

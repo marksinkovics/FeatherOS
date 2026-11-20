@@ -9,8 +9,9 @@
 
 __BEGIN_DECLS
 
-// Only TIOCGWINSZ and TIOCSWINSZ, as tcgetwinsize and tcsetwinsize; on a terminal, other requests
-// fail with EINVAL.
+// TIOCGWINSZ and TIOCSWINSZ, as tcgetwinsize and tcsetwinsize, and the FB_* requests of
+// <featheros/framebuffer.h> on /dev/fb0; on a terminal, other requests fail with EINVAL, and on
+// anything else with ENOTTY.
 int ioctl(int descriptor, unsigned long request, ...);
 
 __END_DECLS

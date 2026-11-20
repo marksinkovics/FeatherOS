@@ -443,7 +443,7 @@ void Term::MarkDirty(uint32_t row, uint32_t* dirty_top, uint32_t* dirty_bottom) 
 
 void Term::Refresh()
 {
-    if (m_framebuffer == nullptr || !m_shown)
+    if (m_framebuffer == nullptr || !m_shown || m_graphics)
     {
         return;
     }
@@ -531,10 +531,53 @@ void Term::Redraw()
 void Term::SetShown(bool shown)
 {
     m_shown = shown;
-    if (shown)
+    if (!shown)
+    {
+        return;
+    }
+    if (m_graphics)
+    {
+        Blank();
+        return;
+    }
+    Redraw();
+}
+
+void Term::SetGraphics(bool graphics)
+{
+    if (m_graphics == graphics)
+    {
+        return;
+    }
+    m_graphics = graphics;
+    if (graphics)
+    {
+        if (m_shown)
+        {
+            Blank();
+        }
+        return;
+    }
+    m_redraw_all = true;
+    if (m_shown)
     {
         Redraw();
     }
+}
+
+bool Term::Graphics() const
+{
+    return m_graphics;
+}
+
+void Term::Blank()
+{
+    if (m_framebuffer == nullptr)
+    {
+        return;
+    }
+    m_framebuffer->clear(FeatherOS::Color::Black);
+    m_framebuffer->draw();
 }
 
 bool Term::Shown() const

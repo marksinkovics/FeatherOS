@@ -2,6 +2,7 @@
 
 #include "kernel/arch/cpu_features.h"
 #include "kernel/arch/thread_pointer.h"
+#include "kernel/config.h"
 #include "kernel/console.h"
 #include "kernel/cpu.h"
 #include "kernel/files.h"
@@ -10,6 +11,7 @@
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/tmpfs.h"
 #include "kernel/filesystem/vfs.h"
+#include "kernel/framebuffer/graphics_mode.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/network/settings.h"
@@ -917,6 +919,55 @@ bool CopyToUser(const ProcessRecord& process, uint64_t address, const void* sour
     return true;
 }
 
+// Every page of the range is mapped for the user to read; one lookup per page.
+bool UserPagesReadable(const ProcessRecord& process, uint64_t address, uint64_t size)
+{
+    if (size == 0)
+    {
+        return true;
+    }
+    if (address > UINT64_MAX - (size - 1))
+    {
+        return false;
+    }
+    const uint64_t last_page = (address + (size - 1)) & ~(Memory::PageSize - 1);
+    uint64_t page = address & ~(Memory::PageSize - 1);
+    for (;;)
+    {
+        if (UserByte(process, page > address ? page : address, false) == nullptr)
+        {
+            return false;
+        }
+        if (page == last_page)
+        {
+            return true;
+        }
+        page += Memory::PageSize;
+    }
+}
+
+// Like CopyFromUser, but translates once per page, for large copies.
+bool CopyFromUserPaged(const ProcessRecord& process, uint64_t address, void* destination,
+                       size_t size)
+{
+    auto* bytes = static_cast<uint8_t*>(destination);
+    while (size > 0)
+    {
+        const uint64_t room = Memory::PageSize - (address & (Memory::PageSize - 1));
+        const size_t chunk = size < room ? size : static_cast<size_t>(room);
+        volatile uint8_t* source = UserByte(process, address, false);
+        if (source == nullptr)
+        {
+            return false;
+        }
+        memcpy(bytes, const_cast<const uint8_t*>(source), chunk);
+        bytes += chunk;
+        address += chunk;
+        size -= chunk;
+    }
+    return true;
+}
+
 // 0, SyscallErrorBadAddress, or SyscallErrorInvalidArgument when no terminator fits.
 uint64_t CopyStringFromUser(const ProcessRecord& process, uint64_t address, char* buffer,
                             size_t capacity)
@@ -1533,6 +1584,10 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
     {
         return User::SyscallErrorBadDescriptor;
     }
+    if (kind == Files::Kind::Framebuffer)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
     if (kind == Files::Kind::Terminal)
     {
         Terminals::Terminal* terminal;
@@ -1608,6 +1663,10 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
     if (kind == Files::Kind::None)
     {
         return User::SyscallErrorBadDescriptor;
+    }
+    if (kind == Files::Kind::Framebuffer)
+    {
+        return User::SyscallErrorInvalidArgument;
     }
     if (kind == Files::Kind::Socket)
     {
@@ -3064,6 +3123,143 @@ uint64_t ResourceLimitSyscall(void* context, uint64_t resource, uint64_t request
     return result;
 }
 
+// Keeps a framebuffer file open for the length of a call, so a racing close in another thread
+// cannot free what the call owns.
+class FramebufferHold
+{
+public:
+    FramebufferHold() = default;
+    ~FramebufferHold()
+    {
+        if (owner != nullptr)
+        {
+            Files::DropFramebuffer(owner);
+        }
+    }
+    FramebufferHold(const FramebufferHold&) = delete;
+    FramebufferHold& operator=(const FramebufferHold&) = delete;
+
+    const void* owner = nullptr;
+};
+
+uint64_t ReportFramebufferInfo(const ProcessRecord& process, uint64_t argument)
+{
+    User::FramebufferInfo info = {};
+    Console::DisplaySize(&info.width, &info.height);
+    const uint32_t console = Console::IndexOf(ControllingTerminal(process));
+    info.console = console == Console::Count ? 0 : console + 1;
+    return CopyToUser(process, argument, &info, sizeof(info)) ? 0 : User::SyscallErrorBadAddress;
+}
+
+uint64_t AcquireFramebuffer(const ProcessRecord& process, const void* owner, uint64_t argument)
+{
+    if (argument != 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Terminals::Terminal* terminal = ControllingTerminal(process);
+    const uint32_t console = Console::IndexOf(terminal);
+    if (console == Console::Count)
+    {
+        return User::SyscallErrorNotTerminal;
+    }
+    const uint64_t access = CheckBackgroundAccess(process, terminal, User::SignalTerminalOutput);
+    if (access != 0)
+    {
+        return access;
+    }
+    return Console::AcquireDisplay(console, owner);
+}
+
+// Every visible row's pages are checked before the first one is drawn.
+uint64_t PresentFramebuffer(const ProcessRecord& process, const void* owner, uint64_t argument)
+{
+    User::FramebufferPresentRequest request;
+    if (!CopyFromUser(process, argument, &request, sizeof(request)))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    uint32_t screen_width;
+    uint32_t screen_height;
+    Console::DisplaySize(&screen_width, &screen_height);
+    GraphicsMode::Clipped clipped;
+    const uint64_t clip = GraphicsMode::Clip(request, screen_width, screen_height, &clipped);
+    if (clip != 0)
+    {
+        return clip;
+    }
+    if (!Console::OwnsDisplay(owner))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    if (clipped.width == 0 || clipped.height == 0)
+    {
+        return 0;
+    }
+    constexpr uint64_t PixelSize = sizeof(uint32_t);
+    const uint64_t row_bytes = static_cast<uint64_t>(clipped.width) * PixelSize;
+    const auto row_address = [&](uint32_t row) -> uint64_t
+    {
+        const uint64_t offset =
+            (clipped.source_offset + static_cast<uint64_t>(row) * request.stride) * PixelSize;
+        return request.pixels > UINT64_MAX - offset ? 0 : request.pixels + offset;
+    };
+    for (uint32_t row = 0; row < clipped.height; ++row)
+    {
+        const uint64_t address = row_address(row);
+        if (address == 0 || !UserPagesReadable(process, address, row_bytes))
+        {
+            return User::SyscallErrorBadAddress;
+        }
+    }
+    auto* bounce = static_cast<uint32_t*>(Memory::Allocate(Config::Width * PixelSize));
+    if (bounce == nullptr)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    uint64_t result = 0;
+    for (uint32_t row = 0; row < clipped.height && result == 0; ++row)
+    {
+        if (!CopyFromUserPaged(process, row_address(row), bounce, row_bytes))
+        {
+            result = User::SyscallErrorBadAddress;
+        }
+        else if (!Console::PresentRow(owner, clipped.screen_x, clipped.screen_y + row, bounce,
+                                      clipped.width))
+        {
+            result = User::SyscallErrorInvalidArgument;
+        }
+    }
+    Memory::Deallocate(bounce);
+    return result;
+}
+
+uint64_t DeviceControlSyscall(void* context, uint64_t descriptor, uint64_t request,
+                              uint64_t argument)
+{
+    auto* process = static_cast<ProcessRecord*>(context);
+    FramebufferHold hold;
+    const uint64_t held = Files::HoldFramebuffer(&process->files, descriptor, &hold.owner);
+    if (held != 0)
+    {
+        return held;
+    }
+    switch (request)
+    {
+    case User::FramebufferGetInfo:
+        return ReportFramebufferInfo(*process, argument);
+    case User::FramebufferAcquire:
+        return AcquireFramebuffer(*process, hold.owner, argument);
+    case User::FramebufferPresent:
+        return PresentFramebuffer(*process, hold.owner, argument);
+    case User::FramebufferRelease:
+        return argument != 0 ? User::SyscallErrorInvalidArgument
+                             : Console::ReleaseDisplay(hold.owner);
+    default:
+        return User::SyscallErrorInvalidArgument;
+    }
+}
+
 uint64_t ResolvePathSyscall(void* context, uint64_t path, uint64_t buffer, uint64_t capacity)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
@@ -3183,6 +3379,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     .resolve_path = ResolvePathSyscall,
     .sync = SyncSyscall,
     .resource_limit = ResourceLimitSyscall,
+    .device_control = DeviceControlSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.

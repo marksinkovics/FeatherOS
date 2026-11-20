@@ -25,6 +25,10 @@ module FeatherLibC [system] {
         header "../include/featheros.h"
         export *
     }
+    module featheros_framebuffer {
+        header "../include/featheros/framebuffer.h"
+        export *
+    }
     module limits {
         header "../include/limits.h"
         export *

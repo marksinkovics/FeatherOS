@@ -89,6 +89,7 @@ set(SRC
     ${SCHEDULER_CONTEXT_SRC}
     ${SRCROOT}/framebuffer/font.c
     ${SRCROOT}/framebuffer/framebuffer.cpp
+    ${SRCROOT}/framebuffer/graphics_mode.cpp
     ${SRCROOT}/framebuffer/term.cpp
     ${SRCROOT}/filesystem/initramfs.cpp
     ${SRCROOT}/filesystem/core_driver.cpp

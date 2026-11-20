@@ -49,4 +49,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 08bfd9c | M30 P5 s5 per-volume locking in Files and the VFS | opus | sonnet | 1 (CountOpen mutex under process_lock spinlock) | 4/4 | |
 | 34e43c0 | M30 P6 s1 core PageCache, CachedDevice, PageSource | opus | sonnet | 0 | 3/3 | |
 | 8b8aeed | M30 P6 s2 core metadata path over the page cache, pass-through BlockCache | opus | sonnet | 0 | 3/3 | |
-| (this) | M30 P6 s3 kernel frames, sizing, reclaim, device counters | opus | sonnet | 0 | 2/2 | |
+| 5373130 | M30 P6 s3 kernel frames, sizing, reclaim, device counters | opus | sonnet | 0 | 2/2 | |
+| (this) | M32 P1 s1 /dev/fb0, syscall 73, graphics mode, fbtest | opus | sonnet | 0 | 3/3 | |

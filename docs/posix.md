@@ -332,7 +332,11 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
 
 ### `sys/ioctl.h`
 
-Only `ioctl(fd, TIOCGWINSZ, &size)` and `ioctl(fd, TIOCSWINSZ, &size)`, which do what `tcgetwinsize` and `tcsetwinsize` in `termios.h` do, and include `termios.h` for `struct winsize`. On a terminal, other requests fail with `EINVAL`; other descriptors fail with `ENOTTY`. The console understands the VT100 sequences listed in `docs/development.md`.
+`ioctl(fd, TIOCGWINSZ, &size)` and `ioctl(fd, TIOCSWINSZ, &size)`, which do what `tcgetwinsize` and `tcsetwinsize` in `termios.h` do, and include `termios.h` for `struct winsize`. Requests of class 0x46 (`FB_*`, see `<featheros/framebuffer.h>`) go to the `DeviceControl` syscall, whose descriptor must be `/dev/fb0`; `ioctl` reads its variadic argument only for `FB_GET_INFO` and `FB_PRESENT`. On a terminal, other requests fail with `EINVAL`; other descriptors fail with `ENOTTY`.
+
+### `featheros/framebuffer.h`
+
+`/dev/fb0` is the framebuffer of the caller's virtual console, listed in `/dev` when there is a framebuffer. Opening it takes any access mode; the descriptor is close-on-exec and `posix_spawn` never passes it on. `ioctl(fd, FB_GET_INFO, &fb_info)` returns `{width, height, console, dropped_events}` (console 1-4, or 0 on a pseudo-terminal or without one). `FB_ACQUIRE` makes the file the console's owner (`EBUSY` if taken, `ENOTTY` without a virtual console, `SIGTTOU` then `EINTR` for a background process); the console then draws neither text nor status bar and is blank. `ioctl(fd, FB_PRESENT, &fb_present)` copies a `0x00RRGGBB` rectangle of `pixels` (rows `stride` pixels apart) to `x`, `y`, clipped to the screen (`EINVAL` for `flags` other than 0, a dimension above 16384, a stride below the width or a file that is not the owner; `EFAULT` for unreadable pixels). `FB_RELEASE` gives the screen back and the console repaints whole; the last close and the process's exit release too. `read`, `write` fail with `EINVAL`, `lseek` with `ESPIPE`. Swift sees it as the module `featheros_framebuffer`. The console understands the VT100 sequences listed in `docs/development.md`.
 
 ### `termios.h`
 

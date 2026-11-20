@@ -454,7 +454,7 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     {
         logger.Warning("Keyboard device unavailable; use serial input");
     }
-    Console::Initialize(display_ready ? terms : nullptr);
+    Console::Initialize(display_ready ? terms : nullptr, display_ready ? &framebuffer : nullptr);
 #if defined(FEATHEROS_KERNEL_TESTS)
     if (KernelTest::Selected(KernelTest::Mode::Input))
     {

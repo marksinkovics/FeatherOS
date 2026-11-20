@@ -35,7 +35,54 @@ void CopyBytes(uint8_t* destination, const uint8_t* source, size_t length)
     }
 }
 
+void WritePixel(uint8_t* destination, uint32_t bytes_per_pixel, uint32_t pixel)
+{
+    if (bytes_per_pixel == 4)
+    {
+        *reinterpret_cast<AliasedUint32*>(destination) = pixel;
+        return;
+    }
+    for (uint32_t byte = 0; byte < bytes_per_pixel; ++byte)
+    {
+        destination[byte] = (uint8_t)(pixel >> (byte * 8));
+    }
+}
+
+bool IsXrgb8888(const PixelFormat& format)
+{
+    return format.bytes_per_pixel == 4 && format.red_size == 8 && format.red_shift == 16 &&
+           format.green_size == 8 && format.green_shift == 8 && format.blue_size == 8 &&
+           format.blue_shift == 0;
+}
+
 } // namespace
+
+uint32_t PackColor(const PixelFormat& format, uint32_t color)
+{
+    uint32_t red = (color >> 16) & 0xffU;
+    uint32_t green = (color >> 8) & 0xffU;
+    uint32_t blue = color & 0xffU;
+    red = (red >> (8U - format.red_size)) << format.red_shift;
+    green = (green >> (8U - format.green_size)) << format.green_shift;
+    blue = (blue >> (8U - format.blue_size)) << format.blue_shift;
+    return red | green | blue;
+}
+
+void PackRow(const PixelFormat& format, const uint32_t* source, uint8_t* destination,
+             uint32_t count)
+{
+    if (IsXrgb8888(format))
+    {
+        CopyBytes(destination, reinterpret_cast<const uint8_t*>(source),
+                  static_cast<size_t>(count) * 4);
+        return;
+    }
+    for (uint32_t index = 0; index < count; ++index)
+    {
+        WritePixel(destination + static_cast<size_t>(index) * format.bytes_per_pixel,
+                   format.bytes_per_pixel, PackColor(format, source[index]));
+    }
+}
 
 bool Framebuffer::init(limine_framebuffer* framebuffer)
 {
@@ -66,13 +113,13 @@ bool Framebuffer::init(limine_framebuffer* framebuffer)
     m_width = (uint32_t)framebuffer->width;
     m_height = (uint32_t)framebuffer->height;
     m_pitch = (uint32_t)framebuffer->pitch;
-    m_bytes_per_pixel = bytes_per_pixel;
-    m_red_mask_size = framebuffer->red_mask_size;
-    m_red_mask_shift = framebuffer->red_mask_shift;
-    m_green_mask_size = framebuffer->green_mask_size;
-    m_green_mask_shift = framebuffer->green_mask_shift;
-    m_blue_mask_size = framebuffer->blue_mask_size;
-    m_blue_mask_shift = framebuffer->blue_mask_shift;
+    m_format = {bytes_per_pixel,
+                framebuffer->red_mask_size,
+                framebuffer->red_mask_shift,
+                framebuffer->green_mask_size,
+                framebuffer->green_mask_shift,
+                framebuffer->blue_mask_size,
+                framebuffer->blue_mask_shift};
     m_backbuffer_len = m_height * m_pitch;
     for (uint32_t byte = 0; byte < m_backbuffer_len; ++byte)
     {
@@ -99,7 +146,7 @@ void Framebuffer::drawPixel(uint32_t x, uint32_t y, uint32_t color)
         return;
 
     size_t pixel_offset =
-        static_cast<size_t>(m_pitch) * y + static_cast<size_t>(m_bytes_per_pixel) * x;
+        static_cast<size_t>(m_pitch) * y + static_cast<size_t>(m_format.bytes_per_pixel) * x;
     writePixel(m_backbuffer + pixel_offset, packColor(color));
 }
 
@@ -125,31 +172,17 @@ void Framebuffer::draw(uint32_t y, uint32_t height)
 
 uint32_t Framebuffer::packColor(uint32_t color) const
 {
-    uint32_t red = (color >> 16) & 0xffU;
-    uint32_t green = (color >> 8) & 0xffU;
-    uint32_t blue = color & 0xffU;
-    red = (red >> (8U - m_red_mask_size)) << m_red_mask_shift;
-    green = (green >> (8U - m_green_mask_size)) << m_green_mask_shift;
-    blue = (blue >> (8U - m_blue_mask_size)) << m_blue_mask_shift;
-    return red | green | blue;
+    return PackColor(m_format, color);
 }
 
 void Framebuffer::writePixel(uint8_t* destination, uint32_t pixel) const
 {
-    if (m_bytes_per_pixel == 4)
-    {
-        *reinterpret_cast<AliasedUint32*>(destination) = pixel;
-        return;
-    }
-    for (uint32_t byte = 0; byte < m_bytes_per_pixel; ++byte)
-    {
-        destination[byte] = (uint8_t)(pixel >> (byte * 8));
-    }
+    WritePixel(destination, m_format.bytes_per_pixel, pixel);
 }
 
 void Framebuffer::fillSpan(uint8_t* destination, uint32_t count, uint32_t pixel) const
 {
-    if (m_bytes_per_pixel == 4)
+    if (m_format.bytes_per_pixel == 4)
     {
         auto* pixels = reinterpret_cast<AliasedUint32*>(destination);
         for (uint32_t index = 0; index < count; ++index)
@@ -160,7 +193,7 @@ void Framebuffer::fillSpan(uint8_t* destination, uint32_t count, uint32_t pixel)
     }
     for (uint32_t index = 0; index < count; ++index)
     {
-        writePixel(destination + static_cast<size_t>(index) * m_bytes_per_pixel, pixel);
+        writePixel(destination + static_cast<size_t>(index) * m_format.bytes_per_pixel, pixel);
     }
 }
 
@@ -182,7 +215,7 @@ void Framebuffer::drawRectangle(uint32_t x, uint32_t y, uint32_t w, uint32_t h, 
     for (uint32_t row = y; row < y + h; ++row)
     {
         fillSpan(m_backbuffer + static_cast<size_t>(m_pitch) * row +
-                     static_cast<size_t>(m_bytes_per_pixel) * x,
+                     static_cast<size_t>(m_format.bytes_per_pixel) * x,
                  w, pixel);
     }
 }
@@ -202,11 +235,11 @@ void Framebuffer::drawCharacter(uint8_t ch_index, uint32_t x, uint32_t y, uint32
     for (uint32_t i = 0; i < rows; i++)
     {
         uint8_t* destination = m_backbuffer + static_cast<size_t>(m_pitch) * (y + i) +
-                               static_cast<size_t>(m_bytes_per_pixel) * x;
+                               static_cast<size_t>(m_format.bytes_per_pixel) * x;
         const uint8_t bits = glyph[i];
         for (uint32_t j = 0; j < columns; j++)
         {
-            writePixel(destination + static_cast<size_t>(j) * m_bytes_per_pixel,
+            writePixel(destination + static_cast<size_t>(j) * m_format.bytes_per_pixel,
                        (bits & (1U << j)) != 0 ? fg_pixel : bg_pixel);
         }
     }
@@ -260,6 +293,27 @@ void Framebuffer::drawString(const char* str, uint32_t x, uint32_t y, uint32_t b
         }
         character = str[++i];
     }
+}
+
+void Framebuffer::presentRow(int64_t x, uint32_t y, const uint32_t* pixels, uint32_t count)
+{
+    if (y >= m_height || pixels == nullptr)
+    {
+        return;
+    }
+    const auto columns = static_cast<int64_t>(count);
+    if (x <= -columns || x >= static_cast<int64_t>(m_width))
+    {
+        return;
+    }
+    const int64_t first = x < 0 ? -x : 0;
+    const int64_t end = x + columns;
+    const int64_t last = end > static_cast<int64_t>(m_width) ? static_cast<int64_t>(m_width) : end;
+    const int64_t screen_x = x + first;
+    PackRow(m_format, pixels + first,
+            m_backbuffer + static_cast<size_t>(m_pitch) * y +
+                static_cast<size_t>(m_format.bytes_per_pixel) * static_cast<size_t>(screen_x),
+            static_cast<uint32_t>(last - screen_x));
 }
 
 uint32_t Framebuffer::GetHeight() const

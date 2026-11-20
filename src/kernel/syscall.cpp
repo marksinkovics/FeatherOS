@@ -363,6 +363,12 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
         return {Action::Return,
                 handlers.resource_limit(context, arguments[0], arguments[1], arguments[2])};
     }
+    if (request.number == static_cast<uint64_t>(Number::DeviceControl) &&
+        handlers.device_control != nullptr)
+    {
+        return {Action::Return,
+                handlers.device_control(context, arguments[0], arguments[1], arguments[2])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

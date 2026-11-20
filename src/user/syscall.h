@@ -203,6 +203,11 @@ inline uint64_t ResourceLimit(uint64_t resource, const ResourceLimits* requested
                    reinterpret_cast<uint64_t>(previous));
 }
 
+inline uint64_t DeviceControl(uint64_t descriptor, uint64_t request, uint64_t argument)
+{
+    return Syscall(SyscallNumber::DeviceControl, descriptor, request, argument);
+}
+
 inline uint64_t StatDescriptor(uint64_t descriptor, FileStatus* status)
 {
     return Syscall(SyscallNumber::StatDescriptor, descriptor, reinterpret_cast<uint64_t>(status));

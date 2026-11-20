@@ -31,8 +31,12 @@ enum class Device : uint8_t
     PseudoTerminalSlave,
     // "ttyN": the terminal of virtual console N, from 1, listed once SetConsoles named it.
     Console,
+    // "fb0": the framebuffer of the caller's virtual console, listed once SetFramebuffer says
+    // there is one. Files opens it as a file of its own kind, which only DeviceControl uses.
+    Framebuffer,
 };
 
+void SetFramebuffer(bool present);
 void SetConsoles(Terminals::Terminal* const* terminals, uint32_t count);
 // path is relative to the mount, such as "null" or "pts/0". node receives the device and, for a
 // slave or a console, its number, as the VFS keeps them.
