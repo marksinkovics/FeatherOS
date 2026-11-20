@@ -30,8 +30,8 @@ _usage() {
     printf 'KERNEL_TESTS=ON builds the kernel test hooks (test, smoke, test-all and any *_TEST kernel toggle turn it on).\n'
     printf 'KERNEL_ROOT=vdaN puts root=vdaN on the kernel command line, naming the root partition (FAT16, ext2, ext3 or ext4);\n'
     printf 'ROOT_TEST=ON boots with it (vda3 by default) and checks the root.\n'
-    printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, benchmark,\n'
-    printf '         debug, all, clean, fullclean\n'
+    printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, unit-test-tsan,\n'
+    printf '         benchmark, debug, all, clean, fullclean\n'
 }
 
 _require_arch() {
@@ -614,6 +614,25 @@ unit_test() {
         --parallel "${CTEST_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 }
 
+unit_test_tsan() {
+    _require_tools cmake git ninja
+
+    local unit_build_dir="$SCRIPT_DIR/build/unit-tsan"
+    local cmake_args=(-DFEATHEROS_SANITIZERS=OFF -DFEATHEROS_THREAD_SANITIZER=ON)
+    if [ "$(uname -s)" = Darwin ]; then
+        local llvm_bin
+        llvm_bin="$(brew --prefix llvm 2>/dev/null)/bin"
+        if [ ! -x "$llvm_bin/clang++" ]; then
+            _err "The ThreadSanitizer tests need Homebrew LLVM (brew install llvm)."
+            exit 1
+        fi
+        cmake_args+=(-DCMAKE_C_COMPILER="$llvm_bin/clang" -DCMAKE_CXX_COMPILER="$llvm_bin/clang++")
+    fi
+    cmake --fresh -S "$SCRIPT_DIR/tests/unit" -B "$unit_build_dir" -G Ninja "${cmake_args[@]}"
+    cmake --build "$unit_build_dir" --parallel --target featheros_unit_tests
+    TSAN_OPTIONS="halt_on_error=1" "$unit_build_dir/featheros_unit_tests" "[concurrency]"
+}
+
 __exit() {
     cd "$SCRIPT_DIR" || return
 }
@@ -687,6 +706,9 @@ for action in "${ACTIONS[@]}"; do
             ;;
         unit-test)
             unit_test
+            ;;
+        unit-test-tsan)
+            unit_test_tsan
             ;;
         benchmark)
             BUILD_TYPE=Release

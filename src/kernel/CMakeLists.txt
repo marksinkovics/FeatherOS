@@ -69,6 +69,8 @@ set(SRC
     ${SRCROOT}/process.cpp
     ${SRCROOT}/process_arguments.cpp
     ${SRCROOT}/scheduler.cpp
+    ${SRCROOT}/sync/volume_mutex.cpp
+    ${SRCROOT}/sync/volume_violation.cpp
     ${SRCROOT}/smp.cpp
     ${SRCROOT}/random.cpp
     ${SRCROOT}/cpu.cpp

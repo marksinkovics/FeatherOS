@@ -199,7 +199,7 @@ TEST_CASE("a raw read with a timeout returns what arrived once it runs out")
 {
     Fixture fixture;
     fixture.terminal.SetSettings({0, 0, 5, 0}, 3);
-    TestScheduler::on_wait = [] { TestScheduler::ticks = TestScheduler::last_wait_deadline; };
+    TestScheduler::on_wait = [] { TestScheduler::ticks = TestScheduler::last_wait_deadline.load(); };
     REQUIRE(fixture.Read() == "");
     REQUIRE(TestScheduler::last_wait_deadline == 50);
 
@@ -235,7 +235,7 @@ TEST_CASE("a read watching output returns once output paused")
         {
             fixture.terminal.Write("log\n", 4);
         }
-        TestScheduler::ticks = TestScheduler::last_wait_deadline;
+        TestScheduler::ticks = TestScheduler::last_wait_deadline.load();
     };
     REQUIRE(fixture.Read() == "");
     REQUIRE(fixture.device.fresh_rows == 1);

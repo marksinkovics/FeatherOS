@@ -6,6 +6,14 @@ include(CTest)
 get_filename_component(FEATHEROS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
 option(FEATHEROS_SANITIZERS "Build the unit tests with AddressSanitizer and UBSan" ON)
+option(FEATHEROS_THREAD_SANITIZER "Build the unit tests with ThreadSanitizer, without ASan" OFF)
+if (FEATHEROS_SANITIZERS AND FEATHEROS_THREAD_SANITIZER)
+    message(FATAL_ERROR "FEATHEROS_SANITIZERS and FEATHEROS_THREAD_SANITIZER exclude each other")
+endif ()
+if (FEATHEROS_THREAD_SANITIZER)
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=thread)
+endif ()
 if (FEATHEROS_SANITIZERS)
     # Applied before Catch2 is added so it is instrumented too; a library built without ASan can
     # report false container overflows in std::string and std::vector shared with the tests.
@@ -50,6 +58,7 @@ add_executable(featheros_unit_tests
     kernel/network/tcp_tests.cpp
     kernel/network/udp_tests.cpp
     kernel/process/futex_tests.cpp
+    kernel/sync/volume_mutex_tests.cpp
     support/network_stubs.cpp
     support/scheduler_stubs.cpp
     support/terminal_device.cpp
@@ -209,6 +218,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/klogger.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
     "${FEATHEROS_ROOT}/src/kernel/process_arguments.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/sync/volume_mutex.cpp"
     "${FEATHEROS_ROOT}/src/kernel/syscall.cpp"
     "${FEATHEROS_ROOT}/src/kernel/time/wall_clock.cpp"
     "${FEATHEROS_ROOT}/src/kernel/thread_local_storage.cpp"

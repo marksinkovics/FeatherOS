@@ -47,6 +47,7 @@ struct Task
     // Saved while the task is switched out; they only ever hold user-mode values.
     Arch::FloatingPoint::State floating_point;
     uint64_t thread_pointer;
+    TaskLocal local;
 };
 
 Task boot_task;
@@ -98,6 +99,7 @@ void ResetTask(Task& task) NO_THREAD_SAFETY_ANALYSIS
     task.wait_queue = nullptr;
     task.user_context = nullptr;
     task.thread_pointer = 0;
+    task.local = {};
     Arch::FloatingPoint::InitializeState(&task.floating_point);
 }
 
@@ -634,6 +636,12 @@ void ActivateCurrentAddressSpace()
 TaskId CurrentTaskId()
 {
     return initialized ? CurrentTask()->id : 0;
+}
+
+TaskLocal& CurrentLocal()
+{
+    Task* task = initialized ? CurrentTask() : nullptr;
+    return task != nullptr ? task->local : boot_task.local;
 }
 
 void* CurrentUserContext()
