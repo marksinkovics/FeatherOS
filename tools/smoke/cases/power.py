@@ -42,7 +42,7 @@ class Power(Case):
 
     def Script(self, session):
         return Lines(
-            b"mount -t ext2 vda4 /mnt\n"
+            b"mount -t ext2 vda6 /mnt\n"
             + f"write /mnt/power.txt before {self.kind}\n".encode()
             + f"write /power.txt before {self.kind}\n".encode()
             + f"{self.kind}\n".encode()

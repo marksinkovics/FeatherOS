@@ -1314,6 +1314,16 @@ void ChangeVolumeSecondBoot(const char* root, Ext2Data* data)
     }
 }
 
+uint64_t TextLength(const char* text)
+{
+    uint64_t length = 0;
+    while (text[length] != '\0')
+    {
+        ++length;
+    }
+    return length;
+}
+
 bool SameText(const char* left, const char* right)
 {
     while (*left != '\0' && *left == *right)
@@ -1820,9 +1830,9 @@ bool Ext2FilesMatch()
 void CheckExt2ReadOnly()
 {
     VFS::FileHandle file{};
-    if (VFS::Mount("ext2", "vda4", "/ext2", Filesystem::MountMode::ReadOnly) !=
+    if (VFS::Mount("ext2", "vda6", "/ext2", Filesystem::MountMode::ReadOnly) !=
             VFS::MountResult::Done ||
-        !MountedAs("/ext2", "ext2", "vda4", true) || !Ext2FilesMatch() ||
+        !MountedAs("/ext2", "ext2", "vda6", true) || !Ext2FilesMatch() ||
         !RefusesChanges("/ext2") || VFS::Open("/ext2/fast-link", &file) ||
         VFS::Unmount("/ext2") != VFS::MountResult::Done || VFS::IsDirectory("/ext2/docs"))
     {
@@ -1830,15 +1840,15 @@ void CheckExt2ReadOnly()
     }
 }
 
-// The disk's third and fourth partitions, ext3 and ext2, mounted read-write; the first boot writes
+// The disk's third and sixth partitions, ext3 and ext2, mounted read-write; the first boot writes
 // both and unmounts, the second finds the first boot's shell session's changes (ext2 synced by the
 // writeback task, ext3 by replaying its journal). The originals are never changed.
 void CheckExt3AndExt2(uint64_t boot_count, Ext2Data* data)
 {
     if (VFS::Mount("ext2", "vda3", "/ext3") != VFS::MountResult::NotFound ||
         VFS::Mount("ext4", "vda3", "/ext3") != VFS::MountResult::NotFound ||
-        VFS::Mount("ext3", "vda4", "/ext2") != VFS::MountResult::NotFound ||
-        VFS::Mount("ext4", "vda4", "/ext2") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext3", "vda6", "/ext2") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext4", "vda6", "/ext2") != VFS::MountResult::NotFound ||
         VFS::Mount("ext2", "vda1", "/ext2") != VFS::MountResult::NotFound ||
         VFS::Mount("ext3", "vda1", "/ext2") != VFS::MountResult::NotFound)
     {
@@ -1850,11 +1860,11 @@ void CheckExt3AndExt2(uint64_t boot_count, Ext2Data* data)
     }
     CheckExt2ReadOnly();
     if (VFS::Mount("ext3", "vda3", "/ext3") != VFS::MountResult::Done ||
-        VFS::Mount("ext2", "vda4", "/ext2") != VFS::MountResult::Done)
+        VFS::Mount("ext2", "vda6", "/ext2") != VFS::MountResult::Done)
     {
         Panic("Mounting the ext3 and ext2 partitions failed");
     }
-    if (!MountedAs("/ext3", "ext3", "vda3", false) || !MountedAs("/ext2", "ext2", "vda4", false))
+    if (!MountedAs("/ext3", "ext3", "vda3", false) || !MountedAs("/ext2", "ext2", "vda6", false))
     {
         Panic("An ext3 or ext2 partition did not mount writable");
     }
@@ -1891,6 +1901,70 @@ void CheckExt3AndExt2(uint64_t boot_count, Ext2Data* data)
     {
         Panic("Unmounting the ext3 and ext2 partitions failed");
     }
+}
+
+// The second ext4 volume (vda5) mounted beside the root, which the shell part and the harness then
+// check on disk: written like the ext3 and ext2 volumes, replayed by the second boot's mount.
+void CheckSecondExt4(uint64_t boot_count, Ext2Data* data)
+{
+    char data_name[32];
+    char root_name[32];
+    char data_text[40];
+    char root_text[40];
+    if (!String::FormatTo(data_name, sizeof(data_name), "/data/boot{}.bin", boot_count) ||
+        !String::FormatTo(root_name, sizeof(root_name), "/boot{}-root.txt", boot_count) ||
+        !String::FormatTo(data_text, sizeof(data_text), "data volume boot {}\n", boot_count) ||
+        !String::FormatTo(root_text, sizeof(root_text), "root boot {}\n", boot_count))
+    {
+        Panic("A second ext4 test name is too long");
+    }
+    if (VFS::Mount("ext4", "vda5", "/data") != VFS::MountResult::Done ||
+        !MountedAs("/data", "ext4", "vda5", false) || !MountedAs("/", "ext4", "vda1", false))
+    {
+        Panic("The second ext4 volume did not mount beside the root");
+    }
+    if (!ReadsAs("/data/hello.txt", "Hello from the second ext4 partition.\n") ||
+        !ReadsAs("/data/samples/hello.txt", "data volume\n") ||
+        !ReadsAs("/samples/hello.txt", "Hello from the ext4 partition.\n"))
+    {
+        Panic("The two ext4 volumes read back each other's contents");
+    }
+    if (boot_count == 1)
+    {
+        WriteVolumeFirstBoot("/data", data);
+    }
+    else if (boot_count == 2)
+    {
+        CheckReplayedFile("/data", "periodic data\n");
+        ChangeVolumeSecondBoot("/data", data);
+    }
+    if (!WriteNew(data_name, data_text, TextLength(data_text)) ||
+        !WriteNew(root_name, root_text, TextLength(root_text)) || !ReadsAs(data_name, data_text) ||
+        !ReadsAs(root_name, root_text))
+    {
+        Panic("Writing to both ext4 volumes failed");
+    }
+    if (VFS::Mount("ext4", "vda5", "/data2") != VFS::MountResult::Busy ||
+        VFS::Mount("ext4", "vda1", "/data2") != VFS::MountResult::Busy ||
+        VFS::Rename("/data/hello.txt", "/moved-hello.txt") ||
+        VFS::LastError() != User::SyscallErrorCrossDevice ||
+        VFS::Link("/data/hello.txt", "/linked-hello.txt") ||
+        VFS::LastError() != User::SyscallErrorCrossDevice ||
+        !ReadsAs("/data/hello.txt", "Hello from the second ext4 partition.\n"))
+    {
+        Panic("A volume mounted twice or a rename across volumes was not refused");
+    }
+    if (VFS::Unmount("/data") != VFS::MountResult::Done || VFS::IsDirectory("/data/samples"))
+    {
+        Panic("Unmounting the second ext4 volume failed");
+    }
+    char message[96];
+    if (!String::FormatTo(message, sizeof(message),
+                          "KERN/STORAGE: two ext4 volumes mounted at once; boot {}\n", boot_count))
+    {
+        Panic("Second ext4 message formatting failed");
+    }
+    Serial::Write(message);
 }
 
 } // namespace
@@ -1967,6 +2041,7 @@ void RunStorageTests()
     CheckRoot(boot_count, &*data);
     CheckEtc(boot_count);
     CheckExt3AndExt2(boot_count, &*data);
+    CheckSecondExt4(boot_count, &*data);
     CheckRemount(boot_count, &*data);
     CheckRootRemount(boot_count);
     if (VFS::Unmount(FatPoint) != VFS::MountResult::Done)

@@ -6,6 +6,7 @@ from pathlib import Path
 from create_test_disk import (
     EXT2_END,
     EXT2_START,
+    EXT3_END,
     EXT3_START,
     FAT16_START,
     ROOT_START,
@@ -19,13 +20,13 @@ from smoke.cases.normal_boot import NormalBoot
 from smoke.script import Lines
 
 # The partitions of the test disk that root= can name instead of the default
-# root: the partition's range and its type. vda3 and vda4 boot as they are,
+# root: the partition's range and its type. vda3 and vda6 boot as they are,
 # with no /home, /bin, /sbin or /BLOCK.TXT; vda1 is made into a new ext4
 # volume with nothing but lost+found first.
 ROOT_VOLUMES = {
     "vda1": ("ext4", ROOT_START, FAT16_START),
-    "vda3": ("ext3", EXT3_START, EXT2_START),
-    "vda4": ("ext2", EXT2_START, EXT2_END),
+    "vda3": ("ext3", EXT3_START, EXT3_END),
+    "vda6": ("ext2", EXT2_START, EXT2_END),
 }
 EMPTY_ROOT = "vda1"
 # The empty root's /sbin/init is garbage, so the kernel must start

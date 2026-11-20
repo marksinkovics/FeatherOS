@@ -3,7 +3,7 @@ import re
 from smoke.cases.shell.part import Part
 from smoke.script import Lines
 
-# The ext2 partition is vda4 (tools/create_test_disk.py). Everything on it but
+# The ext2 partition is vda6 (tools/create_test_disk.py). Everything on it but
 # lost+found belongs to user and group 1000, hello.txt is 0640 in group 100,
 # and every time is 2026-01-01. The part first mounts the FAT16 partition,
 # vda2, read-only at /mnt, then mounts ext2 there (the wrong type is refused;
@@ -22,9 +22,9 @@ EXT2_INPUT = (
     b"mount -r -t fat16 vda2 /mnt\ngrep /mnt /proc/mounts\n"
     b'cat "/mnt/read me first.txt"\nwrite /mnt/new.txt x\n'
     b'rm "/mnt/Read Me First.txt"\numount /mnt\nls /mnt\n'
-    b"mount -t ext4 vda4 /mnt\nmount -r -t ext2 vda4 /mnt\n"
+    b"mount -t ext4 vda6 /mnt\nmount -r -t ext2 vda6 /mnt\n"
     b"grep /mnt /proc/mounts\nwrite /mnt/new2.txt x\numount /mnt\n"
-    b"mount -t ext2 vda4 /mnt\ngrep /mnt /proc/mounts\n"
+    b"mount -t ext2 vda6 /mnt\ngrep /mnt /proc/mounts\n"
     b"ls /mnt\nls -l /mnt\n"
     b"cat /mnt/" + LONG_EXT2_NAME + b"\n"
     b"cat /mnt/hello.txt\ncat /mnt/docs/notes/deep.txt\n"
@@ -48,10 +48,10 @@ EXPECTED_EXT2_OUTPUT = (
     "write: cannot open /mnt/new.txt: Read-only file system",
     "rm: /mnt/Read Me First.txt: read-only file system",
     "ls: /mnt: no such directory",
-    "mount: vda4 on /mnt: No such file or directory",
-    "vda4 /mnt ext2 ro 0 0",
+    "mount: vda6 on /mnt: No such file or directory",
+    "vda6 /mnt ext2 ro 0 0",
     "write: cannot open /mnt/new2.txt: Read-only file system",
-    "vda4 /mnt ext2 rw 0 0",
+    "vda6 /mnt ext2 rw 0 0",
     "\nlong ext2 name",
     "\nHello from the ext2 partition.",
     "\nnested ext2 file",

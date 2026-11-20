@@ -7,10 +7,13 @@ import tempfile
 from pathlib import Path
 
 from create_test_disk import (
+    DATA_END,
+    DATA_START,
     E2FSPROGS_DIRECTORIES,
     EXT2_END,
     EXT2_FILES,
     EXT2_START,
+    EXT3_END,
     EXT3_FILES,
     EXT3_START,
     FAT16_START,
@@ -34,16 +37,19 @@ SERVICE_FILE = (
 DISABLED_FILE = b"# storage test\ndhcp\n"
 SERVICE_MARKER = "# storage-service-marker"
 DISABLED_MESSAGE = "init: /etc/init.disabled: not starting dhcp"
+SECOND_EXT4_MESSAGE = "KERN/STORAGE: two ext4 volumes mounted at once; boot "
 STORAGE_MESSAGE = (
     "KERN/STORAGE: sector, FAT16, ext2, ext3 and ext4 file writes verified; "
     "boot count "
 )
-# The journalled partitions: the ext4 root and ext3. The kernel test
-# (WriteVolumeFirstBoot and ChangeVolumeSecondBoot in kernel_test.cpp) writes
-# both the same way; the root is still mounted when the harness looks.
+# The journalled partitions: the ext4 root, ext3 and the data ext4. The kernel
+# test (WriteVolumeFirstBoot and ChangeVolumeSecondBoot in kernel_test.cpp)
+# writes all three the same way; the root is still mounted when the harness
+# looks, and the data volume is mounted by the first boot's shell session.
 JOURNALLED_PARTITIONS = {
-    "ext3": (EXT3_START, EXT2_START),
+    "ext3": (EXT3_START, EXT3_END),
     "ext4": (ROOT_START, FAT16_START),
+    "data": (DATA_START, DATA_END),
 }
 # The superblock sits 1024 bytes into a volume: s_state at 0x3A (1 is clean)
 # and the incompatible features at 0x60, where bit 0x4 is needs_recovery.
@@ -95,7 +101,8 @@ PERSISTENT_FILE_LINES = 200
 # the ext3 and ext2 partitions, with no sync or umount, and sleeps past the
 # writeback task's 5 s: the harness stops QEMU after that, so only the
 # periodic sync can have made ext2 clean and put the two journalled changes in
-# their logs. The second boot ends by remounting the root read-only, which
+# their logs, the data volume's mounted beside the root and mounted a second
+# time in vain. The second boot ends by remounting the root read-only, which
 # closes its journal, so the harness finds the root clean.
 FAT16_SHELL_SETUP = b"mount -t fat16 vda2 /fat\ncd /fat/home\n"
 STORAGE_SHELL_INPUT = {
@@ -103,9 +110,12 @@ STORAGE_SHELL_INPUT = {
     b"write -a notes.txt second line\n"
     b"cat notes.txt\nmkdir docs\nwrite docs/plan.txt nested hello\n"
     b'cat "/fat/read me first.txt"\nwrite "My Plans.txt" long name test\n'
-    b"sync\nmount -t ext3 vda3 /ext3\nmount -t ext2 vda4 /ext2\n"
+    b"sync\nmount -t ext3 vda3 /ext3\nmount -t ext2 vda6 /ext2\n"
+    b"mount -t ext4 vda5 /data\nmount -t ext4 vda5 /d2\n"
+    b"grep ext4 /proc/mounts\n"
     b"write /periodic.txt periodic ext4\n"
     b"write /ext3/periodic.txt periodic ext3\n"
+    b"write /data/periodic.txt periodic data\n"
     b"write /ext2/periodic.txt periodic ext2\nsleep 8\nls docs\nls\n",
     2: FAT16_SHELL_SETUP + b"cat notes.txt\nrm notes.txt\ncat notes.txt\n"
     b"rm notes.txt\n"
@@ -124,6 +134,9 @@ NOTES_OUTPUT = re.compile(r"^first line\r?\nsecond line\r?$", re.MULTILINE)
 STORAGE_SHELL_OUTPUT = {
     1: (
         "\nLong names from mtools work.",
+        "mount: vda5 on /d2: Device or resource busy",
+        "vda1 / ext4 rw 0 0",
+        "vda5 /data ext4 rw 0 0",
         "plan.txt",
         "notes.txt",
         "My Plans.txt",
@@ -405,6 +418,10 @@ def VerifyJournalled(disk_path, boot_count):
             failure = VerifyExtVolume(str(volume), boot_count, name)
             if failure is None and name == "ext4":
                 failure = VerifyRootEtc(debugfs, str(volume), boot_count)
+            if failure is None and name in ("ext4", "data"):
+                failure = VerifyBootFiles(
+                    debugfs, str(volume), name, boot_count
+                )
             if failure is None and name == "ext4" and boot_count == 2:
                 if Debugfs(debugfs, str(volume), "cat /remount.txt") != (
                     b"remounted\n"
@@ -412,6 +429,22 @@ def VerifyJournalled(disk_path, boot_count):
                     failure = "debugfs read a different /remount.txt"
         if failure is not None:
             return f"{name}: {failure}"
+    return None
+
+
+def VerifyBootFiles(debugfs, volume, name, boot_count):
+    """What CheckSecondExt4 wrote on each boot, on the volume it names."""
+    for boot in range(1, boot_count + 1):
+        path = (
+            f"/boot{boot}.bin" if name == "data" else f"/boot{boot}-root.txt"
+        )
+        text = (
+            f"data volume boot {boot}\n"
+            if name == "data"
+            else f"root boot {boot}\n"
+        )
+        if Debugfs(debugfs, volume, f"cat {path}") != text.encode():
+            return f"debugfs read different {path} contents"
     return None
 
 
@@ -455,7 +488,7 @@ def VerifyJournalledClean(disk_path):
     expected = {
         "ext3": (
             EXT3_START,
-            EXT2_START,
+            EXT3_END,
             "",
             ("/big.txt", EXT3_FILES["big.txt"]),
         ),
@@ -552,9 +585,15 @@ class Storage(Case):
         ext2_error = VerifyExt2(self.args.disk, self.boot)
         if ext2_error is not None:
             return f"ext2 check: {ext2_error}"
+        second = f"{SECOND_EXT4_MESSAGE}{self.boot}"
+        if (
+            re.search(rf"^{re.escape(second)}\r?$", output, re.MULTILINE)
+            is None
+        ):
+            return f"expected '{second}'"
         journalled_error = VerifyJournalled(self.args.disk, self.boot)
         if journalled_error is not None:
-            return f"ext4 root and ext3 check: {journalled_error}"
+            return f"ext4 root, ext3 and data ext4 check: {journalled_error}"
         if self.boot == 2:
             return CheckSecondBoot(output)
         return None
@@ -562,6 +601,7 @@ class Storage(Case):
     def PassMessage(self, result):
         return (
             "sector, FAT16, ext2 and shell file-tool writes verified in the "
-            "guest, with mtools, e2fsck and debugfs, and the writeback task "
-            f"synced the ext4 root, ext3 and ext2; boot {self.boot} persisted"
+            "guest, with mtools, e2fsck and debugfs, two ext4 volumes mounted "
+            "at once, and the writeback task synced the ext4 root, ext3, the "
+            f"data ext4 and ext2; boot {self.boot} persisted"
         )

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -11,19 +13,30 @@ import uuid
 import zlib
 from pathlib import Path
 
-DISK_SIZE = 160 * 1024 * 1024
+DISK_SIZE = 166 * 1024 * 1024
 SECTOR_SIZE = 512
 DISK_SECTORS = DISK_SIZE // SECTOR_SIZE
-# Each partition ends where the next starts: the root's ext4 (127 MiB, which
-# holds every program of a Debug build, about 75 MB), FAT16 (16 MiB) from
-# 128 MiB, ext3 (4 MiB) from 144 MiB and ext2 (8 MiB) from 148 MiB, which
-# leaves the last 4 MiB free in both layouts. An MBR holds no more than these
-# four.
+# Each volume ends where the next starts: the root's ext4 (127 MiB, which holds
+# every program of a Debug build, about 75 MB), FAT16 (16 MiB) from 128 MiB and
+# ext3 (4 MiB) from 144 MiB. An MBR holds four entries, so the fourth is an
+# extended container (14 MiB from 148 MiB) of two logical partitions, as
+# Linux's fdisk lays them out: each logical starts 1 MiB (2048 sectors) after
+# its EBR, the data ext4 (4 MiB) and ext2 (8 MiB). GPT holds the same volumes
+# at the same sectors and numbers, with entry 4 empty. The last 4 MiB stay free
+# in both layouts, clear of GPT's backup table.
 ROOT_START = 2048
 FAT16_START = 262144
 EXT3_START = 294912
-EXT2_START = 303104
-EXT2_END = 319488
+EXT3_END = 303104
+CONTAINER_START = 303104
+CONTAINER_END = 331776
+LOGICAL_GAP = 2048
+EBR1_SECTOR = CONTAINER_START
+DATA_START = EBR1_SECTOR + LOGICAL_GAP
+DATA_END = 313344
+EBR2_SECTOR = DATA_END
+EXT2_START = EBR2_SECTOR + LOGICAL_GAP
+EXT2_END = CONTAINER_END
 FAT16_CLUSTER_SECTORS = 4
 FAT16_PARTITION_TYPE = 0x06
 LINUX_PARTITION_TYPE = 0x83
@@ -44,6 +57,9 @@ EXT3_VOLUME_UUID = "6f2d7e52-3c8e-4d4b-9a51-7a0e5b1c2d05"
 EXT4_VOLUME_UUID = "6f2d7e52-3c8e-4d4b-9a51-7a0e5b1c2d06"
 EXT3_PARTITION_GUID = uuid.UUID("6F2D7E52-3C8E-4D4B-9A51-7A0E5B1C2D07")
 EXT2_PARTITION_GUID = uuid.UUID("6F2D7E52-3C8E-4D4B-9A51-7A0E5B1C2D08")
+EXT4_DATA_VOLUME_UUID = "6f2d7e52-3c8e-4d4b-9a51-7a0e5b1c2d09"
+DATA_PARTITION_GUID = uuid.UUID("6F2D7E52-3C8E-4D4B-9A51-7A0E5B1C2D0A")
+EXTENDED_PARTITION_TYPE = 0x05
 EXT2_TIME = 1767225600
 # mtools writes this file with a VFAT long name, which the kernel must read.
 LONG_NAME_FILE = "Read Me First.txt"
@@ -110,6 +126,13 @@ EXT3_FILES = {
     "docs/readme.txt": b"ext3 subdirectory file\n",
 }
 EXT3_LINKS = {"link": "docs/readme.txt"}
+# The second ext4 volume (vda5), which FeatherOS mounts beside the root: the
+# STORAGE kernel test (CheckSecondExt4) and the shell part ext4.py read it.
+# /samples/hello.txt has the root's path with other contents.
+DATA_FILES = {
+    "hello.txt": b"Hello from the second ext4 partition.\n",
+    f"{SAMPLES}/hello.txt": b"data volume\n",
+}
 E2FSPROGS_DIRECTORIES = (
     "/opt/homebrew/opt/e2fsprogs/sbin",
     "/usr/local/opt/e2fsprogs/sbin",
@@ -132,6 +155,18 @@ def write_mbr(disk_file, *entries):
     mbr[510:512] = b"\x55\xaa"
     disk_file.seek(0)
     disk_file.write(mbr)
+
+
+def write_ebr(disk_file, sector, logical, link=None):
+    """logical is (type, start relative to this EBR, count); link is (type,
+    start relative to the container, count)."""
+    ebr = bytearray(SECTOR_SIZE)
+    ebr[446:462] = mbr_entry(*logical)
+    if link is not None:
+        ebr[462:478] = mbr_entry(*link)
+    ebr[510:512] = b"\x55\xaa"
+    disk_file.seek(sector * SECTOR_SIZE)
+    disk_file.write(ebr)
 
 
 def gpt_header(current, backup, entries_sector, entries_crc):
@@ -162,7 +197,10 @@ def gpt_header(current, backup, entries_sector, entries_crc):
 
 def write_gpt(disk_file, partitions):
     entries = bytearray(GPT_ENTRY_COUNT * GPT_ENTRY_SIZE)
-    for index, (type_guid, guid, first, last, name) in enumerate(partitions):
+    for index, partition in enumerate(partitions):
+        if partition is None:
+            continue
+        type_guid, guid, first, last, name = partition
         struct.pack_into(
             "<16s16sQQQ72s",
             entries,
@@ -421,6 +459,33 @@ def make_ext3_volume(volume_path, sector_count):
     )
 
 
+def make_data_volume(volume_path, sector_count):
+    environment = dict(os.environ, E2FSPROGS_FAKE_TIME=str(EXT2_TIME))
+    mke2fs = find_mke2fs()
+    with tempfile.TemporaryDirectory() as source_name:
+        source = Path(source_name)
+        write_files(source, DATA_FILES, {})
+        names = finish_tree(source)
+        run_mke2fs(
+            mke2fs,
+            ("-t", "ext4", "-b", "1024", "-I", "256", "-J", "size=1"),
+            "FEATHERDATA",
+            EXT4_DATA_VOLUME_UUID,
+            source,
+            volume_path,
+            sector_count,
+            environment,
+        )
+    set_owners(
+        find_debugfs(mke2fs),
+        volume_path,
+        names,
+        set(),
+        lambda name: (0, 0),
+        environment,
+    )
+
+
 def make_fat16_volume(image, fat16_sectors):
     image_spec = f"{image}@@{FAT16_START * SECTOR_SIZE}"
     subprocess.run(
@@ -458,6 +523,29 @@ def make_fat16_volume(image, fat16_sectors):
         )
 
 
+def check_with_sfdisk(image, expected):
+    """util-linux's sfdisk, where installed, must list the same numbers,
+    starts and sizes as the table written here."""
+    sfdisk = shutil.which("sfdisk")
+    if sfdisk is None:
+        return
+    result = subprocess.run(
+        [sfdisk, "-J", str(image)], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        sys.exit(f"create_test_disk.py: sfdisk failed:\n{result.stderr}")
+    listed = {
+        int(re.search(r"(\d+)$", entry["node"]).group(1)): (
+            entry["start"],
+            entry["size"],
+        )
+        for entry in json.loads(result.stdout)["partitiontable"]["partitions"]
+        if entry.get("type") not in ("5", "f", "85")
+    }
+    if listed != expected:
+        sys.exit(f"create_test_disk.py: sfdisk lists {listed}, not {expected}")
+
+
 def copy_volume(volume, disk_path, start):
     with volume.open("rb") as volume_file, disk_path.open("r+b") as disk_file:
         disk_file.seek(start * SECTOR_SIZE)
@@ -467,7 +555,7 @@ def copy_volume(volume, disk_path, start):
 def main():
     parser = argparse.ArgumentParser(
         description="Create a small MBR or GPT disk with the root's ext4 "
-        "partition, then FAT16, ext3 and ext2 partitions."
+        "partition, then FAT16, ext3, a second ext4 and ext2 partitions."
     )
     parser.add_argument("image", help="Output raw disk image")
     parser.add_argument(
@@ -487,13 +575,13 @@ def main():
     )
     args = parser.parse_args()
 
-    # GPT's backup table in the disk's last sectors stays clear of the free
-    # space after ext2.
-    assert EXT2_END <= DISK_SECTORS - GPT_TABLE_SECTORS - 1
+    assert CONTAINER_END <= DISK_SECTORS - GPT_TABLE_SECTORS - 1
     root_sectors = FAT16_START - ROOT_START
     fat16_sectors = EXT3_START - FAT16_START
-    ext3_sectors = EXT2_START - EXT3_START
+    ext3_sectors = EXT3_END - EXT3_START
+    data_sectors = DATA_END - DATA_START
     ext2_sectors = EXT2_END - EXT2_START
+    container_sectors = CONTAINER_END - CONTAINER_START
 
     image = Path(args.image).resolve()
     image.parent.mkdir(parents=True, exist_ok=True)
@@ -507,6 +595,9 @@ def main():
         volume = Path(work) / "ext3.img"
         make_ext3_volume(volume, ext3_sectors)
         copy_volume(volume, image, EXT3_START)
+        volume = Path(work) / "data.img"
+        make_data_volume(volume, data_sectors)
+        copy_volume(volume, image, DATA_START)
         volume = Path(work) / "ext2.img"
         make_ext2_volume(volume, ext2_sectors)
         copy_volume(volume, image, EXT2_START)
@@ -535,8 +626,16 @@ def main():
                         LINUX_FILESYSTEM_TYPE,
                         EXT3_PARTITION_GUID,
                         EXT3_START,
-                        EXT2_START - 1,
+                        EXT3_END - 1,
                         "FEATHEREXT3",
+                    ),
+                    None,
+                    (
+                        LINUX_FILESYSTEM_TYPE,
+                        DATA_PARTITION_GUID,
+                        DATA_START,
+                        DATA_END - 1,
+                        "FEATHERDATA",
                     ),
                     (
                         LINUX_FILESYSTEM_TYPE,
@@ -553,8 +652,35 @@ def main():
                 mbr_entry(LINUX_PARTITION_TYPE, ROOT_START, root_sectors),
                 mbr_entry(FAT16_PARTITION_TYPE, FAT16_START, fat16_sectors),
                 mbr_entry(LINUX_PARTITION_TYPE, EXT3_START, ext3_sectors),
-                mbr_entry(LINUX_PARTITION_TYPE, EXT2_START, ext2_sectors),
+                mbr_entry(
+                    EXTENDED_PARTITION_TYPE, CONTAINER_START, container_sectors
+                ),
             )
+            write_ebr(
+                disk_file,
+                EBR1_SECTOR,
+                (LINUX_PARTITION_TYPE, LOGICAL_GAP, data_sectors),
+                (
+                    EXTENDED_PARTITION_TYPE,
+                    EBR2_SECTOR - CONTAINER_START,
+                    CONTAINER_END - EBR2_SECTOR,
+                ),
+            )
+            write_ebr(
+                disk_file,
+                EBR2_SECTOR,
+                (LINUX_PARTITION_TYPE, LOGICAL_GAP, ext2_sectors),
+            )
+    check_with_sfdisk(
+        image,
+        {
+            1: (ROOT_START, root_sectors),
+            2: (FAT16_START, fat16_sectors),
+            3: (EXT3_START, ext3_sectors),
+            5: (DATA_START, data_sectors),
+            6: (EXT2_START, ext2_sectors),
+        },
+    )
 
 
 if __name__ == "__main__":
