@@ -1562,8 +1562,52 @@ bool AppendTo(const char* path, const char* text)
     return done;
 }
 
-// /etc is the root's own directory, not the RAM copy; hosts, resolv.conf and init.conf keep an edit
-// of the first boot, and a default deleted on the second comes back at the next UseRootEtc.
+bool CreateWith(const char* path, const char* text)
+{
+    VFS::FileHandle file{};
+    uint64_t length = 0;
+    while (text[length] != '\0')
+    {
+        ++length;
+    }
+    uint64_t written = 0;
+    const bool done =
+        VFS::Create(path, &file) && VFS::Write(&file, text, length, &written) && written == length;
+    VFS::Close(&file);
+    return done;
+}
+
+bool FileHolds(const char* path, const char* text)
+{
+    VFS::FileHandle file{};
+    if (!VFS::Open(path, &file))
+    {
+        return false;
+    }
+    char chunk[64];
+    uint64_t offset = 0;
+    uint64_t count = 0;
+    bool same = true;
+    while (same && VFS::Read(&file, chunk, sizeof(chunk), &count) && count != 0)
+    {
+        for (uint64_t index = 0; same && index < count; ++index, ++offset)
+        {
+            same = text[offset] != '\0' && chunk[index] == text[offset];
+        }
+    }
+    VFS::Close(&file);
+    return same && text[offset] == '\0';
+}
+
+// The init service files the harness expects (tools/smoke/cases/storage.py): init reads them at
+// the end of each boot, so the marker is printed twice and dhcp is not started either time.
+constexpr char ServiceFile[] = "# storage-service-marker\n"
+                               "once grep storage-service-marker /etc/init.d/storage\n";
+constexpr char DisabledFile[] = "# storage test\ndhcp\n";
+
+// /etc is the root's own directory, not the RAM copy; hosts and resolv.conf keep an edit of the
+// first boot, the administrator's service and disabled files persist, and a default deleted on the
+// second boot comes back at the next UseRootEtc.
 void CheckEtc(uint64_t boot_count)
 {
     constexpr char FirstEdit[] = "# storage test boot 1\n";
@@ -1575,23 +1619,31 @@ void CheckEtc(uint64_t boot_count)
     if (boot_count == 1)
     {
         if (!EtcFileIs("hosts", "") || !EtcFileIs("resolv.conf", "") ||
-            !EtcFileIs("init.conf", "") || !AppendTo("/etc/hosts", FirstEdit) ||
-            !AppendTo("/etc/resolv.conf", FirstEdit) || !AppendTo("/etc/init.conf", FirstEdit))
+            !AppendTo("/etc/hosts", FirstEdit) || !AppendTo("/etc/resolv.conf", FirstEdit))
         {
             Panic("The root's /etc does not hold the defaults or took no edit");
+        }
+        VFS::FileInfo info;
+        if (VFS::Stat("/etc/init.conf", &info) || VFS::Stat("/etc/init.d", &info) ||
+            VFS::Stat("/etc/init.disabled", &info) || !VFS::MakeDirectory("/etc/init.d") ||
+            !CreateWith("/etc/init.d/storage", ServiceFile) ||
+            !CreateWith("/etc/init.disabled", DisabledFile))
+        {
+            Panic("The root's /etc has init files by default or took no service");
         }
     }
     else if (boot_count == 2)
     {
         if (!EtcFileIs("hosts", FirstEdit) || !EtcFileIs("resolv.conf", FirstEdit) ||
-            !EtcFileIs("init.conf", FirstEdit))
+            !FileHolds("/etc/init.d/storage", ServiceFile) ||
+            !FileHolds("/etc/init.disabled", DisabledFile))
         {
-            Panic("The root's /etc lost the first boot's edits");
+            Panic("The root's /etc lost the first boot's edits or init files");
         }
         VFS::FileInfo info;
         if (!VFS::Remove("/etc/resolv.conf") || VFS::Stat("/etc/resolv.conf", &info) ||
             !VFS::UseRootEtc() || !EtcFileIs("resolv.conf", "") || !EtcFileIs("hosts", FirstEdit) ||
-            !AppendTo("/etc/hosts", SecondEdit) || !AppendTo("/etc/init.conf", SecondEdit))
+            !AppendTo("/etc/hosts", SecondEdit))
         {
             Panic("A deleted /etc default did not come back or an edit was overwritten");
         }

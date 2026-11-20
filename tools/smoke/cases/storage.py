@@ -24,6 +24,16 @@ from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
 from smoke.script import Lines
 
 ETC_DEFAULTS = Path(__file__).resolve().parents[3] / "initramfs" / "etc"
+# The init files the kernel test writes in /etc on boot 1 (ServiceFile and
+# DisabledFile in kernel_test.cpp): init, started afterwards on both boots,
+# runs the service, which prints its marker, and does not start dhcp.
+SERVICE_FILE = (
+    b"# storage-service-marker\n"
+    b"once grep storage-service-marker /etc/init.d/storage\n"
+)
+DISABLED_FILE = b"# storage test\ndhcp\n"
+SERVICE_MARKER = "# storage-service-marker"
+DISABLED_MESSAGE = "init: /etc/init.disabled: not starting dhcp"
 STORAGE_MESSAGE = (
     "KERN/STORAGE: sector, FAT16, ext2, ext3 and ext4 file writes verified; "
     "boot count "
@@ -407,25 +417,27 @@ def VerifyJournalled(disk_path, boot_count):
 
 def VerifyRootEtc(debugfs, volume, boot_count):
     """The root's own /etc holds the initramfs defaults, the first boot's edit
-    in hosts, resolv.conf and init.conf, and after the second boot the
-    restored default resolv.conf and the second edit in hosts and init.conf."""
+    in hosts and resolv.conf, and after the second boot the restored default
+    resolv.conf and the second edit in hosts; it has no init.conf, and holds
+    the administrator's service and disabled files."""
     first = b"# storage test boot 1\n"
     second = b"# storage test boot 2\n"
     hosts = (ETC_DEFAULTS / "hosts").read_bytes() + first
     resolv = (ETC_DEFAULTS / "resolv.conf").read_bytes()
-    init = (ETC_DEFAULTS / "init.conf").read_bytes() + first
     if boot_count == 1:
         resolv += first
     else:
         hosts += second
-        init += second
     for name, expected in (
         ("hosts", hosts),
         ("resolv.conf", resolv),
-        ("init.conf", init),
+        ("init.d/storage", SERVICE_FILE),
+        ("init.disabled", DISABLED_FILE),
     ):
         if Debugfs(debugfs, volume, f"cat /etc/{name}") != expected:
             return f"debugfs read a different /etc/{name}"
+    if not NotFound(debugfs, volume, "/etc/init.conf"):
+        return "the root's /etc has an init.conf"
     return None
 
 
@@ -527,6 +539,12 @@ class Storage(Case):
             return (
                 "file tools output is missing "
                 f"{missing or 'the cat output'}{result.limit_note}"
+            )
+        if SERVICE_MARKER not in output:
+            return "init did not run the /etc/init.d service"
+        if DISABLED_MESSAGE not in output:
+            return (
+                "init did not skip the built-in service in /etc/init.disabled"
             )
         disk_error = VerifyDiskImage(self.args.disk, self.boot)
         if disk_error is not None:

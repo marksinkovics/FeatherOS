@@ -28,13 +28,16 @@ ROOT_VOLUMES = {
     "vda4": ("ext2", EXT2_START, EXT2_END),
 }
 EMPTY_ROOT = "vda1"
-# The empty root's /etc/init.conf and /sbin/init are garbage: the kernel must
-# start /system/init, which must use /system/init.conf.
-BROKEN_INIT_CONF = b"\xff\x00 not a service\nrespawn\n\x01\x02\n"
-INIT_FALLBACK = (
-    "init: /etc/init.conf is missing or lists no service; "
-    "using /system/init.conf"
+# The empty root's /sbin/init is garbage, so the kernel must start
+# /system/init.
+# Its /etc/init.d holds a file that does not parse, which init must skip, and a
+# service that must still run; /etc/init.conf is no longer a default.
+BROKEN_SERVICE = b"\xff\x00 not a service\nrespawn\n\x01\x02\n"
+GOOD_SERVICE = (
+    b"# root-service-marker\nonce grep root-service-marker /etc/init.d/good\n"
 )
+SERVICE_MARKER = "# root-service-marker"
+SERVICE_SKIPPED = "init: /etc/init.d/broken: does not parse; skipped"
 WRITTEN = b"written on the root\n"
 WORKING_DIRECTORY = re.compile(r"^/\r?$", re.MULTILINE)
 TMP_DIRECTORY = re.compile(r"^/tmp\r?$", re.MULTILINE)
@@ -93,20 +96,24 @@ class NamedRoot(Case):
                 capture_output=True,
                 check=True,
             )
-            self.BreakInitConf(work, volume)
+            self.AddServices(work, volume)
             with open(self.args.disk, "r+b") as disk:
                 disk.seek(self.first * SECTOR_SIZE)
                 disk.write(volume.read_bytes())
 
-    def BreakInitConf(self, work, volume):
+    def AddServices(self, work, volume):
         debugfs = storage.FindE2fsprogs("debugfs")
         if debugfs is None:
             raise RuntimeError("debugfs not found; install e2fsprogs")
-        broken = Path(work) / "init.conf"
-        broken.write_bytes(BROKEN_INIT_CONF)
+        broken = Path(work) / "broken"
+        broken.write_bytes(BROKEN_SERVICE)
+        good = Path(work) / "good"
+        good.write_bytes(GOOD_SERVICE)
         commands = Path(work) / "commands"
         commands.write_text(
-            f"mkdir /etc\nwrite {broken} /etc/init.conf\n"
+            f"mkdir /etc\nmkdir /etc/init.d\n"
+            f"write {broken} /etc/init.d/broken\n"
+            f"write {good} /etc/init.d/good\n"
             f"mkdir /sbin\nwrite {broken} /sbin/init\n"
         )
         storage.RunDebugfsWrite(debugfs, str(volume), str(commands))
@@ -144,11 +151,18 @@ class NamedRoot(Case):
         if HOME_IS_ROOT.search(output) is None:
             return "init did not set HOME=/ on a root without /home"
         broken = self.name == EMPTY_ROOT
-        if broken != (INIT_FALLBACK in output):
+        if broken != (SERVICE_SKIPPED in output):
             return (
-                "init did not fall back to /system/init.conf"
+                "init did not skip the /etc/init.d file that does not parse"
                 if broken
-                else "init did not read /etc/init.conf"
+                else "init skipped an /etc/init.d file on a root without any"
+            )
+        if broken != (SERVICE_MARKER in output):
+            return (
+                "init did not start the /etc/init.d service beside the "
+                "built-in ones"
+                if broken
+                else "init started an /etc/init.d service on a root without"
             )
         if "KERN/I: Powering off" not in output:
             return f"the system did not power off{result.limit_note}"
@@ -189,15 +203,27 @@ class NamedRoot(Case):
                 )
             if self.name != EMPTY_ROOT and names.intersection(TEST_FILES):
                 return "the root holds test files the boot should not need"
-            for name in ("hosts", "resolv.conf", "init.conf"):
+            for name in ("hosts", "resolv.conf"):
                 expected = (storage.ETC_DEFAULTS / name).read_bytes()
-                if broken and name == "init.conf":
-                    expected = BROKEN_INIT_CONF
                 if (
                     storage.Debugfs(debugfs, str(volume), f"cat /etc/{name}")
                     != expected
                 ):
                     return f"the root's /etc/{name} is not the default"
+            if not storage.NotFound(debugfs, str(volume), "/etc/init.conf"):
+                return "the root's /etc has an init.conf"
+            if broken:
+                for name, expected in (
+                    ("broken", BROKEN_SERVICE),
+                    ("good", GOOD_SERVICE),
+                ):
+                    if (
+                        storage.Debugfs(
+                            debugfs, str(volume), f"cat /etc/init.d/{name}"
+                        )
+                        != expected
+                    ):
+                        return f"the root's /etc/init.d/{name} changed"
         return None
 
     def PassMessage(self, result):
@@ -207,9 +233,9 @@ class NamedRoot(Case):
             "/system/init as its init, the shell "
             "started in / with HOME=/ and cd returning there, "
             + (
-                "init using /system/init.conf over a broken "
-                "/etc/init.conf and the kernel starting /system/init over a "
-                "broken /sbin/init, "
+                "init skipping a broken /etc/init.d file, running the "
+                "good one beside the built-in services, and the kernel "
+                "starting /system/init over a broken /sbin/init, "
                 if self.name == EMPTY_ROOT
                 else ""
             )

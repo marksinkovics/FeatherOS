@@ -270,7 +270,7 @@ _image_inputs() {
     local disk_programs_dir="$build_dir/disk-programs"
     rm -rf "$root_dir" "$build_dir/system" "$disk_programs_dir"
     mkdir -p "$system_dir" "$disk_programs_dir/bin" "$disk_programs_dir/sbin"
-    cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/etc/init.conf" \
+    cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" \
         "$SCRIPT_DIR/initramfs/sample.json" "$SCRIPT_DIR/initramfs/http-request.txt" \
         "$SCRIPT_DIR/initramfs/http-response.txt" "$system_dir/"
     cp -R "$SCRIPT_DIR/initramfs/etc" "$root_dir/"

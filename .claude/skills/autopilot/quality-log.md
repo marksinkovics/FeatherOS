@@ -39,4 +39,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 98e6719 | fix: remount test mounts its own initramfs | - | claude | 0 | - | |
 | 0b14d0a | M30 P2 s1 core rename crash tests | opus | sonnet | 0 | 3/3 | |
 | f1d19e5 | M30 P2 s2 kernel rename, tmpfs replace | opus | sonnet | 0 | 3/3 | |
-| (this) | M30 P3 /sbin admin programs | - | sonnet | 0 | - | |
+| c268c3b | M30 P3 /sbin admin programs | - | sonnet | 0 | - | |
+| (this) | M30 P4 /etc/init.d and init.disabled | - | sonnet | 0 | - | |

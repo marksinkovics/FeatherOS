@@ -7,8 +7,8 @@ namespace
 constexpr char Help[] =
     "usage: env\n"
     "Prints the environment, one NAME=value per line. Programs inherit it\n"
-    "from the shell, which gets it from init: the env lines in /etc/init.conf and\n"
-    "HOME.\n";
+    "from the shell, which gets it from init: the env lines of /system/init.conf and\n"
+    "/etc/init.d/ and HOME.\n";
 
 void WriteText(const char* text)
 {
