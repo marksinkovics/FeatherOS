@@ -53,8 +53,8 @@ __BEGIN_DECLS
 // replaced by path, or by the name for a program in /system. Returns 0 or an errno value.
 int posix_spawn(pid_t* pid, const char* path, const posix_spawn_file_actions_t* file_actions,
                 const posix_spawnattr_t* attributes, char* const argv[], char* const envp[]);
-// Runs the first regular file named file in the directories of PATH ("/bin:/system" when unset;
-// empty entries are skipped), or file itself if it holds a '/'.
+// Runs the first regular file named file in the directories of PATH ("/bin:/sbin:/system" when
+// unset; empty entries are skipped), or file itself if it holds a '/'.
 int posix_spawnp(pid_t* pid, const char* file, const posix_spawn_file_actions_t* file_actions,
                  const posix_spawnattr_t* attributes, char* const argv[], char* const envp[]);
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t* file_actions);

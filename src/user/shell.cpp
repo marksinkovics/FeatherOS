@@ -950,7 +950,7 @@ int main(int argc, char** argv)
             puts("Editing: Left, Right, Home, End, Delete; Up and Down recall lines; Ctrl+A and "
                  "Ctrl+E go to the start and end, Ctrl+U, Ctrl+K and Ctrl+W erase, Ctrl+L "
                  "clears the screen, Ctrl+C discards the line. Ctrl+Z stops a running command.");
-            puts("Programs are found in PATH (/bin:/system); run another file by its path, "
+            puts("Programs are found in PATH (/bin:/sbin:/system); run another file by its path, "
                  "such as ./tool or /tmp/tool.");
             puts("Run <command> --help to see what a command does.");
             continue;

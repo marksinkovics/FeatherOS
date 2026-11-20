@@ -266,7 +266,7 @@ _image_inputs() {
     # The initramfs holds /system, where each program is a file named after it, as "ls", and /etc.
     local root_dir="$build_dir/initramfs"
     local system_dir="$root_dir/system"
-    # The programs the test disk's root gets in /bin, and init in /sbin (tools/create_test_disk.py).
+    # The programs the test disk's root gets in /bin, and the administrative programs in /sbin (tools/create_test_disk.py).
     local disk_programs_dir="$build_dir/disk-programs"
     rm -rf "$root_dir" "$build_dir/system" "$disk_programs_dir"
     mkdir -p "$system_dir" "$disk_programs_dir/bin" "$disk_programs_dir/sbin"
@@ -284,7 +284,9 @@ _image_inputs() {
         "$ARCH-elf-strip" --strip-all -o "$system_dir/${name%-"$ARCH".elf}" "$program"
         cp "$system_dir/${name%-"$ARCH".elf}" "$disk_programs_dir/bin/"
     done
-    mv "$disk_programs_dir/bin/init" "$disk_programs_dir/sbin/init"
+    for program in init mount umount sync net dhcp; do
+        mv "$disk_programs_dir/bin/$program" "$disk_programs_dir/sbin/$program"
+    done
     python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$system_dir/badelf"
     # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
     export COPYFILE_DISABLE=1

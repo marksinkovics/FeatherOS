@@ -504,7 +504,7 @@ void CheckEnvironment()
     // init.conf sets these, and the shell passes them on.
     const char* home = getenv("HOME");
     Check(home != nullptr && strcmp(home, "/home") == 0, "inherited HOME");
-    Check(EnvironHas("PATH=/bin:/system"), "inherited PATH in environ");
+    Check(EnvironHas("PATH=/bin:/sbin:/system"), "inherited PATH in environ");
     Check(getenv("NOT_SET") == nullptr, "missing variable");
 
     Check(setenv("FEATHER", "os", 0) == 0 && strcmp(getenv("FEATHER"), "os") == 0, "setenv");
@@ -524,7 +524,7 @@ void CheckEnvironment()
     errno = 0;
     Check(setenv("LARGE", large, 1) == -1 && errno == ENOMEM, "setenv past the size limit");
     Check(unsetenv("FEATHER") == 0 && getenv("FEATHER") == nullptr &&
-              EnvironHas("PATH=/bin:/system"),
+              EnvironHas("PATH=/bin:/sbin:/system"),
           "unsetenv");
     Check(unsetenv("FEATHER") == 0, "unsetenv a missing variable");
 }
@@ -1433,10 +1433,10 @@ void CheckDiskPrograms()
           "posix_spawn of a relative path");
     Check(SpawnAndWait("disk-echo", true) == ENOENT, "posix_spawnp of a program outside PATH");
     Check(setenv("PATH", "::/nowhere:/tmp/", 1) == 0 && SpawnAndWait("disk-echo", true) == 0 &&
-              SpawnAndWait("echo", true) == ENOENT && setenv("PATH", "/bin:/system", 1) == 0,
+              SpawnAndWait("echo", true) == ENOENT && setenv("PATH", "/bin:/sbin:/system", 1) == 0,
           "posix_spawnp searches PATH");
     Check(unsetenv("PATH") == 0 && SpawnAndWait("echo", true) == 0 &&
-              setenv("PATH", "/bin:/system", 1) == 0,
+              setenv("PATH", "/bin:/sbin:/system", 1) == 0,
           "posix_spawnp without PATH");
     Check(SpawnAndWait("/system/hello.txt", false) == ENOEXEC &&
               SpawnAndWait("hello.txt", true) == ENOEXEC,
