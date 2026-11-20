@@ -1133,6 +1133,18 @@ Deferred by the user after M29; to be planned in detail when it starts.
 - **FeatherFS:** a filesystem of our own design with journaling, so files survive a crash in the middle of a write, in the shared core beside FAT16 and ext.
 - **The Feather Disk split:** `src/fs/core/` (namespace `FeatherDisk`, MIT OR Apache-2.0) moves to its own repository by a subtree split, for the planned Mac and Windows ext app, and FeatherOS takes it back as a dependency.
 
+### 32. Graphics For User Programs And A Falling-Block Puzzle (Planned, Not Started)
+
+A program on a virtual console takes over its screen, presents pixels it drew in its own memory and reads raw key events; the first user is `featherfall`, an original falling-block puzzle in Embedded Swift. Planned 2026-11-20 at the user's request, on its own branch `feat/graphics`. Design `docs/design/M32.md` (D1-D3 confirmed, D4-D17 proposed).
+
+- **Part 1: `/dev/fb0` and present.** Syscall 73 `DeviceControl`, `FB_GET_INFO`/`FB_ACQUIRE`/`FB_PRESENT`/`FB_RELEASE` through libc `ioctl` and `<featheros/framebuffer.h>`, a console in graphics mode draws neither text nor status bar until released (close, `exec` or exit). `fbdemo` and `fbtest`; smoke mode `GRAPHICS_TEST=ON` checks pixels with a QMP `screendump`.
+- **Part 2: key events.** Presses, repeats and releases read from the same descriptor (`poll`, `O_NONBLOCK`), `Shown`/`Hidden` on console switches, Ctrl+C still sends `SIGINT`; tested with QMP `input-send-event`.
+- **Part 3: the graphics library.** `src/user/graphics/` (`Surface`, `Display`, text in the kernel's font) with host tests, and a Swift module over it.
+- **Part 4: the game's rules.** A deterministic Swift state machine, `featherfall --selftest` and `--demo --seed N` in QEMU.
+- **Part 5: the game.** Drawing, controls, pause, high scores in `$HOME/.featherfall`, a smoke part that plays with QMP keys, matrix cases and docs.
+
+**Complete when:** on both targets, `fbdemo` draws a pattern a `screendump` confirms and the text console returns after it exits, key presses, repeats and releases reach it, and `featherfall` passes its self-test and demo and is playable.
+
 ## Architecture Boundaries
 
 - Keep framebuffer terminal, logging API, panic/assert API, VFS, syscall definitions, and scheduler policy architecture-neutral when possible.
