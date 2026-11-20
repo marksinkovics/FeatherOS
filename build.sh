@@ -522,6 +522,9 @@ smoke_test() {
     if [[ "${INPUT_TEST:-OFF}" == ON || "${INPUT_TEST:-OFF}" == 1 ]]; then
         smoke_args+=(--expect-input)
     fi
+    if _is_on "${GRAPHICS_TEST:-OFF}"; then
+        smoke_args+=(--expect-graphics)
+    fi
     if [[ -n "${QEMU_CPU:-}" ]]; then
         smoke_args+=(--cpu "$QEMU_CPU")
     fi

@@ -29,6 +29,7 @@ TOGGLES = (
     "SHELL_TEST",
     "INPUT_TEST",
     "ROOT_TEST",
+    "GRAPHICS_TEST",
 )
 # Rough minutes each kind of case takes, so the longest start first.
 WEIGHTS = {
@@ -103,6 +104,7 @@ CASES = [
     *Both(41, "unusable_root", ROOT_TEST=ON, KERNEL_ROOT="vda9"),
     *Both(43, "ext2_root", ROOT_TEST=ON, KERNEL_ROOT="vda6"),
     *Both(45, "empty_ext4_root", ROOT_TEST=ON, KERNEL_ROOT="vda1"),
+    *Both(47, "graphics", GRAPHICS_TEST=ON),
 ]
 
 

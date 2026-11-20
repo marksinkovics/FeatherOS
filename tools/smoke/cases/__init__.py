@@ -1,5 +1,6 @@
 from smoke.cases.calc import Calc
 from smoke.cases.exception import CpuException
+from smoke.cases.graphics import Graphics
 from smoke.cases.interrupt import Interrupt
 from smoke.cases.keyboard import Keyboard
 from smoke.cases.memory import Memory
@@ -38,6 +39,10 @@ SWITCHES = {
     "input": (
         Keyboard,
         "Send serial input and expect the kernel to accept a line",
+    ),
+    "graphics": (
+        Graphics,
+        "Run fbdemo and check the screen with QEMU's screendump",
     ),
     "calc": (Calc, "Send a calculator command and expect its result"),
     "shell": (Shell, "Run shell commands and expect their output"),
