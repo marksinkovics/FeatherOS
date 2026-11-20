@@ -80,7 +80,8 @@ protected:
     bool OpenForMount(MountMode mode, bool* writable) override;
     // Read-only makes the core refuse writes in place; read-write reopens a core that was
     // read-only as a fresh mount does. A core that refuses writes after being asked for them stays
-    // as it is.
+    // as it is. A core whose reopen failed has no filesystem: its operations fail with EIO, it
+    // refuses writes, and the next mount or remount opens it again.
     bool ReopenForRemount(MountMode mode, bool* writable) override;
     bool RefusesWrites() const override;
 

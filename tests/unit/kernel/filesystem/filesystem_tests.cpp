@@ -41,6 +41,7 @@ constexpr uint32_t DataStartSector = RootDirectorySector + RootDirectorySectors;
 std::vector<std::array<uint8_t, FeatherOS::BlockDevice::SectorSize>> disk;
 uint32_t flush_count = 0;
 bool writes_fail = false;
+bool reads_fail = false;
 std::function<void(uint64_t, const void*)> on_write;
 
 void WriteLittleEndian16(uint8_t* destination, uint16_t value)
@@ -176,7 +177,7 @@ uint64_t SectorCount()
 
 bool ReadSector(uint64_t sector, void* buffer)
 {
-    if (buffer == nullptr || sector >= disk.size())
+    if (buffer == nullptr || sector >= disk.size() || reads_fail)
     {
         return false;
     }
@@ -2149,6 +2150,72 @@ TEST_CASE("a failed close keeps the mount and shows it read-only")
     REQUIRE(disk == snapshot);
     REQUIRE(NeedsRecovery(start));
     REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+}
+
+namespace
+{
+
+struct ReadFailureGuard
+{
+    ~ReadFailureGuard()
+    {
+        reads_fail = false;
+    }
+};
+
+void CheckFailedReopen(const char* point)
+{
+    namespace User = FeatherOS::User;
+    FeatherOS::Files::Table table{};
+    {
+        const ReadFailureGuard guard;
+        reads_fail = true;
+        REQUIRE(FeatherOS::Files::Remount(point, ReadWrite) == User::SyscallErrorInputOutput);
+    }
+    REQUIRE(MountSource(point) == "vda4 ext4 ro");
+    const std::string file = std::string(point) + "/r.txt";
+    REQUIRE(User::IsSyscallError(FeatherOS::Files::Open(&table, file.c_str(), User::OpenRead)));
+    FeatherOS::VFS::FileHandle handle{};
+    REQUIRE_FALSE(FeatherOS::VFS::Open(file.c_str(), &handle));
+    REQUIRE(CreateFile((std::string(point) + "/new.txt").c_str()) == User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::SyncAll() == 0);
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+}
+
+} // namespace
+
+TEST_CASE("a remount whose reopen fails leaves a mount that fails cleanly and reopens later")
+{
+    using FeatherOS::VFS::MountResult;
+    uint32_t start = 0;
+    if (!MountExt4AtMnt(&start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    WriteAndClose("/mnt/r.txt", "remount\n");
+
+    SECTION("after a read-only remount, then a second remount")
+    {
+        REQUIRE(FeatherOS::Files::Remount("/mnt", ReadOnly) == 0);
+        CheckFailedReopen("/mnt");
+        REQUIRE(FeatherOS::Files::Remount("/mnt", ReadWrite) == 0);
+        REQUIRE(MountSource("/mnt") == "vda4 ext4 rw");
+        REQUIRE(ReadWhole("/mnt/r.txt") == "remount\n");
+        WriteAndClose("/mnt/w.txt", "again\n");
+    }
+    SECTION("after a read-only mount, then unmount and mount")
+    {
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+        REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt", ReadOnly) == MountResult::Done);
+        CheckFailedReopen("/mnt");
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+        REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/mnt") == MountResult::Done);
+        REQUIRE(MountSource("/mnt") == "vda4 ext4 rw");
+        REQUIRE(ReadWhole("/mnt/r.txt") == "remount\n");
+        WriteAndClose("/mnt/w.txt", "again\n");
+    }
+    REQUIRE(FeatherOS::VFS::Unmount("/mnt") == MountResult::Done);
+    REQUIRE_FALSE(NeedsRecovery(start));
 }
 
 TEST_CASE("a remount to read-write that replays the journal waits for open files")

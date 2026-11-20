@@ -178,20 +178,23 @@ bool CoreDriver::Mount(FeatherDisk::FilesystemType& new_type, FeatherDisk::Block
 
 bool CoreDriver::OpenForMount(MountMode mode, bool* writable)
 {
-    if (filesystem == nullptr)
+    if (type == nullptr)
     {
         return Fail(Error::Io);
     }
     const bool read_only = CoreReadOnly(mode);
-    if (read_only != core_read_only)
+    if (filesystem == nullptr || read_only != core_read_only)
     {
-        if (const FeatherDisk::Status unmounted = type->Unmount(*filesystem); !unmounted)
+        if (filesystem != nullptr)
         {
-            return Fail(unmounted.error());
+            if (const FeatherDisk::Status unmounted = type->Unmount(*filesystem); !unmounted)
+            {
+                return Fail(unmounted.error());
+            }
+            filesystem = nullptr;
         }
-        filesystem = nullptr;
-        Result<FeatherDisk::Filesystem*> mounted = type->Mount(volume, {.read_only = read_only});
         core_read_only = read_only;
+        Result<FeatherDisk::Filesystem*> mounted = type->Mount(volume, {.read_only = read_only});
         if (!mounted && !read_only)
         {
             mounted = type->Mount(volume, {.read_only = true});
@@ -199,7 +202,7 @@ bool CoreDriver::OpenForMount(MountMode mode, bool* writable)
         }
         if (!mounted)
         {
-            partition_number = 0;
+            core_read_only = true;
             return Fail(mounted.error());
         }
         filesystem = *mounted;
@@ -210,7 +213,11 @@ bool CoreDriver::OpenForMount(MountMode mode, bool* writable)
 
 bool CoreDriver::RefusesWrites() const
 {
-    return filesystem != nullptr && !core_read_only && !filesystem->GetCapabilities().writable;
+    if (filesystem == nullptr)
+    {
+        return type != nullptr;
+    }
+    return !core_read_only && !filesystem->GetCapabilities().writable;
 }
 
 bool CoreDriver::RemountReplays()
@@ -228,7 +235,15 @@ bool CoreDriver::ReopenForRemount(MountMode mode, bool* writable)
 {
     if (filesystem == nullptr)
     {
-        return Fail(Error::Io);
+        if (!OpenForMount(mode, writable))
+        {
+            return false;
+        }
+        if (mode == MountMode::ReadWrite && !*writable)
+        {
+            last_error = User::SyscallErrorReadOnly;
+        }
+        return true;
     }
     const bool refusing = RefusesWrites();
     if (mode == MountMode::ReadOnly)
@@ -289,7 +304,11 @@ bool CoreDriver::Statistics(FeatherDisk::VolumeStatistics* statistics)
 
 Result<NodeId> CoreDriver::ResolveParent(const char* path, std::string_view* leaf)
 {
-    if (filesystem == nullptr || path == nullptr)
+    if (filesystem == nullptr)
+    {
+        return std::unexpected(FeatherDisk::Error::Io);
+    }
+    if (path == nullptr)
     {
         return std::unexpected(FeatherDisk::Error::InvalidArgument);
     }
@@ -362,7 +381,7 @@ bool CoreDriver::StatNode(const Node& node, FileInfo* info)
 {
     if (filesystem == nullptr)
     {
-        return false;
+        return Fail(Error::Io);
     }
     const Result<FeatherDisk::Attributes> attributes = filesystem->GetAttributes(node.id);
     if (!attributes)
@@ -377,7 +396,11 @@ bool CoreDriver::Read(const Node& node, uint64_t size, uint64_t offset, void* bu
                       uint64_t length, uint64_t* bytes_read)
 {
     *bytes_read = 0;
-    if (filesystem == nullptr || offset > size)
+    if (filesystem == nullptr)
+    {
+        return Fail(Error::Io);
+    }
+    if (offset > size)
     {
         return false;
     }
@@ -422,7 +445,11 @@ bool CoreDriver::Write(Node* node, uint64_t* size, uint64_t offset, const void* 
                        uint64_t length, uint64_t* bytes_written)
 {
     *bytes_written = 0;
-    if (filesystem == nullptr || offset > *size || (length != 0 && buffer == nullptr))
+    if (filesystem == nullptr)
+    {
+        return Fail(Error::Io);
+    }
+    if (offset > *size || (length != 0 && buffer == nullptr))
     {
         return Fail(Error::InvalidArgument);
     }
@@ -444,7 +471,11 @@ bool CoreDriver::Write(Node* node, uint64_t* size, uint64_t offset, const void* 
 
 bool CoreDriver::Truncate(Node* node, uint64_t* size, uint64_t new_size)
 {
-    if (filesystem == nullptr || new_size > *size)
+    if (filesystem == nullptr)
+    {
+        return Fail(Error::Io);
+    }
+    if (new_size > *size)
     {
         return Fail(Error::InvalidArgument);
     }
@@ -737,7 +768,6 @@ bool CoreDriver::Detach()
     const Result<FeatherDisk::Filesystem*> reopened = type->Mount(volume, {.read_only = true});
     if (!reopened)
     {
-        partition_number = 0;
         logger.Error("ext: filesystem could not be reopened read-only");
         return true;
     }
