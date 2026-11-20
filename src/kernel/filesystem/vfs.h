@@ -25,6 +25,10 @@ struct MountStatus;
 // The calls below take physical paths, without symbolic links, ".", ".." or repeated '/', and no
 // driver follows a link: a call on a link acts on the link itself. ResolvePath turns any absolute
 // path into its physical one first, following links across mounts.
+//
+// Each call holds the volume lock (Driver::VolumeLock) of the driver it uses, unless the calling
+// task holds it already, as Files does around a sequence of calls; a task holds one volume lock at
+// a time, so a sequence must stay on one volume.
 namespace FeatherOS::VFS
 {
 
@@ -113,22 +117,32 @@ struct OpenFiles
     bool any;
     bool writer;
 };
+// The driver of the mount holding path (a bare name is a file in /system), for comparing and for
+// its volume lock; the driver must not be called without it.
+Filesystem::Driver* Locate(const char* path, const char** inner);
+// The same driver, counted as a user of its mount until ReleaseMount, so the mount cannot be
+// removed meanwhile; null if there is none or it is being unmounted.
+Filesystem::Driver* AcquireMount(const char* path);
+void ReleaseMount(const Filesystem::Driver* driver);
 // Changes the mode of the mount at point only, not of those inside it. NotFound: no mount there.
 // Invalid: /dev. ReadOnly: read-write asked of /system, /proc or a medium that refuses writes (a
 // refusal after mounting is final until the next mount); read-only asked of those gives Done.
 // Busy: the mount is being unmounted, a writer is open (to read-only), or any file is open when
 // the remount would replay a journal. Failed: the medium could not be made read-only; the mount
-// stays, read-only if it now refuses writes. Callers hold the file system lock.
+// stays, read-only if it now refuses writes.
 MountResult Remount(const char* point, Filesystem::MountMode mode, OpenFiles open = {});
 // The driver mounted exactly at point, for comparing only; null if none.
 const Filesystem::Driver* MountedAt(const char* point);
-// Syncs every mounted driver; false if one failed.
+// Syncs every mounted driver, one at a time under its volume lock; false if one failed. Callers
+// hold no volume lock.
 bool SyncAll();
 // Syncs every mounted driver that wants it in the background; false if one failed. Callers hold
-// the file system lock.
+// no volume lock.
 bool SyncPeriodic();
 // Detaches every mounted driver without removing it, as shutting down does; false if one failed.
-bool DetachAll();
+// With keep_locked the calling task takes every driver's volume lock and its mount user for good
+// (Files::Quiesce), beside any it holds.
+bool DetachAll(bool keep_locked = false);
 // The type and source of the filesystem at "/", as /proc/mounts names them, and whether it is
 // mounted read-only; false with nothing there.
 bool DescribeRoot(const char** type, const char** source, bool* read_only);
@@ -173,8 +187,12 @@ bool SameFilesystem(const char* left, const char* right);
 // by the one driver call; the caller has made the kind and open-file checks.
 bool Rename(const char* from, const char* to);
 // Lists a directory, such as "/", "/home/docs", or "/system": first the mount points directly
-// inside it, then its own entries. False past the last entry.
+// inside it, then its own entries. False past the last entry. A mount point's entry takes the lock
+// of its mount, the others the directory's, never both.
 bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry);
+// No mount point inside the directory and no entry of its own; what ReadDirectory says of index 0,
+// without taking another volume's lock.
+bool IsEmptyDirectory(const char* path);
 
 // Puts the physical path that names what path names in walk->path. path is absolute, or a bare
 // name kernel code uses for a file in /system, which is taken as it is. Every symbolic link on the
@@ -195,8 +213,8 @@ bool Link(const char* from, const char* to);
 bool SupportsLinks(const char* path, Filesystem::LinkKind kind);
 // Why the last Create, Write, Truncate, Remove, MakeDirectory, RemoveDirectory, Rename,
 // SymbolicLink or Link that failed did, as a User::SyscallError code: SyscallErrorReadOnly on a
-// read-only mount, otherwise what the driver says (SyscallErrorFailed when it cannot say).
-// Callers hold the file system lock across the call and this one.
+// read-only mount, otherwise what the driver says (SyscallErrorFailed when it cannot say). The
+// calling task's own, kept in Scheduler::CurrentLocal().
 uint64_t LastError();
 
 } // namespace FeatherOS::VFS

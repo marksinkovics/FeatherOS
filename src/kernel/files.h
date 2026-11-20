@@ -4,6 +4,7 @@
 #include "kernel/filesystem/vfs.h"
 #include "kernel/network/socket.h"
 #include "kernel/pipe.h"
+#include "kernel/sync/mutex.h"
 #include "user/syscall_abi.h"
 
 #include <stdint.h>
@@ -12,9 +13,15 @@
 // between descriptors and processes; it keeps the offset and closes when its last descriptor
 // does. Functions return the value a syscall hands back: a result, or a User::SyscallError code.
 // Buffers are kernel memory. Paths are absolute, and may hold symbolic links, "." and "..": each
-// call walks its paths (VFS::ResolvePath) under the filesystem lock, following a link in the last
-// component unless it says otherwise, and fails with SyscallErrorLoop past
+// call walks its paths (VFS::ResolvePath) holding no lock but one volume's at a time, following a
+// link in the last component unless it says otherwise, and fails with SyscallErrorLoop past
 // User::MaximumSymbolicLinks links.
+//
+// A call on a path then holds the lock of the volume the path is on for its whole check-then-act
+// sequence, and a call on a descriptor the lock of its file's volume, so operations on different
+// volumes run in parallel and those on one volume do not interleave. Mount, unmount, remount and
+// chdir are serialized by a lock of their own, and the descriptor tables by a short one that is
+// never held across a call into a driver. The order is in "Locking" in docs/development.md.
 namespace FeatherOS::Terminals
 {
 class Terminal;
@@ -51,7 +58,7 @@ struct Slot
 // doubles, but never past the soft limit in force or User::MaximumDescriptorLimit, and is freed by
 // CloseAll. A new descriptor gets a number below the soft limit; lowering the limit closes
 // nothing. A zero-filled table has no descriptors at all, not even the console, and limits of 0
-// until OpenConsole or Inherit sets them. Everything here runs under the filesystem lock.
+// until OpenConsole or Inherit sets them. Everything here runs under the table lock.
 struct Table
 {
     Table() = default;
@@ -88,8 +95,8 @@ uint64_t FindTerminal(Table* table, uint64_t descriptor, Terminals::Terminal** t
 // The pair behind a master descriptor, or SyscallErrorNotTerminal for another kind. It stays in
 // use while the caller's descriptor holds it.
 uint64_t FindPseudoTerminal(Table* table, uint64_t descriptor, PseudoTerminals::Pair** pair);
-// A pipe or pty master read waits for data and a write for space, without holding the filesystem
-// lock, until interrupted says to stop, unless the open file is User::OpenNonBlocking.
+// A pipe or pty master read waits for data and a write for space, without holding a lock, until
+// interrupted says to stop, unless the open file is User::OpenNonBlocking.
 uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
               Pipes::InterruptCheck interrupted = nullptr);
 uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t length,
@@ -124,8 +131,10 @@ uint64_t DescriptorFlags(Table* table, uint64_t descriptor, bool set, uint64_t v
 // the last two from value if set is true; value's access flags are ignored.
 uint64_t StatusFlags(Table* table, uint64_t descriptor, bool set, uint64_t value);
 uint64_t CountOpen(const Table* table);
-// For a caller that already holds the filesystem lock, as every read through /proc does.
-uint64_t CountOpenLocked(const Table* table);
+// The lock that guards every descriptor table, for a caller that counts a table while it holds a
+// spinlock of its own: it is taken before such a lock, never after.
+extern Sync::Mutex table_lock;
+uint64_t CountOpenLocked(const Table* table) REQUIRES(table_lock);
 // A file or a symbolic link, not followed.
 uint64_t Remove(const char* path);
 uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* entry);
@@ -134,7 +143,7 @@ uint64_t MakeDirectory(const char* path);
 // 0 for a directory, otherwise SyscallErrorNotDirectory or SyscallErrorNotFound.
 uint64_t CheckDirectory(const char* path);
 // Checks the directory and copies its physical path, without links, into working_directory under
-// the filesystem lock, so an unmount sees either the old working directory or the new one.
+// the namespace lock, so an unmount sees either the old working directory or the new one.
 uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::MaximumPathLength]);
 // Mounts the instance of type named source at point, which must be a directory or not exist, in an
 // existing directory. SyscallErrorUnknownFilesystemType for a type nothing registered,
@@ -215,9 +224,26 @@ private:
 #ifdef FEATHEROS_HOST_TEST
 // Frees the disk-file table, if no file is open, so a test sees it grow from its first size.
 bool ResetDiskFileTable();
+
+namespace Testing
+{
+// Takes the volume lock of the mount holding path, and a user of that mount, until ReleaseVolume,
+// as the task would in the middle of a call on that volume.
+void* HoldVolume(const char* path);
+void ReleaseVolume(void* hold);
+// Holds the descriptor-table lock, which no call holds across a driver call or while waiting for a
+// volume lock.
+void LockTable();
+void UnlockTable();
+// Called, with a name, at the points inside a call where it holds a volume lock between two
+// driver calls ("open.created": a file Open found or created, before it is counted as in use) or
+// between pinning a file and taking its volume lock ("read.pinned": Read).
+using PauseHook = void (*)(const char* point);
+void SetPauseHook(PauseHook hook);
+} // namespace Testing
 #endif
-// Waits for any filesystem call in progress, blocks all later ones and detaches every mount (a
-// journalled volume is closed), for shutdown; false if one did not close cleanly.
+// Waits for the filesystem calls in progress on every mount, blocks all later ones and detaches
+// every mount (a journalled volume is closed), for shutdown; false if one did not close cleanly.
 bool Quiesce();
 
 } // namespace FeatherOS::Files

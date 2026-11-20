@@ -97,17 +97,19 @@ private:
     std::atomic<uint64_t> owner = 0;
 };
 
-// Takes the volume lock unless the task already holds it; the analysis is left to the derived hold.
+// Takes the volume lock unless the task already holds it, and nothing for a null mutex; the
+// analysis is left to the derived hold.
 class VolumeHoldBase
 {
 public:
+    explicit VolumeHoldBase(VolumeMutex* mutex) NO_THREAD_SAFETY_ANALYSIS;
     explicit VolumeHoldBase(VolumeMutex& mutex) NO_THREAD_SAFETY_ANALYSIS;
     ~VolumeHoldBase() NO_THREAD_SAFETY_ANALYSIS;
     VolumeHoldBase(const VolumeHoldBase&) = delete;
     VolumeHoldBase& operator=(const VolumeHoldBase&) = delete;
 
 private:
-    VolumeMutex& mutex;
+    VolumeMutex* mutex;
     bool locked_here;
 };
 

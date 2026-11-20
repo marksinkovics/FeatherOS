@@ -1,8 +1,10 @@
 #ifndef FEATHEROS_FILESYSTEM_FILESYSTEM_H
 #define FEATHEROS_FILESYSTEM_FILESYSTEM_H
 
+#include "kernel/sync/mutex.h"
 #include "user/syscall_abi.h"
 
+#include <atomic>
 #include <stdint.h>
 
 // The interface between the VFS and a mounted filesystem. Paths reaching a driver are relative to
@@ -99,11 +101,14 @@ public:
     // properties keep it read-only whatever mode asks.
     bool PrepareMount(MountMode mode);
     // Read-only by its properties, by how it was last mounted, or because its filesystem refuses
-    // writes.
+    // writes. Other volumes' modes are read without their locks, as /proc/mounts does.
     bool IsMountedReadOnly() const
     {
-        return mounted_read_only;
+        return mounted_read_only.load(std::memory_order_relaxed);
     }
+    // Held by the VFS around every call on the driver, so one task at a time uses it; drivers that
+    // share state share a lock.
+    virtual Sync::VolumeMutex& VolumeLock();
     // Changes a mounted driver's mode as a fresh mount of that mode would set it. The VFS handles
     // read-only properties and devices first. false: LastError says why, SyscallErrorReadOnly when
     // read-write was asked of a medium that refuses writes, which leaves it mounted read-only.
@@ -174,7 +179,8 @@ protected:
 
 private:
     Properties properties;
-    bool mounted_read_only;
+    std::atomic<bool> mounted_read_only;
+    Sync::VolumeMutex own_lock;
 };
 
 } // namespace FeatherOS::Filesystem

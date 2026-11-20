@@ -3289,6 +3289,9 @@ char StateLetter(Scheduler::TaskState state)
 
 bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
 {
+    // Before the spinlock, which a task may not sleep under; Files takes it before process_lock
+    // too.
+    Sync::MutexGuard table_guard(Files::table_lock);
     Sync::SpinLockGuard guard(process_lock);
     ProcessRecord* process = FindProcessLocked(process_id);
     if (process == nullptr)
@@ -3337,7 +3340,6 @@ bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
         status->pages = process->program.mapped_page_count;
     }
     status->page_limit = process->program.page_limit;
-    // Only reads through /proc get here, and they run under the filesystem lock.
     status->open_files = Files::CountOpenLocked(&process->files);
     status->cpu_milliseconds = TicksToMilliseconds(run_ticks);
     status->last_cpu = last_cpu;

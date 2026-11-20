@@ -50,20 +50,22 @@ bool VolumeMutex::HeldByCurrentTask() const
            static_cast<uint64_t>(Scheduler::CurrentTaskId()) + 1;
 }
 
-VolumeHoldBase::VolumeHoldBase(VolumeMutex& mutex)
-    : mutex(mutex), locked_here(!mutex.HeldByCurrentTask())
+VolumeHoldBase::VolumeHoldBase(VolumeMutex* mutex)
+    : mutex(mutex), locked_here(mutex != nullptr && !mutex->HeldByCurrentTask())
 {
     if (locked_here)
     {
-        mutex.Lock();
+        mutex->Lock();
     }
 }
+
+VolumeHoldBase::VolumeHoldBase(VolumeMutex& mutex) : VolumeHoldBase(&mutex) {}
 
 VolumeHoldBase::~VolumeHoldBase()
 {
     if (locked_here)
     {
-        mutex.Unlock();
+        mutex->Unlock();
     }
 }
 

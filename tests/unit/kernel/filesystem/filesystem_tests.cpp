@@ -8,6 +8,7 @@
 #include "kernel/filesystem/vfs.h"
 #include "kernel/storage/block_device.h"
 
+#include "support/filesystem_support.h"
 #include "support/heap_failure.h"
 
 #include "fs/block_device.h"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -43,7 +45,7 @@ constexpr uint32_t RootDirectorySector = PartitionStart + 1 + FatSizeSectors;
 constexpr uint32_t DataStartSector = RootDirectorySector + RootDirectorySectors;
 
 std::vector<std::array<uint8_t, FeatherOS::BlockDevice::SectorSize>> disk;
-uint32_t flush_count = 0;
+std::atomic<uint32_t> flush_count = 0;
 bool writes_fail = false;
 bool reads_fail = false;
 std::function<void(uint64_t, const void*)> on_write;
@@ -3966,3 +3968,45 @@ TEST_CASE("the periodic sync leaves FAT16 alone")
     REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
     REQUIRE(flush_count == flushes);
 }
+
+namespace FilesystemSupport
+{
+
+bool AttachTwoExt4Volumes(TwoExt4Volumes* volumes)
+{
+    SameKindVolumes attached{};
+    if (!AttachSameKindVolumes(FEATHEROS_EXT4_TEST_IMAGE, &attached))
+    {
+        return false;
+    }
+    *volumes = {attached.first_start, attached.first_end, attached.second_start,
+                attached.second_end};
+    return true;
+}
+
+void SetWriteHook(std::function<void(uint64_t sector)> hook)
+{
+    if (!hook)
+    {
+        on_write = nullptr;
+        return;
+    }
+    on_write = [hook = std::move(hook)](uint64_t sector, const void*) { hook(sector); };
+}
+
+std::vector<Sector> CopyRange(uint32_t start, uint32_t end)
+{
+    return ::CopyRange(start, end);
+}
+
+bool NeedsRecovery(uint32_t start)
+{
+    return ::NeedsRecovery(start);
+}
+
+std::string ReadFromCopy(const std::vector<Sector>& volume, const char* name)
+{
+    return MountCopy(FeatherDisk::Ext::Ext4Type(), volume, name).contents;
+}
+
+} // namespace FilesystemSupport

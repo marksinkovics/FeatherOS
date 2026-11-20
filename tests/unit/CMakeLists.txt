@@ -33,6 +33,7 @@ set(FEATHERDISK_CATCH2_TARGET Catch2::Catch2WithMain)
 add_subdirectory("${FEATHEROS_ROOT}/src/fs/core" "${CMAKE_CURRENT_BINARY_DIR}/fs_core")
 
 add_executable(featheros_unit_tests
+    kernel/filesystem/concurrency_tests.cpp
     kernel/filesystem/filesystem_tests.cpp
     kernel/filesystem/mount_table_tests.cpp
     kernel/filesystem/path_tests.cpp

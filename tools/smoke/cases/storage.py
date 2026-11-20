@@ -102,8 +102,10 @@ PERSISTENT_FILE_LINES = 200
 # writeback task's 5 s: the harness stops QEMU after that, so only the
 # periodic sync can have made ext2 clean and put the two journalled changes in
 # their logs, the data volume's mounted beside the root and mounted a second
-# time in vain. The second boot ends by remounting the root read-only, which
-# closes its journal, so the harness finds the root clean.
+# time in vain, and two copies of a program made at once, one on the root and
+# one on the data volume, beside a write to /tmp (the harness compares them
+# with the build's file). The second boot ends by remounting the root
+# read-only, which closes its journal, so the harness finds the root clean.
 FAT16_SHELL_SETUP = b"mount -t fat16 vda2 /fat\ncd /fat/home\n"
 STORAGE_SHELL_INPUT = {
     1: FAT16_SHELL_SETUP + b"write notes.txt first line\n"
@@ -113,6 +115,9 @@ STORAGE_SHELL_INPUT = {
     b"sync\nmount -t ext3 vda3 /ext3\nmount -t ext2 vda6 /ext2\n"
     b"mount -t ext4 vda5 /data\nmount -t ext4 vda5 /d2\n"
     b"grep ext4 /proc/mounts\n"
+    b"cp /bin/libctest /data/c1 &\ncp /bin/libctest /c2 &\n"
+    b"write /tmp/t parallel &\n"
+    b"wait\necho parallel copies done\ncat /tmp/t\n"
     b"write /periodic.txt periodic ext4\n"
     b"write /ext3/periodic.txt periodic ext3\n"
     b"write /data/periodic.txt periodic data\n"
@@ -137,6 +142,7 @@ STORAGE_SHELL_OUTPUT = {
         "mount: vda5 on /d2: Device or resource busy",
         "vda1 / ext4 rw 0 0",
         "vda5 /data ext4 rw 0 0",
+        "parallel copies done",
         "plan.txt",
         "notes.txt",
         "My Plans.txt",
@@ -389,7 +395,21 @@ def ReplayOnCopy(volume):
     return None
 
 
-def VerifyJournalled(disk_path, boot_count):
+PARALLEL_COPIES = {"ext4": "/c2", "data": "/c1"}
+
+
+def VerifyParallelCopy(debugfs, volume, name, build_dir):
+    """The copy the first boot's shell made on this volume, byte for byte."""
+    path = PARALLEL_COPIES.get(name)
+    if path is None:
+        return None
+    original = Path(build_dir) / "disk-programs" / "bin" / "libctest"
+    if Debugfs(debugfs, volume, f"cat {path}") != original.read_bytes():
+        return f"debugfs read a different {path} than the build's libctest"
+    return None
+
+
+def VerifyJournalled(disk_path, boot_count, build_dir):
     """Checks the ext4 root and ext3 on copies. After the first boot the shell
     session stopped both mounted: the change the writeback task committed is
     only in the log, so e2fsck -fy replays it on the copy. After the second,
@@ -421,6 +441,10 @@ def VerifyJournalled(disk_path, boot_count):
             if failure is None and name in ("ext4", "data"):
                 failure = VerifyBootFiles(
                     debugfs, str(volume), name, boot_count
+                )
+            if failure is None:
+                failure = VerifyParallelCopy(
+                    debugfs, str(volume), name, build_dir
                 )
             if failure is None and name == "ext4" and boot_count == 2:
                 if Debugfs(debugfs, str(volume), "cat /remount.txt") != (
@@ -591,7 +615,11 @@ class Storage(Case):
             is None
         ):
             return f"expected '{second}'"
-        journalled_error = VerifyJournalled(self.args.disk, self.boot)
+        if "VFS: two volume locks" in output:
+            return "the kernel panicked on two volume locks"
+        journalled_error = VerifyJournalled(
+            self.args.disk, self.boot, self.args.build_dir
+        )
         if journalled_error is not None:
             return f"ext4 root, ext3 and data ext4 check: {journalled_error}"
         if self.boot == 2:

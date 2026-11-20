@@ -33,7 +33,7 @@ struct CoreKind
 // A filesystem from the shared core (src/fs/core/) as a VFS driver. Paths are walked one
 // component at a time with the core's Lookup, a core error becomes a failure that LastError
 // explains, and a handle's node ID is the core's. Like the core's drivers, it expects one
-// operation at a time, which the file system lock in files.cpp provides. Each driver serves one
+// operation at a time, which the driver's own volume lock provides. Each driver serves one
 // partition and all its state is its own.
 class CoreDriver final : public Driver
 {
@@ -116,6 +116,7 @@ private:
     size_t partition_number = 0;
     // What the core was asked for, which a volume that refuses writes may not have given.
     bool core_read_only = true;
+    // Written and read under the volume lock.
     uint64_t last_error = User::SyscallErrorFailed;
 };
 

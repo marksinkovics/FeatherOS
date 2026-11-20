@@ -3,6 +3,11 @@
 namespace FeatherOS::Filesystem
 {
 
+Sync::VolumeMutex& Driver::VolumeLock()
+{
+    return own_lock;
+}
+
 bool Driver::Open(const char* /*path*/, Node* /*node*/, uint64_t* /*size*/)
 {
     return false;
@@ -149,7 +154,7 @@ void Driver::RefreshMode()
 {
     if (RefusesWrites())
     {
-        mounted_read_only = true;
+        mounted_read_only.store(true, std::memory_order_relaxed);
     }
 }
 
@@ -161,7 +166,7 @@ bool Driver::Remount(MountMode mode)
         RefreshMode();
         return false;
     }
-    mounted_read_only = mode == MountMode::ReadOnly || !writable;
+    mounted_read_only.store(mode == MountMode::ReadOnly || !writable, std::memory_order_relaxed);
     return mode == MountMode::ReadOnly || writable;
 }
 
@@ -169,7 +174,7 @@ bool Driver::PrepareMount(MountMode mode)
 {
     if (properties.read_only)
     {
-        mounted_read_only = true;
+        mounted_read_only.store(true, std::memory_order_relaxed);
         return true;
     }
     bool writable = false;
@@ -177,7 +182,7 @@ bool Driver::PrepareMount(MountMode mode)
     {
         return false;
     }
-    mounted_read_only = mode == MountMode::ReadOnly || !writable;
+    mounted_read_only.store(mode == MountMode::ReadOnly || !writable, std::memory_order_relaxed);
     return true;
 }
 

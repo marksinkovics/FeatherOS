@@ -29,6 +29,9 @@ constexpr uint32_t LinkMode = User::ModeSymbolicLink | 0777;
 // The number every in-memory filesystem gives its root.
 constexpr uint64_t RootSerialNumber = 1;
 
+// /tmp and /etc share Tmpfs's node table.
+constinit Sync::VolumeMutex tmpfs_lock;
+
 // The virtual filesystems have no owners, times or hard links.
 FileInfo MakeInfo(uint64_t node, uint32_t mode, uint64_t size)
 {
@@ -305,6 +308,11 @@ class MemoryDriver final : public Driver
 {
 public:
     constexpr explicit MemoryDriver(Tmpfs::Root root) : Driver(Writable), root(root) {}
+
+    Sync::VolumeMutex& VolumeLock() override
+    {
+        return tmpfs_lock;
+    }
 
     bool Open(const char* path, Node* node, uint64_t* size) override
     {

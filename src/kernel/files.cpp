@@ -8,12 +8,45 @@
 namespace FeatherOS::Files
 {
 
+constinit Sync::Mutex table_lock;
+
+namespace
+{
+
+// The locks, in the order they are taken. Nothing takes an earlier one while holding a later one.
+//
+// namespace_lock serializes changes to the mount tree, and the working directories that an unmount
+// checks. A task then holds at most one volume lock (Driver::VolumeLock; Quiesce is the exception).
+// table_lock guards the descriptor tables, the open files' references and disk_files, and is held
+// across no driver call and no wait for a volume lock. mount_lock is the VFS's. table_lock is also
+// taken before process_lock: closing a pty master under it hangs up a session, which takes
+// process_lock, and /proc's process status counts a table with both.
+constinit Sync::Mutex namespace_lock;
+// The role of a task that holds the volume lock of the file it works on, which guards the handle.
+[[maybe_unused]] constinit Sync::Role held_volume;
+
+#ifdef FEATHEROS_HOST_TEST
+Testing::PauseHook pause_hook = nullptr;
+
+void Pause(const char* point)
+{
+    if (pause_hook != nullptr)
+    {
+        pause_hook(point);
+    }
+}
+#else
+inline void Pause(const char* /*point*/) {}
+#endif
+
+} // namespace
+
 struct OpenFile
 {
-    VFS::FileHandle handle;
+    VFS::FileHandle handle GUARDED_BY(held_volume);
     Pipes::Pipe* pipe;
-    // Descriptors naming this file, in every process.
-    uint32_t references;
+    // Descriptors naming this file, in every process, and tasks using it without table_lock.
+    uint32_t references GUARDED_BY(table_lock);
     Kind kind;
     bool readable;
     bool writable;
@@ -50,19 +83,16 @@ struct DiskFileUse
     bool writer;
 };
 
-// Filesystem updates span many sectors; one lock keeps them from interleaving. It also guards
-// the descriptor tables and open-file references.
-constinit Sync::Mutex file_system_lock;
 // A heap array that doubles from InitialOpenDiskFiles to MaximumOpenDiskFiles; nothing holds a
 // pointer into it across a call that adds an entry.
-DiskFileUse* disk_files GUARDED_BY(file_system_lock) = nullptr;
-uint32_t disk_file_capacity GUARDED_BY(file_system_lock) = 0;
-uint32_t disk_file_count GUARDED_BY(file_system_lock) = 0;
+DiskFileUse* disk_files GUARDED_BY(table_lock) = nullptr;
+uint32_t disk_file_capacity GUARDED_BY(table_lock) = 0;
+uint32_t disk_file_count GUARDED_BY(table_lock) = 0;
 // Every process's console descriptors share this one, which is never freed.
 OpenFile console = {{},    nullptr, 1,       Kind::Terminal, true,   true,
                     false, false,   nullptr, nullptr,        nullptr};
 
-DiskFileUse* FindUse(const VFS::FileKey& key) REQUIRES(file_system_lock)
+DiskFileUse* FindUse(const VFS::FileKey& key) REQUIRES(table_lock)
 {
     for (uint32_t index = 0; index < disk_file_count; ++index)
     {
@@ -74,7 +104,7 @@ DiskFileUse* FindUse(const VFS::FileKey& key) REQUIRES(file_system_lock)
     return nullptr;
 }
 
-uint64_t GrowDiskFilesLocked() REQUIRES(file_system_lock)
+uint64_t GrowDiskFilesLocked() REQUIRES(table_lock)
 {
     const uint32_t capacity =
         disk_file_capacity == 0 ? InitialOpenDiskFiles : disk_file_capacity * 2;
@@ -97,7 +127,7 @@ uint64_t GrowDiskFilesLocked() REQUIRES(file_system_lock)
 }
 
 // Room for one more distinct file, so an open can check before it creates anything.
-uint64_t ReserveUseLocked() REQUIRES(file_system_lock)
+uint64_t ReserveUseLocked() REQUIRES(table_lock)
 {
     if (disk_file_count == MaximumOpenDiskFiles)
     {
@@ -106,7 +136,7 @@ uint64_t ReserveUseLocked() REQUIRES(file_system_lock)
     return disk_file_count == disk_file_capacity ? GrowDiskFilesLocked() : 0;
 }
 
-uint64_t AddUse(const VFS::FileKey& key, bool writable) REQUIRES(file_system_lock)
+uint64_t AddUse(const VFS::FileKey& key, bool writable) REQUIRES(table_lock)
 {
     DiskFileUse* use = FindUse(key);
     if (use != nullptr)
@@ -127,7 +157,7 @@ uint64_t AddUse(const VFS::FileKey& key, bool writable) REQUIRES(file_system_loc
     return 0;
 }
 
-void DropUse(const VFS::FileKey& key, bool writable) REQUIRES(file_system_lock)
+void DropUse(const VFS::FileKey& key, bool writable) REQUIRES(table_lock)
 {
     DiskFileUse* use = FindUse(key);
     if (use == nullptr)
@@ -148,7 +178,7 @@ void DropUse(const VFS::FileKey& key, bool writable) REQUIRES(file_system_lock)
     }
 }
 
-Slot* FindSlot(Table* table, uint64_t descriptor) REQUIRES(file_system_lock)
+Slot* FindSlot(Table* table, uint64_t descriptor) REQUIRES(table_lock)
 {
     if (table == nullptr || descriptor >= table->capacity ||
         table->slots[descriptor].file == nullptr)
@@ -159,29 +189,43 @@ Slot* FindSlot(Table* table, uint64_t descriptor) REQUIRES(file_system_lock)
 }
 
 // A file descriptor, not the console.
-OpenFile* FindFile(Table* table, uint64_t descriptor) REQUIRES(file_system_lock)
+OpenFile* FindFile(Table* table, uint64_t descriptor) REQUIRES(table_lock)
 {
     Slot* slot = FindSlot(table, descriptor);
     return slot == nullptr || slot->file->kind != Kind::File ? nullptr : slot->file;
 }
 
-void ReleaseLocked(OpenFile* file) REQUIRES(file_system_lock)
+bool InUse(const VFS::FileKey& key)
+{
+    Sync::MutexGuard guard(table_lock);
+    return FindUse(key) != nullptr;
+}
+
+// An open file's driver never changes, so it can be read to find the volume lock the handle needs.
+Filesystem::Driver* DriverOf(const OpenFile* file) NO_THREAD_SAFETY_ANALYSIS
+{
+    return file->handle.driver;
+}
+
+// Drops one reference. Files other than disk files close here; the last reference to a disk file
+// hands it back, for FinishClose to close outside table_lock under its volume lock.
+OpenFile* DropReferenceLocked(OpenFile* file) REQUIRES(table_lock)
 {
     if (file == &console || --file->references > 0)
     {
-        return;
+        return nullptr;
     }
     if (file->kind == Kind::Pipe)
     {
         Pipes::CloseEnd(file->pipe, file->writable);
         Memory::Deallocate(file);
-        return;
+        return nullptr;
     }
     if (file->kind == Kind::Socket)
     {
         Network::Sockets::Close(file->socket);
         Memory::Deallocate(file);
-        return;
+        return nullptr;
     }
     if (file->kind == Kind::Terminal || file->kind == Kind::PseudoTerminalMaster)
     {
@@ -194,26 +238,95 @@ void ReleaseLocked(OpenFile* file) REQUIRES(file_system_lock)
             PseudoTerminals::CloseSlave(file->pair);
         }
         Memory::Deallocate(file);
-        return;
+        return nullptr;
     }
-    if (VFS::IsTracked(file->handle))
+    return file;
+}
+
+OpenFile* DetachSlotLocked(Slot* slot) REQUIRES(table_lock)
+{
+    OpenFile* const file = slot->file;
+    slot->file = nullptr;
+    slot->close_on_exec = false;
+    return DropReferenceLocked(file);
+}
+
+// Takes the file's volume lock, then table_lock to forget its use, as every closer does.
+void FinishCloseHeld(OpenFile* file) REQUIRES(held_volume) EXCLUDES(table_lock)
+{
     {
-        DropUse(VFS::KeyOf(file->handle), file->writable);
+        Sync::MutexGuard guard(table_lock);
+        if (VFS::IsTracked(file->handle))
+        {
+            DropUse(VFS::KeyOf(file->handle), file->writable);
+        }
     }
     VFS::Close(&file->handle);
     Memory::Deallocate(file);
 }
 
-void CloseSlotLocked(Slot* slot) REQUIRES(file_system_lock)
+Sync::VolumeMutex* LockOf(Filesystem::Driver* driver)
 {
-    ReleaseLocked(slot->file);
-    slot->file = nullptr;
-    slot->close_on_exec = false;
+    return driver != nullptr ? &driver->VolumeLock() : nullptr;
+}
+
+// Keeps a mount from being unmounted while its holder works on it; destroyed last.
+class MountUser
+{
+protected:
+    explicit MountUser(Filesystem::Driver* driver) : driver(driver) {}
+    ~MountUser()
+    {
+        VFS::ReleaseMount(driver);
+    }
+    MountUser(const MountUser&) = delete;
+    MountUser& operator=(const MountUser&) = delete;
+
+    Filesystem::Driver* const driver;
+};
+
+// Holds one volume lock, unless the task has it, for a sequence of calls that must not be
+// interleaved with another task's on the same volume.
+class SCOPED_CAPABILITY VolumeHold : private MountUser, private Sync::VolumeHoldBase
+{
+public:
+    // The mount holding path, which may be null for none; the nested calls name paths on it.
+    explicit VolumeHold(const char* path) ACQUIRE(held_volume) NO_THREAD_SAFETY_ANALYSIS
+        : MountUser(VFS::AcquireMount(path)),
+          Sync::VolumeHoldBase(LockOf(driver))
+    {
+    }
+    // A driver whose open file the caller keeps, which holds its mount.
+    explicit VolumeHold(Filesystem::Driver* target) ACQUIRE(held_volume) NO_THREAD_SAFETY_ANALYSIS
+        : MountUser(nullptr),
+          Sync::VolumeHoldBase(LockOf(target))
+    {
+    }
+    ~VolumeHold() RELEASE() NO_THREAD_SAFETY_ANALYSIS = default;
+};
+
+void FinishClose(OpenFile* file) EXCLUDES(held_volume, table_lock)
+{
+    if (file != nullptr)
+    {
+        const VolumeHold hold(DriverOf(file));
+        FinishCloseHeld(file);
+    }
+}
+
+void Unpin(OpenFile* file) EXCLUDES(held_volume, table_lock)
+{
+    OpenFile* last = nullptr;
+    {
+        Sync::MutexGuard guard(table_lock);
+        last = DropReferenceLocked(file);
+    }
+    FinishClose(last);
 }
 
 // The array grows to the next power of two that holds needed slots, but not past the soft limit;
 // callers check needed against it first. Slot pointers into the table do not survive this.
-uint64_t GrowLocked(Table* table, uint64_t needed) REQUIRES(file_system_lock)
+uint64_t GrowLocked(Table* table, uint64_t needed) REQUIRES(table_lock)
 {
     if (needed <= table->capacity)
     {
@@ -248,7 +361,7 @@ uint64_t GrowLocked(Table* table, uint64_t needed) REQUIRES(file_system_lock)
 
 // The lowest free descriptor at or above minimum and below the soft limit, growing the table when
 // none is free; the result stays free until the caller fills it.
-uint64_t FreeSlotLocked(Table* table, uint64_t minimum) REQUIRES(file_system_lock)
+uint64_t FreeSlotLocked(Table* table, uint64_t minimum) REQUIRES(table_lock)
 {
     if (minimum >= table->soft_limit)
     {
@@ -272,13 +385,13 @@ uint64_t FreeSlotLocked(Table* table, uint64_t minimum) REQUIRES(file_system_loc
 }
 
 // Anything at path, a link included.
-bool ExistsLocked(const char* path) REQUIRES(file_system_lock)
+bool Exists(const char* path)
 {
     VFS::FileInfo info;
     return VFS::Stat(path, &info);
 }
 
-bool IsLinkLocked(const char* path) REQUIRES(file_system_lock)
+bool IsLink(const char* path)
 {
     VFS::FileInfo info;
     return VFS::Stat(path, &info) && (info.mode & User::ModeTypeMask) == User::ModeSymbolicLink;
@@ -313,7 +426,7 @@ public:
     Resolved(Resolved&&) = delete;
     Resolved& operator=(Resolved&&) = delete;
 
-    uint64_t Walk(const char* path, VFS::Follow follow) REQUIRES(file_system_lock)
+    uint64_t Walk(const char* path, VFS::Follow follow) EXCLUDES(held_volume)
     {
         if (!walk)
         {
@@ -338,7 +451,7 @@ struct PathText
 
 // Paths reach Files already resolved to absolute form, so the parent is everything before the
 // last '/'.
-bool ParentExistsLocked(const char* path) REQUIRES(file_system_lock)
+bool ParentExists(const char* path)
 {
     const Memory::HeapObject<PathText> parent;
     if (!parent)
@@ -420,9 +533,9 @@ User::FileStatus UnmountedStatus(const void* object, uint32_t mode, User::FileTy
 }
 
 // Why an operation that changes path could not create it.
-uint64_t CreateErrorLocked(const char* path) REQUIRES(file_system_lock)
+uint64_t CreateError(const char* path)
 {
-    if (ExistsLocked(path))
+    if (Exists(path))
     {
         return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorExists;
     }
@@ -430,7 +543,7 @@ uint64_t CreateErrorLocked(const char* path) REQUIRES(file_system_lock)
     {
         return User::SyscallErrorReadOnly;
     }
-    return ParentExistsLocked(path) ? VFS::LastError() : User::SyscallErrorNotFound;
+    return ParentExists(path) ? VFS::LastError() : User::SyscallErrorNotFound;
 }
 
 enum class LastName : uint8_t
@@ -465,9 +578,9 @@ LastName LastNameOf(const char* path)
                                                                             : LastName::Plain;
 }
 
-uint64_t MissingErrorLocked(const char* path) REQUIRES(file_system_lock)
+uint64_t MissingError(const char* path)
 {
-    return ExistsLocked(path) ? User::SyscallErrorNotDirectory : User::SyscallErrorNotFound;
+    return Exists(path) ? User::SyscallErrorNotDirectory : User::SyscallErrorNotFound;
 }
 
 uint64_t MountError(VFS::MountResult result)
@@ -495,7 +608,7 @@ uint64_t MountError(VFS::MountResult result)
 }
 
 // The use key of the disk or /tmp file at path; false for anything else.
-bool FileKeyLocked(const char* path, VFS::FileKey* key) REQUIRES(file_system_lock)
+bool FileKeyOf(const char* path, VFS::FileKey* key)
 {
     VFS::FileHandle handle;
     if (!VFS::Open(path, &handle))
@@ -519,34 +632,53 @@ bool IsWithin(const char* path, const char* base)
     return base[length] == '\0' && (path[length] == '\0' || path[length] == '/');
 }
 
-// A slave's pair stays in use until the descriptor is closed, so terminal stays valid.
-uint64_t AddTerminalLocked(Table* table, uint64_t descriptor, uint64_t flags, Kind kind,
-                           Terminals::Terminal* terminal, PseudoTerminals::Pair* pair)
+// A file nothing else sees yet, with one reference; the caller sets the rest.
+OpenFile* NewFile(Kind kind, bool readable, bool writable) NO_THREAD_SAFETY_ANALYSIS
 {
     auto* file = static_cast<OpenFile*>(Memory::Allocate(sizeof(OpenFile)));
+    if (file != nullptr)
+    {
+        *file = {
+            .handle = {},
+            .pipe = nullptr,
+            .references = 1,
+            .kind = kind,
+            .readable = readable,
+            .writable = writable,
+            .append = false,
+            .nonblocking = false,
+            .socket = nullptr,
+            .terminal = nullptr,
+            .pair = nullptr,
+        };
+    }
+    return file;
+}
+
+// A slave's pair stays in use until the descriptor is closed, so terminal stays valid.
+uint64_t AddTerminalLocked(Table* table, uint64_t flags, Kind kind, Terminals::Terminal* terminal,
+                           PseudoTerminals::Pair* pair) REQUIRES(table_lock)
+{
+    const uint64_t descriptor = FreeSlotLocked(table, 0);
+    if (User::IsSyscallError(descriptor))
+    {
+        return descriptor;
+    }
+    OpenFile* const file =
+        NewFile(kind, (flags & User::OpenRead) != 0, (flags & User::OpenWrite) != 0);
     if (file == nullptr)
     {
         return User::SyscallErrorNoMemory;
     }
-    *file = {
-        .handle = {},
-        .pipe = nullptr,
-        .references = 1,
-        .kind = kind,
-        .readable = (flags & User::OpenRead) != 0,
-        .writable = (flags & User::OpenWrite) != 0,
-        .append = false,
-        .nonblocking = kind == Kind::PseudoTerminalMaster && (flags & User::OpenNonBlocking) != 0,
-        .socket = nullptr,
-        .terminal = terminal,
-        .pair = pair,
-    };
+    file->nonblocking = kind == Kind::PseudoTerminalMaster && (flags & User::OpenNonBlocking) != 0;
+    file->terminal = terminal;
+    file->pair = pair;
     table->slots[descriptor] = {file, (flags & User::OpenCloseOnExec) != 0};
     return descriptor;
 }
 
-uint64_t OpenDeviceLocked(Table* table, uint64_t descriptor, uint64_t flags, uint32_t node,
-                          Terminals::Terminal* controlling_terminal)
+uint64_t OpenDeviceLocked(Table* table, uint64_t flags, uint32_t node,
+                          Terminals::Terminal* controlling_terminal) REQUIRES(table_lock)
 {
     PseudoTerminals::Pair* pair = nullptr;
     Terminals::Terminal* terminal = controlling_terminal;
@@ -587,7 +719,7 @@ uint64_t OpenDeviceLocked(Table* table, uint64_t descriptor, uint64_t flags, uin
     default:
         return User::SyscallErrorNotFound;
     }
-    const uint64_t added = AddTerminalLocked(table, descriptor, flags, kind, terminal, pair);
+    const uint64_t added = AddTerminalLocked(table, flags, kind, terminal, pair);
     if (User::IsSyscallError(added) && pair != nullptr)
     {
         if (kind == Kind::PseudoTerminalMaster)
@@ -608,13 +740,13 @@ uint64_t StatPath(const char* path, User::FileStatus* status, VFS::Follow follow
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(path, follow);
     if (walked != 0)
     {
         return walked;
     }
+    const VolumeHold hold(resolved.Path());
     VFS::FileInfo info;
     if (!VFS::Stat(resolved.Path(), &info))
     {
@@ -625,13 +757,13 @@ uint64_t StatPath(const char* path, User::FileStatus* status, VFS::Follow follow
 }
 
 // Why a new link cannot be made at path, in Linux's order, or 0.
-uint64_t NewNameErrorLocked(const char* path, Filesystem::LinkKind kind) REQUIRES(file_system_lock)
+uint64_t NewNameError(const char* path, Filesystem::LinkKind kind)
 {
-    if (ExistsLocked(path))
+    if (Exists(path))
     {
         return User::SyscallErrorExists;
     }
-    if (!ParentExistsLocked(path))
+    if (!ParentExists(path))
     {
         return User::SyscallErrorNotFound;
     }
@@ -659,28 +791,38 @@ bool IsTerminalDevice(const VFS::FileHandle& handle)
 
 bool OpenConsole(Table* table, Terminals::Terminal* terminal)
 {
-    Sync::MutexGuard guard(file_system_lock);
-    console.terminal = terminal;
-    table->soft_limit = User::DefaultDescriptorLimit;
-    table->hard_limit = User::MaximumDescriptorLimit;
-    if (GrowLocked(table, User::StandardError + 1) != 0)
+    constexpr uint64_t Standard = User::StandardError - User::StandardInput + 1;
+    OpenFile* closing[Standard] = {};
     {
-        return false;
-    }
-    for (uint64_t descriptor = User::StandardInput; descriptor <= User::StandardError; ++descriptor)
-    {
-        if (table->slots[descriptor].file != nullptr)
+        Sync::MutexGuard guard(table_lock);
+        console.terminal = terminal;
+        table->soft_limit = User::DefaultDescriptorLimit;
+        table->hard_limit = User::MaximumDescriptorLimit;
+        if (GrowLocked(table, User::StandardError + 1) != 0)
         {
-            CloseSlotLocked(&table->slots[descriptor]);
+            return false;
         }
-        table->slots[descriptor] = {&console, false};
+        for (uint64_t descriptor = User::StandardInput; descriptor <= User::StandardError;
+             ++descriptor)
+        {
+            if (table->slots[descriptor].file != nullptr)
+            {
+                closing[descriptor - User::StandardInput] =
+                    DetachSlotLocked(&table->slots[descriptor]);
+            }
+            table->slots[descriptor] = {&console, false};
+        }
+    }
+    for (OpenFile* file : closing)
+    {
+        FinishClose(file);
     }
     return true;
 }
 
 bool Inherit(Table* child, const Table* parent)
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     child->soft_limit = parent->soft_limit;
     child->hard_limit = parent->hard_limit;
     uint32_t span = 0;
@@ -723,7 +865,7 @@ bool Inherit(Table* child, const Table* parent)
 uint64_t DescriptorLimits(Table* table, const User::ResourceLimits* requested,
                           User::ResourceLimits* previous)
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     if (previous != nullptr)
     {
         *previous = {table->soft_limit, table->hard_limit};
@@ -747,7 +889,7 @@ uint64_t DescriptorLimits(Table* table, const User::ResourceLimits* requested,
 
 Kind KindOf(const Table* table, uint64_t descriptor)
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     if (table == nullptr || descriptor >= table->capacity ||
         table->slots[descriptor].file == nullptr)
     {
@@ -767,11 +909,13 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
         return User::SyscallErrorInvalidArgument;
     }
 
-    Sync::MutexGuard guard(file_system_lock);
-    const uint64_t descriptor = FreeSlotLocked(table, 0);
-    if (User::IsSyscallError(descriptor))
     {
-        return descriptor;
+        Sync::MutexGuard guard(table_lock);
+        const uint64_t free_descriptor = FreeSlotLocked(table, 0);
+        if (User::IsSyscallError(free_descriptor))
+        {
+            return free_descriptor;
+        }
     }
     const bool no_follow = (flags & User::OpenNoFollow) != 0;
     Resolved resolved;
@@ -782,7 +926,8 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
         return walked;
     }
     path = resolved.Path();
-    if (no_follow && IsLinkLocked(path))
+    const VolumeHold hold(path);
+    if (no_follow && IsLink(path))
     {
         return User::SyscallErrorLoop;
     }
@@ -798,14 +943,18 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
         {
             return User::SyscallErrorNotFound;
         }
-        const uint64_t reserved = ReserveUseLocked();
+        uint64_t reserved = 0;
+        {
+            Sync::MutexGuard guard(table_lock);
+            reserved = ReserveUseLocked();
+        }
         if (reserved != 0)
         {
             return reserved;
         }
         if (!VFS::Create(path, &handle))
         {
-            return CreateErrorLocked(path);
+            return CreateError(path);
         }
     }
     else if (writable && !VFS::IsWritable(handle))
@@ -813,46 +962,56 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
         VFS::Close(&handle);
         return User::SyscallErrorReadOnly;
     }
+    Pause("open.created");
     uint32_t node;
     if (IsTerminalDevice(handle) && VFS::DeviceNode(handle, &node))
     {
         VFS::Close(&handle);
-        return OpenDeviceLocked(table, descriptor, flags, node, controlling_terminal);
+        Sync::MutexGuard guard(table_lock);
+        return OpenDeviceLocked(table, flags, node, controlling_terminal);
     }
-    auto* file = static_cast<OpenFile*>(Memory::Allocate(sizeof(OpenFile)));
+    OpenFile* const file = NewFile(Kind::File, (flags & User::OpenRead) != 0, writable);
     if (file == nullptr)
     {
         VFS::Close(&handle);
         return User::SyscallErrorNoMemory;
     }
-    if (VFS::IsTracked(handle))
-    {
-        const uint64_t added = AddUse(VFS::KeyOf(handle), writable);
-        if (User::IsSyscallError(added))
-        {
-            VFS::Close(&handle);
-            Memory::Deallocate(file);
-            return added;
-        }
-    }
-
     file->handle = handle;
-    file->pipe = nullptr;
-    file->references = 1;
-    file->kind = Kind::File;
-    file->readable = (flags & User::OpenRead) != 0;
-    file->writable = writable;
     file->append = (flags & User::OpenAppend) != 0;
     file->nonblocking = (flags & User::OpenNonBlocking) != 0;
-    file->socket = nullptr;
-    file->terminal = nullptr;
-    file->pair = nullptr;
-    Slot& slot = table->slots[descriptor];
-    slot = {file, (flags & User::OpenCloseOnExec) != 0};
+    uint64_t descriptor = 0;
+    {
+        Sync::MutexGuard guard(table_lock);
+        descriptor = FreeSlotLocked(table, 0);
+        if (!User::IsSyscallError(descriptor) && VFS::IsTracked(handle))
+        {
+            const uint64_t added = AddUse(VFS::KeyOf(handle), writable);
+            descriptor = User::IsSyscallError(added) ? added : descriptor;
+        }
+        if (!User::IsSyscallError(descriptor))
+        {
+            table->slots[descriptor] = {file, (flags & User::OpenCloseOnExec) != 0};
+        }
+    }
+    if (User::IsSyscallError(descriptor))
+    {
+        VFS::Close(&file->handle);
+        Memory::Deallocate(file);
+        return descriptor;
+    }
     if ((flags & User::OpenTruncate) != 0 && !VFS::Truncate(&file->handle, 0))
     {
         const uint64_t error = VFS::LastError();
-        CloseSlotLocked(&slot);
+        OpenFile* closing = nullptr;
+        {
+            Sync::MutexGuard guard(table_lock);
+            Slot& slot = table->slots[descriptor];
+            closing = slot.file == file ? DetachSlotLocked(&slot) : nullptr;
+        }
+        if (closing != nullptr)
+        {
+            FinishCloseHeld(closing);
+        }
         return error;
     }
     return descriptor;
@@ -862,7 +1021,7 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
 // reference, and only the caller can close that.
 Pipes::Pipe* FindPipe(Table* table, uint64_t descriptor, bool write_end, bool* nonblocking)
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     Slot* slot = FindSlot(table, descriptor);
     if (slot == nullptr || slot->file->kind != Kind::Pipe || slot->file->writable != write_end)
     {
@@ -874,7 +1033,7 @@ Pipes::Pipe* FindPipe(Table* table, uint64_t descriptor, bool write_end, bool* n
 
 PseudoTerminals::Pair* FindMaster(Table* table, uint64_t descriptor, bool write, bool* nonblocking)
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     Slot* slot = FindSlot(table, descriptor);
     if (slot == nullptr || slot->file->kind != Kind::PseudoTerminalMaster ||
         !(write ? slot->file->writable : slot->file->readable))
@@ -904,15 +1063,28 @@ uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
         return pipe == nullptr ? User::SyscallErrorBadDescriptor
                                : Pipes::Read(pipe, buffer, length, interrupted, nonblocking);
     }
-    Sync::MutexGuard guard(file_system_lock);
-    OpenFile* file = FindFile(table, descriptor);
-    if (file == nullptr || !file->readable)
+    OpenFile* file = nullptr;
     {
-        return User::SyscallErrorBadDescriptor;
+        Sync::MutexGuard guard(table_lock);
+        file = FindFile(table, descriptor);
+        if (file == nullptr || !file->readable)
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        ++file->references;
     }
-    uint64_t bytes_read;
-    return VFS::Read(&file->handle, buffer, length, &bytes_read) ? bytes_read
-                                                                 : User::SyscallErrorFailed;
+    Pause("read.pinned");
+    uint64_t result = User::SyscallErrorFailed;
+    {
+        const VolumeHold hold(DriverOf(file));
+        uint64_t bytes_read;
+        if (VFS::Read(&file->handle, buffer, length, &bytes_read))
+        {
+            result = bytes_read;
+        }
+    }
+    Unpin(file);
+    return result;
 }
 
 uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t length,
@@ -934,38 +1106,33 @@ uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t l
         return pipe == nullptr ? User::SyscallErrorBadDescriptor
                                : Pipes::Write(pipe, buffer, length, interrupted, nonblocking);
     }
-    Sync::MutexGuard guard(file_system_lock);
-    OpenFile* file = FindFile(table, descriptor);
-    if (file == nullptr || !file->writable)
+    OpenFile* file = nullptr;
+    bool append = false;
     {
-        return User::SyscallErrorBadDescriptor;
+        Sync::MutexGuard guard(table_lock);
+        file = FindFile(table, descriptor);
+        if (file == nullptr || !file->writable)
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        append = file->append;
+        ++file->references;
     }
-    // Under the lock, so writes through other descriptors cannot land in between.
-    if (file->append)
+    uint64_t result = 0;
     {
-        VFS::Seek(&file->handle, file->handle.size);
+        const VolumeHold hold(DriverOf(file));
+        // Under the lock, so writes through other descriptors cannot land in between.
+        if (append)
+        {
+            VFS::Seek(&file->handle, file->handle.size);
+        }
+        uint64_t bytes_written;
+        const bool complete = VFS::Write(&file->handle, buffer, length, &bytes_written);
+        // A short write (such as a full disk) still reports the bytes that did land.
+        result = complete || bytes_written > 0 ? bytes_written : VFS::LastError();
     }
-    uint64_t bytes_written;
-    const bool complete = VFS::Write(&file->handle, buffer, length, &bytes_written);
-    // A short write (such as a full disk) still reports the bytes that did land.
-    return complete || bytes_written > 0 ? bytes_written : VFS::LastError();
-}
-
-void SetPipeEnd(OpenFile* file, Pipes::Pipe* pipe, bool write_end, bool nonblocking)
-{
-    *file = {
-        .handle = {},
-        .pipe = pipe,
-        .references = 1,
-        .kind = Kind::Pipe,
-        .readable = !write_end,
-        .writable = write_end,
-        .append = false,
-        .nonblocking = nonblocking,
-        .socket = nullptr,
-        .terminal = nullptr,
-        .pair = nullptr,
-    };
+    Unpin(file);
+    return result;
 }
 
 uint64_t CreatePipe(Table* table, uint64_t flags, uint64_t* read_end, uint64_t* write_end)
@@ -974,7 +1141,7 @@ uint64_t CreatePipe(Table* table, uint64_t flags, uint64_t* read_end, uint64_t* 
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     const uint64_t reader = FreeSlotLocked(table, 0);
     const uint64_t writer =
         User::IsSyscallError(reader) ? reader : FreeSlotLocked(table, reader + 1);
@@ -982,8 +1149,8 @@ uint64_t CreatePipe(Table* table, uint64_t flags, uint64_t* read_end, uint64_t* 
     {
         return writer;
     }
-    auto* reading = static_cast<OpenFile*>(Memory::Allocate(sizeof(OpenFile)));
-    auto* writing = static_cast<OpenFile*>(Memory::Allocate(sizeof(OpenFile)));
+    OpenFile* const reading = NewFile(Kind::Pipe, true, false);
+    OpenFile* const writing = NewFile(Kind::Pipe, false, true);
     Pipes::Pipe* pipe = reading == nullptr || writing == nullptr ? nullptr : Pipes::Create();
     if (pipe == nullptr)
     {
@@ -998,8 +1165,10 @@ uint64_t CreatePipe(Table* table, uint64_t flags, uint64_t* read_end, uint64_t* 
         return User::SyscallErrorNoMemory;
     }
     const bool nonblocking = (flags & User::PipeNonBlocking) != 0;
-    SetPipeEnd(reading, pipe, false, nonblocking);
-    SetPipeEnd(writing, pipe, true, nonblocking);
+    reading->pipe = pipe;
+    reading->nonblocking = nonblocking;
+    writing->pipe = pipe;
+    writing->nonblocking = nonblocking;
     const bool close_on_exec = (flags & User::PipeCloseOnExec) != 0;
     table->slots[reader] = {reading, close_on_exec};
     table->slots[writer] = {writing, close_on_exec};
@@ -1021,34 +1190,24 @@ uint64_t CreateSocket(Table* table, uint64_t family, uint64_t type, uint64_t pro
 
 uint64_t AddSocket(Table* table, Network::Sockets::Socket* socket, uint64_t flags)
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     const uint64_t descriptor = FreeSlotLocked(table, 0);
-    auto* file = User::IsSyscallError(descriptor)
-                     ? nullptr
-                     : static_cast<OpenFile*>(Memory::Allocate(sizeof(OpenFile)));
+    OpenFile* const file =
+        User::IsSyscallError(descriptor) ? nullptr : NewFile(Kind::Socket, true, true);
     if (file == nullptr)
     {
         Network::Sockets::Close(socket);
         return User::IsSyscallError(descriptor) ? descriptor : User::SyscallErrorNoMemory;
     }
-    file->handle = {};
-    file->pipe = nullptr;
-    file->references = 1;
-    file->kind = Kind::Socket;
-    file->readable = true;
-    file->writable = true;
-    file->append = false;
     file->nonblocking = (flags & User::SocketNonBlocking) != 0;
     file->socket = socket;
-    file->terminal = nullptr;
-    file->pair = nullptr;
     table->slots[descriptor] = {file, (flags & User::SocketCloseOnExec) != 0};
     return descriptor;
 }
 
 int16_t PollEvents(Table* table, uint64_t descriptor)
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     const Slot* slot = FindSlot(table, descriptor);
     if (slot == nullptr)
     {
@@ -1072,7 +1231,7 @@ int16_t PollEvents(Table* table, uint64_t descriptor)
 
 uint64_t FindTerminal(Table* table, uint64_t descriptor, Terminals::Terminal** terminal)
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     const Slot* slot = FindSlot(table, descriptor);
     if (slot == nullptr)
     {
@@ -1088,7 +1247,7 @@ uint64_t FindTerminal(Table* table, uint64_t descriptor, Terminals::Terminal** t
 
 uint64_t FindPseudoTerminal(Table* table, uint64_t descriptor, PseudoTerminals::Pair** pair)
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     const Slot* slot = FindSlot(table, descriptor);
     if (slot == nullptr)
     {
@@ -1105,7 +1264,7 @@ uint64_t FindPseudoTerminal(Table* table, uint64_t descriptor, PseudoTerminals::
 uint64_t FindSocket(Table* table, uint64_t descriptor, Network::Sockets::Socket** socket,
                     bool* nonblocking)
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     const Slot* slot = FindSlot(table, descriptor);
     if (slot == nullptr)
     {
@@ -1123,19 +1282,11 @@ uint64_t FindSocket(Table* table, uint64_t descriptor, Network::Sockets::Socket*
     return 0;
 }
 
-uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset, uint64_t whence)
+namespace
 {
-    Sync::MutexGuard guard(file_system_lock);
-    const Slot* slot = FindSlot(table, descriptor);
-    if (slot == nullptr)
-    {
-        return User::SyscallErrorBadDescriptor;
-    }
-    if (slot->file->kind != Kind::File)
-    {
-        return User::SyscallErrorNotSeekable;
-    }
-    OpenFile* file = slot->file;
+
+uint64_t SeekHeld(OpenFile* file, uint64_t offset, uint64_t whence) REQUIRES(held_volume)
+{
     uint64_t origin = 0;
     if (whence == User::SeekFromCurrent)
     {
@@ -1159,25 +1310,56 @@ uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset, uint64_t whenc
     return VFS::Seek(&file->handle, target) ? target : User::SyscallErrorInvalidArgument;
 }
 
+} // namespace
+
+uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset, uint64_t whence)
+{
+    OpenFile* file = nullptr;
+    {
+        Sync::MutexGuard guard(table_lock);
+        const Slot* slot = FindSlot(table, descriptor);
+        if (slot == nullptr)
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        if (slot->file->kind != Kind::File)
+        {
+            return User::SyscallErrorNotSeekable;
+        }
+        file = slot->file;
+        ++file->references;
+    }
+    uint64_t result = 0;
+    {
+        const VolumeHold hold(DriverOf(file));
+        result = SeekHeld(file, offset, whence);
+    }
+    Unpin(file);
+    return result;
+}
+
 uint64_t Close(Table* table, uint64_t descriptor)
 {
-    Sync::MutexGuard guard(file_system_lock);
-    Slot* slot = FindSlot(table, descriptor);
-    if (slot == nullptr)
+    OpenFile* closing = nullptr;
     {
-        return User::SyscallErrorBadDescriptor;
+        Sync::MutexGuard guard(table_lock);
+        Slot* slot = FindSlot(table, descriptor);
+        if (slot == nullptr)
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        closing = DetachSlotLocked(slot);
     }
-    CloseSlotLocked(slot);
+    FinishClose(closing);
     return 0;
 }
 
-uint64_t Duplicate(Table* table, uint64_t descriptor, uint64_t target, uint64_t flags)
+namespace
 {
-    if ((flags & ~(User::DuplicateExact | User::DuplicateCloseOnExec)) != 0)
-    {
-        return User::SyscallErrorInvalidArgument;
-    }
-    Sync::MutexGuard guard(file_system_lock);
+
+uint64_t DuplicateLocked(Table* table, uint64_t descriptor, uint64_t target, uint64_t flags,
+                         OpenFile** closing) REQUIRES(table_lock)
+{
     const Slot* source = FindSlot(table, descriptor);
     if (source == nullptr)
     {
@@ -1204,7 +1386,7 @@ uint64_t Duplicate(Table* table, uint64_t descriptor, uint64_t target, uint64_t 
         }
         if (table->slots[target].file != nullptr)
         {
-            CloseSlotLocked(&table->slots[target]);
+            *closing = DetachSlotLocked(&table->slots[target]);
         }
     }
     else
@@ -1220,13 +1402,31 @@ uint64_t Duplicate(Table* table, uint64_t descriptor, uint64_t target, uint64_t 
     return result;
 }
 
+} // namespace
+
+uint64_t Duplicate(Table* table, uint64_t descriptor, uint64_t target, uint64_t flags)
+{
+    if ((flags & ~(User::DuplicateExact | User::DuplicateCloseOnExec)) != 0)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    OpenFile* closing = nullptr;
+    uint64_t result = 0;
+    {
+        Sync::MutexGuard guard(table_lock);
+        result = DuplicateLocked(table, descriptor, target, flags, &closing);
+    }
+    FinishClose(closing);
+    return result;
+}
+
 uint64_t DescriptorFlags(Table* table, uint64_t descriptor, bool set, uint64_t value)
 {
     if (set && (value & ~User::DescriptorCloseOnExec) != 0)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     Slot* slot = FindSlot(table, descriptor);
     if (slot == nullptr)
     {
@@ -1246,7 +1446,7 @@ uint64_t StatusFlags(Table* table, uint64_t descriptor, bool set, uint64_t value
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     Slot* slot = FindSlot(table, descriptor);
     if (slot == nullptr)
     {
@@ -1276,7 +1476,7 @@ uint64_t StatusFlags(Table* table, uint64_t descriptor, bool set, uint64_t value
 
 uint64_t CountOpen(const Table* table)
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     return CountOpenLocked(table);
 }
 
@@ -1296,7 +1496,6 @@ uint64_t Remove(const char* path)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(path, VFS::Follow::NotLast);
     if (walked != 0)
@@ -1304,8 +1503,9 @@ uint64_t Remove(const char* path)
         return walked;
     }
     path = resolved.Path();
+    const VolumeHold hold(path);
     // No handle ever opens a link, so nothing can be using it.
-    if (IsLinkLocked(path))
+    if (IsLink(path))
     {
         if (VFS::IsReadOnly(path))
         {
@@ -1319,7 +1519,7 @@ uint64_t Remove(const char* path)
         return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorNotFound;
     }
     const bool removable = VFS::IsTracked(handle);
-    const bool busy = removable && FindUse(VFS::KeyOf(handle)) != nullptr;
+    const bool busy = removable && InUse(VFS::KeyOf(handle));
     VFS::Close(&handle);
     if (!removable)
     {
@@ -1338,7 +1538,6 @@ uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* e
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(path, VFS::Follow::All);
     if (walked != 0)
@@ -1348,7 +1547,7 @@ uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* e
     path = resolved.Path();
     if (!VFS::IsDirectory(path))
     {
-        return MissingErrorLocked(path);
+        return MissingError(path);
     }
     const Memory::HeapObject<Filesystem::DirectoryEntry> found;
     if (!found)
@@ -1377,14 +1576,14 @@ uint64_t CheckDirectory(const char* path)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(path, VFS::Follow::All);
     if (walked != 0)
     {
         return walked;
     }
-    return VFS::IsDirectory(resolved.Path()) ? 0 : MissingErrorLocked(resolved.Path());
+    const VolumeHold hold(resolved.Path());
+    return VFS::IsDirectory(resolved.Path()) ? 0 : MissingError(resolved.Path());
 }
 
 uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::MaximumPathLength])
@@ -1393,7 +1592,8 @@ uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::Maxim
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
+    // An unmount, which takes this lock too, sees either the old working directory or the new one.
+    Sync::MutexGuard guard(namespace_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(path, VFS::Follow::All);
     if (walked != 0)
@@ -1401,9 +1601,10 @@ uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::Maxim
         return walked;
     }
     path = resolved.Path();
+    const VolumeHold hold(path);
     if (!VFS::IsDirectory(path))
     {
-        return MissingErrorLocked(path);
+        return MissingError(path);
     }
     uint64_t index = 0;
     for (; path[index] != '\0' && index + 1 < sizeof(working_directory); ++index)
@@ -1420,7 +1621,7 @@ uint64_t Mount(const char* source, const char* point, const char* type, Filesyst
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(namespace_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(point, VFS::Follow::All);
     if (walked != 0)
@@ -1430,9 +1631,9 @@ uint64_t Mount(const char* source, const char* point, const char* type, Filesyst
     point = resolved.Path();
     if (!VFS::IsMountPoint(point))
     {
-        if (!ExistsLocked(point))
+        if (!Exists(point))
         {
-            if (!ParentExistsLocked(point))
+            if (!ParentExists(point))
             {
                 return User::SyscallErrorNotFound;
             }
@@ -1451,7 +1652,7 @@ uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(namespace_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(point, VFS::Follow::All);
     if (walked != 0)
@@ -1461,7 +1662,7 @@ uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use)
     point = resolved.Path();
     if (!VFS::IsMountPoint(point))
     {
-        return ExistsLocked(point) ? User::SyscallErrorInvalidArgument : User::SyscallErrorNotFound;
+        return Exists(point) ? User::SyscallErrorInvalidArgument : User::SyscallErrorNotFound;
     }
     if (in_use(point))
     {
@@ -1478,7 +1679,7 @@ uint64_t Remount(const char* point, Filesystem::MountMode mode)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(namespace_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(point, VFS::Follow::All);
     if (walked != 0)
@@ -1488,16 +1689,21 @@ uint64_t Remount(const char* point, Filesystem::MountMode mode)
     point = resolved.Path();
     if (!VFS::IsMountPoint(point))
     {
-        return ExistsLocked(point) ? User::SyscallErrorInvalidArgument : User::SyscallErrorNotFound;
+        return Exists(point) ? User::SyscallErrorInvalidArgument : User::SyscallErrorNotFound;
     }
+    // The count of open files and the change are one step: nothing opens a file in between.
+    const VolumeHold hold(point);
     const Filesystem::Driver* mounted = VFS::MountedAt(point);
     VFS::OpenFiles open = {};
-    for (uint32_t index = 0; index < disk_file_count; ++index)
     {
-        if (disk_files[index].key.filesystem == mounted)
+        Sync::MutexGuard table_guard(table_lock);
+        for (uint32_t index = 0; index < disk_file_count; ++index)
         {
-            open.any = true;
-            open.writer = open.writer || disk_files[index].writer;
+            if (disk_files[index].key.filesystem == mounted)
+            {
+                open.any = true;
+                open.writer = open.writer || disk_files[index].writer;
+            }
         }
     }
     const VFS::MountResult result = VFS::Remount(point, mode, open);
@@ -1511,7 +1717,6 @@ uint64_t MakeDirectory(const char* path)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(path, VFS::Follow::NotLast);
     if (walked != 0)
@@ -1519,11 +1724,12 @@ uint64_t MakeDirectory(const char* path)
         return walked;
     }
     path = resolved.Path();
-    if (ExistsLocked(path))
+    const VolumeHold hold(path);
+    if (Exists(path))
     {
         return User::SyscallErrorExists;
     }
-    return VFS::MakeDirectory(path) ? 0 : CreateErrorLocked(path);
+    return VFS::MakeDirectory(path) ? 0 : CreateError(path);
 }
 
 uint64_t RemoveDirectory(const char* path)
@@ -1532,7 +1738,6 @@ uint64_t RemoveDirectory(const char* path)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(path, VFS::Follow::NotLast);
     if (walked != 0)
@@ -1541,9 +1746,10 @@ uint64_t RemoveDirectory(const char* path)
     }
     const LastName last = LastNameOf(path);
     path = resolved.Path();
+    const VolumeHold hold(path);
     if (!VFS::IsDirectory(path))
     {
-        return MissingErrorLocked(path);
+        return MissingError(path);
     }
     // Linux's answers, before any other check.
     if (last != LastName::Plain)
@@ -1559,12 +1765,7 @@ uint64_t RemoveDirectory(const char* path)
     {
         return User::SyscallErrorBusy;
     }
-    const Memory::HeapObject<Filesystem::DirectoryEntry> entry;
-    if (!entry)
-    {
-        return User::SyscallErrorNoMemory;
-    }
-    if (VFS::ReadDirectory(path, 0, &*entry))
+    if (!VFS::IsEmptyDirectory(path))
     {
         return User::SyscallErrorNotEmpty;
     }
@@ -1577,7 +1778,6 @@ uint64_t Rename(const char* from, const char* to)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved_from;
     Resolved resolved_to;
     uint64_t walked = resolved_from.Walk(from, VFS::Follow::NotLast);
@@ -1592,7 +1792,10 @@ uint64_t Rename(const char* from, const char* to)
     const bool dot_name = LastNameOf(from) != LastName::Plain || LastNameOf(to) != LastName::Plain;
     from = resolved_from.Path();
     to = resolved_to.Path();
-    if (!ExistsLocked(from))
+    // Two volumes end in an error before any lock is taken; the checks before it run lock by lock.
+    const bool same = VFS::SameFilesystem(from, to);
+    const VolumeHold hold(same ? from : nullptr);
+    if (!Exists(from))
     {
         return User::SyscallErrorNotFound;
     }
@@ -1609,7 +1812,7 @@ uint64_t Rename(const char* from, const char* to)
     {
         return User::SyscallErrorBusy;
     }
-    if (!VFS::SameFilesystem(from, to))
+    if (!same)
     {
         return User::SyscallErrorCrossDevice;
     }
@@ -1619,14 +1822,14 @@ uint64_t Rename(const char* from, const char* to)
     }
     const bool directory = VFS::IsDirectory(from);
     VFS::FileKey source_key = {};
-    if (!directory && !IsLinkLocked(from))
+    if (!directory && !IsLink(from))
     {
-        if (!FileKeyLocked(from, &source_key))
+        if (!FileKeyOf(from, &source_key))
         {
             return User::SyscallErrorReadOnly;
         }
         // A disk file's handles record where its directory entry is, which a rename moves.
-        if (FindUse(source_key) != nullptr)
+        if (InUse(source_key))
         {
             return User::SyscallErrorBusy;
         }
@@ -1646,17 +1849,9 @@ uint64_t Rename(const char* from, const char* to)
             {
                 return User::SyscallErrorNotFound;
             }
-            if (target.node != source.node)
+            if (target.node != source.node && !VFS::IsEmptyDirectory(to))
             {
-                const Memory::HeapObject<Filesystem::DirectoryEntry> entry;
-                if (!entry)
-                {
-                    return User::SyscallErrorNoMemory;
-                }
-                if (VFS::ReadDirectory(to, 0, &*entry))
-                {
-                    return User::SyscallErrorNotEmpty;
-                }
+                return User::SyscallErrorNotEmpty;
             }
         }
         else if (target_type == User::ModeDirectory)
@@ -1666,8 +1861,7 @@ uint64_t Rename(const char* from, const char* to)
         else if (target_type != User::ModeSymbolicLink)
         {
             VFS::FileKey target_key = {};
-            if (FileKeyLocked(to, &target_key) && target_key != source_key &&
-                FindUse(target_key) != nullptr)
+            if (FileKeyOf(to, &target_key) && target_key != source_key && InUse(target_key))
             {
                 return User::SyscallErrorBusy;
             }
@@ -1677,7 +1871,7 @@ uint64_t Rename(const char* from, const char* to)
     {
         return 0;
     }
-    return ParentExistsLocked(to) ? VFS::LastError() : User::SyscallErrorNotFound;
+    return ParentExists(to) ? VFS::LastError() : User::SyscallErrorNotFound;
 }
 
 uint64_t Stat(const char* path, User::FileStatus* status)
@@ -1696,7 +1890,6 @@ uint64_t ReadLink(const char* path, char* buffer, uint64_t capacity)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(path, VFS::Follow::NotLast);
     if (walked != 0)
@@ -1704,9 +1897,10 @@ uint64_t ReadLink(const char* path, char* buffer, uint64_t capacity)
         return walked;
     }
     path = resolved.Path();
-    if (!IsLinkLocked(path))
+    const VolumeHold hold(path);
+    if (!IsLink(path))
     {
-        return ExistsLocked(path) ? User::SyscallErrorInvalidArgument : User::SyscallErrorNotFound;
+        return Exists(path) ? User::SyscallErrorInvalidArgument : User::SyscallErrorNotFound;
     }
     const auto limit = static_cast<uint32_t>(capacity < UINT32_MAX ? capacity : UINT32_MAX);
     uint32_t length = 0;
@@ -1727,7 +1921,6 @@ uint64_t SymbolicLink(const char* target, const char* path)
     {
         return User::SyscallErrorNotFound;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(path, VFS::Follow::NotLast);
     if (walked != 0)
@@ -1735,7 +1928,8 @@ uint64_t SymbolicLink(const char* target, const char* path)
         return walked;
     }
     path = resolved.Path();
-    const uint64_t refused = NewNameErrorLocked(path, Filesystem::LinkKind::Symbolic);
+    const VolumeHold hold(path);
+    const uint64_t refused = NewNameError(path, Filesystem::LinkKind::Symbolic);
     if (refused != 0)
     {
         return refused;
@@ -1749,7 +1943,6 @@ uint64_t Link(const char* from, const char* to)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved_from;
     Resolved resolved_to;
     uint64_t walked = resolved_from.Walk(from, VFS::Follow::NotLast);
@@ -1763,19 +1956,21 @@ uint64_t Link(const char* from, const char* to)
     }
     from = resolved_from.Path();
     to = resolved_to.Path();
-    if (!ExistsLocked(from))
+    const bool same = VFS::SameFilesystem(from, to);
+    const VolumeHold hold(same ? from : nullptr);
+    if (!Exists(from))
     {
         return User::SyscallErrorNotFound;
     }
-    if (ExistsLocked(to))
+    if (Exists(to))
     {
         return User::SyscallErrorExists;
     }
-    if (!ParentExistsLocked(to))
+    if (!ParentExists(to))
     {
         return User::SyscallErrorNotFound;
     }
-    if (!VFS::SameFilesystem(from, to))
+    if (!same)
     {
         return User::SyscallErrorCrossDevice;
     }
@@ -1783,7 +1978,7 @@ uint64_t Link(const char* from, const char* to)
     {
         return User::SyscallErrorNotPermitted;
     }
-    const uint64_t refused = NewNameErrorLocked(to, Filesystem::LinkKind::Hard);
+    const uint64_t refused = NewNameError(to, Filesystem::LinkKind::Hard);
     if (refused != 0)
     {
         return refused;
@@ -1797,14 +1992,13 @@ uint64_t ResolvePath(const char* path, char* buffer, uint64_t capacity)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(path, VFS::Follow::All);
     if (walked != 0)
     {
         return walked;
     }
-    if (!ExistsLocked(resolved.Path()))
+    if (!Exists(resolved.Path()))
     {
         return User::SyscallErrorNotFound;
     }
@@ -1830,62 +2024,74 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
-    const Slot* slot = FindSlot(table, descriptor);
-    if (slot == nullptr)
+    OpenFile* file = nullptr;
     {
-        return User::SyscallErrorBadDescriptor;
+        Sync::MutexGuard guard(table_lock);
+        const Slot* slot = FindSlot(table, descriptor);
+        if (slot == nullptr)
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        file = slot->file;
+        switch (file->kind)
+        {
+        case Kind::Terminal:
+            *status = UnmountedStatus(
+                file->terminal != nullptr ? static_cast<const void*>(file->terminal) : file,
+                User::ModeCharacterDevice | TerminalMode, User::FileType::Terminal, 0, false);
+            return 0;
+        case Kind::Pipe:
+            *status = UnmountedStatus(file->pipe, User::ModeFifo | PipeMode, User::FileType::Pipe,
+                                      Pipes::Buffered(file->pipe), !file->writable);
+            return 0;
+        case Kind::Socket:
+            *status = UnmountedStatus(file->socket, User::ModeSocket | SocketMode,
+                                      User::FileType::Socket, 0, false);
+            return 0;
+        case Kind::PseudoTerminalMaster:
+            *status = UnmountedStatus(file->pair, User::ModeCharacterDevice | TerminalMode,
+                                      User::FileType::Device, 0, false);
+            return 0;
+        case Kind::File:
+        case Kind::None:
+            break;
+        }
+        ++file->references;
     }
-    const OpenFile* file = slot->file;
-    switch (file->kind)
+    uint64_t result = 0;
     {
-    case Kind::Terminal:
-        *status = UnmountedStatus(
-            file->terminal != nullptr ? static_cast<const void*>(file->terminal) : file,
-            User::ModeCharacterDevice | TerminalMode, User::FileType::Terminal, 0, false);
-        return 0;
-    case Kind::Pipe:
-        *status = UnmountedStatus(file->pipe, User::ModeFifo | PipeMode, User::FileType::Pipe,
-                                  Pipes::Buffered(file->pipe), !file->writable);
-        return 0;
-    case Kind::Socket:
-        *status = UnmountedStatus(file->socket, User::ModeSocket | SocketMode,
-                                  User::FileType::Socket, 0, false);
-        return 0;
-    case Kind::PseudoTerminalMaster:
-        *status = UnmountedStatus(file->pair, User::ModeCharacterDevice | TerminalMode,
-                                  User::FileType::Device, 0, false);
-        return 0;
-    case Kind::File:
-    case Kind::None:
-        break;
+        const VolumeHold hold(DriverOf(file));
+        VFS::FileInfo info;
+        if (VFS::StatOpen(file->handle, &info))
+        {
+            *status = ToFileStatus(info, !VFS::IsWritable(file->handle));
+        }
+        else
+        {
+            result = User::SyscallErrorFailed;
+        }
     }
-    VFS::FileInfo info;
-    if (!VFS::StatOpen(file->handle, &info))
-    {
-        return User::SyscallErrorFailed;
-    }
-    *status = ToFileStatus(info, !VFS::IsWritable(file->handle));
-    return 0;
+    Unpin(file);
+    return result;
 }
 
 uint64_t SyncAll()
 {
-    Sync::MutexGuard guard(file_system_lock);
     return VFS::SyncAll() ? 0 : User::SyscallErrorInputOutput;
 }
 
 uint64_t SyncPeriodic()
 {
-    Sync::MutexGuard guard(file_system_lock);
     return VFS::SyncPeriodic() ? 0 : User::SyscallErrorInputOutput;
 }
 
 // Held until the machine stops, so nothing writes to the disk after it.
 bool Quiesce() NO_THREAD_SAFETY_ANALYSIS
 {
-    file_system_lock.Lock();
-    return VFS::DetachAll();
+    namespace_lock.Lock();
+    const bool detached = VFS::DetachAll(true);
+    table_lock.Lock();
+    return detached;
 }
 
 void CloseAll(Table* table)
@@ -1894,14 +2100,23 @@ void CloseAll(Table* table)
     {
         return;
     }
-    Sync::MutexGuard guard(file_system_lock);
-    for (uint32_t descriptor = 0; descriptor < table->capacity; ++descriptor)
+    for (uint32_t descriptor = 0;; ++descriptor)
     {
-        if (table->slots[descriptor].file != nullptr)
+        OpenFile* closing = nullptr;
         {
-            CloseSlotLocked(&table->slots[descriptor]);
+            Sync::MutexGuard guard(table_lock);
+            if (descriptor >= table->capacity)
+            {
+                break;
+            }
+            if (table->slots[descriptor].file != nullptr)
+            {
+                closing = DetachSlotLocked(&table->slots[descriptor]);
+            }
         }
+        FinishClose(closing);
     }
+    Sync::MutexGuard guard(table_lock);
     if (table->slots != nullptr)
     {
         Memory::Deallocate(table->slots);
@@ -1913,7 +2128,7 @@ void CloseAll(Table* table)
 #ifdef FEATHEROS_HOST_TEST
 bool ResetDiskFileTable()
 {
-    Sync::MutexGuard guard(file_system_lock);
+    Sync::MutexGuard guard(table_lock);
     if (disk_file_count != 0)
     {
         return false;
@@ -1926,6 +2141,36 @@ bool ResetDiskFileTable()
     disk_file_capacity = 0;
     return true;
 }
+
+namespace Testing
+{
+
+void* HoldVolume(const char* path)
+{
+    return new VolumeHold(path);
+}
+
+void ReleaseVolume(void* hold)
+{
+    delete static_cast<VolumeHold*>(hold);
+}
+
+void LockTable()
+{
+    table_lock.Lock();
+}
+
+void UnlockTable()
+{
+    table_lock.Unlock();
+}
+
+void SetPauseHook(PauseHook hook)
+{
+    pause_hook = hook;
+}
+
+} // namespace Testing
 #endif
 
 ProgramFile::~ProgramFile()
@@ -1934,9 +2179,10 @@ ProgramFile::~ProgramFile()
     {
         return;
     }
-    Sync::MutexGuard guard(file_system_lock);
+    const VolumeHold hold(handle.driver);
     if (tracked)
     {
+        Sync::MutexGuard guard(table_lock);
         DropUse(VFS::KeyOf(handle), false);
     }
     VFS::Close(&handle);
@@ -1948,7 +2194,6 @@ uint64_t ProgramFile::Open(const char* path)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    Sync::MutexGuard guard(file_system_lock);
     Resolved resolved;
     const uint64_t walked = resolved.Walk(path, VFS::Follow::All);
     if (walked != 0)
@@ -1956,6 +2201,7 @@ uint64_t ProgramFile::Open(const char* path)
         return walked;
     }
     path = resolved.Path();
+    const VolumeHold hold(path);
     if (!VFS::Open(path, &handle))
     {
         return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorNotFound;
@@ -1967,7 +2213,11 @@ uint64_t ProgramFile::Open(const char* path)
     }
     if (VFS::IsTracked(handle))
     {
-        const uint64_t added = AddUse(VFS::KeyOf(handle), false);
+        uint64_t added = 0;
+        {
+            Sync::MutexGuard guard(table_lock);
+            added = AddUse(VFS::KeyOf(handle), false);
+        }
         if (User::IsSyscallError(added))
         {
             VFS::Close(&handle);
@@ -1990,7 +2240,7 @@ bool ProgramFile::ReadAt(uint64_t offset, void* buffer, uint64_t size)
     {
         return false;
     }
-    Sync::MutexGuard guard(file_system_lock);
+    const VolumeHold hold(handle.driver);
     uint64_t bytes_read = 0;
     return VFS::Seek(&handle, offset) && VFS::Read(&handle, buffer, size, &bytes_read) &&
            bytes_read == size;
