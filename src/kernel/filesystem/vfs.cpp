@@ -9,6 +9,9 @@
 
 #include "kernel/sync/spinlock.h"
 
+#include <algorithm>
+#include <array>
+
 namespace FeatherOS::VFS
 {
 namespace
@@ -17,10 +20,6 @@ namespace
 using Filesystem::Driver;
 
 constexpr char SystemPoint[] = "/system";
-constexpr char Fat16Type[] = "fat16";
-constexpr char Ext2Type[] = "ext2";
-constexpr char Ext3Type[] = "ext3";
-constexpr char Ext4Type[] = "ext4";
 constexpr uint32_t RootDirectoryMode = 0755;
 constexpr uint64_t RootSerialNumber = 1;
 
@@ -45,6 +44,9 @@ constexpr BuiltIn BuiltIns[] = {
 constinit Sync::SpinLock mount_lock;
 constinit MountTable mounts GUARDED_BY(mount_lock);
 constinit TypeRegistry types GUARDED_BY(mount_lock);
+
+static_assert(TypeRegistry::Capacity >=
+              sizeof(BuiltIns) / sizeof(BuiltIns[0]) + Filesystem::Drivers::MaximumVolumes);
 
 // Why the last change failed. The file system lock in files.cpp orders the changes and the reads
 // of it; kernel tests run alone.
@@ -179,29 +181,24 @@ void CopyText(char* destination, size_t capacity, const char* source)
     destination[index] = '\0';
 }
 
-// A driver mounted somewhere other than "/" keeps its volume; the others look for theirs on the
-// disk again.
-bool FindVolume(Filesystem::CoreDriver& driver, bool (*mount)())
+// A volume mounted somewhere other than "/" keeps its core; the others are opened again from the
+// disk or forgotten.
+bool KeepsVolume(const Filesystem::CoreDriver& driver)
 {
-    {
-        Sync::SpinLockGuard guard(mount_lock);
-        if (mounts.Holds(&driver) && mounts.Find("/") != &driver)
-        {
-            return driver.PartitionNumber() != 0;
-        }
-    }
-    return mount();
+    Sync::SpinLockGuard guard(mount_lock);
+    return mounts.Holds(&driver) && mounts.Find("/") != &driver;
 }
 
 // Registered under its partition's name, such as vda2, for mount; forgotten when the disk has no
 // such volume.
-void RegisterVolumeLocked(const char* type, Filesystem::CoreDriver& driver, bool found)
-    REQUIRES(mount_lock)
+void RegisterVolumeLocked(Filesystem::CoreDriver& driver) REQUIRES(mount_lock)
 {
-    const char* source = Filesystem::Drivers::PartitionSource(driver.PartitionNumber());
-    if (!found || source == nullptr || !types.Register(type, source, &driver))
+    types.Unregister(&driver);
+    const char* const type = driver.TypeName();
+    const char* const source = Filesystem::Drivers::PartitionSource(driver.PartitionNumber());
+    if (type != nullptr && source != nullptr)
     {
-        types.Unregister(&driver);
+        types.Register(type, source, &driver);
     }
 }
 
@@ -276,66 +273,72 @@ size_t ChooseRoot(const size_t* partitions, size_t count, size_t requested)
 
 bool MountBlockDevice(size_t requested, bool* honored)
 {
-    Filesystem::CoreDriver* const candidates[] = {
-        &Filesystem::Drivers::Disk(),
-        &Filesystem::Drivers::Ext2(),
-        &Filesystem::Drivers::Ext3(),
-        &Filesystem::Drivers::Ext4(),
-    };
-    bool (*const mount_volume[])() = {
-        Filesystem::Drivers::MountDisk,
-        Filesystem::Drivers::MountExt2,
-        Filesystem::Drivers::MountExt3,
-        Filesystem::Drivers::MountExt4,
-    };
-    constexpr size_t Count = sizeof(candidates) / sizeof(candidates[0]);
+    namespace Drivers = Filesystem::Drivers;
+    constexpr size_t Count = Drivers::MaximumVolumes;
+    std::array<FeatherDisk::Partition::Range, Count> ranges{};
+    const size_t found = Drivers::FindPartitions(ranges);
+    for (size_t number = 1; number <= Count; ++number)
+    {
+        if (KeepsVolume(*Drivers::Volume(number)))
+        {
+            continue;
+        }
+        const auto range = std::find_if(ranges.begin(), ranges.begin() + found,
+                                        [number](const FeatherDisk::Partition::Range& candidate)
+                                        { return candidate.number == number; });
+        if (range == ranges.begin() + found || !Drivers::OpenVolume(*range))
+        {
+            Drivers::ForgetVolume(number);
+        }
+    }
     size_t partitions[Count];
-    const auto find_volumes = [&]
+    const auto number_volumes = [&](size_t skipped)
     {
         for (size_t index = 0; index < Count; ++index)
         {
-            partitions[index] = FindVolume(*candidates[index], mount_volume[index])
-                                    ? candidates[index]->PartitionNumber()
-                                    : 0;
+            partitions[index] =
+                index + 1 == skipped ? 0 : Drivers::Volume(index + 1)->PartitionNumber();
         }
     };
-    find_volumes();
+    number_volumes(0);
     // A volume that refuses writes is mounted read-only instead.
     size_t chosen = ChooseRoot(partitions, Count, requested);
     bool prepared =
-        chosen != NoRoot && candidates[chosen]->PrepareMount(Filesystem::MountMode::ReadWrite);
+        chosen != NoRoot &&
+        Drivers::Volume(partitions[chosen])->PrepareMount(Filesystem::MountMode::ReadWrite);
     if (honored != nullptr)
     {
         *honored = requested == 0 || prepared;
     }
-    if (requested != 0 && !prepared)
+    if (chosen != NoRoot && !prepared)
     {
         // A failed reopen forgets the volume.
-        size_t others[Count];
-        for (size_t index = 0; index < Count; ++index)
-        {
-            partitions[index] = candidates[index]->PartitionNumber();
-            others[index] = index == chosen ? 0 : partitions[index];
-        }
-        chosen = ChooseRoot(others, Count, 0);
-        prepared =
-            chosen != NoRoot && candidates[chosen]->PrepareMount(Filesystem::MountMode::ReadWrite);
+        Drivers::ForgetVolume(partitions[chosen]);
+        number_volumes(0);
     }
-    Filesystem::CoreDriver* const root = chosen == NoRoot ? nullptr : candidates[chosen];
+    if (requested != 0 && !prepared)
+    {
+        chosen = ChooseRoot(partitions, Count, 0);
+        prepared =
+            chosen != NoRoot &&
+            Drivers::Volume(partitions[chosen])->PrepareMount(Filesystem::MountMode::ReadWrite);
+        if (chosen != NoRoot && !prepared)
+        {
+            Drivers::ForgetVolume(partitions[chosen]);
+        }
+    }
+    Filesystem::CoreDriver* const root =
+        prepared && chosen != NoRoot ? Drivers::Volume(partitions[chosen]) : nullptr;
     Sync::SpinLockGuard guard(mount_lock);
-    RegisterVolumeLocked(Fat16Type, *candidates[0], partitions[0] != 0);
-    RegisterVolumeLocked(Ext2Type, *candidates[1], partitions[1] != 0);
-    RegisterVolumeLocked(Ext3Type, *candidates[2], partitions[2] != 0);
-    RegisterVolumeLocked(Ext4Type, *candidates[3], partitions[3] != 0);
+    for (size_t number = 1; number <= Count; ++number)
+    {
+        RegisterVolumeLocked(*Drivers::Volume(number));
+    }
     const char* type = nullptr;
     const char* source = nullptr;
-    const bool usable = prepared && types.Describe(root, &type, &source);
+    const bool usable = root != nullptr && types.Describe(root, &type, &source);
     Driver* mounted = mounts.Find("/");
-    bool was_disk = false;
-    for (Filesystem::CoreDriver* candidate : candidates)
-    {
-        was_disk = was_disk || mounted == candidate;
-    }
+    const bool was_disk = Drivers::VolumeOf(mounted) != nullptr;
     if (was_disk && (!usable || mounted != root))
     {
         mounts.Remove("/");

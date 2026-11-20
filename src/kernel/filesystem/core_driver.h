@@ -7,6 +7,7 @@
 #include "fs/partition.h"
 
 #include <stddef.h>
+#include <span>
 #include <stdint.h>
 #include <string_view>
 
@@ -22,23 +23,35 @@ struct CoreOptions
     bool close_on_detach = false;
 };
 
+struct CoreKind
+{
+    FeatherDisk::FilesystemType& (*type)();
+    const char* name;
+    CoreOptions options;
+};
+
 // A filesystem from the shared core (src/fs/core/) as a VFS driver. Paths are walked one
 // component at a time with the core's Lookup, a core error becomes a failure that LastError
 // explains, and a handle's node ID is the core's. Like the core's drivers, it expects one
-// operation at a time, which the file system lock in files.cpp provides.
+// operation at a time, which the file system lock in files.cpp provides. Each driver serves one
+// partition and all its state is its own.
 class CoreDriver final : public Driver
 {
 public:
-    constexpr explicit CoreDriver(Properties properties, CoreOptions options = {})
-        : Driver(properties), options(options)
-    {
-    }
+    constexpr CoreDriver() : Driver({.read_only = false, .tracked = true, .devices = false}) {}
 
-    // Mounts the first partition of disk that type accepts, once the filesystem mounted before
-    // is unmounted. Read-only properties or mode mount it read-only; a VFS mount asking for
-    // another mode reopens it so.
-    bool Mount(FeatherDisk::FilesystemType& type, FeatherDisk::BlockDevice& disk, MountMode mode);
-    // The mounted partition's number (Partition::Range::number, from 1); 0 with nothing mounted.
+    // Opens the filesystem on range, read-only in the core, as the first of kinds whose probe
+    // accepts the volume and whose mount succeeds; the options and TypeName follow that kind. A
+    // VFS mount asking for read-write reopens the core, as PrepareMount does. The filesystem
+    // opened before is unmounted first; false, with the driver as it was, if that fails.
+    bool OpenPartition(std::span<const CoreKind> kinds, FeatherDisk::BlockDevice& disk,
+                       const FeatherDisk::Partition::Range& range);
+    // Unmounts the core and leaves the driver without a volume; false, unchanged, if the core
+    // cannot unmount.
+    bool Forget();
+    // The kind's registry name, "ext4" for example; null without a volume.
+    const char* TypeName() const;
+    // The volume's partition number (Partition::Range::number, from 1); 0 with nothing open.
     size_t PartitionNumber() const;
     bool Statistics(FeatherDisk::VolumeStatistics* statistics);
 
@@ -96,6 +109,7 @@ private:
     bool IsKind(FeatherDisk::NodeId node, FeatherDisk::NodeType type);
 
     CoreOptions options;
+    const char* name = nullptr;
     FeatherDisk::Partition::Volume volume;
     FeatherDisk::FilesystemType* type = nullptr;
     FeatherDisk::Filesystem* filesystem = nullptr;

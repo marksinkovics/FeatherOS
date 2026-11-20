@@ -14,7 +14,7 @@ namespace FeatherOS::VFS
 class TypeRegistry
 {
 public:
-    static constexpr uint32_t Capacity = 16;
+    static constexpr uint32_t Capacity = 32;
 
     enum class Lookup : uint8_t
     {
@@ -23,8 +23,9 @@ public:
         UnknownSource,
     };
 
-    // Registering a driver again under its type renames its source, since a disk's partitions can
-    // change; a name another driver has, or a driver under another type, fails.
+    // A driver has one name: registering it again under the same one succeeds, under another one
+    // fails, as does a name another driver has. A partition that changes goes through Unregister
+    // first.
     bool Register(const char* type, const char* source, Filesystem::Driver* driver);
     // For a driver whose filesystem has gone, such as a partition no longer on the disk.
     void Unregister(const Filesystem::Driver* driver);

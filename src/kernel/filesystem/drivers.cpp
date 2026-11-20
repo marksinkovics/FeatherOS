@@ -437,10 +437,14 @@ constexpr const char* PartitionSources[] = {
     "vda9", "vda10", "vda11", "vda12", "vda13", "vda14", "vda15", "vda16",
 };
 
-constinit CoreDriver disk_driver(Writable);
-constinit CoreDriver ext2_driver(Writable, {.periodic_sync = true});
-constinit CoreDriver ext3_driver(Writable, {.periodic_sync = true, .close_on_detach = true});
-constinit CoreDriver ext4_driver(Writable, {.periodic_sync = true, .close_on_detach = true});
+constexpr CoreKind Kinds[] = {
+    {FeatherDisk::Fat::Fat16Type, "fat16", {}},
+    {FeatherDisk::Ext::Ext2Type, "ext2", {.periodic_sync = true}},
+    {FeatherDisk::Ext::Ext3Type, "ext3", {.periodic_sync = true, .close_on_detach = true}},
+    {FeatherDisk::Ext::Ext4Type, "ext4", {.periodic_sync = true, .close_on_detach = true}},
+};
+
+constinit CoreDriver volume_drivers[Drivers::MaximumVolumes];
 constinit ArchiveDriver system_driver("system");
 constinit DeviceDriver device_driver;
 constinit ProcDriver proc_driver;
@@ -459,48 +463,38 @@ const char* PartitionSource(size_t number)
                : nullptr;
 }
 
-CoreDriver& Disk()
+CoreDriver* Volume(size_t number)
 {
-    return disk_driver;
+    return number >= 1 && number <= MaximumVolumes ? &volume_drivers[number - 1] : nullptr;
 }
 
-bool MountDisk()
+CoreDriver* VolumeOf(const Driver* driver)
 {
-    return disk_driver.Mount(FeatherDisk::Fat::Fat16Type(), BlockDevice::CoreDevice(),
-                             MountMode::ReadWrite);
+    for (CoreDriver& volume : volume_drivers)
+    {
+        if (&volume == driver)
+        {
+            return &volume;
+        }
+    }
+    return nullptr;
 }
 
-CoreDriver& Ext2()
+size_t FindPartitions(std::span<FeatherDisk::Partition::Range> ranges)
 {
-    return ext2_driver;
+    return FeatherDisk::Partition::Find(BlockDevice::CoreDevice(), ranges);
 }
 
-bool MountExt2()
+bool OpenVolume(const FeatherDisk::Partition::Range& range)
 {
-    return ext2_driver.Mount(FeatherDisk::Ext::Ext2Type(), BlockDevice::CoreDevice(),
-                             MountMode::ReadOnly);
+    CoreDriver* const volume = Volume(range.number);
+    return volume != nullptr && volume->OpenPartition(Kinds, BlockDevice::CoreDevice(), range);
 }
 
-CoreDriver& Ext3()
+bool ForgetVolume(size_t number)
 {
-    return ext3_driver;
-}
-
-CoreDriver& Ext4()
-{
-    return ext4_driver;
-}
-
-bool MountExt3()
-{
-    return ext3_driver.Mount(FeatherDisk::Ext::Ext3Type(), BlockDevice::CoreDevice(),
-                             MountMode::ReadOnly);
-}
-
-bool MountExt4()
-{
-    return ext4_driver.Mount(FeatherDisk::Ext::Ext4Type(), BlockDevice::CoreDevice(),
-                             MountMode::ReadOnly);
+    CoreDriver* const volume = Volume(number);
+    return volume != nullptr && volume->Forget();
 }
 
 Driver& System()

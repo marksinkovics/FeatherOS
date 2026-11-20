@@ -1025,7 +1025,8 @@ void CheckPersistentFile(uint64_t boot_count)
 uint64_t FreeDiskBlocks()
 {
     FeatherDisk::VolumeStatistics statistics = {};
-    return Filesystem::Drivers::Disk().Statistics(&statistics) ? statistics.free_blocks : 0;
+    Filesystem::CoreDriver* const volume = Filesystem::Drivers::VolumeOf(VFS::MountedAt(FatPoint));
+    return volume != nullptr && volume->Statistics(&statistics) ? statistics.free_blocks : 0;
 }
 
 // Rewrites the previous boot's file in place, then checks that deleting a file returns its

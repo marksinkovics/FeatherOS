@@ -42,4 +42,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | c268c3b | M30 P3 /sbin admin programs | - | sonnet | 0 | - | |
 | b464dd3 | M30 P4 /etc/init.d and init.disabled | - | sonnet | 0 | - | |
 | f63b7ba | M30 P4 follow-up: no-console guard | - | sonnet | 0 | - | |
-| (this) | M30 P5 s1 MBR extended partitions, Linux numbering | opus | sonnet | 0 | 3/3 | |
+| 3ca7e21 | M30 P5 s1 MBR extended partitions, Linux numbering | opus | sonnet | 0 | 3/3 | |
+| (this) | M30 P5 s2 one driver per partition | opus | sonnet | 0 | 4/5 (static last_error only by step 5) | |

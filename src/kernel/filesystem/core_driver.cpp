@@ -4,7 +4,6 @@
 
 #include "fs/ext2.h"
 
-#include <array>
 #include <span>
 #include <stddef.h>
 #include <stdint.h>
@@ -19,7 +18,6 @@ using FeatherDisk::NodeId;
 using FeatherDisk::NodeType;
 using FeatherDisk::Result;
 
-constexpr size_t MaximumPartitions = 16;
 constexpr uint32_t NewFileMode = 0666;
 constexpr uint32_t NewDirectoryMode = 0777;
 constexpr uint32_t IncompatibleNeedsRecovery = 0x4;
@@ -141,43 +139,56 @@ bool CoreDriver::CoreReadOnly(MountMode mode) const
     return Attributes().read_only || mode == MountMode::ReadOnly;
 }
 
-bool CoreDriver::Mount(FeatherDisk::FilesystemType& new_type, FeatherDisk::BlockDevice& disk,
-                       MountMode mode)
+bool CoreDriver::OpenPartition(std::span<const CoreKind> kinds, FeatherDisk::BlockDevice& disk,
+                               const FeatherDisk::Partition::Range& range)
 {
-    if (filesystem != nullptr)
+    if (!Forget())
     {
-        if (!type->Unmount(*filesystem))
-        {
-            return false;
-        }
-        filesystem = nullptr;
-        type = nullptr;
+        return false;
     }
-    std::array<FeatherDisk::Partition::Range, MaximumPartitions> partitions{};
-    const size_t count = FeatherDisk::Partition::Find(disk, partitions);
-    for (size_t index = 0; index < count; ++index)
+    volume.Assign(disk, range);
+    for (const CoreKind& kind : kinds)
     {
-        if (partitions[index].number > MaximumPartitions)
-        {
-            continue;
-        }
-        volume.Assign(disk, partitions[index]);
-        if (!new_type.Probe(volume))
+        FeatherDisk::FilesystemType& candidate = kind.type();
+        if (!candidate.Probe(volume))
         {
             continue;
         }
         const Result<FeatherDisk::Filesystem*> mounted =
-            new_type.Mount(volume, {.read_only = CoreReadOnly(mode)});
+            candidate.Mount(volume, {.read_only = true});
         if (mounted)
         {
-            type = &new_type;
+            type = &candidate;
             filesystem = *mounted;
-            partition_number = partitions[index].number;
-            core_read_only = CoreReadOnly(mode);
+            partition_number = range.number;
+            core_read_only = true;
+            options = kind.options;
+            name = kind.name;
+            last_error = User::SyscallErrorFailed;
             return true;
         }
     }
     return false;
+}
+
+bool CoreDriver::Forget()
+{
+    if (filesystem != nullptr && !type->Unmount(*filesystem))
+    {
+        return false;
+    }
+    filesystem = nullptr;
+    type = nullptr;
+    name = nullptr;
+    partition_number = 0;
+    options = {};
+    core_read_only = true;
+    return true;
+}
+
+const char* CoreDriver::TypeName() const
+{
+    return type == nullptr ? nullptr : name;
 }
 
 bool CoreDriver::OpenForMount(MountMode mode, bool* writable)
@@ -288,7 +299,7 @@ bool CoreDriver::ReopenForRemount(MountMode mode, bool* writable)
 
 size_t CoreDriver::PartitionNumber() const
 {
-    return filesystem == nullptr ? 0 : partition_number;
+    return partition_number;
 }
 
 bool CoreDriver::Statistics(FeatherDisk::VolumeStatistics* statistics)

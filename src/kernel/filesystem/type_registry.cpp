@@ -34,15 +34,9 @@ bool TypeRegistry::Register(const char* type, const char* source, Filesystem::Dr
     }
     for (uint32_t index = 0; index < count; ++index)
     {
-        Record& record = records[index];
-        if (record.driver == driver)
+        if (records[index].driver == driver)
         {
-            if (!SameText(record.type, type))
-            {
-                return false;
-            }
-            record.source = source;
-            return true;
+            return false;
         }
     }
     if (count == Capacity)

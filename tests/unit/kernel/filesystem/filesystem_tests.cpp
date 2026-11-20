@@ -47,6 +47,7 @@ uint32_t flush_count = 0;
 bool writes_fail = false;
 bool reads_fail = false;
 std::function<void(uint64_t, const void*)> on_write;
+std::function<bool(uint64_t)> write_fails_at;
 
 void WriteLittleEndian16(uint8_t* destination, uint16_t value)
 {
@@ -230,7 +231,8 @@ bool ReadSector(uint64_t sector, void* buffer)
 
 bool WriteSector(uint64_t sector, const void* buffer)
 {
-    if (buffer == nullptr || sector >= disk.size() || writes_fail)
+    if (buffer == nullptr || sector >= disk.size() || writes_fail ||
+        (write_fails_at && write_fails_at(sector)))
     {
         return false;
     }
@@ -438,10 +440,18 @@ std::string ReadWhole(const char* path)
     return contents;
 }
 
+FeatherOS::Filesystem::CoreDriver& RootVolume()
+{
+    FeatherOS::Filesystem::CoreDriver* const volume =
+        FeatherOS::Filesystem::Drivers::VolumeOf(FeatherOS::VFS::MountedAt("/"));
+    REQUIRE(volume != nullptr);
+    return *volume;
+}
+
 uint64_t FreeDiskBlocks()
 {
     FeatherDisk::VolumeStatistics statistics{};
-    REQUIRE(FeatherOS::Filesystem::Drivers::Disk().Statistics(&statistics));
+    REQUIRE(RootVolume().Statistics(&statistics));
     return statistics.free_blocks;
 }
 
@@ -1160,13 +1170,18 @@ void WriteLittleEndian64(uint8_t* destination, uint64_t value)
     WriteLittleEndian32(destination + 4, static_cast<uint32_t>(value >> 32));
 }
 
-// Moves the fixture's FAT16 partition behind a protective MBR and a GUID partition table.
-void ConvertToGpt()
+// Moves the fixture's FAT16 partition, repeated copies times, behind a protective MBR and a GUID
+// partition table.
+void ConvertToGpt(size_t copies = 1)
 {
     const std::vector<std::array<uint8_t, FeatherOS::BlockDevice::SectorSize>> partition(
         disk.begin() + PartitionStart, disk.end());
-    disk.assign(GptPartitionStart + partition.size() + 33, {});
-    std::copy(partition.begin(), partition.end(), disk.begin() + GptPartitionStart);
+    disk.assign(GptPartitionStart + partition.size() * copies + 33, {});
+    for (size_t copy = 0; copy < copies; ++copy)
+    {
+        std::copy(partition.begin(), partition.end(),
+                  disk.begin() + GptPartitionStart + copy * partition.size());
+    }
 
     uint8_t* mbr = disk[0].data();
     mbr[446 + 4] = 0xEE;
@@ -1176,9 +1191,14 @@ void ConvertToGpt()
     mbr[511] = 0xAA;
 
     std::vector<uint8_t> entries(GptEntryCount * GptEntrySize, 0);
-    entries[0] = 0xA2; // Any non-zero type GUID marks the entry as used.
-    WriteLittleEndian64(entries.data() + 32, GptPartitionStart);
-    WriteLittleEndian64(entries.data() + 40, GptPartitionStart + partition.size() - 1);
+    for (size_t copy = 0; copy < copies; ++copy)
+    {
+        uint8_t* entry = entries.data() + copy * GptEntrySize;
+        const uint64_t first = GptPartitionStart + copy * partition.size();
+        entry[0] = 0xA2; // Any non-zero type GUID marks the entry as used.
+        WriteLittleEndian64(entry + 32, first);
+        WriteLittleEndian64(entry + 40, first + partition.size() - 1);
+    }
     for (size_t sector = 0; sector < entries.size() / FeatherOS::BlockDevice::SectorSize; ++sector)
     {
         std::memcpy(disk[2 + sector].data(),
@@ -1248,7 +1268,7 @@ TEST_CASE("the disk's FAT16 mount skips a Linux partition listed before it")
     WriteLittleEndian32(table + 12, LinuxSectors);
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     REQUIRE(ReadWhole("/BLOCK.TXT") == "fat contents");
-    REQUIRE(FeatherOS::Filesystem::Drivers::Disk().PartitionNumber() == 2);
+    REQUIRE(RootVolume().PartitionNumber() == 2);
     REQUIRE(MountSource("/") == "vda2 fat16 rw");
     REQUIRE(FeatherOS::VFS::Mount("ext2", "vda1", "/mnt") == MountResult::UnknownType);
 }
@@ -1269,7 +1289,7 @@ TEST_CASE("a FAT16 volume in an extended partition is vda5")
     ebr[511] = 0xAA;
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     REQUIRE(ReadWhole("/BLOCK.TXT") == "logical contents");
-    REQUIRE(FeatherOS::Filesystem::Drivers::Disk().PartitionNumber() == 5);
+    REQUIRE(RootVolume().PartitionNumber() == 5);
     REQUIRE(MountSource("/") == "vda5 fat16 rw");
 }
 
@@ -1285,7 +1305,7 @@ TEST_CASE("disk sources are named as Linux names the first virtio disk's partiti
 
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
-    REQUIRE(FeatherOS::Filesystem::Drivers::Disk().PartitionNumber() == 1);
+    REQUIRE(RootVolume().PartitionNumber() == 1);
     REQUIRE(MountSource("/") == "vda1 fat16 rw");
 }
 
@@ -1352,6 +1372,7 @@ struct WriteFailureGuard
     {
         writes_fail = false;
         on_write = nullptr;
+        write_fails_at = nullptr;
     }
 };
 
@@ -2339,7 +2360,8 @@ TEST_CASE("the first partition's ext2 volume becomes the root, read-only if it r
 
     // The core read-only again, so changing the disk below it writes nothing; then a FAT16 disk
     // gives a FAT16 root again.
-    REQUIRE(FeatherOS::Filesystem::Drivers::MountExt2());
+    REQUIRE(FeatherOS::VFS::Remount("/", FeatherOS::Filesystem::MountMode::ReadOnly) ==
+            MountResult::Done);
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     REQUIRE(RootDescription() == "vda1 fat16 rw");
@@ -3012,7 +3034,406 @@ TEST_CASE("rename onto an existing name follows one set of rules on ext2, ext3, 
     }
 }
 
+namespace
+{
+
+struct SameKindVolumes
+{
+    uint32_t first_start;
+    uint32_t first_end;
+    uint32_t second_start;
+    uint32_t second_end;
+};
+
+// FAT16 as vda1 and two copies of one ext image as vda3 and vda4.
+bool AttachSameKindVolumes(const char* image, SameKindVolumes* volumes)
+{
+    MakeFat16Disk("fat contents");
+    volumes->first_start = static_cast<uint32_t>(disk.size());
+    if (!AppendExtImage(image, 2))
+    {
+        return false;
+    }
+    volumes->first_end = static_cast<uint32_t>(disk.size());
+    volumes->second_start = volumes->first_end;
+    if (!AppendExtImage(image, 3))
+    {
+        return false;
+    }
+    volumes->second_end = static_cast<uint32_t>(disk.size());
+    return true;
+}
+
+std::vector<Sector> CopyRange(uint32_t start, uint32_t end)
+{
+    return {disk.begin() + start, disk.begin() + end};
+}
+
+void MountBoth(const char* kind)
+{
+    using FeatherOS::VFS::MountResult;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(MountSource("/") == "vda1 fat16 rw");
+    REQUIRE(FeatherOS::VFS::Mount(kind, "vda3", "/a") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Mount(kind, "vda4", "/b") == MountResult::Done);
+}
+
+void CheckTwoVolumes(const char* kind, const SameKindVolumes& volumes)
+{
+    using FeatherOS::VFS::MountResult;
+    namespace Files = FeatherOS::Files;
+    namespace User = FeatherOS::User;
+    MountBoth(kind);
+    REQUIRE(MountSource("/a") == std::string("vda3 ") + kind + " rw");
+    REQUIRE(MountSource("/b") == std::string("vda4 ") + kind + " rw");
+
+    WriteAndClose("/a/own.txt", "from a\n");
+    WriteAndClose("/b/own.txt", "from b\n");
+    REQUIRE(ReadWhole("/a/own.txt") == "from a\n");
+    REQUIRE(ReadWhole("/b/own.txt") == "from b\n");
+    User::FileStatus first{};
+    User::FileStatus second{};
+    REQUIRE(Files::Stat("/a/hello.txt", &first) == 0);
+    REQUIRE(Files::Stat("/b/hello.txt", &second) == 0);
+    REQUIRE(first.device != second.device);
+    REQUIRE(first.node == second.node);
+
+    REQUIRE(Files::SyncAll() == 0);
+    const WriteFailureGuard guard;
+    std::vector<uint64_t> writes;
+    on_write = [&writes](uint64_t sector, const void*) { writes.push_back(sector); };
+    WriteAndClose("/a/x.txt", "x\n");
+    REQUIRE(Files::SyncAll() == 0);
+    REQUIRE_FALSE(writes.empty());
+    for (const uint64_t sector : writes)
+    {
+        REQUIRE(sector >= volumes.first_start);
+        REQUIRE(sector < volumes.first_end);
+    }
+    writes.clear();
+    WriteAndClose("/b/y.txt", "y\n");
+    REQUIRE(Files::SyncAll() == 0);
+    REQUIRE_FALSE(writes.empty());
+    for (const uint64_t sector : writes)
+    {
+        REQUIRE(sector >= volumes.second_start);
+        REQUIRE(sector < volumes.second_end);
+    }
+    on_write = nullptr;
+
+    REQUIRE(FeatherOS::VFS::Mount(kind, "vda3", "/c") == MountResult::Busy);
+    REQUIRE(FeatherOS::VFS::Mount(kind, "vda4", "/c") == MountResult::Busy);
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda3", "/c") == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Mount(kind, "vda1", "/c") == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Unmount("/a") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Unmount("/b") == MountResult::Done);
+}
+
+} // namespace
+
+TEST_CASE("two ext2 volumes mount at once and keep their own files and writes")
+{
+    SameKindVolumes volumes{};
+    if (!AttachSameKindVolumes(FEATHEROS_EXT2_TEST_IMAGE, &volumes))
+    {
+        SKIP("no ext2 image from mke2fs");
+    }
+    CheckTwoVolumes("ext2", volumes);
+}
+
+TEST_CASE("two ext3 volumes mount at once and keep their own files and writes")
+{
+    SameKindVolumes volumes{};
+    if (!AttachSameKindVolumes(FEATHEROS_EXT3_TEST_IMAGE, &volumes))
+    {
+        SKIP("no ext3 image from mke2fs");
+    }
+    CheckTwoVolumes("ext3", volumes);
+}
+
+TEST_CASE("two ext4 volumes mount at once and keep their own files and writes")
+{
+    SameKindVolumes volumes{};
+    if (!AttachSameKindVolumes(FEATHEROS_EXT4_TEST_IMAGE, &volumes))
+    {
+        SKIP("no ext4 image from mke2fs");
+    }
+    CheckTwoVolumes("ext4", volumes);
+}
+
+TEST_CASE("two ext4 volumes keep their own journals")
+{
+    using FeatherOS::VFS::MountResult;
+    SameKindVolumes volumes{};
+    if (!AttachSameKindVolumes(FEATHEROS_EXT4_TEST_IMAGE, &volumes))
+    {
+        SKIP("no ext4 image from mke2fs");
+    }
+    MountBoth("ext4");
+    WriteAndClose("/a/p.txt", "a\n");
+    WriteAndClose("/b/p.txt", "b\n");
+    REQUIRE(NeedsRecovery(volumes.first_start));
+    REQUIRE(NeedsRecovery(volumes.second_start));
+
+    const std::vector<Sector> a_before = CopyRange(volumes.first_start, volumes.first_end);
+    const std::vector<Sector> b_before = CopyRange(volumes.second_start, volumes.second_end);
+    REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
+    REQUIRE(MountCopy(FeatherDisk::Ext::Ext4Type(), a_before, "p.txt").contents == "<missing>");
+    REQUIRE(MountCopy(FeatherDisk::Ext::Ext4Type(), b_before, "p.txt").contents == "<missing>");
+    REQUIRE(MountCopy(FeatherDisk::Ext::Ext4Type(),
+                      CopyRange(volumes.first_start, volumes.first_end), "p.txt")
+                .contents == "a\n");
+    REQUIRE(MountCopy(FeatherDisk::Ext::Ext4Type(),
+                      CopyRange(volumes.second_start, volumes.second_end), "p.txt")
+                .contents == "b\n");
+
+    REQUIRE(FeatherOS::VFS::Unmount("/a") == MountResult::Done);
+    REQUIRE_FALSE(NeedsRecovery(volumes.first_start));
+    REQUIRE(NeedsRecovery(volumes.second_start));
+
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda3", "/a") == MountResult::Done);
+    WriteAndClose("/a/q.txt", "q\n");
+    REQUIRE(NeedsRecovery(volumes.first_start));
+    REQUIRE(FeatherOS::VFS::DetachAll());
+    REQUIRE_FALSE(NeedsRecovery(volumes.first_start));
+    REQUIRE_FALSE(NeedsRecovery(volumes.second_start));
+    REQUIRE(FeatherOS::VFS::Unmount("/a") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Unmount("/b") == MountResult::Done);
+}
+
+TEST_CASE("the same inode number on two volumes is two files")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace Files = FeatherOS::Files;
+    namespace User = FeatherOS::User;
+    SameKindVolumes volumes{};
+    if (!AttachSameKindVolumes(FEATHEROS_EXT4_TEST_IMAGE, &volumes))
+    {
+        SKIP("no ext4 image from mke2fs");
+    }
+    MountBoth("ext4");
+    User::FileStatus first{};
+    User::FileStatus second{};
+    REQUIRE(Files::Stat("/a/hello.txt", &first) == 0);
+    REQUIRE(Files::Stat("/b/hello.txt", &second) == 0);
+    REQUIRE(first.node == second.node);
+
+    Files::Table table{};
+    REQUIRE(Files::OpenConsole(&table, nullptr));
+    const uint64_t writer = Files::Open(&table, "/a/hello.txt", OpenWrite);
+    REQUIRE_FALSE(User::IsSyscallError(writer));
+    REQUIRE(Files::Remove("/b/hello.txt") == 0);
+    REQUIRE(Files::Remove("/a/hello.txt") == User::SyscallErrorBusy);
+    REQUIRE(Files::Remount("/b", FeatherOS::Filesystem::MountMode::ReadOnly) == 0);
+    REQUIRE(Files::Remount("/a", FeatherOS::Filesystem::MountMode::ReadOnly) ==
+            User::SyscallErrorBusy);
+    Files::CloseAll(&table);
+    REQUIRE(FeatherOS::VFS::Unmount("/a") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Unmount("/b") == MountResult::Done);
+}
+
+TEST_CASE("rename and link between two volumes give EXDEV and write nothing")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace Files = FeatherOS::Files;
+    namespace User = FeatherOS::User;
+    SameKindVolumes volumes{};
+    if (!AttachSameKindVolumes(FEATHEROS_EXT4_TEST_IMAGE, &volumes))
+    {
+        SKIP("no ext4 image from mke2fs");
+    }
+    MountBoth("ext4");
+    REQUIRE(Files::SyncAll() == 0);
+    const WriteFailureGuard guard;
+    uint32_t writes = 0;
+    on_write = [&writes](uint64_t, const void*) { ++writes; };
+    REQUIRE(Files::Rename("/a/hello.txt", "/b/moved.txt") == User::SyscallErrorCrossDevice);
+    REQUIRE(Files::Link("/a/hello.txt", "/b/linked.txt") == User::SyscallErrorCrossDevice);
+    REQUIRE(Files::SyncAll() == 0);
+    REQUIRE(writes == 0);
+    on_write = nullptr;
+    REQUIRE(FeatherOS::VFS::Unmount("/a") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Unmount("/b") == MountResult::Done);
+}
+
+TEST_CASE("a volume whose writes fail turns read-only while its neighbour keeps writing")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace Files = FeatherOS::Files;
+    namespace User = FeatherOS::User;
+    SameKindVolumes volumes{};
+    if (!AttachSameKindVolumes(FEATHEROS_EXT4_TEST_IMAGE, &volumes))
+    {
+        SKIP("no ext4 image from mke2fs");
+    }
+    MountBoth("ext4");
+
+    REQUIRE(Files::Remount("/b", ReadOnly) == 0);
+    WriteAndClose("/a/early.txt", "early\n");
+    REQUIRE(Files::SyncPeriodic() == 0);
+    REQUIRE(MountCopy(FeatherDisk::Ext::Ext4Type(),
+                      CopyRange(volumes.first_start, volumes.first_end), "early.txt")
+                .contents == "early\n");
+    REQUIRE(Files::Remount("/b", ReadWrite) == 0);
+
+    WriteAndClose("/a/p.txt", "a\n");
+    WriteAndClose("/b/p.txt", "b\n");
+    {
+        const WriteFailureGuard guard;
+        write_fails_at = [&volumes](uint64_t sector)
+        { return sector >= volumes.second_start && sector < volumes.second_end; };
+        REQUIRE(Files::SyncPeriodic() == User::SyscallErrorInputOutput);
+        REQUIRE(MountSource("/b") == "vda4 ext4 ro");
+        REQUIRE(MountSource("/a") == "vda3 ext4 rw");
+        REQUIRE(CreateFile("/b/more.txt") == User::SyscallErrorReadOnly);
+        REQUIRE(CreateFile("/a/more.txt") == 0);
+        REQUIRE(Files::SyncPeriodic() == 0);
+        const CoreView kept = MountCopy(FeatherDisk::Ext::Ext4Type(),
+                                        CopyRange(volumes.first_start, volumes.first_end),
+                                        "more.txt");
+        REQUIRE(kept.contents == "");
+        REQUIRE(ReadWhole("/a/p.txt") == "a\n");
+        REQUIRE(FeatherOS::VFS::Unmount("/a") == MountResult::Done);
+        REQUIRE_FALSE(NeedsRecovery(volumes.first_start));
+    }
+    REQUIRE(FeatherOS::VFS::Unmount("/b") == MountResult::Done);
+}
+
+TEST_CASE("the root's own type mounts a second time on another volume")
+{
+    using FeatherOS::VFS::MountResult;
+    SameKindVolumes volumes{};
+    if (!AttachSameKindVolumes(FEATHEROS_EXT4_TEST_IMAGE, &volumes))
+    {
+        SKIP("no ext4 image from mke2fs");
+    }
+    bool honored = false;
+    REQUIRE(FeatherOS::VFS::MountBlockDevice(3, &honored));
+    REQUIRE(honored);
+    REQUIRE(RootDescription() == "vda3 ext4 rw");
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/b") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda3", "/x") == MountResult::Busy);
+    WriteAndClose("/r.txt", "root\n");
+    WriteAndClose("/b/s.txt", "b\n");
+    REQUIRE(NeedsRecovery(volumes.first_start));
+    REQUIRE(NeedsRecovery(volumes.second_start));
+    REQUIRE(FeatherOS::VFS::DetachAll());
+    REQUIRE_FALSE(NeedsRecovery(volumes.first_start));
+    REQUIRE_FALSE(NeedsRecovery(volumes.second_start));
+    REQUIRE(FeatherOS::VFS::Unmount("/b") == MountResult::Done);
+}
+
+TEST_CASE("a rescan keeps a volume mounted elsewhere and registers the others as they are now")
+{
+    using FeatherOS::VFS::MountResult;
+    namespace Drivers = FeatherOS::Filesystem::Drivers;
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext3", "vda3", "/a") == MountResult::Done);
+    FeatherOS::Filesystem::CoreDriver* const kept =
+        Drivers::VolumeOf(FeatherOS::VFS::MountedAt("/a"));
+    REQUIRE(kept == Drivers::Volume(3));
+    WriteAndClose("/a/before.txt", "before\n");
+
+    SwapPartitionEntries(1, 3);
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(Drivers::VolumeOf(FeatherOS::VFS::MountedAt("/a")) == kept);
+    REQUIRE(MountSource("/a") == "vda3 ext3 rw");
+    WriteAndClose("/a/after.txt", "after\n");
+    REQUIRE(ReadWhole("/a/before.txt") == "before\n");
+    REQUIRE(ReadWhole("/a/after.txt") == "after\n");
+
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/m") == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda4", "/m") == MountResult::NotFound);
+    REQUIRE(FeatherOS::VFS::Mount("ext4", "vda2", "/m") == MountResult::Done);
+    REQUIRE(MountSource("/m") == "vda2 ext4 rw");
+    REQUIRE(FeatherOS::VFS::Unmount("/m") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda4", "/m") == MountResult::Done);
+    REQUIRE(MountSource("/m") == "vda4 ext2 rw");
+    REQUIRE(FeatherOS::VFS::Unmount("/m") == MountResult::Done);
+
+    std::memset(disk[0].data() + 446 + 16 * 3, 0, 16);
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("ext2", "vda4", "/m") == MountResult::UnknownType);
+    REQUIRE(Drivers::Volume(4)->PartitionNumber() == 0);
+    REQUIRE(Drivers::Volume(4)->TypeName() == nullptr);
+    REQUIRE(Drivers::Volume(2)->TypeName() == std::string("ext4"));
+    REQUIRE(FeatherOS::VFS::Unmount("/a") == MountResult::Done);
+}
+
+namespace
+{
+
+bool ClosesOnDetach(const char* kind, const char* source)
+{
+    using FeatherOS::VFS::MountResult;
+    REQUIRE(FeatherOS::VFS::Mount(kind, source, "/m") == MountResult::Done);
+    FeatherOS::Filesystem::CoreDriver* const driver =
+        FeatherOS::Filesystem::Drivers::VolumeOf(FeatherOS::VFS::MountedAt("/m"));
+    REQUIRE(driver != nullptr);
+    REQUIRE(driver->SyncsInBackground());
+    REQUIRE(driver->Detach());
+    const bool closed = !driver->SyncsInBackground();
+    REQUIRE(FeatherOS::VFS::Unmount("/m") == MountResult::Done);
+    return closed;
+}
+
+} // namespace
+
+TEST_CASE("a volume's options follow its kind also after its slot changes kind")
+{
+    namespace Drivers = FeatherOS::Filesystem::Drivers;
+    uint32_t ext3_start = 0;
+    uint32_t ext4_start = 0;
+    if (!AttachJournalledVolumes(&ext3_start, &ext4_start))
+    {
+        SKIP("no ext images from mke2fs");
+    }
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE_FALSE(Drivers::VolumeOf(FeatherOS::VFS::MountedAt("/"))->SyncsInBackground());
+    REQUIRE_FALSE(ClosesOnDetach("ext2", "vda2"));
+    REQUIRE(ClosesOnDetach("ext3", "vda3"));
+    REQUIRE(ClosesOnDetach("ext4", "vda4"));
+
+    SwapPartitionEntries(1, 2);
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(ClosesOnDetach("ext3", "vda2"));
+    REQUIRE_FALSE(ClosesOnDetach("ext2", "vda3"));
+}
+
 #endif
+
+TEST_CASE("sixteen partitions are volumes and vda17 does not exist")
+{
+    using FeatherOS::VFS::MountResult;
+    MakeFat16Disk("contents");
+    ConvertToGpt(17);
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(MountSource("/") == "vda1 fat16 rw");
+    const auto source = [](size_t number) { return "vda" + std::to_string(number); };
+    const auto point = [](size_t number) { return "/p" + std::to_string(number); };
+    for (size_t number = 2; number <= 11; ++number)
+    {
+        REQUIRE(FeatherOS::VFS::Mount("fat16", source(number).c_str(), point(number).c_str()) ==
+                MountResult::Done);
+        REQUIRE(MountSource(point(number)) == source(number) + " fat16 rw");
+    }
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda12", "/p12") == MountResult::Full);
+    REQUIRE(FeatherOS::VFS::Unmount("/p11") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda16", "/p16") == MountResult::Done);
+    REQUIRE(MountSource("/p16") == "vda16 fat16 rw");
+    REQUIRE(FeatherOS::VFS::Unmount("/p16") == MountResult::Done);
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda17", "/p17") == MountResult::NotFound);
+    for (size_t number = 2; number <= 10; ++number)
+    {
+        REQUIRE(FeatherOS::VFS::Unmount(point(number).c_str()) == MountResult::Done);
+    }
+}
 
 TEST_CASE("core errors become Linux's errno codes")
 {
