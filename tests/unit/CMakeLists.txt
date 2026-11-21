@@ -59,6 +59,8 @@ add_executable(featheros_unit_tests
     kernel/network/tcp_socket_tests.cpp
     kernel/network/tcp_tests.cpp
     kernel/network/udp_tests.cpp
+    kernel/pci/pci_device_tree_tests.cpp
+    kernel/pci/pci_tests.cpp
     kernel/process/futex_tests.cpp
     kernel/storage/page_cache_tests.cpp
     kernel/sync/volume_mutex_tests.cpp
@@ -239,9 +241,11 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/user/text_tools.cpp"
     "${FEATHEROS_ROOT}/src/user/vi_editor.cpp"
     "${FEATHEROS_ROOT}/src/user/wickdeep/art.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/arch/aarch64/pci_device_tree.cpp"
     "${FEATHEROS_ROOT}/src/kernel/klogger.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/page_allocator.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/pci/pci.cpp"
     "${FEATHEROS_ROOT}/src/kernel/process_arguments.cpp"
     "${FEATHEROS_ROOT}/src/kernel/sync/volume_mutex.cpp"
     "${FEATHEROS_ROOT}/src/kernel/syscall.cpp"

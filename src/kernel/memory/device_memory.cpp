@@ -13,22 +13,48 @@ namespace
 // so they stay reachable whichever address space is active.
 constexpr uint64_t DeviceWindowBase = 0xFFFFF00000000000;
 constexpr uint64_t DeviceWindowSize = 1ULL << 40;
-constexpr uint32_t MaximumDevicePages = 128;
+constexpr uint32_t MaximumDeviceRanges = 64;
+
+struct Range
+{
+    uint64_t begin;
+    uint64_t end;
+};
 
 constinit Sync::SpinLock device_lock;
-uint64_t mapped_pages[MaximumDevicePages] GUARDED_BY(device_lock);
-uint32_t mapped_page_count GUARDED_BY(device_lock) = 0;
+Range mapped_ranges[MaximumDeviceRanges] GUARDED_BY(device_lock);
+uint32_t mapped_range_count GUARDED_BY(device_lock) = 0;
 
 bool IsMapped(uint64_t physical_page) REQUIRES(device_lock)
 {
-    for (uint32_t index = 0; index < mapped_page_count; ++index)
+    for (uint32_t index = 0; index < mapped_range_count; ++index)
     {
-        if (mapped_pages[index] == physical_page)
+        if (physical_page >= mapped_ranges[index].begin && physical_page < mapped_ranges[index].end)
         {
             return true;
         }
     }
     return false;
+}
+
+bool Record(uint64_t begin, uint64_t end) REQUIRES(device_lock)
+{
+    for (uint32_t index = 0; index < mapped_range_count; ++index)
+    {
+        Range& range = mapped_ranges[index];
+        if (begin <= range.end && end >= range.begin)
+        {
+            range.begin = begin < range.begin ? begin : range.begin;
+            range.end = end > range.end ? end : range.end;
+            return true;
+        }
+    }
+    if (mapped_range_count == MaximumDeviceRanges)
+    {
+        return false;
+    }
+    mapped_ranges[mapped_range_count++] = {begin, end};
+    return true;
 }
 
 } // namespace
@@ -46,17 +72,20 @@ uintptr_t MapDevice(uint64_t physical_address, uint64_t size)
     Sync::SpinLockGuard guard(device_lock);
     for (uint64_t page = first_page; page < end_page; page += PageSize)
     {
-        if (IsMapped(page))
+        if (!IsMapped(page) && !MapPage(DeviceWindowBase + page, page,
+                                        PageFlags::Read | PageFlags::Write | PageFlags::Device))
         {
-            continue;
-        }
-        if (mapped_page_count == MaximumDevicePages ||
-            !MapPage(DeviceWindowBase + page, page,
-                     PageFlags::Read | PageFlags::Write | PageFlags::Device))
-        {
+            // Pages mapped so far stay recorded, or a retry would map them twice.
+            if (page > first_page)
+            {
+                Record(first_page, page);
+            }
             return 0;
         }
-        mapped_pages[mapped_page_count++] = page;
+    }
+    if (!Record(first_page, end_page))
+    {
+        return 0;
     }
     return static_cast<uintptr_t>(DeviceWindowBase + physical_address);
 }

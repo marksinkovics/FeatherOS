@@ -2,6 +2,7 @@
 
 #include "kernel/arch/cpu_features.h"
 #include "kernel/arch/keyboard.h"
+#include "kernel/arch/pci.h"
 #include "kernel/arch/rtc.h"
 #include "kernel/arch/serial.h"
 #include "kernel/boot_options.h"
@@ -19,6 +20,7 @@
 #include "kernel/network/interface.h"
 #include "kernel/network/neighbor_discovery.h"
 #include "kernel/panic.h"
+#include "kernel/pci/pci.h"
 #include "kernel/process.h"
 #include "kernel/process_arguments.h"
 #include "kernel/scheduler.h"
@@ -241,6 +243,27 @@ void LoadTestExecutable(KLogger& logger, const BootInfo& boot_info)
     logger.Info("ELF64: EL0 kernel-memory isolation passed");
 #endif
     logger.Info("ELF64: test image loaded into user address space");
+}
+
+bool LogPciFunction(const Pci::Function& function, void* context)
+{
+    char line[48];
+    if (Pci::Describe(function, line, sizeof(line)))
+    {
+        static_cast<KLogger*>(context)->Info(line);
+    }
+    return true;
+}
+
+void LogPciDevices(KLogger& logger, const BootInfo& boot_info)
+{
+    Pci::ConfigSpace* config = Arch::Pci::Initialize(boot_info.platform_data);
+    if (config == nullptr)
+    {
+        logger.Warning("PCI: no host bridge");
+        return;
+    }
+    Pci::Enumerate(*config, LogPciFunction, &logger);
 }
 
 void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
@@ -506,6 +529,7 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     InitializeDisplay(logger, boot_info.framebuffer);
     MountInitramfs(logger, boot_info);
     LoadTestExecutable(logger, boot_info);
+    LogPciDevices(logger, boot_info);
     MountAndVerifyDisk(logger, boot_info);
     LogBootSummary(logger, boot_info.memory_summary);
     RunConsole(logger, boot_info);

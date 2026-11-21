@@ -37,6 +37,8 @@ elseif (ARCH STREQUAL "aarch64")
         ${SRCROOT}/arch/aarch64/block_device.cpp
         ${SRCROOT}/arch/aarch64/virtio_mmio.cpp
         ${SRCROOT}/arch/aarch64/virtio_net.cpp
+        ${SRCROOT}/arch/aarch64/pci_device_tree.cpp
+        ${SRCROOT}/arch/aarch64/pci_ecam.cpp
         ${SRCROOT}/arch/aarch64/rtc.cpp
         ${SRCROOT}/arch/aarch64/power.cpp
     )
@@ -56,6 +58,7 @@ set(SRC
     ${SRCROOT}/memory/page_allocator.cpp
     ${SRCROOT}/memory/virtual_memory.cpp
     ${SRCROOT}/panic.cpp
+    ${SRCROOT}/pci/pci.cpp
     ${SRCROOT}/console.cpp
     ${SRCROOT}/writeback.cpp
     ${SRCROOT}/terminal/pseudo_terminal.cpp

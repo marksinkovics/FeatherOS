@@ -71,3 +71,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 1192924 | M34 P5 programs on the new fonts, scale API and font.c gone | opus | sonnet | 0 | 3/3 (two needed new checks) | |
 | ef163ed | M34 P6 fontview, test card, final docs | opus | sonnet | 0 | 2/2 | |
 | 2c2aea9 | Shell smoke: wait for every pipeline stage before Ctrl+C/Ctrl+Z | - | sonnet | 0 | not run | |
+| PENDING | M14 P1 s1 PCI layer, x86 port config, AArch64 ECAM, MapDevice ranges | - | sonnet | 0 | 2/2 (I2 step limit caught as a hang) | |
