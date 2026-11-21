@@ -1,0 +1,6 @@
+# path, SHA-256, release version, where it was taken from; tab-separated.
+# tools/fonts/generate.py refuses to run if a file does not match.
+JetBrainsMono-Regular.ttf	a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f	2.304	https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip (fonts/ttf/JetBrainsMono-Regular.ttf)
+OFL-JetBrainsMono.txt	30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad	2.304	https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip (OFL.txt)
+Inter-Regular.ttf	64f8be6e55c37e32ef03da99714bf3aa58b8f2099bfe4f759a7578e3b8291123	4.0	https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip (extras/ttf/Inter-Regular.ttf)
+OFL-Inter.txt	262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a	4.0	https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip (LICENSE.txt)

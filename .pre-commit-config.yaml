@@ -9,6 +9,8 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        # Upstream licence texts stay byte-exact: their SHA-256 is pinned.
+        exclude: ^(tools/fonts/sources/|initramfs/fonts/)
 
   - repo: local
     hooks:

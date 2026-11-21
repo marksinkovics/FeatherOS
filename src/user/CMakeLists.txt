@@ -78,6 +78,8 @@ add_library(featheros_user_support STATIC
     process_table.cpp
     raw_terminal.cpp
     tcp_client.cpp
+    text/font_data.cpp
+    text/utf8.cpp
     text_tools.cpp
     vi_editor.cpp
     window_size.cpp
