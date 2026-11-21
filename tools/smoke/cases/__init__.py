@@ -9,6 +9,7 @@ from smoke.cases.memory import Memory
 from smoke.cases.network import Network
 from smoke.cases.normal_boot import NormalBoot
 from smoke.cases.panic import Panic
+from smoke.cases.pci import Pci
 from smoke.cases.power import Power
 from smoke.cases.root import RootOption
 from smoke.cases.scheduler import Scheduler
@@ -51,6 +52,7 @@ SWITCHES = {
         Fonts,
         "Print UTF-8 text and compare the screen with the font's glyphs",
     ),
+    "pci": (Pci, "Expect edu to deliver an MSI and a DMA round trip"),
     "calc": (Calc, "Send a calculator command and expect its result"),
     "shell": (Shell, "Run shell commands and expect their output"),
 }

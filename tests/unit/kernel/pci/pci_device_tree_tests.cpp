@@ -124,6 +124,9 @@ struct Options
     uint32_t ecam_size = 0x1000000;
     bool controller_first = false;
     bool truncate_map = false;
+    bool v2m_frame = false;
+    uint32_t v2m_phandle = 2;
+    bool msi_map = false;
 };
 
 void AddController(TreeBuilder& tree)
@@ -134,6 +137,16 @@ void AddController(TreeBuilder& tree)
     tree.Cells("#size-cells", {2});
     tree.Cells("#interrupt-cells", {3});
     tree.Flag("interrupt-controller");
+    tree.End();
+}
+
+void AddMsiFrame(TreeBuilder& tree, uint32_t phandle)
+{
+    tree.Begin("v2m@8020000");
+    tree.String("compatible", "arm,gic-v2m-frame");
+    tree.Flag("msi-controller");
+    tree.Cells("reg", {0, 0x08020000, 0, 0x1000});
+    tree.Cells("phandle", {phandle});
     tree.End();
 }
 
@@ -174,7 +187,15 @@ std::vector<uint8_t> VirtTree(const Options& options = {})
         map.resize(map.size() - 3);
     }
     tree.Cells("interrupt-map", map);
-    tree.Cells("msi-parent", {2});
+    if (options.msi_map)
+    {
+        // QEMU virt's form: rid-base, controller, msi-base, length.
+        tree.Cells("msi-map", {0, 2, 0, 0x10000});
+    }
+    else
+    {
+        tree.Cells("msi-parent", {2});
+    }
     if (options.coherent)
     {
         tree.Flag("dma-coherent");
@@ -188,6 +209,10 @@ std::vector<uint8_t> VirtTree(const Options& options = {})
     if (!options.controller_first)
     {
         AddController(tree);
+    }
+    if (options.v2m_frame)
+    {
+        AddMsiFrame(tree, options.v2m_phandle);
     }
     tree.End();
     return tree.Finish();
@@ -310,4 +335,36 @@ TEST_CASE("PCI device tree: the BAR window hands out aligned, non-overlapping ad
     CHECK_FALSE(AllocateFromWindow(window, 0, &last));
     REQUIRE(AllocateFromWindow(window, 0x20000, &last));
     CHECK(last == 0x10040000);
+}
+
+TEST_CASE("PCI device tree: the GICv2m frame named by msi-parent is found")
+{
+    Options options;
+    options.v2m_frame = true;
+    auto blob = VirtTree(options);
+    HostBridge bridge;
+    REQUIRE(Find(blob, &bridge));
+    REQUIRE(bridge.has_msi_frame);
+    CHECK(bridge.msi_frame_base == 0x08020000);
+    CHECK(bridge.msi_frame_size == 0x1000);
+
+    options.msi_map = true;
+    blob = VirtTree(options);
+    REQUIRE(Find(blob, &bridge));
+    REQUIRE(bridge.has_msi_frame);
+    CHECK(bridge.msi_phandle == 2);
+    CHECK(bridge.msi_frame_base == 0x08020000);
+    options.msi_map = false;
+
+    options.v2m_frame = false;
+    blob = VirtTree(options);
+    REQUIRE(Find(blob, &bridge));
+    CHECK_FALSE(bridge.has_msi_frame);
+    CHECK(bridge.msi_phandle == 2);
+
+    options.v2m_frame = true;
+    options.v2m_phandle = 9;
+    blob = VirtTree(options);
+    REQUIRE(Find(blob, &bridge));
+    CHECK_FALSE(bridge.has_msi_frame);
 }

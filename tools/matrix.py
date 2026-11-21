@@ -32,6 +32,7 @@ TOGGLES = (
     "GRAPHICS_TEST",
     "DUNGEON_TEST",
     "FONTS_TEST",
+    "PCI_TEST",
 )
 # Rough minutes each kind of case takes, so the longest start first.
 WEIGHTS = {
@@ -111,6 +112,7 @@ CASES = [
     *Both(47, "graphics", GRAPHICS_TEST=ON),
     *Both(49, "dungeon", DUNGEON_TEST=ON),
     *Both(51, "fonts", FONTS_TEST=ON),
+    *Both(53, "pci", PCI_TEST=ON),
 ]
 
 

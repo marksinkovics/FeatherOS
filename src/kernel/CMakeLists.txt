@@ -10,6 +10,7 @@ if (ARCH STREQUAL "x86_64")
         ${SRCROOT}/arch/x86_64/exceptions.asm
         ${SRCROOT}/arch/x86_64/interrupts.cpp
         ${SRCROOT}/arch/x86_64/local_apic.cpp
+        ${SRCROOT}/arch/x86_64/msi.cpp
         ${SRCROOT}/arch/x86_64/cpu_features.cpp
         ${SRCROOT}/arch/x86_64/floating_point.cpp
         ${SRCROOT}/arch/x86_64/thread_pointer.cpp
@@ -37,6 +38,7 @@ elseif (ARCH STREQUAL "aarch64")
         ${SRCROOT}/arch/aarch64/block_device.cpp
         ${SRCROOT}/arch/aarch64/virtio_mmio.cpp
         ${SRCROOT}/arch/aarch64/virtio_net.cpp
+        ${SRCROOT}/arch/aarch64/gicv2m.cpp
         ${SRCROOT}/arch/aarch64/pci_device_tree.cpp
         ${SRCROOT}/arch/aarch64/pci_ecam.cpp
         ${SRCROOT}/arch/aarch64/rtc.cpp
@@ -55,9 +57,11 @@ set(SRC
     ${SRCROOT}/memory/heap.cpp
     ${SRCROOT}/memory/kernel_stack.cpp
     ${SRCROOT}/memory/device_memory.cpp
+    ${SRCROOT}/memory/dma.cpp
     ${SRCROOT}/memory/page_allocator.cpp
     ${SRCROOT}/memory/virtual_memory.cpp
     ${SRCROOT}/panic.cpp
+    ${SRCROOT}/pci/msi.cpp
     ${SRCROOT}/pci/pci.cpp
     ${SRCROOT}/console.cpp
     ${SRCROOT}/writeback.cpp

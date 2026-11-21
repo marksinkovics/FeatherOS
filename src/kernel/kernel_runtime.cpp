@@ -477,6 +477,12 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     StartNetwork(logger, boot_info);
     Writeback::Start();
     logger.Info("Kernel initialization complete");
+#if defined(FEATHEROS_KERNEL_TESTS)
+    if (KernelTest::Selected(KernelTest::Mode::Pci))
+    {
+        KernelTest::RunPciTests(boot_info.platform_data);
+    }
+#endif
     if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
     {
         logger.Warning("Keyboard device unavailable; use serial input");

@@ -72,3 +72,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | ef163ed | M34 P6 fontview, test card, final docs | opus | sonnet | 0 | 2/2 | |
 | 2c2aea9 | Shell smoke: wait for every pipeline stage before Ctrl+C/Ctrl+Z | - | sonnet | 0 | not run | |
 | PENDING | M14 P1 s1 PCI layer, x86 port config, AArch64 ECAM, MapDevice ranges | - | sonnet | 0 | 2/2 (I2 step limit caught as a hang) | |
+| 03a768e | M14 P1 s1 PCI layer, x86 port config, AArch64 ECAM, MapDevice ranges | - | sonnet | 0 | 2/2 (I2 step limit caught as a hang) | |
+| PENDING | M14 P1 s2 DMA, MSI/MSI-X, GICv2m, AArch64 INTx, test=pci with edu | M14.md (opus) | sonnet | 0 | 4/4 (I3, I4 by T3/T4; I5 both arches by T30) | |

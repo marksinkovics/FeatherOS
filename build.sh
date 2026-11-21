@@ -90,7 +90,7 @@ _kernel_test_mode() {
     local -a modes=()
     local toggle variable
     for toggle in PANIC EXCEPTION INTERRUPT MEMORY TIMER SCHEDULER USER_PREEMPTION SMP STORAGE \
-        NETWORK INPUT; do
+        NETWORK INPUT PCI; do
         variable="${toggle}_TEST"
         if _is_on "${!variable:-OFF}"; then
             modes+=("$(printf '%s' "$toggle" | tr '[:upper:]_' '[:lower:]-')")
@@ -531,6 +531,9 @@ smoke_test() {
     fi
     if _is_on "${FONTS_TEST:-OFF}"; then
         smoke_args+=(--expect-fonts)
+    fi
+    if _is_on "${PCI_TEST:-OFF}"; then
+        smoke_args+=(--expect-pci)
     fi
     if [[ -n "${QEMU_CPU:-}" ]]; then
         smoke_args+=(--cpu "$QEMU_CPU")

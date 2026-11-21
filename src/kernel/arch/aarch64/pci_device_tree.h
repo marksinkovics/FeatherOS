@@ -35,6 +35,10 @@ struct HostBridge
     bool dma_coherent;
     // The phandle of the MSI controller, or 0 for none.
     uint32_t msi_phandle;
+    // The GICv2m frame msi_phandle names; has_msi_frame is false for any other MSI controller.
+    bool has_msi_frame;
+    uint64_t msi_frame_base;
+    uint64_t msi_frame_size;
     bool has_io;
     bool has_memory32;
     bool has_memory64;

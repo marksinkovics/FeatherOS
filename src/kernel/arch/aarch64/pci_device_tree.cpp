@@ -15,6 +15,7 @@ constexpr uint32_t FdtNoOp = 4;
 constexpr uint32_t FdtEnd = 9;
 constexpr size_t MaxFdtDepth = 24;
 constexpr uint32_t MaximumControllers = 16;
+constexpr uint32_t MaximumMsiFrames = 8;
 constexpr uint32_t PciAddressCells = 3;
 constexpr uint32_t SpaceIo = 1;
 constexpr uint32_t SpaceMemory32 = 2;
@@ -36,6 +37,13 @@ struct Controller
     uint32_t interrupt_cells;
 };
 
+struct MsiFrame
+{
+    uint32_t phandle;
+    uint64_t base;
+    uint64_t size;
+};
+
 struct Node
 {
     uint32_t reg_address_cells;
@@ -53,6 +61,7 @@ struct Node
     Property interrupt_map;
     Property interrupt_map_mask;
     Property msi_parent;
+    Property msi_map;
     Property dma_coherent;
 };
 
@@ -119,6 +128,8 @@ struct Tree
     Node nodes[MaxFdtDepth];
     Controller controllers[MaximumControllers];
     uint32_t controller_count = 0;
+    MsiFrame frames[MaximumMsiFrames];
+    uint32_t frame_count = 0;
     Node host;
     bool host_found = false;
     Property host_compatible;
@@ -172,6 +183,10 @@ void SetProperty(Tree& tree, size_t depth, const uint8_t* name, uint32_t name_li
     {
         node.msi_parent = property;
     }
+    else if (StringEquals(name, name_limit, "msi-map"))
+    {
+        node.msi_map = property;
+    }
     else if (StringEquals(name, name_limit, "dma-coherent"))
     {
         node.dma_coherent = property;
@@ -206,6 +221,16 @@ void EndNode(Tree& tree, size_t depth)
     {
         tree.controllers[tree.controller_count++] = {node.phandle, node.own_address_cells,
                                                      node.interrupt_cells};
+    }
+    if (node.phandle != 0 && !node.disabled && node.reg.present &&
+        tree.frame_count < MaximumMsiFrames &&
+        ListContains(tree.compatible[depth], "arm,gic-v2m-frame") && node.reg_address_cells >= 1 &&
+        node.reg_address_cells <= 2 && node.reg_size_cells >= 1 && node.reg_size_cells <= 2 &&
+        node.reg.length >= (node.reg_address_cells + node.reg_size_cells) * 4)
+    {
+        tree.frames[tree.frame_count++] = {
+            node.phandle, ReadCells(node.reg.value, node.reg_address_cells),
+            ReadCells(CellAt(node.reg.value, node.reg_address_cells), node.reg_size_cells)};
     }
     if (!tree.host_found && !node.disabled &&
         ListContains(tree.compatible[depth], "pci-host-ecam-generic"))
@@ -439,9 +464,26 @@ bool FindHostBridge(const void* device_tree, HostBridge* bridge)
         bridge->last_bus = static_cast<uint8_t>(bridge->first_bus + buses - 1);
     }
     bridge->dma_coherent = node.dma_coherent.present;
-    bridge->msi_phandle = node.msi_parent.present && node.msi_parent.length >= 4
-                              ? ReadBigEndian32(node.msi_parent.value)
-                              : 0;
+    // GICv2m ignores the requester ID, so the first msi-map entry (rid-base, phandle, msi-base,
+    // length) stands for the whole bus.
+    bridge->msi_phandle = 0;
+    if (node.msi_parent.present && node.msi_parent.length >= 4)
+    {
+        bridge->msi_phandle = ReadBigEndian32(node.msi_parent.value);
+    }
+    else if (node.msi_map.present && node.msi_map.length >= 16)
+    {
+        bridge->msi_phandle = ReadBigEndian32(CellAt(node.msi_map.value, 1));
+    }
+    for (uint32_t index = 0; index < tree.frame_count; ++index)
+    {
+        if (bridge->msi_phandle != 0 && tree.frames[index].phandle == bridge->msi_phandle)
+        {
+            bridge->has_msi_frame = true;
+            bridge->msi_frame_base = tree.frames[index].base;
+            bridge->msi_frame_size = tree.frames[index].size;
+        }
+    }
     return ParseRanges(node, bridge) && ParseInterruptMap(node, tree, bridge);
 }
 
