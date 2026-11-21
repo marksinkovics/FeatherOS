@@ -610,7 +610,13 @@ unit_test() {
     fi
     cmake --fresh -S "$SCRIPT_DIR/tests/unit" -B "$unit_build_dir" -G Ninja "${cmake_args[@]}"
     cmake --build "$unit_build_dir" --parallel
-    ctest --test-dir "$unit_build_dir" --output-on-failure \
+    # The ext suites rerun over the page cache double the run; only FULL_UNIT_TESTS=1 includes them.
+    local ctest_filter=()
+    if [ "${FULL_UNIT_TESTS:-0}" != 1 ]; then
+        ctest_filter=(--exclude-regex '^fs\.core\.page-cache')
+        _print "Skipping the fs.core.page-cache suites (FULL_UNIT_TESTS=1 runs them)"
+    fi
+    ctest --test-dir "$unit_build_dir" --output-on-failure "${ctest_filter[@]}" \
         --parallel "${CTEST_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
 }
 

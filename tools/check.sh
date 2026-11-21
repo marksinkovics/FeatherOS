@@ -5,7 +5,8 @@
 #   tools/check.sh [--modes "SHELL INPUT"] [--arch x86_64|aarch64|both] [--matrix] [--no-lint]
 #
 # Modes are build.sh test toggles without _TEST (SHELL for SHELL_TEST=ON); none runs no QEMU
-# test. --matrix runs ./build.sh test-all after everything else passed. Full logs are under
+# test. --matrix also runs the fs.core.page-cache unit suites (FULL_UNIT_TESTS=1) and runs
+# ./build.sh test-all after everything else passed. Full logs are under
 # build/check/, each smoke test's whole session is in build/<arch>/smoke-output.txt, and each matrix
 # case's log and session are in build/matrix/<case>/.
 
@@ -80,7 +81,10 @@ if [[ "$lint" == true ]]; then
     stage "lint" "warning:|error:|ERROR|^[A-Z]+[0-9]+ |-->|^[-+][^-+]" \
         bash tools/quality.sh check || exit 1
 fi
-stage "unit tests" "FAILED|Failed|error:|with expansion|REQUIRE" ./build.sh unit-test || exit 1
+full_unit_tests=0
+[[ "$matrix" == true ]] && full_unit_tests=1
+stage "unit tests" "FAILED|Failed|error:|with expansion|REQUIRE" \
+    env FULL_UNIT_TESTS="$full_unit_tests" ./build.sh unit-test || exit 1
 for arch in $arches; do
     for mode in $modes; do
         stage "$mode $arch" "^FAIL|^PASS|PANIC|libctest: failed|cxxtest: failed|hardening: failed" \
