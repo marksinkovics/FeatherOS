@@ -36,6 +36,8 @@ Status MemoryDevice::Read(std::uint64_t first_sector, std::span<std::uint8_t> bu
     {
         return std::unexpected(Error::InvalidArgument);
     }
+    ++read_count;
+    read_sectors += buffer.size() / sector_size;
     if (first_sector + buffer.size() / sector_size > failing_sector ||
         (failing_single >= first_sector &&
          failing_single - first_sector < buffer.size() / sector_size))
@@ -43,6 +45,10 @@ Status MemoryDevice::Read(std::uint64_t first_sector, std::span<std::uint8_t> bu
         return std::unexpected(Error::Io);
     }
     std::memcpy(buffer.data(), bytes.get() + first_sector * sector_size, buffer.size());
+    if (const auto callback = on_read; callback)
+    {
+        callback(first_sector, buffer.size() / sector_size);
+    }
     return {};
 }
 

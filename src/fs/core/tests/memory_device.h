@@ -45,6 +45,12 @@ public:
     std::unique_ptr<MemoryDevice> CopyKeeping(const std::function<bool(std::size_t)>& keep) const;
 
     bool read_only = false;
+    // Reads that reached the device, failed ones included, and the sectors they asked for.
+    std::uint64_t read_count = 0;
+    std::uint64_t read_sectors = 0;
+    // Called after a successful read has copied its bytes out, with the sector range; a test
+    // changes the device here to interleave with a read. It may reset itself.
+    std::function<void(std::uint64_t first_sector, std::uint64_t sector_count)> on_read;
     std::uint32_t flush_count = 0;
     std::uint64_t write_count = 0;
     // write_count at each Flush, which marks where a commit or checkpoint reached the device.

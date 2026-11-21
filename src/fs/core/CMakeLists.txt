@@ -24,6 +24,7 @@ add_library(featherdisk_core STATIC
     common/bytes.cpp
     common/crc.cpp
     common/host_buffer.cpp
+    common/page_cache.cpp
     ext/allocation.cpp
     ext/checksum.cpp
     ext/directory.cpp
@@ -196,6 +197,7 @@ add_executable(featherdisk_core_tests
     tests/fat_tests.cpp
     tests/filesystem_helpers.cpp
     tests/memory_device.cpp
+    tests/page_cache_tests.cpp
     tests/partition_image.cpp
     tests/partition_tests.cpp
 )

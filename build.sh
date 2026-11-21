@@ -629,8 +629,9 @@ unit_test_tsan() {
         cmake_args+=(-DCMAKE_C_COMPILER="$llvm_bin/clang" -DCMAKE_CXX_COMPILER="$llvm_bin/clang++")
     fi
     cmake --fresh -S "$SCRIPT_DIR/tests/unit" -B "$unit_build_dir" -G Ninja "${cmake_args[@]}"
-    cmake --build "$unit_build_dir" --parallel --target featheros_unit_tests
+    cmake --build "$unit_build_dir" --parallel --target featheros_unit_tests featherdisk_core_tests
     TSAN_OPTIONS="halt_on_error=1" "$unit_build_dir/featheros_unit_tests" "[concurrency]"
+    TSAN_OPTIONS="halt_on_error=1" "$unit_build_dir/fs_core/featherdisk_core_tests" "[concurrency]"
 }
 
 __exit() {
