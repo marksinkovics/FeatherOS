@@ -50,10 +50,10 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 34e43c0 | M30 P6 s1 core PageCache, CachedDevice, PageSource | opus | sonnet | 0 | 3/3 | |
 | 8b8aeed | M30 P6 s2 core metadata path over the page cache, pass-through BlockCache | opus | sonnet | 0 | 3/3 | |
 | 5373130 | M30 P6 s3 kernel frames, sizing, reclaim, device counters | opus | sonnet | 0 | 2/2 | |
-| 4b9c536 | M32 P1 s1 /dev/fb0, syscall 73, graphics mode, fbtest | opus | sonnet | 0 | 3/3 | |
-| 86d79c1 | M32 P1 s2 fbdemo, GRAPHICS_TEST screendumps | - | sonnet | 0 | 1/1 (after widening checks) | |
-| c5a2ee8 | M32 P2 s1 key events: held keys, queue, read/poll, Ctrl+C | opus | sonnet | 0 | 3/3 | |
-| a2a0258 | M32 P2 s2 fbdemo --keys, QMP key checks | - | sonnet | 0 | 1/1 | |
-| d9b3376 | M32 P3 graphics library, fbdemo on it, Swift gfxcheck | - | sonnet | 0 | - | |
-| 729df7f | M32 P4 featherfall rules, selftest, demo | - | sonnet | 0 | 2/2 | |
-| 91a2826 | M32 P5 playable featherfall, high scores, played GRAPHICS check | - | sonnet | 0 | 1/1 | |
+| 117a4bf | M32 P1 s1 /dev/fb0, syscall 73, graphics mode, fbtest | opus | sonnet | 0 | 3/3 | |
+| 1eaa268 | M32 P1 s2 fbdemo, GRAPHICS_TEST screendumps | - | sonnet | 0 | 1/1 (after widening checks) | |
+| 9d1091c | M32 P2 s1 key events: held keys, queue, read/poll, Ctrl+C | opus | sonnet | 0 | 3/3 | |
+| 87a1cad | M32 P2 s2 fbdemo --keys, QMP key checks | - | sonnet | 0 | 1/1 | |
+| 632727b | M32 P3 graphics library, fbdemo on it, Swift gfxcheck | - | sonnet | 0 | - | |
+| 79e74e6 | M32 P4 featherfall rules, selftest, demo | - | sonnet | 0 | 2/2 | |
+| a764ca4 | M32 P5 playable featherfall, high scores, played GRAPHICS check | - | sonnet | 0 | 1/1 | |
