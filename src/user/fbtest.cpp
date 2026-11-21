@@ -3,6 +3,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <featheros/framebuffer.h>
+#include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdint.h>
@@ -27,8 +29,8 @@ constexpr uint32_t ScreenWidth = 1024;
 constexpr uint32_t ScreenHeight = 768;
 constexpr char Help[] = "usage: fbtest\n"
                         "Checks /dev/fb0 on the console it runs on: acquiring and releasing, the\n"
-                        "errors, and release on close, exit, kill and in the background. The\n"
-                        "screen is blank while it runs.";
+                        "errors, reading events, and release on close, exit, kill and in the\n"
+                        "background. The screen is blank while it runs.";
 
 [[noreturn]] void Fail(const char* name)
 {
@@ -61,10 +63,17 @@ int Present(int descriptor, const uint32_t* pixels, uint32_t stride, int32_t x, 
     return ioctl(descriptor, FB_PRESENT, &request);
 }
 
-int OpenFramebuffer()
+int OpenFramebuffer(int flags = 0)
 {
-    return open("/dev/fb0", O_RDWR);
+    return open("/dev/fb0", O_RDWR | flags);
 }
+
+void Pause()
+{
+    usleep(100000);
+}
+
+void OnSignal(int) {}
 
 // The child reports one character on its descriptor 3.
 void Report(char result)
@@ -90,7 +99,13 @@ int RunChild(const char* mode)
     {
         signal(SIGTTOU, SIG_IGN);
     }
-    const int descriptor = OpenFramebuffer();
+    if (strcmp(mode, "eintr") == 0)
+    {
+        struct sigaction action = {};
+        action.sa_handler = OnSignal;
+        sigaction(SIGUSR1, &action, nullptr);
+    }
+    const int descriptor = OpenFramebuffer(strcmp(mode, "nonblockopen") == 0 ? O_NONBLOCK : 0);
     if (descriptor < 0)
     {
         Report('x');
@@ -112,6 +127,22 @@ int RunChild(const char* mode)
         {
             sleep(1);
         }
+    }
+    else if (strcmp(mode, "eintr") == 0)
+    {
+        fb_event event;
+        const bool drained = result == 0 && read(descriptor, &event, sizeof(event)) == 8;
+        Report(drained ? 'r' : 'x');
+        const ssize_t blocked = read(descriptor, &event, sizeof(event));
+        Report(blocked == -1 && errno == EINTR ? 'i' : 'x');
+    }
+    else if (strcmp(mode, "nonblockopen") == 0)
+    {
+        fb_event event = {};
+        const bool first = result == 0 && read(descriptor, &event, sizeof(event)) == 8 &&
+                           event.kind == FB_EVENT_SHOWN && event.code == 0;
+        const bool second = read(descriptor, &event, sizeof(event)) == -1 && errno == EAGAIN;
+        Report(first && second ? 'o' : 'x');
     }
     else if (strcmp(mode, "exit") == 0 || strcmp(mode, "ignore") == 0 || strcmp(mode, "stop") == 0)
     {
@@ -193,6 +224,8 @@ void CheckBeforeAcquire(int descriptor)
     CheckFails(ioctl(descriptor, FB_RELEASE), EINVAL, "a release before acquiring");
     char byte;
     CheckFails(read(descriptor, &byte, 1) < 0 ? -1 : 0, EINVAL, "a read");
+    pollfd entry = {descriptor, POLLIN, 0};
+    Check(poll(&entry, 1, 0) == 1 && (entry.revents & POLLERR) != 0, "poll before acquiring");
     CheckFails(write(descriptor, &byte, 1) < 0 ? -1 : 0, EINVAL, "a write");
     CheckFails(lseek(descriptor, 0, SEEK_SET) < 0 ? -1 : 0, ESPIPE, "a seek");
     CheckFails(ioctl(STDIN_FILENO, FB_ACQUIRE), ENOTTY, "FB_ACQUIRE on the console");
@@ -223,6 +256,32 @@ void CheckAcquireAndBusy(int descriptor)
     Check(Start("busy", POSIX_SPAWN_BACKGROUND, &child), "starting a second owner");
     Check(ReadReport(child) == 'b', "FB_ACQUIRE from another process");
     Check(Reap(&child), "reaping the second owner");
+}
+
+void CheckEvents(int descriptor)
+{
+    pollfd entry = {descriptor, POLLIN, 0};
+    Check(poll(&entry, 1, 0) == 1 && (entry.revents & POLLIN) != 0, "poll with the state event");
+    fb_event event = {};
+    Check(read(descriptor, &event, sizeof(event)) == 8, "reading the state event");
+    Check(event.kind == FB_EVENT_SHOWN && event.code == 0 && event.modifiers == 0,
+          "the first event");
+    entry = {descriptor, POLLIN, 0};
+    Check(poll(&entry, 1, 30) == 0, "poll with no events");
+
+    fb_event pair[2];
+    CheckFails(read(descriptor, pair, 4) < 0 ? -1 : 0, EINVAL, "a read of 4 bytes");
+    Check(read(descriptor, pair, 0) == 0, "a read of 0 bytes");
+    const int flags = fcntl(descriptor, F_GETFL);
+    Check(fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0, "setting O_NONBLOCK");
+    CheckFails(read(descriptor, pair, sizeof(pair)) < 0 ? -1 : 0, EAGAIN, "a non-blocking read");
+    Check(fcntl(descriptor, F_SETFL, flags) == 0, "clearing O_NONBLOCK");
+    const int second = OpenFramebuffer(O_NONBLOCK);
+    Check(second >= 0 && (fcntl(second, F_GETFL) & O_NONBLOCK) != 0, "O_NONBLOCK from open");
+    close(second);
+    fb_info info = {1, 1, 1, 1};
+    Check(ioctl(descriptor, FB_GET_INFO, &info) == 0 && info.dropped_events == 0,
+          "dropped events after acquiring");
 }
 
 void CheckPresentErrors(int descriptor)
@@ -273,6 +332,46 @@ void CheckReleaseOnClose(int descriptor)
     CheckFails(ioctl(second, FB_RELEASE), EINVAL, "a second FB_RELEASE");
     CheckFails(Present(second, pixels, 8, 0, 0, 8, 8), EINVAL, "a present after releasing");
     close(second);
+}
+
+void* BlockedReader(void* argument)
+{
+    const int descriptor = *static_cast<int*>(argument);
+    fb_event event;
+    const ssize_t result = read(descriptor, &event, sizeof(event));
+    return reinterpret_cast<void*>(result == -1 ? static_cast<intptr_t>(errno) : 0);
+}
+
+void CheckReleaseWakesReader()
+{
+    int descriptor = OpenFramebuffer();
+    Check(ioctl(descriptor, FB_ACQUIRE) == 0, "FB_ACQUIRE for a blocked reader");
+    fb_event event;
+    Check(read(descriptor, &event, sizeof(event)) == 8, "draining the state event");
+    pthread_t thread;
+    Check(pthread_create(&thread, nullptr, BlockedReader, &descriptor) == 0,
+          "starting a reader thread");
+    Pause();
+    Check(ioctl(descriptor, FB_RELEASE) == 0, "FB_RELEASE under a blocked reader");
+    void* result = nullptr;
+    Check(pthread_join(thread, &result) == 0, "joining the reader thread");
+    Check(reinterpret_cast<intptr_t>(result) == EINVAL, "a blocked read failing after the release");
+    close(descriptor);
+}
+
+void CheckEventChildren()
+{
+    Child child;
+    Check(Start("eintr", POSIX_SPAWN_BACKGROUND, &child), "starting the reader child");
+    Check(ReadReport(child) == 'r', "the reader child draining its events");
+    Pause();
+    Check(kill(child.pid, SIGUSR1) == 0, "signalling the reader child");
+    Check(ReadReport(child) == 'i', "a blocked read failing with EINTR");
+    Check(Reap(&child), "reaping the reader child");
+
+    Check(Start("nonblockopen", POSIX_SPAWN_BACKGROUND, &child), "starting the non-blocking child");
+    Check(ReadReport(child) == 'o', "a non-blocking open reading its first event and EAGAIN");
+    Check(Reap(&child), "reaping the non-blocking child");
 }
 
 void CheckReleaseAfterChild(const char* mode, short flags, char reported, const char* name,
@@ -341,8 +440,11 @@ int main(int argc, char** argv)
     CheckBeforeAcquire(descriptor);
     CheckNoTerminal();
     CheckAcquireAndBusy(descriptor);
+    CheckEvents(descriptor);
     CheckPresentErrors(descriptor);
     CheckReleaseOnClose(descriptor);
+    CheckReleaseWakesReader();
+    CheckEventChildren();
     CheckReleaseAfterChild("hold", POSIX_SPAWN_BACKGROUND, 'h', "release when a child is killed",
                            true);
     CheckReleaseAfterChild("exit", POSIX_SPAWN_BACKGROUND, 'a', "release when a child exits",

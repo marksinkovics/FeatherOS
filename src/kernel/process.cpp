@@ -1448,9 +1448,7 @@ uint64_t SetClockSyscall(void*, uint64_t nanoseconds)
 
 uint64_t ReadUptimeSyscall(void*)
 {
-    const uint64_t ticks_per_second = Time::TicksPerSecond();
-    return ticks_per_second == 0 ? User::SyscallErrorFailed
-                                 : Time::TickCount() * 1000 / ticks_per_second;
+    return Time::TicksPerSecond() == 0 ? User::SyscallErrorFailed : Time::UptimeMilliseconds();
 }
 
 uint64_t CurrentCpuSyscall(void*)
@@ -1575,6 +1573,94 @@ uint64_t ReceiveSocketData(ProcessRecord* process, Network::Sockets::Socket* soc
     return count;
 }
 
+// Keeps a framebuffer file open for the length of a call, so a racing close in another thread
+// cannot free what the call owns.
+class FramebufferHold
+{
+public:
+    FramebufferHold() = default;
+    ~FramebufferHold()
+    {
+        if (owner != nullptr)
+        {
+            Files::DropFramebuffer(owner);
+        }
+    }
+    FramebufferHold(const FramebufferHold&) = delete;
+    FramebufferHold& operator=(const FramebufferHold&) = delete;
+
+    const void* owner = nullptr;
+};
+
+// Whole events only: a read that finds none waits for one, unless the file is O_NONBLOCK.
+uint64_t ReadFramebufferEvents(ProcessRecord* process, uint64_t descriptor, uint64_t buffer,
+                               uint64_t length)
+{
+    FramebufferHold hold;
+    bool nonblocking = false;
+    const uint64_t held =
+        Files::HoldFramebuffer(&process->files, descriptor, &hold.owner, &nonblocking);
+    if (held != 0)
+    {
+        return held;
+    }
+    if (!Console::OwnsDisplay(hold.owner))
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    constexpr uint64_t EventSize = sizeof(User::FramebufferEvent);
+    if (length == 0)
+    {
+        return 0;
+    }
+    if (length < EventSize)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    const uint64_t wanted = length / EventSize < User::FramebufferEventCapacity
+                                ? length / EventSize
+                                : User::FramebufferEventCapacity;
+    if (!UserRangeWritable(*process, buffer, wanted * EventSize))
+    {
+        return User::SyscallErrorBadAddress;
+    }
+    User::FramebufferEvent events[User::FramebufferEventCapacity];
+    for (;;)
+    {
+        const uint64_t taken =
+            Console::TakeEvents(hold.owner, events, static_cast<uint32_t>(wanted));
+        if (User::IsSyscallError(taken))
+        {
+            return taken;
+        }
+        if (taken != 0)
+        {
+            return CopyToUser(*process, buffer, events, taken * EventSize)
+                       ? taken * EventSize
+                       : User::SyscallErrorBadAddress;
+        }
+        if (nonblocking)
+        {
+            return User::SyscallErrorWouldBlock;
+        }
+        if (CallerInterrupted())
+        {
+            return User::SyscallErrorInterrupted;
+        }
+        Console::WaitForEvents(hold.owner);
+    }
+}
+
+int16_t FramebufferPollEvents(ProcessRecord* process, uint64_t descriptor)
+{
+    FramebufferHold hold;
+    if (Files::HoldFramebuffer(&process->files, descriptor, &hold.owner) != 0)
+    {
+        return User::PollInvalid;
+    }
+    return Console::PollEvents(hold.owner);
+}
+
 uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64_t length)
 {
     auto* process = static_cast<ProcessRecord*>(context);
@@ -1586,7 +1672,7 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
     }
     if (kind == Files::Kind::Framebuffer)
     {
-        return User::SyscallErrorInvalidArgument;
+        return ReadFramebufferEvents(process, descriptor, buffer, length);
     }
     if (kind == Files::Kind::Terminal)
     {
@@ -2667,6 +2753,10 @@ uint64_t PollSyscall(void* context, uint64_t descriptors, uint64_t count, uint64
                 events = TerminalPollEvents(process, descriptor);
                 terminal_polled = true;
             }
+            else if (kind == Files::Kind::Framebuffer)
+            {
+                events = FramebufferPollEvents(process, descriptor);
+            }
             else
             {
                 events = Files::PollEvents(&process->files, descriptor);
@@ -3123,28 +3213,10 @@ uint64_t ResourceLimitSyscall(void* context, uint64_t resource, uint64_t request
     return result;
 }
 
-// Keeps a framebuffer file open for the length of a call, so a racing close in another thread
-// cannot free what the call owns.
-class FramebufferHold
-{
-public:
-    FramebufferHold() = default;
-    ~FramebufferHold()
-    {
-        if (owner != nullptr)
-        {
-            Files::DropFramebuffer(owner);
-        }
-    }
-    FramebufferHold(const FramebufferHold&) = delete;
-    FramebufferHold& operator=(const FramebufferHold&) = delete;
-
-    const void* owner = nullptr;
-};
-
-uint64_t ReportFramebufferInfo(const ProcessRecord& process, uint64_t argument)
+uint64_t ReportFramebufferInfo(const ProcessRecord& process, const void* owner, uint64_t argument)
 {
     User::FramebufferInfo info = {};
+    info.dropped_events = Console::DroppedEvents(owner);
     Console::DisplaySize(&info.width, &info.height);
     const uint32_t console = Console::IndexOf(ControllingTerminal(process));
     info.console = console == Console::Count ? 0 : console + 1;
@@ -3247,7 +3319,7 @@ uint64_t DeviceControlSyscall(void* context, uint64_t descriptor, uint64_t reque
     switch (request)
     {
     case User::FramebufferGetInfo:
-        return ReportFramebufferInfo(*process, argument);
+        return ReportFramebufferInfo(*process, hold.owner, argument);
     case User::FramebufferAcquire:
         return AcquireFramebuffer(*process, hold.owner, argument);
     case User::FramebufferPresent:

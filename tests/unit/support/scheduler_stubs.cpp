@@ -136,6 +136,11 @@ uint32_t TicksPerSecond()
     return 100;
 }
 
+uint64_t UptimeMilliseconds()
+{
+    return TestScheduler::ticks * 10;
+}
+
 } // namespace FeatherOS::Time
 
 // Tests run on one thread with nothing to mask.

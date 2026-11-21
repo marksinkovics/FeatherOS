@@ -325,6 +325,14 @@ uint64_t Terminal::ForegroundGroup()
     return foreground_group;
 }
 
+void Terminal::SignalForeground(int signal)
+{
+    if (process_hooks.interrupt_group != nullptr)
+    {
+        process_hooks.interrupt_group(ForegroundGroup(), signal);
+    }
+}
+
 void Terminal::SetForegroundGroup(uint64_t group)
 {
     Sync::SpinLockGuard guard(lock);

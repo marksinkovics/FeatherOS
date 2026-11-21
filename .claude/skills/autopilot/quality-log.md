@@ -51,4 +51,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 8b8aeed | M30 P6 s2 core metadata path over the page cache, pass-through BlockCache | opus | sonnet | 0 | 3/3 | |
 | 5373130 | M30 P6 s3 kernel frames, sizing, reclaim, device counters | opus | sonnet | 0 | 2/2 | |
 | 4b9c536 | M32 P1 s1 /dev/fb0, syscall 73, graphics mode, fbtest | opus | sonnet | 0 | 3/3 | |
-| (this) | M32 P1 s2 fbdemo, GRAPHICS_TEST screendumps | - | sonnet | 0 | 1/1 (after widening checks) | |
+| 86d79c1 | M32 P1 s2 fbdemo, GRAPHICS_TEST screendumps | - | sonnet | 0 | 1/1 (after widening checks) | |
+| (this) | M32 P2 s1 key events: held keys, queue, read/poll, Ctrl+C | opus | sonnet | 0 | 3/3 | |

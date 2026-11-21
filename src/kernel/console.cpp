@@ -10,6 +10,7 @@
 #include "kernel/input/input.h"
 #include "kernel/network/interface.h"
 #include "kernel/panic.h"
+#include "kernel/poll.h"
 #include "kernel/process.h"
 #include "kernel/scheduler.h"
 #include "kernel/smp.h"
@@ -41,6 +42,8 @@ constinit Sync::SpinLock display_lock;
 uint32_t shown_console GUARDED_BY(display_lock) = 0;
 // Which open file has taken which console's screen.
 GraphicsMode::Owners owners GUARDED_BY(display_lock);
+// Readers of an owner's events, woken under display_lock by every push and release.
+constinit Scheduler::WaitQueue event_waiters[Count];
 // Set once in Initialize, before any program runs.
 Framebuffer* display_framebuffer = nullptr;
 
@@ -275,6 +278,42 @@ void ReleaseOwner(const void* owner)
     ReleaseDisplay(owner);
 }
 
+uint32_t EventTime()
+{
+    return static_cast<uint32_t>(Time::UptimeMilliseconds());
+}
+
+// The signal goes before the event, so a reader that misses the signal's wakeup is woken by the
+// push. SignalForeground takes process_lock, which is never taken under display_lock.
+bool TakeKey(const Input::KeyEvent& event)
+{
+    uint32_t console;
+    {
+        Sync::SpinLockGuard guard(display_lock);
+        console = shown_console;
+        if (!owners.Acquired(console))
+        {
+            return false;
+        }
+    }
+    const bool interrupt = Input::IsInterruptKey(event);
+    if (interrupt)
+    {
+        console_terminals[console].SignalForeground(User::SignalInterrupt);
+    }
+    bool delivered = false;
+    {
+        Sync::SpinLockGuard guard(display_lock);
+        if (shown_console == console && owners.DeliverKey(console, event, EventTime()))
+        {
+            delivered = true;
+            Scheduler::WakeAll(event_waiters[console]);
+        }
+    }
+    Poll::Notify();
+    return delivered || interrupt;
+}
+
 } // namespace
 
 Terminals::Terminal* Terminal()
@@ -300,6 +339,7 @@ void Initialize(Term* terms, Framebuffer* framebuffer)
     {
         Devices::SetFramebuffer(true);
         Files::SetFramebufferRelease(ReleaseOwner);
+        Input::SetGraphicsKeys(TakeKey);
     }
     for (uint32_t console = 0; console < Count; ++console)
     {
@@ -336,6 +376,12 @@ void Show(uint32_t console)
         {
             return;
         }
+        const uint32_t now = EventTime();
+        if (owners.Acquired(shown_console))
+        {
+            owners.Hide(shown_console, Input::CurrentModifiers(), now);
+            Scheduler::WakeAll(event_waiters[shown_console]);
+        }
         if (screens[shown_console].term != nullptr)
         {
             screens[shown_console].term->SetShown(false);
@@ -345,8 +391,14 @@ void Show(uint32_t console)
         {
             screens[console].term->SetShown(true);
         }
+        if (owners.Acquired(console))
+        {
+            owners.Show(console, now);
+            Scheduler::WakeAll(event_waiters[console]);
+        }
         Input::SetKeyboardTerminal(&console_terminals[console]);
     }
+    Poll::Notify();
     NotifyStatusChanged();
 }
 
@@ -380,7 +432,7 @@ uint64_t AcquireDisplay(uint32_t console, const void* owner)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    const uint64_t acquired = owners.Acquire(console, owner);
+    const uint64_t acquired = owners.Acquire(console, owner, console == shown_console, EventTime());
     if (acquired == 0)
     {
         screens[console].term->SetGraphics(true);
@@ -390,13 +442,17 @@ uint64_t AcquireDisplay(uint32_t console, const void* owner)
 
 uint64_t ReleaseDisplay(const void* owner)
 {
-    Sync::SpinLockGuard guard(display_lock);
-    const uint32_t console = owners.Release(owner);
-    if (console == Count)
     {
-        return User::SyscallErrorInvalidArgument;
+        Sync::SpinLockGuard guard(display_lock);
+        const uint32_t console = owners.Release(owner);
+        if (console == Count)
+        {
+            return User::SyscallErrorInvalidArgument;
+        }
+        screens[console].term->SetGraphics(false);
+        Scheduler::WakeAll(event_waiters[console]);
     }
-    screens[console].term->SetGraphics(false);
+    Poll::Notify();
     return 0;
 }
 
@@ -404,6 +460,39 @@ bool OwnsDisplay(const void* owner)
 {
     Sync::SpinLockGuard guard(display_lock);
     return owners.ConsoleOf(owner) != Count;
+}
+
+uint64_t TakeEvents(const void* owner, User::FramebufferEvent* events, uint32_t capacity)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    return owners.TakeEvents(owner, events, capacity);
+}
+
+void WaitForEvents(const void* owner)
+{
+    const uint64_t flags = display_lock.LockIrqSave();
+    const uint32_t console = owners.ConsoleOf(owner);
+    if (console != Count && owners.PendingEvents(owner) == 0)
+    {
+        Scheduler::WaitOn(event_waiters[console], display_lock);
+    }
+    display_lock.UnlockIrqRestore(flags);
+}
+
+int16_t PollEvents(const void* owner)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    if (owners.ConsoleOf(owner) == Count)
+    {
+        return User::PollError;
+    }
+    return owners.PendingEvents(owner) != 0 ? User::PollReadable : 0;
+}
+
+uint32_t DroppedEvents(const void* owner)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    return owners.DroppedEvents(owner);
 }
 
 bool PresentRow(const void* owner, uint32_t screen_x, uint32_t y, const uint32_t* pixels,

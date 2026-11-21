@@ -21,6 +21,22 @@ static_assert(
     offsetof(fb_present, x) == offsetof(FeatherOS::User::FramebufferPresentRequest, x) &&
     offsetof(fb_present, width) == offsetof(FeatherOS::User::FramebufferPresentRequest, width) &&
     offsetof(fb_present, flags) == offsetof(FeatherOS::User::FramebufferPresentRequest, flags));
+static_assert(sizeof(fb_event) == sizeof(FeatherOS::User::FramebufferEvent) &&
+              offsetof(fb_event, code) == offsetof(FeatherOS::User::FramebufferEvent, code) &&
+              offsetof(fb_event, kind) == offsetof(FeatherOS::User::FramebufferEvent, kind) &&
+              offsetof(fb_event, modifiers) ==
+                  offsetof(FeatherOS::User::FramebufferEvent, modifiers) &&
+              offsetof(fb_event, time_ms) == offsetof(FeatherOS::User::FramebufferEvent, time_ms));
+static_assert(FB_EVENT_RELEASE == FeatherOS::User::FramebufferEventRelease &&
+              FB_EVENT_PRESS == FeatherOS::User::FramebufferEventPress &&
+              FB_EVENT_REPEAT == FeatherOS::User::FramebufferEventRepeat &&
+              FB_EVENT_SHOWN == FeatherOS::User::FramebufferEventShown &&
+              FB_EVENT_HIDDEN == FeatherOS::User::FramebufferEventHidden &&
+              FB_MOD_SHIFT == FeatherOS::User::FramebufferModifierShift &&
+              FB_MOD_CONTROL == FeatherOS::User::FramebufferModifierControl &&
+              FB_MOD_ALT == FeatherOS::User::FramebufferModifierAlt &&
+              FB_MOD_CAPS_LOCK == FeatherOS::User::FramebufferModifierCapsLock &&
+              FB_EVENT_CAPACITY == FeatherOS::User::FramebufferEventCapacity);
 static_assert(FB_GET_INFO == FeatherOS::User::FramebufferGetInfo &&
               FB_ACQUIRE == FeatherOS::User::FramebufferAcquire &&
               FB_PRESENT == FeatherOS::User::FramebufferPresent &&

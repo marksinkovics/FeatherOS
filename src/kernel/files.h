@@ -92,8 +92,9 @@ using FramebufferRelease = void (*)(const void* owner);
 void SetFramebufferRelease(FramebufferRelease release);
 // The open file behind a Framebuffer descriptor, which stays open until DropFramebuffer even if a
 // thread closes the descriptor meanwhile. SyscallErrorBadDescriptor, or SyscallErrorNotTerminal
-// for another kind.
-uint64_t HoldFramebuffer(Table* table, uint64_t descriptor, const void** owner);
+// for another kind. nonblocking, if not null, receives whether the file is O_NONBLOCK.
+uint64_t HoldFramebuffer(Table* table, uint64_t descriptor, const void** owner,
+                         bool* nonblocking = nullptr);
 // Ends a hold; the last reference runs the release hook.
 void DropFramebuffer(const void* owner);
 // Reads and writes on terminals go through the process instead of this table.

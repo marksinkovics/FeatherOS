@@ -215,6 +215,31 @@ struct FramebufferInfo
     uint32_t console;
     uint32_t dropped_events;
 };
+// read on an owner's file returns whole FramebufferEvents. modifiers is the state after the event;
+// Shown and Hidden have code 0 and modifiers 0. dropped_events counts the events the owner's queue
+// refused since it acquired.
+struct FramebufferEvent
+{
+    uint16_t code;
+    uint8_t kind;
+    uint8_t modifiers;
+    uint32_t time_ms;
+};
+constexpr uint8_t FramebufferEventRelease = 0;
+constexpr uint8_t FramebufferEventPress = 1;
+constexpr uint8_t FramebufferEventRepeat = 2;
+constexpr uint8_t FramebufferEventShown = 3;
+constexpr uint8_t FramebufferEventHidden = 4;
+constexpr uint8_t FramebufferModifierShift = 1;
+constexpr uint8_t FramebufferModifierControl = 2;
+constexpr uint8_t FramebufferModifierAlt = 4;
+constexpr uint8_t FramebufferModifierCapsLock = 8;
+constexpr uint32_t FramebufferEventCapacity = 64;
+static_assert(sizeof(FramebufferEvent) == 8 && offsetof(FramebufferEvent, code) == 0 &&
+                  offsetof(FramebufferEvent, kind) == 2 &&
+                  offsetof(FramebufferEvent, modifiers) == 3 &&
+                  offsetof(FramebufferEvent, time_ms) == 4,
+              "the kernel and the C library share FramebufferEvent");
 struct FramebufferPresentRequest
 {
     uint64_t pixels;

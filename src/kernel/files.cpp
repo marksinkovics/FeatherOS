@@ -686,7 +686,8 @@ uint64_t AddTerminalLocked(Table* table, uint64_t flags, Kind kind, Terminals::T
     {
         return User::SyscallErrorNoMemory;
     }
-    file->nonblocking = kind == Kind::PseudoTerminalMaster && (flags & User::OpenNonBlocking) != 0;
+    file->nonblocking = (kind == Kind::PseudoTerminalMaster || kind == Kind::Framebuffer) &&
+                        (flags & User::OpenNonBlocking) != 0;
     file->terminal = terminal;
     file->pair = pair;
     table->slots[descriptor] = {file, (flags & User::OpenCloseOnExec) != 0};
@@ -1266,7 +1267,7 @@ void SetFramebufferRelease(FramebufferRelease release)
     framebuffer_release = release;
 }
 
-uint64_t HoldFramebuffer(Table* table, uint64_t descriptor, const void** owner)
+uint64_t HoldFramebuffer(Table* table, uint64_t descriptor, const void** owner, bool* nonblocking)
 {
     Sync::MutexGuard guard(table_lock);
     const Slot* slot = FindSlot(table, descriptor);
@@ -1280,6 +1281,10 @@ uint64_t HoldFramebuffer(Table* table, uint64_t descriptor, const void** owner)
     }
     ++slot->file->references;
     *owner = slot->file;
+    if (nonblocking != nullptr)
+    {
+        *nonblocking = slot->file->nonblocking;
+    }
     return 0;
 }
 

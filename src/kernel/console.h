@@ -1,6 +1,8 @@
 #ifndef FEATHEROS_CONSOLE_H
 #define FEATHEROS_CONSOLE_H
 
+#include "user/syscall_abi.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -46,6 +48,16 @@ void DisplaySize(uint32_t* width, uint32_t* height);
 uint64_t AcquireDisplay(uint32_t console, const void* owner);
 uint64_t ReleaseDisplay(const void* owner);
 bool OwnsDisplay(const void* owner);
+// The owner's key events and Shown/Hidden, oldest first, while it owns a console; they are queued
+// whether or not the console is shown. TakeEvents returns the count taken (at most capacity, 0 if
+// none wait) or SyscallErrorInvalidArgument if owner holds none. WaitForEvents sleeps until events
+// wait or the owner loses its console, and returns at once if either holds. PollEvents is
+// PollReadable if events wait, PollError if owner holds none, else 0. DroppedEvents counts the
+// events refused since the owner acquired.
+uint64_t TakeEvents(const void* owner, User::FramebufferEvent* events, uint32_t capacity);
+void WaitForEvents(const void* owner);
+int16_t PollEvents(const void* owner);
+uint32_t DroppedEvents(const void* owner);
 // Converts count colors into screen row y from screen_x, and draws that row if owner's console is
 // shown. False if owner holds no console, so nothing was written.
 bool PresentRow(const void* owner, uint32_t screen_x, uint32_t y, const uint32_t* pixels,

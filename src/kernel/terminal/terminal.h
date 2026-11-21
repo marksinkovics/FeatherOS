@@ -143,6 +143,9 @@ public:
     void SetForegroundGroup(uint64_t group);
     // True for AnyGroup.
     bool InForeground(uint64_t group);
+    // Sends signal to the foreground group whatever the terminal's modes, and echoes nothing, for
+    // a key that never reaches the terminal. May run in interrupt context.
+    void SignalForeground(int signal);
 
     // The session this is the controlling terminal of, or zero.
     uint64_t Session();

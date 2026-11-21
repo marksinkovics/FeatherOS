@@ -872,6 +872,45 @@ TEST_CASE("the framebuffer's file cannot be read, written or sought, and is a ch
     REQUIRE(FeatherOS::Files::Remove("/tmp/fb-file.txt") == 0);
 }
 
+TEST_CASE("the framebuffer's file honors O_NONBLOCK from open and from F_SETFL, and reports it")
+{
+    const FramebufferDevice framebuffer;
+    FeatherOS::Files::Table table{};
+    REQUIRE(FeatherOS::Files::OpenConsole(&table, nullptr));
+    constexpr uint64_t NonBlocking = FeatherOS::User::OpenNonBlocking;
+    const uint64_t plain = FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead | OpenWrite);
+    const uint64_t flagged =
+        FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead | OpenWrite | NonBlocking);
+    REQUIRE_FALSE(FeatherOS::User::IsSyscallError(plain));
+    REQUIRE_FALSE(FeatherOS::User::IsSyscallError(flagged));
+    REQUIRE((FeatherOS::Files::StatusFlags(&table, plain, false, 0) & NonBlocking) == 0);
+    REQUIRE((FeatherOS::Files::StatusFlags(&table, flagged, false, 0) & NonBlocking) != 0);
+
+    const void* owner = nullptr;
+    bool nonblocking = true;
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, plain, &owner, &nonblocking) == 0);
+    REQUIRE_FALSE(nonblocking);
+    FeatherOS::Files::DropFramebuffer(owner);
+
+    const uint64_t flags = FeatherOS::Files::StatusFlags(&table, plain, false, 0);
+    REQUIRE((FeatherOS::Files::StatusFlags(&table, plain, true, flags | NonBlocking) &
+             NonBlocking) != 0);
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, plain, &owner, &nonblocking) == 0);
+    REQUIRE(nonblocking);
+    FeatherOS::Files::DropFramebuffer(owner);
+    REQUIRE((FeatherOS::Files::StatusFlags(&table, plain, true, flags) & NonBlocking) == 0);
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, plain, &owner, &nonblocking) == 0);
+    REQUIRE_FALSE(nonblocking);
+    FeatherOS::Files::DropFramebuffer(owner);
+
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, flagged, &owner, &nonblocking) == 0);
+    REQUIRE(nonblocking);
+    FeatherOS::Files::DropFramebuffer(owner);
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, flagged, &owner) == 0);
+    FeatherOS::Files::DropFramebuffer(owner);
+    FeatherOS::Files::CloseAll(&table);
+}
+
 TEST_CASE("/proc lists processes and generates their status and meminfo")
 {
     UseFakeProcesses();
