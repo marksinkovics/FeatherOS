@@ -65,6 +65,36 @@ DEMO_RESULTS = {
     1: "score 82553 lines 104 level 11 hash 6636180809909333056",
     2: "score 84561 lines 106 level 11 hash 385706885443829982",
 }
+# featherfall's layout (src/user/featherfall/render.swift) on the 1024x768
+# screen: the well is 10x20 cells of 32 pixels, centered, between two panels.
+GAME_SEED = 7
+GAME_START_SECONDS = 8.0
+CELL = 32
+WELL_X = (WIDTH - 10 * CELL) // 2
+WELL_Y = (HEIGHT - 20 * CELL) // 2
+LEFT_PANEL_X = WELL_X - 24 - 216
+BACKGROUND = 0x12141F
+PANEL_BORDER = 0x3A4160
+WELL_FILL = 0x0A0C14
+GRID = 0x131724
+WELL_BORDER = 0x6C7596
+TEXT = 0xE8EAF2
+ACCENT = 0xFFC857
+OVERLAY_FILL = 0x1E2338
+PIECE_COLORS = (
+    0x35C6D4,
+    0xF2C94C,
+    0xA66BDB,
+    0x6FCF73,
+    0xEB5757,
+    0x4F7BE8,
+    0xF2994A,
+)
+HARD_DROP_ROUNDS = 12
+HARD_DROPS_PER_ROUND = 5
+INITIALS_GUARD_SECONDS = 1.2
+SCORE_FILE = "/home/.featherfall"
+SCORE_LINE = re.compile(r"^ABC (\d+)\r?$", re.MULTILINE)
 EVENT_WAIT_SECONDS = 3.0
 QUIET_SECONDS = 0.5
 # Key events a console queues before dropping: the queue's 64 less the two
@@ -181,6 +211,120 @@ def ExpectTextAgain(pixels):
     return ExpectText(pixels)
 
 
+def CellCenter(column, row):
+    return WELL_X + CELL * column + CELL // 2, WELL_Y + CELL * row + CELL // 2
+
+
+def Found(pixels, x0, y0, width, height, color):
+    return any(
+        PixelAt(pixels, x, y) == color
+        for y in range(y0, y0 + height)
+        for x in range(x0, x0 + width)
+    )
+
+
+def ExpectColor(pixels, what, point, wanted):
+    found = PixelAt(pixels, *point)
+    if found != wanted:
+        return f"{what} at {point} is {Hex(found)}, expected {Hex(wanted)}"
+    return None
+
+
+def ExpectFrame(pixels):
+    for what, point, wanted in (
+        ("the well border", (WELL_X - 2, WELL_Y + 100), WELL_BORDER),
+        ("the left panel border", (LEFT_PANEL_X, WELL_Y + 100), PANEL_BORDER),
+        ("the background", (10, 400), BACKGROUND),
+        ("an empty cell", CellCenter(9, 10), WELL_FILL),
+        ("a grid line", (WELL_X + 9 * CELL, WELL_Y + 10 * CELL), GRID),
+    ):
+        failure = ExpectColor(pixels, what, point, wanted)
+        if failure is not None:
+            return failure
+    return None
+
+
+def ExpectEmptyWell(pixels):
+    failure = ExpectFrame(pixels)
+    if failure is None:
+        failure = ExpectColor(
+            pixels,
+            "the bottom row's second cell",
+            CellCenter(1, 19),
+            WELL_FILL,
+        )
+    return failure
+
+
+# Every piece shape fills the second cell of its bottom row when it has been
+# moved to the left wall and dropped.
+def ExpectLockedPiece(pixels):
+    failure = ExpectFrame(pixels)
+    if failure is None:
+        found = PixelAt(pixels, *CellCenter(1, 19))
+        if found not in PIECE_COLORS:
+            failure = (
+                f"the bottom row's second cell {CellCenter(1, 19)} is "
+                f"{Hex(found)}, expected a piece color"
+            )
+    return failure
+
+
+def ExpectPaused(pixels):
+    failure = ExpectColor(
+        pixels, "the pause box", (WELL_X + 8, WELL_Y + 8), OVERLAY_FILL
+    )
+    if failure is None and not Found(
+        pixels, WELL_X + 60, WELL_Y + 270, 200, 30, ACCENT
+    ):
+        failure = "the word PAUSED is not drawn"
+    if failure is None:
+        failure = ExpectColor(
+            pixels, "a covered cell", CellCenter(1, 19), OVERLAY_FILL
+        )
+    return failure
+
+
+def ExpectEntry(pixels):
+    failure = ExpectColor(
+        pixels, "the game-over box", (WELL_X + 8, WELL_Y + 8), OVERLAY_FILL
+    )
+    if failure is None:
+        failure = ExpectColor(
+            pixels,
+            "the current initials slot",
+            (WELL_X + 60, WELL_Y + 200),
+            ACCENT,
+        )
+    if failure is None:
+        failure = ExpectColor(
+            pixels,
+            "the next initials slot",
+            (WELL_X + 60 + 72, WELL_Y + 200),
+            PANEL_BORDER,
+        )
+    return failure
+
+
+def ExpectInitials(pixels):
+    for slot in range(3):
+        left = WELL_X + 60 + 72 * slot
+        if not Found(pixels, left + 1, WELL_Y + 181, 54, 78, TEXT):
+            return f"initials slot {slot} shows no letter"
+    return None
+
+
+def ExpectTable(pixels):
+    failure = ExpectColor(
+        pixels, "the table box", (WELL_X + 8, WELL_Y + 8), OVERLAY_FILL
+    )
+    if failure is None and not Found(
+        pixels, WELL_X + 68, WELL_Y + 160, 48, 32, ACCENT
+    ):
+        failure = "the new entry is not highlighted in the first row"
+    return failure
+
+
 class StepFailed(Exception):
     pass
 
@@ -284,7 +428,10 @@ class Graphics(Case):
     """Runs fbdemo on the first console and checks what QEMU's screendump
     shows while it owns the screen, on another console, after switching back,
     after drawing again and once it has released the screen; then runs
-    fbdemo --keys and checks the key events QMP key presses produce."""
+    fbdemo --keys and checks the key events QMP key presses produce; last it
+    plays featherfall with QMP keys and checks the well, a locked piece, the
+    pause box, the redraw after a console switch, the game-over screen, the
+    initials entry, the high score table and the saved file."""
 
     serial_input = True
     timeout = GRAPHICS_TIMEOUT_SECONDS
@@ -292,8 +439,10 @@ class Graphics(Case):
         "fbdemo's pattern was drawn clipped without the status bar, the "
         "other console showed text, the blanked console stayed blank until "
         "it drew again, releasing brought the text console back, key "
-        "events, switching, overflow and Ctrl+C behaved as specified, and "
-        "featherfall's self-test and demo runs gave the expected results"
+        "events, switching, overflow and Ctrl+C behaved as specified, "
+        "featherfall's self-test and demo runs gave the expected results, "
+        "and featherfall drew its well, paused, redrew after a console "
+        "switch, took initials for a high score and saved them"
     )
 
     def __init__(self, args):
@@ -326,8 +475,8 @@ class Graphics(Case):
     def Finished(self, clean_output):
         return self.finished
 
-    def Dump(self, check):
-        deadline = time.monotonic() + RETRY_SECONDS
+    def Dump(self, check, seconds=RETRY_SECONDS):
+        deadline = time.monotonic() + seconds
         while True:
             self.command_id += 1
             SendQmpCommand(
@@ -341,8 +490,18 @@ class Graphics(Case):
                 return failure
             time.sleep(RETRY_PAUSE_SECONDS)
 
-    def Step(self, name, check):
-        failure = self.Dump(check)
+    def Probe(self, check):
+        self.command_id += 1
+        SendQmpCommand(
+            self.channel,
+            self.command_id,
+            "screendump",
+            {"filename": self.dump_path},
+        )
+        return check(ReadPpm(self.dump_path)) is None
+
+    def Step(self, name, check, seconds=RETRY_SECONDS):
+        failure = self.Dump(check, seconds)
         if failure is not None and self.failure is None:
             self.failure = f"{name}: {failure}"
 
@@ -451,6 +610,70 @@ class Graphics(Case):
             raise StepFailed("the shell line after Ctrl+C was not 'echo ok'")
         if "time went backwards" in events.Text():
             raise StepFailed("event times went backwards")
+        self.RunGame(session, events)
+
+    def RunGame(self, session, events):
+        events.origin = len(events.Text())
+        session.process.stdin.write(
+            f"featherfall --seed {GAME_SEED}\n".encode()
+        )
+        session.process.stdin.flush()
+        self.Step("featherfall's well", ExpectEmptyWell, GAME_START_SECONDS)
+
+        self.Chord(("left", True))
+        time.sleep(0.8)
+        self.Chord(("left", False))
+        self.Tap("spc")
+        self.Step("a piece at the left wall", ExpectLockedPiece)
+
+        self.Tap("up")
+        self.Tap("z")
+        self.Tap("c")
+        self.Chord(("right", True))
+        time.sleep(0.4)
+        self.Chord(("right", False))
+        self.Tap("spc")
+        self.Tap("p")
+        self.Step("the pause box", ExpectPaused)
+        self.Tap("p")
+        self.Step("after resuming", ExpectLockedPiece)
+
+        self.Tap("p")
+        self.Step("paused again", ExpectPaused)
+        self.Chord(("alt", True), ("f2", True))
+        self.Step("featherfall's console hidden", ExpectText)
+        self.Chord(("f2", False), ("alt", False))
+        self.Chord(("alt", True), ("f1", True))
+        self.Chord(("f1", False), ("alt", False))
+        self.Step("redrawn after switching back", ExpectPaused)
+        self.Tap("p")
+        self.Step("resumed after switching", ExpectLockedPiece)
+
+        for _ in range(HARD_DROP_ROUNDS):
+            for _ in range(HARD_DROPS_PER_ROUND):
+                self.Tap("spc")
+            time.sleep(0.3)
+            if self.Probe(ExpectEntry):
+                break
+        self.Step("the game-over screen", ExpectEntry)
+        time.sleep(INITIALS_GUARD_SECONDS)
+        for key in ("a", "b", "c"):
+            self.Tap(key)
+        self.Step("the initials", ExpectInitials)
+        self.Tap("ret")
+        self.Step("the high score table", ExpectTable)
+        self.Tap("esc")
+        if events.WaitText(SHELL_PROMPT_TEXT) is None:
+            raise StepFailed("the prompt did not return after Esc")
+        self.Step("after featherfall", ExpectTextAgain)
+
+        session.process.stdin.write(f"cat {SCORE_FILE}\n".encode())
+        session.process.stdin.flush()
+        found = events.WaitText(SCORE_LINE)
+        if found is None:
+            raise StepFailed(f"{SCORE_FILE} has no 'ABC <score>' line")
+        if int(found.group(1)) < 1:
+            raise StepFailed("the saved score is not positive")
 
     def OnOutput(self, session, clean_output):
         if self.finished:

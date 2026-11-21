@@ -7,6 +7,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// The screen surface lives as long as the Display; Swift needs to be told a pointer into it is
+// safe.
+#ifdef __clang__
+#define FEATHEROS_SWIFT_INTERIOR_POINTER __attribute__((swift_attr("import_unsafe")))
+#else
+#define FEATHEROS_SWIFT_INTERIOR_POINTER
+#endif
+
 namespace FeatherOS::Graphics
 {
 
@@ -61,6 +69,7 @@ public:
     Display();
     explicit Display(const System* system);
     Display(const Display&) = delete;
+    Display(Display&& other) noexcept;
     Display& operator=(const Display&) = delete;
     ~Display();
 
@@ -73,7 +82,7 @@ public:
     uint32_t Console() const;
     int Descriptor() const;
     int Error() const;
-    Surface* Screen();
+    FEATHEROS_SWIFT_INTERIOR_POINTER Surface* Screen();
 
     void Invalidate(int32_t x, int32_t y, int32_t width, int32_t height);
     void InvalidateAll();

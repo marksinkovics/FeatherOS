@@ -717,6 +717,28 @@ TEST_CASE("a display releases the screen when it goes away", "[graphics]")
     CHECK(Fake.opened == 3);
 }
 
+TEST_CASE("a moved display keeps the screen and the moved-from one releases nothing", "[graphics]")
+{
+    Fake = Kernel{};
+    {
+        Display first(&FakeSystem);
+        REQUIRE(first.Open() == Status::Ok);
+        first.Screen()->Fill(0x123456);
+        first.Invalidate(1, 2, 3, 4);
+        Display second(static_cast<Display&&>(first));
+        CHECK_FALSE(first.IsOpen());
+        CHECK(second.IsOpen());
+        CHECK(second.Console() == 2);
+        CHECK(second.Screen()->PixelAt(5, 5) == 0x123456);
+        REQUIRE(second.Present() == Status::Ok);
+        REQUIRE(Fake.presents.size() == 1);
+        CHECK(Fake.presents[0].x == 1);
+        CHECK(Fake.presents[0].height == 4);
+    }
+    CHECK(Fake.released == 1);
+    CHECK(Fake.closed == 1);
+}
+
 TEST_CASE("a display presents the rectangles it was told about", "[graphics]")
 {
     Fake = Kernel{};

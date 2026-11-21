@@ -76,6 +76,22 @@ Display::Display(const System* system)
 {
 }
 
+// Swift imports a type only when it can be moved; the moved-from Display is closed.
+Display::Display(Display&& other) noexcept
+    : m_system(other.m_system), m_descriptor(other.m_descriptor), m_error(other.m_error),
+      m_console(other.m_console), m_screen(static_cast<Surface&&>(other.m_screen)),
+      m_dirty(other.m_dirty), m_events{}, m_next_event(other.m_next_event),
+      m_event_count(other.m_event_count)
+{
+    for (uint32_t index = 0; index < EventBatch; ++index)
+    {
+        m_events[index] = other.m_events[index];
+    }
+    other.m_descriptor = -1;
+    other.m_next_event = 0;
+    other.m_event_count = 0;
+}
+
 Display::~Display()
 {
     Close();

@@ -55,4 +55,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | c5a2ee8 | M32 P2 s1 key events: held keys, queue, read/poll, Ctrl+C | opus | sonnet | 0 | 3/3 | |
 | a2a0258 | M32 P2 s2 fbdemo --keys, QMP key checks | - | sonnet | 0 | 1/1 | |
 | d9b3376 | M32 P3 graphics library, fbdemo on it, Swift gfxcheck | - | sonnet | 0 | - | |
-| (this) | M32 P4 featherfall rules, selftest, demo | - | sonnet | 0 | 2/2 | |
+| 729df7f | M32 P4 featherfall rules, selftest, demo | - | sonnet | 0 | 2/2 | |
+| (this) | M32 P5 playable featherfall, high scores, played GRAPHICS check | - | sonnet | 0 | 1/1 | |

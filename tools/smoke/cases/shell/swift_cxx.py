@@ -46,11 +46,19 @@ EXPECTED_SWIFT_CXX_OUTPUT = (
     "200 OK\r\nFeather OS",
     "http: connection closed before the end of the response",
     "usage: http url <url> [reference...]",
-    "usage: featherfall --selftest | --demo [--seed N]\r\n"
-    "A falling-block puzzle. --selftest checks the rules; --demo plays a "
-    "fixed script\r\n"
-    "without a display and prints the score, lines, level and a hash of the "
-    "well.",
+    "usage: featherfall [--seed N] | --selftest | --demo [--seed N]\r\n"
+    "A falling-block puzzle for a virtual console. Keys: Left and Right "
+    "move, Down drops\r\n"
+    "softly, Space drops at once, Up or X turns clockwise, Z anticlockwise, "
+    "C or Shift holds\r\n"
+    "a piece, P pauses, Esc quits. A top-10 table is kept in "
+    "$HOME/.featherfall (/tmp\r\n"
+    "without HOME); at game over type three initials, then Enter plays "
+    "again.\r\n"
+    "--seed N fixes the order of pieces. --selftest checks the rules; --demo "
+    "plays a fixed\r\n"
+    "script without a display and prints the score, lines, level and a hash "
+    "of the well.",
     "featherfall: invalid seed x; see featherfall -h",
 )
 

@@ -1,3 +1,6 @@
+import FeatherLibC
+import FeatherSupport
+
 struct Checker {
     var name = ""
     var failure: String?
@@ -387,6 +390,67 @@ func checkGhost(_ check: inout Checker) {
     check.expect(game.well[19 * wellWidth + 4] != 0 && game.well[20 * wellWidth + 5] != 0, "hard drop and ghost disagree")
 }
 
+func scoreEntry(_ text: String, _ score: Int) -> HighScore {
+    HighScore(initials: Array(text.utf8), score: score)
+}
+
+func checkHighScores(_ check: inout Checker) {
+    check.begin("high scores")
+    let valid = Array("AAA 500\nBBB 900\nCCC 20\n".utf8)
+    let parsed = HighScores.parse(valid)
+    check.expect(parsed?.entries.count == 3, "a valid file parsed to \(parsed?.entries.count ?? -1)")
+    check.expect(parsed?.entries.first == scoreEntry("BBB", 900), "entries are not sorted")
+    check.expect(parsed?.serialized() == Array("BBB 900\nAAA 500\nCCC 20\n".utf8), "serialized text")
+    check.expect(HighScores.parse([])?.entries.count == 0, "an empty file is an empty table")
+    let garbage = [
+        "hello\n", "AAA\n", "AAA 12", "aaa 12\n", "AAAA 12\n", "AA 12\n", "AAA  12\n",
+        "AAA -5\n", "AAA 1234567890\n", "AAA 12\nBBB x\n", "AAA 12\n\n", "\n",
+    ]
+    for text in garbage {
+        check.expect(HighScores.parse(Array(text.utf8)) == nil, "garbage parsed: \(text)")
+    }
+    var eleven = ""
+    for index in 0..<11 {
+        eleven += "AAA \(index + 1)\n"
+    }
+    check.expect(HighScores.parse(Array(eleven.utf8)) == nil, "eleven lines parsed")
+    check.expect(HighScores.parse(Array("AAA 999999999\n".utf8))?.entries.count == 1, "nine digits")
+
+    var table = HighScores()
+    check.expect(!table.qualifies(0), "a score of 0 qualified")
+    check.expect(table.qualifies(1), "the first score did not qualify")
+    check.expect(table.insert(scoreEntry("AAA", 100)) == 0, "first rank")
+    check.expect(table.insert(scoreEntry("BBB", 300)) == 0, "a higher score ranks first")
+    check.expect(table.insert(scoreEntry("CCC", 100)) == 2, "a tie ranks below the older entry")
+    check.expect(table.entries.map { $0.score } == [300, 100, 100], "order \(table.entries)")
+    for index in 0..<7 {
+        table.insert(scoreEntry("ZZZ", 200 + index))
+    }
+    check.expect(table.entries.count == 10, "full table has \(table.entries.count)")
+    check.expect(table.entries[9].score == 100, "the lowest score is \(table.entries[9].score)")
+    check.expect(!table.qualifies(100), "a tie with the last place qualified")
+    check.expect(table.qualifies(101), "a score above the last place did not qualify")
+    check.expect(table.insert(scoreEntry("DDD", 100)) == nil, "a score below the table ranked")
+    check.expect(table.insert(scoreEntry("EEE", 101)) == 8, "rank above the last place")
+    check.expect(table.entries.count == 10, "top 10 truncation: \(table.entries.count)")
+    check.expect(table.entries[8].score == 101 && table.entries[9].score == 100, "dropped entry")
+    check.expect(HighScores.parse(table.serialized()) == table, "a round trip through text")
+
+    let path = "/tmp/.featherfall-selftest"
+    check.expect(loadHighScores(path: path).entries.isEmpty, "a missing file")
+    check.expect(saveHighScores(table, path: path) == nil, "saving failed")
+    check.expect(loadHighScores(path: path) == table, "a round trip through a file")
+    if let stream = fopen(path, "w") {
+        fputs("this is not a high score file\n", stream)
+        fclose(stream)
+    }
+    check.expect(loadHighScores(path: path).entries.isEmpty, "a garbage file was not ignored")
+    check.expect(saveHighScores(table, path: path) == nil, "replacing failed")
+    check.expect(loadHighScores(path: path) == table, "a garbage file was not replaced")
+    unlink(path)
+    check.expect(saveHighScores(table, path: "/nonexistent/.featherfall") != nil, "a bad path saved")
+}
+
 func checkDeterminism(_ check: inout Checker) {
     check.begin("determinism")
     var hashes: [UInt64] = []
@@ -418,6 +482,7 @@ func runSelfTest() -> Bool {
     checkRepeat(&check)
     checkGravity(&check)
     checkGhost(&check)
+    checkHighScores(&check)
     checkDeterminism(&check)
     if let failure = check.failure {
         print("featherfall: selftest failed: \(failure)")
