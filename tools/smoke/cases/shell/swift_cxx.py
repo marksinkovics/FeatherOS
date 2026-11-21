@@ -33,6 +33,8 @@ EXPECTED_SWIFT_CXX_OUTPUT = (
     "cxxinterop: chrono 90 seconds, true",
     "gfxcheck: surface 64x40, sprite 8x8",
     "gfxcheck: checksum 1833110056, match true",
+    "gfxcheck: tiles 2 of 8x8, loaded true",
+    "gfxcheck: tile checksum 1753845943, match true",
     "host example.com\r\nport 8080\r\npath /a/b/c?q\r\n"
     "../d resolves to http://example.com:8080/a/d\r\n"
     "//[::1]/x resolves to http://[::1]/x\r\n"

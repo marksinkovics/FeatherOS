@@ -92,6 +92,7 @@ add_executable(featheros_unit_tests
     kernel/time/wall_clock_tests.cpp
     kernel/string/format_tests.cpp
     user/graphics_tests.cpp
+    user/tile_sheet_tests.cpp
     libc/address_text_tests.cpp
     libc/dns_message_tests.cpp
     libc/environment_table_tests.cpp
@@ -218,6 +219,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/user/graphics/dirty_region.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/display.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/surface.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/tile_sheet.cpp"
     "${FEATHEROS_ROOT}/src/user/http_message.cpp"
     "${FEATHEROS_ROOT}/src/user/init_config.cpp"
     "${FEATHEROS_ROOT}/src/user/key_decoder.cpp"

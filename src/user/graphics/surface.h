@@ -36,6 +36,8 @@ public:
     void DrawRectangle(int32_t x, int32_t y, int32_t width, int32_t height, uint32_t color);
     void Blit(const Surface* source, int32_t x, int32_t y);
     void BlitKeyed(const Surface* source, int32_t x, int32_t y, uint32_t transparent);
+    void BlitPart(const Surface* source, int32_t sx, int32_t sy, int32_t width, int32_t height,
+                  int32_t x, int32_t y, bool keyed, uint32_t transparent);
     void DrawText(int32_t x, int32_t y, const char* text, uint32_t color, int32_t scale);
     void DrawTextOn(int32_t x, int32_t y, const char* text, uint32_t color, uint32_t background,
                     int32_t scale);
@@ -43,7 +45,6 @@ public:
     static int32_t TextWidth(const char* text, int32_t scale);
 
 private:
-    void Blit(const Surface* source, int32_t x, int32_t y, bool keyed, uint32_t transparent);
     void DrawString(int32_t x, int32_t y, const char* text, uint32_t color, bool opaque,
                     uint32_t background, int32_t scale);
     void DrawGlyph(int32_t x, int32_t y, char character, uint32_t color, bool opaque,

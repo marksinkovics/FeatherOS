@@ -249,6 +249,104 @@ TEST_CASE("blits copy and clip", "[graphics]")
     }
 }
 
+TEST_CASE("part blits copy a rectangle of the source and clip it", "[graphics]")
+{
+    Surface sprite(4, 3);
+    for (int32_t y = 0; y < 3; ++y)
+    {
+        for (int32_t x = 0; x < 4; ++x)
+        {
+            sprite.FillRectangle(x, y, 1, 1, static_cast<uint32_t>(0x100 + y * 4 + x));
+        }
+    }
+    Surface target(6, 5);
+    target.Fill(Red);
+
+    SECTION("a part inside the source")
+    {
+        target.BlitPart(&sprite, 1, 1, 2, 2, 3, 2, false, 0);
+        CHECK(target.PixelAt(3, 2) == 0x100 + 4 + 1);
+        CHECK(target.PixelAt(4, 3) == 0x100 + 8 + 2);
+        CHECK(target.PixelAt(2, 2) == Red);
+        CHECK(target.PixelAt(5, 2) == Red);
+        CHECK(Count(target, Red) == 30 - 4);
+    }
+    SECTION("the whole source is a plain blit")
+    {
+        Surface other(6, 5);
+        other.Fill(Red);
+        target.BlitPart(&sprite, 0, 0, 4, 3, 1, 1, false, 0);
+        other.Blit(&sprite, 1, 1);
+        CHECK(target.Checksum() == other.Checksum());
+    }
+    SECTION("a part past the source is cut to it and the position follows")
+    {
+        target.BlitPart(&sprite, -2, -1, 4, 3, 1, 1, false, 0);
+        CHECK(target.PixelAt(3, 2) == 0x100);
+        CHECK(target.PixelAt(4, 2) == 0x100 + 1);
+        CHECK(target.PixelAt(3, 3) == 0x100 + 4);
+        CHECK(Count(target, Red) == 30 - 4);
+        target.Fill(Red);
+        target.BlitPart(&sprite, 3, 2, 10, 10, 0, 0, false, 0);
+        CHECK(target.PixelAt(0, 0) == 0x100 + 8 + 3);
+        CHECK(Count(target, Red) == 29);
+    }
+    SECTION("a negative or off-surface position shows the matching part")
+    {
+        target.BlitPart(&sprite, 1, 0, 3, 3, -1, -1, false, 0);
+        CHECK(target.PixelAt(0, 0) == 0x100 + 4 + 2);
+        CHECK(target.PixelAt(1, 1) == 0x100 + 8 + 3);
+        CHECK(Count(target, Red) == 30 - 2 * 2);
+        target.Fill(Red);
+        target.BlitPart(&sprite, 0, 0, 3, 3, 5, 4, false, 0);
+        CHECK(target.PixelAt(5, 4) == 0x100);
+        CHECK(Count(target, Red) == 29);
+    }
+    SECTION("nothing happens for empty, outside or invalid parts")
+    {
+        const Surface empty(0, 0);
+        target.BlitPart(&sprite, 0, 0, 0, 3, 0, 0, false, 0);
+        target.BlitPart(&sprite, 0, 0, 3, -1, 0, 0, false, 0);
+        target.BlitPart(&sprite, 4, 0, 2, 2, 0, 0, false, 0);
+        target.BlitPart(&sprite, 0, 3, 2, 2, 0, 0, false, 0);
+        target.BlitPart(&sprite, -5, 0, 5, 3, 0, 0, false, 0);
+        target.BlitPart(&sprite, 0, 0, 2, 2, 6, 0, false, 0);
+        target.BlitPart(&sprite, 0, 0, 2, 2, -2, 0, false, 0);
+        target.BlitPart(&sprite, 0, 0, 2, 2, 0, 5, false, 0);
+        target.BlitPart(&sprite, 0, 0, 2, 2, INT32_MAX, INT32_MIN, false, 0);
+        target.BlitPart(&sprite, INT32_MAX, INT32_MAX, INT32_MAX, INT32_MAX, 0, 0, false, 0);
+        target.BlitPart(&sprite, INT32_MIN, INT32_MIN, INT32_MAX, INT32_MAX, 0, 0, false, 0);
+        target.BlitPart(nullptr, 0, 0, 2, 2, 0, 0, false, 0);
+        target.BlitPart(&empty, 0, 0, 2, 2, 0, 0, false, 0);
+        target.BlitPart(&target, 0, 0, 2, 2, 1, 1, false, 0);
+        CHECK(Count(target, Red) == 30);
+    }
+    SECTION("a huge part is cut without overflowing")
+    {
+        target.BlitPart(&sprite, INT32_MIN + 1, 0, INT32_MAX, 3, 0, 0, false, 0);
+        CHECK(Count(target, Red) == 30);
+        target.BlitPart(&sprite, 0, 0, INT32_MAX, INT32_MAX, INT32_MAX - 1, 0, false, 0);
+        CHECK(Count(target, Red) == 30);
+        target.BlitPart(&sprite, 0, 0, INT32_MAX, INT32_MAX, 0, 0, false, 0);
+        CHECK(Count(target, Red) == 30 - 12);
+    }
+    SECTION("a transparent color is skipped inside the clipped part")
+    {
+        sprite.FillRectangle(1, 1, 2, 1, Green);
+        target.BlitPart(&sprite, 1, 0, 3, 3, 0, 0, true, 0x7F000000 | Green);
+        CHECK(target.PixelAt(0, 0) == 0x101);
+        CHECK(target.PixelAt(0, 1) == Red);
+        CHECK(target.PixelAt(1, 1) == Red);
+        CHECK(target.PixelAt(2, 1) == 0x100 + 4 + 3);
+        CHECK(Count(target, Red) == 30 - 9 + 2);
+        target.Fill(Red);
+        target.BlitPart(&sprite, 1, 0, 3, 3, -1, -1, true, Green);
+        CHECK(target.PixelAt(0, 0) == Red);
+        CHECK(target.PixelAt(1, 0) == 0x100 + 4 + 3);
+        CHECK(target.PixelAt(0, 1) == 0x100 + 8 + 2);
+    }
+}
+
 TEST_CASE("text is drawn in the kernel's font", "[graphics]")
 {
     Surface surface(40, 40);

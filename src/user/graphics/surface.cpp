@@ -221,33 +221,58 @@ void Surface::DrawRectangle(int32_t x, int32_t y, int32_t width, int32_t height,
 
 void Surface::Blit(const Surface* source, int32_t x, int32_t y)
 {
-    Blit(source, x, y, false, 0);
+    if (source != nullptr)
+    {
+        BlitPart(source, 0, 0, source->m_width, source->m_height, x, y, false, 0);
+    }
 }
 
 void Surface::BlitKeyed(const Surface* source, int32_t x, int32_t y, uint32_t transparent)
 {
-    Blit(source, x, y, true, transparent & ColorMask);
+    if (source != nullptr)
+    {
+        BlitPart(source, 0, 0, source->m_width, source->m_height, x, y, true, transparent);
+    }
 }
 
-void Surface::Blit(const Surface* source, int32_t x, int32_t y, bool keyed, uint32_t transparent)
+void Surface::BlitPart(const Surface* source, int32_t sx, int32_t sy, int32_t width, int32_t height,
+                       int32_t x, int32_t y, bool keyed, uint32_t transparent)
 {
-    if (m_pixels == nullptr || source == nullptr || source == this || !source->Valid())
+    if (m_pixels == nullptr || source == nullptr || source == this || !source->Valid() ||
+        width <= 0 || height <= 0)
     {
         return;
     }
-    const Area area = Clip(x, y, source->m_width, source->m_height, m_width, m_height);
-    if (area.Empty())
+    // The part is cut to the source first; the position moves by what was cut off.
+    const int32_t part_left = Clamp(sx, source->m_width);
+    const int32_t part_top = Clamp(sy, source->m_height);
+    const int32_t part_right = Clamp(static_cast<int64_t>(sx) + width, source->m_width);
+    const int32_t part_bottom = Clamp(static_cast<int64_t>(sy) + height, source->m_height);
+    if (part_left >= part_right || part_top >= part_bottom)
     {
         return;
     }
-    for (int32_t row = area.top; row < area.bottom; ++row)
+    const int64_t origin_x = static_cast<int64_t>(x) + (part_left - static_cast<int64_t>(sx));
+    const int64_t origin_y = static_cast<int64_t>(y) + (part_top - static_cast<int64_t>(sy));
+    const int32_t left = Clamp(origin_x, m_width);
+    const int32_t top = Clamp(origin_y, m_height);
+    const int32_t right = Clamp(origin_x + (part_right - part_left), m_width);
+    const int32_t bottom = Clamp(origin_y + (part_bottom - part_top), m_height);
+    if (left >= right || top >= bottom)
     {
-        const uint32_t* from = source->m_pixels +
-                               static_cast<size_t>(row - y) * static_cast<size_t>(source->m_width) +
-                               static_cast<size_t>(area.left - x);
-        uint32_t* to =
-            m_pixels + static_cast<size_t>(row) * static_cast<size_t>(m_width) + area.left;
-        const auto count = static_cast<size_t>(area.right - area.left);
+        return;
+    }
+    const uint32_t key = transparent & ColorMask;
+    for (int32_t row = top; row < bottom; ++row)
+    {
+        const int64_t source_row = part_top + (row - origin_y);
+        const int64_t source_column = part_left + (left - origin_x);
+        const uint32_t* from =
+            source->m_pixels +
+            static_cast<size_t>(source_row) * static_cast<size_t>(source->m_width) +
+            static_cast<size_t>(source_column);
+        uint32_t* to = m_pixels + static_cast<size_t>(row) * static_cast<size_t>(m_width) + left;
+        const auto count = static_cast<size_t>(right - left);
         if (!keyed)
         {
             memcpy(to, from, count * sizeof(uint32_t));
@@ -255,7 +280,7 @@ void Surface::Blit(const Surface* source, int32_t x, int32_t y, bool keyed, uint
         }
         for (size_t column = 0; column < count; ++column)
         {
-            if ((from[column] & ColorMask) != transparent)
+            if ((from[column] & ColorMask) != key)
             {
                 to[column] = from[column];
             }

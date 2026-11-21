@@ -65,6 +65,7 @@ add_library(featheros_user_support STATIC
     graphics/dirty_region.cpp
     graphics/display.cpp
     graphics/surface.cpp
+    graphics/tile_sheet.cpp
     http_message.cpp
     init_config.cpp
     key_decoder.cpp

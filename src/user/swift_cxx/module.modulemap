@@ -15,6 +15,7 @@ module FeatherGraphics {
     header "../graphics/dirty_region.h"
     header "../graphics/surface.h"
     header "../graphics/display.h"
+    header "../graphics/tile_sheet.h"
     requires cplusplus
     export *
 }
