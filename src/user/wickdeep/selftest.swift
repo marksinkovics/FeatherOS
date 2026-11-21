@@ -82,6 +82,9 @@ func openRoomGame(oil: Int) -> Game {
     game.x = 30
     game.y = 20
     game.oil = oil
+    game.monsters = []
+    game.items = []
+    game.resetTurns()
     game.remembered = [UInt8](repeating: 0, count: mapWidth * mapHeight)
     game.refreshSight()
     return game
@@ -418,8 +421,8 @@ func checkMovement(_ check: inout Checker) {
     game.cells[game.y * mapWidth + game.x + 1] = Terrain.plinth.rawValue
     let bottom = game.step(.move(.east))
     check.expect(
-        bottom == [Event(code: .plinthReached, first: finalDepth)] && game.outcome == .bottom
-            && game.score == 600,
+        bottom == [Event(code: .heartwickTaken, first: finalDepth)] && game.outcome == .victory
+            && game.score == 1700,
         "reaching the plinth")
     let turn = game.turn
     check.expect(game.step(.wait).isEmpty && game.turn == turn, "a finished game took a turn")
@@ -486,6 +489,20 @@ func runSelfTest() -> Bool {
     checkMovement(&check)
     checkEnergy(&check)
     checkDeterminism(&check)
+    checkHitChance(&check)
+    checkDamage(&check)
+    checkPlayerCombat(&check)
+    checkMonsterCombat(&check)
+    checkLevels(&check)
+    checkItems(&check)
+    checkMonsterTable(&check)
+    checkPlacement(&check)
+    checkWaking(&check)
+    checkChase(&check)
+    checkSpeeds(&check)
+    checkOilmoth(&check)
+    checkRootgrip(&check)
+    checkBotRuns(&check)
     if let failure = check.failure {
         print("wickdeep: selftest failed: \(failure)")
         return false

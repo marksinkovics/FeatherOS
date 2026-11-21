@@ -3,10 +3,11 @@ import FeatherSupport
 
 let help = """
     usage: wickdeep --selftest | --demo [--seed N]
-    A turn-based dungeon crawler of eight floors lit by a lamp that runs down. The floors, the
-    lamp and the view exist so far; the game screen comes later. --selftest checks the rules;
-    --demo walks a fixed exploring bot down the floors without a display and prints the turns,
-    depth, level, score, outcome and a hash of the game state.
+    A turn-based dungeon crawler of eight floors lit by a lamp that runs down. The rules exist
+    so far (floors, lamp, monsters, items, combat); the game screen comes later. --selftest
+    checks the rules; --demo plays a fixed bot from the first floor to its death or the
+    Heartwick without a display and prints the turns, depth, level, score, outcome and a hash
+    of the game state.
     """
 
 func parseSeed(_ text: String) -> UInt64? {

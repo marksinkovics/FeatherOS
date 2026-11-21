@@ -67,12 +67,14 @@ EXPECTED_SWIFT_CXX_OUTPUT = (
     "featherfall: invalid seed x; see featherfall -h",
     "usage: wickdeep --selftest | --demo [--seed N]\r\n"
     "A turn-based dungeon crawler of eight floors lit by a lamp that runs "
-    "down. The floors, the\r\n"
-    "lamp and the view exist so far; the game screen comes later. --selftest "
-    "checks the rules;\r\n"
-    "--demo walks a fixed exploring bot down the floors without a display "
-    "and prints the turns,\r\n"
-    "depth, level, score, outcome and a hash of the game state.",
+    "down. The rules exist\r\n"
+    "so far (floors, lamp, monsters, items, combat); the game screen comes "
+    "later. --selftest\r\n"
+    "checks the rules; --demo plays a fixed bot from the first floor to its "
+    "death or the\r\n"
+    "Heartwick without a display and prints the turns, depth, level, score, "
+    "outcome and a hash\r\n"
+    "of the game state.",
     "wickdeep: invalid seed x; see wickdeep -h",
 )
 

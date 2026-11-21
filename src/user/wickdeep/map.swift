@@ -63,6 +63,8 @@ struct Floor {
     var startY: Int
     var exitX: Int
     var exitY: Int
+    var monsters: [Monster] = []
+    var items: [FloorItem] = []
 }
 
 func blocksMovement(_ cell: UInt8) -> Bool {
@@ -247,8 +249,89 @@ private func placeRubble(
     }
 }
 
-// Monsters and items go in the rooms but the start room.
-private func placeOccupants(_ floor: inout Floor, _ random: inout Random, depth: Int) {}
+private func isVacant(_ floor: Floor, x: Int, y: Int) -> Bool {
+    guard floor.cells[y * mapWidth + x] == Terrain.floor.rawValue else {
+        return false
+    }
+    for monster in floor.monsters where monster.x == x && monster.y == y {
+        return false
+    }
+    for item in floor.items where item.x == x && item.y == y {
+        return false
+    }
+    return true
+}
+
+private func vacantCell(_ floor: Floor, _ random: inout Random, in room: Room) -> (Int, Int)? {
+    for _ in 0..<64 {
+        let x = room.x + random.below(room.width)
+        let y = room.y + random.below(room.height)
+        if isVacant(floor, x: x, y: y) {
+            return (x, y)
+        }
+    }
+    return nil
+}
+
+private func spawn(_ floor: inout Floor, _ kind: MonsterKind, x: Int, y: Int) {
+    floor.monsters.append(Monster(kind: kind, x: x, y: y, hp: stats(of: kind).hitPoints))
+}
+
+private func spawnPartner(_ floor: inout Floor, _ random: inout Random, near first: (Int, Int), in room: Room) {
+    let turn = random.below(8)
+    for offset in 0..<8 {
+        let direction = Direction(rawValue: (turn + offset) % 8)!
+        let x = first.0 + direction.dx
+        let y = first.1 + direction.dy
+        if isVacant(floor, x: x, y: y) {
+            spawn(&floor, .gnawling, x: x, y: y)
+            return
+        }
+    }
+    if let cell = vacantCell(floor, &random, in: room) {
+        spawn(&floor, .gnawling, x: cell.0, y: cell.1)
+    }
+}
+
+// Occupants go in the rooms but the start room and never in a one-cell junction.
+private func placeOccupants(_ floor: inout Floor, _ random: inout Random, depth: Int) {
+    var rooms: [Room] = []
+    for (number, room) in floor.rooms.enumerated() where number != floor.startRoom && !room.junction {
+        rooms.append(room)
+    }
+    if depth == finalDepth {
+        let room = floor.rooms[floor.exitRoom]
+        if let cell = vacantCell(floor, &random, in: room) {
+            spawn(&floor, .hearthwarden, x: cell.0, y: cell.1)
+        }
+    }
+    let wanted = min(16, 3 + depth)
+    var placed = 0
+    while placed < wanted {
+        var kind = chooseMonster(&random, depth: depth)
+        if kind == .gnawling && placed + 2 > wanted {
+            kind = .dustmite
+        }
+        let room = rooms[random.below(rooms.count)]
+        guard let cell = vacantCell(floor, &random, in: room) else {
+            placed += 1
+            continue
+        }
+        spawn(&floor, kind, x: cell.0, y: cell.1)
+        placed += 1
+        if kind == .gnawling {
+            spawnPartner(&floor, &random, near: cell, in: room)
+            placed += 1
+        }
+    }
+    for _ in 0..<4 + depth / 2 {
+        let room = rooms[random.below(rooms.count)]
+        if let cell = vacantCell(floor, &random, in: room) {
+            floor.items.append(
+                FloorItem(kind: chooseItem(&random, depth: depth), x: cell.0, y: cell.1))
+        }
+    }
+}
 
 func generateFloor(seed: UInt64, depth: Int) -> Floor {
     var random = Random(seed: seed ^ (UInt64(depth) &* 0x9E37_79B9_7F4A_7C15))

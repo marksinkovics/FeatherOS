@@ -1,7 +1,8 @@
 let demoTurnLimit = 20_000
 
-// Walks, over what the lamp has shown, to the nearest remembered cell with an unseen neighbour,
-// then to the stairs or the plinth.
+// Fights what stands next to it, heals, refills and equips from the pack, picks up what the lamp
+// shows, then walks, over what it has seen, to the nearest remembered cell with an unseen
+// neighbour, then to the stairs or the plinth.
 struct DemoBot {
     private func isFrontier(_ game: Game, _ index: Int) -> Bool {
         let x = index % mapWidth
@@ -67,7 +68,65 @@ struct DemoBot {
         return nil
     }
 
+    private func adjacentTarget(_ game: Game) -> Direction? {
+        for step in 0..<8 {
+            let direction = Direction(rawValue: step)!
+            let nx = game.x + direction.dx
+            let ny = game.y + direction.dy
+            guard let index = game.monsterIndex(x: nx, y: ny),
+                game.reaches(fromX: game.x, fromY: game.y, toX: nx, toY: ny)
+            else {
+                continue
+            }
+            let monster = game.monsters[index]
+            if monster.kind != .hearthwarden || monster.awake {
+                return direction
+            }
+        }
+        return nil
+    }
+
+    private func betterGear(_ game: Game) -> Int? {
+        for (slot, kind) in game.pack.enumerated() where kind.isGear {
+            let worn = kind.isWeapon ? game.weapon : game.coat
+            if kind.bonus > (worn?.bonus ?? 0) {
+                return slot
+            }
+        }
+        return nil
+    }
+
+    private func monstersInView(_ game: Game) -> Int {
+        var count = 0
+        for monster in game.monsters where game.lit[monster.y * mapWidth + monster.x] != 0 {
+            count += 1
+        }
+        return count
+    }
+
     func next(_ game: Game) -> Command {
+        if let direction = adjacentTarget(game) {
+            return .move(direction)
+        }
+        if game.hp * 100 < game.maxHitPoints * 40, let slot = game.pack.firstIndex(of: .salve) {
+            return .use(slot)
+        }
+        if game.oil < 150, let slot = game.pack.firstIndex(of: .oilFlask) {
+            return .use(slot)
+        }
+        if monstersInView(game) >= 3, let slot = game.pack.firstIndex(of: .flareStone) {
+            return .use(slot)
+        }
+        if let slot = betterGear(game) {
+            return .equip(slot)
+        }
+        if game.pack.count < packLimit,
+            let direction = firstStep(
+                game,
+                toward: { game.lit[$0] != 0 && game.itemIndex(x: $0 % mapWidth, y: $0 / mapWidth) != nil })
+        {
+            return .move(direction)
+        }
         if let direction = firstStep(game, toward: { isFrontier(game, $0) }) {
             return .move(direction)
         }
@@ -88,7 +147,12 @@ func runDemo(seed: UInt64) {
     while game.outcome == .playing && game.turn < demoTurnLimit {
         _ = game.step(bot.next(game))
     }
-    let outcome = game.outcome == .bottom ? "bottom" : "limit"
+    var outcome = "limit"
+    switch game.outcome {
+    case .playing: break
+    case .dead: outcome = "dead"
+    case .victory: outcome = "victory"
+    }
     print(
         "wickdeep: demo turns \(game.turn) depth \(game.depth) level \(game.level) "
             + "score \(game.score) outcome \(outcome) hash \(game.stateHash())")

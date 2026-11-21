@@ -6,10 +6,10 @@ DUNGEON_TIMEOUT_SECONDS = 240
 SELFTEST_LINE = "wickdeep: selftest ok"
 # The same on both architectures: the rules use integers only.
 DEMO_RESULTS = {
-    1: "turns 3684 depth 8 level 1 score 1200 outcome bottom "
-    "hash 9680416461032995841",
-    2: "turns 3146 depth 8 level 1 score 1200 outcome bottom "
-    "hash 18330328682316093004",
+    1: "turns 2690 depth 8 level 7 score 1945 outcome victory "
+    "hash 15825503568446765951",
+    2: "turns 703 depth 3 level 2 score 223 outcome dead "
+    "hash 16159091418060334296",
 }
 
 
@@ -18,8 +18,8 @@ def DemoLine(seed):
 
 
 class Dungeon(Case):
-    """Runs wickdeep's self-test and two demo runs and checks their exact
-    output lines."""
+    """Runs wickdeep's self-test and two demo runs (one wins, one dies) and
+    checks their exact output lines."""
 
     serial_input = True
     timeout = DUNGEON_TIMEOUT_SECONDS
