@@ -10,6 +10,7 @@
 #include "tests/ext2_image.h"
 #include "tests/filesystem_helpers.h"
 #include "tests/memory_device.h"
+#include "tests/page_cache_support.h"
 
 #include <array>
 #include <cstdint>
@@ -58,7 +59,7 @@ GroupDescriptor DescriptorOf(RawVolume& raw, std::uint32_t group)
 Error MountError(const std::vector<std::uint8_t>& bytes)
 {
     const std::unique_ptr<MemoryDevice> device = DeviceFrom(bytes);
-    return ErrorOf(Ext2Type().Mount(*device, {.read_only = true}));
+    return ErrorOf(Ext2Type().Mount(Mountable(*device), {.read_only = true}));
 }
 
 std::uint32_t InodeOf(RawVolume& raw, std::uint32_t directory, std::string_view name)

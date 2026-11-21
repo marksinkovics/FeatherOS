@@ -8,9 +8,11 @@
 #include "ext/inode.h"
 #include "fs/ext2.h"
 #include "tests/crash_helpers.h"
+#include "tests/crash_scenarios.h"
 #include "tests/ext2_image.h"
 #include "tests/filesystem_helpers.h"
 #include "tests/memory_device.h"
+#include "tests/page_cache_support.h"
 
 #include <array>
 #include <cstdint>
@@ -31,72 +33,10 @@ using namespace FeatherDisk::Tests::Crash;
 using Ext::Ext2Type;
 using Ext::InodeIndexed;
 
-struct Replacement
-{
-    std::string_view source;
-    std::string_view target;
-};
-
-constexpr std::array<Replacement, 6> Replacements = {{
-    {"/src.txt", "/d/old.txt"},
-    {"/d/x.txt", "/d/y.txt"},
-    {"/f.txt", "/ln"},
-    {"/e2", "/x/empty"},
-    {"/h1", "/h2"},
-    {"/n.txt", "/big.bin"},
-}};
-
-constexpr std::size_t HardLinkCase = 4;
-constexpr std::size_t MadeInScenario = 5;
-
-Scenario RenameScenario()
-{
-    Scenario scenario;
-    for (std::size_t index = 0; index < Replacements.size(); ++index)
-    {
-        if (index == MadeInScenario)
-        {
-            scenario.push_back(Make(std::string(Replacements[index].source), "n"));
-        }
-        scenario.push_back(
-            Move(std::string(Replacements[index].source), std::string(Replacements[index].target)));
-    }
-    return scenario;
-}
-
-Scenario FixtureSetup()
-{
-    Scenario setup;
-    setup.push_back(Mkdir("/d"));
-    setup.push_back(Make("/d/old.txt", PatternAt(0, 6000)));
-    setup.push_back(Make("/src.txt", PatternAt(0, 3000, 5)));
-    setup.push_back(Make("/d/x.txt", PatternAt(0, 2000, 9)));
-    setup.push_back(Make("/d/y.txt", PatternAt(0, 1500, 13)));
-    setup.push_back(Make("/h1", "hard\n"));
-    setup.push_back(Hard("/h1", "/h2"));
-    setup.push_back(Make("/f.txt", "file\n"));
-    setup.push_back(Symlink("/ln", "d/old.txt"));
-    setup.push_back(Mkdir("/e2"));
-    setup.push_back(Make("/e2/child", "child\n"));
-    setup.push_back(Mkdir("/x"));
-    setup.push_back(Mkdir("/x/empty"));
-    setup.push_back(Make("/big.bin", PatternAt(0, 400 << 10, 3)));
-    return setup;
-}
-
-std::unique_ptr<MemoryDevice> Fixture(std::string_view variant, const Scenario& setup)
-{
-    std::unique_ptr<MemoryDevice> device = Prepared(variant);
-    Filesystem* filesystem = Value(Ext2Type().Mount(*device, {.read_only = false}));
-    REQUIRE(Run(*filesystem, setup) == setup.size());
-    Succeeds(Ext2Type().Unmount(*filesystem));
-    return device;
-}
-
 std::unique_ptr<MemoryDevice> FinalImage(MemoryDevice& base, const Scenario& scenario)
 {
     std::unique_ptr<MemoryDevice> device = CopyOf(base);
-    Filesystem* filesystem = Value(Ext2Type().Mount(*device, {.read_only = false}));
+    Filesystem* filesystem = Value(Ext2Type().Mount(Mountable(*device), {.read_only = false}));
     REQUIRE(Run(*filesystem, scenario) == scenario.size());
     Succeeds(Ext2Type().Unmount(*filesystem));
     return device;
@@ -282,7 +222,7 @@ void ReplacingCrashesWithoutJournal(std::string_view variant, std::uint64_t stri
     std::uint64_t mounted_writes = 0;
     {
         const std::unique_ptr<MemoryDevice> device = CopyOf(*base);
-        Filesystem* filesystem = Value(Ext2Type().Mount(*device, {.read_only = false}));
+        Filesystem* filesystem = Value(Ext2Type().Mount(Mountable(*device), {.read_only = false}));
         mounted_writes = device->write_count;
         Run(*filesystem, scenario);
         Succeeds(Ext2Type().Unmount(*filesystem));
@@ -297,7 +237,8 @@ void ReplacingCrashesWithoutJournal(std::string_view variant, std::uint64_t stri
         INFO("stopped after write " << cut << " of " << total);
         const std::unique_ptr<MemoryDevice> device = CopyOf(*base);
         device->FailWritesAfter(cut);
-        const Result<Filesystem*> mounted = Ext2Type().Mount(*device, {.read_only = false});
+        const Result<Filesystem*> mounted =
+            Ext2Type().Mount(Mountable(*device), {.read_only = false});
         REQUIRE(mounted.has_value());
         Run(**mounted, scenario);
         const std::unique_ptr<MemoryDevice> stopped = CopyOf(*device);
@@ -415,7 +356,7 @@ TEST_CASE("a replacing rename in a hashed directory keeps its index at every wri
     std::uint64_t mounted_writes = 0;
     {
         const std::unique_ptr<MemoryDevice> device = CopyOf(*base);
-        Filesystem* filesystem = Value(Ext2Type().Mount(*device, {.read_only = false}));
+        Filesystem* filesystem = Value(Ext2Type().Mount(Mountable(*device), {.read_only = false}));
         mounted_writes = device->write_count;
         REQUIRE(Run(*filesystem, scenario) == 1);
         Succeeds(Ext2Type().Unmount(*filesystem));
@@ -431,7 +372,8 @@ TEST_CASE("a replacing rename in a hashed directory keeps its index at every wri
         INFO("stopped after write " << cut << " of " << total);
         const std::unique_ptr<MemoryDevice> device = CopyOf(*base);
         device->FailWritesAfter(cut);
-        const Result<Filesystem*> mounted = Ext2Type().Mount(*device, {.read_only = false});
+        const Result<Filesystem*> mounted =
+            Ext2Type().Mount(Mountable(*device), {.read_only = false});
         REQUIRE(mounted.has_value());
         Run(**mounted, scenario);
         const std::unique_ptr<MemoryDevice> stopped = CopyOf(*device);

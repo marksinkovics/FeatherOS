@@ -3,6 +3,7 @@
 
 #include "tests/ext2_image.h"
 #include "tests/filesystem_helpers.h"
+#include "tests/page_cache_support.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -227,8 +228,41 @@ std::size_t Run(Filesystem& filesystem, const Scenario& scenario,
     return synced;
 }
 
+namespace
+{
+
+// What the volume is mounted over: the device as Mountable gives it, or a CachedDevice with its
+// own small cache.
+class MountLayer
+{
+public:
+    MountLayer(MemoryDevice& device, std::size_t pages) : target(&Mountable(device))
+    {
+        if (pages > 0)
+        {
+            REQUIRE(cache.Initialize(source, pages).has_value());
+            cached.Attach(&cache, device);
+            target = &cached;
+        }
+    }
+
+    BlockDevice& Device()
+    {
+        return *target;
+    }
+
+private:
+    TestPageSource source;
+    PageCache cache;
+    CachedDevice cached;
+    BlockDevice* target;
+};
+
+} // namespace
+
 Reference RunReference(MemoryDevice& base, const Scenario& scenario,
-                       std::optional<JournalLimits> limits, bool keep_trees, bool skip_no_space)
+                       std::optional<JournalLimits> limits, bool keep_trees, bool skip_no_space,
+                       std::size_t page_cache_pages)
 {
     Reference reference;
     if (keep_trees)
@@ -236,14 +270,15 @@ Reference RunReference(MemoryDevice& base, const Scenario& scenario,
         reference.trees.push_back(TreeOf(base));
     }
     std::unique_ptr<MemoryDevice> device = CopyOf(base);
-    Filesystem* filesystem = Value(Ext2Type().Mount(*device, {.read_only = false}));
+    MountLayer layer(*device, page_cache_pages);
+    Filesystem* filesystem = Value(Ext2Type().Mount(layer.Device(), {.read_only = false}));
     if (limits)
     {
         Core(*filesystem).LimitJournal(*limits);
     }
     reference.mounted = device->write_count;
     reference.writes.push_back(device->write_count);
-    reference.activity.push_back(ActivityOf(*filesystem));
+    reference.activity.push_back(Core(*filesystem).Activity().value_or(JournalActivity{}));
     std::size_t skipped = 0;
     const std::size_t synced = Run(
         *filesystem, scenario,
@@ -254,7 +289,7 @@ Reference RunReference(MemoryDevice& base, const Scenario& scenario,
                 reference.trees.push_back(TreeOf(live));
             }
             reference.writes.push_back(device->write_count);
-            reference.activity.push_back(ActivityOf(live));
+            reference.activity.push_back(Core(live).Activity().value_or(JournalActivity{}));
         },
         skip_no_space ? &skipped : nullptr);
     REQUIRE(synced + skipped == scenario.size());
@@ -269,13 +304,15 @@ Reference RunReference(MemoryDevice& base, const Scenario& scenario,
 
 // The scenario on a copy of base whose writes stop after cut, to the unmount.
 Crashed RunCrashed(MemoryDevice& base, const Scenario& scenario, std::uint64_t cut,
-                   std::optional<JournalLimits> limits, bool skip_no_space)
+                   std::optional<JournalLimits> limits, bool skip_no_space,
+                   std::size_t page_cache_pages)
 {
     Crashed crashed;
     crashed.device = CopyOf(base);
     crashed.device->TrackUnflushed();
     crashed.device->FailWritesAfter(cut);
-    const Result<Filesystem*> mounted = Ext2Type().Mount(*crashed.device, {.read_only = false});
+    MountLayer layer(*crashed.device, page_cache_pages);
+    const Result<Filesystem*> mounted = Ext2Type().Mount(layer.Device(), {.read_only = false});
     if (!mounted)
     {
         return crashed;
@@ -288,6 +325,20 @@ Crashed RunCrashed(MemoryDevice& base, const Scenario& scenario, std::uint64_t c
     crashed.synced = Run(**mounted, scenario, {}, skip_no_space ? &skipped : nullptr);
     if (!Ext2Type().Unmount(**mounted))
     {
+        if (!Core(**mounted).Activity().has_value())
+        {
+            // Without a journal nothing stops the unmount from writing once the device takes
+            // writes again, so the stopped volume is kept as a copy and the mount ends on the
+            // device.
+            std::unique_ptr<MemoryDevice> stopped = CopyOf(*crashed.device);
+            stopped->write_count = crashed.device->write_count;
+            stopped->flush_writes = crashed.device->flush_writes;
+            stopped->call_digest = crashed.device->call_digest;
+            crashed.device->FailWritesAfter(UINT64_MAX);
+            Succeeds(Ext2Type().Unmount(**mounted));
+            crashed.device = std::move(stopped);
+            return crashed;
+        }
         // The failed unmount leaves the mount to be freed; after an abort it writes nothing.
         const std::uint64_t writes = crashed.device->write_count;
         Succeeds(Ext2Type().Unmount(**mounted));
@@ -416,6 +467,20 @@ std::unique_ptr<MemoryDevice> Prepared(std::string_view variant)
         return device;
     }
     return DeviceFrom(LoadExtImage(variant));
+}
+
+std::size_t
+FirstStepWhere(const Reference& reference,
+               const std::function<bool(const JournalActivity&, const JournalActivity&)>& changed)
+{
+    for (std::size_t step = 1; step < reference.activity.size(); ++step)
+    {
+        if (changed(reference.activity[step - 1], reference.activity[step]))
+        {
+            return step;
+        }
+    }
+    return 0;
 }
 
 // At most budget of the cuts from first to last, all of them when there are fewer.

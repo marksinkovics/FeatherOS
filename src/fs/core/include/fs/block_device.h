@@ -27,6 +27,12 @@ public:
     virtual Status Write(std::uint64_t first_sector, std::span<const std::uint8_t> data) = 0;
     // Makes every completed write durable.
     virtual Status Flush() = 0;
+    // True while reads of this device come from a cache the host keeps, so the core need not keep
+    // copies of its own.
+    virtual bool CachesBlocks() const
+    {
+        return false;
+    }
 
 protected:
     // The core never owns a device, so it never deletes one through this interface.

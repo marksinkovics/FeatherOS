@@ -139,6 +139,7 @@ public:
     Status Read(std::uint64_t first_sector, std::span<std::uint8_t> buffer) override;
     Status Write(std::uint64_t first_sector, std::span<const std::uint8_t> data) override;
     Status Flush() override;
+    bool CachesBlocks() const override;
 
 private:
     friend class PageCache;

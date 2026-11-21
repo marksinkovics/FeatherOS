@@ -30,6 +30,24 @@ bool MemoryDevice::Covers(std::uint64_t first_sector, std::size_t byte_count) co
            byte_count / sector_size <= SectorCount() - first_sector;
 }
 
+void MemoryDevice::Digest(std::uint64_t tag, std::span<const std::uint8_t> data)
+{
+    constexpr std::uint64_t Prime = 1099511628211ULL;
+    const auto mix = [&](std::uint64_t value)
+    {
+        for (int shift = 0; shift < 64; shift += 8)
+        {
+            call_digest = (call_digest ^ ((value >> shift) & 0xFF)) * Prime;
+        }
+    };
+    mix(tag);
+    mix(data.size());
+    for (const std::uint8_t byte : data)
+    {
+        call_digest = (call_digest ^ byte) * Prime;
+    }
+}
+
 Status MemoryDevice::Read(std::uint64_t first_sector, std::span<std::uint8_t> buffer)
 {
     if (!Covers(first_sector, buffer.size()))
@@ -67,6 +85,7 @@ Status MemoryDevice::Write(std::uint64_t first_sector, std::span<const std::uint
         return std::unexpected(Error::Io);
     }
     ++write_count;
+    Digest(first_sector * 2 + 1, data);
     std::uint8_t* const place = bytes.get() + first_sector * sector_size;
     if (tracking)
     {
@@ -81,6 +100,7 @@ Status MemoryDevice::Write(std::uint64_t first_sector, std::span<const std::uint
 Status MemoryDevice::Flush()
 {
     ++flush_count;
+    Digest(0, {});
     flush_writes.push_back(write_count);
     // A device that stopped writing makes nothing durable.
     if (write_count < write_limit)

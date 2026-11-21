@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #include "tests/filesystem_helpers.h"
 
+#include "tests/page_cache_support.h"
+
 #include <algorithm>
 #include <span>
 
@@ -11,7 +13,7 @@ MountedFilesystem::MountedFilesystem(FilesystemType& filesystem_type, BlockDevic
                                      bool read_only)
     : type(filesystem_type), filesystem(nullptr)
 {
-    filesystem = Value(type.Mount(volume, {.read_only = read_only}));
+    filesystem = Value(type.Mount(Mountable(volume), {.read_only = read_only}));
 }
 
 MountedFilesystem::~MountedFilesystem()

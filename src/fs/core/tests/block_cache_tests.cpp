@@ -3,6 +3,7 @@
 
 #include "common/block_cache.h"
 #include "tests/memory_device.h"
+#include "tests/page_cache_support.h"
 
 #include <array>
 #include <cstdint>
@@ -16,6 +17,7 @@ namespace
 using FeatherDisk::BlockCache;
 using FeatherDisk::Error;
 using FeatherDisk::Tests::MemoryDevice;
+using FeatherDisk::Tests::RecordingDevice;
 
 constexpr std::uint32_t BlockSize = 1024;
 
@@ -153,6 +155,90 @@ TEST_CASE("the block cache refuses bad sizes and offsets")
     REQUIRE(cache.Read(0, 0, part, short_scratch).error() == Error::InvalidArgument);
     std::vector<std::uint8_t> partial(BlockSize + 1);
     REQUIRE(cache.ReadUncached(0, partial).error() == Error::InvalidArgument);
+}
+
+TEST_CASE("a block cache with no slots sends every call to the device and keeps nothing")
+{
+    MemoryDevice device(512, 128);
+    Number(device);
+    RecordingDevice recording(device);
+    BlockCache cache;
+    REQUIRE(cache.Initialize(recording, BlockSize, 0).has_value());
+    REQUIRE(cache.SlotCount() == 0);
+    REQUIRE(cache.BlockSize() == BlockSize);
+    std::vector<std::uint8_t> scratch(BlockSize);
+
+    // Repeated reads of one block are one read of the whole block each.
+    std::array<std::uint8_t, 4> part{};
+    for (int round = 1; round <= 3; ++round)
+    {
+        part = {};
+        REQUIRE(cache.Read(7, 1020, part, scratch).has_value());
+        REQUIRE(part == std::array<std::uint8_t, 4>{Expected(7, 1020), Expected(7, 1021),
+                                                    Expected(7, 1022), Expected(7, 1023)});
+        REQUIRE(recording.reads.size() == static_cast<std::size_t>(round));
+        REQUIRE(recording.reads.back() == RecordingDevice::ReadCall{14, 2});
+    }
+
+    // A whole block read into the scratch itself needs no copy.
+    REQUIRE(cache.Read(9, 0, scratch, scratch).has_value());
+    REQUIRE(scratch[5] == Expected(9, 5));
+    REQUIRE(recording.reads.back() == RecordingDevice::ReadCall{18, 2});
+
+    // A write is one device write with the same bytes, and a read after it sees the device.
+    std::vector<std::uint8_t> written(2 * BlockSize);
+    for (std::size_t index = 0; index < written.size(); ++index)
+    {
+        written[index] = static_cast<std::uint8_t>(0x40 + index);
+    }
+    REQUIRE(cache.Read(20, 0, part, scratch).has_value());
+    REQUIRE(cache.Write(20, written).has_value());
+    REQUIRE(recording.calls.size() == 1);
+    REQUIRE(recording.calls[0] ==
+            RecordingDevice::Call{false, 40, {written.begin(), written.end()}});
+    const std::size_t reads = recording.reads.size();
+    REQUIRE(cache.Read(21, 0, part, scratch).has_value());
+    REQUIRE(part[0] == written[BlockSize]);
+    REQUIRE(recording.reads.size() == reads + 1);
+
+    // A failed write is reported and still one call.
+    recording.fail_writes = true;
+    REQUIRE(cache.Write(20, written).error() == Error::Io);
+    REQUIRE(recording.calls.size() == 2);
+    recording.fail_writes = false;
+    device.read_only = true;
+    REQUIRE(cache.Write(20, written).error() == Error::ReadOnly);
+    device.read_only = false;
+
+    // ReadUncached is the same call as with slots.
+    std::vector<std::uint8_t> blocks(3 * BlockSize);
+    REQUIRE(cache.ReadUncached(4, blocks).has_value());
+    REQUIRE(blocks[2 * BlockSize] == Expected(6, 0));
+    REQUIRE(recording.reads.back() == RecordingDevice::ReadCall{8, 6});
+
+    // Read errors pass through, and nothing was kept for the next read.
+    device.FailReadsFrom(0);
+    REQUIRE(cache.Read(7, 0, part, scratch).error() == Error::Io);
+}
+
+TEST_CASE("a block cache with no slots still refuses bad sizes and offsets")
+{
+    MemoryDevice device(512, 16);
+    Number(device);
+    BlockCache cache;
+    std::vector<std::uint8_t> scratch(BlockSize);
+    std::array<std::uint8_t, 4> part{};
+    REQUIRE(cache.Read(0, 0, part, scratch).error() == Error::InvalidArgument);
+    REQUIRE(cache.Initialize(device, 768, 0).error() == Error::InvalidArgument);
+    REQUIRE(cache.Initialize(device, 256, 0).error() == Error::InvalidArgument);
+    REQUIRE(cache.Initialize(device, BlockSize, 0).has_value());
+    REQUIRE(cache.Initialize(device, BlockSize, 0).error() == Error::InvalidArgument);
+    REQUIRE(cache.Read(0, 1021, part, scratch).error() == Error::InvalidArgument);
+    std::vector<std::uint8_t> short_scratch(512);
+    REQUIRE(cache.Read(0, 0, part, short_scratch).error() == Error::InvalidArgument);
+    std::vector<std::uint8_t> partial(BlockSize + 1);
+    REQUIRE(cache.ReadUncached(0, partial).error() == Error::InvalidArgument);
+    REQUIRE(cache.Write(0, std::span(partial)).error() == Error::InvalidArgument);
 }
 
 TEST_CASE("the block cache serves several threads at once")

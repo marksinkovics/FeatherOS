@@ -209,9 +209,15 @@ void* Ext2Filesystem::operator new(std::size_t /*size*/, void* place) noexcept
     return place;
 }
 
+std::size_t Ext2Filesystem::MetadataCacheSlots() const
+{
+    return cache.SlotCount();
+}
+
 Status Ext2Filesystem::Initialize()
 {
-    if (const Status initialized = cache.Initialize(volume, block_size, CacheBytes / block_size);
+    if (const Status initialized = cache.Initialize(
+            volume, block_size, volume.CachesBlocks() ? 0 : CacheBytes / block_size);
         !initialized)
     {
         return initialized;

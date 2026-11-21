@@ -546,6 +546,11 @@ void CachedDevice::Detach()
     cache = nullptr;
 }
 
+bool CachedDevice::CachesBlocks() const
+{
+    return cache != nullptr;
+}
+
 std::uint32_t CachedDevice::SectorSize() const
 {
     return lower == nullptr ? 512 : lower->SectorSize();

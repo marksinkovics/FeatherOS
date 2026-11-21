@@ -10,6 +10,7 @@
 #include "tests/ext2_image.h"
 #include "tests/filesystem_helpers.h"
 #include "tests/memory_device.h"
+#include "tests/page_cache_support.h"
 
 #include <algorithm>
 #include <array>
@@ -455,7 +456,7 @@ TEST_CASE("a jbd2 checksum that does not match in a committed transaction refuse
             }
             made.device->Bytes()[byte] ^= 0x20U;
             const std::vector<std::uint8_t> damaged = BytesOf(*made.device);
-            REQUIRE(ErrorOf(Ext2Type().Mount(*made.device, {.read_only = false})) ==
+            REQUIRE(ErrorOf(Ext2Type().Mount(Mountable(*made.device), {.read_only = false})) ==
                     Error::Corrupt);
             CheckUnchanged(*made.device, damaged);
             REQUIRE(made.device->flush_count == 0);
@@ -515,7 +516,7 @@ TEST_CASE("a malformed journal fails a writable mount before anything is written
     const auto refused = [](Journalled& made, Error error)
     {
         made.original = BytesOf(*made.device);
-        REQUIRE(ErrorOf(Ext2Type().Mount(*made.device, {.read_only = false})) == error);
+        REQUIRE(ErrorOf(Ext2Type().Mount(Mountable(*made.device), {.read_only = false})) == error);
         CheckUnchanged(*made.device, made.original);
         // A read-only mount does not look at the journal.
         MountedFilesystem ext(Ext2Type(), *made.device, true);
@@ -676,7 +677,7 @@ TEST_CASE("a replay stopped at any write replays again to the same volume")
         std::uint64_t writes = 0;
         {
             const FeatherDisk::Result<FeatherDisk::Filesystem*> mounted =
-                Ext2Type().Mount(*whole, {.read_only = false});
+                Ext2Type().Mount(Mountable(*whole), {.read_only = false});
             REQUIRE(mounted.has_value());
             writes = whole->write_count;
             Succeeds(Ext2Type().Unmount(**mounted));
@@ -704,7 +705,8 @@ TEST_CASE("a replay stopped at any write replays again to the same volume")
             INFO("writes allowed " << allowed);
             const std::unique_ptr<MemoryDevice> stopped = CopyOf(*made.device);
             stopped->FailWritesAfter(allowed);
-            REQUIRE(ErrorOf(Ext2Type().Mount(*stopped, {.read_only = false})) == Error::Io);
+            REQUIRE(ErrorOf(Ext2Type().Mount(Mountable(*stopped), {.read_only = false})) ==
+                    Error::Io);
             const std::unique_ptr<MemoryDevice> again = CopyOf(*stopped);
             ReplayByMounting(*again);
             RequireSameBytes(without_sequence(*again), without_sequence(*whole));

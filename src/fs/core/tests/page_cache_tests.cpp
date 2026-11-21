@@ -4,6 +4,7 @@
 #include "fs/page_cache.h"
 #include "fs/partition.h"
 #include "tests/memory_device.h"
+#include "tests/page_cache_support.h"
 
 #include <algorithm>
 #include <array>
@@ -26,92 +27,15 @@ using FeatherDisk::CachedDevice;
 using FeatherDisk::CachePageSize;
 using FeatherDisk::Error;
 using FeatherDisk::PageCache;
-using FeatherDisk::PageSource;
 using FeatherDisk::Status;
 using FeatherDisk::Partition::Range;
 using FeatherDisk::Partition::Volume;
 using FeatherDisk::Tests::MemoryDevice;
+using FeatherDisk::Tests::RecordingDevice;
+using FeatherDisk::Tests::TestPageSource;
 
 constexpr std::uint32_t SectorBytes = 512;
 constexpr std::uint32_t SectorsPerPage = CachePageSize / SectorBytes;
-
-class TestPageSource final : public PageSource
-{
-public:
-    std::uint8_t* AllocatePage() override
-    {
-        if (fail)
-        {
-            return nullptr;
-        }
-        ++allocations;
-        ++outstanding;
-        return new std::uint8_t[CachePageSize];
-    }
-
-    void FreePage(std::uint8_t* page) override
-    {
-        --outstanding;
-        delete[] page;
-    }
-
-    std::size_t Headroom() const override
-    {
-        const std::size_t used = outstanding;
-        return used < budget ? budget - used : 0;
-    }
-
-    std::atomic<std::size_t> outstanding{0};
-    std::atomic<std::size_t> allocations{0};
-    std::atomic<std::size_t> budget{SIZE_MAX};
-    std::atomic<bool> fail{false};
-};
-
-class RecordingDevice final : public BlockDevice
-{
-public:
-    struct Call
-    {
-        bool is_flush;
-        std::uint64_t first_sector;
-        std::vector<std::uint8_t> bytes;
-        bool operator==(const Call&) const = default;
-    };
-
-    explicit RecordingDevice(BlockDevice& below) : lower(below) {}
-
-    std::uint32_t SectorSize() const override
-    {
-        return lower.SectorSize();
-    }
-
-    std::uint64_t SectorCount() const override
-    {
-        return lower.SectorCount();
-    }
-
-    Status Read(std::uint64_t first_sector, std::span<std::uint8_t> buffer) override
-    {
-        return lower.Read(first_sector, buffer);
-    }
-
-    Status Write(std::uint64_t first_sector, std::span<const std::uint8_t> data) override
-    {
-        calls.push_back({false, first_sector, {data.begin(), data.end()}});
-        return lower.Write(first_sector, data);
-    }
-
-    Status Flush() override
-    {
-        calls.push_back({true, 0, {}});
-        return lower.Flush();
-    }
-
-    std::vector<Call> calls;
-
-private:
-    BlockDevice& lower;
-};
 
 // One lock around a device that is not safe to share between threads.
 class LockedDevice final : public BlockDevice

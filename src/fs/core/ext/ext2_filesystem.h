@@ -277,6 +277,9 @@ public:
     std::optional<JournalActivity> Activity() const;
     // Only lowers the limits, for tests.
     void LimitJournal(const JournalLimits& limits);
+    // Blocks the metadata cache holds copies of at most, 0 when the device caches them itself;
+    // for tests.
+    std::size_t MetadataCacheSlots() const;
 
     Capabilities GetCapabilities() const override;
     NodeId Root() const override;

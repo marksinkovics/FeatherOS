@@ -8,6 +8,7 @@
 #include "tests/ext2_image.h"
 #include "tests/filesystem_helpers.h"
 #include "tests/memory_device.h"
+#include "tests/page_cache_support.h"
 
 #include <cstdint>
 #include <memory>
@@ -73,7 +74,7 @@ std::string CatOf(MemoryDevice& device, std::string_view path)
 
 Filesystem* MountWritable(MemoryDevice& device)
 {
-    Filesystem* filesystem = Value(Ext2Type().Mount(device, {.read_only = false}));
+    Filesystem* filesystem = Value(Ext2Type().Mount(Mountable(device), {.read_only = false}));
     REQUIRE(filesystem->GetCapabilities().writable);
     return filesystem;
 }

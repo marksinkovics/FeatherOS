@@ -11,6 +11,7 @@
 #include "tests/filesystem_helpers.h"
 #include "tests/memory_device.h"
 #include "tests/partition_image.h"
+#include "tests/page_cache_support.h"
 
 #include <array>
 #include <cstdint>
@@ -484,7 +485,8 @@ TEST_CASE("ext2 refuses volumes with incompatible features it does not support")
         raw.Store32(1024 + 96, raw.Load32(1024 + 96) | feature);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(bytes);
         INFO("feature " << feature);
-        REQUIRE(ErrorOf(Ext2Type().Mount(*device, {.read_only = true})) == Error::Unsupported);
+        REQUIRE(ErrorOf(Ext2Type().Mount(Mountable(*device), {.read_only = true})) ==
+                Error::Unsupported);
     }
 
     // Read-only compatible features that are unknown still leave the volume readable.
@@ -505,7 +507,8 @@ TEST_CASE("ext2 probes only ext2 volumes and needs blocks of whole sectors")
 #else
     Fat16Image fat;
     REQUIRE_FALSE(Ext2Type().Probe(fat.Device()));
-    REQUIRE(ErrorOf(Ext2Type().Mount(fat.Device(), {.read_only = true})) == Error::Unsupported);
+    REQUIRE(ErrorOf(Ext2Type().Mount(Mountable(fat.Device()), {.read_only = true})) ==
+            Error::Unsupported);
     MemoryDevice blank(512, 64);
     REQUIRE_FALSE(Ext2Type().Probe(blank));
     MemoryDevice tiny(512, 3);
@@ -513,7 +516,7 @@ TEST_CASE("ext2 probes only ext2 volumes and needs blocks of whole sectors")
     MemoryDevice unreadable(512, 64);
     unreadable.FailReadsFrom(0);
     REQUIRE_FALSE(Ext2Type().Probe(unreadable));
-    REQUIRE(ErrorOf(Ext2Type().Mount(unreadable, {.read_only = true})) == Error::Io);
+    REQUIRE(ErrorOf(Ext2Type().Mount(Mountable(unreadable), {.read_only = true})) == Error::Io);
 
     // With 4096-byte sectors the superblock is the second quarter of sector 0.
     const std::unique_ptr<MemoryDevice> large_sectors = DeviceFrom(LoadExtImage("4k"), 4096);
@@ -524,7 +527,8 @@ TEST_CASE("ext2 probes only ext2 volumes and needs blocks of whole sectors")
     }
     const std::unique_ptr<MemoryDevice> small_blocks = DeviceFrom(LoadExtImage("1k"), 4096);
     REQUIRE(Ext2Type().Probe(*small_blocks));
-    REQUIRE(ErrorOf(Ext2Type().Mount(*small_blocks, {.read_only = true})) == Error::Unsupported);
+    REQUIRE(ErrorOf(Ext2Type().Mount(Mountable(*small_blocks), {.read_only = true})) ==
+            Error::Unsupported);
 #endif
 }
 
@@ -743,7 +747,7 @@ TEST_CASE("damaged ext2 counts, groups and root refuse the mount")
         RawVolume raw{bytes};
         damage(raw);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(bytes);
-        return ErrorOf(Ext2Type().Mount(*device, {.read_only = true}));
+        return ErrorOf(Ext2Type().Mount(Mountable(*device), {.read_only = true}));
     };
     REQUIRE(mount_error([](RawVolume& raw) { raw.Store32(1024, raw.InodeCount() + 1); }) ==
             Error::Corrupt);
@@ -825,7 +829,8 @@ int DamageAtRandom(std::string_view variant)
         // Damage to the feature words can change which name probes the volume.
         if (Ext2Type().Probe(*device) || Ext3Type().Probe(*device) || Ext4Type().Probe(*device))
         {
-            const Result<Filesystem*> filesystem = Ext2Type().Mount(*device, {.read_only = true});
+            const Result<Filesystem*> filesystem =
+                Ext2Type().Mount(Mountable(*device), {.read_only = true});
             if (filesystem)
             {
                 ++mounted;

@@ -13,6 +13,7 @@
 #include "tests/ext2_image.h"
 #include "tests/filesystem_helpers.h"
 #include "tests/memory_device.h"
+#include "tests/page_cache_support.h"
 
 #include <algorithm>
 #include <array>
@@ -76,7 +77,7 @@ class Mounted
 public:
     explicit Mounted(MemoryDevice& volume, bool read_only = false)
     {
-        filesystem = Value(Ext2Type().Mount(volume, {.read_only = read_only}));
+        filesystem = Value(Ext2Type().Mount(Mountable(volume), {.read_only = read_only}));
     }
     ~Mounted()
     {

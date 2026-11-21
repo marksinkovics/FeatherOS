@@ -16,7 +16,8 @@ namespace FeatherDisk
 
 // A few blocks of a volume kept in memory, the least recently used one replaced first, for
 // metadata that is read again and again. Callers get copies: a host lock covers only the copying,
-// never a device call, so operations may run at the same time.
+// never a device call, so operations may run at the same time. With no slots it keeps nothing and
+// passes every call to the device, for a device that caches blocks itself.
 class BlockCache
 {
 public:
@@ -27,10 +28,11 @@ public:
     BlockCache(const BlockCache&) = delete;
     BlockCache& operator=(const BlockCache&) = delete;
 
-    // block_size is a whole number of the device's sectors; slot_count is clamped to
-    // 1..MaximumSlots.
+    // block_size is a whole number of the device's sectors; slot_count 0 passes through, any
+    // other is clamped to 1..MaximumSlots.
     Status Initialize(BlockDevice& volume, std::uint32_t block_size, std::size_t slot_count);
     std::uint32_t BlockSize() const;
+    std::size_t SlotCount() const;
 
     // Copies out.size() bytes of block, from offset. On a miss the whole block is read into
     // scratch, which is one block long and may be out itself when out is the whole block.

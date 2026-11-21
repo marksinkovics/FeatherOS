@@ -69,9 +69,11 @@ struct Reference
     std::unique_ptr<MemoryDevice> final_device;
 };
 
+// With page_cache_pages, the volume is mounted over a CachedDevice with that many pages, as in the
+// kernel. A volume without a journal has an empty JournalActivity.
 Reference RunReference(MemoryDevice& base, const Scenario& scenario,
                        std::optional<JournalLimits> limits, bool keep_trees = true,
-                       bool skip_no_space = false);
+                       bool skip_no_space = false, std::size_t page_cache_pages = 0);
 
 struct Crashed
 {
@@ -81,7 +83,8 @@ struct Crashed
 
 // The scenario on a copy of base whose writes stop after cut, to the unmount.
 Crashed RunCrashed(MemoryDevice& base, const Scenario& scenario, std::uint64_t cut,
-                   std::optional<JournalLimits> limits, bool skip_no_space = false);
+                   std::optional<JournalLimits> limits, bool skip_no_space = false,
+                   std::size_t page_cache_pages = 0);
 
 // The tree is that of `synced` changes (whose blocks may hold bytes of the next change's
 // in-place writes) or of one more, whole.
@@ -94,6 +97,11 @@ void RequireLossyRecovery(const Crashed& crashed, std::uint64_t cut, const std::
                           std::size_t block_size);
 std::uint32_t BlockSizeOf(MemoryDevice& device);
 std::unique_ptr<MemoryDevice> Prepared(std::string_view variant);
+
+// The first step after which changed(before, after) holds of the journal's activity, or 0.
+std::size_t
+FirstStepWhere(const Reference& reference,
+               const std::function<bool(const JournalActivity&, const JournalActivity&)>& changed);
 
 // At most budget of the cuts from first to last, all of them when there are fewer.
 std::vector<std::uint64_t> CutsBetween(std::uint64_t first, std::uint64_t last, std::size_t budget);

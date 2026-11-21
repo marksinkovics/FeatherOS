@@ -12,6 +12,7 @@
 #include "tests/ext2_image.h"
 #include "tests/filesystem_helpers.h"
 #include "tests/memory_device.h"
+#include "tests/page_cache_support.h"
 
 #include <algorithm>
 #include <array>
@@ -415,7 +416,8 @@ TEST_CASE("an ext4 volume stopped while a directory drops its index needs only e
         INFO("stopped after write " << cut << " of " << total);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(original);
         device->FailWritesAfter(cut);
-        const Result<Filesystem*> mounted = Ext2Type().Mount(*device, {.read_only = false});
+        const Result<Filesystem*> mounted =
+            Ext2Type().Mount(Mountable(*device), {.read_only = false});
         REQUIRE(mounted.has_value());
         scenario(**mounted);
         const std::unique_ptr<MemoryDevice> stopped = CopyOf(*device);

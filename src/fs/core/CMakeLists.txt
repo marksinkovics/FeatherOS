@@ -171,12 +171,22 @@ if (NOT FEATHERDISK_CATCH2_TARGET)
     set(FEATHERDISK_CATCH2_TARGET Catch2::Catch2WithMain)
 endif ()
 
+set(featherdisk_helper_tests
+    tests/crash_helpers.cpp
+    tests/crash_scenarios.cpp
+    tests/ext2_image.cpp
+    tests/fat_image.cpp
+    tests/filesystem_helpers.cpp
+    tests/memory_device.cpp
+    tests/page_cache_support.cpp
+    tests/partition_image.cpp
+)
+
 add_executable(featherdisk_core_tests
+    ${featherdisk_helper_tests}
     tests/block_cache_tests.cpp
     tests/common_tests.cpp
-    tests/crash_helpers.cpp
     tests/ext2_format_tests.cpp
-    tests/ext2_image.cpp
     tests/ext2_image_tests.cpp
     tests/ext2_tree_tests.cpp
     tests/ext2_write_tests.cpp
@@ -191,45 +201,75 @@ add_executable(featherdisk_core_tests
     tests/ext_rename_crash_tests.cpp
     tests/ext_transaction_crash_tests.cpp
     tests/ext_transaction_tests.cpp
-    tests/fat_image.cpp
     tests/fat_mtools_tests.cpp
     tests/fat_names_tests.cpp
     tests/fat_tests.cpp
-    tests/filesystem_helpers.cpp
-    tests/memory_device.cpp
+    tests/page_cache_crash_tests.cpp
+    tests/page_cache_metadata_tests.cpp
     tests/page_cache_tests.cpp
-    tests/partition_image.cpp
     tests/partition_tests.cpp
 )
-target_include_directories(featherdisk_core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(featherdisk_core_tests PRIVATE ${featherdisk_warnings})
-find_package(Threads REQUIRED)
-target_link_libraries(featherdisk_core_tests PRIVATE
-    featherdisk_core featherdisk_standard_host ${FEATHERDISK_CATCH2_TARGET} Threads::Threads)
 
-if (featherdisk_fat16_image)
-    add_dependencies(featherdisk_core_tests featherdisk_test_images)
-    target_compile_definitions(featherdisk_core_tests PRIVATE
-        FEATHERDISK_MTOOLS_IMAGE="${featherdisk_fat16_image}"
-        FEATHERDISK_MTYPE="${FEATHERDISK_MTYPE}"
-        FEATHERDISK_MDIR="${FEATHERDISK_MDIR}"
-        FEATHERDISK_TEST_OUTPUT="${CMAKE_CURRENT_BINARY_DIR}"
-    )
-endif ()
-if (featherdisk_ext_images)
-    add_dependencies(featherdisk_core_tests featherdisk_ext_test_images)
-    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ext-work")
-    target_compile_definitions(featherdisk_core_tests PRIVATE
-        FEATHERDISK_EXT_IMAGES="${featherdisk_ext_image_directory}"
-        FEATHERDISK_EXT_WORK="${CMAKE_CURRENT_BINARY_DIR}/ext-work"
-        FEATHERDISK_DEBUGFS="${FEATHERDISK_DEBUGFS}")
-    if (FEATHERDISK_E2FSCK)
-        target_compile_definitions(featherdisk_core_tests PRIVATE
-            FEATHERDISK_E2FSCK="${FEATHERDISK_E2FSCK}")
+# The kernel's configuration: every ext volume is mounted over a CachedDevice, so the block cache
+# has no slots. The suites that mount ext volumes run again unchanged; ext2_image_tests also
+# mounts the FAT16 image of fat_image.cpp.
+add_executable(featherdisk_core_tests_page_cache
+    ${featherdisk_helper_tests}
+    tests/ext2_image_tests.cpp
+    tests/ext2_tree_tests.cpp
+    tests/ext2_write_tests.cpp
+    tests/ext4_extent_tests.cpp
+    tests/ext4_extent_write_tests.cpp
+    tests/ext4_layout_tests.cpp
+    tests/ext4_write_tests.cpp
+    tests/ext_journal_tests.cpp
+    tests/ext_journal_write_tests.cpp
+    tests/ext_orphan_tests.cpp
+    tests/ext_remount_tests.cpp
+    tests/ext_rename_crash_tests.cpp
+    tests/ext_transaction_crash_tests.cpp
+    tests/ext_transaction_tests.cpp
+)
+target_compile_definitions(featherdisk_core_tests_page_cache PRIVATE FEATHERDISK_TEST_PAGE_CACHE)
+
+find_package(Threads REQUIRED)
+foreach (featherdisk_target featherdisk_core_tests featherdisk_core_tests_page_cache)
+    target_include_directories(${featherdisk_target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_options(${featherdisk_target} PRIVATE ${featherdisk_warnings})
+    target_link_libraries(${featherdisk_target} PRIVATE
+        featherdisk_core featherdisk_standard_host ${FEATHERDISK_CATCH2_TARGET} Threads::Threads)
+    if (featherdisk_fat16_image)
+        add_dependencies(${featherdisk_target} featherdisk_test_images)
+        target_compile_definitions(${featherdisk_target} PRIVATE
+            FEATHERDISK_MTOOLS_IMAGE="${featherdisk_fat16_image}"
+            FEATHERDISK_MTYPE="${FEATHERDISK_MTYPE}"
+            FEATHERDISK_MDIR="${FEATHERDISK_MDIR}"
+            FEATHERDISK_TEST_OUTPUT="${CMAKE_CURRENT_BINARY_DIR}"
+        )
     endif ()
-endif ()
+    if (featherdisk_ext_images)
+        # Two test programs may run at once, and each names its scratch files by test.
+        if (featherdisk_target STREQUAL featherdisk_core_tests)
+            set(featherdisk_ext_work "${CMAKE_CURRENT_BINARY_DIR}/ext-work")
+        else ()
+            set(featherdisk_ext_work "${CMAKE_CURRENT_BINARY_DIR}/ext-work-page-cache")
+        endif ()
+        add_dependencies(${featherdisk_target} featherdisk_ext_test_images)
+        file(MAKE_DIRECTORY "${featherdisk_ext_work}")
+        target_compile_definitions(${featherdisk_target} PRIVATE
+            FEATHERDISK_EXT_IMAGES="${featherdisk_ext_image_directory}"
+            FEATHERDISK_EXT_WORK="${featherdisk_ext_work}"
+            FEATHERDISK_DEBUGFS="${FEATHERDISK_DEBUGFS}")
+        if (FEATHERDISK_E2FSCK)
+            target_compile_definitions(${featherdisk_target} PRIVATE
+                FEATHERDISK_E2FSCK="${FEATHERDISK_E2FSCK}")
+        endif ()
+    endif ()
+endforeach ()
 if (COMMAND catch_discover_tests)
     catch_discover_tests(featherdisk_core_tests TEST_PREFIX "fs.core:")
+    catch_discover_tests(featherdisk_core_tests_page_cache TEST_PREFIX "fs.core.page-cache:")
 else ()
     add_test(NAME fs.core COMMAND featherdisk_core_tests)
+    add_test(NAME fs.core.page-cache COMMAND featherdisk_core_tests_page_cache)
 endif ()

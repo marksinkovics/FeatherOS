@@ -51,6 +51,9 @@ public:
     // Called after a successful read has copied its bytes out, with the sector range; a test
     // changes the device here to interleave with a read. It may reset itself.
     std::function<void(std::uint64_t first_sector, std::uint64_t sector_count)> on_read;
+    // A hash of every accepted write (its sector and bytes) and every flush, in order, so two runs
+    // can be compared for sending the device the same calls.
+    std::uint64_t call_digest = 14695981039346656037ULL;
     std::uint32_t flush_count = 0;
     std::uint64_t write_count = 0;
     // write_count at each Flush, which marks where a commit or checkpoint reached the device.
@@ -65,6 +68,7 @@ private:
     };
 
     bool Covers(std::uint64_t first_sector, std::size_t byte_count) const;
+    void Digest(std::uint64_t tag, std::span<const std::uint8_t> data);
 
     std::uint32_t sector_size;
     std::uint64_t failing_sector;
