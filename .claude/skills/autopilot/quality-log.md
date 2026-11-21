@@ -50,4 +50,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 34e43c0 | M30 P6 s1 core PageCache, CachedDevice, PageSource | opus | sonnet | 0 | 3/3 | |
 | 8b8aeed | M30 P6 s2 core metadata path over the page cache, pass-through BlockCache | opus | sonnet | 0 | 3/3 | |
 | 5373130 | M30 P6 s3 kernel frames, sizing, reclaim, device counters | opus | sonnet | 0 | 2/2 | |
-| (this) | M30 P6 s4 CoreDriver over CachedDevice, overlap, Cached in meminfo | opus | sonnet | 0 | 4/4 | |
+| 2436d5d | M30 P6 s4 CoreDriver over CachedDevice, overlap, Cached in meminfo | opus | sonnet | 0 | 4/4 | |
+| (this) | M30 P6 s5 QEMU page-cache hit and reclaim checks, docs | opus | sonnet | 0 | 2/2 | |

@@ -304,7 +304,7 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
 #if defined(FEATHEROS_KERNEL_TESTS)
     if (KernelTest::Selected(KernelTest::Mode::Storage))
     {
-        KernelTest::RunStorageTests();
+        KernelTest::RunStorageTests(boot_info.hhdm_offset);
     }
 #endif
 }

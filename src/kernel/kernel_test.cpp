@@ -21,6 +21,8 @@
 #include "kernel/scheduler.h"
 #include "kernel/storage/block_device.h"
 #include "kernel/storage/core_block_device.h"
+#include "kernel/storage/page_cache.h"
+#include "kernel/storage/page_cache.h"
 #include "kernel/string/format.h"
 #include "kernel/string/memory_functions.h"
 #include "kernel/terminal/terminal.h"
@@ -1967,11 +1969,221 @@ void CheckSecondExt4(uint64_t boot_count, Ext2Data* data)
     Serial::Write(message);
 }
 
+bool FatFileMatches(uint64_t boot_count)
+{
+    CheckPersistentFile(boot_count);
+    return true;
+}
+
+bool Ext2BigFileMatches(uint64_t)
+{
+    return BigFileMatches("/ext2/big.txt", "ext2 line ", 5000);
+}
+
+// /samples/extents.bin: 1 KiB blocks of 32-byte lines, every fourth block a hole.
+bool ExtentsFileMatches(uint64_t)
+{
+    constexpr uint32_t Blocks = 2048;
+    constexpr uint32_t BlockSize = 1024;
+    constexpr uint32_t LineSize = 32;
+    VFS::FileHandle file{};
+    if (!VFS::Open("/samples/extents.bin", &file) || file.size != uint64_t{Blocks} * BlockSize)
+    {
+        VFS::Close(&file);
+        return false;
+    }
+    bool matches = true;
+    for (uint32_t block = 0; matches && block < Blocks; ++block)
+    {
+        char bytes[BlockSize];
+        uint64_t length = 0;
+        matches = VFS::Read(&file, bytes, BlockSize, &length) && length == BlockSize;
+        for (uint32_t line = 0; matches && line < BlockSize / LineSize; ++line)
+        {
+            char expected[LineSize + 1] = "ext4 block 0000 line 00 extents\n";
+            if (block % 4 == 3)
+            {
+                for (char& byte : expected)
+                {
+                    byte = '\0';
+                }
+            }
+            else
+            {
+                uint32_t value = block;
+                for (uint32_t digit = 0; digit < 4; ++digit)
+                {
+                    expected[14 - digit] = static_cast<char>('0' + value % 10);
+                    value /= 10;
+                }
+                expected[21] = static_cast<char>('0' + line / 10);
+                expected[22] = static_cast<char>('0' + line % 10);
+            }
+            for (uint32_t index = 0; matches && index < LineSize; ++index)
+            {
+                matches = bytes[line * LineSize + index] == expected[index];
+            }
+        }
+    }
+    VFS::Close(&file);
+    return matches;
+}
+
+// Nothing else reads the disk while the storage test runs, so the counter moves only for these
+// reads: a cold read must fetch at least the file's data sectors, the second must fetch none.
+void CheckCachedRead(Filesystem::CoreDriver* volume, bool (*reads)(uint64_t), uint64_t boot_count,
+                     uint64_t sectors)
+{
+    if (volume == nullptr)
+    {
+        Panic("A page cache check found no volume");
+    }
+    volume->InvalidateCache();
+    const uint64_t cold_start = BlockDevice::DeviceStatistics().read_sectors;
+    if (!reads(boot_count))
+    {
+        Panic("A file read back different contents with a cold page cache");
+    }
+    const uint64_t warm_start = BlockDevice::DeviceStatistics().read_sectors;
+    const uint64_t hits = BlockDevice::Cache().Statistics().hits;
+    if (warm_start - cold_start < sectors)
+    {
+        Panic("A cold read of a file did not read its sectors from the disk");
+    }
+    if (!reads(boot_count))
+    {
+        Panic("A file read back different contents from the page cache");
+    }
+    if (BlockDevice::DeviceStatistics().read_sectors != warm_start)
+    {
+        Panic("A second read of a file went to the disk");
+    }
+    if (BlockDevice::Cache().Statistics().hits <= hits)
+    {
+        Panic("A second read of a file did not hit the page cache");
+    }
+}
+
+// Before the writeback task starts. The ext2 volume is mounted read-only just for this check.
+void CheckPageCache(uint64_t boot_count)
+{
+    if (!BlockDevice::CacheReady())
+    {
+        Panic("The storage test needs the page cache");
+    }
+    // 2 MiB of which a quarter is holes, which have no sectors.
+    constexpr uint64_t ExtentsSectors = 3 * 2048 * 1024 / 4 / BlockDevice::SectorSize;
+    // 200 lines of 24 to 26 bytes.
+    constexpr uint64_t FatSectors = 9;
+    // 5000 lines of 16 bytes.
+    constexpr uint64_t Ext2Sectors = 5000 * 16 / BlockDevice::SectorSize;
+    CheckCachedRead(Filesystem::Drivers::VolumeOf(VFS::MountedAt("/")), ExtentsFileMatches,
+                    boot_count, ExtentsSectors);
+    CheckCachedRead(Filesystem::Drivers::VolumeOf(VFS::MountedAt(FatPoint)), FatFileMatches,
+                    boot_count, FatSectors);
+    if (VFS::Mount("ext2", "vda6", "/ext2", Filesystem::MountMode::ReadOnly) !=
+        VFS::MountResult::Done)
+    {
+        Panic("Mounting the ext2 partition for the page cache check failed");
+    }
+    CheckCachedRead(Filesystem::Drivers::VolumeOf(VFS::MountedAt("/ext2")), Ext2BigFileMatches,
+                    boot_count, Ext2Sectors);
+    if (VFS::Unmount("/ext2") != VFS::MountResult::Done)
+    {
+        Panic("Unmounting the ext2 partition after the page cache check failed");
+    }
+    char message[96];
+    if (!String::FormatTo(message, sizeof(message),
+                          "KERN/STORAGE: second read of a large file did no disk reads; boot {}\n",
+                          boot_count))
+    {
+        Panic("Page cache message formatting failed");
+    }
+    Serial::Write(message);
+}
+
+// Frames are chained through directory frames of their own, so that taking every frame needs
+// neither the heap nor a touch of each frame.
+constexpr uint64_t DirectoryCapacity = 510;
+
+struct FrameDirectory
+{
+    uint64_t next;
+    uint64_t count;
+    uint64_t frames[DirectoryCapacity];
+};
+static_assert(sizeof(FrameDirectory) == Memory::PageSize);
+
+FrameDirectory* DirectoryAt(uint64_t hhdm_offset, uint64_t physical)
+{
+    return reinterpret_cast<FrameDirectory*>(static_cast<uintptr_t>(hhdm_offset + physical));
+}
+
+// Runs right after CheckPageCache, with its pages cached: taking every frame in the machine must
+// empty the cache, nothing else may allocate meanwhile, and the cache must work afterwards.
+void CheckCacheReclaim(uint64_t boot_count, uint64_t hhdm_offset)
+{
+    const uint64_t cached = BlockDevice::Cache().Statistics().pages;
+    const uint64_t free_before = Memory::FreeFrameCount();
+    uint64_t head = 0;
+    uint64_t taken = 0;
+    uint64_t frame = 0;
+    while (Memory::AllocatePageFrame(&frame))
+    {
+        ++taken;
+        FrameDirectory* const directory = head != 0 ? DirectoryAt(hhdm_offset, head) : nullptr;
+        if (directory != nullptr && directory->count < DirectoryCapacity)
+        {
+            directory->frames[directory->count++] = frame;
+        }
+        else
+        {
+            FrameDirectory* const fresh = DirectoryAt(hhdm_offset, frame);
+            fresh->next = head;
+            fresh->count = 0;
+            head = frame;
+        }
+    }
+    const uint64_t left = BlockDevice::Cache().Statistics().pages;
+    while (head != 0)
+    {
+        const FrameDirectory* const directory = DirectoryAt(hhdm_offset, head);
+        const uint64_t next = directory->next;
+        for (uint64_t index = 0; index < directory->count; ++index)
+        {
+            Memory::FreePageFrame(directory->frames[index]);
+        }
+        Memory::FreePageFrame(head);
+        head = next;
+    }
+    // The file's data sectors alone are 3 of every 4 KiB.
+    if (cached < 384 || taken + 32 < free_before + cached)
+    {
+        Panic("Taking every frame did not reclaim the page cache");
+    }
+    if (left != 0 || Memory::FreeFrameCount() != free_before + cached)
+    {
+        Panic("The page cache kept pages or frames leaked while memory was exhausted");
+    }
+    if (!ExtentsFileMatches(boot_count))
+    {
+        Panic("A file read back different contents after the page cache was reclaimed");
+    }
+    char message[96];
+    if (!String::FormatTo(message, sizeof(message),
+                          "KERN/STORAGE: allocation reclaimed the page cache; boot {}\n",
+                          boot_count))
+    {
+        Panic("Reclaim message formatting failed");
+    }
+    Serial::Write(message);
+}
+
 } // namespace
 
 // Each boot reads the previous boot's count from the scratch sector, so running twice on one disk
 // image shows that writes persist across a restart.
-void RunStorageTests()
+void RunStorageTests(uint64_t hhdm_offset)
 {
     uint8_t sector[BlockDevice::SectorSize];
     if (!BlockDevice::ReadSector(ScratchSector, sector))
@@ -2038,6 +2250,8 @@ void RunStorageTests()
     }
     FillExt2Data(data->bytes);
     CheckRootFile();
+    CheckPageCache(boot_count);
+    CheckCacheReclaim(boot_count, hhdm_offset);
     CheckRoot(boot_count, &*data);
     CheckEtc(boot_count);
     CheckExt3AndExt2(boot_count, &*data);

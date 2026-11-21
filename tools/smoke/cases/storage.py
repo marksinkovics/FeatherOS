@@ -38,6 +38,12 @@ DISABLED_FILE = b"# storage test\ndhcp\n"
 SERVICE_MARKER = "# storage-service-marker"
 DISABLED_MESSAGE = "init: /etc/init.disabled: not starting dhcp"
 SECOND_EXT4_MESSAGE = "KERN/STORAGE: two ext4 volumes mounted at once; boot "
+PAGE_CACHE_MESSAGE = (
+    "KERN/STORAGE: second read of a large file did no disk reads; boot "
+)
+CACHE_RECLAIM_MESSAGE = (
+    "KERN/STORAGE: allocation reclaimed the page cache; boot "
+)
 STORAGE_MESSAGE = (
     "KERN/STORAGE: sector, FAT16, ext2, ext3 and ext4 file writes verified; "
     "boot count "
@@ -609,12 +615,17 @@ class Storage(Case):
         ext2_error = VerifyExt2(self.args.disk, self.boot)
         if ext2_error is not None:
             return f"ext2 check: {ext2_error}"
-        second = f"{SECOND_EXT4_MESSAGE}{self.boot}"
-        if (
-            re.search(rf"^{re.escape(second)}\r?$", output, re.MULTILINE)
-            is None
+        for prefix in (
+            SECOND_EXT4_MESSAGE,
+            PAGE_CACHE_MESSAGE,
+            CACHE_RECLAIM_MESSAGE,
         ):
-            return f"expected '{second}'"
+            expected = f"{prefix}{self.boot}"
+            if (
+                re.search(rf"^{re.escape(expected)}\r?$", output, re.MULTILINE)
+                is None
+            ):
+                return f"expected '{expected}'"
         if "VFS: two volume locks" in output:
             return "the kernel panicked on two volume locks"
         journalled_error = VerifyJournalled(
