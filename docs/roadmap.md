@@ -459,11 +459,15 @@ Out of scope for Part 3:
 
 ### 14. USB Host And HID Input
 
-- Add xHCI host-controller support and enumerate USB devices on both architectures.
-- Implement USB HID keyboard reports and route key events through the shared input queue from M4.
-- Add QEMU xHCI keyboard devices to both machine configurations for repeatable tests.
+The goal is to boot a real x86-64 UEFI laptop and type on it. The xHCI driver and USB core serve both architectures (QEMU `qemu-xhci`; PCIe ECAM on AArch64 virt) and stay open to bulk transfers for M19 Part 2. Design: `docs/design/M14.md`. Steps (design section 5): 1 the PCI layer and AArch64 ECAM; 2 DMA buffers, MSI/MSI-X and AArch64 INTx; 3 rings, contexts and a simulated controller; 4 controller bring-up and root-port enumeration; 5 the USB core, stalls, hot-plug and `/proc/usb`; 6 HID parsing, key map and repeat; 7 the HID driver and keys into the shell; 8 the pointer queue and `/dev/mouse`; 9 hubs; 10 real hardware (i8042, Intel routing, a tmpfs root without a disk, `dmesg`, the stick image and the checklist). The user's choices (2026-11-21): a UEFI laptop first, hubs, keyboard and mouse, QEMU tests on both targets define done, `/dev/mouse` with Linux `input_event` records, a tmpfs root without a disk, x2APIC only if it blocks the laptop.
 
-**Complete when:** both targets enumerate a QEMU USB keyboard and deliver key events through the shared input path.
+- **Part 1: PCI and interrupts.** A shared PCI layer (enumeration, BARs, capabilities) over port I/O on x86-64 and the device tree's ECAM on AArch64; DMA buffers with address limits; MSI/MSI-X on both (local APIC vectors, GICv2m) and INTx on AArch64. Tested with QEMU's `edu` device (`PCI_TEST`).
+- **Part 2: xHCI and the USB core.** Firmware handoff, reset, scratchpads, 32/64-byte contexts, command/event/transfer rings, root-port enumeration, control and interrupt transfers, stall and timeout recovery, root-port hot-plug, `/proc/usb` and `lsusb`; a kernel task drains events (interrupts or polling). Ring and context logic is host-tested against a simulated controller.
+- **Part 3: HID keyboard and mouse.** Boot protocol plus a minimal report-descriptor parser, the HID-usage to key-code map into the existing keyboard path, software key repeat, Caps/Num Lock LEDs, and a pointer-event queue read from `/dev/mouse` as Linux-layout `input_event` records (`<featheros/input.h>`, `mousetest`).
+- **Part 4: hubs.** USB 2.0 and 3.x hubs, transaction translators for low- and full-speed devices behind high-speed hubs, hot-plug behind hubs.
+- **Part 5: real hardware.** i8042 setup after the USB handoff, Intel PCH port routing, booting without a disk, a `dmesg` ring, interrupt fallbacks, a USB-stick image and the laptop checklist (`docs/hardware.md`). I2C-HID keyboards and touchpads are out of scope.
+
+**Complete when:** on both targets the matrix enumerates `usb-kbd` and `usb-mouse` on `qemu-xhci`, directly and behind `usb-hub`; keys typed on the USB keyboard reach the shell with PS/2 and virtio-keyboard absent; `mousetest` reads mouse events; `device_add`/`device_del` hot-plug works; the MSI-off fallback and report-protocol cases pass; and the laptop checklist has been run once and its log recorded.
 
 ### 15. Terminal Layout And Status Bar (Complete)
 
