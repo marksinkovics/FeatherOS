@@ -69,7 +69,7 @@ void SaveImage(MemoryDevice& device, const std::string& path)
 // Runs an mtools program on image and returns what it printed.
 std::string Mtools(const char* program, const std::string& image, const std::string& arguments)
 {
-    const std::string output = std::string(FEATHERDISK_TEST_OUTPUT) + "/mtools-output.txt";
+    const std::string output = image + ".mtools-output.txt";
     const std::string command = std::string("\"") + program + "\" -i \"" + image + "\" " +
                                 arguments + " > \"" + output + "\"";
     REQUIRE(std::system(command.c_str()) == 0);
