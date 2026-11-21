@@ -7,9 +7,11 @@
 #include "kernel/filesystem/tmpfs.h"
 #include "kernel/filesystem/vfs.h"
 #include "kernel/storage/block_device.h"
+#include "kernel/storage/page_cache.h"
 
 #include "support/filesystem_support.h"
 #include "support/heap_failure.h"
+#include "support/page_cache_host.h"
 
 #include "fs/block_device.h"
 #include "fs/ext2.h"
@@ -21,6 +23,8 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <set>
@@ -29,6 +33,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+
+#include <unistd.h>
 
 namespace
 {
@@ -46,6 +52,8 @@ constexpr uint32_t DataStartSector = RootDirectorySector + RootDirectorySectors;
 
 std::vector<std::array<uint8_t, FeatherOS::BlockDevice::SectorSize>> disk;
 std::atomic<uint32_t> flush_count = 0;
+std::atomic<uint64_t> read_sector_count = 0;
+std::atomic<uint64_t> write_sector_count = 0;
 bool writes_fail = false;
 bool reads_fail = false;
 std::function<void(uint64_t, const void*)> on_write;
@@ -223,6 +231,7 @@ uint64_t SectorCount()
 
 bool ReadSector(uint64_t sector, void* buffer)
 {
+    ++read_sector_count;
     if (buffer == nullptr || sector >= disk.size() || reads_fail)
     {
         return false;
@@ -238,6 +247,7 @@ bool WriteSector(uint64_t sector, const void* buffer)
     {
         return false;
     }
+    ++write_sector_count;
     if (on_write)
     {
         on_write(sector, buffer);
@@ -588,6 +598,7 @@ TEST_CASE("FAT16 stops a write cleanly when the disk is full")
             ++marked;
         }
     }
+    HostPageCache::InvalidateAll();
     REQUIRE(FreeDiskBlocks() == 1);
 
     FeatherOS::VFS::FileHandle file{};
@@ -605,6 +616,7 @@ TEST_CASE("FAT16 refuses to free a looping cluster chain")
     MakeFat16Disk(std::string(700, 'x'));
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
     WriteLittleEndian16(disk[PartitionStart + 1].data() + 6, 2);
+    HostPageCache::InvalidateAll();
     REQUIRE_FALSE(FeatherOS::VFS::Remove("/BLOCK.TXT"));
 }
 
@@ -2746,6 +2758,7 @@ void CheckFailedReopen(const char* point)
     FeatherOS::Files::Table table{};
     {
         const ReadFailureGuard guard;
+        HostPageCache::InvalidateAll();
         reads_fail = true;
         REQUIRE(FeatherOS::Files::Remount(point, ReadWrite) == User::SyscallErrorInputOutput);
     }
@@ -3967,6 +3980,285 @@ TEST_CASE("the periodic sync leaves FAT16 alone")
     const uint32_t flushes = flush_count;
     REQUIRE(FeatherOS::Files::SyncPeriodic() == 0);
     REQUIRE(flush_count == flushes);
+}
+
+namespace
+{
+
+uint64_t DiskReads()
+{
+    return read_sector_count;
+}
+
+FeatherDisk::PageCacheStatistics CacheStatistics()
+{
+    return FeatherOS::BlockDevice::Cache().Statistics();
+}
+
+void CheckSecondReadHits(const char* path)
+{
+    HostPageCache::InvalidateAll();
+    uint64_t before = DiskReads();
+    const std::string first = ReadWhole(path);
+    REQUIRE(DiskReads() > before);
+    FeatherOS::VFS::FileInfo info{};
+    REQUIRE(FeatherOS::VFS::Stat(path, &info));
+    REQUIRE(info.size == first.size());
+
+    before = DiskReads();
+    REQUIRE(ReadWhole(path) == first);
+    REQUIRE(FeatherOS::VFS::Stat(path, &info));
+    REQUIRE(DiskReads() == before);
+
+    // Nothing below the page cache keeps metadata, as the block cache did.
+    HostPageCache::InvalidateAll();
+    REQUIRE(FeatherOS::VFS::Stat(path, &info));
+    REQUIRE(DiskReads() > before);
+}
+
+void Overwrite(const char* path, const std::string& contents)
+{
+    FeatherOS::VFS::FileHandle file{};
+    REQUIRE(FeatherOS::VFS::Open(path, &file));
+    uint64_t written = 0;
+    REQUIRE(FeatherOS::VFS::Write(&file, contents.data(), contents.size(), &written));
+    REQUIRE(written == contents.size());
+    FeatherOS::VFS::Close(&file);
+}
+
+bool DiskHoldsSector(const std::string& contents)
+{
+    return std::any_of(disk.begin(), disk.end(),
+                       [&contents](const auto& sector)
+                       { return std::memcmp(sector.data(), contents.data(), sector.size()) == 0; });
+}
+
+// An overwrite reaches the disk before it returns and leaves the cached copy current.
+void CheckWriteThenRead(const char* path)
+{
+    const std::string old_contents = Pattern(5000);
+    std::string new_contents = Pattern(5000);
+    for (char& letter : new_contents)
+    {
+        letter = static_cast<char>(letter == 'z' ? 'a' : letter + 1);
+    }
+    WriteAndClose(path, old_contents);
+    REQUIRE(ReadWhole(path) == old_contents);
+    REQUIRE_FALSE(DiskHoldsSector(new_contents.substr(0, 512)));
+
+    const uint64_t writes = write_sector_count;
+    Overwrite(path, new_contents);
+    REQUIRE(write_sector_count > writes);
+    REQUIRE(DiskHoldsSector(new_contents.substr(0, 512)));
+    REQUIRE(DiskHoldsSector(new_contents.substr(4096, 512)));
+
+    const uint64_t reads = DiskReads();
+    REQUIRE(ReadWhole(path) == new_contents);
+    REQUIRE(DiskReads() == reads);
+}
+
+#if defined(FEATHEROS_EXT2_TEST_IMAGE)
+bool CleanWithE2fsck([[maybe_unused]] uint32_t start)
+{
+#if defined(FEATHEROS_E2FSCK)
+    const std::string image = (std::filesystem::temp_directory_path() /
+                               ("featheros-cache-" + std::to_string(getpid()) + ".img"))
+                                  .string();
+    {
+        std::ofstream file(image, std::ios::binary);
+        for (size_t sector = start; sector < disk.size(); ++sector)
+        {
+            file.write(reinterpret_cast<const char*>(disk[sector].data()),
+                       static_cast<std::streamsize>(disk[sector].size()));
+        }
+    }
+    const std::string command =
+        std::string("\"") + FEATHEROS_E2FSCK + "\" -fn \"" + image + "\" > /dev/null 2>&1";
+    const int status = std::system(command.c_str());
+    std::remove(image.c_str());
+    return status == 0;
+#else
+    return true;
+#endif
+}
+#endif
+
+} // namespace
+
+TEST_CASE("T18 a second read of a file makes no disk read", "[page-cache]")
+{
+    SECTION("FAT16")
+    {
+        MakeFat16Disk("contents");
+        REQUIRE(FeatherOS::VFS::MountBlockDevice());
+        WriteAndClose("/big.bin", Pattern(20000));
+        CheckSecondReadHits("/big.bin");
+    }
+#if defined(FEATHEROS_EXT2_TEST_IMAGE)
+    SECTION("ext2")
+    {
+        if (!AttachExt2Image())
+        {
+            SKIP("no ext2 image from mke2fs");
+        }
+        REQUIRE(FeatherOS::VFS::MountBlockDevice());
+        REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt", ReadOnly) ==
+                FeatherOS::VFS::MountResult::Done);
+        CheckSecondReadHits("/mnt/big.txt");
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == FeatherOS::VFS::MountResult::Done);
+    }
+    SECTION("ext4")
+    {
+        uint32_t start = 0;
+        if (!MountExt4AtMnt(&start))
+        {
+            SKIP("no ext images from mke2fs");
+        }
+        CheckSecondReadHits("/mnt/hello.txt");
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == FeatherOS::VFS::MountResult::Done);
+    }
+#endif
+}
+
+TEST_CASE("T19 a write reaches the disk at once and the next read hits", "[page-cache]")
+{
+    SECTION("FAT16")
+    {
+        MakeFat16Disk("contents");
+        REQUIRE(FeatherOS::VFS::MountBlockDevice());
+        CheckWriteThenRead("/w.bin");
+    }
+#if defined(FEATHEROS_EXT2_TEST_IMAGE)
+    SECTION("ext4 and its checker")
+    {
+        uint32_t start = 0;
+        if (!MountExt4AtMnt(&start))
+        {
+            SKIP("no ext images from mke2fs");
+        }
+        CheckWriteThenRead("/mnt/w.bin");
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == FeatherOS::VFS::MountResult::Done);
+        REQUIRE(CleanWithE2fsck(start));
+    }
+#endif
+}
+
+TEST_CASE("T20 a rescan, a vanished partition and an unmount drop the right pages", "[page-cache]")
+{
+    SECTION("a moved partition reads its new bytes")
+    {
+        MakeFat16Disk("old contents");
+        REQUIRE(FeatherOS::VFS::MountBlockDevice());
+        REQUIRE(ReadWhole("/BLOCK.TXT") == "old contents");
+
+        MakeFat16Disk("new contents");
+        disk.insert(disk.begin() + 1, Sector{});
+        WriteLittleEndian32(disk[0].data() + 446 + 8, 2);
+        REQUIRE(FeatherOS::VFS::MountBlockDevice());
+        REQUIRE(ReadWhole("/BLOCK.TXT") == "new contents");
+    }
+    SECTION("a vanished partition's pages are freed")
+    {
+        MakeFat16Disk("contents");
+        REQUIRE(FeatherOS::VFS::MountBlockDevice());
+        HostPageCache::InvalidateAll();
+        REQUIRE(ReadWhole("/BLOCK.TXT") == "contents");
+        REQUIRE(CacheStatistics().pages > 0);
+
+        disk[0][446 + 4] = 0;
+        REQUIRE_FALSE(FeatherOS::VFS::MountBlockDevice());
+        REQUIRE(CacheStatistics().pages == 0);
+    }
+#if defined(FEATHEROS_EXT2_TEST_IMAGE)
+    SECTION("an unmount frees the volume's pages and a kept mount keeps them")
+    {
+        if (!AttachExt2Image())
+        {
+            SKIP("no ext2 image from mke2fs");
+        }
+        REQUIRE(FeatherOS::VFS::MountBlockDevice());
+        REQUIRE(FeatherOS::VFS::Mount("ext2", "vda2", "/mnt", ReadOnly) ==
+                FeatherOS::VFS::MountResult::Done);
+        HostPageCache::InvalidateAll();
+        const std::string big = ReadWhole("/mnt/big.txt");
+        const std::string fat = ReadWhole("/BLOCK.TXT");
+        const uint64_t cached = CacheStatistics().pages;
+        REQUIRE(cached >= 100);
+
+        // The mount at /mnt is kept; the FAT16 root is reopened.
+        REQUIRE(FeatherOS::VFS::MountBlockDevice());
+        REQUIRE(CacheStatistics().pages >= 100);
+        uint64_t reads = DiskReads();
+        REQUIRE(ReadWhole("/mnt/big.txt") == big);
+        REQUIRE(DiskReads() == reads);
+
+        // Each volume's pages answer to its own volume.
+        REQUIRE(ReadWhole("/BLOCK.TXT") == fat);
+        reads = DiskReads();
+        REQUIRE(ReadWhole("/BLOCK.TXT") == fat);
+        REQUIRE(ReadWhole("/mnt/big.txt") == big);
+        REQUIRE(DiskReads() == reads);
+
+        REQUIRE(FeatherOS::VFS::Unmount("/mnt") == FeatherOS::VFS::MountResult::Done);
+        REQUIRE(CacheStatistics().pages < 20);
+    }
+#endif
+}
+
+TEST_CASE("T21 a partition that overlaps an open volume is read without the cache", "[page-cache]")
+{
+    MakeFat16Disk("shared contents");
+    uint8_t* mbr = disk[0].data();
+    std::memcpy(mbr + 446 + 16, mbr + 446, 16);
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    REQUIRE(FeatherOS::VFS::Mount("fat16", "vda2", "/b") == FeatherOS::VFS::MountResult::Done);
+    HostPageCache::InvalidateAll();
+
+    REQUIRE(ReadWhole("/BLOCK.TXT") == "shared contents");
+    uint64_t reads = DiskReads();
+    REQUIRE(ReadWhole("/BLOCK.TXT") == "shared contents");
+    REQUIRE(DiskReads() == reads);
+
+    REQUIRE(ReadWhole("/b/BLOCK.TXT") == "shared contents");
+    reads = DiskReads();
+    REQUIRE(ReadWhole("/b/BLOCK.TXT") == "shared contents");
+    REQUIRE(DiskReads() > reads);
+
+    WriteAndClose("/NEW.TXT", "through the first");
+    REQUIRE(ReadWhole("/b/NEW.TXT") == "through the first");
+    WriteAndClose("/b/OTHER.TXT", "through the second");
+    REQUIRE(ReadWhole("/b/OTHER.TXT") == "through the second");
+    REQUIRE(FeatherOS::VFS::Unmount("/b") == FeatherOS::VFS::MountResult::Done);
+}
+
+namespace
+{
+
+void ReportCachedBytes(FeatherOS::Procfs::MemoryStatus* status)
+{
+    *status = {};
+    status->cached_bytes = FeatherOS::BlockDevice::CachedBytes();
+}
+
+} // namespace
+
+TEST_CASE("T22 /proc/meminfo reports the page cache's size", "[page-cache]")
+{
+    FeatherOS::Procfs::SetSource({nullptr, nullptr, ReportCachedBytes, nullptr, nullptr});
+    MakeFat16Disk("contents");
+    REQUIRE(FeatherOS::VFS::MountBlockDevice());
+    HostPageCache::InvalidateAll();
+    REQUIRE(ReadWhole("/proc/meminfo").find("Cached:\t0 kB\n") != std::string::npos);
+
+    WriteAndClose("/big.bin", Pattern(20000));
+    HostPageCache::InvalidateAll();
+    REQUIRE(ReadWhole("/big.bin") == Pattern(20000));
+    const uint64_t pages = CacheStatistics().pages;
+    REQUIRE(pages >= 5);
+    const std::string expected = "Cached:\t" + std::to_string(pages * 4) + " kB\n";
+    const std::string meminfo = ReadWhole("/proc/meminfo");
+    REQUIRE(meminfo.find(expected) != std::string::npos);
+    REQUIRE(meminfo.find("MemTotal:\t0 kB\n") == 0);
 }
 
 namespace FilesystemSupport

@@ -4,6 +4,7 @@
 #include "kernel/filesystem/filesystem.h"
 
 #include "fs/filesystem.h"
+#include "fs/page_cache.h"
 #include "fs/partition.h"
 
 #include <stddef.h>
@@ -43,12 +44,18 @@ public:
     // Opens the filesystem on range, read-only in the core, as the first of kinds whose probe
     // accepts the volume and whose mount succeeds; the options and TypeName follow that kind. A
     // VFS mount asking for read-write reopens the core, as PrepareMount does. The filesystem
-    // opened before is unmounted first; false, with the driver as it was, if that fails.
+    // opened before is unmounted first; false, with the driver as it was, if that fails. Every
+    // read and write of the volume goes through its CachedDevice, which uses cache, or none when
+    // that is null.
     bool OpenPartition(std::span<const CoreKind> kinds, FeatherDisk::BlockDevice& disk,
-                       const FeatherDisk::Partition::Range& range);
-    // Unmounts the core and leaves the driver without a volume; false, unchanged, if the core
-    // cannot unmount.
+                       const FeatherDisk::Partition::Range& range, FeatherDisk::PageCache* cache);
+    // Unmounts the core, drops the volume's cached pages and leaves the driver without a volume;
+    // false, unchanged, if the core cannot unmount.
     bool Forget();
+    // Whether range shares sectors with the volume this driver holds; not under the volume lock.
+    bool Overlaps(const FeatherDisk::Partition::Range& other) const;
+    // Drops the volume's cached pages, for tests that change the disk below the cache.
+    void InvalidateCache();
     // The kind's registry name, "ext4" for example; null without a volume.
     const char* TypeName() const;
     // The volume's partition number (Partition::Range::number, from 1); 0 with nothing open.
@@ -100,6 +107,7 @@ protected:
 
 private:
     bool Fail(FeatherDisk::Error error);
+    bool DetachCore();
     bool CoreReadOnly(MountMode mode) const;
     // Walks every component of path but the last, which *leaf receives; "" (and "/" repeated)
     // leave *leaf empty, naming the root.
@@ -111,6 +119,8 @@ private:
     CoreOptions options;
     const char* name = nullptr;
     FeatherDisk::Partition::Volume volume;
+    FeatherDisk::CachedDevice cached;
+    FeatherDisk::Partition::Range range = {};
     FeatherDisk::FilesystemType* type = nullptr;
     FeatherDisk::Filesystem* filesystem = nullptr;
     size_t partition_number = 0;

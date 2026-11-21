@@ -20,6 +20,7 @@
 #include "kernel/random.h"
 #include "kernel/scheduler.h"
 #include "kernel/smp.h"
+#include "kernel/storage/page_cache.h"
 #include "kernel/string/memory_functions.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/syscall.h"
@@ -3368,6 +3369,7 @@ void DescribeMemory(Procfs::MemoryStatus* status)
     status->free_bytes = stats.free_frames * Memory::PageSize;
     status->kernel_heap_bytes = Memory::HeapMappedBytes();
     status->tmp_bytes = Tmpfs::UsedBytes();
+    status->cached_bytes = BlockDevice::CachedBytes();
 }
 
 } // namespace

@@ -11,7 +11,9 @@ namespace FeatherOS::BlockDevice
 // Sizes the cache from the free frames and registers its reclaimer; after the heap, before any
 // volume is opened, and once.
 bool InitializeCache(uint64_t hhdm_offset);
-// Valid after InitializeCache.
+// True once InitializeCache has succeeded; until then volumes attach no cache.
+bool CacheReady();
+// Valid when CacheReady.
 FeatherDisk::PageCache& Cache();
 // What the page allocator calls when it has no frame.
 uint64_t ReclaimFrames(uint64_t wanted);

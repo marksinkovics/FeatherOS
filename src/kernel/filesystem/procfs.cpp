@@ -214,9 +214,10 @@ bool Generate(const char* path, char* buffer, size_t* length)
         source.memory_status(&memory);
         formatted = String::FormatTo(buffer, MaximumFileSize,
                                      "MemTotal:\t{} kB\nMemFree:\t{} kB\nKernelHeap:\t{} kB\n"
-                                     "Tmp:\t{} kB\n",
+                                     "Tmp:\t{} kB\nCached:\t{} kB\n",
                                      memory.total_bytes / 1024, memory.free_bytes / 1024,
-                                     memory.kernel_heap_bytes / 1024, memory.tmp_bytes / 1024);
+                                     memory.kernel_heap_bytes / 1024, memory.tmp_bytes / 1024,
+                                     memory.cached_bytes / 1024);
         break;
     }
     case Kind::SystemStat:

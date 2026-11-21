@@ -1,12 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include <limine.h>
-
 #include "fs/page_cache.h"
-#include "kernel/memory/memory_map.h"
 #include "kernel/memory/page_allocator.h"
 #include "kernel/storage/cache_sizing.h"
 #include "kernel/storage/page_cache.h"
+
+#include "support/page_cache_host.h"
 
 #include <array>
 #include <cstdint>
@@ -22,34 +21,16 @@ namespace Memory = FeatherOS::Memory;
 namespace Storage = FeatherOS::BlockDevice;
 using FeatherDisk::CachePageSize;
 
-constexpr std::uint64_t PhysicalBase = 0x100000;
-constexpr std::size_t FrameTotal = 4096;
-alignas(4096) std::array<std::uint8_t, FrameTotal * 4096> physical_memory;
+constexpr std::size_t FrameTotal = HostPageCache::FrameTotal;
 
 std::uint64_t HostOffset()
 {
-    return reinterpret_cast<std::uintptr_t>(physical_memory.data()) - PhysicalBase;
+    return HostPageCache::HostOffset();
 }
 
-// The allocator keeps its state for the life of the process, so every test starts here and
-// returns the frames it took.
 void EnsureAllocator()
 {
-    static limine_memmap_entry entry{};
-    entry.base = PhysicalBase;
-    entry.length = FrameTotal * 4096;
-    entry.type = LIMINE_MEMMAP_USABLE;
-    static limine_memmap_entry* entries[] = {&entry};
-    static limine_memmap_response response{};
-    response.entry_count = 1;
-    response.entries = entries;
-    REQUIRE(Memory::InitializeMemoryMapFromResponse(&response));
-    static bool initialized = false;
-    if (!initialized)
-    {
-        REQUIRE(Memory::InitializePageAllocator(HostOffset()));
-        initialized = true;
-    }
+    REQUIRE(HostPageCache::EnsureAllocator());
 }
 
 struct ReclaimerGuard
@@ -288,29 +269,12 @@ TEST_CASE("T16 a trim stops exactly at its margin or an empty cache", "[page-cac
     device.Detach();
 }
 
-// InitializeCache runs once per process; the first call also checks that it registered the
-// reclaimer, which exhausting the allocator then uses.
+// The listener of support/page_cache_host.cpp ran InitializeCache before the first test and
+// checked that it registered the reclaimer.
 void EnsureCache()
 {
-    static bool initialized = false;
-    if (initialized)
-    {
-        return;
-    }
-    REQUIRE(Storage::InitializeCache(HostOffset()));
-    initialized = true;
-    RamDevice ram(100);
-    FeatherDisk::CachedDevice device;
-    device.Attach(&Storage::Cache(), ram);
-    for (std::size_t page = 0; page < 100; ++page)
-    {
-        REQUIRE(ReadPage(device, ram, page));
-    }
-    REQUIRE(Storage::Cache().Statistics().pages == 100);
-    HogAll();
-    CHECK(Storage::Cache().Statistics().pages == 0);
-    ReleaseHogged();
-    device.Detach();
+    REQUIRE(HostPageCache::EnsureCache());
+    Memory::SetFrameReclaimer(Storage::ReclaimFrames);
 }
 
 std::uint64_t reclaim_calls;

@@ -40,6 +40,7 @@ struct MemoryStatus
     uint64_t free_bytes;
     uint64_t kernel_heap_bytes;
     uint64_t tmp_bytes;
+    uint64_t cached_bytes;
 };
 
 struct SystemStatus

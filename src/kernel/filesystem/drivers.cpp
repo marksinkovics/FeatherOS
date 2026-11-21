@@ -7,8 +7,10 @@
 
 #include "fs/ext2.h"
 #include "fs/fat.h"
+#include "kernel/klogger.h"
 #include "kernel/memory/heap.h"
 #include "kernel/storage/core_block_device.h"
+#include "kernel/storage/page_cache.h"
 
 #include <stdint.h>
 
@@ -453,6 +455,19 @@ constexpr CoreKind Kinds[] = {
 };
 
 constinit CoreDriver volume_drivers[Drivers::MaximumVolumes];
+constinit KLogger logger;
+
+bool OverlapsOpenVolume(const FeatherDisk::Partition::Range& range)
+{
+    for (size_t number = 1; number <= Drivers::MaximumVolumes; ++number)
+    {
+        if (number != range.number && volume_drivers[number - 1].Overlaps(range))
+        {
+            return true;
+        }
+    }
+    return false;
+}
 constinit ArchiveDriver system_driver("system");
 constinit DeviceDriver device_driver;
 constinit ProcDriver proc_driver;
@@ -496,7 +511,17 @@ size_t FindPartitions(std::span<FeatherDisk::Partition::Range> ranges)
 bool OpenVolume(const FeatherDisk::Partition::Range& range)
 {
     CoreDriver* const volume = Volume(range.number);
-    return volume != nullptr && volume->OpenPartition(Kinds, BlockDevice::CoreDevice(), range);
+    if (volume == nullptr)
+    {
+        return false;
+    }
+    FeatherDisk::PageCache* cache = BlockDevice::CacheReady() ? &BlockDevice::Cache() : nullptr;
+    if (cache != nullptr && OverlapsOpenVolume(range))
+    {
+        logger.Warning("VFS: a partition overlaps an open volume, read without the page cache");
+        cache = nullptr;
+    }
+    return volume->OpenPartition(Kinds, BlockDevice::CoreDevice(), range, cache);
 }
 
 bool ForgetVolume(size_t number)

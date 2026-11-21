@@ -139,6 +139,7 @@ void FakeMemoryStatus(FeatherOS::Procfs::MemoryStatus* status)
     status->free_bytes = 200 * 1024 * 1024;
     status->kernel_heap_bytes = 64 * 1024;
     status->tmp_bytes = FeatherOS::Tmpfs::UsedBytes();
+    status->cached_bytes = 12 * 1024 + 512;
 }
 
 void FakeSystemStatus(FeatherOS::Procfs::SystemStatus* status)
@@ -721,7 +722,8 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
     REQUIRE(ReadAll("/proc/stat") ==
             "UptimeMs:\t61000\nCpus:\t2\nCpu0BusyMs:\t700\nCpu1BusyMs:\t30\n");
     REQUIRE(ReadAll("/proc/meminfo") ==
-            "MemTotal:\t262144 kB\nMemFree:\t204800 kB\nKernelHeap:\t64 kB\nTmp:\t0 kB\n");
+            "MemTotal:\t262144 kB\nMemFree:\t204800 kB\nKernelHeap:\t64 kB\nTmp:\t0 kB\n"
+            "Cached:\t12 kB\n");
     REQUIRE(FeatherOS::VFS::IsDirectory("/proc/1"));
     REQUIRE_FALSE(FeatherOS::VFS::IsDirectory("/proc/2"));
     REQUIRE_FALSE(FeatherOS::VFS::IsDirectory("/proc/01"));

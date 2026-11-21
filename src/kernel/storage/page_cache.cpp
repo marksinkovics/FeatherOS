@@ -50,6 +50,7 @@ private:
 
 constinit FramePages frames;
 constinit uint64_t trim_margin = 0;
+constinit bool cache_ready = false;
 
 // The kernel runs no static destructors, which PageCache has, so it lives in raw storage that
 // InitializeCache constructs.
@@ -83,7 +84,13 @@ bool InitializeCache(uint64_t hhdm_offset)
         return false;
     }
     Memory::SetFrameReclaimer(ReclaimFrames);
+    cache_ready = true;
     return true;
+}
+
+bool CacheReady()
+{
+    return cache_ready;
 }
 
 FeatherDisk::PageCache& Cache()
@@ -93,11 +100,19 @@ FeatherDisk::PageCache& Cache()
 
 void BalanceCache()
 {
+    if (!cache_ready)
+    {
+        return;
+    }
     TrimToMargin(CacheInstance(), frames, trim_margin);
 }
 
 uint64_t CachedBytes()
 {
+    if (!cache_ready)
+    {
+        return 0;
+    }
     return CacheInstance().Statistics().pages * FeatherDisk::CachePageSize;
 }
 

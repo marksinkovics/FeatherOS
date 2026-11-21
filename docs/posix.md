@@ -61,7 +61,7 @@ These come from the kernel and apply everywhere below.
 | `/system` | The read-only initramfs, which holds every bundled program as `/system/<name>` |
 | `/dev` | `null`, `zero` and `random`, as on Linux; all take writes. `tty` opens the caller's controlling terminal, or fails with `ENXIO` without one |
 | `/tmp` | A RAM filesystem, emptied on restart: at most 128 entries and 4 MiB, with case-sensitive names |
-| `/proc` | Read-only: `meminfo`, `stat` (uptime and CPU use), `mounts`, and `<pid>/status` for each process; `/proc/self` is the caller |
+| `/proc` | Read-only: `meminfo` (with `Cached`, the page cache's size), `stat` (uptime and CPU use), `mounts`, and `<pid>/status` for each process; `/proc/self` is the caller |
 
 `/proc/mounts` lists every mount as Linux does, `<source> <point> <type> <ro|rw> 0 0`, in mount order, and `mount` and `umount` (`sys/mount.h`) change them. `/bin`, an ordinary disk directory, is the second entry of the default `PATH`, for programs copied to the disk. Disk names ignore case and are at most 63 ASCII characters (FAT16's limit; ext2 and `/tmp` take 255 bytes), and no file can have holes. Symbolic links are followed anywhere in a path and across mounts, and `..` after one leads to the parent of its target, as POSIX's physical walk does; `/tmp`, `/etc` and ext2 hold them, FAT16 does not. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
 

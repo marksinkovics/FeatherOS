@@ -316,6 +316,16 @@ bool MountBlockDevice(size_t requested, bool* honored)
     constexpr size_t Count = Drivers::MaximumVolumes;
     std::array<FeatherDisk::Partition::Range, Count> ranges{};
     const size_t found = Drivers::FindPartitions(ranges);
+    // Every volume that is not kept goes first, so no stale range makes a new volume look
+    // overlapped.
+    for (size_t number = 1; number <= Count; ++number)
+    {
+        if (!KeepsVolume(*Drivers::Volume(number)))
+        {
+            Held held(Drivers::Volume(number));
+            Drivers::ForgetVolume(number);
+        }
+    }
     for (size_t number = 1; number <= Count; ++number)
     {
         if (KeepsVolume(*Drivers::Volume(number)))

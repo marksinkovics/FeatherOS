@@ -62,6 +62,7 @@ add_executable(featheros_unit_tests
     kernel/storage/page_cache_tests.cpp
     kernel/sync/volume_mutex_tests.cpp
     support/network_stubs.cpp
+    support/page_cache_host.cpp
     support/scheduler_stubs.cpp
     support/terminal_device.cpp
     kernel/input/keyboard_tests.cpp
@@ -276,6 +277,10 @@ if (TARGET featherdisk_ext_test_images)
         FEATHEROS_EXT2_TEST_IMAGE="${CMAKE_CURRENT_BINARY_DIR}/fs_core/ext-images/1k.img"
         FEATHEROS_EXT3_TEST_IMAGE="${CMAKE_CURRENT_BINARY_DIR}/fs_core/ext-images/ext3.img"
         FEATHEROS_EXT4_TEST_IMAGE="${CMAKE_CURRENT_BINARY_DIR}/fs_core/ext-images/ext4.img")
+endif ()
+
+if (FEATHERDISK_E2FSCK)
+    target_compile_definitions(featheros_unit_tests PRIVATE FEATHEROS_E2FSCK="${FEATHERDISK_E2FSCK}")
 endif ()
 
 catch_discover_tests(featheros_unit_tests)

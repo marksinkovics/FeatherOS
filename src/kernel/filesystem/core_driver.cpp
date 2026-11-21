@@ -140,27 +140,30 @@ bool CoreDriver::CoreReadOnly(MountMode mode) const
 }
 
 bool CoreDriver::OpenPartition(std::span<const CoreKind> kinds, FeatherDisk::BlockDevice& disk,
-                               const FeatherDisk::Partition::Range& range)
+                               const FeatherDisk::Partition::Range& partition,
+                               FeatherDisk::PageCache* cache)
 {
     if (!Forget())
     {
         return false;
     }
-    volume.Assign(disk, range);
+    volume.Assign(disk, partition);
+    cached.Attach(cache, volume);
     for (const CoreKind& kind : kinds)
     {
         FeatherDisk::FilesystemType& candidate = kind.type();
-        if (!candidate.Probe(volume))
+        if (!candidate.Probe(cached))
         {
             continue;
         }
         const Result<FeatherDisk::Filesystem*> mounted =
-            candidate.Mount(volume, {.read_only = true});
+            candidate.Mount(cached, {.read_only = true});
         if (mounted)
         {
             type = &candidate;
             filesystem = *mounted;
-            partition_number = range.number;
+            range = partition;
+            partition_number = partition.number;
             core_read_only = true;
             options = kind.options;
             name = kind.name;
@@ -168,6 +171,7 @@ bool CoreDriver::OpenPartition(std::span<const CoreKind> kinds, FeatherDisk::Blo
             return true;
         }
     }
+    cached.Detach();
     return false;
 }
 
@@ -177,13 +181,26 @@ bool CoreDriver::Forget()
     {
         return false;
     }
+    cached.Detach();
     filesystem = nullptr;
     type = nullptr;
     name = nullptr;
+    range = {};
     partition_number = 0;
     options = {};
     core_read_only = true;
     return true;
+}
+
+bool CoreDriver::Overlaps(const FeatherDisk::Partition::Range& other) const
+{
+    return type != nullptr && range.first_sector < other.first_sector + other.sector_count &&
+           other.first_sector < range.first_sector + range.sector_count;
+}
+
+void CoreDriver::InvalidateCache()
+{
+    cached.Invalidate();
 }
 
 const char* CoreDriver::TypeName() const
@@ -209,10 +226,10 @@ bool CoreDriver::OpenForMount(MountMode mode, bool* writable)
             filesystem = nullptr;
         }
         core_read_only = read_only;
-        Result<FeatherDisk::Filesystem*> mounted = type->Mount(volume, {.read_only = read_only});
+        Result<FeatherDisk::Filesystem*> mounted = type->Mount(cached, {.read_only = read_only});
         if (!mounted && !read_only)
         {
-            mounted = type->Mount(volume, {.read_only = true});
+            mounted = type->Mount(cached, {.read_only = true});
             core_read_only = true;
         }
         if (!mounted)
@@ -242,7 +259,7 @@ bool CoreDriver::RemountReplays()
         return false;
     }
     const Result<FeatherDisk::Ext::ExtFeatures> features =
-        FeatherDisk::Ext::DescribeFeatures(volume);
+        FeatherDisk::Ext::DescribeFeatures(cached);
     return features && (features->incompatible & IncompatibleNeedsRecovery) != 0;
 }
 
@@ -761,6 +778,13 @@ bool CoreDriver::Sync()
 
 bool CoreDriver::Detach()
 {
+    const bool done = DetachCore();
+    cached.Invalidate();
+    return done;
+}
+
+bool CoreDriver::DetachCore()
+{
     if (!options.close_on_detach || filesystem == nullptr || core_read_only)
     {
         return Sync();
@@ -771,7 +795,7 @@ bool CoreDriver::Detach()
     }
     filesystem = nullptr;
     core_read_only = true;
-    const Result<FeatherDisk::Filesystem*> reopened = type->Mount(volume, {.read_only = true});
+    const Result<FeatherDisk::Filesystem*> reopened = type->Mount(cached, {.read_only = true});
     if (!reopened)
     {
         logger.Error("ext: filesystem could not be reopened read-only");
