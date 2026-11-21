@@ -1149,6 +1149,18 @@ A program on a virtual console takes over its screen, presents pixels it drew in
 
 **Check:** both targets pass the `GRAPHICS` mode (a screendump of `fbdemo`'s pattern and of `featherfall`'s well, key events, a played game with a saved high score); the full matrix is the coordinator's run before the merge.
 
+### 33. Wickdeep, A Turn-Based Dungeon Crawler (Planned, Not Started)
+
+An original turn-based dungeon crawler in Embedded Swift on `/dev/fb0`. The last wick-keeper descends eight procedurally built floors of a sunken lamp-works by the light of a lamp that runs down, to take the Heartwick from its warden. The art is our own drawn tiles, there are saved games on disk, and the rules are a pure, seeded state machine checked the same way on both architectures. Planned 2026-11-21 at the user's request, on `feat/graphics` after M32. Design `docs/design/M33.md` (decisions D1-D22; D1-D6 await the user's confirmation).
+
+- **Part 1: the tile layer.** `Surface::BlitPart` and `Graphics::TileSheet` in `src/user/graphics/`: tiles written as palette-indexed text in source, drawn lit or remembered (dimmed), keyed and clipped. Host tests in `tile_sheet_tests.cpp`, the `FeatherGraphics` module map, and `gfxcheck` checking a tile's checksum in the SHELL part `swift_cxx.py`.
+- **Part 2: floors and sight.** `wickdeep` (`FEATHEROS_SWIFT_CXX_PROGRAMS`, `src/user/wickdeep/`) with movement, the lamp, stairs, sector-grid floor generation and integer shadowcasting. `--selftest` and `--demo --seed N` run in the new smoke mode `DUNGEON_TEST=ON` (`tools/smoke/cases/dungeon.py`).
+- **Part 3: monsters, combat and items.** Energy turns, eight monsters with their own rules, ten items, levels, death and victory, and the full demo bot with new hashes.
+- **Part 4: saves.** A versioned, checksummed save (`WDSV`, version 1) in `$HOME/.wickdeep-save` written by temporary file and rename, refused with a reason when damaged, `wickdeep --check-save`, and the hall of runs `$HOME/.wickdeep-runs`. Round-trip and corruption checks in the self-test and in `DUNGEON`.
+- **Part 5: the game.** The tile art, the renderer, controls, overlays, and save on Esc or Ctrl+C. A played `DUNGEON` part with QMP keys and `screendump` checks: start, pack, moves, console switch, save, resume to identical pixels, and a corrupted save set aside. Docs and the `add-program` checklist.
+
+**Complete when:** on both targets, `wickdeep` passes its self-test, prints the expected demo hashes, can be played, saves on quit, resumes to the same screen, and refuses a damaged save.
+
 ## Architecture Boundaries
 
 - Keep framebuffer terminal, logging API, panic/assert API, VFS, syscall definitions, and scheduler policy architecture-neutral when possible.
