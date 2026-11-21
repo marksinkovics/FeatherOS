@@ -58,6 +58,13 @@ RETRY_PAUSE_SECONDS = 0.2
 PRESENTED = b"fbdemo: presented"
 DONE = b"fbdemo: done"
 KEYS_COMMAND = "fbdemo --keys 120\n"
+SELFTEST_COMMAND = "featherfall --selftest\n"
+SELFTEST_LINE = "featherfall: selftest ok"
+# The same on both architectures: the game's rules use integers only.
+DEMO_RESULTS = {
+    1: "score 82553 lines 104 level 11 hash 6636180809909333056",
+    2: "score 84561 lines 106 level 11 hash 385706885443829982",
+}
 EVENT_WAIT_SECONDS = 3.0
 QUIET_SECONDS = 0.5
 # Key events a console queues before dropping: the queue's 64 less the two
@@ -284,8 +291,9 @@ class Graphics(Case):
     passed = (
         "fbdemo's pattern was drawn clipped without the status bar, the "
         "other console showed text, the blanked console stayed blank until "
-        "it drew again, releasing brought the text console back, and key "
-        "events, switching, overflow and Ctrl+C behaved as specified"
+        "it drew again, releasing brought the text console back, key "
+        "events, switching, overflow and Ctrl+C behaved as specified, and "
+        "featherfall's self-test and demo runs gave the expected results"
     )
 
     def __init__(self, args):
@@ -304,7 +312,13 @@ class Graphics(Case):
         return self.socket_path
 
     def Script(self, session):
-        return Lines(f"fbdemo {DEMO_SECONDS}\n{KEYS_COMMAND}".encode())
+        demos = "".join(
+            f"featherfall --demo --seed {seed}\n" for seed in DEMO_RESULTS
+        )
+        return Lines(
+            f"{SELFTEST_COMMAND}{demos}fbdemo {DEMO_SECONDS}\n"
+            f"{KEYS_COMMAND}".encode()
+        )
 
     def Markers(self):
         return (PANIC_MARKER.encode(),)
@@ -491,6 +505,15 @@ class Graphics(Case):
     def Check(self, result):
         if self.failure is not None:
             return self.failure
+        output = result.output.replace("\r", "")
+        if SELFTEST_LINE not in output.split("\n"):
+            return f"featherfall --selftest did not pass{result.limit_note}"
+        for seed, results in DEMO_RESULTS.items():
+            line = f"featherfall: demo seed {seed} {results}"
+            if line not in output.split("\n"):
+                return (
+                    f"featherfall --demo --seed {seed} gave no line {line!r}"
+                )
         if "fbdemo: tty1 1024x768" not in result.output:
             return f"fbdemo did not start{result.limit_note}"
         if not self.finished:

@@ -32,7 +32,7 @@ set(FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS
 # deps/ holds the Cxx module's sources (see swift_cxx/). GCC builds the C++ they call
 # like other user code; a program's own C++ sources are listed by program name.
 set(FEATHEROS_SWIFT_CXX_PROGRAMS
-    http:http cxxinterop:cxxinterop gfxcheck:gfxcheck
+    http:http cxxinterop:cxxinterop gfxcheck:gfxcheck featherfall:featherfall
 )
 set(FEATHEROS_SWIFT_CXX_SOURCES_cxxinterop cxx_interop.cpp)
 set(FEATHEROS_SWIFT_CXX_SOURCES_gfxcheck gfx_check.cpp)

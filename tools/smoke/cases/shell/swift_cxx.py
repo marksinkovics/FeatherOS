@@ -2,7 +2,8 @@ from smoke.cases.shell.part import Part
 from smoke.script import Lines
 
 # Swift programs that call C++, built where deps/ holds the Cxx module's
-# sources; gfxcheck draws with the graphics library and compares checksums.
+# sources; gfxcheck draws with the graphics library and compares checksums;
+# featherfall's rules run from the GRAPHICS mode, here only its arguments.
 SWIFT_CXX_INPUT = (
     b"cxxinterop\n"
     b"gfxcheck\n"
@@ -12,6 +13,8 @@ SWIFT_CXX_INPUT = (
     b"http response /system/http-response.txt\n"
     b'echo "HTTP/1.1 200 OK" | http response\n'
     b"http -h\n"
+    b"featherfall -h\n"
+    b"featherfall --demo --seed x\n"
 )
 EXPECTED_SWIFT_CXX_OUTPUT = (
     "cxxinterop: constant 42, the color after red is green true",
@@ -43,6 +46,12 @@ EXPECTED_SWIFT_CXX_OUTPUT = (
     "200 OK\r\nFeather OS",
     "http: connection closed before the end of the response",
     "usage: http url <url> [reference...]",
+    "usage: featherfall --selftest | --demo [--seed N]\r\n"
+    "A falling-block puzzle. --selftest checks the rules; --demo plays a "
+    "fixed script\r\n"
+    "without a display and prints the score, lines, level and a hash of the "
+    "well.",
+    "featherfall: invalid seed x; see featherfall -h",
 )
 
 PART = Part(
