@@ -59,4 +59,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | a764ca4 | M32 P5 playable featherfall, high scores, played GRAPHICS check | - | sonnet | 0 | 1/1 | |
 | 38f5ea4 | M33 P1 tile layer, BlitPart, TileSheet | - | sonnet | 0 | - | |
 | 0bed505 | M33 P2 wickdeep floors, sight, DUNGEON mode | - | sonnet | 0 | 2/2 (connectivity via pinned values) | |
-| (this) | M33 P3 monsters, combat, items, full bot | - | sonnet | 0 | 2/2 | |
+| e3bd253 | M33 P3 monsters, combat, items, full bot | - | sonnet | 0 | 2/2 | |
+| (this) | M33 P4 saves, hall of runs, --check-save | - | sonnet | 0 | 2/2 | |

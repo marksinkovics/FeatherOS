@@ -284,49 +284,7 @@ struct Game {
 
     func stateHash() -> UInt64 {
         var hash = Fnv1a()
-        hash.add(seed, bytes: 8)
-        hash.add(depth, bytes: 1)
-        hash.add(turn, bytes: 4)
-        hash.add(random.state, bytes: 8)
-        hash.add(x, bytes: 1)
-        hash.add(y, bytes: 1)
-        hash.add(oil, bytes: 2)
-        hash.add(hp, bytes: 2)
-        hash.add(embers, bytes: 2)
-        hash.add(outcome.rawValue)
-        hash.add(weapon?.rawValue ?? 0)
-        hash.add(coat?.rawValue ?? 0)
-        hash.add(pack.count, bytes: 1)
-        for kind in pack {
-            hash.add(kind.rawValue)
-        }
-        hash.add(turns.energy.count, bytes: 1)
-        for energy in turns.energy {
-            hash.add(energy, bytes: 2)
-        }
-        hash.add(turns.cursor, bytes: 1)
-        hash.add(cells)
-        hash.add(remembered)
-        hash.add(monsters.count, bytes: 1)
-        for monster in monsters {
-            hash.add(monster.kind.rawValue)
-            hash.add(monster.x, bytes: 1)
-            hash.add(monster.y, bytes: 1)
-            hash.add(monster.hp, bytes: 2)
-            hash.add(monster.awake ? 1 : 0, bytes: 1)
-        }
-        hash.add(items.count, bytes: 1)
-        for item in items {
-            hash.add(item.kind.rawValue)
-            hash.add(item.x, bytes: 1)
-            hash.add(item.y, bytes: 1)
-        }
-        hash.add(recent.count, bytes: 1)
-        for event in recent {
-            hash.add(event.code.rawValue)
-            hash.add(event.first, bytes: 2)
-            hash.add(event.second, bytes: 2)
-        }
+        hash.add(encode())
         return hash.value
     }
 }

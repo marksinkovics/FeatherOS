@@ -503,6 +503,10 @@ func runSelfTest() -> Bool {
     checkOilmoth(&check)
     checkRootgrip(&check)
     checkBotRuns(&check)
+    checkSaveRoundTrip(&check)
+    checkSaveRefusals(&check)
+    checkSaveFiles(&check)
+    checkHall(&check)
     if let failure = check.failure {
         print("wickdeep: selftest failed: \(failure)")
         return false

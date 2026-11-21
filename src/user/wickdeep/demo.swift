@@ -1,3 +1,5 @@
+import FeatherSupport
+
 let demoTurnLimit = 20_000
 
 // Fights what stands next to it, heals, refills and equips from the pack, picks up what the lamp
@@ -141,19 +143,33 @@ struct DemoBot {
     }
 }
 
-func runDemo(seed: UInt64) {
+struct DemoSave {
+    var turn: Int
+    var path: String
+}
+
+func runDemo(seed: UInt64, save: DemoSave?) {
     var game = Game(seed: seed)
     let bot = DemoBot()
+    var pending = save
+    func saveIfDue() {
+        guard let due = pending, game.turn == due.turn else {
+            return
+        }
+        pending = nil
+        if let error = saveGame(game, path: due.path) {
+            fail("cannot write \(due.path): \(error)")
+        }
+    }
     while game.outcome == .playing && game.turn < demoTurnLimit {
+        saveIfDue()
         _ = game.step(bot.next(game))
     }
-    var outcome = "limit"
-    switch game.outcome {
-    case .playing: break
-    case .dead: outcome = "dead"
-    case .victory: outcome = "victory"
+    saveIfDue()
+    if let missed = pending {
+        fail("the demo ended before turn \(missed.turn)")
     }
     print(
         "wickdeep: demo turns \(game.turn) depth \(game.depth) level \(game.level) "
-            + "score \(game.score) outcome \(outcome) hash \(game.stateHash())")
+            + "score \(game.score) outcome \(outcomeWord(game.outcome)) hash \(game.stateHash())")
 }

@@ -65,16 +65,20 @@ EXPECTED_SWIFT_CXX_OUTPUT = (
     "script without a display and prints the score, lines, level and a hash "
     "of the well.",
     "featherfall: invalid seed x; see featherfall -h",
-    "usage: wickdeep --selftest | --demo [--seed N]\r\n"
+    "usage: wickdeep --selftest | --check-save PATH | --demo [--seed N] "
+    "[--save-at TURN PATH]\r\n"
     "A turn-based dungeon crawler of eight floors lit by a lamp that runs "
-    "down. The rules exist\r\n"
-    "so far (floors, lamp, monsters, items, combat); the game screen comes "
-    "later. --selftest\r\n"
-    "checks the rules; --demo plays a fixed bot from the first floor to its "
-    "death or the\r\n"
-    "Heartwick without a display and prints the turns, depth, level, score, "
-    "outcome and a hash\r\n"
-    "of the game state.",
+    "down. The rules and the\r\n"
+    "saves exist so far (floors, lamp, monsters, items, combat); the game "
+    "screen comes later.\r\n"
+    "--selftest checks the rules and the save format; --check-save reads a "
+    "save and says whether\r\n"
+    "it is sound; --demo plays a fixed bot from the first floor to its death "
+    "or the Heartwick\r\n"
+    "without a display and prints the turns, depth, level, score, outcome and "
+    "a hash of the\r\n"
+    "encoded save, which --save-at writes to PATH when the bot reaches that "
+    "turn.",
     "wickdeep: invalid seed x; see wickdeep -h",
 )
 
