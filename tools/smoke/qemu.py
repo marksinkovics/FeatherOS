@@ -104,6 +104,17 @@ def SendQmpKeys(channel, first_id, keys):
     return first_id + len(keys)
 
 
+def SendQmpKeyEvent(channel, command_id, key, down):
+    event = {
+        "type": "key",
+        "data": {"down": down, "key": {"type": "qcode", "data": key}},
+    }
+    SendQmpCommand(
+        channel, command_id, "input-send-event", {"events": [event]}
+    )
+    return command_id + 1
+
+
 def OpenQmpChannel(socket_path):
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     connection.settimeout(5)

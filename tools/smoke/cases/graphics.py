@@ -1,16 +1,28 @@
 import functools
 import json
 import os
+import re
+import select
 import tempfile
 import time
 
 from smoke.boot import PANIC_MARKER
 from smoke.cases.base import Case
-from smoke.qemu import OpenQmpChannel, SendQmpCommand, SendQmpKeys
+from smoke.qemu import (
+    OpenQmpChannel,
+    SendQmpCommand,
+    SendQmpKeyEvent,
+    SendQmpKeys,
+)
 from smoke.script import Lines
-from smoke.terminal import SHELL_PROMPT
+from smoke.terminal import (
+    ANSI_ESCAPE_BYTES,
+    CONSOLE_REPORT,
+    LEAVE_ALTERNATE_SCREEN,
+    SHELL_PROMPT,
+)
 
-GRAPHICS_TIMEOUT_SECONDS = 90
+GRAPHICS_TIMEOUT_SECONDS = 150
 DEMO_SECONDS = 10
 WIDTH = 1024
 HEIGHT = 768
@@ -45,6 +57,19 @@ RETRY_SECONDS = 2.0
 RETRY_PAUSE_SECONDS = 0.2
 PRESENTED = b"fbdemo: presented"
 DONE = b"fbdemo: done"
+KEYS_COMMAND = "fbdemo --keys 120\n"
+EVENT_WAIT_SECONDS = 3.0
+QUIET_SECONDS = 0.5
+# Key events a console queues before dropping: the queue's 64 less the two
+# slots kept for Shown and Hidden.
+KEY_EVENT_LIMIT = 62
+OVERFLOW_PAIRS = 100
+TOKEN = re.compile(
+    r"^fbdemo: (?:event (\w+) (\d+) (\d+)|(presented|paused|resumed|"
+    r"interrupted|time went backwards|dropped \d+))\r?\n",
+    re.MULTILINE,
+)
+SHELL_PROMPT_TEXT = re.compile(SHELL_PROMPT.pattern.decode(), re.MULTILINE)
 
 
 def PatternAt(x, y):
@@ -149,17 +174,118 @@ def ExpectTextAgain(pixels):
     return ExpectText(pixels)
 
 
+class StepFailed(Exception):
+    pass
+
+
+class EventStream:
+    """The lines fbdemo --keys prints, read one at a time from the session
+    while the harness drives the keyboard."""
+
+    def __init__(self, session):
+        self.session = session
+        self.origin = 0
+        self.taken = 0
+
+    def Text(self):
+        captured = bytes(self.session.captured)
+        clean = ANSI_ESCAPE_BYTES.sub(
+            b"",
+            CONSOLE_REPORT.sub(b"", captured).replace(
+                LEAVE_ALTERNATE_SCREEN, b"\n"
+            ),
+        )
+        return clean.decode("utf-8", errors="replace")
+
+    def Start(self, marker):
+        text = self.Text()
+        first = text.find(marker)
+        self.origin = text.find(marker, first + 1)
+        if self.origin < 0:
+            raise StepFailed(f"{marker!r} did not appear twice")
+        self.taken = 0
+
+    def Tokens(self):
+        tokens = []
+        for match in TOKEN.finditer(self.Text(), self.origin):
+            if match.group(1) is not None:
+                tokens.append(" ".join(match.group(1, 2, 3)))
+            else:
+                tokens.append(match.group(4))
+        return tokens
+
+    def Pump(self, seconds):
+        stdout = self.session.process.stdout
+        readable, _, _ = select.select([stdout], [], [], seconds)
+        if not readable:
+            return
+        chunk = os.read(stdout.fileno(), 4096)
+        if not chunk:
+            raise StepFailed("the guest's output ended")
+        self.session.captured.extend(chunk)
+
+    def Next(self, seconds=EVENT_WAIT_SECONDS):
+        deadline = time.monotonic() + seconds
+        while True:
+            if PANIC_MARKER in self.Text():
+                raise StepFailed("the kernel panicked")
+            tokens = self.Tokens()
+            if len(tokens) > self.taken:
+                self.taken += 1
+                return tokens[self.taken - 1]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            self.Pump(remaining)
+
+    def Expect(self, step, *wanted, seconds=EVENT_WAIT_SECONDS):
+        for pattern in wanted:
+            found = self.Next(seconds)
+            if found is None or re.fullmatch(pattern, found) is None:
+                raise StepFailed(
+                    f"{step}: expected {pattern!r}, got {found!r}"
+                )
+
+    def Collect(self, quiet=QUIET_SECONDS, limit=10.0):
+        deadline = time.monotonic() + limit
+        found = []
+        while time.monotonic() < deadline:
+            token = self.Next(quiet)
+            if token is None:
+                break
+            found.append(token)
+        return found
+
+    def Quiet(self, step):
+        found = self.Collect(QUIET_SECONDS, QUIET_SECONDS)
+        if found:
+            raise StepFailed(f"{step}: unexpected {found!r}")
+
+    def WaitText(self, pattern, seconds=EVENT_WAIT_SECONDS):
+        deadline = time.monotonic() + seconds
+        while True:
+            found = pattern.search(self.Text(), self.origin)
+            if found is not None:
+                return found
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            self.Pump(remaining)
+
+
 class Graphics(Case):
     """Runs fbdemo on the first console and checks what QEMU's screendump
     shows while it owns the screen, on another console, after switching back,
-    after drawing again and once it has released the screen."""
+    after drawing again and once it has released the screen; then runs
+    fbdemo --keys and checks the key events QMP key presses produce."""
 
     serial_input = True
     timeout = GRAPHICS_TIMEOUT_SECONDS
     passed = (
         "fbdemo's pattern was drawn clipped without the status bar, the "
         "other console showed text, the blanked console stayed blank until "
-        "it drew again, and releasing brought the text console back"
+        "it drew again, releasing brought the text console back, and key "
+        "events, switching, overflow and Ctrl+C behaved as specified"
     )
 
     def __init__(self, args):
@@ -178,7 +304,7 @@ class Graphics(Case):
         return self.socket_path
 
     def Script(self, session):
-        return Lines(f"fbdemo {DEMO_SECONDS}\n".encode())
+        return Lines(f"fbdemo {DEMO_SECONDS}\n{KEYS_COMMAND}".encode())
 
     def Markers(self):
         return (PANIC_MARKER.encode(),)
@@ -209,6 +335,109 @@ class Graphics(Case):
     def Keys(self, keys):
         self.command_id = SendQmpKeys(self.channel, self.command_id + 1, keys)
 
+    def Chord(self, *keys):
+        for key, down in keys:
+            self.command_id = SendQmpKeyEvent(
+                self.channel, self.command_id, key, down
+            )
+
+    def Tap(self, *keys):
+        self.Chord(*[(key, True) for key in keys])
+        self.Chord(*[(key, False) for key in reversed(keys)])
+
+    def RunKeys(self, session):
+        events = EventStream(session)
+        events.Start("fbdemo: tty1")
+        events.Expect("startup", "presented", "shown 0 0", "presented")
+
+        self.Chord(("a", True), ("a", False))
+        events.Expect("a", "press 30 0", "release 30 0")
+
+        self.Chord(("shift", True), ("a", True), ("a", False))
+        self.Chord(("shift", False))
+        events.Expect(
+            "shift", "press 42 1", "press 30 1", "release 30 1", "release 42 0"
+        )
+
+        self.Chord(("left", True), ("left", True), ("left", True))
+        self.Chord(("left", False))
+        events.Expect(
+            "repeat",
+            "press 105 0",
+            "repeat 105 0",
+            "repeat 105 0",
+            "release 105 0",
+        )
+
+        self.Chord(("ctrl", True), ("z", True), ("z", False))
+        self.Chord(("ctrl", False))
+        events.Expect(
+            "ctrl+z",
+            "press 29 2",
+            "press 44 2",
+            "release 44 2",
+            "release 29 0",
+        )
+
+        self.Chord(("x", True), ("alt", True))
+        events.Expect("held key", "press 45 0", "press 56 4")
+        self.Chord(("f2", True))
+        events.Expect(
+            "switching away",
+            r"release 45 \d+",
+            r"release 56 \d+",
+            "hidden 0 0",
+        )
+        self.Step("fbdemo's console hidden", ExpectText)
+        self.Chord(("f2", False), ("alt", False), ("x", False))
+        events.Quiet("keys on the other console")
+
+        self.Chord(("alt", True), ("f1", True))
+        events.Expect("switching back", "shown 0 0", "presented")
+        self.Chord(("f1", False), ("alt", False))
+        events.Quiet("after switching back")
+        self.Step("switched back", ExpectPattern)
+
+        session.process.stdin.write(b"p\n")
+        session.process.stdin.flush()
+        events.Expect("pause", "paused")
+        for _ in range(OVERFLOW_PAIRS):
+            self.Chord(("a", True), ("a", False))
+        events.Expect("pause", "resumed", seconds=15)
+        queued = events.Collect()
+        wanted = ["press 30 0", "release 30 0"] * (KEY_EVENT_LIMIT // 2)
+        if queued != wanted:
+            raise StepFailed(
+                f"overflow: {len(queued)} events, expected "
+                f"{KEY_EVENT_LIMIT} alternating press and release"
+            )
+
+        self.Chord(("ctrl", True), ("c", True), ("c", False))
+        self.Chord(("ctrl", False))
+        events.Expect("ctrl+c", "press 29 2", "press 46 2")
+        while True:
+            token = events.Next()
+            if token == "interrupted":
+                break
+            if token not in ("release 46 2", "release 29 0"):
+                raise StepFailed(
+                    f"ctrl+c: expected interrupted, got {token!r}"
+                )
+        events.Expect("ctrl+c", r"dropped \d+")
+        if events.WaitText(SHELL_PROMPT_TEXT) is None:
+            raise StepFailed("the prompt did not return after Ctrl+C")
+        self.Step("after Ctrl+C", ExpectTextAgain)
+        dropped = int(re.findall(r"fbdemo: dropped (\d+)", events.Text())[-1])
+        if dropped < 1:
+            raise StepFailed("overflow: no event was counted as dropped")
+
+        session.process.stdin.write(b"echo ok\n")
+        session.process.stdin.flush()
+        if events.WaitText(re.compile(r"> echo ok\r?\nok\r?\n")) is None:
+            raise StepFailed("the shell line after Ctrl+C was not 'echo ok'")
+        if "time went backwards" in events.Text():
+            raise StepFailed("event times went backwards")
+
     def OnOutput(self, session, clean_output):
         if self.finished:
             return
@@ -234,7 +463,15 @@ class Graphics(Case):
                 done = clean_output.find(DONE)
                 if done >= 0 and SHELL_PROMPT.search(clean_output, done):
                     self.Step("after release", ExpectTextAgain)
-                    self.finished = True
+                    self.state = 3
+            elif self.state == 3 and clean_output.count(b"fbdemo: tty1") >= 2:
+                self.state = 4
+                try:
+                    self.RunKeys(session)
+                except StepFailed as failure:
+                    if self.failure is None:
+                        self.failure = str(failure)
+                self.finished = True
         except (
             OSError,
             RuntimeError,
