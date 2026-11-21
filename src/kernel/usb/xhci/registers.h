@@ -19,6 +19,42 @@ constexpr uint32_t RuntimeOffset = 0x18;
 constexpr uint32_t HccParams2 = 0x1C;
 } // namespace Cap
 
+namespace HcsParams1
+{
+constexpr uint32_t MaxSlotsMask = 0xFF;
+constexpr uint32_t MaxPortsShift = 24;
+} // namespace HcsParams1
+
+namespace HccParams1
+{
+constexpr uint32_t Ac64 = 1U << 0;
+constexpr uint32_t ContextSize64 = 1U << 2;
+constexpr uint32_t PortPowerControl = 1U << 3;
+constexpr uint32_t ExtendedCapabilityShift = 16;
+} // namespace HccParams1
+
+// HCSPARAMS2 splits the scratchpad count: the high five bits at 21, the low five at 27.
+constexpr uint32_t ScratchpadCount(uint32_t hcs_params2)
+{
+    return (((hcs_params2 >> 21) & 0x1FU) << 5) | ((hcs_params2 >> 27) & 0x1FU);
+}
+
+// Extended capabilities: a dword header with the ID in bits 7:0 and the distance to the next
+// capability, in dwords, in bits 15:8.
+namespace ExtendedCapability
+{
+constexpr uint32_t LegacySupport = 1;
+constexpr uint32_t SupportedProtocol = 2;
+constexpr uint32_t MaximumSteps = 48;
+constexpr uint32_t LegacyControlStatus = 4;
+constexpr uint32_t BiosOwned = 1U << 16;
+constexpr uint32_t OsOwned = 1U << 24;
+// USB SMI enable, SMI on host system error, and the OS ownership, hardware and bar change enables.
+constexpr uint32_t SmiEnableMask = (1U << 0) | (1U << 4) | (7U << 13);
+constexpr uint32_t SmiStatusMask = 7U << 29;
+constexpr uint32_t ProtocolName = 0x20425355;
+} // namespace ExtendedCapability
+
 // Offsets from the operational base (capability length).
 namespace Op
 {

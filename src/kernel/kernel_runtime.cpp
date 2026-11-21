@@ -21,6 +21,7 @@
 #include "kernel/network/neighbor_discovery.h"
 #include "kernel/panic.h"
 #include "kernel/pci/pci.h"
+#include "kernel/usb/usb.h"
 #include "kernel/process.h"
 #include "kernel/process_arguments.h"
 #include "kernel/scheduler.h"
@@ -483,6 +484,7 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
         KernelTest::RunPciTests(boot_info.platform_data);
     }
 #endif
+    Usb::Initialize(boot_info.platform_data);
     if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
     {
         logger.Warning("Keyboard device unavailable; use serial input");

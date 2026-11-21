@@ -30,6 +30,7 @@ _usage() {
     printf 'KERNEL_TESTS=ON builds the kernel test hooks (test, smoke, test-all and any *_TEST kernel toggle turn it on).\n'
     printf 'KERNEL_ROOT=vdaN puts root=vdaN on the kernel command line, naming the root partition (FAT16, ext2, ext3 or ext4);\n'
     printf 'ROOT_TEST=ON boots with it (vda3 by default) and checks the root.\n'
+    printf 'KERNEL_USB=off|poll puts usb=off or usb=poll on the kernel command line (no USB, or controller events by timer).\n'
     printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, unit-test-tsan,\n'
     printf '         benchmark, debug, all, clean, fullclean\n'
 }
@@ -114,6 +115,9 @@ _kernel_command_line() {
     fi
     if [ -n "$root" ]; then
         words+=("root=$root")
+    fi
+    if [ -n "${KERNEL_USB:-}" ]; then
+        words+=("usb=$KERNEL_USB")
     fi
     if [ -n "$test_mode" ]; then
         words+=("test=$test_mode")
@@ -534,6 +538,9 @@ smoke_test() {
     fi
     if _is_on "${PCI_TEST:-OFF}"; then
         smoke_args+=(--expect-pci)
+    fi
+    if _is_on "${USB_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb)
     fi
     if [[ -n "${QEMU_CPU:-}" ]]; then
         smoke_args+=(--cpu "$QEMU_CPU")

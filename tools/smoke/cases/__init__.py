@@ -17,6 +17,7 @@ from smoke.cases.shell import Shell
 from smoke.cases.smp import Smp
 from smoke.cases.storage import Storage
 from smoke.cases.timer import Timer
+from smoke.cases.usb import Usb
 from smoke.cases.user_preemption import UserPreemption
 
 # Each --expect-<name> switch: its case and help text.
@@ -53,6 +54,10 @@ SWITCHES = {
         "Print UTF-8 text and compare the screen with the font's glyphs",
     ),
     "pci": (Pci, "Expect edu to deliver an MSI and a DMA round trip"),
+    "usb": (
+        Usb,
+        "Expect the xHCI controller to address a keyboard and a mouse",
+    ),
     "calc": (Calc, "Send a calculator command and expect its result"),
     "shell": (Shell, "Run shell commands and expect their output"),
 }

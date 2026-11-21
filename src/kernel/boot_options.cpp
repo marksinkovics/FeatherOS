@@ -11,7 +11,11 @@ constexpr char RootPrefix[] = "root=vda";
 constexpr size_t RootPrefixLength = sizeof(RootPrefix) - 1;
 constexpr size_t MaximumPartition = 9999;
 
+constexpr char UsbOption[] = "usb=";
+constexpr size_t UsbOptionLength = sizeof(UsbOption) - 1;
+
 constinit Root selected_root = {RootRequest::Absent, 0};
+constinit UsbMode selected_usb = UsbMode::Default;
 
 Root ParseRootWord(const char* word, size_t length)
 {
@@ -105,6 +109,50 @@ void SelectRoot(Root root)
 Root SelectedRoot()
 {
     return selected_root;
+}
+
+UsbMode ParseUsb(const char* command_line)
+{
+    UsbMode mode = UsbMode::Default;
+    if (command_line == nullptr)
+    {
+        return mode;
+    }
+    const char* cursor = command_line;
+    const char* word = nullptr;
+    size_t length = 0;
+    while (NextWord(&cursor, &word, &length))
+    {
+        if (length < UsbOptionLength || !MatchesWord(word, UsbOptionLength, UsbOption))
+        {
+            continue;
+        }
+        const char* value = word + UsbOptionLength;
+        const size_t value_length = length - UsbOptionLength;
+        if (MatchesWord(value, value_length, "off"))
+        {
+            mode = UsbMode::Off;
+        }
+        else if (MatchesWord(value, value_length, "poll"))
+        {
+            mode = UsbMode::Poll;
+        }
+        else
+        {
+            mode = UsbMode::Default;
+        }
+    }
+    return mode;
+}
+
+void SelectUsb(UsbMode mode)
+{
+    selected_usb = mode;
+}
+
+UsbMode SelectedUsb()
+{
+    return selected_usb;
 }
 
 } // namespace FeatherOS::BootOptions

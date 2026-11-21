@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace FeatherOS::Usb::Testing
@@ -17,7 +18,7 @@ namespace FeatherOS::Usb::Testing
 class PhysicalMemory
 {
 public:
-    PhysicalMemory() = default;
+    explicit PhysicalMemory(uint64_t base = 0x1'2000'0000ULL);
     PhysicalMemory(const PhysicalMemory&) = delete;
     PhysicalMemory& operator=(const PhysicalMemory&) = delete;
     ~PhysicalMemory();
@@ -34,13 +35,18 @@ private:
     };
 
     std::vector<Region> regions_;
-    uint64_t next_physical_ = 0x1'2000'0000ULL;
+    uint64_t next_physical_;
 };
 
 // What it models: the capability, operational, port and interrupter 0 registers; the command
 // ring, transfer rings and event ring read as hardware reads them (cycle bits, Link TRBs with
 // Toggle Cycle, one event segment, no overwriting of unconsumed events); PORTSC write
-// semantics. Not yet: device contexts, scripted devices and hubs, data stages, injected errors.
+// semantics; the USB Legacy Support and Supported Protocol capabilities, a firmware that gives up
+// ownership after a set number of polls, reset and halt delays with the Controller Not Ready flag,
+// scratchpad and page-size settings, Enable Slot, Disable Slot, Address Device (reads the input
+// context and writes the device context's slot and EP0), a command that never completes until the
+// command ring is aborted, and injected events and errors. Not yet: scripted devices and hubs,
+// data stages.
 class FakeXhci
 {
 public:
@@ -48,6 +54,7 @@ public:
     static constexpr uint32_t DoorbellBase = 0x2000;
     static constexpr uint32_t RuntimeBase = 0x1000;
     static constexpr uint32_t MaxSlots = 64;
+    static constexpr uint32_t ExtendedBase = 0x3000;
 
     FakeXhci(PhysicalMemory& memory, uint32_t ports, bool context64);
 
@@ -70,9 +77,71 @@ public:
     void Write64(uint32_t offset, uint64_t value);
 
     void SetEndpointRing(uint32_t slot, uint32_t dci, uint64_t ring, bool cycle);
-    void Connect(uint32_t port, Speed speed);
+    // A SuperSpeed device on a USB 3 port is enabled in U0 unless it is not trained.
+    void Connect(uint32_t port, Speed speed, bool trained = true);
     void Disconnect(uint32_t port);
 
+    void EnableLegacySupport(bool firmware_owns, int release_after_polls);
+    // Ports from usb3_first up are USB 3; 0 makes every port USB 2.
+    void SetUsb3Ports(uint32_t usb3_first);
+    void SetScratchpads(uint32_t count);
+    void SetAc64(bool ac64);
+    void SetPageSize(uint32_t page_size_bits);
+    void SetPortPowerControl(bool enabled);
+    void StartRunning();
+    // After HCRST, USBSTS shows Controller Not Ready for this many reads of it; never ready if
+    // never_ready.
+    void SetResetDelay(uint32_t polls, bool never_ready);
+    void SetHaltDelay(uint32_t polls, bool never_halts);
+    // The next command of this type is taken off the ring and never completes, until a command
+    // abort.
+    void HoldNextCommand(uint32_t type);
+    bool PostInjectedEvent(const Xhci::Trb& event);
+    void SetStatusBits(uint32_t bits);
+    // Completes the held command as if it had just run.
+    void ReleaseHeldCommand();
+    uint64_t LastHeldTrb() const;
+    // Enable Slot answers No Slots Available once this many slots are enabled.
+    void SetSlotLimit(uint32_t limit);
+    uint32_t PortResets(uint32_t port) const;
+
+    struct ResetRecord
+    {
+        bool halted;
+        bool legacy_present;
+        bool os_owned;
+        bool bios_owned;
+        uint32_t smi_enables;
+        uint32_t smi_status;
+    };
+
+    struct AddressedDevice
+    {
+        uint32_t slot;
+        uint32_t speed_id;
+        uint32_t root_port;
+        uint32_t route;
+        uint32_t entries;
+        uint32_t ep0_max_packet;
+        uint64_t ep0_ring;
+        uint32_t add_flags;
+    };
+
+    const std::vector<ResetRecord>& Resets() const;
+    const std::vector<AddressedDevice>& Addressed() const;
+    const std::vector<uint32_t>& DisabledSlots() const;
+    uint32_t NotReadyAccesses() const;
+    uint32_t AbortCount() const;
+    uint32_t SmiEnables() const;
+    uint32_t SmiStatus() const;
+    bool OsOwned() const;
+    bool BiosOwned() const;
+    uint64_t DcbaaEntry(uint32_t index);
+    uint64_t DcbaaPointer() const;
+    uint32_t UsbCommand() const;
+    uint32_t ConfiguredSlots() const;
+    uint32_t InterruptModeration() const;
+    uint32_t ErstSize() const;
     const std::vector<uint32_t>& CommandTypes() const;
     const std::vector<uint32_t>& TransferTypes() const;
     const std::vector<uint64_t>& EventPointerWrites() const;
@@ -98,6 +167,15 @@ private:
     void WriteRuntimeRegister(uint32_t reg, uint32_t value);
     uint32_t ReadRuntimeRegister(uint32_t reg) const;
     void Reset();
+    uint32_t ReadExtended(uint32_t offset);
+    void WriteExtended(uint32_t offset, uint32_t value);
+    void BuildProtocols();
+    bool PortIsUsb3(uint32_t port) const;
+    void CountNotReadyAccess(uint32_t offset);
+    uint32_t ReadStatus();
+    void AbortCommands();
+    void Execute(const Xhci::Trb& trb, uint64_t physical);
+    void AddressDevice(uint32_t slot, uint64_t input_physical, uint32_t* code);
 
     PhysicalMemory& memory_;
     uint32_t ports_;
@@ -120,8 +198,41 @@ private:
     uint32_t event_enqueue_ = 0;
     bool event_cycle_ = true;
     bool event_busy_ = false;
-    uint32_t next_slot_ = 1;
     std::map<uint32_t, Endpoint> endpoints_;
+    std::set<uint32_t> enabled_slots_;
+    std::vector<uint32_t> protocol_words_;
+    bool legacy_present_ = false;
+    bool bios_owned_ = false;
+    bool os_owned_ = false;
+    int release_after_ = -1;
+    int legacy_polls_ = 0;
+    uint32_t smi_enables_ = 0;
+    uint32_t smi_status_ = 0;
+    uint32_t usb3_first_ = 0;
+    uint32_t scratchpads_ = 0;
+    bool ac64_ = true;
+    uint32_t page_size_bits_ = 1;
+    bool port_power_control_ = false;
+    bool reset_pending_ = false;
+    uint32_t reset_delay_ = 0;
+    uint32_t ready_countdown_ = 0;
+    bool never_ready_ = false;
+    uint32_t halt_delay_ = 0;
+    uint32_t halt_countdown_ = 0;
+    bool never_halts_ = false;
+    bool halt_pending_ = false;
+    uint32_t hold_type_ = 0;
+    bool held_ = false;
+    uint64_t held_trb_ = 0;
+    uint64_t last_held_trb_ = 0;
+    Xhci::Trb held_command_ = {};
+    uint32_t slot_limit_ = MaxSlots;
+    std::vector<uint32_t> port_resets_;
+    uint32_t abort_count_ = 0;
+    uint32_t not_ready_accesses_ = 0;
+    std::vector<ResetRecord> resets_;
+    std::vector<AddressedDevice> addressed_;
+    std::vector<uint32_t> disabled_slots_;
     std::vector<uint32_t> command_types_;
     std::vector<uint32_t> transfer_types_;
     std::vector<uint64_t> erdp_writes_;

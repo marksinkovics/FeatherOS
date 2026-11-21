@@ -34,6 +34,10 @@ PhysicalMemory::~PhysicalMemory()
     }
 }
 
+PhysicalMemory::PhysicalMemory(uint64_t base) : next_physical_(base)
+{
+}
+
 Memory::Dma::Buffer PhysicalMemory::Allocate(uint64_t bytes)
 {
     const uint64_t size = (bytes + PageSize - 1) / PageSize * PageSize;
@@ -60,12 +64,19 @@ volatile uint8_t* PhysicalMemory::Translate(uint64_t physical, uint64_t length) 
 
 FakeXhci::FakeXhci(PhysicalMemory& memory, uint32_t ports, bool context64)
     : memory_(memory), ports_(ports), context64_(context64), portsc_(ports, Xhci::PortSc::Power),
-      enable_clears_(ports, 0)
+      enable_clears_(ports, 0), port_resets_(ports, 0)
 {
+    BuildProtocols();
+    usbsts_ = X::UsbSts::HostControllerHalted;
 }
 
 uint32_t FakeXhci::Read32(uint32_t offset)
 {
+    CountNotReadyAccess(offset);
+    if (offset >= ExtendedBase)
+    {
+        return ReadExtended(offset);
+    }
     if (offset == X::Cap::Length)
     {
         return CapabilityLength | (0x0100U << 16);
@@ -74,9 +85,16 @@ uint32_t FakeXhci::Read32(uint32_t offset)
     {
         return MaxSlots | (1U << 8) | (ports_ << 24);
     }
+    if (offset == X::Cap::HcsParams2)
+    {
+        return (((scratchpads_ >> 5) & 0x1FU) << 21) | ((scratchpads_ & 0x1FU) << 27);
+    }
     if (offset == X::Cap::HccParams1)
     {
-        return (1U << 0) | (context64_ ? 1U << 2 : 0);
+        return (ac64_ ? X::HccParams1::Ac64 : 0) |
+               (context64_ ? X::HccParams1::ContextSize64 : 0) |
+               (port_power_control_ ? X::HccParams1::PortPowerControl : 0) |
+               ((ExtendedBase / 4) << X::HccParams1::ExtendedCapabilityShift);
     }
     if (offset == X::Cap::DoorbellOffset)
     {
@@ -92,13 +110,17 @@ uint32_t FakeXhci::Read32(uint32_t offset)
         switch (reg)
         {
         case X::Op::UsbCmd:
-            return usbcmd_;
+            ReadStatus();
+            return usbcmd_ | (reset_pending_ ? X::UsbCmd::HostControllerReset : 0);
         case X::Op::UsbSts:
-            return usbsts_;
+            return ReadStatus();
         case X::Op::PageSize:
-            return 1;
+            return page_size_bits_;
         case X::Op::Config:
             return config_;
+        case X::Op::CommandRing:
+            return (command_cycle_ ? 1U : 0U) |
+                   (held_ ? static_cast<uint32_t>(X::CommandRingControl::CommandRingRunning) : 0U);
         case X::Op::Dcbaap:
             return static_cast<uint32_t>(dcbaap_);
         case X::Op::Dcbaap + 4:
@@ -120,6 +142,49 @@ uint32_t FakeXhci::Read32(uint32_t offset)
     return 0;
 }
 
+uint32_t FakeXhci::ReadStatus()
+{
+    if (reset_pending_ && !never_ready_)
+    {
+        if (ready_countdown_ == 0)
+        {
+            reset_pending_ = false;
+            usbsts_ &= ~X::UsbSts::ControllerNotReady;
+        }
+        else
+        {
+            --ready_countdown_;
+        }
+    }
+    if (halt_pending_ && !never_halts_)
+    {
+        if (halt_countdown_ == 0)
+        {
+            halt_pending_ = false;
+            usbsts_ |= X::UsbSts::HostControllerHalted;
+        }
+        else
+        {
+            --halt_countdown_;
+        }
+    }
+    return usbsts_;
+}
+
+void FakeXhci::CountNotReadyAccess(uint32_t offset)
+{
+    if ((usbsts_ & X::UsbSts::ControllerNotReady) == 0 || offset < CapabilityLength)
+    {
+        return;
+    }
+    const uint32_t reg = offset - CapabilityLength;
+    if (offset < RuntimeBase && (reg == X::Op::UsbCmd || reg == X::Op::UsbSts))
+    {
+        return;
+    }
+    ++not_ready_accesses_;
+}
+
 void FakeXhci::Write64(uint32_t offset, uint64_t value)
 {
     Write32(offset + 4, static_cast<uint32_t>(value >> 32));
@@ -128,7 +193,12 @@ void FakeXhci::Write64(uint32_t offset, uint64_t value)
 
 void FakeXhci::Write32(uint32_t offset, uint32_t value)
 {
-    if (offset >= DoorbellBase && offset < DoorbellBase + (MaxSlots + 1) * 4)
+    CountNotReadyAccess(offset);
+    if (offset >= ExtendedBase)
+    {
+        WriteExtended(offset, value);
+    }
+    else if (offset >= DoorbellBase && offset < DoorbellBase + (MaxSlots + 1) * 4)
     {
         const uint32_t index = (offset - DoorbellBase) / 4;
         if (index == 0)
@@ -231,12 +301,30 @@ void FakeXhci::WriteOperationalRegister(uint32_t reg, uint32_t value)
     case X::Op::UsbCmd:
         if ((value & X::UsbCmd::HostControllerReset) != 0)
         {
+            resets_.push_back({(usbsts_ & X::UsbSts::HostControllerHalted) != 0, legacy_present_,
+                               os_owned_, bios_owned_, smi_enables_, smi_status_});
             Reset();
             return;
         }
-        usbcmd_ = value;
-        usbsts_ = (value & X::UsbCmd::RunStop) != 0 ? usbsts_ & ~X::UsbSts::HostControllerHalted
-                                                    : usbsts_ | X::UsbSts::HostControllerHalted;
+        {
+            const bool was_running = (usbsts_ & X::UsbSts::HostControllerHalted) == 0;
+            usbcmd_ = value;
+            if ((value & X::UsbCmd::RunStop) != 0)
+            {
+                usbsts_ &= ~X::UsbSts::HostControllerHalted;
+                halt_pending_ = false;
+            }
+            else if (was_running && !halt_pending_)
+            {
+                halt_pending_ = true;
+                halt_countdown_ = halt_delay_;
+                if (halt_delay_ == 0 && !never_halts_)
+                {
+                    halt_pending_ = false;
+                    usbsts_ |= X::UsbSts::HostControllerHalted;
+                }
+            }
+        }
         return;
     case X::Op::UsbSts:
         usbsts_ &= ~(value & (X::UsbSts::HostSystemError | X::UsbSts::EventInterrupt |
@@ -246,11 +334,22 @@ void FakeXhci::WriteOperationalRegister(uint32_t reg, uint32_t value)
         config_ = value;
         return;
     case X::Op::CommandRing:
-        command_dequeue_ = (command_dequeue_ & ~0xFFFFFFFFULL) | (value & 0xFFFFFFC0U);
-        command_cycle_ = (value & X::CommandRingControl::RingCycleState) != 0;
+        if ((value & X::CommandRingControl::CommandAbort) != 0)
+        {
+            AbortCommands();
+        }
+        else if (!held_)
+        {
+            command_dequeue_ = (command_dequeue_ & ~0xFFFFFFFFULL) | (value & 0xFFFFFFC0U);
+            command_cycle_ = (value & X::CommandRingControl::RingCycleState) != 0;
+        }
         return;
     case X::Op::CommandRing + 4:
-        command_dequeue_ = (command_dequeue_ & 0xFFFFFFFFULL) | (static_cast<uint64_t>(value) << 32);
+        if (!held_)
+        {
+            command_dequeue_ =
+                (command_dequeue_ & 0xFFFFFFFFULL) | (static_cast<uint64_t>(value) << 32);
+        }
         return;
     case X::Op::Dcbaap:
         dcbaap_ = (dcbaap_ & ~0xFFFFFFFFULL) | (value & 0xFFFFFFC0U);
@@ -272,11 +371,20 @@ void FakeXhci::Reset()
 {
     usbcmd_ = 0;
     usbsts_ = X::UsbSts::HostControllerHalted;
+    halt_pending_ = false;
+    reset_pending_ = reset_delay_ > 0 || never_ready_;
+    ready_countdown_ = reset_delay_;
+    if (reset_pending_)
+    {
+        usbsts_ |= X::UsbSts::ControllerNotReady;
+    }
     config_ = 0;
     dcbaap_ = 0;
     command_dequeue_ = 0;
     command_cycle_ = true;
+    held_ = false;
     iman_ = 0;
+    imod_ = 0;
     erst_size_ = 0;
     erst_base_ = 0;
     segment_base_ = 0;
@@ -285,7 +393,7 @@ void FakeXhci::Reset()
     event_enqueue_ = 0;
     event_cycle_ = true;
     event_busy_ = false;
-    next_slot_ = 1;
+    enabled_slots_.clear();
     endpoints_.clear();
 }
 
@@ -343,7 +451,7 @@ bool FakeXhci::PostEvent(const X::Trb& event)
 
 void FakeXhci::ProcessCommands()
 {
-    if ((usbcmd_ & X::UsbCmd::RunStop) == 0)
+    if ((usbcmd_ & X::UsbCmd::RunStop) == 0 || held_)
     {
         return;
     }
@@ -367,23 +475,162 @@ void FakeXhci::ProcessCommands()
         }
         command_dequeue_ += X::TrbSize;
         command_types_.push_back(type);
-        uint32_t slot = (trb.control & X::TrbControl::SlotMask) >> X::TrbControl::SlotShift;
-        uint32_t code = X::CompletionCode::Success;
-        if (type == X::TrbType::EnableSlot)
+        if (hold_type_ != 0 && hold_type_ == type)
         {
-            if (next_slot_ > MaxSlots)
+            hold_type_ = 0;
+            held_ = true;
+            held_trb_ = physical;
+            held_command_ = trb;
+            last_held_trb_ = physical;
+            return;
+        }
+        Execute(trb, physical);
+    }
+}
+
+void FakeXhci::Execute(const X::Trb& trb, uint64_t physical)
+{
+    const uint32_t type = X::TrbTypeOf(trb);
+    uint32_t slot = (trb.control & X::TrbControl::SlotMask) >> X::TrbControl::SlotShift;
+    uint32_t code = X::CompletionCode::Success;
+    if (type == X::TrbType::EnableSlot)
+    {
+        slot = 0;
+        for (uint32_t candidate = 1; candidate <= MaxSlots && candidate <= config_; ++candidate)
+        {
+            if (enabled_slots_.count(candidate) == 0)
             {
-                slot = 0;
-                code = X::CompletionCode::NoSlotsAvailable;
-            }
-            else
-            {
-                slot = next_slot_++;
+                slot = candidate;
+                break;
             }
         }
-        PostEvent(X::MakeTrb(X::TrbType::CommandCompletionEvent, slot << X::TrbControl::SlotShift,
-                             physical, code << X::CompletionShift));
+        if (slot == 0 || enabled_slots_.size() >= slot_limit_)
+        {
+            slot = 0;
+            code = X::CompletionCode::NoSlotsAvailable;
+        }
+        else
+        {
+            enabled_slots_.insert(slot);
+        }
     }
+    else if (type == X::TrbType::DisableSlot)
+    {
+        if (enabled_slots_.erase(slot) == 0)
+        {
+            code = X::CompletionCode::SlotNotEnabled;
+        }
+        else
+        {
+            disabled_slots_.push_back(slot);
+            for (uint32_t dci = 1; dci < 32; ++dci)
+            {
+                endpoints_.erase(slot << 5 | dci);
+            }
+        }
+    }
+    else if (type == X::TrbType::AddressDevice)
+    {
+        AddressDevice(slot, X::TrbParameter(trb), &code);
+    }
+    PostEvent(X::MakeTrb(X::TrbType::CommandCompletionEvent, slot << X::TrbControl::SlotShift,
+                     physical, code << X::CompletionShift));
+}
+
+void FakeXhci::ReleaseHeldCommand()
+{
+    if (!held_)
+    {
+        return;
+    }
+    held_ = false;
+    Execute(held_command_, held_trb_);
+    ProcessCommands();
+}
+
+uint64_t FakeXhci::LastHeldTrb() const
+{
+    return last_held_trb_;
+}
+
+void FakeXhci::SetSlotLimit(uint32_t limit)
+{
+    slot_limit_ = limit;
+}
+
+uint32_t FakeXhci::PortResets(uint32_t port) const
+{
+    return port_resets_[port - 1];
+}
+
+void FakeXhci::AbortCommands()
+{
+    ++abort_count_;
+    if (held_)
+    {
+        PostEvent(X::MakeTrb(X::TrbType::CommandCompletionEvent, 0, held_trb_,
+                             X::CompletionCode::CommandAborted << X::CompletionShift));
+        PostEvent(X::MakeTrb(X::TrbType::CommandCompletionEvent, 0, held_trb_,
+                             X::CompletionCode::CommandRingStopped << X::CompletionShift));
+        held_ = false;
+        return;
+    }
+    PostEvent(X::MakeTrb(X::TrbType::CommandCompletionEvent, 0, command_dequeue_,
+                         X::CompletionCode::CommandRingStopped << X::CompletionShift));
+}
+
+void FakeXhci::AddressDevice(uint32_t slot, uint64_t input_physical, uint32_t* code)
+{
+    const uint32_t context_bytes = context64_ ? 64 : 32;
+    const uint64_t device_physical = DcbaaEntry(slot);
+    if (enabled_slots_.count(slot) == 0)
+    {
+        *code = X::CompletionCode::SlotNotEnabled;
+        return;
+    }
+    volatile uint8_t* input = memory_.Translate(input_physical, 3ULL * context_bytes);
+    volatile uint8_t* device = device_physical == 0 ? nullptr : memory_.Translate(device_physical, 2ULL * context_bytes);
+    if (device == nullptr)
+    {
+        *code = X::CompletionCode::ContextStateError;
+        return;
+    }
+    if (input == nullptr)
+    {
+        ++faults_;
+        *code = X::CompletionCode::TrbError;
+        return;
+    }
+    const auto* control = reinterpret_cast<volatile const uint32_t*>(input);
+    const auto* slot_context = reinterpret_cast<volatile const uint32_t*>(input + context_bytes);
+    const auto* ep0 = reinterpret_cast<volatile const uint32_t*>(input + 2ULL * context_bytes);
+    const uint32_t add_flags = Fetch(control + 1);
+    if ((add_flags & 3U) != 3U)
+    {
+        *code = X::CompletionCode::TrbError;
+        return;
+    }
+    AddressedDevice record = {};
+    record.slot = slot;
+    record.route = Fetch(slot_context) & 0xFFFFFU;
+    record.speed_id = (Fetch(slot_context) >> 20) & 0xFU;
+    record.entries = Fetch(slot_context) >> 27;
+    record.root_port = (Fetch(slot_context + 1) >> 16) & 0xFFU;
+    record.ep0_max_packet = Fetch(ep0 + 1) >> 16;
+    record.ep0_ring = (static_cast<uint64_t>(Fetch(ep0 + 3)) << 32) | Fetch(ep0 + 2);
+    record.add_flags = add_flags;
+    addressed_.push_back(record);
+
+    auto* out_slot = reinterpret_cast<volatile uint32_t*>(device);
+    auto* out_ep0 = reinterpret_cast<volatile uint32_t*>(device + context_bytes);
+    for (uint32_t word = 0; word < 8; ++word)
+    {
+        out_slot[word] = Fetch(slot_context + word);
+        out_ep0[word] = Fetch(ep0 + word);
+    }
+    out_slot[3] = (2U << 27) | slot;
+    out_ep0[0] = (out_ep0[0] & ~7U) | 1U;
+    SetEndpointRing(slot, 1, record.ep0_ring & ~0xFULL, (record.ep0_ring & 1U) != 0);
 }
 
 void FakeXhci::ProcessTransfers(uint32_t slot, uint32_t dci)
@@ -453,9 +700,12 @@ void FakeXhci::WritePortRegister(uint32_t port, uint32_t value)
                                 X::PortSc::WakeOnConnect | X::PortSc::WakeOnDisconnect |
                                 X::PortSc::WakeOnOverCurrent;
     status = (status & ~Stored) | (value & Stored);
-    if ((value & X::PortSc::Reset) != 0 && (status & X::PortSc::CurrentConnect) != 0)
+    const bool warm = (value & X::PortSc::WarmReset) != 0;
+    if (((value & X::PortSc::Reset) != 0 || warm) && (status & X::PortSc::CurrentConnect) != 0)
     {
-        status |= X::PortSc::Enabled | X::PortSc::ResetChange;
+        ++port_resets_[port - 1];
+        status |= X::PortSc::Enabled | X::PortSc::ResetChange |
+                  (warm ? X::PortSc::WarmResetChange : 0);
         status &= ~X::PortSc::LinkStateMask;
         PostPortEvent(port);
     }
@@ -466,10 +716,14 @@ void FakeXhci::SetEndpointRing(uint32_t slot, uint32_t dci, uint64_t ring, bool 
     endpoints_[slot << 5 | dci] = {ring, cycle};
 }
 
-void FakeXhci::Connect(uint32_t port, Speed speed)
+void FakeXhci::Connect(uint32_t port, Speed speed, bool trained)
 {
     portsc_[port - 1] = X::PortSc::CurrentConnect | X::PortSc::ConnectChange | X::PortSc::Power |
                         (static_cast<uint32_t>(X::SpeedId(speed)) << X::PortSc::SpeedShift);
+    if (trained && PortIsUsb3(port) && speed >= Speed::Super)
+    {
+        portsc_[port - 1] |= X::PortSc::Enabled;
+    }
     PostPortEvent(port);
 }
 
@@ -479,6 +733,261 @@ void FakeXhci::Disconnect(uint32_t port)
     status &= ~(X::PortSc::CurrentConnect | X::PortSc::Enabled | X::PortSc::SpeedMask);
     status |= X::PortSc::ConnectChange;
     PostPortEvent(port);
+}
+
+bool FakeXhci::PortIsUsb3(uint32_t port) const
+{
+    return usb3_first_ != 0 && port >= usb3_first_;
+}
+
+void FakeXhci::BuildProtocols()
+{
+    protocol_words_.clear();
+    struct Range
+    {
+        uint32_t major;
+        uint32_t first;
+        uint32_t count;
+    };
+    std::vector<Range> ranges;
+    if (usb3_first_ == 0)
+    {
+        ranges.push_back({2, 1, ports_});
+    }
+    else
+    {
+        if (usb3_first_ > 1)
+        {
+            ranges.push_back({2, 1, usb3_first_ - 1});
+        }
+        ranges.push_back({3, usb3_first_, ports_ - usb3_first_ + 1});
+    }
+    for (size_t index = 0; index < ranges.size(); ++index)
+    {
+        const uint32_t next = index + 1 == ranges.size() ? 0 : 4;
+        protocol_words_.push_back(X::ExtendedCapability::SupportedProtocol | (next << 8) |
+                                  (ranges[index].major << 24));
+        protocol_words_.push_back(X::ExtendedCapability::ProtocolName);
+        protocol_words_.push_back(ranges[index].first | (ranges[index].count << 8));
+        protocol_words_.push_back(0);
+    }
+}
+
+uint32_t FakeXhci::ReadExtended(uint32_t offset)
+{
+    uint32_t relative = offset - ExtendedBase;
+    if (legacy_present_)
+    {
+        if (relative == 0)
+        {
+            if (os_owned_ && bios_owned_ && release_after_ >= 0)
+            {
+                if (legacy_polls_ >= release_after_)
+                {
+                    bios_owned_ = false;
+                }
+                else
+                {
+                    ++legacy_polls_;
+                }
+            }
+            return X::ExtendedCapability::LegacySupport | (2U << 8) |
+                   (bios_owned_ ? X::ExtendedCapability::BiosOwned : 0) |
+                   (os_owned_ ? X::ExtendedCapability::OsOwned : 0);
+        }
+        if (relative == 4)
+        {
+            return smi_enables_ | smi_status_;
+        }
+        if (relative < 8)
+        {
+            return 0;
+        }
+        relative -= 8;
+    }
+    const size_t index = relative / 4;
+    return index < protocol_words_.size() ? protocol_words_[index] : 0;
+}
+
+void FakeXhci::WriteExtended(uint32_t offset, uint32_t value)
+{
+    const uint32_t relative = offset - ExtendedBase;
+    if (!legacy_present_)
+    {
+        return;
+    }
+    if (relative == 0)
+    {
+        os_owned_ = (value & X::ExtendedCapability::OsOwned) != 0;
+        if ((value & X::ExtendedCapability::BiosOwned) == 0)
+        {
+            bios_owned_ = false;
+        }
+    }
+    else if (relative == 4)
+    {
+        smi_enables_ = value & X::ExtendedCapability::SmiEnableMask;
+        smi_status_ &= ~(value & X::ExtendedCapability::SmiStatusMask);
+    }
+}
+
+void FakeXhci::EnableLegacySupport(bool firmware_owns, int release_after_polls)
+{
+    legacy_present_ = true;
+    bios_owned_ = firmware_owns;
+    os_owned_ = false;
+    release_after_ = release_after_polls;
+    legacy_polls_ = 0;
+    smi_enables_ = X::ExtendedCapability::SmiEnableMask;
+    smi_status_ = X::ExtendedCapability::SmiStatusMask;
+}
+
+void FakeXhci::SetUsb3Ports(uint32_t usb3_first)
+{
+    usb3_first_ = usb3_first;
+    BuildProtocols();
+}
+
+void FakeXhci::SetScratchpads(uint32_t count)
+{
+    scratchpads_ = count;
+}
+
+void FakeXhci::SetAc64(bool ac64)
+{
+    ac64_ = ac64;
+}
+
+void FakeXhci::SetPageSize(uint32_t page_size_bits)
+{
+    page_size_bits_ = page_size_bits;
+}
+
+void FakeXhci::SetPortPowerControl(bool enabled)
+{
+    port_power_control_ = enabled;
+    for (uint32_t& status : portsc_)
+    {
+        status = enabled ? status & ~X::PortSc::Power : status | X::PortSc::Power;
+    }
+}
+
+void FakeXhci::StartRunning()
+{
+    usbcmd_ |= X::UsbCmd::RunStop;
+    usbsts_ &= ~X::UsbSts::HostControllerHalted;
+}
+
+void FakeXhci::SetResetDelay(uint32_t polls, bool never_ready)
+{
+    reset_delay_ = polls;
+    never_ready_ = never_ready;
+}
+
+void FakeXhci::SetHaltDelay(uint32_t polls, bool never_halts)
+{
+    halt_delay_ = polls;
+    never_halts_ = never_halts;
+}
+
+void FakeXhci::HoldNextCommand(uint32_t type)
+{
+    hold_type_ = type;
+}
+
+bool FakeXhci::PostInjectedEvent(const X::Trb& event)
+{
+    return PostEvent(event);
+}
+
+void FakeXhci::SetStatusBits(uint32_t bits)
+{
+    usbsts_ |= bits;
+}
+
+const std::vector<FakeXhci::ResetRecord>& FakeXhci::Resets() const
+{
+    return resets_;
+}
+
+const std::vector<FakeXhci::AddressedDevice>& FakeXhci::Addressed() const
+{
+    return addressed_;
+}
+
+const std::vector<uint32_t>& FakeXhci::DisabledSlots() const
+{
+    return disabled_slots_;
+}
+
+uint32_t FakeXhci::NotReadyAccesses() const
+{
+    return not_ready_accesses_;
+}
+
+uint32_t FakeXhci::AbortCount() const
+{
+    return abort_count_;
+}
+
+uint32_t FakeXhci::SmiEnables() const
+{
+    return smi_enables_;
+}
+
+uint32_t FakeXhci::SmiStatus() const
+{
+    return smi_status_;
+}
+
+bool FakeXhci::OsOwned() const
+{
+    return os_owned_;
+}
+
+bool FakeXhci::BiosOwned() const
+{
+    return bios_owned_;
+}
+
+uint64_t FakeXhci::DcbaaPointer() const
+{
+    return dcbaap_;
+}
+
+uint64_t FakeXhci::DcbaaEntry(uint32_t index)
+{
+    volatile uint8_t* table = dcbaap_ == 0 ? nullptr : memory_.Translate(dcbaap_ + index * 8ULL, 8);
+    if (table == nullptr)
+    {
+        return 0;
+    }
+    uint64_t value = 0;
+    for (uint32_t byte = 0; byte < 8; ++byte)
+    {
+        value |= static_cast<uint64_t>(table[byte]) << (byte * 8);
+    }
+    return value;
+}
+
+uint32_t FakeXhci::UsbCommand() const
+{
+    return usbcmd_;
+}
+
+uint32_t FakeXhci::ConfiguredSlots() const
+{
+    return config_;
+}
+
+uint32_t FakeXhci::InterruptModeration() const
+{
+    return imod_;
+}
+
+uint32_t FakeXhci::ErstSize() const
+{
+    return erst_size_;
 }
 
 const std::vector<uint32_t>& FakeXhci::CommandTypes() const

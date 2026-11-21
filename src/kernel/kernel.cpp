@@ -109,6 +109,7 @@ extern "C" void kmain()
         command_line = kernel_file_request.response->kernel_file->cmdline;
     }
     FeatherOS::BootOptions::SelectRoot(FeatherOS::BootOptions::ParseRoot(command_line));
+    FeatherOS::BootOptions::SelectUsb(FeatherOS::BootOptions::ParseUsb(command_line));
 #if defined(FEATHEROS_KERNEL_TESTS)
     FeatherOS::KernelTest::Mode test_mode = FeatherOS::KernelTest::Mode::None;
     if (!FeatherOS::KernelTest::ParseCommandLine(command_line, &test_mode))

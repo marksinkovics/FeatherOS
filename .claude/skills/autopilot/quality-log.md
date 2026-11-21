@@ -74,4 +74,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | PENDING | M14 P1 s1 PCI layer, x86 port config, AArch64 ECAM, MapDevice ranges | - | sonnet | 0 | 2/2 (I2 step limit caught as a hang) | |
 | 03a768e | M14 P1 s1 PCI layer, x86 port config, AArch64 ECAM, MapDevice ranges | - | sonnet | 0 | 2/2 (I2 step limit caught as a hang) | |
 | fe9200a | M14 P1 s2 DMA, MSI/MSI-X, GICv2m, AArch64 INTx, test=pci with edu | M14.md (opus) | sonnet | 0 | 4/4 (I3, I4 by T3/T4; I5 both arches by T30) | |
-| PENDING | M14 P2 s3 xHCI TRBs, rings, contexts, PORTSC mask, fake controller (host) | M14.md (opus) | sonnet | 0 | 3/3 (I6 T6, I7 T5, I14 T12) | |
+| ec05a46 | M14 P2 s3 xHCI TRBs, rings, contexts, PORTSC mask, fake controller (host) | M14.md (opus) | sonnet | 0 | 3/3 (I6 T6, I7 T5, I14 T12) | |
+| PENDING | M14 P2 s4 xHCI bring-up, UsbEvents/UsbManager, interrupt choice, root-port Address Device, USB_TEST | M14.md (opus) | sonnet | 0 | 3/3 (I10 T9 after test fix, I11 T13, I12 T14) | |

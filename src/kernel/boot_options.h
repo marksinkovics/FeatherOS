@@ -33,6 +33,19 @@ Root ParseRoot(const char* command_line);
 void SelectRoot(Root root);
 Root SelectedRoot();
 
+enum class UsbMode : uint8_t
+{
+    Default,
+    Off,
+    Poll,
+};
+
+// usb=off leaves USB alone, usb=poll takes controller events from the timer instead of an
+// interrupt. The last usb= wins and a value that is neither counts as absent.
+UsbMode ParseUsb(const char* command_line);
+void SelectUsb(UsbMode mode);
+UsbMode SelectedUsb();
+
 } // namespace FeatherOS::BootOptions
 
 #endif
