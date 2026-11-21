@@ -4,6 +4,7 @@
 #include "kernel/klogger.h"
 #include "kernel/panic.h"
 #include "kernel/scheduler.h"
+#include "kernel/storage/page_cache.h"
 #include "kernel/time/timer.h"
 
 #include <stdint.h>
@@ -27,6 +28,7 @@ uint64_t WritebackTask(void*)
             Scheduler::SleepUntil(next);
         }
         next = Time::TickCount() + interval;
+        BlockDevice::BalanceCache();
         const bool synced = Files::SyncPeriodic() == 0;
         if (!synced && !failing)
         {

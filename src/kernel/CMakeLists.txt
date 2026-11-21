@@ -95,7 +95,9 @@ set(SRC
     ${SRCROOT}/filesystem/core_host.cpp
     ${SRCROOT}/filesystem/path.cpp
     ${SRCROOT}/filesystem/path_walk.cpp
+    ${SRCROOT}/storage/cache_sizing.cpp
     ${SRCROOT}/storage/core_block_device.cpp
+    ${SRCROOT}/storage/page_cache.cpp
     ${SRCROOT}/network/address.cpp
     ${SRCROOT}/network/arp.cpp
     ${SRCROOT}/network/checksum.cpp

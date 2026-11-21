@@ -59,6 +59,7 @@ add_executable(featheros_unit_tests
     kernel/network/tcp_tests.cpp
     kernel/network/udp_tests.cpp
     kernel/process/futex_tests.cpp
+    kernel/storage/page_cache_tests.cpp
     kernel/sync/volume_mutex_tests.cpp
     support/network_stubs.cpp
     support/scheduler_stubs.cpp
@@ -139,7 +140,9 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/filesystem/core_driver.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path_walk.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/cache_sizing.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/core_block_device.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/page_cache.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/devices.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/procfs.cpp"
@@ -218,6 +221,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/user/vi_editor.cpp"
     "${FEATHEROS_ROOT}/src/kernel/klogger.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/memory/page_allocator.cpp"
     "${FEATHEROS_ROOT}/src/kernel/process_arguments.cpp"
     "${FEATHEROS_ROOT}/src/kernel/sync/volume_mutex.cpp"
     "${FEATHEROS_ROOT}/src/kernel/syscall.cpp"

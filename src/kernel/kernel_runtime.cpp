@@ -28,6 +28,7 @@
 #include "kernel/smp.h"
 #include "kernel/string/format.h"
 #include "kernel/storage/block_device.h"
+#include "kernel/storage/page_cache.h"
 #include "kernel/time/timer.h"
 #include "kernel/writeback.h"
 #include "kernel/memory/virtual_memory.h"
@@ -244,6 +245,10 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
         BlockDevice::SectorCount() < 2)
     {
         Panic("Virtio block device initialization failed");
+    }
+    if (!BlockDevice::InitializeCache(boot_info.hhdm_offset))
+    {
+        Panic("Page cache initialization failed");
     }
     const char* root_type = nullptr;
     const char* root_source = nullptr;

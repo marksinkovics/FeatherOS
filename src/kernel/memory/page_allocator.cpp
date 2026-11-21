@@ -4,6 +4,7 @@
 
 #include "kernel/sync/spinlock.h"
 
+#include <atomic>
 #include <stddef.h>
 
 namespace
@@ -19,6 +20,15 @@ uint64_t bitmap_physical_address = 0;
 uint64_t bitmap_frame_count = 0;
 size_t bitmap_size_bytes = 0;
 bool initialized = false;
+constexpr uint64_t ReclaimBatch = 32;
+std::atomic<FeatherOS::Memory::FrameReclaimer> reclaimer = nullptr;
+
+enum class Attempt : uint8_t
+{
+    Allocated,
+    Exhausted,
+    Failed,
+};
 
 bool GetUsableFrameBounds(const FeatherOS::Memory::Region& region, uint64_t* first, uint64_t* end)
 {
@@ -152,6 +162,53 @@ bool FindBitmapRegion(uint64_t required_frames, uint64_t* physical_address)
     return false;
 }
 
+Attempt TryAllocatePageFrame(uint64_t* physical_address)
+{
+    FeatherOS::Sync::SpinLockGuard guard(allocator_lock);
+    if (!initialized || physical_address == nullptr)
+    {
+        return Attempt::Failed;
+    }
+    if (free_frame_count == 0)
+    {
+        return Attempt::Exhausted;
+    }
+
+    for (uint64_t index = next_search_index; index < frame_count; ++index)
+    {
+        if (!IsAllocated(index))
+        {
+            uint64_t address;
+            if (!GetPhysicalAddress(index, &address))
+            {
+                return Attempt::Failed;
+            }
+            SetAllocated(index, true);
+            --free_frame_count;
+            next_search_index = index + 1 == frame_count ? 0 : index + 1;
+            *physical_address = address;
+            return Attempt::Allocated;
+        }
+    }
+    for (uint64_t index = 0; index < next_search_index; ++index)
+    {
+        if (!IsAllocated(index))
+        {
+            uint64_t address;
+            if (!GetPhysicalAddress(index, &address))
+            {
+                return Attempt::Failed;
+            }
+            SetAllocated(index, true);
+            --free_frame_count;
+            next_search_index = index + 1 == frame_count ? 0 : index + 1;
+            *physical_address = address;
+            return Attempt::Allocated;
+        }
+    }
+    return Attempt::Exhausted;
+}
+
 } // namespace
 
 namespace FeatherOS::Memory
@@ -258,45 +315,18 @@ bool InitializePageAllocator(uint64_t hhdm_offset)
 
 bool AllocatePageFrame(uint64_t* physical_address)
 {
-    Sync::SpinLockGuard guard(allocator_lock);
-    if (!initialized || physical_address == nullptr || free_frame_count == 0)
+    const Attempt first = TryAllocatePageFrame(physical_address);
+    if (first != Attempt::Exhausted)
+    {
+        return first == Attempt::Allocated;
+    }
+    const FrameReclaimer reclaim = reclaimer.load(std::memory_order_acquire);
+    if (reclaim == nullptr)
     {
         return false;
     }
-
-    for (uint64_t index = next_search_index; index < frame_count; ++index)
-    {
-        if (!IsAllocated(index))
-        {
-            uint64_t address;
-            if (!GetPhysicalAddress(index, &address))
-            {
-                return false;
-            }
-            SetAllocated(index, true);
-            --free_frame_count;
-            next_search_index = index + 1 == frame_count ? 0 : index + 1;
-            *physical_address = address;
-            return true;
-        }
-    }
-    for (uint64_t index = 0; index < next_search_index; ++index)
-    {
-        if (!IsAllocated(index))
-        {
-            uint64_t address;
-            if (!GetPhysicalAddress(index, &address))
-            {
-                return false;
-            }
-            SetAllocated(index, true);
-            --free_frame_count;
-            next_search_index = index + 1 == frame_count ? 0 : index + 1;
-            *physical_address = address;
-            return true;
-        }
-    }
-    return false;
+    reclaim(ReclaimBatch);
+    return TryAllocatePageFrame(physical_address) == Attempt::Allocated;
 }
 
 bool AllocateContiguousPageFrames(uint64_t count, uint64_t* physical_address)
@@ -375,6 +405,22 @@ bool GetPageAllocatorStats(PageAllocatorStats* stats)
     stats->bitmap_physical_address = bitmap_physical_address;
     stats->bitmap_size_bytes = bitmap_size_bytes;
     return true;
+}
+
+uint64_t FreeFrameCount()
+{
+    Sync::SpinLockGuard guard(allocator_lock);
+    return initialized ? free_frame_count : 0;
+}
+
+void SetFrameReclaimer(FrameReclaimer reclaim)
+{
+    reclaimer.store(reclaim, std::memory_order_release);
+}
+
+bool AllocatorLockHeld()
+{
+    return allocator_lock.IsLocked();
 }
 
 } // namespace FeatherOS::Memory
