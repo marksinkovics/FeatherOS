@@ -63,6 +63,9 @@ set(SRC
     ${SRCROOT}/panic.cpp
     ${SRCROOT}/pci/msi.cpp
     ${SRCROOT}/pci/pci.cpp
+    ${SRCROOT}/usb/xhci/context.cpp
+    ${SRCROOT}/usb/xhci/registers.cpp
+    ${SRCROOT}/usb/xhci/ring.cpp
     ${SRCROOT}/console.cpp
     ${SRCROOT}/writeback.cpp
     ${SRCROOT}/terminal/pseudo_terminal.cpp
