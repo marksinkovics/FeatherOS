@@ -60,4 +60,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 38f5ea4 | M33 P1 tile layer, BlitPart, TileSheet | - | sonnet | 0 | - | |
 | 0bed505 | M33 P2 wickdeep floors, sight, DUNGEON mode | - | sonnet | 0 | 2/2 (connectivity via pinned values) | |
 | e3bd253 | M33 P3 monsters, combat, items, full bot | - | sonnet | 0 | 2/2 | |
-| (this) | M33 P4 saves, hall of runs, --check-save | - | sonnet | 0 | 2/2 | |
+| 432ed22 | M33 P4 saves, hall of runs, --check-save | - | sonnet | 0 | 2/2 | |
+| (this) | M33 P5 playable wickdeep, tiles, played DUNGEON check | - | sonnet | 0 | 1/1 | |

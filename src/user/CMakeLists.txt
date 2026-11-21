@@ -37,6 +37,7 @@ set(FEATHEROS_SWIFT_CXX_PROGRAMS
 )
 set(FEATHEROS_SWIFT_CXX_SOURCES_cxxinterop cxx_interop.cpp)
 set(FEATHEROS_SWIFT_CXX_SOURCES_gfxcheck gfx_check.cpp)
+set(FEATHEROS_SWIFT_CXX_SOURCES_wickdeep wickdeep/art.cpp)
 # Programs in full Swift, with runtime type information (see swift_runtime/), built when deps/
 # holds the runtime's sources. They import a FeatherSupport built in full mode, and cannot import
 # the Embedded modules.

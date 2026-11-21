@@ -38,7 +38,7 @@ WEIGHTS = {
     "NETWORK_TEST": 3,
     "STORAGE_TEST": 2,
     "POWER_TEST": 1,
-    "DUNGEON_TEST": 1,
+    "DUNGEON_TEST": 2,
 }
 
 

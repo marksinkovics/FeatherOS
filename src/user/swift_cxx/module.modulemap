@@ -20,6 +20,12 @@ module FeatherGraphics {
     export *
 }
 
+module WickdeepArt {
+    header "../wickdeep/art.h"
+    requires cplusplus
+    export *
+}
+
 module GfxCheck {
     header "../gfx_check.h"
     requires cplusplus

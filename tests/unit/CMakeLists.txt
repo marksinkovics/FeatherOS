@@ -93,6 +93,7 @@ add_executable(featheros_unit_tests
     kernel/string/format_tests.cpp
     user/graphics_tests.cpp
     user/tile_sheet_tests.cpp
+    user/wickdeep_art_tests.cpp
     libc/address_text_tests.cpp
     libc/dns_message_tests.cpp
     libc/environment_table_tests.cpp
@@ -228,6 +229,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/user/process_table.cpp"
     "${FEATHEROS_ROOT}/src/user/text_tools.cpp"
     "${FEATHEROS_ROOT}/src/user/vi_editor.cpp"
+    "${FEATHEROS_ROOT}/src/user/wickdeep/art.cpp"
     "${FEATHEROS_ROOT}/src/kernel/klogger.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/page_allocator.cpp"

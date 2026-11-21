@@ -2,9 +2,14 @@ import FeatherLibC
 import FeatherSupport
 
 let help = """
-    usage: wickdeep --selftest | --check-save PATH | --demo [--seed N] [--save-at TURN PATH]
-    A turn-based dungeon crawler of eight floors lit by a lamp that runs down. The rules and the
-    saves exist so far (floors, lamp, monsters, items, combat); the game screen comes later.
+    usage: wickdeep [--seed N] | --selftest | --check-save PATH | --demo [--seed N] [--save-at TURN PATH]
+    A turn-based dungeon crawler for a virtual console: eight floors lit by a lamp that runs
+    down, and the Heartwick at the bottom. Keys: arrows or keypad 8 4 6 2 move or attack,
+    keypad 7 9 1 3 move diagonally, Space waits, Enter takes the stairs, I opens the pack (Up
+    and Down choose, Enter uses or equips, D drops, Esc closes), H shows help, Esc or Ctrl+C
+    saves the run to $HOME/.wickdeep-save (/tmp without HOME) and quits; the next start
+    resumes it, and a save that does not check out is set aside as .wickdeep-save.bad. Runs
+    that end are ranked in $HOME/.wickdeep-runs. --seed N fixes a new run's seed.
     --selftest checks the rules and the save format; --check-save reads a save and says whether
     it is sound; --demo plays a fixed bot from the first floor to its death or the Heartwick
     without a display and prints the turns, depth, level, score, outcome and a hash of the
@@ -62,9 +67,22 @@ func demoArguments(_ operands: [String]) {
     runDemo(seed: seed, save: save)
 }
 
+func exitWith(_ status: Int32) {
+    if status != 0 {
+        FeatherLibC.exit(status)
+    }
+}
+
 let operands = Arguments.operands
 if Arguments.helpRequested {
     print(help)
+} else if operands.isEmpty {
+    exitWith(runGame(seed: nil))
+} else if operands.count == 2 && operands[0] == "--seed" {
+    guard let seed = parseSeed(operands[1]) else {
+        fail("invalid seed \(operands[1]); see wickdeep -h")
+    }
+    exitWith(runGame(seed: seed))
 } else if operands.count == 1 && operands[0] == "--selftest" {
     if !runSelfTest() {
         exit(.failure)
@@ -74,5 +92,5 @@ if Arguments.helpRequested {
 } else if operands.first == "--demo" {
     demoArguments(operands)
 } else {
-    fail("expected --selftest, --check-save or --demo; see wickdeep -h")
+    fail("expected --seed N, --selftest, --check-save or --demo; see wickdeep -h")
 }
