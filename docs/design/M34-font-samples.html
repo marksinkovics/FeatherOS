@@ -1,0 +1,114 @@
+<title>FeatherOS Font Pairs</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono&family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@400;600&family=Noto+Sans+Mono&family=Noto+Sans:wght@400;600&family=Fira+Mono&family=Fira+Sans:wght@400;600&display=swap">
+<style>
+/* Layout: one column of four pair panels; each panel shows a console strip (mono 16 px, the 8x16 cell) and UI text (sans at 16/32/48 px). */
+:root {
+  --bg: #f3f4f6; --panel: #ffffff; --fg: #1d2129; --muted: #5b6270; --line: #d9dde4;
+  --console-bg: #000000; --console-fg: #e6e6e6; --console-bar: #ffffff; --console-bar-fg: #000000;
+  --accent: #2f6fdb;
+  --ui: "Inter", system-ui, sans-serif; --mono-ui: "JetBrains Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121418; --panel: #1b1e24; --fg: #e8eaee; --muted: #a2a8b3; --line: #2c313a; --accent: #7aa7ff; color-scheme: dark } }
+:root[data-theme="dark"] { --bg: #121418; --panel: #1b1e24; --fg: #e8eaee; --muted: #a2a8b3; --line: #2c313a; --accent: #7aa7ff; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font-family: var(--ui); line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 24px 48px; }
+.wrap { max-width: 980px; margin: 0 auto; display: grid; gap: 20px; }
+header h1 { font-size: 1.6rem; margin: 0 0 4px; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); max-width: 68ch; }
+.pair { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; display: grid; gap: 14px; min-width: 0; }
+.pair h2 { margin: 0; font-size: 1.1rem; display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; }
+.pair h2 .lic { font-size: .8rem; font-weight: 400; color: var(--muted); letter-spacing: .02em; }
+.rec { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); font-weight: 600; }
+.label { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.console { background: var(--console-bg); color: var(--console-fg); border-radius: 6px; overflow-x: auto; font-size: 13.3px; line-height: 16px; padding: 8px 8px 10px; white-space: pre; min-width: 0; }
+.console .bar { background: var(--console-bar); color: var(--console-bar-fg); display: block; margin: -8px -8px 6px; padding: 0 8px; border-radius: 6px 6px 0 0; }
+.ui { display: grid; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.s16 { font-size: 16px; } .s32 { font-size: 32px; line-height: 1.15; font-weight: 600; } .s48 { font-size: 48px; line-height: 1.05; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+.licence { font-size: .9rem; color: var(--muted); max-width: 72ch; }
+.licence strong { color: var(--fg); }
+</style>
+
+<div class="wrap">
+<header>
+  <h1>FeatherOS Font Pairs</h1>
+  <p>The same sample in each candidate pair: the console strip is the monospace face at the 8x16 cell size, below it the UI face at 16, 32 and 48 px, with Hungarian accents, Greek, Cyrillic and box drawing. In FeatherOS the glyphs would be pre-rendered with 4-bit anti-aliasing, so they will look very close to this, slightly softer at 16 px.</p>
+</header>
+
+<section class="pair" id="jb" style="--m:'JetBrains Mono'; --s:'Inter'">
+  <h2>JetBrains Mono + Inter <span class="rec">Recommended</span> <span class="lic">SIL OFL 1.1 · "Inter" is a reserved name</span></h2>
+  <div class="label">Console, mono 16</div>
+  <div class="console" style="font-family:'JetBrains Mono',monospace"><span class="bar">wickdeep                                     2/4 CPU  12:04 UTC</span>&gt; ls /system/fonts
+mono-16.ffnt  sans-32.ffnt  README.txt
+&gt; echo "Árvíztűrő tükörfúrógép — αβγ δέλτα — Привет, мир"
+Árvíztűrő tükörfúrógép — αβγ δέλτα — Привет, мир
+┌──────────┬─────┐  ░▒▓█  ← ↑ → ↓  0O 1lI {}[]()
+│ featherf │ 812 │  != == -&gt; =&gt;
+└──────────┴─────┘</div>
+  <div class="label">UI, sans 16 / 32 / 48</div>
+  <div class="ui" style="font-family:'Inter',sans-serif">
+    <div class="s16">Score 12 400 · Level 7 · Lines 64 — Pause (P), quit (Esc). Árvíztűrő, Ελληνικά, Кириллица.</div>
+    <div class="s32">The last wick-keeper</div>
+    <div class="s48">Game over</div>
+  </div>
+</section>
+
+<section class="pair" style="">
+  <h2>IBM Plex Mono + IBM Plex Sans <span class="lic">SIL OFL 1.1 · "Plex" is a reserved name</span></h2>
+  <div class="label">Console, mono 16</div>
+  <div class="console" style="font-family:'IBM Plex Mono',monospace"><span class="bar">wickdeep                                     2/4 CPU  12:04 UTC</span>&gt; ls /system/fonts
+mono-16.ffnt  sans-32.ffnt  README.txt
+&gt; echo "Árvíztűrő tükörfúrógép — αβγ δέλτα — Привет, мир"
+Árvíztűrő tükörfúrógép — αβγ δέλτα — Привет, мир
+┌──────────┬─────┐  ░▒▓█  ← ↑ → ↓  0O 1lI {}[]()
+│ featherf │ 812 │  != == -&gt; =&gt;
+└──────────┴─────┘</div>
+  <div class="label">UI, sans 16 / 32 / 48</div>
+  <div class="ui" style="font-family:'IBM Plex Sans',sans-serif">
+    <div class="s16">Score 12 400 · Level 7 · Lines 64 — Pause (P), quit (Esc). Árvíztűrő, Ελληνικά, Кириллица.</div>
+    <div class="s32">The last wick-keeper</div>
+    <div class="s48">Game over</div>
+  </div>
+</section>
+
+<section class="pair">
+  <h2>Noto Sans Mono + Noto Sans <span class="lic">SIL OFL 1.1 · widest coverage</span></h2>
+  <div class="label">Console, mono 16</div>
+  <div class="console" style="font-family:'Noto Sans Mono',monospace"><span class="bar">wickdeep                                     2/4 CPU  12:04 UTC</span>&gt; ls /system/fonts
+mono-16.ffnt  sans-32.ffnt  README.txt
+&gt; echo "Árvíztűrő tükörfúrógép — αβγ δέλτα — Привет, мир"
+Árvíztűrő tükörfúrógép — αβγ δέλτα — Привет, мир
+┌──────────┬─────┐  ░▒▓█  ← ↑ → ↓  0O 1lI {}[]()
+│ featherf │ 812 │  != == -&gt; =&gt;
+└──────────┴─────┘</div>
+  <div class="label">UI, sans 16 / 32 / 48</div>
+  <div class="ui" style="font-family:'Noto Sans',sans-serif">
+    <div class="s16">Score 12 400 · Level 7 · Lines 64 — Pause (P), quit (Esc). Árvíztűrő, Ελληνικά, Кириллица.</div>
+    <div class="s32">The last wick-keeper</div>
+    <div class="s48">Game over</div>
+  </div>
+</section>
+
+<section class="pair">
+  <h2>Fira Mono + Fira Sans <span class="lic">SIL OFL 1.1 · "Fira" is a reserved name</span></h2>
+  <div class="label">Console, mono 16</div>
+  <div class="console" style="font-family:'Fira Mono',monospace"><span class="bar">wickdeep                                     2/4 CPU  12:04 UTC</span>&gt; ls /system/fonts
+mono-16.ffnt  sans-32.ffnt  README.txt
+&gt; echo "Árvíztűrő tükörfúrógép — αβγ δέλτα — Привет, мир"
+Árvíztűrő tükörfúrógép — αβγ δέλτα — Привет, мир
+┌──────────┬─────┐  ░▒▓█  ← ↑ → ↓  0O 1lI {}[]()
+│ featherf │ 812 │  != == -&gt; =&gt;
+└──────────┴─────┘</div>
+  <div class="label">UI, sans 16 / 32 / 48</div>
+  <div class="ui" style="font-family:'Fira Sans',sans-serif">
+    <div class="s16">Score 12 400 · Level 7 · Lines 64 — Pause (P), quit (Esc). Árvíztűrő, Ελληνικά, Кириллица.</div>
+    <div class="s32">The last wick-keeper</div>
+    <div class="s48">Game over</div>
+  </div>
+</section>
+
+<p class="licence"><strong>Are they free to use?</strong> Yes. All four pairs are under the SIL Open Font License 1.1: free to use, embed, convert and redistribute, also commercially, as long as the licence text travels with the fonts, the fonts are not sold on their own, and a converted version does not carry a reserved font name. FeatherOS would name its files <code>mono-N</code> and <code>sans-N</code> and ship each family's licence beside them in <code>/system/fonts/</code>.</p>
+</div>
