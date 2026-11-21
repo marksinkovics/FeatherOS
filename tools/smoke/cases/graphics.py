@@ -3,16 +3,22 @@ import json
 import os
 import re
 import select
-import tempfile
 import time
 
 from smoke.boot import PANIC_MARKER
 from smoke.cases.base import Case
-from smoke.qemu import (
-    OpenQmpChannel,
-    SendQmpCommand,
-    SendQmpKeyEvent,
-    SendQmpKeys,
+from smoke.cases.screen import (
+    BLACK,
+    HEIGHT,
+    WHITE,
+    WIDTH,
+    Difference,
+    ExpectColor,
+    Found,
+    Hex,
+    PixelAt,
+    ScreenCase,
+    StepFailed,
 )
 from smoke.script import Lines
 from smoke.terminal import (
@@ -24,8 +30,6 @@ from smoke.terminal import (
 
 GRAPHICS_TIMEOUT_SECONDS = 150
 DEMO_SECONDS = 10
-WIDTH = 1024
-HEIGHT = 768
 BAR_COLORS = (
     0xFF0000,
     0x00FF00,
@@ -51,10 +55,6 @@ SAMPLE_POINTS = BAR_CENTERS + (
     STATUS_POINT,
     PADDING_POINT,
 )
-WHITE = 0xFFFFFF
-BLACK = 0x000000
-RETRY_SECONDS = 2.0
-RETRY_PAUSE_SECONDS = 0.2
 PRESENTED = b"fbdemo: presented"
 DONE = b"fbdemo: done"
 KEYS_COMMAND = "fbdemo --keys 120\n"
@@ -119,29 +119,6 @@ def PatternAt(x, y):
     return ((x // 4) << 16) | (((y - HEIGHT // 2) // 2) << 8)
 
 
-def ReadPpm(path):
-    with open(path, "rb") as file:
-        data = file.read()
-    header = data.split(b"\n", 3)
-    if header[0] != b"P6" or header[2] != b"255":
-        raise RuntimeError("the screendump is not a binary PPM")
-    width, height = (int(value) for value in header[1].split())
-    if (width, height) != (WIDTH, HEIGHT):
-        raise RuntimeError(f"the screendump is {width}x{height}")
-    return header[3]
-
-
-def PixelAt(pixels, x, y):
-    offset = 3 * (y * WIDTH + x)
-    return (
-        (pixels[offset] << 16) | (pixels[offset + 1] << 8) | pixels[offset + 2]
-    )
-
-
-def Hex(color):
-    return f"{color:06X}"
-
-
 def MatchingBars(pixels):
     return sum(
         PixelAt(pixels, x, y) == color
@@ -159,21 +136,6 @@ def PatternBytes():
             row += bytes((color >> 16, (color >> 8) & 0xFF, color & 0xFF))
         rows.append(bytes(row))
     return b"".join(rows)
-
-
-def Difference(pixels, expected):
-    if pixels == expected:
-        return None
-    offset = next(
-        index
-        for index in range(len(pixels))
-        if pixels[index] != expected[index]
-    )
-    x, y = divmod(offset // 3, WIDTH)[::-1]
-    return (
-        f"({x},{y}) is {Hex(PixelAt(pixels, x, y))}, expected "
-        f"{Hex(PixelAt(expected, x, y))}"
-    )
 
 
 # The whole screen, so anything the console drew over the pattern, such as the
@@ -213,21 +175,6 @@ def ExpectTextAgain(pixels):
 
 def CellCenter(column, row):
     return WELL_X + CELL * column + CELL // 2, WELL_Y + CELL * row + CELL // 2
-
-
-def Found(pixels, x0, y0, width, height, color):
-    return any(
-        PixelAt(pixels, x, y) == color
-        for y in range(y0, y0 + height)
-        for x in range(x0, x0 + width)
-    )
-
-
-def ExpectColor(pixels, what, point, wanted):
-    found = PixelAt(pixels, *point)
-    if found != wanted:
-        return f"{what} at {point} is {Hex(found)}, expected {Hex(wanted)}"
-    return None
 
 
 def ExpectFrame(pixels):
@@ -325,10 +272,6 @@ def ExpectTable(pixels):
     return failure
 
 
-class StepFailed(Exception):
-    pass
-
-
 class EventStream:
     """The lines fbdemo --keys prints, read one at a time from the session
     while the harness drives the keyboard."""
@@ -424,7 +367,7 @@ class EventStream:
             self.Pump(remaining)
 
 
-class Graphics(Case):
+class Graphics(ScreenCase, Case):
     """Runs fbdemo on the first console and checks what QEMU's screendump
     shows while it owns the screen, on another console, after switching back,
     after drawing again and once it has released the screen; then runs
@@ -447,18 +390,9 @@ class Graphics(Case):
 
     def __init__(self, args):
         super().__init__(args)
-        self.directory = tempfile.TemporaryDirectory(prefix="fq-")
-        self.socket_path = os.path.join(self.directory.name, "qmp.sock")
-        self.dump_path = os.path.join(self.directory.name, "screen.ppm")
-        self.connection = None
-        self.channel = None
-        self.command_id = 2
+        self.InitScreen()
         self.state = 0
-        self.failure = None
         self.finished = False
-
-    def QmpSocket(self):
-        return self.socket_path
 
     def Script(self, session):
         demos = "".join(
@@ -474,49 +408,6 @@ class Graphics(Case):
 
     def Finished(self, clean_output):
         return self.finished
-
-    def Dump(self, check, seconds=RETRY_SECONDS):
-        deadline = time.monotonic() + seconds
-        while True:
-            self.command_id += 1
-            SendQmpCommand(
-                self.channel,
-                self.command_id,
-                "screendump",
-                {"filename": self.dump_path},
-            )
-            failure = check(ReadPpm(self.dump_path))
-            if failure is None or time.monotonic() >= deadline:
-                return failure
-            time.sleep(RETRY_PAUSE_SECONDS)
-
-    def Probe(self, check):
-        self.command_id += 1
-        SendQmpCommand(
-            self.channel,
-            self.command_id,
-            "screendump",
-            {"filename": self.dump_path},
-        )
-        return check(ReadPpm(self.dump_path)) is None
-
-    def Step(self, name, check, seconds=RETRY_SECONDS):
-        failure = self.Dump(check, seconds)
-        if failure is not None and self.failure is None:
-            self.failure = f"{name}: {failure}"
-
-    def Keys(self, keys):
-        self.command_id = SendQmpKeys(self.channel, self.command_id + 1, keys)
-
-    def Chord(self, *keys):
-        for key, down in keys:
-            self.command_id = SendQmpKeyEvent(
-                self.channel, self.command_id, key, down
-            )
-
-    def Tap(self, *keys):
-        self.Chord(*[(key, True) for key in keys])
-        self.Chord(*[(key, False) for key in reversed(keys)])
 
     def RunKeys(self, session):
         events = EventStream(session)
@@ -680,9 +571,7 @@ class Graphics(Case):
             return
         try:
             if self.state == 0 and clean_output.count(PRESENTED) >= 1:
-                self.connection, self.channel = OpenQmpChannel(
-                    self.socket_path
-                )
+                self.OpenScreen()
                 # The status task has to tick before a wrongly drawn bar shows.
                 time.sleep(1.5)
                 self.Step("the pattern", ExpectPattern)
@@ -719,11 +608,7 @@ class Graphics(Case):
             self.finished = True
 
     def Stop(self):
-        if self.channel is not None:
-            self.channel.close()
-        if self.connection is not None:
-            self.connection.close()
-        self.directory.cleanup()
+        self.CloseScreen()
 
     def Check(self, result):
         if self.failure is not None:

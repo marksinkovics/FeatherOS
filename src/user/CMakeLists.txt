@@ -33,6 +33,7 @@ set(FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS
 # like other user code; a program's own C++ sources are listed by program name.
 set(FEATHEROS_SWIFT_CXX_PROGRAMS
     http:http cxxinterop:cxxinterop gfxcheck:gfxcheck featherfall:featherfall
+    wickdeep:wickdeep
 )
 set(FEATHEROS_SWIFT_CXX_SOURCES_cxxinterop cxx_interop.cpp)
 set(FEATHEROS_SWIFT_CXX_SOURCES_gfxcheck gfx_check.cpp)
@@ -51,6 +52,7 @@ set(FEATHEROS_SWIFT_FULL_CXX_PROGRAMS
 set(FEATHEROS_SWIFT_CXX_SOURCES_fullcxxinterop cxx_interop.cpp)
 # Sources a Swift program compiles in from other programs' directories, by program name.
 set(FEATHEROS_SWIFT_SHARED_SOURCES_swiftbench life/grid.swift)
+set(FEATHEROS_SWIFT_SHARED_SOURCES_wickdeep featherfall/random.swift)
 set(FEATHEROS_SWIFT_SHARED_SOURCES_fullswiftbench life/grid.swift)
 
 set(USER_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker_${ARCH}.ld)

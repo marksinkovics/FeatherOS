@@ -525,6 +525,9 @@ smoke_test() {
     if _is_on "${GRAPHICS_TEST:-OFF}"; then
         smoke_args+=(--expect-graphics)
     fi
+    if _is_on "${DUNGEON_TEST:-OFF}"; then
+        smoke_args+=(--expect-dungeon)
+    fi
     if [[ -n "${QEMU_CPU:-}" ]]; then
         smoke_args+=(--cpu "$QEMU_CPU")
     fi

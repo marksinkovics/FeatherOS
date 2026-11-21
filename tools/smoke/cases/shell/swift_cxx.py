@@ -3,7 +3,8 @@ from smoke.script import Lines
 
 # Swift programs that call C++, built where deps/ holds the Cxx module's
 # sources; gfxcheck draws with the graphics library and compares checksums;
-# featherfall's rules run from the GRAPHICS mode, here only its arguments.
+# featherfall's rules run from the GRAPHICS mode and wickdeep's from DUNGEON,
+# here only their arguments.
 SWIFT_CXX_INPUT = (
     b"cxxinterop\n"
     b"gfxcheck\n"
@@ -15,6 +16,8 @@ SWIFT_CXX_INPUT = (
     b"http -h\n"
     b"featherfall -h\n"
     b"featherfall --demo --seed x\n"
+    b"wickdeep -h\n"
+    b"wickdeep --demo --seed x\n"
 )
 EXPECTED_SWIFT_CXX_OUTPUT = (
     "cxxinterop: constant 42, the color after red is green true",
@@ -62,6 +65,15 @@ EXPECTED_SWIFT_CXX_OUTPUT = (
     "script without a display and prints the score, lines, level and a hash "
     "of the well.",
     "featherfall: invalid seed x; see featherfall -h",
+    "usage: wickdeep --selftest | --demo [--seed N]\r\n"
+    "A turn-based dungeon crawler of eight floors lit by a lamp that runs "
+    "down. The floors, the\r\n"
+    "lamp and the view exist so far; the game screen comes later. --selftest "
+    "checks the rules;\r\n"
+    "--demo walks a fixed exploring bot down the floors without a display "
+    "and prints the turns,\r\n"
+    "depth, level, score, outcome and a hash of the game state.",
+    "wickdeep: invalid seed x; see wickdeep -h",
 )
 
 PART = Part(

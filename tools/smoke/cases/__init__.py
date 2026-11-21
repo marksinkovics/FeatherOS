@@ -1,4 +1,5 @@
 from smoke.cases.calc import Calc
+from smoke.cases.dungeon import Dungeon
 from smoke.cases.exception import CpuException
 from smoke.cases.graphics import Graphics
 from smoke.cases.interrupt import Interrupt
@@ -44,6 +45,7 @@ SWITCHES = {
         Graphics,
         "Run fbdemo and check the screen with QEMU's screendump",
     ),
+    "dungeon": (Dungeon, "Run wickdeep's self-test and demo runs"),
     "calc": (Calc, "Send a calculator command and expect its result"),
     "shell": (Shell, "Run shell commands and expect their output"),
 }
