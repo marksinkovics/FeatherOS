@@ -1,3 +1,4 @@
+set(CMAKE_C_FLAGS "")
 set(CMAKE_CXX_FLAGS "")
 set(CMAKE_EXE_LINKER_FLAGS "")
 
@@ -31,9 +32,10 @@ set(FEATHEROS_SWIFT_CONCURRENCY_PROGRAMS
 # deps/ holds the Cxx module's sources (see swift_cxx/). GCC builds the C++ they call
 # like other user code; a program's own C++ sources are listed by program name.
 set(FEATHEROS_SWIFT_CXX_PROGRAMS
-    http:http cxxinterop:cxxinterop
+    http:http cxxinterop:cxxinterop gfxcheck:gfxcheck
 )
 set(FEATHEROS_SWIFT_CXX_SOURCES_cxxinterop cxx_interop.cpp)
+set(FEATHEROS_SWIFT_CXX_SOURCES_gfxcheck gfx_check.cpp)
 # Programs in full Swift, with runtime type information (see swift_runtime/), built when deps/
 # holds the runtime's sources. They import a FeatherSupport built in full mode, and cannot import
 # the Embedded modules.
@@ -60,6 +62,9 @@ add_library(featheros_user_support STATIC
     dhcp_lease.cpp
     dhcp_message.cpp
     file_copy.cpp
+    graphics/dirty_region.cpp
+    graphics/display.cpp
+    graphics/surface.cpp
     http_message.cpp
     init_config.cpp
     key_decoder.cpp
@@ -72,8 +77,13 @@ add_library(featheros_user_support STATIC
     text_tools.cpp
     vi_editor.cpp
     window_size.cpp
+    ${SRCROOT}/kernel/framebuffer/font.c
 )
-target_compile_options(featheros_user_support PRIVATE ${FEATHEROS_USER_FLAGS})
+set(FEATHEROS_USER_C_FLAGS ${FEATHEROS_USER_FLAGS})
+list(REMOVE_ITEM FEATHEROS_USER_C_FLAGS -fno-rtti)
+target_compile_options(featheros_user_support PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:${FEATHEROS_USER_FLAGS}> $<$<COMPILE_LANGUAGE:C>:${FEATHEROS_USER_C_FLAGS}>)
+target_include_directories(featheros_user_support PRIVATE ${SRCROOT})
 target_link_libraries(featheros_user_support PRIVATE featheros_c)
 
 function(featheros_link_program name source)
@@ -326,7 +336,8 @@ set(FEATHEROS_SWIFT_CXX_INCLUDES -Xcc -nostdinc++ -Xcc -isystem${libcxx_source}/
 set(FEATHEROS_SWIFT_CXX_CLANG_FLAGS -Xcc -std=gnu++23 -Xcc -fno-exceptions -Xcc -fno-rtti)
 file(GLOB FEATHEROS_CXX_HEADER_FILES CONFIGURE_DEPENDS ${libcxx_source}/include/*)
 list(APPEND FEATHEROS_CXX_HEADER_FILES ${libcxx_source}/swift/module.modulemap)
-file(GLOB FEATHEROS_SWIFT_CXX_HEADERS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.h)
+file(GLOB FEATHEROS_SWIFT_CXX_HEADERS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/graphics/*.h)
 list(APPEND FEATHEROS_SWIFT_CXX_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/swift_cxx/module.modulemap
     ${FEATHEROS_CXX_HEADER_FILES})
 set(swift_usable FALSE)

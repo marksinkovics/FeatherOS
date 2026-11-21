@@ -2,9 +2,10 @@ from smoke.cases.shell.part import Part
 from smoke.script import Lines
 
 # Swift programs that call C++, built where deps/ holds the Cxx module's
-# sources.
+# sources; gfxcheck draws with the graphics library and compares checksums.
 SWIFT_CXX_INPUT = (
     b"cxxinterop\n"
+    b"gfxcheck\n"
     b"http url http://example.com:8080/a/b/c?q ../d //[::1]/x ?r\n"
     b"http url https://example.com\n"
     b"http request /system/http-request.txt\n"
@@ -27,6 +28,8 @@ EXPECTED_SWIFT_CXX_OUTPUT = (
     "cxxinterop: vowels in featheros 4",
     "cxxinterop: string hello, swift, 5 words, equal true, same hash true",
     "cxxinterop: chrono 90 seconds, true",
+    "gfxcheck: surface 64x40, sprite 8x8",
+    "gfxcheck: checksum 1833110056, match true",
     "host example.com\r\nport 8080\r\npath /a/b/c?q\r\n"
     "../d resolves to http://example.com:8080/a/d\r\n"
     "//[::1]/x resolves to http://[::1]/x\r\n"

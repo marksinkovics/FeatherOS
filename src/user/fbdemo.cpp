@@ -1,19 +1,22 @@
 #include "command_line.h"
+#include "graphics/display.h"
 
 #include <errno.h>
-#include <fcntl.h>
-#include <featheros/framebuffer.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <unistd.h>
 
 namespace
 {
+
+using FeatherOS::Graphics::Display;
+using FeatherOS::Graphics::Event;
+using FeatherOS::Graphics::EventKind;
+using FeatherOS::Graphics::Status;
+using FeatherOS::Graphics::Surface;
 
 constexpr uint32_t ScreenWidth = 1024;
 constexpr uint32_t ScreenHeight = 768;
@@ -51,56 +54,40 @@ void OnInterrupt(int)
     Interrupted = 1;
 }
 
-bool Present(int descriptor, const uint32_t* pixels, uint32_t stride, int32_t x, int32_t y,
-             uint32_t width, uint32_t height)
+void FillPattern(Surface* screen)
 {
-    const fb_present request = {pixels, stride, x, y, width, height, 0};
-    return ioctl(descriptor, FB_PRESENT, &request) == 0;
-}
-
-void FillPattern(uint32_t* screen)
-{
+    uint32_t* pixels = screen->Pixels();
     for (uint32_t y = 0; y < ScreenHeight; ++y)
     {
         for (uint32_t x = 0; x < ScreenWidth; ++x)
         {
-            screen[y * ScreenWidth + x] =
+            pixels[y * ScreenWidth + x] =
                 y < BarHeight ? Bars[x / BarWidth] : ((x / 4) << 16) | (((y - BarHeight) / 2) << 8);
         }
     }
+    screen->FillRectangle(CornerOrigin, CornerOrigin, CornerSize, CornerSize, CornerColor);
+    screen->FillRectangle(PatchX, PatchY, PatchSize, PatchSize, PatchColor);
 }
 
-bool PresentAll(int descriptor, const uint32_t* screen)
+bool PresentAll(Display* display)
 {
-    static uint32_t corner[CornerSize * CornerSize];
-    static uint32_t patch[PatchSize * PatchSize];
-    for (uint32_t& pixel : corner)
-    {
-        pixel = CornerColor;
-    }
-    for (uint32_t& pixel : patch)
-    {
-        pixel = PatchColor;
-    }
-    return Present(descriptor, screen, ScreenWidth, 0, 0, ScreenWidth, ScreenHeight) &&
-           Present(descriptor, corner, CornerSize, CornerOrigin, CornerOrigin, CornerSize,
-                   CornerSize) &&
-           Present(descriptor, patch, PatchSize, PatchX, PatchY, PatchSize, PatchSize);
+    display->InvalidateAll();
+    return display->Present() == Status::Ok;
 }
 
-const char* KindName(uint8_t kind)
+const char* KindName(EventKind kind)
 {
     switch (kind)
     {
-    case FB_EVENT_PRESS:
+    case EventKind::Press:
         return "press";
-    case FB_EVENT_REPEAT:
+    case EventKind::Repeat:
         return "repeat";
-    case FB_EVENT_RELEASE:
+    case EventKind::Release:
         return "release";
-    case FB_EVENT_SHOWN:
+    case EventKind::Shown:
         return "shown";
-    case FB_EVENT_HIDDEN:
+    case EventKind::Hidden:
         return "hidden";
     default:
         return "unknown";
@@ -109,27 +96,22 @@ const char* KindName(uint8_t kind)
 
 struct EventReader
 {
-    int descriptor;
-    const uint32_t* screen;
+    Display* display;
     uint32_t last_time = 0;
     bool failed = false;
 
     void Read()
     {
-        fb_event events[16];
-        const ssize_t length = read(descriptor, events, sizeof(events));
-        if (length < 0)
+        Event event = {};
+        Status status = Status::Timeout;
+        while ((status = display->WaitEvent(0, &event)) == Status::Ok)
         {
-            failed = errno != EAGAIN && errno != EINTR;
-            return;
+            Handle(event);
         }
-        for (size_t index = 0; index < static_cast<size_t>(length) / sizeof(fb_event); ++index)
-        {
-            Handle(events[index]);
-        }
+        failed = failed || (status != Status::Timeout && status != Status::Interrupted);
     }
 
-    void Handle(const fb_event& event)
+    void Handle(const Event& event)
     {
         if (event.time_ms < last_time)
         {
@@ -137,9 +119,9 @@ struct EventReader
         }
         last_time = event.time_ms;
         printf("fbdemo: event %s %u %u\n", KindName(event.kind), event.code, event.modifiers);
-        if (event.kind == FB_EVENT_SHOWN)
+        if (event.kind == EventKind::Shown)
         {
-            if (PresentAll(descriptor, screen))
+            if (PresentAll(display))
             {
                 puts("fbdemo: presented");
             }
@@ -152,15 +134,13 @@ struct EventReader
 
     void Drain()
     {
-        for (;;)
+        Event event = {};
+        Status status = Status::Timeout;
+        while (!failed && (status = display->WaitEvent(DrainMilliseconds, &event)) == Status::Ok)
         {
-            pollfd events = {descriptor, POLLIN, 0};
-            if (poll(&events, 1, DrainMilliseconds) <= 0 || failed)
-            {
-                return;
-            }
-            Read();
+            Handle(event);
         }
+        failed = failed || (status != Status::Timeout && status != Status::Interrupted);
     }
 };
 
@@ -201,50 +181,46 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    const int descriptor = open("/dev/fb0", O_RDWR | (keys ? O_NONBLOCK : 0));
-    if (descriptor < 0)
+    Display display;
+    const Status opened = display.Open();
+    if (opened == Status::OpenFailed)
     {
-        printf("fbdemo: /dev/fb0: %s\n", strerror(errno));
+        printf("fbdemo: /dev/fb0: %s\n", strerror(display.Error()));
         return 1;
     }
-    fb_info info = {};
-    if (ioctl(descriptor, FB_GET_INFO, &info) != 0 || info.width != ScreenWidth ||
-        info.height != ScreenHeight)
+    if (opened == Status::AcquireFailed)
+    {
+        printf("fbdemo: FB_ACQUIRE: %s\n", strerror(display.Error()));
+        return 1;
+    }
+    if (opened == Status::OutOfMemory)
+    {
+        puts("fbdemo: out of memory");
+        return 1;
+    }
+    if (opened != Status::Ok || display.Width() != ScreenWidth || display.Height() != ScreenHeight)
     {
         puts("fbdemo: unsupported screen");
         return 1;
     }
-    if (ioctl(descriptor, FB_ACQUIRE) != 0)
-    {
-        printf("fbdemo: FB_ACQUIRE: %s\n", strerror(errno));
-        return 1;
-    }
-    auto* screen = static_cast<uint32_t*>(
-        malloc(static_cast<size_t>(ScreenWidth) * ScreenHeight * sizeof(uint32_t)));
-    if (screen == nullptr)
-    {
-        ioctl(descriptor, FB_RELEASE);
-        puts("fbdemo: out of memory");
-        return 1;
-    }
-    FillPattern(screen);
+    FillPattern(display.Screen());
 
-    printf("fbdemo: tty%u %ux%u\n", info.console, info.width, info.height);
+    printf("fbdemo: tty%u %dx%d\n", display.Console(), display.Width(), display.Height());
     if (keys)
     {
         struct sigaction action = {};
         action.sa_handler = OnInterrupt;
         sigaction(SIGINT, &action, nullptr);
     }
-    EventReader reader = {descriptor, screen};
-    bool failed = !PresentAll(descriptor, screen);
+    EventReader reader = {&display};
+    bool failed = !PresentAll(&display);
     if (!failed)
     {
         puts("fbdemo: presented");
     }
     while (!failed && !reader.failed && Interrupted == 0)
     {
-        pollfd inputs[2] = {{STDIN_FILENO, POLLIN, 0}, {descriptor, POLLIN, 0}};
+        pollfd inputs[2] = {{STDIN_FILENO, POLLIN, 0}, {display.Descriptor(), POLLIN, 0}};
         const int ready = poll(inputs, keys ? 2 : 1, static_cast<int>(seconds * 1000));
         if (ready < 0 && errno == EINTR)
         {
@@ -270,7 +246,7 @@ int main(int argc, char** argv)
         }
         if (line[0] == 'r')
         {
-            failed = !PresentAll(descriptor, screen);
+            failed = !PresentAll(&display);
             if (!failed)
             {
                 puts("fbdemo: presented");
@@ -292,17 +268,16 @@ int main(int argc, char** argv)
     }
     if (keys)
     {
-        fb_info final = {};
-        if (ioctl(descriptor, FB_GET_INFO, &final) == 0)
+        uint32_t dropped = 0;
+        if (display.DroppedEvents(&dropped) == Status::Ok)
         {
-            printf("fbdemo: dropped %u\n", final.dropped_events);
+            printf("fbdemo: dropped %u\n", dropped);
         }
     }
-    free(screen);
-    ioctl(descriptor, FB_RELEASE);
+    display.Close();
     if (failed)
     {
-        printf("fbdemo: FB_PRESENT: %s\n", strerror(errno));
+        printf("fbdemo: FB_PRESENT: %s\n", strerror(display.Error()));
         return 1;
     }
     if (Interrupted != 0)

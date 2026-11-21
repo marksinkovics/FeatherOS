@@ -10,3 +10,17 @@ module CxxInterop {
     requires cplusplus
     export *
 }
+
+module FeatherGraphics {
+    header "../graphics/dirty_region.h"
+    header "../graphics/surface.h"
+    header "../graphics/display.h"
+    requires cplusplus
+    export *
+}
+
+module GfxCheck {
+    header "../gfx_check.h"
+    requires cplusplus
+    export *
+}
