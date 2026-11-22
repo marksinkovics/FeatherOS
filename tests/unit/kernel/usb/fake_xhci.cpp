@@ -4,6 +4,7 @@
 #include "kernel/usb/xhci/registers.h"
 #include "kernel/usb/xhci/ring.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 
@@ -395,6 +396,7 @@ void FakeXhci::Reset()
     event_busy_ = false;
     enabled_slots_.clear();
     endpoints_.clear();
+    bindings_.clear();
 }
 
 bool FakeXhci::ReadTrb(uint64_t physical, X::Trb* trb)
@@ -527,14 +529,195 @@ void FakeXhci::Execute(const X::Trb& trb, uint64_t physical)
             {
                 endpoints_.erase(slot << 5 | dci);
             }
+            bindings_.erase(slot);
         }
     }
     else if (type == X::TrbType::AddressDevice)
     {
         AddressDevice(slot, X::TrbParameter(trb), &code);
     }
+    else if (type == X::TrbType::EvaluateContext)
+    {
+        EvaluateContext(slot, X::TrbParameter(trb), &code);
+    }
+    else if (type == X::TrbType::ConfigureEndpoint)
+    {
+        ConfigureEndpoint(slot, X::TrbParameter(trb), &code);
+    }
+    else if (type == X::TrbType::ResetEndpoint || type == X::TrbType::StopEndpoint ||
+             type == X::TrbType::SetTrDequeue)
+    {
+        ChangeEndpointState(type, slot, (trb.control & X::TrbControl::EndpointMask) >> X::TrbControl::EndpointShift,
+                            X::TrbParameter(trb), &code);
+    }
     PostEvent(X::MakeTrb(X::TrbType::CommandCompletionEvent, slot << X::TrbControl::SlotShift,
                      physical, code << X::CompletionShift));
+}
+
+void FakeXhci::EvaluateContext(uint32_t slot, uint64_t input_physical, uint32_t* code)
+{
+    const uint32_t context_bytes = context64_ ? 64 : 32;
+    if (enabled_slots_.count(slot) == 0)
+    {
+        *code = X::CompletionCode::SlotNotEnabled;
+        return;
+    }
+    const uint64_t device_physical = DcbaaEntry(slot);
+    volatile uint8_t* input = memory_.Translate(input_physical, 3ULL * context_bytes);
+    volatile uint8_t* device =
+        device_physical == 0 ? nullptr : memory_.Translate(device_physical, 2ULL * context_bytes);
+    if (input == nullptr || device == nullptr)
+    {
+        ++faults_;
+        *code = X::CompletionCode::TrbError;
+        return;
+    }
+    const auto* control = reinterpret_cast<volatile const uint32_t*>(input);
+    const auto* ep0 = reinterpret_cast<volatile const uint32_t*>(input + 2ULL * context_bytes);
+    if ((Fetch(control + 1) & 2U) != 0)
+    {
+        const uint32_t packet = Fetch(ep0 + 1) >> 16;
+        auto* output = reinterpret_cast<volatile uint32_t*>(device + context_bytes);
+        output[1] = (output[1] & 0xFFFFU) | (packet << 16);
+        evaluated_.push_back({slot, packet});
+    }
+}
+
+void FakeXhci::ConfigureEndpoint(uint32_t slot, uint64_t input_physical, uint32_t* code)
+{
+    const uint32_t context_bytes = context64_ ? 64 : 32;
+    if (enabled_slots_.count(slot) == 0)
+    {
+        *code = X::CompletionCode::SlotNotEnabled;
+        return;
+    }
+    volatile uint8_t* input = memory_.Translate(input_physical, 33ULL * context_bytes);
+    if (input == nullptr)
+    {
+        ++faults_;
+        *code = X::CompletionCode::TrbError;
+        return;
+    }
+    const auto* control = reinterpret_cast<volatile const uint32_t*>(input);
+    const auto* slot_context = reinterpret_cast<volatile const uint32_t*>(input + context_bytes);
+    const uint32_t drop = Fetch(control);
+    const uint32_t add = Fetch(control + 1);
+    const uint32_t entries = Fetch(slot_context) >> 27;
+    for (uint32_t dci = 2; dci < 32; ++dci)
+    {
+        if ((drop & (1U << dci)) != 0)
+        {
+            endpoints_.erase(slot << 5 | dci);
+        }
+        if ((add & (1U << dci)) == 0)
+        {
+            continue;
+        }
+        const auto* context =
+            reinterpret_cast<volatile const uint32_t*>(input + (1ULL + dci) * context_bytes);
+        const uint64_t ring = (static_cast<uint64_t>(Fetch(context + 3)) << 32) | Fetch(context + 2);
+        Endpoint endpoint;
+        endpoint.dequeue = ring & ~0xFULL;
+        endpoint.cycle = (ring & 1U) != 0;
+        endpoint.address = static_cast<uint8_t>((dci / 2) | ((dci & 1U) != 0 ? 0x80U : 0U));
+        endpoints_[slot << 5 | dci] = endpoint;
+        configured_.push_back({slot, dci, (Fetch(context + 1) >> 3) & 7U, Fetch(context + 1) >> 16,
+                               (Fetch(context) >> 16) & 0xFFU, ring, entries});
+    }
+}
+
+void FakeXhci::ChangeEndpointState(uint32_t type, uint32_t slot, uint32_t dci, uint64_t parameter,
+                                   uint32_t* code)
+{
+    if (enabled_slots_.count(slot) == 0)
+    {
+        *code = X::CompletionCode::SlotNotEnabled;
+        return;
+    }
+    const auto found = endpoints_.find(slot << 5 | dci);
+    if (found == endpoints_.end())
+    {
+        *code = X::CompletionCode::ContextStateError;
+        return;
+    }
+    Endpoint& endpoint = found->second;
+    if (type == X::TrbType::ResetEndpoint)
+    {
+        if (endpoint.state != State::Halted)
+        {
+            *code = X::CompletionCode::ContextStateError;
+            return;
+        }
+        endpoint.state = State::Stopped;
+        endpoint.hung = false;
+    }
+    else if (type == X::TrbType::StopEndpoint)
+    {
+        if (endpoint.state != State::Running)
+        {
+            *code = X::CompletionCode::ContextStateError;
+            return;
+        }
+        endpoint.state = State::Stopped;
+        endpoint.hung = false;
+        X::Trb trb;
+        if (ReadTrb(endpoint.dequeue, &trb) &&
+            ((trb.control & X::TrbControl::Cycle) != 0) == endpoint.cycle &&
+            X::TrbTypeOf(trb) != X::TrbType::Link)
+        {
+            PostTransferEvent(slot, dci, endpoint.dequeue, X::CompletionCode::Stopped, 0);
+        }
+    }
+    else
+    {
+        if (endpoint.state == State::Running)
+        {
+            *code = X::CompletionCode::ContextStateError;
+            return;
+        }
+        endpoint.dequeue = parameter & ~0xFULL;
+        endpoint.cycle = (parameter & 1U) != 0;
+        endpoint.hung = false;
+        dequeue_sets_.push_back({slot, dci, parameter});
+    }
+}
+
+const std::vector<FakeXhci::ConfiguredEndpoint>& FakeXhci::Configured() const
+{
+    return configured_;
+}
+
+const std::vector<std::pair<uint32_t, uint32_t>>& FakeXhci::Evaluated() const
+{
+    return evaluated_;
+}
+
+const std::vector<FakeXhci::DequeueSet>& FakeXhci::DequeueSets() const
+{
+    return dequeue_sets_;
+}
+
+bool FakeXhci::EndpointState(uint32_t slot, uint32_t dci, State* state) const
+{
+    const auto found = endpoints_.find(slot << 5 | dci);
+    if (found == endpoints_.end())
+    {
+        return false;
+    }
+    *state = found->second.state;
+    return true;
+}
+
+uint32_t FakeXhci::SlotOfPort(uint32_t port) const
+{
+    for (const auto& [slot, binding] : bindings_)
+    {
+        if (binding.root_port == port)
+        {
+            return slot;
+        }
+    }
+    return 0;
 }
 
 void FakeXhci::ReleaseHeldCommand()
@@ -631,6 +814,13 @@ void FakeXhci::AddressDevice(uint32_t slot, uint64_t input_physical, uint32_t* c
     out_slot[3] = (2U << 27) | slot;
     out_ep0[0] = (out_ep0[0] & ~7U) | 1U;
     SetEndpointRing(slot, 1, record.ep0_ring & ~0xFULL, (record.ep0_ring & 1U) != 0);
+    const auto attached = port_devices_.find(record.root_port);
+    if (attached != port_devices_.end())
+    {
+        Speed speed = Speed::Full;
+        X::SpeedFromId(static_cast<uint8_t>(record.speed_id), &speed);
+        bindings_[slot] = {attached->second, record.root_port, speed};
+    }
 }
 
 void FakeXhci::ProcessTransfers(uint32_t slot, uint32_t dci)
@@ -645,6 +835,24 @@ void FakeXhci::ProcessTransfers(uint32_t slot, uint32_t dci)
         return;
     }
     Endpoint& endpoint = found->second;
+    if (endpoint.state == State::Halted)
+    {
+        return;
+    }
+    endpoint.state = State::Running;
+    const auto binding = bindings_.find(slot);
+    if (binding == bindings_.end())
+    {
+        ProcessPlainTransfers(endpoint, slot, dci);
+    }
+    else
+    {
+        ProcessDeviceTransfers(endpoint, binding->second, slot, dci);
+    }
+}
+
+void FakeXhci::ProcessPlainTransfers(Endpoint& endpoint, uint32_t slot, uint32_t dci)
+{
     for (uint32_t step = 0; step < LoopLimit; ++step)
     {
         X::Trb trb;
@@ -668,9 +876,233 @@ void FakeXhci::ProcessTransfers(uint32_t slot, uint32_t dci)
         transfer_types_.push_back(type);
         if ((trb.control & X::TrbControl::InterruptOnCompletion) != 0)
         {
-            PostEvent(X::MakeTrb(X::TrbType::TransferEvent,
-                                 (dci << X::TrbControl::EndpointShift) | (slot << X::TrbControl::SlotShift),
-                                 physical, X::CompletionCode::Success << X::CompletionShift));
+            PostTransferEvent(slot, dci, physical, X::CompletionCode::Success, 0);
+        }
+    }
+}
+
+bool FakeXhci::DevicePresent(const Binding& binding) const
+{
+    const auto attached = port_devices_.find(binding.root_port);
+    return attached != port_devices_.end() && attached->second == binding.device;
+}
+
+void FakeXhci::PostTransferEvent(uint32_t slot, uint32_t dci, uint64_t trb, uint32_t code,
+                                 uint32_t residue)
+{
+    PostEvent(X::MakeTrb(X::TrbType::TransferEvent,
+                         (dci << X::TrbControl::EndpointShift) | (slot << X::TrbControl::SlotShift),
+                         trb, (code << X::CompletionShift) | (residue & X::ResidueMask)));
+}
+
+bool FakeXhci::CopyToBuffer(uint64_t physical, const std::vector<uint8_t>& bytes, size_t count)
+{
+    if (count == 0)
+    {
+        return true;
+    }
+    volatile uint8_t* target = memory_.Translate(physical, count);
+    if (target == nullptr)
+    {
+        ++faults_;
+        return false;
+    }
+    for (size_t index = 0; index < count; ++index)
+    {
+        target[index] = bytes[index];
+    }
+    return true;
+}
+
+uint32_t FakeXhci::ContextMaxPacket(uint32_t slot)
+{
+    const uint32_t context_bytes = context64_ ? 64 : 32;
+    const uint64_t device_physical = DcbaaEntry(slot);
+    volatile uint8_t* device =
+        device_physical == 0 ? nullptr : memory_.Translate(device_physical, 2ULL * context_bytes);
+    if (device == nullptr)
+    {
+        return 0;
+    }
+    return Fetch(reinterpret_cast<volatile const uint32_t*>(device + context_bytes) + 1) >> 16;
+}
+
+void FakeXhci::ProcessDeviceTransfers(Endpoint& endpoint, Binding& binding, uint32_t slot,
+                                      uint32_t dci)
+{
+    using Outcome = ScriptedDevice::Outcome;
+    ScriptedDevice& device = *binding.device;
+    for (uint32_t step = 0; step < LoopLimit; ++step)
+    {
+        if (endpoint.hung)
+        {
+            return;
+        }
+        X::Trb trb;
+        if (!ReadTrb(endpoint.dequeue, &trb) ||
+            ((trb.control & X::TrbControl::Cycle) != 0) != endpoint.cycle)
+        {
+            return;
+        }
+        const uint64_t physical = endpoint.dequeue;
+        const uint32_t type = X::TrbTypeOf(trb);
+        if (type == X::TrbType::Link)
+        {
+            endpoint.dequeue = X::TrbParameter(trb) & ~static_cast<uint64_t>(X::TrbSize - 1);
+            if ((trb.control & X::TrbControl::ToggleCycle) != 0)
+            {
+                endpoint.cycle = !endpoint.cycle;
+            }
+            continue;
+        }
+        transfer_types_.push_back(type);
+        const bool in_data = (trb.control & X::TrbControl::DirectionIn) != 0;
+        const uint32_t length = trb.status & 0x1FFFFU;
+        const bool present = DevicePresent(binding);
+        const auto halt = [&](uint32_t code)
+        {
+            PostTransferEvent(slot, dci, physical, code, length);
+            endpoint.state = State::Halted;
+        };
+        if (type == X::TrbType::SetupStage)
+        {
+            if (!present)
+            {
+                halt(X::CompletionCode::UsbTransactionError);
+                return;
+            }
+            const uint64_t packed = X::TrbParameter(trb);
+            ControlTd& td = endpoint.control;
+            td = {};
+            td.active = true;
+            td.request = {static_cast<uint8_t>(packed), static_cast<uint8_t>(packed >> 8),
+                          static_cast<uint16_t>(packed >> 16), static_cast<uint16_t>(packed >> 32),
+                          static_cast<uint16_t>(packed >> 48)};
+            td.outcome = device.Control(td.request, &td.response);
+            if (td.outcome == Outcome::Hang)
+            {
+                endpoint.hung = true;
+                return;
+            }
+            if (td.outcome == Outcome::TransactionError)
+            {
+                halt(X::CompletionCode::UsbTransactionError);
+                return;
+            }
+            endpoint.dequeue += X::TrbSize;
+            continue;
+        }
+        if (type == X::TrbType::DataStage && endpoint.control.active)
+        {
+            ControlTd& td = endpoint.control;
+            if (td.outcome == Outcome::Stall || td.outcome == Outcome::Babble)
+            {
+                halt(td.outcome == Outcome::Stall ? X::CompletionCode::StallError
+                                                  : X::CompletionCode::BabbleDetected);
+                return;
+            }
+            size_t usable = std::min<size_t>(length, td.response.size());
+            const uint32_t context_packet = ContextMaxPacket(slot);
+            const uint32_t packet = device.MaxPacket0(binding.speed);
+            if (in_data)
+            {
+                if (context_packet != 0 && context_packet < packet && usable > context_packet)
+                {
+                    halt(X::CompletionCode::BabbleDetected);
+                    return;
+                }
+                if (context_packet > packet && usable > packet)
+                {
+                    usable = packet;
+                }
+                const uint64_t buffer = X::TrbParameter(trb);
+                CopyToBuffer(buffer, td.response, usable);
+                endpoint.dequeue += X::TrbSize;
+                if (usable < length && (trb.control & X::TrbControl::InterruptOnShortPacket) != 0)
+                {
+                    PostTransferEvent(slot, dci, physical, X::CompletionCode::ShortPacket,
+                                      static_cast<uint32_t>(length - usable));
+                }
+                continue;
+            }
+            endpoint.dequeue += X::TrbSize;
+            continue;
+        }
+        if (type == X::TrbType::StatusStage && endpoint.control.active)
+        {
+            if (endpoint.control.outcome == Outcome::Stall ||
+                endpoint.control.outcome == Outcome::Babble)
+            {
+                halt(endpoint.control.outcome == Outcome::Stall ? X::CompletionCode::StallError
+                                                                : X::CompletionCode::BabbleDetected);
+                return;
+            }
+            endpoint.control.active = false;
+            endpoint.dequeue += X::TrbSize;
+            if ((trb.control & X::TrbControl::InterruptOnCompletion) != 0)
+            {
+                PostTransferEvent(slot, dci, physical, X::CompletionCode::Success, 0);
+            }
+            continue;
+        }
+        if (type == X::TrbType::Normal)
+        {
+            const Outcome outcome = present ? device.EndpointOutcome(endpoint.address)
+                                            : Outcome::TransactionError;
+            if (outcome != Outcome::Ok)
+            {
+                halt(outcome == Outcome::Stall      ? X::CompletionCode::StallError
+                     : outcome == Outcome::Babble   ? X::CompletionCode::BabbleDetected
+                                                    : X::CompletionCode::UsbTransactionError);
+                return;
+            }
+            const bool in = (endpoint.address & 0x80U) != 0;
+            if (in)
+            {
+                std::vector<uint8_t> report;
+                if (!device.TakeReport(endpoint.address, &report))
+                {
+                    return;
+                }
+                const size_t count = std::min<size_t>(length, report.size());
+                CopyToBuffer(X::TrbParameter(trb), report, count);
+                endpoint.dequeue += X::TrbSize;
+                const bool short_packet = count < length;
+                if ((trb.control & X::TrbControl::InterruptOnCompletion) != 0 || short_packet)
+                {
+                    PostTransferEvent(slot, dci, physical,
+                                      short_packet ? X::CompletionCode::ShortPacket
+                                                   : X::CompletionCode::Success,
+                                      static_cast<uint32_t>(length - count));
+                }
+                continue;
+            }
+            endpoint.dequeue += X::TrbSize;
+            if ((trb.control & X::TrbControl::InterruptOnCompletion) != 0)
+            {
+                PostTransferEvent(slot, dci, physical, X::CompletionCode::Success, 0);
+            }
+            continue;
+        }
+        endpoint.dequeue += X::TrbSize;
+    }
+}
+
+void FakeXhci::DeliverReport(const std::shared_ptr<ScriptedDevice>& device, uint8_t endpoint,
+                             std::vector<uint8_t> report)
+{
+    device->QueueReport(endpoint, std::move(report));
+    for (auto& [slot, binding] : bindings_)
+    {
+        if (binding.device != device)
+        {
+            continue;
+        }
+        const uint32_t dci = (endpoint & 0x0FU) * 2 + ((endpoint & 0x80U) != 0 ? 1 : 0);
+        const auto found = endpoints_.find(slot << 5 | dci);
+        if (found != endpoints_.end() && found->second.state == State::Running)
+        {
+            ProcessTransfers(slot, dci);
         }
     }
 }
@@ -716,8 +1148,10 @@ void FakeXhci::SetEndpointRing(uint32_t slot, uint32_t dci, uint64_t ring, bool 
     endpoints_[slot << 5 | dci] = {ring, cycle};
 }
 
-void FakeXhci::Connect(uint32_t port, Speed speed, bool trained)
+void FakeXhci::Connect(uint32_t port, Speed speed, bool trained,
+                       std::shared_ptr<ScriptedDevice> device)
 {
+    port_devices_[port] = device != nullptr ? std::move(device) : MakeKeyboard(speed);
     portsc_[port - 1] = X::PortSc::CurrentConnect | X::PortSc::ConnectChange | X::PortSc::Power |
                         (static_cast<uint32_t>(X::SpeedId(speed)) << X::PortSc::SpeedShift);
     if (trained && PortIsUsb3(port) && speed >= Speed::Super)
@@ -729,6 +1163,7 @@ void FakeXhci::Connect(uint32_t port, Speed speed, bool trained)
 
 void FakeXhci::Disconnect(uint32_t port)
 {
+    port_devices_.erase(port);
     uint32_t& status = portsc_[port - 1];
     status &= ~(X::PortSc::CurrentConnect | X::PortSc::Enabled | X::PortSc::SpeedMask);
     status |= X::PortSc::ConnectChange;

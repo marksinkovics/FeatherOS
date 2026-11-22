@@ -24,6 +24,11 @@ public:
     bool Enqueue(std::span<const Trb> td, uint64_t* first_physical);
     bool Retire(uint64_t trb_physical);
     bool InFlight(uint64_t trb_physical) const;
+    // The dequeue pointer, with the cycle state in bit 0, that skips the TRB and everything
+    // before it.
+    bool PointerAfter(uint64_t trb_physical, uint64_t* pointer) const;
+    // Retires everything in flight; the pointer is where the producer writes next.
+    uint64_t Drain();
     uint32_t Free() const;
     uint64_t Physical() const;
     bool CycleState() const;

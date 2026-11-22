@@ -56,6 +56,7 @@ constexpr uint32_t InterruptOnCompletion = 1U << 5;
 constexpr uint32_t ImmediateData = 1U << 6;
 constexpr uint32_t BlockSetAddress = 1U << 9;
 constexpr uint32_t DirectionIn = 1U << 16;
+constexpr uint32_t TransferTypeShift = 16;
 constexpr uint32_t TypeShift = 10;
 constexpr uint32_t TypeMask = 0x3FU << TypeShift;
 constexpr uint32_t EndpointShift = 16;
@@ -79,6 +80,10 @@ constexpr uint32_t ContextStateError = 19;
 constexpr uint32_t ShortPacket = 13;
 constexpr uint32_t CommandRingStopped = 24;
 constexpr uint32_t CommandAborted = 25;
+constexpr uint32_t Stopped = 26;
+constexpr uint32_t StoppedLengthInvalid = 27;
+constexpr uint32_t StoppedShortPacket = 28;
+constexpr uint32_t SplitTransactionError = 36;
 } // namespace CompletionCode
 
 constexpr uint32_t CompletionShift = 24;

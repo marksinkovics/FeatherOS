@@ -18,9 +18,15 @@
 namespace FeatherOS::Usb::Xhci
 {
 
-constexpr uint32_t MaxPorts = 255;
-constexpr uint32_t MaxSlots = 64;
+constexpr uint32_t MaxPorts = MaxRootPorts;
+constexpr uint32_t MaxSlots = MaxDeviceSlots;
 constexpr uint32_t PendingCommands = 4;
+constexpr uint32_t PendingTransfers = 128;
+constexpr uint32_t ContextIndexes = 32;
+constexpr uint32_t MaxTransferBytes = 16384;
+constexpr uint32_t TransactionRetries = 3;
+constexpr uint32_t CompletionBatch = 16;
+constexpr uint32_t ControlTimeoutMs = 5000;
 
 enum class CommandStatus : uint8_t
 {
@@ -44,9 +50,14 @@ struct SlotInfo
     Speed speed;
 };
 
+// Called from the manager task after an endpoint was recovered from an error, with how many
+// recoveries that endpoint had in the last second.
+using RecoveryHandler = void (*)(void* context, uint32_t slot, uint8_t endpoint,
+                                 uint32_t recent_recoveries);
+
 // One controller. Three kinds of task use it: the event task (ProcessEvents), the manager task
-// (RunManagerWork and everything it calls) and, through the interrupt top half, any CPU.
-class Controller
+// (everything that blocks) and, through the interrupt top half, any CPU.
+class Controller final : public HostController
 {
 public:
     // Maps the function's registers and brings the controller up; null when it cannot.
@@ -59,14 +70,11 @@ public:
 
     bool Initialize(bool allow_interrupts);
 
-    // The event task: drains the event ring and completes commands.
+    // The event task: drains the event ring, completes commands and transfers, and runs the
+    // completion callbacks with no lock held.
     void ProcessEvents();
-    bool HasManagerWork() const;
-    // The manager task: restarts after a controller error, then handles each port with news.
-    void RunManagerWork();
 
     bool Describe(char* buffer, size_t capacity) const;
-    uint32_t RootPorts() const;
     uint32_t SlotCount() const;
     InterruptKind Interrupts() const;
     // A registered handler keeps a pointer to the controller, which then must never be freed.
@@ -75,6 +83,31 @@ public:
     uint32_t Restarts() const;
     bool GetSlot(uint32_t slot, SlotInfo* info) const;
     Hardware& Machine();
+    void SetRecoveryHandler(RecoveryHandler handler, void* context);
+    uint32_t RecentRecoveries(uint32_t slot, uint8_t endpoint);
+
+    uint32_t RootPorts() const override;
+    void ReadRootPort(uint32_t port, RootPortStatus* status, bool acknowledge) override;
+    bool ResetRootPort(uint32_t port, Speed* speed) override;
+    CreateStatus CreateDevice(const Location& location, uint32_t* slot) override;
+    bool SetControlMaxPacket(uint32_t slot, uint32_t max_packet) override;
+    bool ConfigureEndpoints(uint32_t slot, std::span<const EndpointDescriptor> endpoints,
+                            const HubInfo* hub) override;
+    void DestroyDevice(uint32_t slot) override;
+    Status Control(uint32_t slot, const SetupPacket& setup, Memory::Dma::Buffer& buffer,
+                   uint32_t* actual) override;
+    bool Submit(uint32_t slot, Transfer& transfer) override;
+    bool Wait(Transfer& transfer, uint64_t deadline_milliseconds) override;
+    bool ResetEndpoint(uint32_t slot, uint8_t endpoint) override;
+    void StopEndpoints(uint32_t slot) override;
+    bool AllocateBuffer(uint64_t bytes, Memory::Dma::Buffer* buffer) override;
+    void FreeBuffer(const Memory::Dma::Buffer& buffer) override;
+    void Delay(uint32_t milliseconds) override;
+    uint64_t NowMilliseconds() override;
+    bool HasWork() const override;
+    bool TakePortChange(uint32_t* port) override;
+    bool Recover() override;
+    void ServiceEndpoints() override;
 
 private:
     struct Pending
@@ -86,15 +119,58 @@ private:
         uint32_t slot = 0;
     };
 
+    enum class TransferState : uint8_t
+    {
+        Free,
+        Active,
+        Failed,
+    };
+
+    // One TD in flight. Events name any TRB of it; the last one ends the transfer.
+    struct PendingTransfer
+    {
+        TransferState state = TransferState::Free;
+        bool control = false;
+        bool short_seen = false;
+        uint8_t slot = 0;
+        uint8_t dci = 0;
+        uint8_t attempts = 0;
+        Transfer* transfer = nullptr;
+        uint64_t first = 0;
+        uint64_t last = 0;
+        uint32_t actual = 0;
+        uint32_t code = 0;
+        SetupPacket setup{};
+    };
+
+    struct EndpointRing
+    {
+        ProducerRing ring;
+        bool active = false;
+        bool halted = false;
+        bool quiescing = false;
+        bool recovery_needed = false;
+        uint8_t address = 0;
+        uint32_t recoveries = 0;
+        uint64_t recovery_window = 0;
+    };
+
     struct Slot
     {
         bool in_use = false;
         uint8_t port = 0;
         Speed speed = Speed::Full;
+        uint32_t entries = 1;
+        Location location{};
         Memory::Dma::Buffer device{};
         Memory::Dma::Buffer input{};
-        Memory::Dma::Buffer ep0_buffer{};
-        ProducerRing ep0;
+        Memory::Dma::Buffer rings[ContextIndexes]{};
+    };
+
+    struct Completions
+    {
+        Transfer* items[CompletionBatch];
+        uint32_t count = 0;
     };
 
     static void OnInterrupt(void* context);
@@ -119,25 +195,42 @@ private:
     void ReadProtocols();
     void QueueConnectedPorts();
     void SetPortWork(uint32_t port);
-    bool TakePortWork(uint32_t* port);
 
+    bool DrainEvents(Completions& completions);
     void RaiseError(uint32_t status);
-    void HandleEvent(const Trb& event);
+    void HandleEvent(const Trb& event, Completions& completions);
     void CompleteCommand(const Trb& event);
-    void RingDoorbell(uint32_t index);
+    void HandleTransferEvent(const Trb& event, Completions& completions);
+    void RingDoorbell(uint32_t index, uint32_t target = 0);
 
     CommandResult Command(const Trb& trb);
     void AbortCommand(uint32_t index, uint64_t trb_physical);
 
-    void HandlePort(uint32_t port);
-    bool Enumerate(uint32_t port);
     bool ResetPort(uint32_t port);
-    bool AddressDevice(uint32_t port, Speed speed, uint32_t slot);
-    bool AllocateSlot(uint32_t slot, Speed speed, uint32_t port);
+    bool AddressDevice(uint32_t slot);
+    bool AllocateSlot(uint32_t slot, const Location& location);
     void ReleaseSlot(uint32_t slot);
     void DisableSlot(uint32_t slot);
+    void ClearInput(uint32_t slot);
+    uint64_t RingPointer(uint32_t slot, uint32_t dci);
     void DetachAll();
     void Restart();
+
+    bool SubmitTransfer(uint32_t slot, Transfer& transfer, const SetupPacket* setup);
+    bool QueueTransferLocked(PendingTransfer& entry) REQUIRES(ring_lock_);
+    PendingTransfer* FindTransferLocked(uint32_t slot, uint32_t dci, uint64_t pointer)
+        REQUIRES(ring_lock_);
+    PendingTransfer* FindFailedLocked(uint32_t slot, uint32_t dci) REQUIRES(ring_lock_);
+    PendingTransfer* FindWaitingLocked(const Transfer& transfer) REQUIRES(ring_lock_);
+    bool AwaitTransfer(Transfer& transfer, uint32_t dci, uint64_t deadline_milliseconds);
+    void FinishTransfer(Transfer& transfer);
+    void FinishTransfer(Transfer& transfer, Status status);
+    void AbortTransfers(uint32_t slot, uint32_t dci_mask, Status status);
+    void RecoverEndpoint(uint32_t slot, uint32_t dci);
+    void Quiesce(uint32_t slot, uint32_t dci, Transfer* waited, Status waited_status, bool resume);
+    bool DeviceGone(uint32_t slot);
+    bool ClearHalt(uint32_t slot, uint8_t address);
+    uint32_t RecordRecoveryLocked(uint32_t slot, uint32_t dci) REQUIRES(ring_lock_);
 
     Hardware& hardware_;
     Pci::Function function_;
@@ -159,8 +252,6 @@ private:
     uint32_t scratchpads_ = 0;
     uint8_t port_major_[MaxPorts + 1] = {};
     uint8_t port_slot_type_[MaxPorts + 1] = {};
-    uint8_t port_slot_[MaxPorts + 1] = {};
-    bool port_failed_[MaxPorts + 1] = {};
     Slot slots_[MaxSlots + 1];
 
     Memory::Dma::Buffer dcbaa_{};
@@ -180,6 +271,14 @@ private:
     Pending pending_[PendingCommands] GUARDED_BY(ring_lock_);
     std::atomic<bool> done_[PendingCommands] = {};
     bool unknown_logged_ GUARDED_BY(ring_lock_) = false;
+    EndpointRing endpoint_rings_[MaxSlots + 1][ContextIndexes] GUARDED_BY(ring_lock_);
+    PendingTransfer transfers_[PendingTransfers] GUARDED_BY(ring_lock_);
+    bool unknown_transfer_logged_ GUARDED_BY(ring_lock_) = false;
+    // One bit per device context index with an error the manager has yet to recover.
+    std::atomic<uint32_t> recovery_mask_[MaxSlots + 1] = {};
+    std::atomic<uint32_t> recovery_count_ = 0;
+    RecoveryHandler recovery_handler_ = nullptr;
+    void* recovery_context_ = nullptr;
 
     Sync::SpinLock work_lock_;
     uint32_t port_work_[(MaxPorts + 32) / 32] GUARDED_BY(work_lock_) = {};

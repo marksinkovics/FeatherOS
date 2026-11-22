@@ -6,6 +6,7 @@
 #include "kernel/pci/pci.h"
 #include "kernel/scheduler.h"
 #include "kernel/sync/spinlock.h"
+#include "kernel/usb/manager.h"
 #include "kernel/usb/xhci/controller.h"
 #include "user/thread_safety.h"
 
@@ -29,6 +30,7 @@ constexpr uint8_t UhciInterface = 0x00;
 
 constinit KLogger logger;
 constinit Xhci::Controller* controllers[MaxControllers] = {};
+constinit Manager* managers[MaxControllers] = {};
 constinit uint32_t controller_count = 0;
 
 constinit Sync::SpinLock manager_lock;
@@ -49,7 +51,7 @@ uint64_t EventsTask(void* context)
     for (;;)
     {
         controller->ProcessEvents();
-        if (controller->HasManagerWork())
+        if (controller->HasWork())
         {
             WakeManager();
         }
@@ -73,7 +75,7 @@ uint64_t ManagerTask(void*)
         }
         for (uint32_t index = 0; index < controller_count; ++index)
         {
-            controllers[index]->RunManagerWork();
+            managers[index]->Run();
         }
     }
 }
@@ -182,6 +184,10 @@ bool Initialize(const void* platform_data)
         {
             logger.Info(line);
         }
+    }
+    for (uint32_t index = 0; index < controller_count; ++index)
+    {
+        managers[index] = new Manager(*controllers[index]);
     }
     bool started = StartTask(ManagerTask, nullptr, Scheduler::TaskPriority::Normal);
     for (uint32_t index = 0; index < controller_count; ++index)

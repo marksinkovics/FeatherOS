@@ -66,6 +66,8 @@ add_executable(featheros_unit_tests
     kernel/storage/page_cache_tests.cpp
     kernel/usb/context_tests.cpp
     kernel/usb/controller_tests.cpp
+    kernel/usb/descriptor_tests.cpp
+    kernel/usb/fake_device.cpp
     kernel/usb/fake_hardware.cpp
     kernel/usb/fake_xhci.cpp
     kernel/usb/ring_tests.cpp
@@ -255,10 +257,14 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/memory/page_allocator.cpp"
     "${FEATHEROS_ROOT}/src/kernel/pci/msi.cpp"
     "${FEATHEROS_ROOT}/src/kernel/pci/pci.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/descriptors.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/manager.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/text.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/xhci/context.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/xhci/controller.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/xhci/registers.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/xhci/ring.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/xhci/transfer.cpp"
     "${FEATHEROS_ROOT}/src/kernel/process_arguments.cpp"
     "${FEATHEROS_ROOT}/src/kernel/sync/volume_mutex.cpp"
     "${FEATHEROS_ROOT}/src/kernel/syscall.cpp"

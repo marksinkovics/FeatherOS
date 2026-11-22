@@ -160,6 +160,29 @@ bool ProducerRing::InFlight(uint64_t trb_physical) const
     return index != LinkIndex && (index + RingTrbs - dequeue_) % RingTrbs < Distance();
 }
 
+bool ProducerRing::PointerAfter(uint64_t trb_physical, uint64_t* pointer) const
+{
+    if (!InFlight(trb_physical))
+    {
+        return false;
+    }
+    const uint32_t next =
+        (static_cast<uint32_t>((trb_physical - buffer_.physical) / TrbSize) + 1) % RingTrbs;
+    bool cycle = cycle_;
+    if ((next + RingTrbs - dequeue_) % RingTrbs < Distance())
+    {
+        cycle = (Slot(buffer_, next)[3] & TrbControl::Cycle) != 0;
+    }
+    *pointer = buffer_.physical + static_cast<uint64_t>(next) * TrbSize + (cycle ? 1U : 0U);
+    return true;
+}
+
+uint64_t ProducerRing::Drain()
+{
+    dequeue_ = enqueue_;
+    return buffer_.physical + static_cast<uint64_t>(enqueue_) * TrbSize + (cycle_ ? 1U : 0U);
+}
+
 bool ProducerRing::Retire(uint64_t trb_physical)
 {
     if (!InFlight(trb_physical))

@@ -1,12 +1,15 @@
 #ifndef FEATHEROS_TESTS_USB_FAKE_XHCI_H
 #define FEATHEROS_TESTS_USB_FAKE_XHCI_H
 
+#include "fake_device.h"
+
 #include "kernel/memory/dma.h"
 #include "kernel/usb/host_controller.h"
 #include "kernel/usb/xhci/trb.h"
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <set>
 #include <vector>
 
@@ -45,8 +48,13 @@ private:
 // ownership after a set number of polls, reset and halt delays with the Controller Not Ready flag,
 // scratchpad and page-size settings, Enable Slot, Disable Slot, Address Device (reads the input
 // context and writes the device context's slot and EP0), a command that never completes until the
-// command ring is aborted, and injected events and errors. Not yet: scripted devices and hubs,
-// data stages.
+// command ring is aborted, and injected events and errors. Slots whose root port has a
+// ScriptedDevice get real transfer processing: control TDs (setup, data, status stages with short
+// packets, stalls, transaction errors, babble when the context's EP0 packet size is wrong, hung
+// requests), interrupt IN TDs fed from the device's queued reports, the endpoint states (running,
+// halted, stopped) with Reset Endpoint, Set TR Dequeue Pointer, Stop Endpoint, Evaluate Context
+// and Configure Endpoint. Slots without a device keep the plain behavior: an event for every
+// TRB that asks for one. Not yet: hubs.
 class FakeXhci
 {
 public:
@@ -78,8 +86,13 @@ public:
 
     void SetEndpointRing(uint32_t slot, uint32_t dci, uint64_t ring, bool cycle);
     // A SuperSpeed device on a USB 3 port is enabled in U0 unless it is not trained.
-    void Connect(uint32_t port, Speed speed, bool trained = true);
+    // Without a device, a keyboard of the speed's default packet size is attached.
+    void Connect(uint32_t port, Speed speed, bool trained = true,
+                 std::shared_ptr<ScriptedDevice> device = nullptr);
     void Disconnect(uint32_t port);
+    // Queues a report and runs any interrupt IN TD that waits for one.
+    void DeliverReport(const std::shared_ptr<ScriptedDevice>& device, uint8_t endpoint,
+                       std::vector<uint8_t> report);
 
     void EnableLegacySupport(bool firmware_owns, int release_after_polls);
     // Ports from usb3_first up are USB 3; 0 makes every port USB 2.
@@ -127,6 +140,37 @@ public:
         uint32_t add_flags;
     };
 
+    struct ConfiguredEndpoint
+    {
+        uint32_t slot;
+        uint32_t dci;
+        uint32_t type;
+        uint32_t max_packet;
+        uint32_t interval;
+        uint64_t ring;
+        uint32_t entries;
+    };
+
+    struct DequeueSet
+    {
+        uint32_t slot;
+        uint32_t dci;
+        uint64_t pointer;
+    };
+
+    enum class State
+    {
+        Running,
+        Halted,
+        Stopped,
+    };
+
+    const std::vector<ConfiguredEndpoint>& Configured() const;
+    const std::vector<std::pair<uint32_t, uint32_t>>& Evaluated() const;
+    const std::vector<DequeueSet>& DequeueSets() const;
+    bool EndpointState(uint32_t slot, uint32_t dci, State* state) const;
+    uint32_t SlotOfPort(uint32_t port) const;
+
     const std::vector<ResetRecord>& Resets() const;
     const std::vector<AddressedDevice>& Addressed() const;
     const std::vector<uint32_t>& DisabledSlots() const;
@@ -151,14 +195,44 @@ public:
     uint32_t PortStatus(uint32_t port) const;
 
 private:
+    struct ControlTd
+    {
+        bool active = false;
+        ScriptedDevice::Request request{};
+        ScriptedDevice::Outcome outcome = ScriptedDevice::Outcome::Ok;
+        std::vector<uint8_t> response;
+    };
+
     struct Endpoint
     {
-        uint64_t dequeue;
-        bool cycle;
+        uint64_t dequeue = 0;
+        bool cycle = true;
+        State state = State::Running;
+        bool hung = false;
+        uint8_t address = 0;
+        ControlTd control;
+    };
+
+    struct Binding
+    {
+        std::shared_ptr<ScriptedDevice> device;
+        uint32_t root_port;
+        Speed speed;
     };
 
     void ProcessCommands();
     void ProcessTransfers(uint32_t slot, uint32_t dci);
+    void ProcessPlainTransfers(Endpoint& endpoint, uint32_t slot, uint32_t dci);
+    void ProcessDeviceTransfers(Endpoint& endpoint, Binding& binding, uint32_t slot, uint32_t dci);
+    bool DevicePresent(const Binding& binding) const;
+    void PostTransferEvent(uint32_t slot, uint32_t dci, uint64_t trb, uint32_t code,
+                           uint32_t residue);
+    bool CopyToBuffer(uint64_t physical, const std::vector<uint8_t>& bytes, size_t count);
+    uint32_t ContextMaxPacket(uint32_t slot);
+    void EvaluateContext(uint32_t slot, uint64_t input_physical, uint32_t* code);
+    void ConfigureEndpoint(uint32_t slot, uint64_t input_physical, uint32_t* code);
+    void ChangeEndpointState(uint32_t type, uint32_t slot, uint32_t dci, uint64_t parameter,
+                             uint32_t* code);
     bool ReadTrb(uint64_t physical, Xhci::Trb* trb);
     bool PostEvent(const Xhci::Trb& event);
     void PostPortEvent(uint32_t port);
@@ -199,6 +273,11 @@ private:
     bool event_cycle_ = true;
     bool event_busy_ = false;
     std::map<uint32_t, Endpoint> endpoints_;
+    std::map<uint32_t, std::shared_ptr<ScriptedDevice>> port_devices_;
+    std::map<uint32_t, Binding> bindings_;
+    std::vector<ConfiguredEndpoint> configured_;
+    std::vector<std::pair<uint32_t, uint32_t>> evaluated_;
+    std::vector<DequeueSet> dequeue_sets_;
     std::set<uint32_t> enabled_slots_;
     std::vector<uint32_t> protocol_words_;
     bool legacy_present_ = false;

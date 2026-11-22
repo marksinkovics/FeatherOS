@@ -2,6 +2,7 @@
 
 #include "kernel/klogger.h"
 #include "kernel/string/format.h"
+#include "kernel/usb/text.h"
 #include "kernel/usb/xhci/registers.h"
 
 namespace FeatherOS::Usb::Xhci
@@ -38,68 +39,6 @@ bool IntelWithEhci(uint16_t device)
            device == 0x9CB1;
 }
 
-class Text
-{
-public:
-    Text(char* destination, size_t capacity) : out_(destination), capacity_(capacity) {}
-
-    void Put(char value)
-    {
-        if (length_ + 1 < capacity_)
-        {
-            out_[length_] = value;
-        }
-        ++length_;
-    }
-
-    void Words(const char* text)
-    {
-        while (*text != '\0')
-        {
-            Put(*text++);
-        }
-    }
-
-    void Hex(uint32_t value, uint32_t digits)
-    {
-        constexpr char Digits[] = "0123456789abcdef";
-        for (uint32_t shift = digits * 4; shift > 0; shift -= 4)
-        {
-            Put(Digits[(value >> (shift - 4)) & 0xFU]);
-        }
-    }
-
-    void Decimal(uint32_t value)
-    {
-        char reversed[10];
-        uint32_t count = 0;
-        do
-        {
-            reversed[count++] = static_cast<char>('0' + value % 10);
-            value /= 10;
-        } while (value != 0);
-        while (count > 0)
-        {
-            Put(reversed[--count]);
-        }
-    }
-
-    bool Finish()
-    {
-        if (capacity_ == 0 || length_ + 1 > capacity_)
-        {
-            return false;
-        }
-        out_[length_] = '\0';
-        return true;
-    }
-
-private:
-    char* out_;
-    size_t capacity_;
-    size_t length_ = 0;
-};
-
 void AppendAddress(Text& text, const Pci::Function& function)
 {
     text.Hex(function.address.bus, 2);
@@ -121,24 +60,6 @@ void LogRefusal(const Pci::Function& function, const char* reason)
     {
         logger.Warning(line);
     }
-}
-
-const char* SpeedName(Speed speed)
-{
-    switch (speed)
-    {
-    case Speed::Low:
-        return "low-speed";
-    case Speed::Full:
-        return "full-speed";
-    case Speed::High:
-        return "high-speed";
-    case Speed::Super:
-        return "super-speed";
-    case Speed::SuperPlus:
-        return "super-speed+";
-    }
-    return "unknown-speed";
 }
 
 const char* InterruptName(InterruptKind kind)
@@ -173,7 +94,7 @@ uint32_t ControlEndpointPacketSize(Speed speed)
     return 512;
 }
 
-void FreeBuffer(Hardware& hardware, Memory::Dma::Buffer& buffer)
+void ReleaseBuffer(Hardware& hardware, Memory::Dma::Buffer& buffer)
 {
     if (buffer.size != 0)
     {
@@ -454,12 +375,12 @@ bool Controller::AllocateTables()
 
 void Controller::FreeTables()
 {
-    FreeBuffer(hardware_, scratchpad_pages_);
-    FreeBuffer(hardware_, scratchpad_array_);
-    FreeBuffer(hardware_, segment_table_);
-    FreeBuffer(hardware_, event_buffer_);
-    FreeBuffer(hardware_, command_buffer_);
-    FreeBuffer(hardware_, dcbaa_);
+    ReleaseBuffer(hardware_, scratchpad_pages_);
+    ReleaseBuffer(hardware_, scratchpad_array_);
+    ReleaseBuffer(hardware_, segment_table_);
+    ReleaseBuffer(hardware_, event_buffer_);
+    ReleaseBuffer(hardware_, command_buffer_);
+    ReleaseBuffer(hardware_, dcbaa_);
 }
 
 bool Controller::Program()
@@ -601,8 +522,12 @@ void Controller::SetPortWork(uint32_t port)
     }
 }
 
-bool Controller::TakePortWork(uint32_t* port)
+bool Controller::TakePortChange(uint32_t* port)
 {
+    if (disabled_.load() || error_pending_.load())
+    {
+        return false;
+    }
     Sync::SpinLockGuard guard(work_lock_);
     for (uint32_t index = 0; index < sizeof(port_work_) / sizeof(port_work_[0]); ++index)
     {
@@ -647,16 +572,29 @@ void Controller::ProcessEvents()
     {
         return;
     }
+    for (bool more = true; more;)
+    {
+        Completions completions;
+        more = DrainEvents(completions);
+        for (uint32_t index = 0; index < completions.count; ++index)
+        {
+            FinishTransfer(*completions.items[index]);
+        }
+    }
+}
+
+bool Controller::DrainEvents(Completions& completions)
+{
     Sync::SpinLockGuard guard(event_lock_);
     if (quiesced_.load())
     {
-        return;
+        return false;
     }
     const uint32_t status = ReadOperational(Op::UsbSts);
     if ((status & UsbStatusErrors) != 0)
     {
         RaiseError(status);
-        return;
+        return false;
     }
     if ((status & UsbSts::EventInterrupt) != 0)
     {
@@ -666,16 +604,23 @@ void Controller::ProcessEvents()
                       Iman::InterruptPending | Iman::InterruptEnable);
     Trb event;
     bool consumed = false;
+    bool full = false;
     while (events_.Next(&event))
     {
         consumed = true;
-        HandleEvent(event);
+        HandleEvent(event, completions);
+        if (completions.count == CompletionBatch)
+        {
+            full = true;
+            break;
+        }
     }
     if (consumed)
     {
         hardware_.Write64(RuntimeOffset(InterrupterRegister(0, Runtime::Erdp)),
                           events_.DequeuePointer());
     }
+    return full;
 }
 
 void Controller::RaiseError(uint32_t status)
@@ -706,12 +651,15 @@ void Controller::RaiseError(uint32_t status)
     }
 }
 
-void Controller::HandleEvent(const Trb& event)
+void Controller::HandleEvent(const Trb& event, Completions& completions)
 {
     switch (TrbTypeOf(event))
     {
     case TrbType::CommandCompletionEvent:
         CompleteCommand(event);
+        break;
+    case TrbType::TransferEvent:
+        HandleTransferEvent(event, completions);
         break;
     case TrbType::PortStatusChangeEvent:
         SetPortWork(event.parameter_low >> 24);
@@ -769,9 +717,9 @@ void Controller::CompleteCommand(const Trb& event)
     }
 }
 
-void Controller::RingDoorbell(uint32_t index)
+void Controller::RingDoorbell(uint32_t index, uint32_t target)
 {
-    hardware_.Write32(doorbells_ + index * 4, 0);
+    hardware_.Write32(doorbells_ + index * 4, target);
 }
 
 CommandResult Controller::Command(const Trb& trb)
@@ -851,24 +799,33 @@ void Controller::AbortCommand(uint32_t index, uint64_t trb_physical)
     pending_[index].used = false;
 }
 
-bool Controller::AllocateSlot(uint32_t slot, Speed speed, uint32_t port)
+bool Controller::AllocateSlot(uint32_t slot, const Location& location)
 {
     Slot& entry = slots_[slot];
     const uint64_t below = ac64_ ? UINT64_MAX : FourGiB;
-    if (!hardware_.AllocateDma(layout_.DeviceBytes(), below, &entry.device) ||
-        !hardware_.AllocateDma(layout_.InputBytes(), below, &entry.input) ||
-        !hardware_.AllocateDma(RingBytes, below, &entry.ep0_buffer) ||
-        !entry.ep0.Initialize(entry.ep0_buffer))
+    bool ready = hardware_.AllocateDma(layout_.DeviceBytes(), below, &entry.device) &&
+                 hardware_.AllocateDma(layout_.InputBytes(), below, &entry.input) &&
+                 hardware_.AllocateDma(RingBytes, below, &entry.rings[1]);
+    if (ready)
     {
-        FreeBuffer(hardware_, entry.ep0_buffer);
-        FreeBuffer(hardware_, entry.input);
-        FreeBuffer(hardware_, entry.device);
+        Sync::SpinLockGuard guard(ring_lock_);
+        EndpointRing& control = endpoint_rings_[slot][1];
+        control = {};
+        ready = control.ring.Initialize(entry.rings[1]);
+        control.active = ready;
+    }
+    if (!ready)
+    {
+        ReleaseBuffer(hardware_, entry.rings[1]);
+        ReleaseBuffer(hardware_, entry.input);
+        ReleaseBuffer(hardware_, entry.device);
         return false;
     }
     entry.in_use = true;
-    entry.port = static_cast<uint8_t>(port);
-    entry.speed = speed;
-    port_slot_[port] = static_cast<uint8_t>(slot);
+    entry.port = location.root_port;
+    entry.speed = location.speed;
+    entry.entries = 1;
+    entry.location = location;
     Table(dcbaa_)[slot] = entry.device.physical;
     return true;
 }
@@ -876,14 +833,25 @@ bool Controller::AllocateSlot(uint32_t slot, Speed speed, uint32_t port)
 void Controller::ReleaseSlot(uint32_t slot)
 {
     Slot& entry = slots_[slot];
-    Table(dcbaa_)[slot] = 0;
-    if (entry.port != 0 && port_slot_[entry.port] == slot)
     {
-        port_slot_[entry.port] = 0;
+        Sync::SpinLockGuard guard(ring_lock_);
+        for (uint32_t dci = 0; dci < ContextIndexes; ++dci)
+        {
+            endpoint_rings_[slot][dci] = {};
+        }
+        uint32_t pending = recovery_mask_[slot].exchange(0);
+        for (; pending != 0; pending &= pending - 1)
+        {
+            recovery_count_.fetch_sub(1);
+        }
     }
-    FreeBuffer(hardware_, entry.ep0_buffer);
-    FreeBuffer(hardware_, entry.input);
-    FreeBuffer(hardware_, entry.device);
+    Table(dcbaa_)[slot] = 0;
+    for (uint32_t dci = 0; dci < ContextIndexes; ++dci)
+    {
+        ReleaseBuffer(hardware_, entry.rings[dci]);
+    }
+    ReleaseBuffer(hardware_, entry.input);
+    ReleaseBuffer(hardware_, entry.device);
     entry.in_use = false;
     entry.port = 0;
 }
@@ -904,16 +872,36 @@ void Controller::DetachAll()
     }
 }
 
-bool Controller::AddressDevice(uint32_t port, Speed speed, uint32_t slot)
+void Controller::ClearInput(uint32_t slot)
+{
+    auto* words = reinterpret_cast<volatile uint32_t*>(slots_[slot].input.address);
+    for (uint32_t index = 0; index < layout_.InputBytes() / 4; ++index)
+    {
+        words[index] = 0;
+    }
+}
+
+uint64_t Controller::RingPointer(uint32_t slot, uint32_t dci)
+{
+    Sync::SpinLockGuard guard(ring_lock_);
+    const ProducerRing& ring = endpoint_rings_[slot][dci].ring;
+    return ring.Physical() | (ring.CycleState() ? 1U : 0U);
+}
+
+bool Controller::AddressDevice(uint32_t slot)
 {
     Slot& entry = slots_[slot];
-    const Location location = {speed, static_cast<uint8_t>(port), 0, 0, 0, 0, false};
     const EndpointDescriptor control = {
-        0, EndpointType::Control, static_cast<uint16_t>(ControlEndpointPacketSize(speed)), 0, 0, 0,
+        0,
+        EndpointType::Control,
+        static_cast<uint16_t>(ControlEndpointPacketSize(entry.speed)),
+        0,
+        0,
+        0,
         0};
-    WriteSlot(layout_, entry.input.address, location, 1, nullptr);
-    WriteEndpoint(layout_, entry.input.address, control, speed,
-                  entry.ep0.Physical() | (entry.ep0.CycleState() ? 1U : 0U));
+    ClearInput(slot);
+    WriteSlot(layout_, entry.input.address, entry.location, 1, nullptr);
+    WriteEndpoint(layout_, entry.input.address, control, entry.speed, RingPointer(slot, 1));
     const CommandResult result = Command(
         MakeTrb(TrbType::AddressDevice, slot << TrbControl::SlotShift, entry.input.physical, 0));
     return result.status == CommandStatus::Success;
@@ -949,136 +937,225 @@ bool Controller::ResetPort(uint32_t port)
     return (ReadPort(port) & PortSc::Enabled) != 0;
 }
 
-bool Controller::Enumerate(uint32_t port)
+void Controller::ReadRootPort(uint32_t port, RootPortStatus* status, bool acknowledge)
 {
-    char line[96];
-    if (!ResetPort(port))
+    *status = {};
+    if (port == 0 || port > max_ports_)
     {
-        if (String::FormatTo(line, sizeof(line), "USB: port {} did not reset", port))
-        {
-            logger.Warning(line);
-        }
+        return;
+    }
+    const uint32_t value = ReadPort(port);
+    status->connected = (value & PortSc::CurrentConnect) != 0;
+    status->enabled = (value & PortSc::Enabled) != 0;
+    status->connect_changed = (value & PortSc::ConnectChange) != 0;
+    status->changed = (value & PortSc::ChangeMask) != 0;
+    status->speed_known = SpeedFromId(
+        static_cast<uint8_t>((value & PortSc::SpeedMask) >> PortSc::SpeedShift), &status->speed);
+    if (acknowledge && status->changed)
+    {
+        WritePort(port, PortscWriteValue(value, value & PortSc::ChangeMask));
+    }
+}
+
+bool Controller::ResetRootPort(uint32_t port, Speed* speed)
+{
+    if (port == 0 || port > max_ports_ || !ResetPort(port))
+    {
         return false;
     }
     const uint32_t status = ReadPort(port);
-    Speed speed;
-    if (!SpeedFromId(static_cast<uint8_t>((status & PortSc::SpeedMask) >> PortSc::SpeedShift),
-                     &speed))
+    return SpeedFromId(static_cast<uint8_t>((status & PortSc::SpeedMask) >> PortSc::SpeedShift),
+                       speed);
+}
+
+CreateStatus Controller::CreateDevice(const Location& location, uint32_t* slot)
+{
+    const uint32_t port = location.root_port;
+    if (port == 0 || port > max_ports_)
     {
-        if (String::FormatTo(line, sizeof(line), "USB: port {} has an unknown speed", port))
-        {
-            logger.Warning(line);
-        }
-        return false;
+        return CreateStatus::SlotFailed;
     }
     const CommandResult enabled = Command(
         MakeTrb(TrbType::EnableSlot, static_cast<uint32_t>(port_slot_type_[port]) << 16, 0, 0));
     if (enabled.status != CommandStatus::Success)
     {
-        const char* reason = enabled.code == CompletionCode::NoSlotsAvailable
-                                 ? "USB: no device slots left for port {}"
-                                 : "USB: port {} got no device slot";
-        if (String::FormatTo(line, sizeof(line), reason, port))
+        if (enabled.status == CommandStatus::Unavailable)
         {
-            logger.Warning(line);
+            return CreateStatus::Unavailable;
         }
-        return false;
+        return enabled.code == CompletionCode::NoSlotsAvailable ? CreateStatus::NoSlots
+                                                                : CreateStatus::SlotFailed;
     }
-    const uint32_t slot = enabled.slot;
-    if (slot == 0 || slot > max_slots_ || slots_[slot].in_use || !AllocateSlot(slot, speed, port))
+    const uint32_t id = enabled.slot;
+    if (id == 0 || id > max_slots_ || slots_[id].in_use || !AllocateSlot(id, location))
     {
-        if (slot != 0 && slot <= max_slots_ && !slots_[slot].in_use)
+        if (id != 0 && id <= max_slots_ && !slots_[id].in_use)
         {
-            DisableSlot(slot);
+            DisableSlot(id);
         }
-        if (String::FormatTo(line, sizeof(line), "USB: port {} could not set up its device slot",
-                             port))
-        {
-            logger.Warning(line);
-        }
-        return false;
+        return CreateStatus::SlotFailed;
     }
-    if (!AddressDevice(port, speed, slot))
+    if (!AddressDevice(id))
     {
-        DisableSlot(slot);
-        ReleaseSlot(slot);
-        if (String::FormatTo(line, sizeof(line), "USB: port {} could not be addressed", port))
-        {
-            logger.Warning(line);
-        }
-        return false;
+        DisableSlot(id);
+        ReleaseSlot(id);
+        return CreateStatus::AddressFailed;
     }
-    if (String::FormatTo(line, sizeof(line), "USB: port {} {} device addressed as slot {}", port,
-                         SpeedName(speed), slot))
-    {
-        logger.Info(line);
-    }
-    return true;
+    *slot = id;
+    return CreateStatus::Created;
 }
 
-void Controller::HandlePort(uint32_t port)
+bool Controller::SetControlMaxPacket(uint32_t slot, uint32_t max_packet)
 {
-    uint32_t status = ReadPort(port);
-    if ((status & PortSc::ChangeMask) != 0)
+    if (slot == 0 || slot > MaxSlots || !slots_[slot].in_use || max_packet == 0 ||
+        max_packet > 0x7FF)
     {
-        WritePort(port, PortscWriteValue(status, status & PortSc::ChangeMask));
+        return false;
     }
-    const bool connected = (status & PortSc::CurrentConnect) != 0;
-    const bool changed = (status & PortSc::ConnectChange) != 0;
-    const uint32_t slot = port_slot_[port];
-    if (changed)
+    Slot& entry = slots_[slot];
+    const EndpointDescriptor control = {
+        0, EndpointType::Control, static_cast<uint16_t>(max_packet), 0, 0, 0, 0};
+    ClearInput(slot);
+    WriteEndpoint(layout_, entry.input.address, control, entry.speed, RingPointer(slot, 1));
+    const CommandResult result = Command(
+        MakeTrb(TrbType::EvaluateContext, slot << TrbControl::SlotShift, entry.input.physical, 0));
+    return result.status == CommandStatus::Success;
+}
+
+bool Controller::ConfigureEndpoints(uint32_t slot, std::span<const EndpointDescriptor> endpoints,
+                                    const HubInfo* hub)
+{
+    constexpr size_t MaxConfigured = ContextIndexes - 2;
+    if (slot == 0 || slot > MaxSlots || !slots_[slot].in_use || endpoints.size() > MaxConfigured)
     {
-        port_failed_[port] = false;
+        return false;
     }
-    if (!connected || (changed && slot != 0))
+    Slot& entry = slots_[slot];
+    uint32_t indexes[MaxConfigured] = {};
+    uint32_t entries = entry.entries;
     {
-        if (slot != 0)
+        Sync::SpinLockGuard guard(ring_lock_);
+        for (size_t index = 0; index < endpoints.size(); ++index)
         {
-            DisableSlot(slot);
-            ReleaseSlot(slot);
-            char line[48];
-            if (String::FormatTo(line, sizeof(line), "USB: port {} device removed", port))
+            const uint32_t dci = EndpointContextIndex(endpoints[index]);
+            if (dci < 2 || dci >= ContextIndexes || endpoint_rings_[slot][dci].active)
             {
-                logger.Info(line);
+                return false;
+            }
+            for (size_t before = 0; before < index; ++before)
+            {
+                if (indexes[before] == dci)
+                {
+                    return false;
+                }
+            }
+            indexes[index] = dci;
+            entries = dci > entries ? dci : entries;
+        }
+    }
+    const uint64_t below = ac64_ ? UINT64_MAX : FourGiB;
+    bool ready = true;
+    for (size_t index = 0; index < endpoints.size() && ready; ++index)
+    {
+        ready = hardware_.AllocateDma(RingBytes, below, &entry.rings[indexes[index]]);
+    }
+    if (ready)
+    {
+        Sync::SpinLockGuard guard(ring_lock_);
+        for (size_t index = 0; index < endpoints.size() && ready; ++index)
+        {
+            EndpointRing& endpoint = endpoint_rings_[slot][indexes[index]];
+            endpoint = {};
+            endpoint.address = endpoints[index].address;
+            ready = endpoint.ring.Initialize(entry.rings[indexes[index]]);
+        }
+    }
+    CommandResult result = {CommandStatus::Failed, 0, 0};
+    if (ready)
+    {
+        ClearInput(slot);
+        WriteSlot(layout_, entry.input.address, entry.location, entries, hub);
+        for (size_t index = 0; index < endpoints.size(); ++index)
+        {
+            WriteEndpoint(layout_, entry.input.address, endpoints[index], entry.speed,
+                          RingPointer(slot, indexes[index]));
+        }
+        result = Command(MakeTrb(TrbType::ConfigureEndpoint, slot << TrbControl::SlotShift,
+                                 entry.input.physical, 0));
+    }
+    const bool configured = result.status == CommandStatus::Success;
+    {
+        Sync::SpinLockGuard guard(ring_lock_);
+        for (size_t index = 0; index < endpoints.size(); ++index)
+        {
+            EndpointRing& endpoint = endpoint_rings_[slot][indexes[index]];
+            if (configured)
+            {
+                endpoint.active = true;
+            }
+            else
+            {
+                endpoint = {};
             }
         }
-        if (!connected)
-        {
-            return;
-        }
     }
-    else if (slot != 0 || port_failed_[port])
+    if (configured)
     {
-        return;
+        entry.entries = entries;
+        return true;
     }
-    hardware_.Pause(DebounceMs);
-    if ((ReadPort(port) & PortSc::CurrentConnect) == 0)
+    for (size_t index = 0; index < endpoints.size(); ++index)
     {
-        return;
+        ReleaseBuffer(hardware_, entry.rings[indexes[index]]);
     }
-    port_failed_[port] = !Enumerate(port);
+    return false;
 }
 
-bool Controller::HasManagerWork() const
+void Controller::DestroyDevice(uint32_t slot)
 {
-    return !disabled_.load() && (error_pending_.load() || port_work_count_.load() != 0);
-}
-
-void Controller::RunManagerWork()
-{
-    if (!initialized_ || disabled_.load())
+    if (slot == 0 || slot > MaxSlots || !slots_[slot].in_use)
     {
         return;
     }
-    if (error_pending_.load())
+    DisableSlot(slot);
+    AbortTransfers(slot, ~0U, Status::NoDevice);
+    ReleaseSlot(slot);
+}
+
+bool Controller::AllocateBuffer(uint64_t bytes, Memory::Dma::Buffer* buffer)
+{
+    return hardware_.AllocateDma(bytes, ac64_ ? UINT64_MAX : FourGiB, buffer);
+}
+
+void Controller::FreeBuffer(const Memory::Dma::Buffer& buffer)
+{
+    hardware_.FreeDma(buffer);
+}
+
+void Controller::Delay(uint32_t milliseconds)
+{
+    hardware_.Pause(milliseconds);
+}
+
+uint64_t Controller::NowMilliseconds()
+{
+    return hardware_.NowMilliseconds();
+}
+
+bool Controller::HasWork() const
+{
+    return !disabled_.load() &&
+           (error_pending_.load() || port_work_count_.load() != 0 || recovery_count_.load() != 0);
+}
+
+bool Controller::Recover()
+{
+    if (!initialized_ || disabled_.load() || !error_pending_.load())
     {
-        Restart();
+        return false;
     }
-    uint32_t port;
-    while (!disabled_.load() && !error_pending_.load() && TakePortWork(&port))
-    {
-        HandlePort(port);
-    }
+    Restart();
+    return true;
 }
 
 void Controller::Restart()
@@ -1087,11 +1164,8 @@ void Controller::Restart()
     {
         Sync::SpinLockGuard drained(event_lock_);
     }
+    AbortTransfers(0, ~0U, Status::NoDevice);
     DetachAll();
-    for (uint32_t port = 0; port <= MaxPorts; ++port)
-    {
-        port_failed_[port] = false;
-    }
     const bool allowed = restarts_ == 0;
     ++restarts_;
     const bool restarted = allowed && Halt() && Reset() && Program();
