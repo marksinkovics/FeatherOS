@@ -85,4 +85,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 7a9acc0 | M14 P4 s9 hubs: state machine, hub driver, TT, recursive detach, USB_HUB_TEST | M14.md (opus) | sonnet | 0 | 3/3 (I29 T26, I30 T27, I20 T28) | |
 | 741db2d | M14 P5 s10a i8042 after handoff, ACPI FindTable, FADT flag, OVMF usb case | M14.md (opus) | sonnet | 0 | I32 bits by [i8042]; I32 order not caught (laptop only); I31 by INPUT with usb=off | |
 | b8ad2cd | M14 P5 s10b boot without a disk: tmpfs root with /home, nodisk case | M14.md (opus) | sonnet | 0 (agent ran out of turns; coordinator finished verification) | I33 by NODISK case (2 mutations) | |
-| PENDING | M14 P5 s10c log ring, /proc/kmsg, dmesg, LIMINE_TIMEOUT, USB stick image, docs/hardware.md | M14.md (opus) | sonnet | 0 | 2/2 (wrap by [logring], lock by TSan) | |
+| 391d216 | M14 P5 s10c log ring, /proc/kmsg, dmesg, LIMINE_TIMEOUT, USB stick image, docs/hardware.md | M14.md (opus) | sonnet | 0 | 2/2 (wrap by [logring], lock by TSan) | |
