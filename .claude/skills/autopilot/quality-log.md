@@ -86,3 +86,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 4623da9 | M14 P5 s10b boot without a disk: tmpfs root with /home, nodisk case | M14.md (opus) | sonnet | 0 (agent ran out of turns; coordinator finished verification) | I33 by NODISK case (2 mutations) | |
 | c931dda | M14 P5 s10c log ring, /proc/kmsg, dmesg, LIMINE_TIMEOUT, USB stick image, docs/hardware.md | M14.md (opus) | sonnet | 0 | 2/2 (wrap by [logring], lock by TSan) | |
 | 7a08c5a | M19 P2 s1a xHCI bulk TDs, residue, CancelEndpoint, ClearHalt | M19-P2.md (opus) | sonnet | 0 | 3/3 (I1 by T1, I4 by T6, I5 by T7) | |
+| aaf571c | M19 P2 s1b driver service hook, stalls_are_protocol, device work dispatch | M19-P2.md (opus) | sonnet | 0 | 3/4 (stall count by T23, hub branch by [hub], generation by [service]; detaching check not testable single-threaded) | |
