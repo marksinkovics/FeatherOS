@@ -85,3 +85,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | e686dd9 | M14 P5 s10a i8042 after handoff, ACPI FindTable, FADT flag, OVMF usb case | M14.md (opus) | sonnet | 0 | I32 bits by [i8042]; I32 order not caught (laptop only); I31 by INPUT with usb=off | |
 | 4623da9 | M14 P5 s10b boot without a disk: tmpfs root with /home, nodisk case | M14.md (opus) | sonnet | 0 (agent ran out of turns; coordinator finished verification) | I33 by NODISK case (2 mutations) | |
 | c931dda | M14 P5 s10c log ring, /proc/kmsg, dmesg, LIMINE_TIMEOUT, USB stick image, docs/hardware.md | M14.md (opus) | sonnet | 0 | 2/2 (wrap by [logring], lock by TSan) | |
+| 7a08c5a | M19 P2 s1a xHCI bulk TDs, residue, CancelEndpoint, ClearHalt | M19-P2.md (opus) | sonnet | 0 | 3/3 (I1 by T1, I4 by T6, I5 by T7) | |
