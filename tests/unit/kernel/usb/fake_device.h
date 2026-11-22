@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace FeatherOS::Usb::Testing
@@ -40,6 +41,10 @@ public:
     ScriptedDevice(std::vector<uint8_t> device, std::vector<uint8_t> configuration);
 
     void AddString(uint8_t index, const std::string& text);
+    void SetReportDescriptor(uint8_t interface, std::vector<uint8_t> descriptor);
+    void RecordData(const Request& request, std::vector<uint8_t> data);
+    // The data stages of the control requests of one request code, in order.
+    std::vector<std::vector<uint8_t>> DataOf(uint8_t request) const;
     // Descriptor length 0: bMaxPacketSize0 as bytes; a SuperSpeed device writes the exponent.
     uint32_t MaxPacket0(Speed speed) const;
 
@@ -71,6 +76,8 @@ private:
     std::vector<uint8_t> device_;
     std::vector<uint8_t> configuration_;
     std::map<uint8_t, std::vector<uint8_t>> strings_;
+    std::map<uint8_t, std::vector<uint8_t>> report_descriptors_;
+    std::vector<std::pair<Request, std::vector<uint8_t>>> data_;
     std::vector<Request> requests_;
     std::vector<Fault> control_faults_;
     std::map<uint8_t, std::deque<std::vector<uint8_t>>> reports_;
@@ -84,11 +91,17 @@ std::vector<uint8_t> MakeDeviceDescriptor(uint16_t vendor, uint16_t product, uin
 std::vector<uint8_t> KeyboardConfiguration();
 std::vector<uint8_t> MouseConfiguration();
 std::vector<uint8_t> ComboConfiguration();
+// One HID interface that is not a boot interface (subclass 0).
+std::vector<uint8_t> GenericKeyboardConfiguration(uint16_t report_length);
 std::vector<uint8_t> HubConfiguration();
 std::vector<uint8_t> MassStorageConfiguration();
 
 // bMaxPacketSize0 a device of this speed reports (the exponent at SuperSpeed).
 uint8_t MaxPacket0Field(Speed speed);
+
+// The report descriptors of QEMU's boot keyboard and boot mouse.
+const std::vector<uint8_t>& BootKeyboardDescriptor();
+const std::vector<uint8_t>& BootMouseDescriptor();
 
 std::shared_ptr<ScriptedDevice> MakeKeyboard(Speed speed, uint8_t max_packet0 = 0);
 std::shared_ptr<ScriptedDevice> MakeMouse(Speed speed, uint8_t max_packet0 = 0);

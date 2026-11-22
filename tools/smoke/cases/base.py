@@ -18,6 +18,9 @@ class Case:
     serial_input = False
     reboots = False
     shuts_down = False
+    # AArch64 only; x86-64 cases that need no PS/2 keyboard say so in
+    # QemuArguments.
+    virtio_keyboard = True
     passed = ""
 
     def __init__(self, args):

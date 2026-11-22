@@ -65,6 +65,29 @@ void ScriptedDevice::AddString(uint8_t index, const std::string& text)
     strings_[index] = descriptor;
 }
 
+void ScriptedDevice::SetReportDescriptor(uint8_t interface, std::vector<uint8_t> descriptor)
+{
+    report_descriptors_[interface] = std::move(descriptor);
+}
+
+void ScriptedDevice::RecordData(const Request& request, std::vector<uint8_t> data)
+{
+    data_.emplace_back(request, std::move(data));
+}
+
+std::vector<std::vector<uint8_t>> ScriptedDevice::DataOf(uint8_t request) const
+{
+    std::vector<std::vector<uint8_t>> found;
+    for (const auto& [entry, data] : data_)
+    {
+        if (entry.request == request)
+        {
+            found.push_back(data);
+        }
+    }
+    return found;
+}
+
 uint32_t ScriptedDevice::MaxPacket0(Speed speed) const
 {
     const uint8_t value = device_[7];
@@ -121,6 +144,17 @@ ScriptedDevice::Outcome ScriptedDevice::Control(const Request& request,
         }
         const size_t count = std::min<size_t>(request.length, source->size());
         response->assign(source->begin(), source->begin() + static_cast<long>(count));
+        return Outcome::Ok;
+    }
+    if (request.type == 0x81 && request.request == GetDescriptor && (request.value >> 8) == 0x22)
+    {
+        const auto found = report_descriptors_.find(static_cast<uint8_t>(request.index));
+        if (found == report_descriptors_.end())
+        {
+            return Outcome::Stall;
+        }
+        const size_t count = std::min<size_t>(request.length, found->second.size());
+        response->assign(found->second.begin(), found->second.begin() + static_cast<long>(count));
         return Outcome::Ok;
     }
     if (request.type == 0x00 && request.request == SetConfiguration)
@@ -244,6 +278,15 @@ std::vector<uint8_t> ComboConfiguration()
     return Finish(body, 2);
 }
 
+std::vector<uint8_t> GenericKeyboardConfiguration(uint16_t report_length)
+{
+    std::vector<uint8_t> body;
+    Interface(body, 0, 0, 1, 3, 0, 0);
+    Hid(body, report_length);
+    Endpoint(body, 0x81, 3, 8, 10);
+    return Finish(body, 1);
+}
+
 std::vector<uint8_t> HubConfiguration()
 {
     std::vector<uint8_t> body;
@@ -281,12 +324,34 @@ uint8_t MaxPacket0Field(Speed speed)
     return 9;
 }
 
+const std::vector<uint8_t>& BootKeyboardDescriptor()
+{
+    static const std::vector<uint8_t> descriptor = {
+        0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00,
+        0x25, 0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01,
+        0x95, 0x05, 0x75, 0x01, 0x05, 0x08, 0x19, 0x01, 0x29, 0x05, 0x91, 0x02, 0x95, 0x01,
+        0x75, 0x03, 0x91, 0x01, 0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65, 0x05, 0x07,
+        0x19, 0x00, 0x29, 0x65, 0x81, 0x00, 0xC0};
+    return descriptor;
+}
+
+const std::vector<uint8_t>& BootMouseDescriptor()
+{
+    static const std::vector<uint8_t> descriptor = {
+        0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09, 0x19, 0x01,
+        0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01,
+        0x75, 0x05, 0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7F,
+        0x75, 0x08, 0x95, 0x02, 0x81, 0x06, 0xC0, 0xC0};
+    return descriptor;
+}
+
 std::shared_ptr<ScriptedDevice> MakeKeyboard(Speed speed, uint8_t max_packet0)
 {
     auto device = std::make_shared<ScriptedDevice>(
         MakeDeviceDescriptor(0x0627, 0x0001, max_packet0 != 0 ? max_packet0 : MaxPacket0Field(speed)),
         KeyboardConfiguration());
     device->AddString(2, "QEMU USB Keyboard");
+    device->SetReportDescriptor(0, BootKeyboardDescriptor());
     return device;
 }
 
@@ -296,6 +361,7 @@ std::shared_ptr<ScriptedDevice> MakeMouse(Speed speed, uint8_t max_packet0)
         MakeDeviceDescriptor(0x0627, 0x0002, max_packet0 != 0 ? max_packet0 : MaxPacket0Field(speed)),
         MouseConfiguration());
     device->AddString(2, "QEMU USB Mouse");
+    device->SetReportDescriptor(0, BootMouseDescriptor());
     return device;
 }
 

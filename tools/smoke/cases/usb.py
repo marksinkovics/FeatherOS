@@ -6,7 +6,12 @@ import tempfile
 from smoke.boot import NETWORK_DHCP_MESSAGE, PANIC_MARKER
 from smoke.cases.base import INPUT_TIMEOUT_SECONDS
 from smoke.cases.normal_boot import NormalBoot
-from smoke.qemu import OpenQmpChannel, SendQmpCommand
+from smoke.qemu import (
+    OpenQmpChannel,
+    SendkeyNames,
+    SendQmpCommand,
+    SendQmpKeys,
+)
 from smoke.script import WaitFor, WaitUntil
 
 CONTROLLER_LINE = re.compile(
@@ -15,17 +20,18 @@ CONTROLLER_LINE = re.compile(
 )
 DEVICE_LINE = re.compile(
     r"KERN/I: USB 1-(\d+): (low|full|high|super)-speed "
-    r"([0-9a-f]{4}):([0-9a-f]{4}) \"([^\"]*)\""
+    r"([0-9a-f]{4}):([0-9a-f]{4}) \"([^\"]*)\" (hid-keyboard|hid-mouse)"
 )
 ADDED_LINE = re.compile(
-    rb"KERN/I: USB 1-(\d+): high-speed 0627:0001 \"QEMU USB Keyboard\""
+    rb"KERN/I: USB 1-(\d+): high-speed 0627:0001 \"QEMU USB Keyboard\" "
+    rb"hid-keyboard"
 )
 LISTING_LINE = re.compile(
     r"^(1-\d+ dev (\d+) (?:low|full|high|super) ([0-9a-f]{4}):([0-9a-f]{4}) "
     r"class ([0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{2}) (\S+))\r?$",
     re.MULTILINE,
 )
-LAST_DEVICE = 'full-speed 0627:0001 "QEMU USB Keyboard"'
+LAST_DEVICE = 'full-speed 0627:0001 "QEMU USB Keyboard" hid-keyboard'
 LISTED = "LSUSB LISTED"
 DONE = "USB DONE"
 DEVICES = [
@@ -58,17 +64,19 @@ class Usb(NormalBoot):
     """QEMU's xHCI controller with a keyboard and a mouse at high speed and a
     keyboard at full speed: the controller comes up with MSI-X on both targets
     and the kernel enumerates each device on its root port down to the
-    descriptors, logging its speed, IDs and product name. lsusb lists them
-    (unbound, since no driver exists yet); then a keyboard is plugged into and
-    pulled out of a free root port three times through QMP, each time logging
-    its line and its disconnection, and lsusb shows the starting list again."""
+    descriptors, logging its speed, IDs, product name and the HID driver that
+    bound. lsusb lists them with their drivers; then a keyboard is plugged
+    into a free root port, typed on (QEMU sends keys to the keyboard added
+    last) and pulled out three times through QMP, each time logging its line
+    and its disconnection, and lsusb shows the starting list again."""
 
     timeout = INPUT_TIMEOUT_SECONDS
     serial_input = True
+    virtio_keyboard = False
     passed = (
         "xHCI came up with MSI-X, all three devices were enumerated on "
-        "their root ports and listed, and a keyboard was hot-plugged three "
-        "times"
+        "their root ports, bound to the HID drivers and listed, and a "
+        "keyboard was hot-plugged and typed on three times"
     )
 
     def __init__(self, args):
@@ -90,7 +98,11 @@ class Usb(NormalBoot):
         return self.socket_path
 
     def QemuArguments(self):
+        machine = (
+            ["-machine", "pc,i8042=off"] if self.args.arch == "x86_64" else []
+        )
         return [
+            *machine,
             "-device",
             "qemu-xhci,id=xhci",
             "-device",
@@ -118,6 +130,11 @@ class Usb(NormalBoot):
     def Command(self, execute, arguments=None):
         SendQmpCommand(self.channel, self.command_id, execute, arguments)
         self.command_id += 1
+
+    def Type(self, text):
+        self.command_id = SendQmpKeys(
+            self.channel, self.command_id, SendkeyNames(text)
+        )
 
     def OnOutput(self, session, clean_output):
         try:
@@ -152,6 +169,19 @@ class Usb(NormalBoot):
             self.removed_before = clean_output.count(
                 f"USB 1-{self.port}: disconnected".encode()
             )
+            self.Type(f"echo k2 {self.round + 1} | upper\n")
+            self.phase = "typed"
+            return
+        if self.phase == "typed":
+            if (
+                re.search(
+                    rf"^K2 {self.round + 1}\r?$".encode(),
+                    clean_output,
+                    re.MULTILINE,
+                )
+                is None
+            ):
+                return
             self.Command("device_del", {"id": "k2"})
             self.phase = "unplugged"
             return
@@ -188,15 +218,17 @@ class Usb(NormalBoot):
         if "USB: interrupts by polling" in output:
             return "the controller fell back to polling"
         devices = DEVICE_LINE.findall(output)[: len(DEVICES)]
-        found = sorted((speed, product) for _, speed, _, _, product in devices)
+        found = sorted(
+            (speed, product) for _, speed, _, _, product, _ in devices
+        )
         if found != sorted(DEVICES):
             return f"expected devices {sorted(DEVICES)}, found {found}"
-        ports = {port for port, _, _, _, _ in devices}
+        ports = {device[0] for device in devices}
         if len(ports) != len(DEVICES):
             return f"the devices share a port: {devices}"
         if int(max(ports, key=int)) > int(controller.group(1)):
             return "a device sits on a port the controller does not have"
-        for _, _, vendor, product, _ in devices:
+        for _, _, vendor, product, _, _ in devices:
             if (vendor, product) != ("0627", "0001"):
                 return f"unexpected device ID {vendor}:{product}"
         for warning in FAILURES:
@@ -225,17 +257,20 @@ class Usb(NormalBoot):
         numbers = sorted(int(entry[1]) for entry in entries)
         if numbers != [2, 3, 4]:
             return f"device numbers are {numbers}, not 2, 3 and 4"
-        classes = sorted(entry[4] for entry in entries)
-        if classes != ["03/01/01", "03/01/01", "03/01/02"]:
-            return f"unexpected interface classes {classes}"
-        if any(entry[5] != "unbound" for entry in entries):
-            return f"a device has a driver already: {entries}"
+        bound = sorted((entry[4], entry[5]) for entry in entries)
+        expected = [
+            ("03/01/01", "hid-keyboard"),
+            ("03/01/01", "hid-keyboard"),
+            ("03/01/02", "hid-mouse"),
+        ]
+        if bound != expected:
+            return f"unexpected classes and drivers {bound}"
         return None
 
     def PassMessage(self, result):
         devices = DEVICE_LINE.findall(result.output)[: len(DEVICES)]
         speeds = ", ".join(
             f"port {port} {speed}-speed {product}"
-            for port, speed, _, _, product in devices
+            for port, speed, _, _, product, _ in devices
         )
         return f"{self.passed} ({speeds})"

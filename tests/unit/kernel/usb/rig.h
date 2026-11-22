@@ -68,7 +68,7 @@ public:
     Pci::Function function;
     std::unique_ptr<Xhci::Controller> controller;
     std::unique_ptr<Manager> manager;
-    std::span<const Driver* const> drivers = BuiltInDrivers();
+    std::span<const Driver* const> drivers;
     uint32_t baseline = 0;
 };
 

@@ -18,6 +18,7 @@ from smoke.cases.smp import Smp
 from smoke.cases.storage import Storage
 from smoke.cases.timer import Timer
 from smoke.cases.usb import Usb
+from smoke.cases.usb_keys import UsbFallback, UsbKeys
 from smoke.cases.user_preemption import UserPreemption
 
 # Each --expect-<name> switch: its case and help text.
@@ -57,6 +58,15 @@ SWITCHES = {
     "usb": (
         Usb,
         "Expect the xHCI controller to address a keyboard and a mouse",
+    ),
+    "usb-keys": (
+        UsbKeys,
+        "Type on a USB keyboard and expect the shell to receive it",
+    ),
+    "usb-fallback": (
+        UsbFallback,
+        "Type on a full-speed USB keyboard through the report parser, "
+        "without MSI",
     ),
     "calc": (Calc, "Send a calculator command and expect its result"),
     "shell": (Shell, "Run shell commands and expect their output"),

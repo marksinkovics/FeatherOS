@@ -110,6 +110,8 @@ extern "C" void kmain()
     }
     FeatherOS::BootOptions::SelectRoot(FeatherOS::BootOptions::ParseRoot(command_line));
     FeatherOS::BootOptions::SelectUsb(FeatherOS::BootOptions::ParseUsb(command_line));
+    FeatherOS::BootOptions::SelectUsbHid(FeatherOS::BootOptions::ParseUsbHid(command_line));
+    FeatherOS::BootOptions::SelectPs2(FeatherOS::BootOptions::ParsePs2(command_line));
 #if defined(FEATHEROS_KERNEL_TESTS)
     FeatherOS::KernelTest::Mode test_mode = FeatherOS::KernelTest::Mode::None;
     if (!FeatherOS::KernelTest::ParseCommandLine(command_line, &test_mode))

@@ -1025,6 +1025,14 @@ void FakeXhci::ProcessDeviceTransfers(Endpoint& endpoint, Binding& binding, uint
                 }
                 continue;
             }
+            const volatile uint8_t* out =
+                length == 0 ? nullptr : memory_.Translate(X::TrbParameter(trb), length);
+            std::vector<uint8_t> sent;
+            for (uint32_t index = 0; out != nullptr && index < length; ++index)
+            {
+                sent.push_back(static_cast<uint8_t>(out[index]));
+            }
+            device.RecordData(td.request, std::move(sent));
             endpoint.dequeue += X::TrbSize;
             continue;
         }

@@ -2,10 +2,12 @@
 
 #include "kernel/arch/pci.h"
 #include "kernel/boot_options.h"
+#include "kernel/input/input.h"
 #include "kernel/klogger.h"
 #include "kernel/pci/pci.h"
 #include "kernel/scheduler.h"
 #include "kernel/sync/spinlock.h"
+#include "kernel/usb/hid/driver.h"
 #include "kernel/usb/manager.h"
 #include "kernel/usb/xhci/controller.h"
 #include "user/thread_safety.h"
@@ -55,10 +57,19 @@ uint64_t EventsTask(void* context)
         {
             WakeManager();
         }
+        Hid::ServiceRepeat(*controller, hardware.NowMilliseconds());
         const bool polling = controller->Interrupts() == Xhci::InterruptKind::Polling;
-        hardware.WaitForEvents(hardware.NowMilliseconds() +
-                               (polling ? PollMilliseconds : WatchdogMilliseconds));
+        const uint64_t period =
+            hardware.NowMilliseconds() + (polling ? PollMilliseconds : WatchdogMilliseconds);
+        const uint64_t repeat = Hid::NextRepeat(*controller);
+        hardware.WaitForEvents(repeat < period ? repeat : period);
     }
+}
+
+// Runs wherever a lock key was pressed, perhaps in an interrupt handler.
+void OnLockChange(uint8_t)
+{
+    WakeManager();
 }
 
 uint64_t ManagerTask(void*)
@@ -77,6 +88,7 @@ uint64_t ManagerTask(void*)
         {
             managers[index]->Run();
         }
+        Hid::SendLeds();
     }
 }
 
@@ -189,6 +201,7 @@ bool Initialize(const void* platform_data)
     {
         managers[index] = new Manager(*controllers[index], index + 1);
     }
+    Input::SetLedCallback(OnLockChange);
     bool started = StartTask(ManagerTask, nullptr, Scheduler::TaskPriority::Normal);
     for (uint32_t index = 0; index < controller_count; ++index)
     {

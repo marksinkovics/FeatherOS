@@ -34,6 +34,8 @@ TOGGLES = (
     "FONTS_TEST",
     "PCI_TEST",
     "USB_TEST",
+    "USB_KEYS_TEST",
+    "USB_FALLBACK_TEST",
 )
 # Rough minutes each kind of case takes, so the longest start first.
 WEIGHTS = {
@@ -115,6 +117,8 @@ CASES = [
     *Both(51, "fonts", FONTS_TEST=ON),
     *Both(53, "pci", PCI_TEST=ON),
     *Both(55, "usb", USB_TEST=ON),
+    *Both(57, "usb_keys", USB_KEYS_TEST=ON),
+    *Both(59, "usb_fallback", USB_FALLBACK_TEST=ON),
 ]
 
 
@@ -128,6 +132,9 @@ def Environment(arch, build_type, settings=None, out_dir=None):
         "DISK_LAYOUT",
         "OUT_DIR",
         "KERNEL_ROOT",
+        "KERNEL_USB",
+        "KERNEL_USBHID",
+        "KERNEL_PS2",
     ):
         environment.pop(key, None)
     environment.update(settings or {})

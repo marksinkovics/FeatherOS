@@ -2,6 +2,7 @@
 
 #include "interrupts.h"
 #include "kernel/arch/keyboard.h"
+#include "kernel/boot_options.h"
 #include "kernel/input/input.h"
 #include "kernel/input/keyboard.h"
 
@@ -138,6 +139,10 @@ bool Initialize(const void* platform_data, uint64_t hhdm_offset)
 {
     (void)platform_data;
     (void)hhdm_offset;
+    if (BootOptions::SelectedPs2() == BootOptions::Ps2Mode::Off)
+    {
+        return false;
+    }
     return X86_64::InitializeKeyboard();
 }
 

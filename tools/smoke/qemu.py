@@ -25,10 +25,10 @@ def Command(qemu, args, case):
                 args.firmware,
                 "-device",
                 "ramfb",
-                "-device",
-                "virtio-keyboard-device",
             ]
         )
+        if case.virtio_keyboard:
+            command.extend(["-device", "virtio-keyboard-device"])
     else:
         command.extend(
             ["-m", "2G", "-smp", str(QEMU_CPU_COUNT), "-boot", "order=d"]

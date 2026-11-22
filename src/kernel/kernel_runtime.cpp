@@ -487,7 +487,14 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     Usb::Initialize(boot_info.platform_data);
     if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
     {
-        logger.Warning("Keyboard device unavailable; use serial input");
+        if (BootOptions::SelectedPs2() == BootOptions::Ps2Mode::Off)
+        {
+            logger.Info("Keyboard: ps2=off, no PS/2 or virtio keyboard");
+        }
+        else
+        {
+            logger.Warning("Keyboard device unavailable; use serial input");
+        }
     }
     Console::Initialize(display_ready ? terms : nullptr, display_ready ? &framebuffer : nullptr);
 #if defined(FEATHEROS_KERNEL_TESTS)
