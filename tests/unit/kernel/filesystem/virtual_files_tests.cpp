@@ -812,7 +812,7 @@ TEST_CASE("/dev/fb0 exists only with a framebuffer, and is listed before the con
         FeatherOS::Devices::SetConsoles(consoles, 2);
         const FramebufferDevice framebuffer;
         REQUIRE(List("/dev") == std::vector<std::string>{"null", "zero", "random", "tty", "ptmx",
-                                                         "fb0", "tty1", "tty2", "pts/"});
+                                                         "mouse", "fb0", "tty1", "tty2", "pts/"});
         const uint64_t opened = FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead);
         REQUIRE_FALSE(FeatherOS::User::IsSyscallError(opened));
         REQUIRE(FeatherOS::Files::KindOf(&table, opened) == FeatherOS::Files::Kind::Framebuffer);
@@ -825,7 +825,7 @@ TEST_CASE("/dev/fb0 exists only with a framebuffer, and is listed before the con
         FeatherOS::Devices::SetConsoles(nullptr, 0);
     }
     REQUIRE(List("/dev") ==
-            std::vector<std::string>{"null", "zero", "random", "tty", "ptmx", "pts/"});
+            std::vector<std::string>{"null", "zero", "random", "tty", "ptmx", "mouse", "pts/"});
     REQUIRE(FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead) ==
             FeatherOS::User::SyscallErrorNotFound);
 }

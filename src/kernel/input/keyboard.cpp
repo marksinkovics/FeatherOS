@@ -175,7 +175,7 @@ uint8_t Keyboard::Modifiers() const
     {
         modifiers |= Modifier::Alt;
     }
-    if (m_caps_lock)
+    if (Input::CapsLock())
     {
         modifiers |= Modifier::CapsLock;
     }
