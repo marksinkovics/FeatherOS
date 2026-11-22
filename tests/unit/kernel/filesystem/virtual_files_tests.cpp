@@ -916,7 +916,7 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
 {
     UseFakeProcesses();
     REQUIRE(List("/proc") ==
-            std::vector<std::string>{"meminfo", "stat", "mounts", "1/", "4/", "12/"});
+            std::vector<std::string>{"meminfo", "stat", "mounts", "usb", "1/", "4/", "12/"});
     REQUIRE(List("/proc/4") == std::vector<std::string>{"status"});
     REQUIRE(ReadAll("/proc/12/status") ==
             "Name:\tshell\nState:\tR (running)\nPid:\t12\nPPid:\t1\nPgid:\t4\nPages:\t37\n"

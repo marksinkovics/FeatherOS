@@ -1,6 +1,7 @@
 #include "manager.h"
 
 #include "kernel/klogger.h"
+#include "kernel/usb/descriptors.h"
 #include "kernel/usb/text.h"
 
 namespace FeatherOS::Usb
@@ -16,24 +17,6 @@ constexpr uint32_t LanguageBytes = 4;
 constexpr uint32_t StringBytes = 128;
 
 constinit KLogger logger;
-
-const char* SpeedName(Speed speed)
-{
-    switch (speed)
-    {
-    case Speed::Low:
-        return "low-speed";
-    case Speed::Full:
-        return "full-speed";
-    case Speed::High:
-        return "high-speed";
-    case Speed::Super:
-        return "super-speed";
-    case Speed::SuperPlus:
-        return "super-speed+";
-    }
-    return "unknown-speed";
-}
 
 uint32_t DefaultControlPacket(Speed speed)
 {
@@ -77,11 +60,33 @@ uint32_t PacketFromDescriptor(Speed speed, uint8_t value)
     return value;
 }
 
-void Log(uint32_t port, const char* message, bool warning)
+} // namespace
+
+enum class Manager::Step : uint8_t
+{
+    ShortDevice,
+    ControlPacket,
+    Device,
+    ConfigurationHeader,
+    ConfigurationSize,
+    Configuration,
+    ConfigurationParse,
+    Gone,
+};
+
+Manager::Manager(HostController& host, uint32_t bus, std::span<const Driver* const> drivers)
+    : host_(host), bus_(host, bus, drivers)
+{
+    host_.SetRecoveryHandler(OnRecovery, this);
+}
+
+void Manager::Log(uint32_t port, const char* message, bool warning) const
 {
     char line[96];
     Text text(line, sizeof(line));
-    text.Words("USB 1-");
+    text.Words("USB ");
+    text.Decimal(bus_.Number());
+    text.Put('-');
     text.Decimal(port);
     text.Words(": ");
     text.Words(message);
@@ -98,30 +103,23 @@ void Log(uint32_t port, const char* message, bool warning)
     }
 }
 
-} // namespace
-
-enum class Manager::Step : uint8_t
+void Manager::OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_t recent)
 {
-    ShortDevice,
-    ControlPacket,
-    Device,
-    ConfigurationHeader,
-    ConfigurationSize,
-    Configuration,
-    ConfigurationParse,
-    Gone,
-};
-
-Manager::Manager(HostController& host) : host_(host) {}
+    auto* manager = static_cast<Manager*>(context);
+    if (endpoint != 0 && recent >= UnbindRecoveries && slot <= MaxDeviceSlots)
+    {
+        manager->unbind_[slot].store(true);
+    }
+}
 
 bool Manager::HasWork() const
 {
     return host_.HasWork();
 }
 
-const DeviceInfo* Manager::Find(uint32_t slot) const
+const Device* Manager::Find(uint32_t slot) const
 {
-    return slot != 0 && slot <= MaxDeviceSlots && known_[slot] ? &devices_[slot] : nullptr;
+    return bus_.Find(slot);
 }
 
 uint32_t Manager::SlotOfPort(uint32_t port) const
@@ -131,14 +129,29 @@ uint32_t Manager::SlotOfPort(uint32_t port) const
 
 void Manager::Forget()
 {
+    bus_.DropAll();
     for (uint32_t port = 0; port <= MaxRootPorts; ++port)
     {
         port_slot_[port] = 0;
         port_failed_[port] = false;
     }
-    for (uint32_t slot = 0; slot <= MaxDeviceSlots; ++slot)
+}
+
+void Manager::Service()
+{
+    host_.ServiceEndpoints();
+    for (uint32_t slot = 1; slot <= MaxDeviceSlots; ++slot)
     {
-        known_[slot] = false;
+        if (!unbind_[slot].exchange(false))
+        {
+            continue;
+        }
+        Device* device = bus_.Find(slot);
+        if (device != nullptr)
+        {
+            Log(device->location.root_port, "too many transfer errors, drivers unbound", true);
+            bus_.UnbindDrivers(*device);
+        }
     }
 }
 
@@ -148,12 +161,12 @@ void Manager::Run()
     {
         Forget();
     }
-    host_.ServiceEndpoints();
+    Service();
     uint32_t port;
     while (host_.TakePortChange(&port))
     {
         HandlePort(port);
-        host_.ServiceEndpoints();
+        Service();
     }
 }
 
@@ -174,10 +187,12 @@ void Manager::HandlePort(uint32_t port)
     {
         if (slot != 0)
         {
-            host_.DestroyDevice(slot);
-            known_[slot] = false;
+            Device* device = bus_.Find(slot);
+            if (device != nullptr)
+            {
+                bus_.Detach(*device);
+            }
             port_slot_[port] = 0;
-            Log(port, "disconnected", false);
         }
         if (!status.connected)
         {
@@ -232,10 +247,7 @@ bool Manager::Enumerate(uint32_t port)
         Log(port, "got no device slot", true);
         return false;
     }
-    DeviceInfo& info = devices_[slot];
-    info = {};
-    info.slot = slot;
-    info.location = location;
+    Device& info = bus_.Prepare(slot, location);
     Memory::Dma::Buffer buffer{};
     Step failed = Step::Gone;
     const bool read = host_.AllocateBuffer(MaxConfigurationBytes, &buffer) &&
@@ -264,32 +276,12 @@ bool Manager::Enumerate(uint32_t port)
         }
         return false;
     }
-    known_[slot] = true;
     port_slot_[port] = slot;
-    char line[128];
-    Text text(line, sizeof(line));
-    text.Words("USB 1-");
-    text.Decimal(port);
-    text.Words(": ");
-    text.Words(SpeedName(speed));
-    text.Put(' ');
-    text.Hex(info.device.vendor, 4);
-    text.Put(':');
-    text.Hex(info.device.product, 4);
-    if (info.product[0] != '\0')
-    {
-        text.Words(" \"");
-        text.Words(info.product);
-        text.Put('"');
-    }
-    if (text.Finish())
-    {
-        logger.Info(line);
-    }
+    bus_.Attach(info, nullptr, 0);
     return true;
 }
 
-bool Manager::ReadDescriptors(DeviceInfo& info, Memory::Dma::Buffer& buffer, Step* failed)
+bool Manager::ReadDescriptors(Device& info, Memory::Dma::Buffer& buffer, Step* failed)
 {
     const uint32_t slot = info.slot;
     const Speed speed = info.location.speed;

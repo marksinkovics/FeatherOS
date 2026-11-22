@@ -125,6 +125,11 @@ enum class CreateStatus : uint8_t
     Unavailable,
 };
 
+// Called from the manager task after an endpoint was recovered from an error, with how many
+// recoveries that endpoint had in the last second.
+using RecoveryHandler = void (*)(void* context, uint32_t slot, uint8_t endpoint,
+                                 uint32_t recent_recoveries);
+
 // The USB core's view of one controller. Control, ConfigureEndpoints, ResetEndpoint,
 // StopEndpoints, DestroyDevice, Wait and ServiceEndpoints block and belong to the manager task;
 // Submit may be called from any task, including a transfer's own completion callback.
@@ -162,6 +167,7 @@ public:
     // Restarts the controller after an error; true when every device was detached by it.
     virtual bool Recover() = 0;
     virtual void ServiceEndpoints() = 0;
+    virtual void SetRecoveryHandler(RecoveryHandler handler, void* context) = 0;
 
 protected:
     HostController() = default;

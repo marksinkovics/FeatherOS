@@ -32,6 +32,7 @@
 #include "kernel/thread_stacks.h"
 #include "kernel/time/timer.h"
 #include "kernel/time/wall_clock.h"
+#include "kernel/usb/device.h"
 #if defined(ARCH_x86_64)
 #include "kernel/arch/x86_64/exceptions.h"
 #elif defined(ARCH_aarch64)
@@ -3664,8 +3665,8 @@ UserLayout RandomUserLayout()
 
 void Initialize(uint64_t offset)
 {
-    Procfs::SetSource(
-        {ProcessAt, DescribeProcess, DescribeMemory, DescribeSystem, VFS::DescribeMount});
+    Procfs::SetSource({ProcessAt, DescribeProcess, DescribeMemory, DescribeSystem,
+                       VFS::DescribeMount, Usb::FormatDevices});
     Terminals::SetProcessHooks({InterruptGroup, CallerInterrupted, SignalGroup, HangUpSession});
     hhdm_offset = offset;
     Sync::SpinLockGuard guard(process_lock);

@@ -3,6 +3,7 @@
 #include "fake_device.h"
 #include "fake_hardware.h"
 #include "fake_xhci.h"
+#include "rig.h"
 
 #include "kernel/usb/manager.h"
 #include "kernel/usb/xhci/context.h"
@@ -10,11 +11,14 @@
 #include "kernel/usb/xhci/registers.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <set>
+#include <shared_mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -33,62 +37,10 @@ using FeatherOS::Usb::Testing::ScriptedDevice;
 using FeatherOS::Usb::Testing::FakeHardware;
 using FeatherOS::Usb::Testing::FakeXhci;
 using FeatherOS::Usb::Testing::PhysicalMemory;
+using FeatherOS::Usb::Testing::QemuFunction;
+using FeatherOS::Usb::Testing::Rig;
 
 constexpr uint64_t FourGiB = 1ULL << 32;
-
-Function QemuFunction()
-{
-    return {{0, 4, 0}, 0x1b36, 0x000d, 0x0c, 0x03, 0x30, 0, 1};
-}
-
-class Rig
-{
-public:
-    explicit Rig(uint32_t ports = 8, bool context64 = false, uint64_t base = 0x1'2000'0000ULL,
-                 const Function& pci = QemuFunction())
-        : memory(base), fake(memory, ports, context64), hardware(fake, memory), function(pci)
-    {
-        hardware.on_idle = [this]
-        {
-            if (controller != nullptr)
-            {
-                controller->ProcessEvents();
-            }
-        };
-    }
-
-    bool Create(bool allow_interrupts = true)
-    {
-        controller = std::make_unique<X::Controller>(hardware, function);
-        const bool created = controller->Initialize(allow_interrupts);
-        manager = std::make_unique<FeatherOS::Usb::Manager>(*controller);
-        baseline = hardware.Outstanding();
-        return created;
-    }
-
-    void Settle()
-    {
-        controller->ProcessEvents();
-        for (int round = 0; round < 64 && manager->HasWork(); ++round)
-        {
-            manager->Run();
-            controller->ProcessEvents();
-        }
-    }
-
-    uint32_t Command(uint32_t reg) const
-    {
-        return fake.UsbCommand() & reg;
-    }
-
-    PhysicalMemory memory;
-    FakeXhci fake;
-    FakeHardware hardware;
-    Function function;
-    std::unique_ptr<X::Controller> controller;
-    std::unique_ptr<FeatherOS::Usb::Manager> manager;
-    uint32_t baseline = 0;
-};
 
 TEST_CASE("xhci: the controller line names ports, slots, context size and interrupt kind",
           "[xhci]")
@@ -703,7 +655,7 @@ uint32_t Enumerate(Rig& rig, uint32_t port, Speed speed, Device device = nullptr
 
 bool ConfigureFirstInterface(Rig& rig, uint32_t slot)
 {
-    const T::DeviceInfo* info = rig.manager->Find(slot);
+    const T::Device* info = rig.manager->Find(slot);
     if (info == nullptr)
     {
         return false;
@@ -797,7 +749,7 @@ TEST_CASE("xhci T15: descriptors are read at every speed, Evaluate Context only 
             const uint32_t slot =
                 Enumerate(rig, entry.port, entry.speed, MakeKeyboard(entry.speed, entry.max_packet0));
             REQUIRE(slot != 0);
-            const T::DeviceInfo* info = rig.manager->Find(slot);
+            const T::Device* info = rig.manager->Find(slot);
             REQUIRE(info != nullptr);
             REQUIRE(info->location.speed == entry.speed);
             REQUIRE(info->location.root_port == entry.port);
@@ -1300,7 +1252,7 @@ TEST_CASE("xhci: destroying a configured device frees every ring and cancels its
     const uint32_t outstanding = rig.hardware.Outstanding();
     rig.fake.Disconnect(1);
     rig.Settle();
-    REQUIRE(listener.statuses == std::vector<Status>{Status::NoDevice});
+    REQUIRE(listener.statuses == std::vector<Status>{Status::Cancelled});
     REQUIRE(rig.hardware.Outstanding() == outstanding - 4);
     REQUIRE_FALSE(rig.controller->Submit(slot, listener.transfer));
     REQUIRE(listener.transfer.status == Status::NoDevice);
@@ -1386,3 +1338,105 @@ TEST_CASE("xhci: a host controller error fails a transfer that waits on it", "[x
 }
 
 } // namespace
+
+TEST_CASE("xhci T29: two submitters and a completer share one transfer ring",
+          "[xhci][concurrency]")
+{
+    constexpr int Rounds = 100;
+    constexpr int Window = 4;
+    Rig rig;
+    REQUIRE(rig.Create());
+    Device device = MakeKeyboard(Speed::High);
+    const uint32_t slot = Enumerate(rig, 1, Speed::High, device);
+    REQUIRE(ConfigureFirstInterface(rig, slot));
+    constexpr int Total = 2 * Rounds * Window;
+    for (int index = 0; index < Total; ++index)
+    {
+        device->QueueReport(0x81, {static_cast<uint8_t>(index), 0, 0, 0, 0, 0, 0, 0});
+    }
+    struct Submitter
+    {
+        Transfer transfers[Window];
+        FeatherOS::Memory::Dma::Buffer buffers[Window];
+        std::atomic<int> failures = 0;
+    };
+    Submitter submitters[2];
+    for (Submitter& submitter : submitters)
+    {
+        for (int index = 0; index < Window; ++index)
+        {
+            REQUIRE(rig.controller->AllocateBuffer(64, &submitter.buffers[index]));
+            submitter.transfers[index].endpoint = 0x81;
+            submitter.transfers[index].buffer = &submitter.buffers[index];
+            submitter.transfers[index].length = 8;
+        }
+    }
+    rig.hardware.DeferDoorbells(true);
+    // The fake reads TRBs the way hardware does, while a CPU may be writing the next ones, which
+    // a race detector cannot tell from a race; the pump therefore excludes the submitters, who
+    // still run side by side and against ProcessEvents.
+    std::shared_mutex pump_gate;
+    std::atomic<bool> stop = false;
+    const auto pump = [&]
+    {
+        {
+            const std::unique_lock exclusive(pump_gate);
+            rig.hardware.PumpDoorbells();
+        }
+        rig.controller->ProcessEvents();
+    };
+    std::thread completer(
+        [&]
+        {
+            while (!stop.load())
+            {
+                pump();
+                std::this_thread::yield();
+            }
+            pump();
+        });
+    const auto submit = [&](Submitter& submitter)
+    {
+        for (int round = 0; round < Rounds; ++round)
+        {
+            for (Transfer& transfer : submitter.transfers)
+            {
+                const std::shared_lock shared(pump_gate);
+                if (!rig.controller->Submit(slot, transfer))
+                {
+                    submitter.failures.fetch_add(1);
+                    transfer.finished.store(true);
+                }
+            }
+            for (Transfer& transfer : submitter.transfers)
+            {
+                while (!transfer.finished.load(std::memory_order_acquire))
+                {
+                    std::this_thread::yield();
+                }
+                if (transfer.status != Status::Success || transfer.actual != 8)
+                {
+                    submitter.failures.fetch_add(1);
+                }
+            }
+        }
+    };
+    std::thread first(submit, std::ref(submitters[0]));
+    std::thread second(submit, std::ref(submitters[1]));
+    first.join();
+    second.join();
+    stop.store(true);
+    completer.join();
+    rig.hardware.DeferDoorbells(false);
+    REQUIRE(submitters[0].failures.load() == 0);
+    REQUIRE(submitters[1].failures.load() == 0);
+    REQUIRE_FALSE(device->HasReport(0x81));
+    REQUIRE(rig.fake.Faults() == 0);
+    for (Submitter& submitter : submitters)
+    {
+        for (auto& buffer : submitter.buffers)
+        {
+            rig.controller->FreeBuffer(buffer);
+        }
+    }
+}

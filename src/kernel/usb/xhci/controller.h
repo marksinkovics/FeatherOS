@@ -50,11 +50,6 @@ struct SlotInfo
     Speed speed;
 };
 
-// Called from the manager task after an endpoint was recovered from an error, with how many
-// recoveries that endpoint had in the last second.
-using RecoveryHandler = void (*)(void* context, uint32_t slot, uint8_t endpoint,
-                                 uint32_t recent_recoveries);
-
 // One controller. Three kinds of task use it: the event task (ProcessEvents), the manager task
 // (everything that blocks) and, through the interrupt top half, any CPU.
 class Controller final : public HostController
@@ -83,7 +78,6 @@ public:
     uint32_t Restarts() const;
     bool GetSlot(uint32_t slot, SlotInfo* info) const;
     Hardware& Machine();
-    void SetRecoveryHandler(RecoveryHandler handler, void* context);
     uint32_t RecentRecoveries(uint32_t slot, uint8_t endpoint);
 
     uint32_t RootPorts() const override;
@@ -108,6 +102,7 @@ public:
     bool TakePortChange(uint32_t* port) override;
     bool Recover() override;
     void ServiceEndpoints() override;
+    void SetRecoveryHandler(RecoveryHandler handler, void* context) override;
 
 private:
     struct Pending

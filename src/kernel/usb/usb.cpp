@@ -187,7 +187,7 @@ bool Initialize(const void* platform_data)
     }
     for (uint32_t index = 0; index < controller_count; ++index)
     {
-        managers[index] = new Manager(*controllers[index]);
+        managers[index] = new Manager(*controllers[index], index + 1);
     }
     bool started = StartTask(ManagerTask, nullptr, Scheduler::TaskPriority::Normal);
     for (uint32_t index = 0; index < controller_count; ++index)

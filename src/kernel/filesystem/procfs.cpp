@@ -15,6 +15,7 @@ enum class Kind : uint8_t
     MemoryInfo,
     SystemStat,
     Mounts,
+    UsbDevices,
     ProcessDirectory,
     ProcessStatusFile,
 };
@@ -22,8 +23,9 @@ enum class Kind : uint8_t
 constexpr char MemoryInfoName[] = "meminfo";
 constexpr char SystemStatName[] = "stat";
 constexpr char MountsName[] = "mounts";
-constexpr const char* FixedNames[] = {MemoryInfoName, SystemStatName, MountsName};
-constexpr Kind FixedKinds[] = {Kind::MemoryInfo, Kind::SystemStat, Kind::Mounts};
+constexpr char UsbName[] = "usb";
+constexpr const char* FixedNames[] = {MemoryInfoName, SystemStatName, MountsName, UsbName};
+constexpr Kind FixedKinds[] = {Kind::MemoryInfo, Kind::SystemStat, Kind::Mounts, Kind::UsbDevices};
 constexpr uint32_t FixedCount = sizeof(FixedNames) / sizeof(FixedNames[0]);
 constexpr char StatusName[] = "status";
 
@@ -86,6 +88,10 @@ Kind Classify(const char* path, uint64_t* process_id)
     {
         return Kind::Mounts;
     }
+    if (Equals(path, UsbName))
+    {
+        return Kind::UsbDevices;
+    }
     const char* rest;
     if (!ParseProcessId(path, process_id, &rest) || !ProcessExists(*process_id))
     {
@@ -139,6 +145,8 @@ uint64_t SerialNumber(Kind kind, uint64_t process_id)
         return RootSerialNumber + 2;
     case Kind::Mounts:
         return RootSerialNumber + 3;
+    case Kind::UsbDevices:
+        return RootSerialNumber + 4;
     case Kind::ProcessDirectory:
         return FirstProcessSerialNumber + 2 * process_id;
     case Kind::ProcessStatusFile:
@@ -242,6 +250,14 @@ bool Generate(const char* path, char* buffer, size_t* length)
     }
     case Kind::Mounts:
         formatted = FormatMounts(buffer);
+        break;
+    case Kind::UsbDevices:
+        buffer[0] = '\0';
+        if (source.usb_devices != nullptr)
+        {
+            source.usb_devices(buffer, MaximumFileSize);
+        }
+        formatted = true;
         break;
     case Kind::ProcessStatusFile:
     {

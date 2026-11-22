@@ -67,6 +67,7 @@ add_executable(featheros_unit_tests
     kernel/usb/context_tests.cpp
     kernel/usb/controller_tests.cpp
     kernel/usb/descriptor_tests.cpp
+    kernel/usb/device_tests.cpp
     kernel/usb/fake_device.cpp
     kernel/usb/fake_hardware.cpp
     kernel/usb/fake_xhci.cpp
@@ -258,6 +259,8 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/pci/msi.cpp"
     "${FEATHEROS_ROOT}/src/kernel/pci/pci.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/descriptors.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/device.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/driver.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/manager.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/text.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/xhci/context.cpp"

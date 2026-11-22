@@ -6,9 +6,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// The generated files mounted at /proc: "meminfo", "stat", "mounts", and a directory per process
-// holding "status". Paths are relative to the mount ("" is the root). A file's text is made when it
-// is opened, so a reader sees one consistent snapshot.
+// The generated files mounted at /proc: "meminfo", "stat", "mounts", "usb", and a directory per
+// process holding "status". Paths are relative to the mount ("" is the root). A file's text is made
+// when it is opened, so a reader sees one consistent snapshot.
 namespace FeatherOS::Procfs
 {
 
@@ -69,6 +69,8 @@ struct Source
     void (*system_status)(SystemStatus* status);
     // The index-th mount in mount order; false past the last one.
     bool (*mount_at)(uint32_t index, MountStatus* status);
+    // Writes the USB devices' lines, whole ones only, into the buffer; returns the text's length.
+    size_t (*usb_devices)(char* buffer, size_t capacity);
 };
 
 void SetSource(const Source& source);

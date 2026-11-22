@@ -64,6 +64,8 @@ set(SRC
     ${SRCROOT}/pci/msi.cpp
     ${SRCROOT}/pci/pci.cpp
     ${SRCROOT}/usb/descriptors.cpp
+    ${SRCROOT}/usb/device.cpp
+    ${SRCROOT}/usb/driver.cpp
     ${SRCROOT}/usb/manager.cpp
     ${SRCROOT}/usb/text.cpp
     ${SRCROOT}/usb/usb.cpp

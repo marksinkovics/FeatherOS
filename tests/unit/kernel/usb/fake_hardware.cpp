@@ -2,6 +2,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <thread>
+
 namespace FeatherOS::Usb::Testing
 {
 
@@ -17,7 +20,33 @@ uint32_t FakeHardware::Read32(uint32_t offset)
 
 void FakeHardware::Write32(uint32_t offset, uint32_t value)
 {
+    if (defer_doorbells_ && offset >= FakeXhci::DoorbellBase &&
+        offset < FakeXhci::DoorbellBase + (FakeXhci::MaxSlots + 1) * 4)
+    {
+        const std::lock_guard guard(doorbell_mutex_);
+        doorbells_.emplace_back(offset, value);
+        return;
+    }
     controller_.Write32(offset, value);
+}
+
+void FakeHardware::DeferDoorbells(bool defer)
+{
+    defer_doorbells_ = defer;
+}
+
+bool FakeHardware::PumpDoorbells()
+{
+    std::vector<std::pair<uint32_t, uint32_t>> taken;
+    {
+        const std::lock_guard guard(doorbell_mutex_);
+        taken.swap(doorbells_);
+    }
+    for (const auto& [offset, value] : taken)
+    {
+        controller_.Write32(offset, value);
+    }
+    return !taken.empty();
 }
 
 void FakeHardware::Write64(uint32_t offset, uint64_t value)
@@ -87,6 +116,10 @@ uint64_t FakeHardware::Now() const
 void FakeHardware::Pause(uint32_t milliseconds)
 {
     now_ += milliseconds;
+    if (pause_microseconds != 0)
+    {
+        std::this_thread::sleep_for(std::chrono::microseconds(pause_microseconds));
+    }
     if (on_idle)
     {
         on_idle();

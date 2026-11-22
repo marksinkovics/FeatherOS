@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 namespace FeatherOS::Usb::Testing
@@ -44,9 +46,16 @@ public:
     };
 
     std::function<void()> on_idle;
+    // Real time each Pause also takes, for tests where another thread has to make progress.
+    uint32_t pause_microseconds = 0;
     Xhci::InterruptKind available = Xhci::InterruptKind::MsiX;
     uint64_t allocation_limit = ~0ULL;
     uint32_t allocations_before_failure = ~0U;
+
+    // With deferral on, doorbell writes from any thread are queued; PumpDoorbells, called by
+    // the one thread that stands for the controller, applies them in order.
+    void DeferDoorbells(bool defer);
+    bool PumpDoorbells();
 
     void FireInterrupt();
     uint64_t Now() const;
@@ -66,6 +75,9 @@ private:
     std::map<uint16_t, uint32_t> config_;
     std::vector<ConfigWrite> config_writes_;
     std::vector<Memory::Dma::Buffer> live_;
+    std::mutex doorbell_mutex_;
+    std::vector<std::pair<uint32_t, uint32_t>> doorbells_;
+    bool defer_doorbells_ = false;
     uint32_t wakes_ = 0;
     uint32_t signals_ = 0;
     bool allowed_ = false;
