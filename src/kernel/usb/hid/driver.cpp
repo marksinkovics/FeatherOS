@@ -3,6 +3,7 @@
 #include "kernel/boot_options.h"
 #include "kernel/input/input.h"
 #include "kernel/input/keyboard.h"
+#include "kernel/input/pointer.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/usb/device.h"
 #include "kernel/usb/hid/keyboard.h"
@@ -37,6 +38,8 @@ constexpr uint16_t ProtocolBoot = 0;
 constexpr uint16_t ProtocolReport = 1;
 constexpr uint32_t EndpointPacketMask = 0x7FF;
 constexpr uint8_t NoLedState = 0xFF;
+constexpr uint32_t MouseButtons = 8;
+constexpr size_t MaxMouseEvents = MouseButtons + 5;
 
 struct Port;
 
@@ -82,6 +85,10 @@ struct Port
     uint32_t head GUARDED_BY(lock) = 0;
     uint32_t count GUARDED_BY(lock) = 0;
     bool draining GUARDED_BY(lock) = false;
+
+    // Held while a report is submitted, so two tasks never put one mouse's reports out of order.
+    Sync::SpinLock mouse_lock;
+    uint32_t buttons GUARDED_BY(mouse_lock) = 0;
 };
 
 Port* ports[MaxPorts] GUARDED_BY(registry_lock) = {};
@@ -140,7 +147,56 @@ void Drain(Port& port)
     }
 }
 
-void ReleaseKeys(Port& port)
+size_t AddEvent(User::InputEvent* events, size_t count, uint16_t type, uint16_t code, int32_t value)
+{
+    events[count] = {};
+    events[count].type = type;
+    events[count].code = code;
+    events[count].value = value;
+    return count + 1;
+}
+
+size_t AddRelative(User::InputEvent* events, size_t count, uint16_t code, int32_t value)
+{
+    return value == 0 ? count : AddEvent(events, count, User::InputEventRelative, code, value);
+}
+
+void SubmitMouse(Port& port, const MouseReport& report) REQUIRES(port.mouse_lock)
+{
+    User::InputEvent events[MaxMouseEvents] = {};
+    size_t count = 0;
+    const uint32_t changed = (report.buttons ^ port.buttons) & ((1U << MouseButtons) - 1);
+    for (uint32_t button = 0; button < MouseButtons; ++button)
+    {
+        if ((changed >> button & 1U) != 0)
+        {
+            count = AddEvent(events, count, User::InputEventKey,
+                             static_cast<uint16_t>(User::InputButtonLeft + button),
+                             static_cast<int32_t>(report.buttons >> button & 1U));
+        }
+    }
+    port.buttons = report.buttons & ((1U << MouseButtons) - 1);
+    count = AddRelative(events, count, User::InputRelativeX, report.dx);
+    count = AddRelative(events, count, User::InputRelativeY, report.dy);
+    count = AddRelative(events, count, User::InputRelativeWheel, report.wheel);
+    count = AddRelative(events, count, User::InputRelativeHorizontalWheel, report.pan);
+    if (count != 0)
+    {
+        count = AddEvent(events, count, User::InputEventSync, User::InputSyncReport, 0);
+        Input::Pointer::Submit(events, count);
+    }
+}
+
+void ReleaseButtons(Port& port)
+{
+    Sync::SpinLockGuard guard(port.mouse_lock);
+    if (port.buttons != 0)
+    {
+        SubmitMouse(port, MouseReport{});
+    }
+}
+
+void ReleaseInput(Port& port)
 {
     KeyEvent events[MaxKeyEvents];
     {
@@ -150,12 +206,10 @@ void ReleaseKeys(Port& port)
         Apply(port, events, count, 0);
     }
     Drain(port);
-}
-
-// Step 8 submits the report to Input::Pointer.
-void DeliverMouse(const MouseReport& report)
-{
-    (void)report;
+    if (port.mouse)
+    {
+        ReleaseButtons(port);
+    }
 }
 
 void HandleReport(Port& port, const uint8_t* data, size_t length)
@@ -180,7 +234,8 @@ void HandleReport(Port& port, const uint8_t* data, size_t length)
         MouseReport mouse;
         if (ExtractMouse(port.map, report, &mouse))
         {
-            DeliverMouse(mouse);
+            Sync::SpinLockGuard guard(port.mouse_lock);
+            SubmitMouse(port, mouse);
         }
     }
 }
@@ -207,7 +262,7 @@ void OnReport(DeviceTransfer& transfer)
     }
     else
     {
-        ReleaseKeys(port);
+        ReleaseInput(port);
     }
     port.device->Submit(transfer);
 }
@@ -440,7 +495,7 @@ void Detach(Device& device, void* state)
     (void)device;
     auto* port = static_cast<Port*>(state);
     Unregister(*port);
-    ReleaseKeys(*port);
+    ReleaseInput(*port);
     Release(port);
 }
 

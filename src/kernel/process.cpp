@@ -1697,7 +1697,8 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
                    : ReceiveSocketData(process, socket, buffer, length, 0, nonblocking);
     }
     // One chunk at most, since a pipe read returns as soon as any data is there.
-    if (kind == Files::Kind::Pipe || kind == Files::Kind::PseudoTerminalMaster)
+    if (kind == Files::Kind::Pipe || kind == Files::Kind::PseudoTerminalMaster ||
+        kind == Files::Kind::PointerEvents)
     {
         if (!UserRangeWritable(*process, buffer, length))
         {

@@ -34,6 +34,8 @@ enum class Device : uint8_t
     // "fb0": the framebuffer of the caller's virtual console, listed once SetFramebuffer says
     // there is one. Files opens it as a file of its own kind, which only DeviceControl uses.
     Framebuffer,
+    // "mouse": Files opens a pointer-event cursor, which reads whole User::InputEvent records.
+    Mouse,
 };
 
 void SetFramebuffer(bool present);

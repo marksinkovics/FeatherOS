@@ -6,6 +6,7 @@
 #include "kernel/boot_options.h"
 #include "kernel/input/input.h"
 #include "kernel/input/keyboard.h"
+#include "kernel/input/pointer.h"
 #include "kernel/terminal/terminal.h"
 #include "kernel/usb/device.h"
 #include "kernel/usb/hid/driver.h"
@@ -29,6 +30,7 @@ using FeatherOS::Usb::Speed;
 using FeatherOS::Usb::Status;
 using FeatherOS::Usb::Testing::MakeKeyboard;
 using FeatherOS::Usb::Testing::MakeMouse;
+using FeatherOS::Usb::Testing::MakeWheelMouse;
 using FeatherOS::Usb::Testing::Rig;
 using FeatherOS::Usb::Testing::ScriptedDevice;
 
@@ -94,6 +96,52 @@ Bytes Report(uint8_t modifiers, std::initializer_list<uint8_t> usages)
     }
     return report;
 }
+
+namespace User = FeatherOS::User;
+
+struct PointerEvent
+{
+    uint16_t type;
+    uint16_t code;
+    int32_t value;
+
+    bool operator==(const PointerEvent& other) const
+    {
+        return type == other.type && code == other.code && value == other.value;
+    }
+};
+
+constexpr PointerEvent PointerSync = {User::InputEventSync, User::InputSyncReport, 0};
+
+PointerEvent Rel(uint16_t code, int32_t value)
+{
+    return {User::InputEventRelative, code, value};
+}
+
+PointerEvent Button(uint16_t code, int32_t value)
+{
+    return {User::InputEventKey, code, value};
+}
+
+std::vector<PointerEvent> ReadPointer(Input::Pointer::Reader& reader)
+{
+    std::vector<PointerEvent> events;
+    for (;;)
+    {
+        User::InputEvent raw[16];
+        const uint64_t bytes = Input::Pointer::Read(reader, raw, sizeof(raw), true);
+        if (User::IsSyscallError(bytes))
+        {
+            return events;
+        }
+        for (uint64_t index = 0; index < bytes / sizeof(raw[0]); ++index)
+        {
+            events.push_back({raw[index].type, raw[index].code, raw[index].value});
+        }
+    }
+}
+
+using PointerEvents = std::vector<PointerEvent>;
 
 class HidRig
 {
@@ -522,6 +570,75 @@ TEST_CASE("hid I21 and I25: lock changes only post work, and every keyboard gets
     H::SendLeds();
     REQUIRE(leds(first).back() == 2);
     REQUIRE(leds(third).size() == 1);
+}
+
+TEST_CASE("hid T33: boot mouse reports become button changes, moves and one sync", "[usb][hid]")
+{
+    HidRig world;
+    const Scripted mouse = MakeMouse(Speed::High);
+    REQUIRE(world.Plug(1, mouse) != 0);
+    Input::Pointer::Reader reader = Input::Pointer::Open();
+
+    world.Send(mouse, {0x01, 5, 0xFB});
+    REQUIRE(ReadPointer(reader) == PointerEvents{Button(0x110, 1), Rel(User::InputRelativeX, 5),
+                                                 Rel(User::InputRelativeY, -5), PointerSync});
+    // A held button is not repeated, and a report that changes nothing is not submitted.
+    world.Send(mouse, {0x01, 0, 0});
+    REQUIRE(ReadPointer(reader).empty());
+    world.Send(mouse, {0x03, 0x80, 0x7F});
+    REQUIRE(ReadPointer(reader) == PointerEvents{Button(0x111, 1), Rel(User::InputRelativeX, -128),
+                                                 Rel(User::InputRelativeY, 127), PointerSync});
+    world.Send(mouse, {0x00, 0, 0});
+    REQUIRE(ReadPointer(reader) ==
+            PointerEvents{Button(0x110, 0), Button(0x111, 0), PointerSync});
+    world.Send(mouse, {0x04, 0, 0});
+    REQUIRE(ReadPointer(reader) == PointerEvents{Button(0x112, 1), PointerSync});
+    world.Send(mouse, {0x00, 0, 0});
+    REQUIRE(ReadPointer(reader) == PointerEvents{Button(0x112, 0), PointerSync});
+}
+
+TEST_CASE("hid T33: a report-protocol mouse gives wheel and pan events", "[usb][hid]")
+{
+    HidRig world;
+    const Scripted mouse = MakeWheelMouse(Speed::High);
+    REQUIRE(world.Plug(1, mouse) != 0);
+    REQUIRE(Listing().find("hid\n") != std::string::npos);
+    Input::Pointer::Reader reader = Input::Pointer::Open();
+
+    world.Send(mouse, {0x04, 0xFE, 0x03, 0xFF, 0x01});
+    REQUIRE(ReadPointer(reader) ==
+            PointerEvents{Button(0x112, 1), Rel(User::InputRelativeX, -2),
+                          Rel(User::InputRelativeY, 3), Rel(User::InputRelativeWheel, -1),
+                          Rel(User::InputRelativeHorizontalWheel, 1), PointerSync});
+    world.Send(mouse, {0x00, 0, 0, 2, 0});
+    REQUIRE(ReadPointer(reader) ==
+            PointerEvents{Button(0x112, 0), Rel(User::InputRelativeWheel, 2), PointerSync});
+}
+
+TEST_CASE("hid T33: detach releases the held buttons, and mice keep their own state",
+          "[usb][hid]")
+{
+    HidRig world;
+    const Scripted first = MakeMouse(Speed::High);
+    const Scripted second = MakeMouse(Speed::High);
+    REQUIRE(world.Plug(1, first) != 0);
+    REQUIRE(world.Plug(2, second) != 0);
+    Input::Pointer::Reader reader = Input::Pointer::Open();
+
+    world.Send(first, {0x05, 0, 0});
+    REQUIRE(ReadPointer(reader) ==
+            PointerEvents{Button(0x110, 1), Button(0x112, 1), PointerSync});
+    // The second mouse sees no button of its own go up, so the first one's stay down.
+    world.Send(second, {0x00, 1, 0});
+    REQUIRE(ReadPointer(reader) == PointerEvents{Rel(User::InputRelativeX, 1), PointerSync});
+
+    world.rig.fake.Disconnect(1);
+    world.rig.Settle();
+    REQUIRE(ReadPointer(reader) ==
+            PointerEvents{Button(0x110, 0), Button(0x112, 0), PointerSync});
+    world.rig.fake.Disconnect(2);
+    world.rig.Settle();
+    REQUIRE(ReadPointer(reader).empty());
 }
 
 TEST_CASE("hid: the sink is never entered twice at once while the event task and repeats race",
