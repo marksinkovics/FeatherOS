@@ -51,7 +51,7 @@ struct Device
     HostController& Host() const;
     void Reset(HostController& host, uint32_t bus_number, uint32_t slot_number,
                const Location& where, Bus* tree = nullptr);
-    // From the event task: asks the manager task to look at this device (a hub) again.
+    // Asks the manager task to look at this device again: a hub's status, or a driver's service.
     void PostWork();
 
     uint32_t bus = 0;
@@ -85,6 +85,9 @@ struct DeviceWork
     uint32_t number;
     uint32_t generation;
 };
+
+// The driver bound to an interface (by its index in the configuration); null when none is.
+const Driver* DriverOf(const Device& device, uint32_t interface);
 
 // Called after work was posted, from any task; the kernel wakes the manager task with it.
 void SetWorkWake(void (*wake)());
@@ -134,7 +137,7 @@ private:
     Device devices_[MaxDeviceSlots + 1];
     uint32_t used_[(MaxDeviceNumber + 32) / 32] GUARDED_BY(topology_lock) = {};
 
-    // At most one entry per hub is queued, and a hub is at most a device slot.
+    // A device has at most one entry queued; a driver posts again only after being serviced.
     static constexpr uint32_t WorkCapacity = 2 * MaxDeviceSlots;
     Sync::SpinLock work_lock_;
     DeviceWork work_[WorkCapacity] GUARDED_BY(work_lock_) = {};

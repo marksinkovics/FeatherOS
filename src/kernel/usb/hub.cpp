@@ -208,7 +208,7 @@ void Detach(Device& device, void* state)
 
 } // namespace
 
-const Driver HubDriver = {"hub", Matches, Attach, Detach};
+const Driver HubDriver = {"hub", Matches, Attach, Detach, nullptr, false};
 
 Hub::Hub(Device& hub, bool super) : device(hub), super_speed(super) {}
 

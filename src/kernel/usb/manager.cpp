@@ -106,13 +106,43 @@ void Manager::Log(const char* path, const char* message, bool warning) const
     }
 }
 
-void Manager::OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_t recent, Status)
+void Manager::OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_t recent,
+                         Status status)
 {
     auto* manager = static_cast<Manager*>(context);
-    if (endpoint != 0 && recent >= UnbindRecoveries && slot <= MaxDeviceSlots)
+    if (endpoint == 0 || recent < UnbindRecoveries || slot > MaxDeviceSlots)
     {
-        manager->unbind_[slot].store(true);
+        return;
     }
+    if (status == Status::Stall && manager->StallsAreProtocol(slot, endpoint))
+    {
+        return;
+    }
+    manager->unbind_[slot].store(true);
+}
+
+bool Manager::StallsAreProtocol(uint32_t slot, uint8_t endpoint) const
+{
+    const Device* device = bus_.Find(slot);
+    if (device == nullptr)
+    {
+        return false;
+    }
+    const ConfigurationView& configuration = device->configuration;
+    for (uint32_t index = 0; index < configuration.interface_count && index < MaxInterfaces;
+         ++index)
+    {
+        const InterfaceView& interface = configuration.interfaces[index];
+        for (uint32_t entry = 0; entry < interface.endpoint_count; ++entry)
+        {
+            if (interface.endpoints[entry].address == endpoint)
+            {
+                const Driver* driver = DriverOf(*device, index);
+                return driver != nullptr && driver->stalls_are_protocol;
+            }
+        }
+    }
+    return false;
 }
 
 bool Manager::HasWork() const
@@ -175,7 +205,7 @@ void Manager::Run()
         }
         else if (bus_.TakeWork(&work))
         {
-            HandleHub(work);
+            HandleDeviceWork(work);
         }
         else
         {
@@ -441,7 +471,7 @@ void Manager::ServiceHubStatus(Hub& hub)
     }
 }
 
-void Manager::HandleHub(const DeviceWork& work)
+void Manager::HandleDeviceWork(const DeviceWork& work)
 {
     Device* device = bus_.FindNumber(work.number);
     if (device == nullptr || device->detaching.load() ||
@@ -450,25 +480,47 @@ void Manager::HandleHub(const DeviceWork& work)
         return;
     }
     Hub* hub = HubOf(*device);
-    if (hub == nullptr)
+    if (hub != nullptr)
     {
+        HandleHub(*device, *hub);
         return;
     }
-    const uint32_t bits = hub->TakePending();
-    if ((bits & 1U) != 0)
+    ServiceDrivers(*device);
+}
+
+void Manager::ServiceDrivers(Device& device)
+{
+    for (uint32_t index = 0; index < MaxInterfaces; ++index)
     {
-        ServiceHubStatus(*hub);
-    }
-    for (uint32_t port = 1; port <= hub->ports; ++port)
-    {
-        if ((bits & (1U << port)) != 0 && !device->detaching.load())
+        const Driver* driver = DriverOf(device, index);
+        if (driver == nullptr || driver->service == nullptr || device.detaching.load())
         {
-            ServiceHubPort(*device, *hub, port);
+            continue;
+        }
+        if (driver->service(device, device.driver_state[index]))
+        {
+            Log(device.path, "port reset requested, not supported yet", true);
         }
     }
-    if (!device->detaching.load())
+}
+
+void Manager::HandleHub(Device& device, Hub& hub)
+{
+    const uint32_t bits = hub.TakePending();
+    if ((bits & 1U) != 0)
     {
-        hub->Listen();
+        ServiceHubStatus(hub);
+    }
+    for (uint32_t port = 1; port <= hub.ports; ++port)
+    {
+        if ((bits & (1U << port)) != 0 && !device.detaching.load())
+        {
+            ServiceHubPort(device, hub, port);
+        }
+    }
+    if (!device.detaching.load())
+    {
+        hub.Listen();
     }
 }
 

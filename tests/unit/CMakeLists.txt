@@ -77,6 +77,7 @@ add_executable(featheros_unit_tests
     kernel/usb/hid_report_tests.cpp
     kernel/usb/hub_tests.cpp
     kernel/usb/ring_tests.cpp
+    kernel/usb/service_tests.cpp
     kernel/sync/volume_mutex_tests.cpp
     support/network_stubs.cpp
     support/page_cache_host.cpp

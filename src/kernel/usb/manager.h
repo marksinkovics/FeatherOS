@@ -35,7 +35,9 @@ private:
     enum class Step : uint8_t;
 
     void HandlePort(uint32_t port);
-    void HandleHub(const DeviceWork& work);
+    void HandleDeviceWork(const DeviceWork& work);
+    void HandleHub(Device& device, Hub& hub);
+    void ServiceDrivers(Device& device);
     void ServiceHubPort(Device& hub_device, Hub& hub, uint32_t port);
     void ServiceHubStatus(Hub& hub);
     bool ReadPortStatus(Hub& hub, uint32_t port, HubPort::Event* event);
@@ -43,6 +45,7 @@ private:
     bool ReadDescriptors(Device& info, Memory::Dma::Buffer& buffer, Step* failed);
     Status GetDescriptor(uint32_t slot, uint8_t type, uint8_t index, uint16_t language,
                          uint16_t length, Memory::Dma::Buffer& buffer, uint32_t* actual);
+    bool StallsAreProtocol(uint32_t slot, uint8_t endpoint) const;
     void Forget();
     void Service();
     void Log(const char* path, const char* message, bool warning) const;
