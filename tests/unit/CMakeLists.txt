@@ -71,6 +71,8 @@ add_executable(featheros_unit_tests
     kernel/usb/fake_device.cpp
     kernel/usb/fake_hardware.cpp
     kernel/usb/fake_xhci.cpp
+    kernel/usb/hid_keyboard_tests.cpp
+    kernel/usb/hid_report_tests.cpp
     kernel/usb/ring_tests.cpp
     kernel/sync/volume_mutex_tests.cpp
     support/network_stubs.cpp
@@ -261,6 +263,8 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/usb/descriptors.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/device.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/driver.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/hid/keyboard.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/hid/report.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/manager.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/text.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/xhci/context.cpp"

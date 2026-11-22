@@ -1,5 +1,7 @@
 #include "keyboard.h"
 
+#include "kernel/input/input.h"
+
 namespace FeatherOS::Input
 {
 namespace
@@ -17,6 +19,66 @@ constexpr Sequence Sequences[] = {
     {KeyCode::Insert, "\x1b[2~"},   {KeyCode::Delete, "\x1b[3~"}, {KeyCode::PageUp, "\x1b[5~"},
     {KeyCode::PageDown, "\x1b[6~"},
 };
+
+// The keypad's key codes: the operators always, the rest as digits with Num Lock on.
+char KeypadCharacter(uint16_t code, bool num_lock)
+{
+    switch (code)
+    {
+    case 55:
+        return '*';
+    case 74:
+        return '-';
+    case 78:
+        return '+';
+    case 98:
+        return '/';
+    default:
+        break;
+    }
+    if (!num_lock)
+    {
+        return '\0';
+    }
+    static constexpr char digits[] = {'7',  '8', '9', '\0', '4', '5', '6',
+                                      '\0', '1', '2', '3',  '0', '.'};
+    return code >= 71 && code <= 83 ? digits[code - 71] : '\0';
+}
+
+// What the keypad's digit keys are with Num Lock off.
+uint16_t KeypadNavigation(uint16_t code)
+{
+    switch (code)
+    {
+    case 71:
+        return KeyCode::Home;
+    case 72:
+        return KeyCode::Up;
+    case 73:
+        return KeyCode::PageUp;
+    case 75:
+        return KeyCode::Left;
+    case 77:
+        return KeyCode::Right;
+    case 79:
+        return KeyCode::End;
+    case 80:
+        return KeyCode::Down;
+    case 81:
+        return KeyCode::PageDown;
+    case 82:
+        return KeyCode::Insert;
+    case 83:
+        return KeyCode::Delete;
+    default:
+        return 0;
+    }
+}
+
+bool IsKeypadDigit(uint16_t code)
+{
+    return code >= 71 && code <= 83 && code != 74 && code != 78;
+}
 
 size_t Copy(const char* text, char (&bytes)[Keyboard::MaximumKeyBytes])
 {
@@ -64,11 +126,16 @@ char Keyboard::Character(uint16_t code) const
     {
         character = ' ';
     }
-    if (m_caps_lock && character >= 'a' && character <= 'z')
+    else if (code == 55 || code == 98 || (code >= 71 && code <= 83))
+    {
+        character = KeypadCharacter(code, Input::NumLock());
+    }
+    const bool caps_lock = Input::CapsLock();
+    if (caps_lock && character >= 'a' && character <= 'z')
     {
         character = static_cast<char>(character - 'a' + 'A');
     }
-    else if (m_caps_lock && character >= 'A' && character <= 'Z')
+    else if (caps_lock && character >= 'A' && character <= 'Z')
     {
         character = static_cast<char>(character - 'A' + 'a');
     }
@@ -138,8 +205,18 @@ size_t Keyboard::Press(uint16_t code, bool pressed, char (&bytes)[MaximumKeyByte
         m_right_alt = pressed;
         return 0;
     case KeyCode::CapsLock:
-        m_caps_lock = m_caps_lock != (pressed && !m_caps_lock_held);
+        if (pressed && !m_caps_lock_held)
+        {
+            Input::ToggleCapsLock();
+        }
         m_caps_lock_held = pressed;
+        return 0;
+    case KeyCode::NumLock:
+        if (pressed && !m_num_lock_held)
+        {
+            Input::ToggleNumLock();
+        }
+        m_num_lock_held = pressed;
         return 0;
     default:
         break;
@@ -169,6 +246,14 @@ size_t Keyboard::Press(uint16_t code, bool pressed, char (&bytes)[MaximumKeyByte
         return Copy("\r", bytes);
     default:
         break;
+    }
+    if (IsKeypadDigit(code) && !Input::NumLock())
+    {
+        code = KeypadNavigation(code);
+        if (code == 0)
+        {
+            return 0;
+        }
     }
     for (const Sequence& sequence : Sequences)
     {

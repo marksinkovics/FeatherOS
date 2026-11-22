@@ -78,3 +78,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 1098cde | M14 P2 s4 xHCI bring-up, UsbEvents/UsbManager, interrupt choice, root-port Address Device, USB_TEST | M14.md (opus) | sonnet | 0 | 3/3 (I10 T9 after test fix, I11 T13, I12 T14) | |
 | cac9c0b | M14 P2 s5a HostController, descriptor parser, control/interrupt transfers, stall and error recovery | M14.md (opus) | sonnet | 0 | 3/3 (I16 T18 after test fix, I17 T15, I19 T16) | |
 | 74a1d6e | M14 P2 s5b Device tree, driver binding, root hot-plug, /proc/usb, lsusb | M14.md (opus) | sonnet | 0 | 2/2 (I20 T28 and I20 tests, I21 lock test) | |
+| PENDING | M14 P3 s6 HID report parser, key map, diff, repeater, global locks (host) | M14.md (opus) | sonnet | 0 | 3/3 (I22 T19/T20, I23 T21, I24 T23) | |

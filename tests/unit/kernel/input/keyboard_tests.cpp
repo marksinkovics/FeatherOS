@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "kernel/input/input.h"
 #include "kernel/input/keyboard.h"
 #include "libc/include/featheros/framebuffer.h"
 #include "user/key_decoder.h"
@@ -78,6 +79,7 @@ TEST_CASE("keys produce the bytes a VT100 terminal sends")
 
 TEST_CASE("Shift, Caps Lock and Ctrl change what a key sends")
 {
+    FeatherOS::Input::SetLockState(false, false);
     Keyboard keyboard;
     Hold(keyboard, KeyCode::LeftShift, true);
     REQUIRE(Press(keyboard, 30) == "A");

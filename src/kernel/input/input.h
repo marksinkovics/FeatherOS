@@ -39,6 +39,19 @@ uint8_t CurrentModifiers();
 void SubmitKey(Keyboard& keyboard, uint16_t code, bool pressed);
 // A key's bytes, passed on together.
 void SubmitBytes(const char* bytes, size_t length);
+// Caps Lock and Num Lock belong to every keyboard at once: a lock key on any of them toggles
+// them for all. Each change calls the callback with the new LedState, perhaps in interrupt
+// context.
+constexpr uint8_t LedNumLock = 1;
+constexpr uint8_t LedCapsLock = 2;
+bool CapsLock();
+bool NumLock();
+void ToggleCapsLock();
+void ToggleNumLock();
+void SetLockState(bool caps_lock, bool num_lock);
+// The lock LEDs in the bit layout of a boot keyboard's LED report.
+uint8_t LedState();
+void SetLedCallback(void (*callback)(uint8_t led_state));
 // Reads what the serial port received.
 void Poll();
 

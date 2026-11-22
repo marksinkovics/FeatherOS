@@ -7,6 +7,7 @@
 #include "support/scheduler_stubs.h"
 #include "support/terminal_device.h"
 
+#include <cstdint>
 #include <deque>
 #include <string>
 #include <vector>
@@ -165,6 +166,8 @@ bool RecordKey(const FeatherOS::Input::KeyEvent& event)
     return hook_takes;
 }
 
+std::vector<uint8_t> led_changes;
+
 } // namespace
 
 TEST_CASE("a key the graphics hook takes sends no bytes; one it refuses sends today's")
@@ -304,4 +307,55 @@ TEST_CASE("IsInterruptKey is a first press of C with Control, whatever else is h
         FeatherOS::Input::SubmitKey(keyboard, control, false);
     }
     FeatherOS::Input::SetGraphicsKeys(nullptr);
+}
+
+TEST_CASE("input T24: Caps Lock and Num Lock toggle once per press and are shared")
+{
+    namespace KeyCode = FeatherOS::Input::KeyCode;
+    FeatherOS::Input::SetLockState(false, false);
+    led_changes.clear();
+    FeatherOS::Input::SetLedCallback([](uint8_t state) { led_changes.push_back(state); });
+    REQUIRE(FeatherOS::Input::LedState() == 0);
+
+    FeatherOS::Input::Keyboard first;
+    FeatherOS::Input::Keyboard second;
+    char bytes[FeatherOS::Input::Keyboard::MaximumKeyBytes];
+
+    // A held key repeats its press, and the release changes nothing.
+    first.Press(KeyCode::CapsLock, true, bytes);
+    first.Press(KeyCode::CapsLock, true, bytes);
+    first.Press(KeyCode::CapsLock, true, bytes);
+    first.Press(KeyCode::CapsLock, false, bytes);
+    REQUIRE(FeatherOS::Input::CapsLock());
+    REQUIRE(FeatherOS::Input::LedState() == FeatherOS::Input::LedCapsLock);
+    REQUIRE(led_changes == std::vector<uint8_t>{2});
+
+    // The other keyboard types capitals, and its Num Lock press is the same lock.
+    REQUIRE(second.Press(30, true, bytes) == 1);
+    REQUIRE(bytes[0] == 'A');
+    second.Press(KeyCode::NumLock, true, bytes);
+    second.Press(KeyCode::NumLock, true, bytes);
+    second.Press(KeyCode::NumLock, false, bytes);
+    REQUIRE(FeatherOS::Input::NumLock());
+    REQUIRE(FeatherOS::Input::LedState() == 3);
+    REQUIRE(led_changes == std::vector<uint8_t>{2, 3});
+    REQUIRE(first.Press(KeyCode::KeypadEnter, true, bytes) == 1);
+    first.Press(79, true, bytes);
+    REQUIRE(bytes[0] == '1');
+
+    // Each physical press toggles: the second keyboard turns Caps Lock off again.
+    second.Press(KeyCode::CapsLock, true, bytes);
+    second.Press(KeyCode::CapsLock, false, bytes);
+    REQUIRE_FALSE(FeatherOS::Input::CapsLock());
+    REQUIRE(led_changes == std::vector<uint8_t>{2, 3, 1});
+
+    // Setting what is already set sends nothing; a change does.
+    FeatherOS::Input::SetLockState(false, true);
+    REQUIRE(led_changes.size() == 3);
+    FeatherOS::Input::SetLockState(true, false);
+    REQUIRE(led_changes == std::vector<uint8_t>{2, 3, 1, 2});
+
+    FeatherOS::Input::SetLedCallback(nullptr);
+    FeatherOS::Input::SetLockState(false, false);
+    REQUIRE(led_changes.size() == 4);
 }
