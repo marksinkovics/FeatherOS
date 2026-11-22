@@ -7,6 +7,8 @@
 namespace FeatherOS::Graphics
 {
 
+class Font;
+
 constexpr uint32_t ColorMask = 0x00FFFFFF;
 constexpr int32_t GlyphWidth = 8;
 constexpr int32_t GlyphHeight = 16;
@@ -38,6 +40,9 @@ public:
     void BlitKeyed(const Surface* source, int32_t x, int32_t y, uint32_t transparent);
     void BlitPart(const Surface* source, int32_t sx, int32_t sy, int32_t width, int32_t height,
                   int32_t x, int32_t y, bool keyed, uint32_t transparent);
+    int32_t DrawText(const Font* font, int32_t x, int32_t y, const char* utf8, uint32_t color);
+    int32_t DrawTextOn(const Font* font, int32_t x, int32_t y, const char* utf8, uint32_t color,
+                       uint32_t background);
     void DrawText(int32_t x, int32_t y, const char* text, uint32_t color, int32_t scale);
     void DrawTextOn(int32_t x, int32_t y, const char* text, uint32_t color, uint32_t background,
                     int32_t scale);

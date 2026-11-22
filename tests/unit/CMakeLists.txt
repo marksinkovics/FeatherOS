@@ -93,6 +93,7 @@ add_executable(featheros_unit_tests
     kernel/string/format_tests.cpp
     support/font_builder.cpp
     user/font_data_tests.cpp
+    user/font_tests.cpp
     user/graphics_tests.cpp
     user/tile_sheet_tests.cpp
     user/utf8_tests.cpp
@@ -223,6 +224,8 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/user/gfx_check.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/dirty_region.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/display.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/font.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/font_console.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/surface.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/tile_sheet.cpp"
     "${FEATHEROS_ROOT}/src/user/http_message.cpp"

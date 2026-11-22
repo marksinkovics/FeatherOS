@@ -38,6 +38,8 @@ EXPECTED_SWIFT_CXX_OUTPUT = (
     "gfxcheck: checksum 1833110056, match true",
     "gfxcheck: tiles 2 of 8x8, loaded true",
     "gfxcheck: tile checksum 1753845943, match true",
+    "gfxcheck: font checksum 1648750494, match true",
+    "gfxcheck: font sans 16, line 16, text ends at 157, console 8x16",
     "host example.com\r\nport 8080\r\npath /a/b/c?q\r\n"
     "../d resolves to http://example.com:8080/a/d\r\n"
     "//[::1]/x resolves to http://[::1]/x\r\n"

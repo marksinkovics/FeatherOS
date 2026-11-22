@@ -67,6 +67,8 @@ add_library(featheros_user_support STATIC
     file_copy.cpp
     graphics/dirty_region.cpp
     graphics/display.cpp
+    graphics/font.cpp
+    graphics/font_console.cpp
     graphics/surface.cpp
     graphics/tile_sheet.cpp
     http_message.cpp
@@ -83,6 +85,7 @@ add_library(featheros_user_support STATIC
     text_tools.cpp
     vi_editor.cpp
     window_size.cpp
+    ${SRCROOT}/kernel/framebuffer/console_font.c
     ${SRCROOT}/kernel/framebuffer/font.c
 )
 set(FEATHEROS_USER_C_FLAGS ${FEATHEROS_USER_FLAGS})
@@ -343,7 +346,7 @@ set(FEATHEROS_SWIFT_CXX_CLANG_FLAGS -Xcc -std=gnu++23 -Xcc -fno-exceptions -Xcc 
 file(GLOB FEATHEROS_CXX_HEADER_FILES CONFIGURE_DEPENDS ${libcxx_source}/include/*)
 list(APPEND FEATHEROS_CXX_HEADER_FILES ${libcxx_source}/swift/module.modulemap)
 file(GLOB FEATHEROS_SWIFT_CXX_HEADERS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/graphics/*.h)
+    ${CMAKE_CURRENT_SOURCE_DIR}/graphics/*.h ${CMAKE_CURRENT_SOURCE_DIR}/text/*.h)
 list(APPEND FEATHEROS_SWIFT_CXX_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/swift_cxx/module.modulemap
     ${FEATHEROS_CXX_HEADER_FILES})
 set(swift_usable FALSE)

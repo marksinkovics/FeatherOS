@@ -24,6 +24,19 @@ const char* const* TileRows();
 const uint32_t* TilePalette();
 uint32_t ExpectedTileChecksum();
 
+constexpr int32_t FontPictureWidth = 120;
+constexpr int32_t FontPictureHeight = 48;
+
+// The text gfxcheck draws in sans-16 and in the console font: accents, Greek, Cyrillic, box
+// drawing, a code point the font lacks, a control and invalid UTF-8.
+const char* FontText();
+const char* OnText();
+const char* ConsoleText();
+
+// The checksum of the picture gfxcheck draws with the font read from `path` and with the console
+// font, drawn here by plain loops over the file's bytes (0 if the file cannot be read).
+uint32_t ExpectedFontChecksum(const char* path);
+
 } // namespace FeatherOS::User::GfxCheck
 
 #endif

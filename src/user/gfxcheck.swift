@@ -7,6 +7,7 @@ import GfxCheck
 
 typealias Surface = FeatherOS.Graphics.Surface
 typealias TileSheet = FeatherOS.Graphics.TileSheet
+typealias Font = FeatherOS.Graphics.Font
 typealias Check = FeatherOS.User.GfxCheck
 
 var surface = Surface(Check.Width, Check.Height)
@@ -54,3 +55,30 @@ if tileActual != tileExpected {
     print("gfxcheck: expected \(tileExpected)")
     exit(.failure)
 }
+
+let fontPath = "/system/fonts/sans-16.ffnt"
+let sans = UnsafeMutablePointer<Font>.allocate(capacity: 1)
+sans.initialize(to: Font())
+let fontStatus = sans.pointee.LoadNamed("sans-16")
+if fontStatus != .Ok {
+    print("gfxcheck: font rejected \(String(cString: FeatherOS.Text.FontStatusName(fontStatus)))")
+    exit(.failure)
+}
+var textPicture = Surface(Check.FontPictureWidth, Check.FontPictureHeight)
+textPicture.Fill(0x203050)
+let textEnd = textPicture.DrawText(sans, 4, 4, Check.FontText(), 0xF0E0C0)
+_ = textPicture.DrawTextOn(sans, 4, 26, Check.OnText(), 0x00FF00, 0x602020)
+guard let console = Font.Console() else {
+    print("gfxcheck: no console font")
+    exit(.failure)
+}
+_ = textPicture.DrawText(console, 50, 26, Check.ConsoleText(), 0xFFFF00)
+_ = textPicture.DrawText(console, 70, 40, "cut", 0xFF8080)
+let fontActual = textPicture.Checksum()
+let fontExpected = Check.ExpectedFontChecksum(fontPath)
+print("gfxcheck: font checksum \(fontActual), match \(fontActual == fontExpected)")
+if fontActual != fontExpected {
+    print("gfxcheck: expected \(fontExpected)")
+    exit(.failure)
+}
+print("gfxcheck: font \(String(cString: sans.pointee.Name())), line \(sans.pointee.LineHeight()), text ends at \(textEnd), console \(console.pointee.CellWidth())x\(console.pointee.LineHeight())")

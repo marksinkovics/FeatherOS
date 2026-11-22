@@ -47,6 +47,7 @@ REFERENCE_TEXTS = (
     "Привет мир ЖЁЯ",
     "┌─┬─┐│▀▄█░▒▓╔═╗╱╲╳",
     "←↑→↓↵ ■▲● … – — € ™ ͸ 中",
+    "Bad \ufffd byte \ufffd\ufffd end",
 )
 
 
@@ -474,6 +475,46 @@ def missing_box(width: int, em: float) -> ffnt.Glyph:
     return ffnt.Glyph(0, margin, box_height, width, rows)
 
 
+def replacement_glyph(
+    source: Source, em: float, ascent: int, line_height: int
+) -> ffnt.Glyph:
+    # A diamond over the whole line box, by 8x8 supersampling in integers, with
+    # the source's own question mark knocked out of it.
+    height = line_height
+    width = height * 3 // 4
+    margin = max(1, height // 16)
+    inside = [[0] * width for _ in range(height)]
+    for py in range(height):
+        for px in range(width):
+            hits = 0
+            for j in range(8):
+                for i in range(8):
+                    x = 2 * (px * 8 + i) + 1
+                    y = 2 * (py * 8 + j) + 1
+                    if (
+                        abs(x - 8 * width) * height
+                        + abs(y - 8 * height) * width
+                        <= 8 * width * height
+                    ):
+                        hits += 1
+            inside[py][px] = (hits * 15 + 32) // 64
+    source.set_size(em * 0.62)
+    mark = source.render(ord("?"))
+    source.set_size(em)
+    mark_width = len(mark.rows[0])
+    mark_height = len(mark.rows)
+    left = (width - mark_width) // 2
+    top = (height - mark_height) // 2
+    for y, row in enumerate(mark.rows):
+        for x, value in enumerate(row):
+            cell = inside[top + y][left + x]
+            inside[top + y][left + x] = (cell * (15 - value) + 7) // 15
+    rows, glyph_left, glyph_top = crop(
+        [bytes(row) for row in inside], margin, ascent
+    )
+    return ffnt.Glyph(0xFFFD, glyph_left, glyph_top, width + 2 * margin, rows)
+
+
 def vertical_metrics(source: Source, line_height: int) -> tuple[int, int]:
     probes = [*ASCII, *(ord(c) for c in ACCENT_PROBES)]
     top = bottom = 0
@@ -565,6 +606,8 @@ def build(family: Family, source: Source, size: int, notice: str) -> Built:
             if not rows:
                 die(f"U+{code_point:04X} came out empty")
             glyphs.append(ffnt.Glyph(code_point, left, top, width, rows))
+        elif code_point == 0xFFFD and not family.monospace:
+            glyphs.append(replacement_glyph(source, em, ascent, size))
         elif not source.has(code_point):
             absent.append(code_point)
         else:

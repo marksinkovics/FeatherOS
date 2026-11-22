@@ -640,7 +640,7 @@ TEST_CASE("every committed font parses and has its family's shape", "[font]")
                 CHECK(view.Contains(code_point));
             }
             for (const char32_t code_point :
-                 {0xE9, 0x151, 0x3B1, 0x416, 0x2192, 0x2500, 0x2588, 0x20AC})
+                 {0xE9, 0x151, 0x3B1, 0x416, 0x2192, 0x2500, 0x2588, 0x20AC, 0xFFFD})
             {
                 CHECK(view.Contains(code_point));
             }
@@ -648,6 +648,17 @@ TEST_CASE("every committed font parses and has its family's shape", "[font]")
             CHECK_FALSE(view.Contains(0x1F));
             CHECK_FALSE(view.Contains(0x4E2D));
             CHECK(view.GlyphCount() > 600);
+            if (!monospace)
+            {
+                const Text::Glyph replacement = view.Find(0xFFFD);
+                const Text::Glyph missing = view.Find(0);
+                CHECK(replacement.width > missing.width);
+                CHECK(replacement.height > missing.height);
+                CHECK(replacement.top <= view.Ascent());
+                CHECK(replacement.height - replacement.top <= view.Descent());
+                CHECK(replacement.left >= 0);
+                CHECK(replacement.left + replacement.width <= replacement.advance);
+            }
         }
     }
 }
@@ -786,5 +797,5 @@ TEST_CASE("renderings match the checksums written by tools/fonts/ffnt.py", "[fon
         CHECK(checksum.str() == fields[1]);
         ++checked;
     }
-    CHECK(checked == 60);
+    CHECK(checked == 70);
 }

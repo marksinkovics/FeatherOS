@@ -1,5 +1,9 @@
 #include "surface.h"
 
+#include "../text/font_data.h"
+#include "../text/utf8.h"
+#include "font.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -286,6 +290,66 @@ void Surface::BlitPart(const Surface* source, int32_t sx, int32_t sy, int32_t wi
             }
         }
     }
+}
+
+int32_t Surface::DrawText(const Font* font, int32_t x, int32_t y, const char* utf8, uint32_t color)
+{
+    if (font == nullptr || !font->Valid() || utf8 == nullptr)
+    {
+        return x;
+    }
+    const Text::FontView& view = font->View();
+    const uint32_t foreground = color & ColorMask;
+    const int64_t baseline = static_cast<int64_t>(y) + view.Ascent();
+    const size_t length = strlen(utf8);
+    int64_t pen = x;
+    for (size_t offset = 0; offset < length;)
+    {
+        size_t used = 0;
+        const char32_t code_point = Text::DecodeNext(utf8 + offset, length - offset, &used);
+        offset += used;
+        if (code_point < 0x20 || code_point == 0x7F)
+        {
+            continue;
+        }
+        const Text::Glyph glyph = view.Find(code_point);
+        if (m_pixels != nullptr)
+        {
+            const int64_t left = pen + glyph.left;
+            const int64_t top = baseline - glyph.top;
+            const int32_t first_column = Clamp(-left, glyph.width);
+            const int32_t last_column = Clamp(static_cast<int64_t>(m_width) - left, glyph.width);
+            const int32_t first_row = Clamp(-top, glyph.height);
+            const int32_t last_row = Clamp(static_cast<int64_t>(m_height) - top, glyph.height);
+            for (int32_t row = first_row; row < last_row; ++row)
+            {
+                uint32_t* line =
+                    m_pixels + static_cast<size_t>(top + row) * static_cast<size_t>(m_width);
+                for (int32_t column = first_column; column < last_column; ++column)
+                {
+                    const uint32_t coverage = view.Coverage(glyph, column, row);
+                    if (coverage != 0)
+                    {
+                        uint32_t& pixel = line[left + column];
+                        pixel = Text::Blend(pixel & ColorMask, foreground, coverage);
+                    }
+                }
+            }
+        }
+        pen += glyph.advance;
+    }
+    return pen > INT32_MAX ? INT32_MAX : static_cast<int32_t>(pen);
+}
+
+int32_t Surface::DrawTextOn(const Font* font, int32_t x, int32_t y, const char* utf8,
+                            uint32_t color, uint32_t background)
+{
+    if (font == nullptr || !font->Valid() || utf8 == nullptr)
+    {
+        return x;
+    }
+    FillRectangle(x, y, font->MeasureText(utf8), font->LineHeight(), background);
+    return DrawText(font, x, y, utf8, color);
 }
 
 void Surface::DrawText(int32_t x, int32_t y, const char* text, uint32_t color, int32_t scale)
