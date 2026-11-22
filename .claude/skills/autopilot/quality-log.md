@@ -82,4 +82,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 4f52ec7 | M14 P3 s7 HID driver, LEDs, usbhid=, ps2=off, USB keys into the shell | M14.md (opus) | sonnet | 0 | 3/3 (I21, I25 hid test; I23 after test fix) — I21 relaxed: detach releases keys into Input under topology_lock, documented | |
 | db74d37 | M14 P3 s8 pointer queue, /dev/mouse, featheros/input.h, mousetest | M14.md (opus) | sonnet | 0 | 2/2 (I27, I28 by T25) | |
 | fc362df | M14 P3 follow-up: mice use report protocol, boot fallback (user decision) | - | sonnet (medium) | 0 | - | |
-| PENDING | M14 P4 s9 hubs: state machine, hub driver, TT, recursive detach, USB_HUB_TEST | M14.md (opus) | sonnet | 0 | 3/3 (I29 T26, I30 T27, I20 T28) | |
+| 7a9acc0 | M14 P4 s9 hubs: state machine, hub driver, TT, recursive detach, USB_HUB_TEST | M14.md (opus) | sonnet | 0 | 3/3 (I29 T26, I30 T27, I20 T28) | |
