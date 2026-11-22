@@ -473,6 +473,7 @@ constinit DeviceDriver device_driver;
 constinit ProcDriver proc_driver;
 constinit MemoryDriver tmp_driver(Tmpfs::Root::Tmp);
 constinit MemoryDriver etc_driver(Tmpfs::Root::Etc);
+constinit MemoryDriver ram_root_driver(Tmpfs::Root::Ram);
 
 } // namespace
 
@@ -553,6 +554,11 @@ Driver& Tmp()
 Driver& Etc()
 {
     return etc_driver;
+}
+
+Driver& RamRoot()
+{
+    return ram_root_driver;
 }
 
 } // namespace Drivers

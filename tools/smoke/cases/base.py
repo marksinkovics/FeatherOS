@@ -21,6 +21,7 @@ class Case:
     # AArch64 only; x86-64 cases that need no PS/2 keyboard say so in
     # QemuArguments.
     virtio_keyboard = True
+    has_disk = True
     passed = ""
 
     def __init__(self, args):

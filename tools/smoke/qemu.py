@@ -42,14 +42,19 @@ def Command(qemu, args, case):
                     f"if=pflash,unit=0,format=raw,readonly=on,file={args.firmware}",
                 ]
             )
+    if case.has_disk:
+        command.extend(
+            [
+                "-drive",
+                f"if=none,id=featheros_disk,file={args.disk},format=raw",
+                "-device",
+                "virtio-blk-device,drive=featheros_disk"
+                if args.arch == "aarch64"
+                else "virtio-blk-pci,drive=featheros_disk,disable-legacy=off",
+            ]
+        )
     command.extend(
         [
-            "-drive",
-            f"if=none,id=featheros_disk,file={args.disk},format=raw",
-            "-device",
-            "virtio-blk-device,drive=featheros_disk"
-            if args.arch == "aarch64"
-            else "virtio-blk-pci,drive=featheros_disk,disable-legacy=off",
             # QEMU's user-mode network: the guest is 10.0.2.15 behind 10.0.2.2.
             "-netdev",
             f"user,id={NETDEV}{case.NetdevOptions()}",

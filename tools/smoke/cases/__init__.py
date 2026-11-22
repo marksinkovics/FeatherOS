@@ -7,6 +7,7 @@ from smoke.cases.interrupt import Interrupt
 from smoke.cases.keyboard import Keyboard
 from smoke.cases.memory import Memory
 from smoke.cases.network import Network
+from smoke.cases.no_disk import NoDisk
 from smoke.cases.normal_boot import NormalBoot
 from smoke.cases.panic import Panic
 from smoke.cases.pci import Pci
@@ -73,6 +74,10 @@ SWITCHES = {
         UsbHub,
         "Type and move the mouse behind a USB hub, and hot-plug a keyboard "
         "into one of its ports",
+    ),
+    "nodisk": (
+        NoDisk,
+        "Boot with no disk and expect a RAM root, a shell and a shutdown",
     ),
     "calc": (Calc, "Send a calculator command and expect its result"),
     "shell": (Shell, "Run shell commands and expect their output"),

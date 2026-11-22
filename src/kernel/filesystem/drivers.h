@@ -39,9 +39,10 @@ bool ForgetVolume(size_t number);
 Driver& System();
 Driver& Devices();
 Driver& Proc();
-// The RAM filesystem's two roots.
+// The RAM filesystem's roots: /tmp, /etc, and the root of a machine with no disk.
 Driver& Tmp();
 Driver& Etc();
+Driver& RamRoot();
 
 } // namespace FeatherOS::Filesystem::Drivers
 

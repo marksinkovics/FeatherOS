@@ -24,8 +24,15 @@ void Shutdown(Action action, uint64_t caller_process)
     {
         Console::WriteLine("KERN/W: Shutdown: a filesystem did not close cleanly");
     }
-    Console::WriteLine(BlockDevice::Flush() ? "KERN/I: Shutdown: disk flushed"
-                                            : "KERN/W: Shutdown: disk flush failed");
+    if (BlockDevice::SectorCount() == 0)
+    {
+        Console::WriteLine("KERN/I: Shutdown: no disk to flush");
+    }
+    else
+    {
+        Console::WriteLine(BlockDevice::Flush() ? "KERN/I: Shutdown: disk flushed"
+                                                : "KERN/W: Shutdown: disk flush failed");
+    }
     Console::WriteLine(action == Action::PowerOff ? "KERN/I: Powering off" : "KERN/I: Restarting");
     // Nothing may print after this point: a stopped CPU could be holding the console's locks.
     const bool stopped = Smp::StopOtherCpus();

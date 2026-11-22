@@ -24,6 +24,8 @@ using Filesystem::Driver;
 constexpr char SystemPoint[] = "/system";
 constexpr uint32_t RootDirectoryMode = 0755;
 constexpr uint64_t RootSerialNumber = 1;
+constexpr char RamRootType[] = "tmpfs";
+constexpr char RamRootSource[] = "root";
 
 struct BuiltIn
 {
@@ -396,13 +398,36 @@ bool MountBlockDevice(size_t requested, bool* honored)
     const char* source = nullptr;
     const bool usable = root != nullptr && types.Describe(root, &type, &source);
     Driver* mounted = mounts.Find("/");
-    const bool was_disk = Drivers::VolumeOf(mounted) != nullptr;
-    if (was_disk && (!usable || mounted != root))
+    const bool was_replaceable =
+        Drivers::VolumeOf(mounted) != nullptr || mounted == &Drivers::RamRoot();
+    if (was_replaceable && (!usable || mounted != root))
     {
         mounts.Remove("/");
         mounted = nullptr;
     }
     return usable && (mounted == root || mounts.Add("/", root));
+}
+
+bool MountRamRoot()
+{
+    Driver* const driver = &Filesystem::Drivers::RamRoot();
+    {
+        Sync::SpinLockGuard guard(mount_lock);
+        const Driver* const mounted = mounts.Find("/");
+        if (mounted != driver)
+        {
+            if (mounted != nullptr)
+            {
+                mounts.Remove("/");
+            }
+            if (!types.Register(RamRootType, RamRootSource, driver) ||
+                !driver->PrepareMount(Filesystem::MountMode::ReadWrite) || !mounts.Add("/", driver))
+            {
+                return false;
+            }
+        }
+    }
+    return IsDirectory("/home") || MakeDirectory("/home");
 }
 
 bool LoadEtc()

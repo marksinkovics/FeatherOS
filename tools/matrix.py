@@ -37,6 +37,7 @@ TOGGLES = (
     "USB_KEYS_TEST",
     "USB_FALLBACK_TEST",
     "USB_HUB_TEST",
+    "NODISK_TEST",
     "X86_UEFI",
 )
 # Rough minutes each kind of case takes, so the longest start first.
@@ -124,6 +125,7 @@ CASES = [
     *Both(61, "usb_hub", USB_HUB_TEST=ON),
     # OVMF instead of SeaBIOS; skipped when no edk2 x86-64 firmware is found.
     Case("63_x86_64_usb_uefi", "x86_64", USB_TEST=ON, X86_UEFI=ON),
+    *Both(64, "nodisk", NODISK_TEST=ON),
 ]
 
 

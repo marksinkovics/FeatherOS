@@ -83,4 +83,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | db74d37 | M14 P3 s8 pointer queue, /dev/mouse, featheros/input.h, mousetest | M14.md (opus) | sonnet | 0 | 2/2 (I27, I28 by T25) | |
 | fc362df | M14 P3 follow-up: mice use report protocol, boot fallback (user decision) | - | sonnet (medium) | 0 | - | |
 | 7a9acc0 | M14 P4 s9 hubs: state machine, hub driver, TT, recursive detach, USB_HUB_TEST | M14.md (opus) | sonnet | 0 | 3/3 (I29 T26, I30 T27, I20 T28) | |
-| PENDING | M14 P5 s10a i8042 after handoff, ACPI FindTable, FADT flag, OVMF usb case | M14.md (opus) | sonnet | 0 | I32 bits by [i8042]; I32 order not caught (laptop only); I31 by INPUT with usb=off | |
+| 741db2d | M14 P5 s10a i8042 after handoff, ACPI FindTable, FADT flag, OVMF usb case | M14.md (opus) | sonnet | 0 | I32 bits by [i8042]; I32 order not caught (laptop only); I31 by INPUT with usb=off | |
+| PENDING | M14 P5 s10b boot without a disk: tmpfs root with /home, nodisk case | M14.md (opus) | sonnet | 0 (agent ran out of turns; coordinator finished verification) | I33 by NODISK case (2 mutations) | |

@@ -267,12 +267,24 @@ void LogPciDevices(KLogger& logger, const BootInfo& boot_info)
     Pci::Enumerate(*config, LogPciFunction, &logger);
 }
 
+void MountRamRoot(KLogger& logger)
+{
+    logger.Info("Storage: no disk; running from the initramfs");
+    if (!VFS::MountRamRoot())
+    {
+        Panic("Could not mount the RAM root");
+    }
+    logger.Info("VFS: / is tmpfs root, read-write");
+    logger.Info("VFS: /etc is the initramfs's RAM copy: there is no disk");
+}
+
 void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
 {
     if (!BlockDevice::Initialize(boot_info.platform_data, boot_info.hhdm_offset) ||
         BlockDevice::SectorCount() < 2)
     {
-        Panic("Virtio block device initialization failed");
+        MountRamRoot(logger);
+        return;
     }
     if (!BlockDevice::InitializeCache(boot_info.hhdm_offset))
     {

@@ -5,10 +5,11 @@
 
 #include <stdint.h>
 
-// The RAM filesystem mounted at /tmp and /etc. Files, directories and symbolic links live on the
-// kernel heap until they are removed or the system restarts. Paths are relative to a root, such as
-// "notes/a.txt" ("" is the root), and names are case-sensitive. Links are never followed here; the
-// VFS walk does that. Hard links are not supported: a node holds its own name.
+// The RAM filesystem mounted at /tmp and /etc, and at / when the machine has no disk. Files,
+// directories and symbolic links live on the kernel heap until they are removed or the system
+// restarts. Paths are relative to a root, such as "notes/a.txt" ("" is the root), and names are
+// case-sensitive. Links are never followed here; the VFS walk does that. Hard links are not
+// supported: a node holds its own name.
 namespace FeatherOS::Tmpfs
 {
 
@@ -16,9 +17,10 @@ enum class Root : uint8_t
 {
     Tmp,
     Etc,
+    Ram,
 };
 
-// Files, directories and links under both roots together.
+// Files, directories and links under all the roots together.
 constexpr uint32_t MaximumEntries = 128;
 // All file data and link targets together; writes beyond it are short.
 constexpr uint64_t MaximumBytes = 4 * 1024 * 1024;
