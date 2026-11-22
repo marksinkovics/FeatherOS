@@ -1,5 +1,6 @@
 #include "procfs.h"
 
+#include "kernel/memory/heap.h"
 #include "kernel/string/format.h"
 
 namespace FeatherOS::Procfs
@@ -13,12 +14,17 @@ enum class Kind : uint8_t
     Root,
     MemoryInfo,
     SystemStat,
+    Mounts,
     ProcessDirectory,
     ProcessStatusFile,
 };
 
 constexpr char MemoryInfoName[] = "meminfo";
 constexpr char SystemStatName[] = "stat";
+constexpr char MountsName[] = "mounts";
+constexpr const char* FixedNames[] = {MemoryInfoName, SystemStatName, MountsName};
+constexpr Kind FixedKinds[] = {Kind::MemoryInfo, Kind::SystemStat, Kind::Mounts};
+constexpr uint32_t FixedCount = sizeof(FixedNames) / sizeof(FixedNames[0]);
 constexpr char StatusName[] = "status";
 
 Source source = {};
@@ -76,6 +82,10 @@ Kind Classify(const char* path, uint64_t* process_id)
     {
         return Kind::SystemStat;
     }
+    if (Equals(path, MountsName))
+    {
+        return Kind::Mounts;
+    }
     const char* rest;
     if (!ParseProcessId(path, process_id, &rest) || !ProcessExists(*process_id))
     {
@@ -113,7 +123,34 @@ size_t Length(const char* text)
     return length;
 }
 
-void SetEntry(FAT16::DirectoryEntry* entry, const char* name, bool directory)
+// The root is 1 and the fixed files follow it; each process has two numbers past them.
+constexpr uint64_t RootSerialNumber = 1;
+constexpr uint64_t FirstProcessSerialNumber = 16;
+
+uint64_t SerialNumber(Kind kind, uint64_t process_id)
+{
+    switch (kind)
+    {
+    case Kind::Root:
+        return RootSerialNumber;
+    case Kind::MemoryInfo:
+        return RootSerialNumber + 1;
+    case Kind::SystemStat:
+        return RootSerialNumber + 2;
+    case Kind::Mounts:
+        return RootSerialNumber + 3;
+    case Kind::ProcessDirectory:
+        return FirstProcessSerialNumber + 2 * process_id;
+    case Kind::ProcessStatusFile:
+        return FirstProcessSerialNumber + 2 * process_id + 1;
+    case Kind::None:
+        break;
+    }
+    return 0;
+}
+
+void SetEntry(Filesystem::DirectoryEntry* entry, const char* name, Kind kind,
+              uint64_t process_id = 0)
 {
     uint32_t index = 0;
     for (; name[index] != '\0' && index < sizeof(entry->name) - 1; ++index)
@@ -121,8 +158,33 @@ void SetEntry(FAT16::DirectoryEntry* entry, const char* name, bool directory)
         entry->name[index] = name[index];
     }
     entry->name[index] = '\0';
-    entry->directory = directory;
+    const bool directory = kind == Kind::Root || kind == Kind::ProcessDirectory;
+    entry->type = directory ? User::ModeDirectory : User::ModeRegular;
+    entry->node = SerialNumber(kind, process_id);
     entry->size = 0;
+}
+
+// One line per mount, as Linux's /proc/mounts: "<source> <point> <type> <ro|rw> 0 0".
+bool FormatMounts(char* buffer)
+{
+    buffer[0] = '\0';
+    size_t used = 0;
+    const Memory::HeapObject<MountStatus> mount;
+    if (!mount)
+    {
+        return false;
+    }
+    for (uint32_t index = 0; source.mount_at != nullptr && source.mount_at(index, &*mount); ++index)
+    {
+        if (!String::FormatTo(buffer + used, MaximumFileSize - used, "{} {} {} {} 0 0\n",
+                              mount->source, mount->point, mount->type,
+                              mount->read_only ? "ro" : "rw"))
+        {
+            return false;
+        }
+        used += Length(buffer + used);
+    }
+    return true;
 }
 
 } // namespace
@@ -152,9 +214,10 @@ bool Generate(const char* path, char* buffer, size_t* length)
         source.memory_status(&memory);
         formatted = String::FormatTo(buffer, MaximumFileSize,
                                      "MemTotal:\t{} kB\nMemFree:\t{} kB\nKernelHeap:\t{} kB\n"
-                                     "Tmp:\t{} kB\n",
+                                     "Tmp:\t{} kB\nCached:\t{} kB\n",
                                      memory.total_bytes / 1024, memory.free_bytes / 1024,
-                                     memory.kernel_heap_bytes / 1024, memory.tmp_bytes / 1024);
+                                     memory.kernel_heap_bytes / 1024, memory.tmp_bytes / 1024,
+                                     memory.cached_bytes / 1024);
         break;
     }
     case Kind::SystemStat:
@@ -177,6 +240,9 @@ bool Generate(const char* path, char* buffer, size_t* length)
         }
         break;
     }
+    case Kind::Mounts:
+        formatted = FormatMounts(buffer);
+        break;
     case Kind::ProcessStatusFile:
     {
         ProcessStatus status;
@@ -216,7 +282,20 @@ bool IsDirectory(const char* path)
     return kind == Kind::Root || kind == Kind::ProcessDirectory;
 }
 
-bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry)
+bool Find(const char* path, uint64_t* serial_number, bool* directory)
+{
+    uint64_t process_id = 0;
+    if (path == nullptr || serial_number == nullptr || directory == nullptr)
+    {
+        return false;
+    }
+    const Kind kind = Classify(path, &process_id);
+    *serial_number = SerialNumber(kind, process_id);
+    *directory = kind == Kind::Root || kind == Kind::ProcessDirectory;
+    return kind != Kind::None;
+}
+
+bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry)
 {
     uint64_t process_id = 0;
     if (path == nullptr || entry == nullptr)
@@ -230,19 +309,19 @@ bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entr
         {
             return false;
         }
-        SetEntry(entry, StatusName, false);
+        SetEntry(entry, StatusName, Kind::ProcessStatusFile, process_id);
         return true;
     }
     if (kind != Kind::Root)
     {
         return false;
     }
-    if (index == 0 || index == 1)
+    if (index < FixedCount)
     {
-        SetEntry(entry, index == 0 ? MemoryInfoName : SystemStatName, false);
+        SetEntry(entry, FixedNames[index], FixedKinds[index]);
         return true;
     }
-    if (source.process_at == nullptr || !source.process_at(index - 2, &process_id))
+    if (source.process_at == nullptr || !source.process_at(index - FixedCount, &process_id))
     {
         return false;
     }
@@ -251,7 +330,7 @@ bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entr
     {
         return false;
     }
-    SetEntry(entry, name, true);
+    SetEntry(entry, name, Kind::ProcessDirectory, process_id);
     return true;
 }
 

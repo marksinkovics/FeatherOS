@@ -10,16 +10,21 @@ SUSPEND_RUNNING = object()
 
 
 class TypeWhen:
-    """Keys typed once text appears, for a program that shows no prompt."""
+    """Keys typed once text appears, for a program that shows no prompt. A
+    fresh one waits for a copy that appears after the line before it was
+    typed, not for one the session already holds."""
 
-    def __init__(self, text, keys):
+    def __init__(self, text, keys, fresh=False):
         self.text = text.encode()
         self.keys = keys
+        self.fresh = fresh
 
 
 class WaitFor:
     """Holds back the lines after it until text appears, for a background
     program that reports on its own."""
+
+    fresh = False
 
     def __init__(self, text):
         self.text = text.encode()

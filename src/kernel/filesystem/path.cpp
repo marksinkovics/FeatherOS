@@ -5,68 +5,84 @@ namespace FeatherOS::Path
 namespace
 {
 
-bool Append(const char* text, char (&result)[MaximumLength], uint32_t* length)
+bool Copy(const char* text, char (&result)[MaximumLength], uint32_t* length)
 {
-    while (*text != '\0')
+    for (; *text != '\0'; ++text)
     {
-        while (*text == '/')
-        {
-            ++text;
-        }
-        uint32_t component_length = 0;
-        while (text[component_length] != '\0' && text[component_length] != '/')
-        {
-            ++component_length;
-        }
-        if (component_length == 0 || (component_length == 1 && text[0] == '.'))
-        {
-            text += component_length;
-            continue;
-        }
-        if (component_length == 2 && text[0] == '.' && text[1] == '.')
-        {
-            while (*length > 0 && result[*length - 1] != '/')
-            {
-                --*length;
-            }
-            if (*length > 0)
-            {
-                --*length;
-            }
-            text += component_length;
-            continue;
-        }
-        if (*length + 1 + component_length >= MaximumLength)
+        if (*length + 1 >= MaximumLength)
         {
             return false;
         }
-        result[(*length)++] = '/';
-        for (uint32_t index = 0; index < component_length; ++index)
-        {
-            result[(*length)++] = text[index];
-        }
-        text += component_length;
+        result[(*length)++] = *text;
     }
     return true;
 }
 
 } // namespace
 
-bool Resolve(const char* working_directory, const char* path, char (&result)[MaximumLength])
+bool Join(const char* working_directory, const char* path, char (&result)[MaximumLength])
 {
     if (working_directory == nullptr || path == nullptr)
     {
         return false;
     }
     uint32_t length = 0;
-    if ((path[0] != '/' && !Append(working_directory, result, &length)) ||
-        !Append(path, result, &length))
+    if (path[0] == '/')
+    {
+        if (!Copy(path, result, &length))
+        {
+            return false;
+        }
+        result[length] = '\0';
+        return true;
+    }
+    if (!Copy(working_directory, result, &length))
     {
         return false;
     }
-    if (length == 0)
+    while (length > 1 && result[length - 1] == '/')
     {
-        result[length++] = '/';
+        --length;
+    }
+    for (;;)
+    {
+        while (*path == '/')
+        {
+            ++path;
+        }
+        if (path[0] == '.' && (path[1] == '/' || path[1] == '\0'))
+        {
+            ++path;
+            continue;
+        }
+        if (path[0] != '.' || path[1] != '.' || (path[2] != '/' && path[2] != '\0'))
+        {
+            break;
+        }
+        path += 2;
+        while (length > 1 && result[length - 1] != '/')
+        {
+            --length;
+        }
+        if (length > 1)
+        {
+            --length;
+        }
+    }
+    if (*path != '\0')
+    {
+        if (length > 1)
+        {
+            if (length + 1 >= MaximumLength)
+            {
+                return false;
+            }
+            result[length++] = '/';
+        }
+        if (!Copy(path, result, &length))
+        {
+            return false;
+        }
     }
     result[length] = '\0';
     return true;

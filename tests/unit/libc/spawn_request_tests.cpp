@@ -70,10 +70,16 @@ TEST_CASE("spawn requests reject paths and arguments the kernel cannot run")
     std::string line;
     REQUIRE(Build("", {"x"}, &line) == SpawnRequestResult::NotFound);
     REQUIRE(Build("/tmp/\"x\"", {"x"}, &line) == SpawnRequestResult::Invalid);
-    REQUIRE(Build(("/" + std::string(70, 'p')).c_str(), {"x"}, &line) ==
+    // The command line holds a path of nearly PATH_MAX characters as an argument, but no more.
+    const std::string long_path = "/" + std::string(FeatherOS::User::MaximumPathLength - 7, 'p');
+    REQUIRE(Build("cat", {"cat", long_path.c_str()}, &line) == SpawnRequestResult::Done);
+    REQUIRE(line == "cat " + long_path);
+    REQUIRE(Build((long_path + std::string(5, 'q')).c_str(), {"x"}, &line) ==
+            SpawnRequestResult::Done);
+    REQUIRE(Build((long_path + std::string(6, 'q')).c_str(), {"x"}, &line) ==
             SpawnRequestResult::TooBig);
     REQUIRE(Build("echo", {"echo", "say \"hi\""}, &line) == SpawnRequestResult::Invalid);
-    REQUIRE(Build("echo", {"echo", std::string(70, 'x').c_str()}, &line) ==
+    REQUIRE(Build("echo", {"echo", (long_path + "x").c_str()}, &line) ==
             SpawnRequestResult::TooBig);
     REQUIRE(Build("echo", {"echo", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11",
                            "12", "13", "14", "15", "16"},
@@ -105,8 +111,9 @@ TEST_CASE("PATH searches join each directory to the file")
     REQUIRE(Candidates("::/bin/:", "ls") == std::vector<std::string>{"/bin/ls"});
     REQUIRE(Candidates("", "ls").empty());
     // A candidate must fit in a path, terminator included.
-    const std::string long_directory = "/" + std::string(60, 'd');
-    const std::string search = long_directory + ":/" + std::string(59, 'e') + ":/bin";
+    const size_t longest = FeatherOS::User::MaximumPathLength - 1 - sizeof("//ls") + 1;
+    const std::string long_directory = "/" + std::string(longest + 1, 'd');
+    const std::string search = long_directory + ":/" + std::string(longest, 'e') + ":/bin";
     REQUIRE(Candidates(search.c_str(), "ls") ==
-            std::vector<std::string>{"/" + std::string(59, 'e') + "/ls", "/bin/ls"});
+            std::vector<std::string>{"/" + std::string(longest, 'e') + "/ls", "/bin/ls"});
 }

@@ -2,13 +2,17 @@
 #define FEATHEROS_USER_LINE_EDITOR_H
 
 #include "key_decoder.h"
+#include "process.h"
 
 #include <stddef.h>
 
 namespace FeatherOS::User
 {
 
-constexpr size_t MaximumEditedLineLength = 63;
+// A command line without its terminator, and a prompt that shows a working directory, such as
+// "/home> ".
+constexpr size_t MaximumEditedLineLength = MaximumCommandLineLength - 1;
+constexpr size_t MaximumPromptLength = MaximumPathLength + 2;
 constexpr size_t MaximumHistoryLines = 32;
 
 class LineHistory
@@ -73,8 +77,8 @@ private:
     size_t m_cursor = 0;
     // Rows between the prompt's first row and the terminal's cursor.
     size_t m_cursor_row = 0;
-    // Room for a redraw of the longest prompt and line.
-    char m_output[512] = {};
+    // Room for a redraw of the longest prompt and line, with the cursor movements around them.
+    char m_output[MaximumPromptLength + MaximumEditedLineLength + 64] = {};
     size_t m_output_length = 0;
 
     void Append(const char* text);

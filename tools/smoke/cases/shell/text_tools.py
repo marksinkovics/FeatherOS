@@ -27,7 +27,7 @@ TEXT_TOOLS_INPUT = (
     b"mkdir /tmp/box\nmv /tmp/copy.txt /tmp/box\nmv /tmp/box /tmp/crate\n"
     b"wc -l /tmp/crate/copy.txt\nmv /tmp/crate /tmp/crate/inner\n"
     b"mv /tmp/crate/copy.txt work\nwc -l /tmp/crate/copy.txt\n"
-    b'mv work/copy.txt "work/Moved Copy.txt"\nwc -w "work/moved copy.txt"\n'
+    b'mv work/copy.txt "work/Moved Copy.txt"\nwc -w "work/Moved Copy.txt"\n'
 )
 # Each pattern spans the lines one text-tool command printed, in order.
 EXPECTED_TEXT_TOOLS = (
@@ -46,7 +46,7 @@ EXPECTED_TEXT_TOOLS = (
     r"^4 /tmp/crate/copy\.txt\r?$",
     r"^mv: /tmp/crate: Invalid argument\r?$",
     r"^wc: /tmp/crate/copy\.txt: No such file or directory\r?$",
-    r"^4 work/moved copy\.txt\r?$",
+    r"^4 work/Moved Copy\.txt\r?$",
     r"^3:a\.b\r?\n4:axb\r?$",
     r"^1:key=42 id=7\r?\n2:plain line\r?\n4:axb\r?$",
     r"^plain line\r?$",

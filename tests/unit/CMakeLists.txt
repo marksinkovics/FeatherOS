@@ -6,6 +6,14 @@ include(CTest)
 get_filename_component(FEATHEROS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
 option(FEATHEROS_SANITIZERS "Build the unit tests with AddressSanitizer and UBSan" ON)
+option(FEATHEROS_THREAD_SANITIZER "Build the unit tests with ThreadSanitizer, without ASan" OFF)
+if (FEATHEROS_SANITIZERS AND FEATHEROS_THREAD_SANITIZER)
+    message(FATAL_ERROR "FEATHEROS_SANITIZERS and FEATHEROS_THREAD_SANITIZER exclude each other")
+endif ()
+if (FEATHEROS_THREAD_SANITIZER)
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=thread)
+endif ()
 if (FEATHEROS_SANITIZERS)
     # Applied before Catch2 is added so it is instrumented too; a library built without ASan can
     # report false container overflows in std::string and std::vector shared with the tests.
@@ -20,10 +28,16 @@ featheros_fetch_catch2()
 list(APPEND CMAKE_MODULE_PATH "${FEATHEROS_CATCH2_SOURCE_DIR}/extras")
 include(Catch)
 
+# The shared filesystem core builds its own library and tests, which leave with it at the split.
+set(FEATHERDISK_CATCH2_TARGET Catch2::Catch2WithMain)
+add_subdirectory("${FEATHEROS_ROOT}/src/fs/core" "${CMAKE_CURRENT_BINARY_DIR}/fs_core")
+
 add_executable(featheros_unit_tests
-    kernel/filesystem/fat_names_tests.cpp
+    kernel/filesystem/concurrency_tests.cpp
     kernel/filesystem/filesystem_tests.cpp
+    kernel/filesystem/mount_table_tests.cpp
     kernel/filesystem/path_tests.cpp
+    kernel/filesystem/symbolic_link_tests.cpp
     kernel/filesystem/pipe_tests.cpp
     kernel/filesystem/virtual_files_tests.cpp
     kernel/elf/elf_loader_tests.cpp
@@ -45,10 +59,14 @@ add_executable(featheros_unit_tests
     kernel/network/tcp_tests.cpp
     kernel/network/udp_tests.cpp
     kernel/process/futex_tests.cpp
+    kernel/storage/page_cache_tests.cpp
+    kernel/sync/volume_mutex_tests.cpp
     support/network_stubs.cpp
+    support/page_cache_host.cpp
     support/scheduler_stubs.cpp
     support/terminal_device.cpp
     kernel/input/keyboard_tests.cpp
+    kernel/boot_options_tests.cpp
     kernel/kernel_test/kernel_test_mode_tests.cpp
     kernel/klogger/klogger_tests.cpp
     kernel/memory/memory_map_tests.cpp
@@ -120,14 +138,20 @@ add_executable(featheros_unit_tests
     libcxx/vector_tests.cpp
     libcxx/wait_tests.cpp
     libcxx/host_futex.cpp
-    "${FEATHEROS_ROOT}/src/kernel/filesystem/fat16.cpp"
-    "${FEATHEROS_ROOT}/src/kernel/filesystem/fat_names.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/core_driver.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path.cpp"
-    "${FEATHEROS_ROOT}/src/kernel/storage/partition.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/path_walk.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/cache_sizing.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/core_block_device.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/page_cache.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/devices.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/procfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/tmpfs.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/drivers.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/filesystem.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/mount_table.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/filesystem/type_registry.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/vfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/elf/elf_loader.cpp"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/font.c"
@@ -135,6 +159,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/term.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/input.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/keyboard.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/boot_options.cpp"
     "${FEATHEROS_ROOT}/src/kernel/kernel_test_mode.cpp"
     "${FEATHEROS_ROOT}/src/kernel/network/address.cpp"
     "${FEATHEROS_ROOT}/src/kernel/network/arp.cpp"
@@ -197,7 +222,9 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/user/vi_editor.cpp"
     "${FEATHEROS_ROOT}/src/kernel/klogger.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/memory/page_allocator.cpp"
     "${FEATHEROS_ROOT}/src/kernel/process_arguments.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/sync/volume_mutex.cpp"
     "${FEATHEROS_ROOT}/src/kernel/syscall.cpp"
     "${FEATHEROS_ROOT}/src/kernel/time/wall_clock.cpp"
     "${FEATHEROS_ROOT}/src/kernel/thread_local_storage.cpp"
@@ -240,7 +267,21 @@ target_include_directories(featheros_unit_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${FEATHEROS_ROOT}/deps/limine"
 )
-target_link_libraries(featheros_unit_tests PRIVATE Catch2::Catch2WithMain)
+target_link_libraries(featheros_unit_tests PRIVATE Catch2::Catch2WithMain featherdisk_core
+    featherdisk_standard_host)
+# The VFS reads the core's 1 KiB ext2, ext3 and ext4 images as partitions, when e2fsprogs made
+# them.
+if (TARGET featherdisk_ext_test_images)
+    add_dependencies(featheros_unit_tests featherdisk_ext_test_images)
+    target_compile_definitions(featheros_unit_tests PRIVATE
+        FEATHEROS_EXT2_TEST_IMAGE="${CMAKE_CURRENT_BINARY_DIR}/fs_core/ext-images/1k.img"
+        FEATHEROS_EXT3_TEST_IMAGE="${CMAKE_CURRENT_BINARY_DIR}/fs_core/ext-images/ext3.img"
+        FEATHEROS_EXT4_TEST_IMAGE="${CMAKE_CURRENT_BINARY_DIR}/fs_core/ext-images/ext4.img")
+endif ()
+
+if (FEATHERDISK_E2FSCK)
+    target_compile_definitions(featheros_unit_tests PRIVATE FEATHEROS_E2FSCK="${FEATHERDISK_E2FSCK}")
+endif ()
 
 catch_discover_tests(featheros_unit_tests)
 # The Swift programs' host-testable parts, as one host executable per program built with the

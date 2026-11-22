@@ -2,21 +2,28 @@ import re
 
 from smoke.boot import PANIC_MARKER
 from smoke.build_tree import ProgramBuilt
+from smoke.cases import storage
 from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
 from smoke.cases.shell import (
     calculator,
     cppbench,
     editing,
+    ext2,
+    ext4,
     files,
     interrupt,
     job_control,
     jobs,
     keys,
     limits,
+    links,
+    mounts,
     ping,
     pipes,
     programs,
+    remount,
     restart,
+    root_programs,
     script_command,
     swift,
     swift_concurrency,
@@ -38,6 +45,12 @@ PARTS = (
     swift_full.PART,
     programs.PART,
     files.PART,
+    mounts.PART,
+    remount.PART,
+    ext2.PART,
+    ext4.PART,
+    root_programs.PART,
+    links.PART,
     ping.PART,
     text_tools.PART,
     pipes.PART,
@@ -106,6 +119,12 @@ class Shell(Case):
             failure = part.check(result) if part.check else None
             if failure is not None:
                 return failure
+        ext2_error = storage.VerifyExt2(self.args.disk)
+        if ext2_error is not None:
+            return f"the root after the session: {ext2_error}"
+        journalled_error = storage.VerifyJournalledClean(self.args.disk)
+        if journalled_error is not None:
+            return f"after the session: {journalled_error}"
         # A prompt may precede the echo on the same line.
         interrupts = len(re.findall(r"\^C\r?$", output, re.MULTILINE))
         expected_interrupts = sum(part.interrupts for part in self.parts)

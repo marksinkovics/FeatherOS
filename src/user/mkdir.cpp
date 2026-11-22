@@ -1,6 +1,8 @@
 #include "command_line.h"
 
+#include <errno.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 
 constexpr char Help[] = "usage: mkdir <directory>\n"
@@ -20,7 +22,7 @@ int main(int argc, char** argv)
     }
     if (mkdir(argv[1], 0777) != 0)
     {
-        printf("mkdir: %s: cannot create the directory\n", argv[1]);
+        printf("mkdir: %s: cannot create the directory: %s\n", argv[1], strerror(errno));
         return 1;
     }
     return 0;

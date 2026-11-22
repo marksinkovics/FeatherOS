@@ -8,6 +8,18 @@ namespace
 
 constexpr blksize_t BlockSize = 512;
 
+static_assert(S_IFMT == FeatherOS::User::ModeTypeMask && S_IFREG == FeatherOS::User::ModeRegular &&
+              S_IFDIR == FeatherOS::User::ModeDirectory &&
+              S_IFLNK == FeatherOS::User::ModeSymbolicLink &&
+              S_IFCHR == FeatherOS::User::ModeCharacterDevice &&
+              S_IFBLK == FeatherOS::User::ModeBlockDevice && S_IFIFO == FeatherOS::User::ModeFifo &&
+              S_IFSOCK == FeatherOS::User::ModeSocket);
+
+timespec ToTimespec(const FeatherOS::User::FileTime& time)
+{
+    return {static_cast<time_t>(time.seconds), static_cast<long>(time.nanoseconds)};
+}
+
 int Convert(uint64_t result, const FeatherOS::User::FileStatus& file_status, struct stat* status)
 {
     if (FeatherOS::User::IsSyscallError(result))
@@ -15,30 +27,18 @@ int Convert(uint64_t result, const FeatherOS::User::FileStatus& file_status, str
         return FeatherOS::LibC::Check<int>(result);
     }
     *status = {};
-    const bool writable = !file_status.read_only;
-    switch (file_status.type)
-    {
-    case FeatherOS::User::FileType::Directory:
-        status->st_mode = S_IFDIR | (writable ? 0755 : 0555);
-        break;
-    case FeatherOS::User::FileType::Terminal:
-    case FeatherOS::User::FileType::Device:
-        status->st_mode = S_IFCHR | 0666;
-        break;
-    case FeatherOS::User::FileType::Pipe:
-        status->st_mode = S_IFIFO | (writable ? 0200 : 0400);
-        break;
-    case FeatherOS::User::FileType::Socket:
-        status->st_mode = S_IFSOCK | 0666;
-        break;
-    default:
-        status->st_mode = S_IFREG | (writable ? 0644 : 0444);
-        break;
-    }
-    status->st_nlink = 1;
+    status->st_dev = static_cast<dev_t>(file_status.device);
+    status->st_ino = static_cast<ino_t>(file_status.node);
+    status->st_mode = static_cast<mode_t>(file_status.mode);
+    status->st_nlink = static_cast<nlink_t>(file_status.link_count);
+    status->st_uid = static_cast<uid_t>(file_status.owner);
+    status->st_gid = static_cast<gid_t>(file_status.group);
     status->st_size = static_cast<off_t>(file_status.size);
     status->st_blksize = BlockSize;
     status->st_blocks = static_cast<blkcnt_t>((file_status.size + BlockSize - 1) / BlockSize);
+    status->st_atim = ToTimespec(file_status.access_time);
+    status->st_mtim = ToTimespec(file_status.modify_time);
+    status->st_ctim = ToTimespec(file_status.change_time);
     return 0;
 }
 
@@ -48,6 +48,12 @@ int stat(const char* path, struct stat* status)
 {
     FeatherOS::User::FileStatus file_status = {};
     return Convert(FeatherOS::User::Stat(path, &file_status), file_status, status);
+}
+
+int lstat(const char* path, struct stat* status)
+{
+    FeatherOS::User::FileStatus file_status = {};
+    return Convert(FeatherOS::User::LinkStat(path, &file_status), file_status, status);
 }
 
 int fstat(int descriptor, struct stat* status)

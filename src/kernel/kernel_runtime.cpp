@@ -4,6 +4,7 @@
 #include "kernel/arch/keyboard.h"
 #include "kernel/arch/rtc.h"
 #include "kernel/arch/serial.h"
+#include "kernel/boot_options.h"
 #include "kernel/console.h"
 #include "kernel/elf/elf_loader.h"
 #include "kernel/filesystem/initramfs.h"
@@ -27,7 +28,9 @@
 #include "kernel/smp.h"
 #include "kernel/string/format.h"
 #include "kernel/storage/block_device.h"
+#include "kernel/storage/page_cache.h"
 #include "kernel/time/timer.h"
+#include "kernel/writeback.h"
 #include "kernel/memory/virtual_memory.h"
 #include "user/calendar.h"
 #include "user/syscall_abi.h"
@@ -41,6 +44,9 @@ namespace FeatherOS::KernelRuntime
 {
 namespace
 {
+
+constexpr char RootInit[] = "/sbin/init";
+constexpr char RescueInit[] = "init";
 
 Framebuffer framebuffer;
 Term terms[Console::Count];
@@ -71,6 +77,10 @@ void MountInitramfs(KLogger& logger, const BootInfo& boot_info)
     if (!Initramfs::Mount(boot_info.initramfs_data, boot_info.initramfs_size))
     {
         Panic("Initramfs archive is missing or invalid");
+    }
+    if (!VFS::MountBuiltIn())
+    {
+        Panic("Could not mount /system, /etc, /dev, /proc and /tmp");
     }
     if (!VFS::LoadEtc())
     {
@@ -236,49 +246,67 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     {
         Panic("Virtio block device initialization failed");
     }
-    if (!VFS::MountBlockDevice())
+    if (!BlockDevice::InitializeCache(boot_info.hhdm_offset))
     {
-        Panic("MBR partition or FAT16 mount failed");
+        Panic("Page cache initialization failed");
+    }
+    const char* root_type = nullptr;
+    const char* root_source = nullptr;
+    bool root_read_only = false;
+    const BootOptions::Root requested = BootOptions::SelectedRoot();
+    bool honored = true;
+    if (!VFS::MountBlockDevice(requested.partition, &honored) ||
+        !VFS::DescribeRoot(&root_type, &root_source, &root_read_only))
+    {
+        Panic("No FAT16, ext2, ext3 or ext4 root filesystem on the disk");
+    }
+    char message[96];
+    if (requested.request == BootOptions::RootRequest::Malformed)
+    {
+        logger.Warning("VFS: root= is not a partition such as vda1, using the default root");
+    }
+    else if (!honored)
+    {
+        if (!String::FormatTo(message, sizeof(message),
+                              "VFS: root=vda{} is not a usable partition, using the default root",
+                              requested.partition))
+        {
+            Panic("Root warning formatting failed");
+        }
+        logger.Warning(message);
+    }
+    if (!String::FormatTo(message, sizeof(message), "VFS: / is {} {}, {}", root_source, root_type,
+                          root_read_only ? "read-only: the volume refused writes" : "read-write"))
+    {
+        Panic("Root filesystem message formatting failed");
+    }
+    if (root_read_only)
+    {
+        logger.Warning(message);
+    }
+    else
+    {
+        logger.Info(message);
+    }
+    if (root_read_only)
+    {
+        logger.Info("VFS: /etc is the initramfs's RAM copy: the root is read-only");
+    }
+    else if (VFS::UseRootEtc())
+    {
+        logger.Info("VFS: /etc is the root's own directory");
+    }
+    else
+    {
+        logger.Warning(
+            "VFS: /etc is the initramfs's RAM copy: the root's /etc could not be filled");
     }
 #if defined(FEATHEROS_KERNEL_TESTS)
     if (KernelTest::Selected(KernelTest::Mode::Storage))
     {
-        KernelTest::RunStorageTests();
+        KernelTest::RunStorageTests(boot_info.hhdm_offset);
     }
 #endif
-
-    constexpr char expected_contents[] = "FeatherOS FAT16 volume OK";
-    VFS::FileInfo file_info;
-    VFS::FileHandle file;
-    if (!VFS::Stat("/BLOCK.TXT", &file_info) || file_info.size != sizeof(expected_contents) - 1)
-    {
-        Panic("VFS could not stat FAT16 BLOCK.TXT");
-    }
-    if (!VFS::Open("/BLOCK.TXT", &file))
-    {
-        Panic("VFS could not open FAT16 BLOCK.TXT");
-    }
-
-    char contents[sizeof(expected_contents) - 1];
-    uint64_t bytes_read;
-    if (!VFS::Read(&file, contents, sizeof(contents), &bytes_read) ||
-        bytes_read != sizeof(contents))
-    {
-        Panic("VFS could not read FAT16 BLOCK.TXT");
-    }
-    for (size_t index = 0; index < sizeof(contents); ++index)
-    {
-        if (contents[index] != expected_contents[index])
-        {
-            Panic("VFS returned invalid FAT16 file data");
-        }
-    }
-    if (!VFS::Seek(&file, 0))
-    {
-        Panic("VFS could not seek in FAT16 BLOCK.TXT");
-    }
-    VFS::Close(&file);
-    logger.Info("VFS: FAT16 BLOCK.TXT read passed");
 }
 
 void LogCpuProtections(KLogger& logger)
@@ -420,6 +448,7 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     // Secondary CPUs start their timers at the boot CPU's rate.
     StartSecondaryCpus(logger, boot_info.smp);
     StartNetwork(logger, boot_info);
+    Writeback::Start();
     logger.Info("Kernel initialization complete");
     if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
     {
@@ -433,11 +462,19 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     }
 #endif
 
-    // init starts and supervises the services in /init.conf; restart it if it ever exits.
+    // init starts and supervises the services in /etc/init.conf; restart it if it ever exits.
     for (;;)
     {
         Process::ProcessId init;
-        if (Process::Spawn("init", nullptr, 0, 0, &init) != Process::SpawnStatus::Started)
+        if (Process::Spawn(RootInit, nullptr, 0, 0, &init) == Process::SpawnStatus::Started)
+        {
+            logger.Info("Init: starting /sbin/init from the root");
+        }
+        else if (Process::Spawn(RescueInit, nullptr, 0, 0, &init) == Process::SpawnStatus::Started)
+        {
+            logger.Info("Init: starting /system/init from the initramfs");
+        }
+        else
         {
             Panic("Could not start init");
         }

@@ -3,16 +3,24 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
-// The path is made absolute when the directory is opened, so a later chdir does not change
-// which directory the stream reads.
+static_assert(DT_DIR == FeatherOS::User::ModeDirectory >> FeatherOS::User::EntryTypeShift &&
+              DT_REG == FeatherOS::User::ModeRegular >> FeatherOS::User::EntryTypeShift &&
+              DT_LNK == FeatherOS::User::ModeSymbolicLink >> FeatherOS::User::EntryTypeShift &&
+              DT_CHR == FeatherOS::User::ModeCharacterDevice >> FeatherOS::User::EntryTypeShift &&
+              DT_BLK == FeatherOS::User::ModeBlockDevice >> FeatherOS::User::EntryTypeShift &&
+              DT_FIFO == FeatherOS::User::ModeFifo >> FeatherOS::User::EntryTypeShift &&
+              DT_SOCK == FeatherOS::User::ModeSocket >> FeatherOS::User::EntryTypeShift);
+
+// The path is resolved to its physical form when the directory is opened, so a later chdir, or a
+// symbolic link changed on the way, does not change which directory the stream reads.
 struct FeatherDirectory
 {
-    char path[FeatherOS::User::MaximumPathLength];
+    char path[PATH_MAX];
     uint64_t index;
     struct dirent entry;
 };
@@ -34,36 +42,11 @@ DIR* opendir(const char* path)
     {
         return nullptr;
     }
-    const size_t length = strlen(path);
-    if (path[0] == '/')
-    {
-        if (length >= sizeof(directory->path))
-        {
-            free(directory);
-            errno = ENAMETOOLONG;
-            return nullptr;
-        }
-        memcpy(directory->path, path, length + 1);
-        return directory;
-    }
-    if (getcwd(directory->path, sizeof(directory->path)) == nullptr)
+    if (realpath(path, directory->path) == nullptr)
     {
         free(directory);
         return nullptr;
     }
-    const size_t prefix = strlen(directory->path);
-    const bool needs_separator = directory->path[prefix - 1] != '/';
-    if (prefix + (needs_separator ? 1 : 0) + length >= sizeof(directory->path))
-    {
-        free(directory);
-        errno = ENAMETOOLONG;
-        return nullptr;
-    }
-    if (needs_separator)
-    {
-        directory->path[prefix] = '/';
-    }
-    memcpy(directory->path + prefix + (needs_separator ? 1 : 0), path, length + 1);
     return directory;
 }
 
@@ -72,6 +55,9 @@ struct dirent* readdir(DIR* directory)
     FeatherOS::User::DirectoryEntry entry{};
     const uint64_t result =
         FeatherOS::User::ReadDirectory(directory->path, directory->index, &entry);
+    static_assert(sizeof(directory->entry.d_name) == sizeof(entry.name) &&
+                  PATH_MAX == FeatherOS::User::MaximumPathLength &&
+                  NAME_MAX == FeatherOS::User::MaximumNameLength);
     // Past the last entry is the normal end of the listing, which leaves errno alone.
     if (result == FeatherOS::User::SyscallErrorNotFound)
     {
@@ -82,8 +68,8 @@ struct dirent* readdir(DIR* directory)
         return nullptr;
     }
     ++directory->index;
-    directory->entry.d_ino = directory->index;
-    directory->entry.d_type = entry.directory ? DT_DIR : DT_REG;
+    directory->entry.d_ino = static_cast<ino_t>(entry.node);
+    directory->entry.d_type = static_cast<unsigned char>(entry.type);
     memcpy(directory->entry.d_name, entry.name, sizeof(directory->entry.d_name));
     directory->entry.d_name[sizeof(directory->entry.d_name) - 1] = '\0';
     return &directory->entry;

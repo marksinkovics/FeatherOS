@@ -1,6 +1,8 @@
 #include "command_line.h"
 
+#include <errno.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 constexpr char Help[] = "usage: rmdir <directory>\n"
@@ -20,7 +22,7 @@ int main(int argc, char** argv)
     }
     if (rmdir(argv[1]) != 0)
     {
-        printf("rmdir: %s: not an empty directory\n", argv[1]);
+        printf("rmdir: %s: %s\n", argv[1], strerror(errno));
         return 1;
     }
     return 0;

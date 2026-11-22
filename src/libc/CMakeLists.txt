@@ -38,10 +38,12 @@ add_library(featheros_c STATIC
     pthread.cpp
     regex.cpp
     regex_engine.cpp
+    resource.cpp
     thread_keys.cpp
     signal.cpp
     socket.cpp
     math.cpp
+    mount.cpp
     spawn.cpp
     stat.cpp
     stdio.cpp

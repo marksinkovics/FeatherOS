@@ -1,14 +1,14 @@
 #ifndef FEATHEROS_FILESYSTEM_PROCFS_H
 #define FEATHEROS_FILESYSTEM_PROCFS_H
 
-#include "kernel/filesystem/fat16.h"
+#include "kernel/filesystem/filesystem.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
-// The generated files mounted at /proc: "meminfo", "stat", and a directory per process holding
-// "status". Paths are relative to the mount ("" is the root). A file's text is made when it is
-// opened, so a reader sees one consistent snapshot.
+// The generated files mounted at /proc: "meminfo", "stat", "mounts", and a directory per process
+// holding "status". Paths are relative to the mount ("" is the root). A file's text is made when it
+// is opened, so a reader sees one consistent snapshot.
 namespace FeatherOS::Procfs
 {
 
@@ -40,6 +40,7 @@ struct MemoryStatus
     uint64_t free_bytes;
     uint64_t kernel_heap_bytes;
     uint64_t tmp_bytes;
+    uint64_t cached_bytes;
 };
 
 struct SystemStatus
@@ -50,7 +51,15 @@ struct SystemStatus
     uint64_t busy_milliseconds[MaximumCpus];
 };
 
-// The kernel's process table and memory counters, which the host tests replace.
+struct MountStatus
+{
+    const char* source;
+    const char* type;
+    char point[User::MaximumPathLength];
+    bool read_only;
+};
+
+// The kernel's process table, memory counters and mounts, which the host tests replace.
 struct Source
 {
     // The index-th live process; false past the last one.
@@ -58,13 +67,17 @@ struct Source
     bool (*process_status)(uint64_t process_id, ProcessStatus* status);
     void (*memory_status)(MemoryStatus* status);
     void (*system_status)(SystemStatus* status);
+    // The index-th mount in mount order; false past the last one.
+    bool (*mount_at)(uint32_t index, MountStatus* status);
 };
 
 void SetSource(const Source& source);
 // Writes the file's text into buffer (MaximumFileSize bytes) and its length into *length.
 bool Generate(const char* path, char* buffer, size_t* length);
 bool IsDirectory(const char* path);
-bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry);
+// Whether path exists, with its number for stat and whether it is a directory.
+bool Find(const char* path, uint64_t* serial_number, bool* directory);
+bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry);
 
 } // namespace FeatherOS::Procfs
 

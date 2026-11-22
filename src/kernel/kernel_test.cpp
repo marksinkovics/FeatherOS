@@ -1,11 +1,14 @@
 #include "kernel_test.h"
 
+#include "fs/partition.h"
 #include "kernel/arch/cpu_features.h"
 #include "kernel/arch/serial.h"
 #include "kernel/console.h"
 #include "kernel/cpu.h"
 #include "kernel/exception.h"
-#include "kernel/filesystem/fat16.h"
+#include "kernel/filesystem/drivers.h"
+#include "kernel/filesystem/initramfs.h"
+#include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/vfs.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/kernel_stack.h"
@@ -17,6 +20,9 @@
 #include "kernel/process.h"
 #include "kernel/scheduler.h"
 #include "kernel/storage/block_device.h"
+#include "kernel/storage/core_block_device.h"
+#include "kernel/storage/page_cache.h"
+#include "kernel/storage/page_cache.h"
 #include "kernel/string/format.h"
 #include "kernel/string/memory_functions.h"
 #include "kernel/terminal/terminal.h"
@@ -938,7 +944,7 @@ void RunSmpTests()
 namespace
 {
 
-// The last sector before the FAT16 partition, which nothing else uses.
+// The last sector before the root's partition, which nothing else uses.
 constexpr uint64_t ScratchSector = 2047;
 constexpr char BootCountMagic[] = "FOSBOOT";
 
@@ -947,9 +953,11 @@ uint8_t PatternByte(uint32_t index, uint64_t boot_count)
     return static_cast<uint8_t>(static_cast<uint64_t>(index) * 7 + boot_count);
 }
 
-// The host-side check in tools/smoke_test.py rebuilds the same text.
-constexpr char PersistentFile[] = "/PERSIST.TXT";
-constexpr char ScratchFile[] = "/SCRATCH.TMP";
+// The disk's FAT16 partition, its second, which nothing mounts at boot. The host-side check in
+// tools/smoke/cases/storage.py rebuilds the same text.
+constexpr char FatPoint[] = "/fat";
+constexpr char PersistentFile[] = "/fat/PERSIST.TXT";
+constexpr char ScratchFile[] = "/fat/SCRATCH.TMP";
 constexpr uint32_t PersistentLines = 200;
 
 uint64_t FormatLine(char (&line)[48], uint64_t boot_count, uint32_t line_number)
@@ -1015,6 +1023,14 @@ void CheckPersistentFile(uint64_t boot_count)
     VFS::Close(&file);
 }
 
+// 0 when the disk cannot say.
+uint64_t FreeDiskBlocks()
+{
+    FeatherDisk::VolumeStatistics statistics = {};
+    Filesystem::CoreDriver* const volume = Filesystem::Drivers::VolumeOf(VFS::MountedAt(FatPoint));
+    return volume != nullptr && volume->Statistics(&statistics) ? statistics.free_blocks : 0;
+}
+
 // Rewrites the previous boot's file in place, then checks that deleting a file returns its
 // clusters.
 void RunFileTests(uint64_t boot_count)
@@ -1042,25 +1058,1132 @@ void RunFileTests(uint64_t boot_count)
     VFS::Close(&file);
     CheckPersistentFile(boot_count);
 
-    const uint32_t free_clusters = FAT16::FreeClusterCount();
+    const uint64_t free_clusters = FreeDiskBlocks();
     if (!VFS::Create(ScratchFile, &file))
     {
         Panic("Storage scratch file creation failed");
     }
     WriteLines(&file, boot_count, 100);
     VFS::Close(&file);
-    if (FAT16::FreeClusterCount() >= free_clusters || !VFS::Remove(ScratchFile) ||
-        FAT16::FreeClusterCount() != free_clusters)
+    if (FreeDiskBlocks() >= free_clusters || !VFS::Remove(ScratchFile) ||
+        FreeDiskBlocks() != free_clusters)
     {
         Panic("Removing the storage scratch file did not free its clusters");
     }
+}
+
+void MountFat16()
+{
+    if (VFS::Mount("fat16", "vda1", FatPoint) != VFS::MountResult::NotFound ||
+        VFS::Mount("ext2", "vda2", FatPoint) != VFS::MountResult::NotFound ||
+        VFS::Mount("fat16", "vda2", FatPoint) != VFS::MountResult::Done)
+    {
+        Panic("Mounting the FAT16 partition failed");
+    }
+}
+
+// For the files tools/create_test_disk.py puts on the disk.
+bool ReadsAs(const char* path, const char* expected)
+{
+    VFS::FileHandle file;
+    if (!VFS::Open(path, &file))
+    {
+        return false;
+    }
+    char contents[64];
+    uint64_t length = 0;
+    const bool read = VFS::Read(&file, contents, sizeof(contents), &length);
+    VFS::Close(&file);
+    uint64_t index = 0;
+    while (read && index < length && expected[index] == contents[index])
+    {
+        ++index;
+    }
+    return read && index == length && expected[index] == '\0';
+}
+
+// Lines of "extN line NNNNN\n", past what direct blocks reach: the ext2 and ext3 partitions'
+// big.txt.
+bool BigFileMatches(const char* path, const char (&prefix)[11], uint32_t lines)
+{
+    constexpr uint64_t LineLength = 16;
+    VFS::FileHandle file{};
+    if (!VFS::Open(path, &file) || file.size != lines * LineLength)
+    {
+        VFS::Close(&file);
+        return false;
+    }
+    bool matches = true;
+    for (uint32_t line = 0; matches && line < lines; ++line)
+    {
+        char text[LineLength];
+        uint64_t length = 0;
+        matches = VFS::Read(&file, text, LineLength, &length) && length == LineLength;
+        for (uint32_t index = 0; matches && index < sizeof(prefix) - 1; ++index)
+        {
+            matches = text[index] == prefix[index];
+        }
+        uint32_t number = line;
+        for (uint32_t digit = 0; matches && digit < 5; ++digit)
+        {
+            matches = text[14 - digit] == static_cast<char>('0' + number % 10);
+            number /= 10;
+        }
+        matches = matches && text[15] == '\n';
+    }
+    VFS::Close(&file);
+    return matches;
+}
+
+// The file the read-write checks write: 1000 lines of "feather ext2 line NNNNN\n", past the
+// 12 direct blocks of the test disk's 1 KiB blocks. tools/smoke/cases/storage.py checks it too.
+constexpr uint32_t Ext2DataLines = 1000;
+constexpr uint64_t Ext2DataLineLength = 24;
+constexpr uint64_t Ext2DataSize = Ext2DataLines * Ext2DataLineLength;
+
+struct Ext2Data
+{
+    char bytes[Ext2DataSize];
+    char read_back[Ext2DataSize];
+};
+
+void FillExt2Data(char* bytes)
+{
+    constexpr char Prefix[] = "feather ext2 line ";
+    for (uint32_t line = 0; line < Ext2DataLines; ++line)
+    {
+        char* text = bytes + line * Ext2DataLineLength;
+        for (uint32_t index = 0; index < sizeof(Prefix) - 1; ++index)
+        {
+            text[index] = Prefix[index];
+        }
+        uint32_t number = line;
+        for (uint32_t digit = 0; digit < 5; ++digit)
+        {
+            text[22 - digit] = static_cast<char>('0' + number % 10);
+            number /= 10;
+        }
+        text[23] = '\n';
+    }
+}
+
+bool WriteNew(const char* path, const char* data, uint64_t length)
+{
+    VFS::FileHandle file{};
+    if (!VFS::Create(path, &file))
+    {
+        return false;
+    }
+    uint64_t written = 0;
+    const bool done = VFS::Write(&file, data, length, &written) && written == length;
+    VFS::Close(&file);
+    return done;
+}
+
+bool HoldsExt2Data(const char* path, Ext2Data* data)
+{
+    VFS::FileHandle file{};
+    if (!VFS::Open(path, &file))
+    {
+        return false;
+    }
+    uint64_t length = 0;
+    const bool read = file.size == Ext2DataSize &&
+                      VFS::Read(&file, data->read_back, Ext2DataSize, &length) &&
+                      length == Ext2DataSize;
+    VFS::Close(&file);
+    for (uint64_t index = 0; read && index < Ext2DataSize; ++index)
+    {
+        if (data->read_back[index] != data->bytes[index])
+        {
+            return false;
+        }
+    }
+    return read;
+}
+
+bool LinkCountIs(const char* path, uint32_t count)
+{
+    VFS::FileInfo info{};
+    return VFS::Stat(path, &info) && info.link_count == count;
+}
+
+bool LinkTargetIs(const char* path, const char* expected)
+{
+    char target[32];
+    uint32_t length = 0;
+    if (!VFS::ReadLink(path, target, sizeof(target), &length) || length >= sizeof(target))
+    {
+        return false;
+    }
+    target[length] = '\0';
+    uint32_t index = 0;
+    while (expected[index] != '\0' && expected[index] == target[index])
+    {
+        ++index;
+    }
+    return expected[index] == '\0' && index == length;
+}
+
+struct VolumePath
+{
+    char text[64];
+};
+
+// root is "" for the root filesystem or the mount point of another volume.
+VolumePath Join(const char* root, const char* tail)
+{
+    VolumePath path{};
+    if (!String::FormatTo(path.text, sizeof(path.text), "{}{}", root, tail))
+    {
+        Panic("A storage test path is too long");
+    }
+    return path;
+}
+
+// The first boot builds /os on a volume; the second checks it and changes it again. After each
+// boot the harness runs e2fsck -fn on the partitions and reads them with debugfs.
+void WriteVolumeFirstBoot(const char* root, Ext2Data* data)
+{
+    constexpr char Short[] = "short\nand the rest is truncated away";
+    VFS::FileHandle file{};
+    if (!VFS::MakeDirectory(Join(root, "/os").text) ||
+        !WriteNew(Join(root, "/os/data.txt").text, data->bytes, Ext2DataSize) ||
+        !VFS::Link(Join(root, "/os/data.txt").text, Join(root, "/os/data-link.txt").text) ||
+        !VFS::SymbolicLink(Join(root, "/os/to-data").text, "data.txt") ||
+        !VFS::MakeDirectory(Join(root, "/os/sub").text) ||
+        !WriteNew(Join(root, "/os/scratch.txt").text, "moved\n", 6) ||
+        !VFS::Rename(Join(root, "/os/scratch.txt").text, Join(root, "/os/sub/moved.txt").text) ||
+        !WriteNew(Join(root, "/os/short.txt").text, Short, sizeof(Short) - 1) ||
+        !WriteNew(Join(root, "/os/gone.txt").text, "gone\n", 5) ||
+        !VFS::Remove(Join(root, "/os/gone.txt").text) ||
+        !VFS::MakeDirectory(Join(root, "/os/empty").text) ||
+        !VFS::RemoveDirectory(Join(root, "/os/empty").text))
+    {
+        Panic("Writing a volume failed");
+    }
+    if (!VFS::Open(Join(root, "/os/short.txt").text, &file) || !VFS::Truncate(&file, 6))
+    {
+        Panic("Truncating a file failed");
+    }
+    VFS::Close(&file);
+    if (VFS::MakeDirectory(Join(root, "/os").text) ||
+        VFS::LastError() != User::SyscallErrorExists ||
+        VFS::RemoveDirectory(Join(root, "/os/sub").text) ||
+        VFS::LastError() != User::SyscallErrorNotEmpty ||
+        VFS::Link(Join(root, "/os/sub").text, Join(root, "/os/sub-link").text) ||
+        VFS::LastError() != User::SyscallErrorNotPermitted ||
+        VFS::Rename(Join(root, "/os").text, Join(root, "/os/sub/inside").text) ||
+        VFS::LastError() != User::SyscallErrorInvalidArgument ||
+        VFS::Create(Join(root, "/missing/new.txt").text, &file) ||
+        VFS::LastError() != User::SyscallErrorNotFound)
+    {
+        Panic("A change failed with the wrong error");
+    }
+}
+
+void ChangeVolumeSecondBoot(const char* root, Ext2Data* data)
+{
+    VFS::FileInfo info{};
+    if (!HoldsExt2Data(Join(root, "/os/data.txt").text, data) ||
+        !HoldsExt2Data(Join(root, "/os/data-link.txt").text, data) ||
+        !LinkCountIs(Join(root, "/os/data.txt").text, 2) ||
+        !LinkTargetIs(Join(root, "/os/to-data").text, "data.txt") ||
+        !ReadsAs(Join(root, "/os/sub/moved.txt").text, "moved\n") ||
+        !ReadsAs(Join(root, "/os/short.txt").text, "short\n") ||
+        VFS::IsDirectory(Join(root, "/os/empty").text) ||
+        VFS::Stat(Join(root, "/os/gone.txt").text, &info))
+    {
+        Panic("A volume lost what the first boot wrote");
+    }
+    VFS::FileHandle file{};
+    uint64_t written = 0;
+    if (!VFS::Remove(Join(root, "/os/data.txt").text) ||
+        !LinkCountIs(Join(root, "/os/data-link.txt").text, 1) ||
+        !VFS::Remove(Join(root, "/os/to-data").text) ||
+        !VFS::Rename(Join(root, "/os/sub").text, Join(root, "/moved-sub").text) ||
+        !VFS::Open(Join(root, "/os/short.txt").text, &file) || !VFS::Seek(&file, file.size) ||
+        !VFS::Write(&file, "more\n", 5, &written))
+    {
+        Panic("Changing a volume again failed");
+    }
+    VFS::Close(&file);
+    if (!HoldsExt2Data(Join(root, "/os/data-link.txt").text, data) ||
+        !ReadsAs(Join(root, "/moved-sub/moved.txt").text, "moved\n") ||
+        !ReadsAs(Join(root, "/os/short.txt").text, "short\nmore\n"))
+    {
+        Panic("A volume read back different contents after the second changes");
+    }
+}
+
+uint64_t TextLength(const char* text)
+{
+    uint64_t length = 0;
+    while (text[length] != '\0')
+    {
+        ++length;
+    }
+    return length;
+}
+
+bool SameText(const char* left, const char* right)
+{
+    while (*left != '\0' && *left == *right)
+    {
+        ++left;
+        ++right;
+    }
+    return *left == *right;
+}
+
+// The directory has count entries, name among them with the type bits given.
+bool ListsWith(const char* path, uint32_t count, const char* name, uint32_t type)
+{
+    const Memory::HeapObject<Filesystem::DirectoryEntry> entry;
+    bool found = false;
+    uint32_t index = 0;
+    for (; entry && VFS::ReadDirectory(path, index, &*entry); ++index)
+    {
+        found = found || (SameText(entry->name, name) && entry->type == type);
+    }
+    return found && index == count;
+}
+
+bool MountedAs(const char* point, const char* type, const char* source, bool read_only)
+{
+    const Memory::HeapObject<Procfs::MountStatus> status;
+    for (uint32_t index = 0; status && VFS::DescribeMount(index, &*status); ++index)
+    {
+        if (SameText(status->point, point))
+        {
+            return SameText(status->type, type) && SameText(status->source, source) &&
+                   status->read_only == read_only;
+        }
+    }
+    return false;
+}
+
+// The ext4 partition's extents.bin (tools/create_test_disk.py): 2048 blocks of 1 KiB, each 32
+// lines of "ext4 block BBBB line LL extents\n", except every fourth block, a hole of zeros. With
+// 512 extents its tree is two levels deep.
+constexpr uint32_t ExtentFileBlocks = 2048;
+constexpr uint32_t ExtentBlockSize = 1024;
+constexpr uint32_t ExtentLineLength = 32;
+
+struct ExtentBlock
+{
+    char bytes[ExtentBlockSize];
+};
+
+void WriteDigits(char* text, uint32_t value, uint32_t count)
+{
+    for (uint32_t digit = count; digit-- > 0;)
+    {
+        text[digit] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    }
+}
+
+bool ExtentBlockMatches(const char* bytes, uint32_t block)
+{
+    if (block % 4 == 3)
+    {
+        for (uint32_t index = 0; index < ExtentBlockSize; ++index)
+        {
+            if (bytes[index] != '\0')
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    char expected[] = "ext4 block 0000 line 00 extents\n";
+    static_assert(sizeof(expected) == ExtentLineLength + 1);
+    WriteDigits(expected + 11, block, 4);
+    for (uint32_t line = 0; line < ExtentBlockSize / ExtentLineLength; ++line)
+    {
+        WriteDigits(expected + 21, line, 2);
+        for (uint32_t index = 0; index < ExtentLineLength; ++index)
+        {
+            if (bytes[line * ExtentLineLength + index] != expected[index])
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool ExtentFileMatches(const char* path)
+{
+    const Memory::HeapObject<ExtentBlock> block;
+    VFS::FileHandle file{};
+    if (!block || !VFS::Open(path, &file))
+    {
+        return false;
+    }
+    bool matches = file.size == uint64_t{ExtentFileBlocks} * ExtentBlockSize;
+    for (uint32_t number = 0; matches && number < ExtentFileBlocks; ++number)
+    {
+        uint64_t length = 0;
+        matches = VFS::Read(&file, block->bytes, ExtentBlockSize, &length) &&
+                  length == ExtentBlockSize && ExtentBlockMatches(block->bytes, number);
+    }
+    VFS::Close(&file);
+    return matches;
+}
+
+// Nothing may change a read-only volume.
+bool RefusesChanges(const char* point)
+{
+    char path[32];
+    VFS::FileHandle file{};
+    return String::FormatTo(path, sizeof(path), "{}/hello.txt", point) && VFS::IsReadOnly(path) &&
+           !VFS::Remove(path) && VFS::LastError() == User::SyscallErrorReadOnly &&
+           String::FormatTo(path, sizeof(path), "{}/new.txt", point) && !VFS::Create(path, &file) &&
+           VFS::LastError() == User::SyscallErrorReadOnly &&
+           String::FormatTo(path, sizeof(path), "{}/new", point) && !VFS::MakeDirectory(path);
+}
+
+// A read-only mount never replays a journal: what the first boot's writeback committed to the log
+// is not visible yet, and what the first boot wrote and unmounted is.
+void CheckReadOnlyBeforeReplay(const char* type, const char* source, const char* point)
+{
+    VFS::FileInfo info{};
+    if (VFS::Mount(type, source, point, Filesystem::MountMode::ReadOnly) !=
+            VFS::MountResult::Done ||
+        !MountedAs(point, type, source, true) || !RefusesChanges(point) ||
+        VFS::Stat(Join(point, "/periodic.txt").text, &info) ||
+        !VFS::Stat(Join(point, "/os/data.txt").text, &info) ||
+        VFS::Unmount(point) != VFS::MountResult::Done)
+    {
+        Panic("A read-only ext3 mount replayed its journal or took a change");
+    }
+}
+
+// The first boot's shell session wrote /periodic.txt and stopped without unmounting, so the next
+// writable mount replays the journal and finds it.
+void CheckReplayedFile(const char* root, const char* text)
+{
+    if (!ReadsAs(Join(root, "/periodic.txt").text, text) ||
+        !VFS::Rename(Join(root, "/periodic.txt").text, Join(root, "/os/replayed.txt").text))
+    {
+        Panic("An ext3 or ext4 mount did not replay the writeback's change");
+    }
+}
+
+// The ext4 root's /samples (tools/create_test_disk.py): the ext4 test files, the depth-2 extent
+// file among them.
+bool SamplesMatch()
+{
+    return ReadsAs("/samples/hello.txt", "Hello from the ext4 partition.\n") &&
+           ReadsAs("/samples/docs/nested/deep.txt", "nested ext4 file\n") &&
+           ExtentFileMatches("/samples/extents.bin") &&
+           LinkTargetIs("/samples/link", "docs/nested/deep.txt") &&
+           ListsWith("/samples/docs", 1, "nested", User::ModeDirectory);
+}
+
+// The test disk's root holds BLOCK.TXT; the kernel itself reads no file from the root.
+void CheckRootFile()
+{
+    constexpr char Contents[] = "FeatherOS root volume OK";
+    VFS::FileInfo info{};
+    if (!VFS::Stat("/BLOCK.TXT", &info) || info.size != sizeof(Contents) - 1 ||
+        !ReadsAs("/BLOCK.TXT", Contents))
+    {
+        Panic("The root's /BLOCK.TXT read back different contents");
+    }
+}
+
+// The root's journal gets the changes and is not closed here: the first boot's shell session stops
+// the machine, so the second boot's root mount replays what only the writeback task committed.
+void CheckRoot(uint64_t boot_count, Ext2Data* data)
+{
+    if (!SamplesMatch())
+    {
+        Panic("The ext4 root read back different contents");
+    }
+    if (boot_count == 1)
+    {
+        WriteVolumeFirstBoot("", data);
+    }
+    else if (boot_count == 2)
+    {
+        CheckReplayedFile("", "periodic ext4\n");
+        ChangeVolumeSecondBoot("", data);
+    }
+    if (!VFS::SyncAll())
+    {
+        Panic("Syncing the written ext4 root failed");
+    }
+}
+
+// The initramfs's default of /etc/<name> followed by suffix.
+bool EtcFileIs(const char* name, const char* suffix)
+{
+    char path[sizeof("/etc/") + Initramfs::NameCapacity];
+    if (!String::FormatTo(path, sizeof(path), "/etc/{}", name))
+    {
+        return false;
+    }
+    uint64_t suffix_length = 0;
+    while (suffix[suffix_length] != '\0')
+    {
+        ++suffix_length;
+    }
+    Initramfs::File archive;
+    VFS::FileHandle file{};
+    if (!Initramfs::Open("etc", name, &archive) || !VFS::Open(path, &file))
+    {
+        return false;
+    }
+    bool same = file.size == archive.size + suffix_length;
+    char chunk[64];
+    uint64_t offset = 0;
+    uint64_t count = 0;
+    while (same && VFS::Read(&file, chunk, sizeof(chunk), &count) && count != 0)
+    {
+        for (uint64_t index = 0; index < count; ++index, ++offset)
+        {
+            const uint64_t past = offset < archive.size ? 0 : offset - archive.size;
+            if (past >= suffix_length && offset >= archive.size)
+            {
+                same = false;
+                break;
+            }
+            const char expected =
+                offset < archive.size ? static_cast<char>(archive.data[offset]) : suffix[past];
+            same = same && chunk[index] == expected;
+        }
+    }
+    VFS::Close(&file);
+    return same && offset == archive.size + suffix_length;
+}
+
+bool AppendTo(const char* path, const char* text)
+{
+    VFS::FileHandle file{};
+    uint64_t length = 0;
+    while (text[length] != '\0')
+    {
+        ++length;
+    }
+    uint64_t written = 0;
+    const bool done = VFS::Open(path, &file) && VFS::Seek(&file, file.size) &&
+                      VFS::Write(&file, text, length, &written) && written == length;
+    VFS::Close(&file);
+    return done;
+}
+
+bool CreateWith(const char* path, const char* text)
+{
+    VFS::FileHandle file{};
+    uint64_t length = 0;
+    while (text[length] != '\0')
+    {
+        ++length;
+    }
+    uint64_t written = 0;
+    const bool done =
+        VFS::Create(path, &file) && VFS::Write(&file, text, length, &written) && written == length;
+    VFS::Close(&file);
+    return done;
+}
+
+bool FileHolds(const char* path, const char* text)
+{
+    VFS::FileHandle file{};
+    if (!VFS::Open(path, &file))
+    {
+        return false;
+    }
+    char chunk[64];
+    uint64_t offset = 0;
+    uint64_t count = 0;
+    bool same = true;
+    while (same && VFS::Read(&file, chunk, sizeof(chunk), &count) && count != 0)
+    {
+        for (uint64_t index = 0; same && index < count; ++index, ++offset)
+        {
+            same = text[offset] != '\0' && chunk[index] == text[offset];
+        }
+    }
+    VFS::Close(&file);
+    return same && text[offset] == '\0';
+}
+
+// The init service files the harness expects (tools/smoke/cases/storage.py): init reads them at
+// the end of each boot, so the marker is printed twice and dhcp is not started either time.
+constexpr char ServiceFile[] = "# storage-service-marker\n"
+                               "once grep storage-service-marker /etc/init.d/storage\n";
+constexpr char DisabledFile[] = "# storage test\ndhcp\n";
+
+// /etc is the root's own directory, not the RAM copy; hosts and resolv.conf keep an edit of the
+// first boot, the administrator's service and disabled files persist, and a default deleted on the
+// second boot comes back at the next UseRootEtc.
+void CheckEtc(uint64_t boot_count)
+{
+    constexpr char FirstEdit[] = "# storage test boot 1\n";
+    constexpr char SecondEdit[] = "# storage test boot 2\n";
+    if (VFS::IsMountPoint("/etc") || !VFS::IsDirectory("/etc") || VFS::IsReadOnly("/etc/hosts"))
+    {
+        Panic("/etc is not the writable root's directory");
+    }
+    if (boot_count == 1)
+    {
+        if (!EtcFileIs("hosts", "") || !EtcFileIs("resolv.conf", "") ||
+            !AppendTo("/etc/hosts", FirstEdit) || !AppendTo("/etc/resolv.conf", FirstEdit))
+        {
+            Panic("The root's /etc does not hold the defaults or took no edit");
+        }
+        VFS::FileInfo info;
+        if (VFS::Stat("/etc/init.conf", &info) || VFS::Stat("/etc/init.d", &info) ||
+            VFS::Stat("/etc/init.disabled", &info) || !VFS::MakeDirectory("/etc/init.d") ||
+            !CreateWith("/etc/init.d/storage", ServiceFile) ||
+            !CreateWith("/etc/init.disabled", DisabledFile))
+        {
+            Panic("The root's /etc has init files by default or took no service");
+        }
+    }
+    else if (boot_count == 2)
+    {
+        if (!EtcFileIs("hosts", FirstEdit) || !EtcFileIs("resolv.conf", FirstEdit) ||
+            !FileHolds("/etc/init.d/storage", ServiceFile) ||
+            !FileHolds("/etc/init.disabled", DisabledFile))
+        {
+            Panic("The root's /etc lost the first boot's edits or init files");
+        }
+        VFS::FileInfo info;
+        if (!VFS::Remove("/etc/resolv.conf") || VFS::Stat("/etc/resolv.conf", &info) ||
+            !VFS::UseRootEtc() || !EtcFileIs("resolv.conf", "") || !EtcFileIs("hosts", FirstEdit) ||
+            !AppendTo("/etc/hosts", SecondEdit))
+        {
+            Panic("A deleted /etc default did not come back or an edit was overwritten");
+        }
+    }
+}
+
+void CheckRootReadOnly(const char* kept, Ext2Data* data)
+{
+    if (VFS::Mount("ext4", "vda2", "/", Filesystem::MountMode::ReadOnly) !=
+            VFS::MountResult::NotFound ||
+        VFS::Mount("ext2", "vda1", "/", Filesystem::MountMode::ReadOnly) !=
+            VFS::MountResult::NotFound ||
+        VFS::Mount("ext4", "vda1", "/", Filesystem::MountMode::ReadOnly) != VFS::MountResult::Done)
+    {
+        Panic("Mounting the root read-only failed");
+    }
+    if (!MountedAs("/", "ext4", "vda1", true) || !SamplesMatch() ||
+        (kept != nullptr && !HoldsExt2Data(kept, data)))
+    {
+        Panic("The ext4 root read back different contents");
+    }
+    VFS::FileHandle file{};
+    if (!RefusesChanges("/samples") || VFS::Open("/samples/link", &file))
+    {
+        Panic("The read-only ext4 root took a change or opened a link");
+    }
+    if (VFS::Unmount("/") != VFS::MountResult::Done || VFS::IsDirectory("/samples/docs"))
+    {
+        Panic("Unmounting the read-only root failed");
+    }
+}
+
+// Nothing runs yet, so once the other mounts are out of the way the root can be unmounted, mounted
+// read-only and read-write again, and the FAT16 file written before must still be there. The
+// root's changes of this boot are there too: unmounting the ext4 root closed its journal.
+void CheckRemount(uint64_t boot_count, Ext2Data* data)
+{
+    constexpr const char* InnerPoints[] = {"/system", "/etc", "/dev", "/proc", "/tmp", FatPoint};
+    constexpr char RootFile[] = "/BLOCK.TXT";
+    if (VFS::Unmount("/") != VFS::MountResult::Busy)
+    {
+        Panic("Unmounting / with mounts inside it did not fail busy");
+    }
+    for (const char* point : InnerPoints)
+    {
+        if (VFS::IsMountPoint(point) && VFS::Unmount(point) != VFS::MountResult::Done)
+        {
+            Panic("Storage test could not unmount a filesystem inside /");
+        }
+    }
+    VFS::FileHandle file;
+    if (!VFS::Open(RootFile, &file) || VFS::Unmount("/") != VFS::MountResult::Busy)
+    {
+        Panic("Unmounting / with an open file did not fail busy");
+    }
+    VFS::Close(&file);
+    if (VFS::Unmount("/") != VFS::MountResult::Done || VFS::Open(RootFile, &file))
+    {
+        Panic("Unmounting the root failed");
+    }
+    const char* kept = nullptr;
+    if (boot_count == 1 || boot_count == 2)
+    {
+        kept = boot_count == 1 ? "/os/data.txt" : "/os/data-link.txt";
+    }
+    CheckRootReadOnly(kept, data);
+    if (VFS::Mount("ext4", "vda1", "/") != VFS::MountResult::Done || VFS::IsReadOnly(RootFile))
+    {
+        Panic("Mounting the root read-write again failed");
+    }
+    if (!VFS::MountBuiltIn() || VFS::Mount("fat16", "vda2", FatPoint) != VFS::MountResult::Done ||
+        !VFS::UseRootEtc())
+    {
+        Panic("Storage test could not mount the filesystems inside / again");
+    }
+    CheckPersistentFile(boot_count);
+}
+
+bool RefusesCreate(const char* point)
+{
+    char path[32];
+    VFS::FileHandle file{};
+    return String::FormatTo(path, sizeof(path), "{}/remount-new.txt", point) &&
+           !VFS::Create(path, &file) && VFS::LastError() == User::SyscallErrorReadOnly;
+}
+
+// The partition's superblock, 1024 bytes in, names needs_recovery (incompatible feature 0x4).
+bool PartitionNeedsRecovery(size_t number)
+{
+    FeatherDisk::Partition::Range ranges[16] = {};
+    const size_t count = FeatherDisk::Partition::Find(BlockDevice::CoreDevice(), ranges);
+    uint8_t sector[BlockDevice::SectorSize];
+    size_t index = 0;
+    while (index < count && ranges[index].number != number)
+    {
+        ++index;
+    }
+    if (index == count || !BlockDevice::ReadSector(ranges[index].first_sector + 2, sector))
+    {
+        Panic("Could not read the root's superblock");
+    }
+    constexpr uint32_t IncompatOffset = 0x60;
+    constexpr uint8_t NeedsRecoveryBit = 0x4;
+    return (sector[IncompatOffset] & NeedsRecoveryBit) != 0;
+}
+
+bool RemountTo(const char* point, Filesystem::MountMode mode, bool read_only, const char* type,
+               const char* source)
+{
+    return VFS::Remount(point, mode) == VFS::MountResult::Done &&
+           MountedAs(point, type, source, read_only);
+}
+
+// At the end of the storage test's mounts: the root and /fat change mode in place, the root's
+// journal is closed on the way to read-only, and only the root's own /etc follows it.
+void CheckRootRemount(uint64_t boot_count)
+{
+    constexpr char RemountFile[] = "/os/remount.txt";
+    constexpr char Text[] = "remounted\n";
+    VFS::FileHandle file{};
+    VFS::Remove(RemountFile);
+    if (!RemountTo("/", Filesystem::MountMode::ReadOnly, true, "ext4", "vda1") ||
+        PartitionNeedsRecovery(1))
+    {
+        Panic("The root's read-only remount left its journal needing recovery");
+    }
+    if (!RefusesChanges("/samples") || !RefusesCreate("/etc") || !RefusesCreate("/") ||
+        VFS::IsMountPoint("/etc"))
+    {
+        Panic("The read-only root or its /etc took a change");
+    }
+    const bool tmp_created = VFS::Create("/tmp/remount.txt", &file);
+    VFS::Close(&file);
+    if (!tmp_created || !VFS::Remove("/tmp/remount.txt"))
+    {
+        Panic("/tmp refused a change while the root was read-only");
+    }
+    if (!RemountTo("/", Filesystem::MountMode::ReadWrite, false, "ext4", "vda1") ||
+        !WriteNew(RemountFile, Text, sizeof(Text) - 1))
+    {
+        Panic("The root did not remount read-write");
+    }
+    if (!RemountTo("/", Filesystem::MountMode::ReadOnly, true, "ext4", "vda1") ||
+        PartitionNeedsRecovery(1) || !ReadsAs(RemountFile, Text) || !SamplesMatch() ||
+        VFS::Create(RemountFile, &file))
+    {
+        Panic("The root read back wrong after a read-only remount");
+    }
+    if (!RemountTo("/", Filesystem::MountMode::ReadWrite, false, "ext4", "vda1") ||
+        !VFS::Remove(RemountFile) || VFS::IsReadOnly("/etc/hosts"))
+    {
+        Panic("The root did not remount read-write again");
+    }
+    if (!RemountTo(FatPoint, Filesystem::MountMode::ReadOnly, true, "fat16", "vda2") ||
+        !RefusesCreate(FatPoint) ||
+        !RemountTo(FatPoint, Filesystem::MountMode::ReadWrite, false, "fat16", "vda2") ||
+        !RemountTo(FatPoint, Filesystem::MountMode::ReadWrite, false, "fat16", "vda2"))
+    {
+        Panic("The FAT16 partition did not remount");
+    }
+    CheckPersistentFile(boot_count);
+}
+
+// The ext2 partition's files, which tools/create_test_disk.py makes.
+bool Ext2FilesMatch()
+{
+    return ReadsAs("/ext2/hello.txt", "Hello from the ext2 partition.\n") &&
+           ReadsAs("/ext2/docs/notes/deep.txt", "nested ext2 file\n") &&
+           BigFileMatches("/ext2/big.txt", "ext2 line ", 5000) &&
+           LinkTargetIs("/ext2/fast-link", "hello.txt");
+}
+
+void CheckExt2ReadOnly()
+{
+    VFS::FileHandle file{};
+    if (VFS::Mount("ext2", "vda6", "/ext2", Filesystem::MountMode::ReadOnly) !=
+            VFS::MountResult::Done ||
+        !MountedAs("/ext2", "ext2", "vda6", true) || !Ext2FilesMatch() ||
+        !RefusesChanges("/ext2") || VFS::Open("/ext2/fast-link", &file) ||
+        VFS::Unmount("/ext2") != VFS::MountResult::Done || VFS::IsDirectory("/ext2/docs"))
+    {
+        Panic("A read-only ext2 mount took a change or opened a link");
+    }
+}
+
+// The disk's third and sixth partitions, ext3 and ext2, mounted read-write; the first boot writes
+// both and unmounts, the second finds the first boot's shell session's changes (ext2 synced by the
+// writeback task, ext3 by replaying its journal). The originals are never changed.
+void CheckExt3AndExt2(uint64_t boot_count, Ext2Data* data)
+{
+    if (VFS::Mount("ext2", "vda3", "/ext3") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext4", "vda3", "/ext3") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext3", "vda6", "/ext2") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext4", "vda6", "/ext2") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext2", "vda1", "/ext2") != VFS::MountResult::NotFound ||
+        VFS::Mount("ext3", "vda1", "/ext2") != VFS::MountResult::NotFound)
+    {
+        Panic("Mounting an ext2, ext3 or ext4 partition by the wrong type did not fail");
+    }
+    if (boot_count == 2)
+    {
+        CheckReadOnlyBeforeReplay("ext3", "vda3", "/ext3");
+    }
+    CheckExt2ReadOnly();
+    if (VFS::Mount("ext3", "vda3", "/ext3") != VFS::MountResult::Done ||
+        VFS::Mount("ext2", "vda6", "/ext2") != VFS::MountResult::Done)
+    {
+        Panic("Mounting the ext3 and ext2 partitions failed");
+    }
+    if (!MountedAs("/ext3", "ext3", "vda3", false) || !MountedAs("/ext2", "ext2", "vda6", false))
+    {
+        Panic("An ext3 or ext2 partition did not mount writable");
+    }
+    if (!ReadsAs("/ext3/hello.txt", "Hello from the ext3 partition.\n") ||
+        !ReadsAs("/ext3/docs/readme.txt", "ext3 subdirectory file\n") ||
+        !BigFileMatches("/ext3/big.txt", "ext3 line ", 3000) ||
+        !LinkTargetIs("/ext3/link", "docs/readme.txt") ||
+        !ListsWith("/ext3/docs", 1, "readme.txt", User::ModeRegular))
+    {
+        Panic("The ext3 partition read back different contents");
+    }
+    if (!Ext2FilesMatch())
+    {
+        Panic("The ext2 partition read back different contents");
+    }
+
+    if (boot_count == 1)
+    {
+        WriteVolumeFirstBoot("/ext3", data);
+        WriteVolumeFirstBoot("/ext2", data);
+    }
+    else if (boot_count == 2)
+    {
+        CheckReplayedFile("/ext3", "periodic ext3\n");
+        if (!ReadsAs("/ext2/periodic.txt", "periodic ext2\n") || !VFS::Remove("/ext2/periodic.txt"))
+        {
+            Panic("The ext2 partition lost the file the first boot's writeback synced");
+        }
+        ChangeVolumeSecondBoot("/ext3", data);
+        ChangeVolumeSecondBoot("/ext2", data);
+    }
+    if (VFS::Unmount("/ext3") != VFS::MountResult::Done ||
+        VFS::Unmount("/ext2") != VFS::MountResult::Done || VFS::IsDirectory("/ext2/docs"))
+    {
+        Panic("Unmounting the ext3 and ext2 partitions failed");
+    }
+}
+
+// The second ext4 volume (vda5) mounted beside the root, which the shell part and the harness then
+// check on disk: written like the ext3 and ext2 volumes, replayed by the second boot's mount.
+void CheckSecondExt4(uint64_t boot_count, Ext2Data* data)
+{
+    char data_name[32];
+    char root_name[32];
+    char data_text[40];
+    char root_text[40];
+    if (!String::FormatTo(data_name, sizeof(data_name), "/data/boot{}.bin", boot_count) ||
+        !String::FormatTo(root_name, sizeof(root_name), "/boot{}-root.txt", boot_count) ||
+        !String::FormatTo(data_text, sizeof(data_text), "data volume boot {}\n", boot_count) ||
+        !String::FormatTo(root_text, sizeof(root_text), "root boot {}\n", boot_count))
+    {
+        Panic("A second ext4 test name is too long");
+    }
+    if (VFS::Mount("ext4", "vda5", "/data") != VFS::MountResult::Done ||
+        !MountedAs("/data", "ext4", "vda5", false) || !MountedAs("/", "ext4", "vda1", false))
+    {
+        Panic("The second ext4 volume did not mount beside the root");
+    }
+    if (!ReadsAs("/data/hello.txt", "Hello from the second ext4 partition.\n") ||
+        !ReadsAs("/data/samples/hello.txt", "data volume\n") ||
+        !ReadsAs("/samples/hello.txt", "Hello from the ext4 partition.\n"))
+    {
+        Panic("The two ext4 volumes read back each other's contents");
+    }
+    if (boot_count == 1)
+    {
+        WriteVolumeFirstBoot("/data", data);
+    }
+    else if (boot_count == 2)
+    {
+        CheckReplayedFile("/data", "periodic data\n");
+        ChangeVolumeSecondBoot("/data", data);
+    }
+    if (!WriteNew(data_name, data_text, TextLength(data_text)) ||
+        !WriteNew(root_name, root_text, TextLength(root_text)) || !ReadsAs(data_name, data_text) ||
+        !ReadsAs(root_name, root_text))
+    {
+        Panic("Writing to both ext4 volumes failed");
+    }
+    if (VFS::Mount("ext4", "vda5", "/data2") != VFS::MountResult::Busy ||
+        VFS::Mount("ext4", "vda1", "/data2") != VFS::MountResult::Busy ||
+        VFS::Rename("/data/hello.txt", "/moved-hello.txt") ||
+        VFS::LastError() != User::SyscallErrorCrossDevice ||
+        VFS::Link("/data/hello.txt", "/linked-hello.txt") ||
+        VFS::LastError() != User::SyscallErrorCrossDevice ||
+        !ReadsAs("/data/hello.txt", "Hello from the second ext4 partition.\n"))
+    {
+        Panic("A volume mounted twice or a rename across volumes was not refused");
+    }
+    if (VFS::Unmount("/data") != VFS::MountResult::Done || VFS::IsDirectory("/data/samples"))
+    {
+        Panic("Unmounting the second ext4 volume failed");
+    }
+    char message[96];
+    if (!String::FormatTo(message, sizeof(message),
+                          "KERN/STORAGE: two ext4 volumes mounted at once; boot {}\n", boot_count))
+    {
+        Panic("Second ext4 message formatting failed");
+    }
+    Serial::Write(message);
+}
+
+bool FatFileMatches(uint64_t boot_count)
+{
+    CheckPersistentFile(boot_count);
+    return true;
+}
+
+bool Ext2BigFileMatches(uint64_t)
+{
+    return BigFileMatches("/ext2/big.txt", "ext2 line ", 5000);
+}
+
+// /samples/extents.bin: 1 KiB blocks of 32-byte lines, every fourth block a hole.
+bool ExtentsFileMatches(uint64_t)
+{
+    constexpr uint32_t Blocks = 2048;
+    constexpr uint32_t BlockSize = 1024;
+    constexpr uint32_t LineSize = 32;
+    VFS::FileHandle file{};
+    if (!VFS::Open("/samples/extents.bin", &file) || file.size != uint64_t{Blocks} * BlockSize)
+    {
+        VFS::Close(&file);
+        return false;
+    }
+    bool matches = true;
+    for (uint32_t block = 0; matches && block < Blocks; ++block)
+    {
+        char bytes[BlockSize];
+        uint64_t length = 0;
+        matches = VFS::Read(&file, bytes, BlockSize, &length) && length == BlockSize;
+        for (uint32_t line = 0; matches && line < BlockSize / LineSize; ++line)
+        {
+            char expected[LineSize + 1] = "ext4 block 0000 line 00 extents\n";
+            if (block % 4 == 3)
+            {
+                for (char& byte : expected)
+                {
+                    byte = '\0';
+                }
+            }
+            else
+            {
+                uint32_t value = block;
+                for (uint32_t digit = 0; digit < 4; ++digit)
+                {
+                    expected[14 - digit] = static_cast<char>('0' + value % 10);
+                    value /= 10;
+                }
+                expected[21] = static_cast<char>('0' + line / 10);
+                expected[22] = static_cast<char>('0' + line % 10);
+            }
+            for (uint32_t index = 0; matches && index < LineSize; ++index)
+            {
+                matches = bytes[line * LineSize + index] == expected[index];
+            }
+        }
+    }
+    VFS::Close(&file);
+    return matches;
+}
+
+// Nothing else reads the disk while the storage test runs, so the counter moves only for these
+// reads: a cold read must fetch at least the file's data sectors, the second must fetch none.
+void CheckCachedRead(Filesystem::CoreDriver* volume, bool (*reads)(uint64_t), uint64_t boot_count,
+                     uint64_t sectors)
+{
+    if (volume == nullptr)
+    {
+        Panic("A page cache check found no volume");
+    }
+    volume->InvalidateCache();
+    const uint64_t cold_start = BlockDevice::DeviceStatistics().read_sectors;
+    if (!reads(boot_count))
+    {
+        Panic("A file read back different contents with a cold page cache");
+    }
+    const uint64_t warm_start = BlockDevice::DeviceStatistics().read_sectors;
+    const uint64_t hits = BlockDevice::Cache().Statistics().hits;
+    if (warm_start - cold_start < sectors)
+    {
+        Panic("A cold read of a file did not read its sectors from the disk");
+    }
+    if (!reads(boot_count))
+    {
+        Panic("A file read back different contents from the page cache");
+    }
+    if (BlockDevice::DeviceStatistics().read_sectors != warm_start)
+    {
+        Panic("A second read of a file went to the disk");
+    }
+    if (BlockDevice::Cache().Statistics().hits <= hits)
+    {
+        Panic("A second read of a file did not hit the page cache");
+    }
+}
+
+// Before the writeback task starts. The ext2 volume is mounted read-only just for this check.
+void CheckPageCache(uint64_t boot_count)
+{
+    if (!BlockDevice::CacheReady())
+    {
+        Panic("The storage test needs the page cache");
+    }
+    // 2 MiB of which a quarter is holes, which have no sectors.
+    constexpr uint64_t ExtentsSectors = 3 * 2048 * 1024 / 4 / BlockDevice::SectorSize;
+    // 200 lines of 24 to 26 bytes.
+    constexpr uint64_t FatSectors = 9;
+    // 5000 lines of 16 bytes.
+    constexpr uint64_t Ext2Sectors = 5000 * 16 / BlockDevice::SectorSize;
+    CheckCachedRead(Filesystem::Drivers::VolumeOf(VFS::MountedAt("/")), ExtentsFileMatches,
+                    boot_count, ExtentsSectors);
+    CheckCachedRead(Filesystem::Drivers::VolumeOf(VFS::MountedAt(FatPoint)), FatFileMatches,
+                    boot_count, FatSectors);
+    if (VFS::Mount("ext2", "vda6", "/ext2", Filesystem::MountMode::ReadOnly) !=
+        VFS::MountResult::Done)
+    {
+        Panic("Mounting the ext2 partition for the page cache check failed");
+    }
+    CheckCachedRead(Filesystem::Drivers::VolumeOf(VFS::MountedAt("/ext2")), Ext2BigFileMatches,
+                    boot_count, Ext2Sectors);
+    if (VFS::Unmount("/ext2") != VFS::MountResult::Done)
+    {
+        Panic("Unmounting the ext2 partition after the page cache check failed");
+    }
+    char message[96];
+    if (!String::FormatTo(message, sizeof(message),
+                          "KERN/STORAGE: second read of a large file did no disk reads; boot {}\n",
+                          boot_count))
+    {
+        Panic("Page cache message formatting failed");
+    }
+    Serial::Write(message);
+}
+
+// Frames are chained through directory frames of their own, so that taking every frame needs
+// neither the heap nor a touch of each frame.
+constexpr uint64_t DirectoryCapacity = 510;
+
+struct FrameDirectory
+{
+    uint64_t next;
+    uint64_t count;
+    uint64_t frames[DirectoryCapacity];
+};
+static_assert(sizeof(FrameDirectory) == Memory::PageSize);
+
+FrameDirectory* DirectoryAt(uint64_t hhdm_offset, uint64_t physical)
+{
+    return reinterpret_cast<FrameDirectory*>(static_cast<uintptr_t>(hhdm_offset + physical));
+}
+
+// Runs right after CheckPageCache, with its pages cached: taking every frame in the machine must
+// empty the cache, nothing else may allocate meanwhile, and the cache must work afterwards.
+void CheckCacheReclaim(uint64_t boot_count, uint64_t hhdm_offset)
+{
+    const uint64_t cached = BlockDevice::Cache().Statistics().pages;
+    const uint64_t free_before = Memory::FreeFrameCount();
+    uint64_t head = 0;
+    uint64_t taken = 0;
+    uint64_t frame = 0;
+    while (Memory::AllocatePageFrame(&frame))
+    {
+        ++taken;
+        FrameDirectory* const directory = head != 0 ? DirectoryAt(hhdm_offset, head) : nullptr;
+        if (directory != nullptr && directory->count < DirectoryCapacity)
+        {
+            directory->frames[directory->count++] = frame;
+        }
+        else
+        {
+            FrameDirectory* const fresh = DirectoryAt(hhdm_offset, frame);
+            fresh->next = head;
+            fresh->count = 0;
+            head = frame;
+        }
+    }
+    const uint64_t left = BlockDevice::Cache().Statistics().pages;
+    while (head != 0)
+    {
+        const FrameDirectory* const directory = DirectoryAt(hhdm_offset, head);
+        const uint64_t next = directory->next;
+        for (uint64_t index = 0; index < directory->count; ++index)
+        {
+            Memory::FreePageFrame(directory->frames[index]);
+        }
+        Memory::FreePageFrame(head);
+        head = next;
+    }
+    // The file's data sectors alone are 3 of every 4 KiB.
+    if (cached < 384 || taken + 32 < free_before + cached)
+    {
+        Panic("Taking every frame did not reclaim the page cache");
+    }
+    if (left != 0 || Memory::FreeFrameCount() != free_before + cached)
+    {
+        Panic("The page cache kept pages or frames leaked while memory was exhausted");
+    }
+    if (!ExtentsFileMatches(boot_count))
+    {
+        Panic("A file read back different contents after the page cache was reclaimed");
+    }
+    char message[96];
+    if (!String::FormatTo(message, sizeof(message),
+                          "KERN/STORAGE: allocation reclaimed the page cache; boot {}\n",
+                          boot_count))
+    {
+        Panic("Reclaim message formatting failed");
+    }
+    Serial::Write(message);
 }
 
 } // namespace
 
 // Each boot reads the previous boot's count from the scratch sector, so running twice on one disk
 // image shows that writes persist across a restart.
-void RunStorageTests()
+void RunStorageTests(uint64_t hhdm_offset)
 {
     uint8_t sector[BlockDevice::SectorSize];
     if (!BlockDevice::ReadSector(ScratchSector, sector))
@@ -1118,11 +2241,32 @@ void RunStorageTests()
         }
     }
 
+    MountFat16();
     RunFileTests(boot_count);
+    const Memory::HeapObject<Ext2Data> data;
+    if (!data)
+    {
+        Panic("No memory for the ext2, ext3 and ext4 write tests");
+    }
+    FillExt2Data(data->bytes);
+    CheckRootFile();
+    CheckPageCache(boot_count);
+    CheckCacheReclaim(boot_count, hhdm_offset);
+    CheckRoot(boot_count, &*data);
+    CheckEtc(boot_count);
+    CheckExt3AndExt2(boot_count, &*data);
+    CheckSecondExt4(boot_count, &*data);
+    CheckRemount(boot_count, &*data);
+    CheckRootRemount(boot_count);
+    if (VFS::Unmount(FatPoint) != VFS::MountResult::Done)
+    {
+        Panic("Unmounting the FAT16 partition failed");
+    }
 
-    char message[80];
+    char message[128];
     if (!String::FormatTo(message, sizeof(message),
-                          "KERN/STORAGE: sector and FAT16 file writes verified; boot count {}\n",
+                          "KERN/STORAGE: sector, FAT16, ext2, ext3 and ext4 file writes verified; "
+                          "boot count {}\n",
                           boot_count))
     {
         Panic("Storage test message formatting failed");

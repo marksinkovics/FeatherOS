@@ -28,8 +28,10 @@ _usage() {
     printf 'BUILD_TYPE=Release builds at -O2 (Swift -O) in build/<arch>-release; the default, Debug, at -O0 -g\n'
     printf '(Swift -Onone) in build/<arch>. OUT_DIR puts the ISO, disk image and logs elsewhere than the build folder.\n'
     printf 'KERNEL_TESTS=ON builds the kernel test hooks (test, smoke, test-all and any *_TEST kernel toggle turn it on).\n'
-    printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, benchmark,\n'
-    printf '         debug, all, clean, fullclean\n'
+    printf 'KERNEL_ROOT=vdaN puts root=vdaN on the kernel command line, naming the root partition (FAT16, ext2, ext3 or ext4);\n'
+    printf 'ROOT_TEST=ON boots with it (vda3 by default) and checks the root.\n'
+    printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, unit-test-tsan,\n'
+    printf '         benchmark, debug, all, clean, fullclean\n'
 }
 
 _require_arch() {
@@ -101,6 +103,22 @@ _kernel_test_mode() {
     if ((${#modes[@]} == 1)); then
         printf '%s\n' "${modes[0]}"
     fi
+}
+
+_kernel_command_line() {
+    local test_mode="$1"
+    local root="${KERNEL_ROOT:-}"
+    local -a words=()
+    if [ -z "$root" ] && _is_on "${ROOT_TEST:-OFF}"; then
+        root=vda3
+    fi
+    if [ -n "$root" ]; then
+        words+=("root=$root")
+    fi
+    if [ -n "$test_mode" ]; then
+        words+=("test=$test_mode")
+    fi
+    printf '%s' "${words[*]}"
 }
 
 _aarch64_firmware() {
@@ -248,8 +266,10 @@ _image_inputs() {
     # The initramfs holds /system, where each program is a file named after it, as "ls", and /etc.
     local root_dir="$build_dir/initramfs"
     local system_dir="$root_dir/system"
-    rm -rf "$root_dir" "$build_dir/system"
-    mkdir -p "$system_dir"
+    # The programs the test disk's root gets in /bin, and the administrative programs in /sbin (tools/create_test_disk.py).
+    local disk_programs_dir="$build_dir/disk-programs"
+    rm -rf "$root_dir" "$build_dir/system" "$disk_programs_dir"
+    mkdir -p "$system_dir" "$disk_programs_dir/bin" "$disk_programs_dir/sbin"
     cp "$SCRIPT_DIR/initramfs/hello.txt" "$SCRIPT_DIR/initramfs/init.conf" \
         "$SCRIPT_DIR/initramfs/sample.json" "$SCRIPT_DIR/initramfs/http-request.txt" \
         "$SCRIPT_DIR/initramfs/http-response.txt" "$system_dir/"
@@ -262,6 +282,10 @@ _image_inputs() {
     for program in "${programs[@]}"; do
         local name="${program##*/}"
         "$ARCH-elf-strip" --strip-all -o "$system_dir/${name%-"$ARCH".elf}" "$program"
+        cp "$system_dir/${name%-"$ARCH".elf}" "$disk_programs_dir/bin/"
+    done
+    for program in init mount umount sync net dhcp; do
+        mv "$disk_programs_dir/bin/$program" "$disk_programs_dir/sbin/$program"
     done
     python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$system_dir/badelf"
     # macOS tar would otherwise add a "._name" AppleDouble entry for each file's metadata.
@@ -344,7 +368,8 @@ iso() {
     fi
     mkdir -p "$out_dir"
     python3 "$SCRIPT_DIR/tools/create_test_disk.py" "$out_dir/virtio-disk.img" \
-        "$SCRIPT_DIR/initramfs/block.txt" --layout "${DISK_LAYOUT:-mbr}"
+        "$SCRIPT_DIR/initramfs/block.txt" --programs "$build_dir/disk-programs" \
+        --layout "${DISK_LAYOUT:-mbr}"
 
     local iso_root="$out_dir/iso_root"
     local iso_path
@@ -352,8 +377,10 @@ iso() {
     rm -rf "$iso_root"
     mkdir -p "$iso_root/EFI/BOOT"
     cp "$SCRIPT_DIR/configs/$ARCH/limine.conf" "$iso_root/limine.conf"
-    if [ -n "$test_mode" ]; then
-        printf '\n    cmdline: test=%s\n' "$test_mode" >>"$iso_root/limine.conf"
+    local command_line
+    command_line=$(_kernel_command_line "$test_mode")
+    if [ -n "$command_line" ]; then
+        printf '\n    cmdline: %s\n' "$command_line" >>"$iso_root/limine.conf"
     fi
     cp "$build_dir/kernel.elf" "$build_dir/initramfs.tar" "$SCRIPT_DIR/deps/limine/limine-uefi-cd.bin" \
         "$iso_root/"
@@ -501,6 +528,9 @@ smoke_test() {
     if [[ -n "${POWER_TEST:-}" ]]; then
         smoke_args+=(--expect-power "$POWER_TEST")
     fi
+    if _is_on "${ROOT_TEST:-OFF}"; then
+        smoke_args+=(--expect-root "${KERNEL_ROOT:-vda3}")
+    fi
 
     iso_path=$(_kernel_iso)
     if [ ! -f "$iso_path" ]; then
@@ -580,7 +610,34 @@ unit_test() {
     fi
     cmake --fresh -S "$SCRIPT_DIR/tests/unit" -B "$unit_build_dir" -G Ninja "${cmake_args[@]}"
     cmake --build "$unit_build_dir" --parallel
-    ctest --test-dir "$unit_build_dir" --output-on-failure
+    # The ext suites rerun over the page cache double the run; only FULL_UNIT_TESTS=1 includes them.
+    local ctest_filter=()
+    if [ "${FULL_UNIT_TESTS:-0}" != 1 ]; then
+        ctest_filter=(--exclude-regex '^fs\.core\.page-cache')
+        _print "Skipping the fs.core.page-cache suites (FULL_UNIT_TESTS=1 runs them)"
+    fi
+    ctest --test-dir "$unit_build_dir" --output-on-failure "${ctest_filter[@]}" \
+        --parallel "${CTEST_PARALLEL_LEVEL:-$(getconf _NPROCESSORS_ONLN)}"
+}
+
+unit_test_tsan() {
+    _require_tools cmake git ninja
+
+    local unit_build_dir="$SCRIPT_DIR/build/unit-tsan"
+    local cmake_args=(-DFEATHEROS_SANITIZERS=OFF -DFEATHEROS_THREAD_SANITIZER=ON)
+    if [ "$(uname -s)" = Darwin ]; then
+        local llvm_bin
+        llvm_bin="$(brew --prefix llvm 2>/dev/null)/bin"
+        if [ ! -x "$llvm_bin/clang++" ]; then
+            _err "The ThreadSanitizer tests need Homebrew LLVM (brew install llvm)."
+            exit 1
+        fi
+        cmake_args+=(-DCMAKE_C_COMPILER="$llvm_bin/clang" -DCMAKE_CXX_COMPILER="$llvm_bin/clang++")
+    fi
+    cmake --fresh -S "$SCRIPT_DIR/tests/unit" -B "$unit_build_dir" -G Ninja "${cmake_args[@]}"
+    cmake --build "$unit_build_dir" --parallel --target featheros_unit_tests featherdisk_core_tests
+    TSAN_OPTIONS="halt_on_error=1" "$unit_build_dir/featheros_unit_tests" "[concurrency]"
+    TSAN_OPTIONS="halt_on_error=1" "$unit_build_dir/fs_core/featherdisk_core_tests" "[concurrency]"
 }
 
 __exit() {
@@ -656,6 +713,9 @@ for action in "${ACTIONS[@]}"; do
             ;;
         unit-test)
             unit_test
+            ;;
+        unit-test-tsan)
+            unit_test_tsan
             ;;
         benchmark)
             BUILD_TYPE=Release

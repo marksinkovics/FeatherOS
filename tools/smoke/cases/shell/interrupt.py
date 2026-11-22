@@ -4,6 +4,10 @@ from smoke.script import CONTROL_C, INTERRUPT_RUNNING
 # Interrupts a CPU-bound job, a sleep, programs blocked reading input, and the
 # shell's own prompt (which only discards the line).
 SHELL_INTERRUPT_INPUT = (
+    # Makes the root clean now; the writeback task would within 5 s, but the
+    # interrupted commands may finish sooner than that after the last write.
+    # Nothing after it writes to the disk.
+    b"sync\n",
     b"primes 1 1000000000\n",
     INTERRUPT_RUNNING,
     # The reader of an interrupted writer sees its input end and exits too.

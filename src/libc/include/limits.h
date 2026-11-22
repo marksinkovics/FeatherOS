@@ -14,10 +14,10 @@
 #define ULLONG_MAX (LLONG_MAX * 2ULL + 1ULL)
 #endif
 
-// The kernel's limits, as POSIX names them.
+// The kernel's limits, as POSIX names them. PATH_MAX counts the terminator; NAME_MAX does not.
 #define PIPE_BUF 512
-#define OPEN_MAX 32
-#define PATH_MAX 64
+#define PATH_MAX 1024
+#define NAME_MAX 255
 
 // The C library's limits for pthread_key_create.
 #define PTHREAD_KEYS_MAX 128

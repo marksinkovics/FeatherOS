@@ -161,6 +161,48 @@ inline uint64_t Stat(const char* path, FileStatus* status)
                    reinterpret_cast<uint64_t>(status));
 }
 
+inline uint64_t LinkStat(const char* path, FileStatus* status)
+{
+    return Syscall(SyscallNumber::LinkStat, reinterpret_cast<uint64_t>(path),
+                   reinterpret_cast<uint64_t>(status));
+}
+
+inline uint64_t ReadLink(const char* path, char* buffer, uint64_t capacity)
+{
+    return Syscall(SyscallNumber::ReadLink, reinterpret_cast<uint64_t>(path),
+                   reinterpret_cast<uint64_t>(buffer), capacity);
+}
+
+inline uint64_t SymbolicLink(const char* target, const char* path)
+{
+    return Syscall(SyscallNumber::SymbolicLink, reinterpret_cast<uint64_t>(target),
+                   reinterpret_cast<uint64_t>(path));
+}
+
+inline uint64_t Link(const char* from, const char* to)
+{
+    return Syscall(SyscallNumber::Link, reinterpret_cast<uint64_t>(from),
+                   reinterpret_cast<uint64_t>(to));
+}
+
+inline uint64_t ResolvePath(const char* path, char* buffer, uint64_t capacity)
+{
+    return Syscall(SyscallNumber::ResolvePath, reinterpret_cast<uint64_t>(path),
+                   reinterpret_cast<uint64_t>(buffer), capacity);
+}
+
+inline uint64_t SyncFilesystems()
+{
+    return Syscall(SyscallNumber::Sync);
+}
+
+inline uint64_t ResourceLimit(uint64_t resource, const ResourceLimits* requested,
+                              ResourceLimits* previous)
+{
+    return Syscall(SyscallNumber::ResourceLimit, resource, reinterpret_cast<uint64_t>(requested),
+                   reinterpret_cast<uint64_t>(previous));
+}
+
 inline uint64_t StatDescriptor(uint64_t descriptor, FileStatus* status)
 {
     return Syscall(SyscallNumber::StatDescriptor, descriptor, reinterpret_cast<uint64_t>(status));
@@ -209,6 +251,18 @@ inline uint64_t SessionId(uint64_t process_id)
 inline uint64_t TerminalControl(uint64_t descriptor, uint64_t request, uint64_t argument)
 {
     return Syscall(SyscallNumber::TerminalControl, descriptor, request, argument);
+}
+
+inline uint64_t Mount(const char* source, const char* target, const char* type, uint64_t flags)
+{
+    const MountRequest request = {reinterpret_cast<uint64_t>(type), flags};
+    return Syscall(SyscallNumber::Mount, reinterpret_cast<uint64_t>(source),
+                   reinterpret_cast<uint64_t>(target), reinterpret_cast<uint64_t>(&request));
+}
+
+inline uint64_t Unmount(const char* target)
+{
+    return Syscall(SyscallNumber::Unmount, reinterpret_cast<uint64_t>(target));
 }
 
 inline uint64_t ProcessId()

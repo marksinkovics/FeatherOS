@@ -419,6 +419,9 @@ char* strerror(int error)
     case EINVAL:
         message = "Invalid argument";
         break;
+    case ENFILE:
+        message = "Too many open files in system";
+        break;
     case EMFILE:
         message = "Too many open files";
         break;
@@ -428,6 +431,12 @@ char* strerror(int error)
     case ENXIO:
         message = "No such device or address";
         break;
+    case ENODEV:
+        message = "No such device";
+        break;
+    case EFBIG:
+        message = "File too large";
+        break;
     case ENOSPC:
         message = "No space left on device";
         break;
@@ -436,6 +445,9 @@ char* strerror(int error)
         break;
     case EROFS:
         message = "Read-only file system";
+        break;
+    case EMLINK:
+        message = "Too many links";
         break;
     case EPIPE:
         message = "Broken pipe";
@@ -520,6 +532,9 @@ char* strerror(int error)
         break;
     case ENOTEMPTY:
         message = "Directory not empty";
+        break;
+    case ELOOP:
+        message = "Too many levels of symbolic links";
         break;
     case EOVERFLOW:
         message = "Value too large for defined data type";

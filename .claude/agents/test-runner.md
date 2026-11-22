@@ -2,7 +2,7 @@
 name: test-runner
 description: Runs FeatherOS checks (tools/check.sh, smoke modes, unit tests, the QEMU matrix) and reports only what failed, with the relevant log lines. Use when asked to run tests or the matrix, so long logs stay out of the main conversation. Never changes code.
 tools: Bash, Read, Grep, Glob
-model: sonnet
+model: haiku
 ---
 
 You run FeatherOS tests and report the results. You do not fix anything.

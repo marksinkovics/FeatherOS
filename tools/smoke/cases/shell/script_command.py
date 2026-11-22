@@ -1,7 +1,12 @@
 import re
 
 from smoke.cases.shell.part import Part
-from smoke.script import INTERRUPT_RUNNING, SUSPEND_RUNNING, TypeWhen
+from smoke.script import (
+    CONTROL_Z,
+    INTERRUPT_RUNNING,
+    SUSPEND_RUNNING,
+    TypeWhen,
+)
 
 # script runs a shell on a pty, where line editing, jobs, Ctrl+C, Ctrl+Z, vi,
 # top and size changes work as on the console, while the console shell keeps
@@ -27,7 +32,7 @@ SHELL_SCRIPT_INPUT = (
     b"fg\n",
     TypeWhen('"/tmp/sv.txt" [New]', b":wq\n"),
     b"top\n",
-    SUSPEND_RUNNING,
+    TypeWhen("; q quits", CONTROL_Z, fresh=True),
     b"fg\n",
     TypeWhen("; q quits", b"q"),
     b"upper < /tmp/sv.txt\n",

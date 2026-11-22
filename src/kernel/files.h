@@ -4,6 +4,7 @@
 #include "kernel/filesystem/vfs.h"
 #include "kernel/network/socket.h"
 #include "kernel/pipe.h"
+#include "kernel/sync/mutex.h"
 #include "user/syscall_abi.h"
 
 #include <stdint.h>
@@ -11,7 +12,16 @@
 // Per-process file descriptors. A descriptor names an open file, which dup and Spawn can share
 // between descriptors and processes; it keeps the offset and closes when its last descriptor
 // does. Functions return the value a syscall hands back: a result, or a User::SyscallError code.
-// Buffers are kernel memory.
+// Buffers are kernel memory. Paths are absolute, and may hold symbolic links, "." and "..": each
+// call walks its paths (VFS::ResolvePath) holding no lock but one volume's at a time, following a
+// link in the last component unless it says otherwise, and fails with SyscallErrorLoop past
+// User::MaximumSymbolicLinks links.
+//
+// A call on a path then holds the lock of the volume the path is on for its whole check-then-act
+// sequence, and a call on a descriptor the lock of its file's volume, so operations on different
+// volumes run in parallel and those on one volume do not interleave. Mount, unmount, remount and
+// chdir are serialized by a lock of their own, and the descriptor tables by a short one that is
+// never held across a call into a driver. The order is in "Locking" in docs/development.md.
 namespace FeatherOS::Terminals
 {
 class Terminal;
@@ -44,20 +54,39 @@ struct Slot
     bool close_on_exec;
 };
 
-// A zero-filled table has no descriptors at all, not even the console.
+// The slots are a heap array that starts at 32 entries the first time something is put in it and
+// doubles, but never past the soft limit in force or User::MaximumDescriptorLimit, and is freed by
+// CloseAll. A new descriptor gets a number below the soft limit; lowering the limit closes
+// nothing. A zero-filled table has no descriptors at all, not even the console, and limits of 0
+// until OpenConsole or Inherit sets them. Everything here runs under the table lock.
 struct Table
 {
-    Slot slots[User::MaximumDescriptors];
+    Table() = default;
+    Table(const Table&) = delete;
+    Table& operator=(const Table&) = delete;
+
+    Slot* slots = nullptr;
+    uint32_t capacity = 0;
+    uint32_t soft_limit = User::DefaultDescriptorLimit;
+    uint32_t hard_limit = User::MaximumDescriptorLimit;
 };
 
-// Puts the console, whose terminal is console, at descriptors 0, 1, and 2.
-void OpenConsole(Table* table, Terminals::Terminal* console);
-// Gives child every descriptor of parent that is not close-on-exec.
-void Inherit(Table* child, const Table* parent);
+// Puts the console, whose terminal is console, at descriptors 0, 1, and 2, and gives the table the
+// default limits. False if the table could not be allocated.
+bool OpenConsole(Table* table, Terminals::Terminal* console);
+// Gives child every descriptor of parent that is not close-on-exec, and parent's limits. False,
+// with child empty and nothing shared, if the child's table could not be allocated.
+bool Inherit(Table* child, const Table* parent);
+// Stores the table's limits in previous and then, if requested is not null, sets them:
+// SyscallErrorInvalidArgument if soft is above hard, and SyscallErrorNotPermitted if hard is above
+// User::MaximumDescriptorLimit.
+uint64_t DescriptorLimits(Table* table, const User::ResourceLimits* requested,
+                          User::ResourceLimits* previous);
 // Reads and writes on terminals go through the process instead of this table.
 Kind KindOf(const Table* table, uint64_t descriptor);
 // "/dev/tty" opens controlling_terminal, or fails with SyscallErrorNoDevice if it is null.
 // "/dev/ptmx" creates a pseudo-terminal pair and opens its master, and "/dev/pts/N" opens a slave.
+// With User::OpenNoFollow a link in the last component fails with SyscallErrorLoop.
 uint64_t Open(Table* table, const char* path, uint64_t flags,
               Terminals::Terminal* controlling_terminal = nullptr);
 // The terminal behind a descriptor, or SyscallErrorNotTerminal for another kind. Terminals live
@@ -66,13 +95,14 @@ uint64_t FindTerminal(Table* table, uint64_t descriptor, Terminals::Terminal** t
 // The pair behind a master descriptor, or SyscallErrorNotTerminal for another kind. It stays in
 // use while the caller's descriptor holds it.
 uint64_t FindPseudoTerminal(Table* table, uint64_t descriptor, PseudoTerminals::Pair** pair);
-// A pipe or pty master read waits for data and a write for space, without holding the filesystem
-// lock, until interrupted says to stop, unless the open file is User::OpenNonBlocking.
+// A pipe or pty master read waits for data and a write for space, without holding a lock, until
+// interrupted says to stop, unless the open file is User::OpenNonBlocking.
 uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
               Pipes::InterruptCheck interrupted = nullptr);
 uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t length,
                Pipes::InterruptCheck interrupted = nullptr);
-// Puts a new pipe's read end and write end at the two lowest free descriptors.
+// Puts a new pipe's read end and write end at the two lowest free descriptors. A full table fails
+// with SyscallErrorTooManyOpenFiles, and one that cannot grow with SyscallErrorNoMemory.
 uint64_t CreatePipe(Table* table, uint64_t flags, uint64_t* read_end, uint64_t* write_end);
 // Puts a new socket at the lowest free descriptor.
 uint64_t CreateSocket(Table* table, uint64_t family, uint64_t type, uint64_t protocol);
@@ -89,8 +119,11 @@ uint64_t FindSocket(Table* table, uint64_t descriptor, Network::Sockets::Socket*
 // offset is signed, added to the origin whence names; returns the new offset.
 uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset, uint64_t whence);
 uint64_t Close(Table* table, uint64_t descriptor);
-// With User::DuplicateExact, makes target name descriptor's file, closing what target named;
-// otherwise uses the lowest free descriptor at or above target. Returns the new descriptor.
+// With User::DuplicateExact, makes target name descriptor's file, closing what target named, and
+// fails with SyscallErrorBadDescriptor for a target at or above the soft limit; otherwise uses the
+// lowest free descriptor at or above target, and fails with SyscallErrorInvalidArgument for a
+// target at or above the soft limit and SyscallErrorTooManyOpenFiles when none is free. Returns
+// the new descriptor.
 uint64_t Duplicate(Table* table, uint64_t descriptor, uint64_t target, uint64_t flags);
 // Returns the descriptor's User::Descriptor* flags, after setting them to value if set is true.
 uint64_t DescriptorFlags(Table* table, uint64_t descriptor, bool set, uint64_t value);
@@ -98,16 +131,70 @@ uint64_t DescriptorFlags(Table* table, uint64_t descriptor, bool set, uint64_t v
 // the last two from value if set is true; value's access flags are ignored.
 uint64_t StatusFlags(Table* table, uint64_t descriptor, bool set, uint64_t value);
 uint64_t CountOpen(const Table* table);
+// The lock that guards every descriptor table, for a caller that counts a table while it holds a
+// spinlock of its own: it is taken before such a lock, never after.
+extern Sync::Mutex table_lock;
+uint64_t CountOpenLocked(const Table* table) REQUIRES(table_lock);
+// A file or a symbolic link, not followed.
 uint64_t Remove(const char* path);
 uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* entry);
+// A link at path, not followed, makes it SyscallErrorExists.
 uint64_t MakeDirectory(const char* path);
 // 0 for a directory, otherwise SyscallErrorNotDirectory or SyscallErrorNotFound.
 uint64_t CheckDirectory(const char* path);
-// Fails unless the directory is empty.
+// Checks the directory and copies its physical path, without links, into working_directory under
+// the namespace lock, so an unmount sees either the old working directory or the new one.
+uint64_t ChangeDirectory(const char* path, char (&working_directory)[User::MaximumPathLength]);
+// Mounts the instance of type named source at point, which must be a directory or not exist, in an
+// existing directory. SyscallErrorUnknownFilesystemType for a type nothing registered,
+// SyscallErrorNotFound for an unknown source, SyscallErrorBusy if the point is taken or the
+// instance is mounted elsewhere, SyscallErrorInputOutput if its volume could not be reopened. A
+// filesystem that refuses writes mounts read-only whatever mode asks.
+uint64_t Mount(const char* source, const char* point, const char* type,
+               Filesystem::MountMode mode = Filesystem::MountMode::ReadWrite);
+// True if some process's working directory is point or lies inside it.
+using WorkingDirectoryCheck = bool (*)(const char* point);
+// SyscallErrorNotFound if point does not exist, SyscallErrorInvalidArgument if it is not a mount
+// point, SyscallErrorBusy while a file on it is open, a working directory is inside it or another
+// mount point lies inside it, and SyscallErrorInputOutput if its data could not be synced.
+uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use);
+// Changes the mode of the mount at point; it follows links, and the mount's own mode only changes,
+// not the mounts inside it. SyscallErrorInvalidArgument if point is not a mount point or is /dev,
+// SyscallErrorNotFound if it does not exist, SyscallErrorBusy while a file on it is open for
+// writing (to read-only) or when the remount would replay a journal and any file on it is open,
+// SyscallErrorReadOnly for read-write on /system, /proc or a filesystem that refuses writes, and
+// SyscallErrorInputOutput if it could not be made read-only (it stays mounted and refusing
+// writes if its journal aborted).
+uint64_t Remount(const char* point, Filesystem::MountMode mode);
+// SyscallErrorInputOutput if a mounted filesystem could not write its changes.
+uint64_t SyncAll();
+// What the writeback task calls: syncs the mounts that want it, SyscallErrorInputOutput if one
+// failed.
+uint64_t SyncPeriodic();
+// Fails unless the directory is empty; a link is SyscallErrorNotDirectory.
 uint64_t RemoveDirectory(const char* path);
-// Within one filesystem; replaces a file at to, but neither a directory nor an open file.
+// Within one filesystem; replaces a file or link at to, but neither a directory nor an open file.
+// Links in the last components are not followed.
 uint64_t Rename(const char* from, const char* to);
 uint64_t Stat(const char* path, User::FileStatus* status);
+// Stat that describes a link in the last component itself, as lstat does.
+uint64_t LinkStat(const char* path, User::FileStatus* status);
+// Copies at most capacity bytes of the target of the link at path (not followed), without a
+// terminator, and returns how many. SyscallErrorInvalidArgument for something else than a link.
+uint64_t ReadLink(const char* path, char* buffer, uint64_t capacity);
+// Makes path (not followed) a symbolic link to target, stored as given and not checked; an empty
+// target fails with SyscallErrorNotFound. SyscallErrorExists if path exists, SyscallErrorReadOnly
+// on a read-only filesystem, SyscallErrorNotPermitted where the filesystem cannot hold links
+// (FAT16 and the virtual filesystems, as Linux's vfat answers).
+uint64_t SymbolicLink(const char* target, const char* path);
+// A second name, to, for the file from; neither is followed, as on Linux. SyscallErrorCrossDevice
+// across filesystems, SyscallErrorNotPermitted for a directory or where the filesystem cannot hold
+// hard links (every writable one so far), and the other errors as SymbolicLink.
+uint64_t Link(const char* from, const char* to);
+// Copies the physical path of what path names, with its terminator, as realpath gives it.
+// SyscallErrorNotFound if it does not exist, SyscallErrorRange if it does not fit; returns its
+// length.
+uint64_t ResolvePath(const char* path, char* buffer, uint64_t capacity);
 uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* status);
 void CloseAll(Table* table);
 
@@ -122,8 +209,8 @@ public:
     ProgramFile& operator=(const ProgramFile&) = delete;
 
     // 0, or SyscallErrorNotFound, SyscallErrorIsDirectory, SyscallErrorNotExecutable for a device
-    // or an empty file, SyscallErrorBusy while it is open for writing, or
-    // SyscallErrorTooManyOpenFiles.
+    // or an empty file, SyscallErrorBusy while it is open for writing,
+    // SyscallErrorTooManyFilesInSystem or SyscallErrorNoMemory.
     uint64_t Open(const char* path);
     uint64_t Size() const;
     // Fills the whole buffer or fails.
@@ -134,8 +221,30 @@ private:
     bool open = false;
     bool tracked = false;
 };
-// Waits for any filesystem call in progress, then blocks all later ones, for shutdown.
-void Quiesce();
+#ifdef FEATHEROS_HOST_TEST
+// Frees the disk-file table, if no file is open, so a test sees it grow from its first size.
+bool ResetDiskFileTable();
+
+namespace Testing
+{
+// Takes the volume lock of the mount holding path, and a user of that mount, until ReleaseVolume,
+// as the task would in the middle of a call on that volume.
+void* HoldVolume(const char* path);
+void ReleaseVolume(void* hold);
+// Holds the descriptor-table lock, which no call holds across a driver call or while waiting for a
+// volume lock.
+void LockTable();
+void UnlockTable();
+// Called, with a name, at the points inside a call where it holds a volume lock between two
+// driver calls ("open.created": a file Open found or created, before it is counted as in use) or
+// between pinning a file and taking its volume lock ("read.pinned": Read).
+using PauseHook = void (*)(const char* point);
+void SetPauseHook(PauseHook hook);
+} // namespace Testing
+#endif
+// Waits for the filesystem calls in progress on every mount, blocks all later ones and detaches
+// every mount (a journalled volume is closed), for shutdown; false if one did not close cleanly.
+bool Quiesce();
 
 } // namespace FeatherOS::Files
 

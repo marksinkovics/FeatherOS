@@ -88,6 +88,8 @@ enum class SpawnStatus : uint8_t
     NoResources,
     // The program file is open for writing.
     Busy,
+    // Too many symbolic links on the way to the program.
+    Loop,
 };
 
 void Initialize(uint64_t hhdm_offset);

@@ -1,6 +1,7 @@
 #ifndef FEATHEROS_USER_SYSCALL_ABI_H
 #define FEATHEROS_USER_SYSCALL_ABI_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 // Syscall numbers and result codes shared by the kernel and user programs.
@@ -74,6 +75,15 @@ enum class SyscallNumber : uint64_t
     CreateSession = 61,    // () -> the new session's ID, the caller's process ID
     SessionId = 62,        // (process_id, or 0 for the caller) -> its session
     TerminalControl = 63,  // (descriptor, request, argument) -> the request's result
+    Mount = 64,            // (source, target, request) -> 0; request points to a MountRequest
+    Unmount = 65,          // (target) -> 0
+    LinkStat = 66,         // (path, status) -> 0; a final symbolic link describes itself (lstat)
+    ReadLink = 67,         // (path, buffer, capacity) -> bytes stored, without a terminator
+    SymbolicLink = 68,     // (target, path) -> 0; path, not followed, becomes a link to target
+    Link = 69,             // (from, to) -> 0; a second name for a file, on the same filesystem
+    ResolvePath = 70,      // (path, buffer, capacity) -> length of the path without links
+    Sync = 71,             // () -> 0 once every mounted filesystem has written its changes
+    ResourceLimit = 72,    // (resource, new_limits, old_limits) -> 0; either pointer may be null
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec, and joins its
@@ -122,7 +132,13 @@ constexpr uint64_t MaximumEnvironmentVariables = 32;
 
 // Paths are absolute ("/home/notes.txt") or relative to the process's working directory, which
 // starts as its parent's ("/home" for the shell). "/" is the disk; "/system" is the read-only
-// initramfs.
+// initramfs. Symbolic links are followed anywhere in a path, across mounts, at most
+// MaximumSymbolicLinks times (SyscallErrorLoop past that), and ".." after one leads to the parent
+// of its target. Open, Stat, ChangeDirectory, ReadDirectory, Spawn and Mount follow a link in the
+// last component too; LinkStat, ReadLink, Remove, RemoveDirectory, MakeDirectory, Rename,
+// SymbolicLink and Link (its from, as on Linux) act on the link itself. The working directory is
+// kept without links.
+constexpr uint64_t MaximumSymbolicLinks = 40;
 constexpr uint64_t OpenRead = 1U << 0;
 constexpr uint64_t OpenWrite = 1U << 1;
 // With OpenWrite: create the file if it is missing, or empty it if it exists.
@@ -139,7 +155,25 @@ constexpr uint64_t OpenNonBlocking = 1U << 6;
 // A session leader without a controlling terminal takes the first terminal it opens, unless it
 // passes this flag.
 constexpr uint64_t OpenNoControllingTerminal = 1U << 7;
-constexpr uint64_t MaximumPathLength = 64;
+// A symbolic link in the last component fails with SyscallErrorLoop instead of being followed.
+constexpr uint64_t OpenNoFollow = 1U << 8;
+// PATH_MAX: a path, its terminator included, as a program passes it and once it is resolved
+// against the working directory; longer ones fail with SyscallErrorNameTooLong. NAME_MAX: one
+// component, without its terminator.
+constexpr uint64_t MaximumPathLength = 1024;
+constexpr uint64_t MaximumNameLength = 255;
+// Mount's third argument: the filesystem type's name, and MountReadOnly or 0. A filesystem that
+// refuses writes, such as an ext2 volume that was not cleanly unmounted, mounts read-only anyway.
+// With MountRemount only the target and MountReadOnly count (source and type may be null): the
+// mount at target changes its mode.
+struct MountRequest
+{
+    uint64_t type;
+    uint64_t flags;
+};
+constexpr uint64_t MountReadOnly = 1U << 0;
+constexpr uint64_t MountRemount = 1U << 5;
+static_assert(sizeof(MountRequest) == 16, "the kernel and the C library share MountRequest");
 // Descriptors 0-2 start as the console, unless the parent passed other files there. The console
 // is a terminal: in its default mode a read returns one line, ending in '\n'. On a process's
 // controlling terminal only the foreground group may read or change the mode: another group's
@@ -147,11 +181,21 @@ constexpr uint64_t MaximumPathLength = 64;
 // once the group continues), or SyscallErrorInputOutput when the caller ignores or blocks
 // SIGTTIN or its group is orphaned; a change that ignores or blocks SIGTTOU goes ahead. "/dev/tty"
 // opens the caller's controlling terminal. A new descriptor
-// gets the lowest free number.
+// gets the lowest free number below the soft descriptor limit.
 constexpr uint64_t StandardInput = 0;
 constexpr uint64_t StandardOutput = 1;
 constexpr uint64_t StandardError = 2;
-constexpr uint64_t MaximumDescriptors = 32;
+// A process's table starts at DefaultDescriptorLimit descriptors (its soft limit) and grows on
+// demand; the hard limit starts at MaximumDescriptorLimit, which is also its ceiling.
+constexpr uint64_t DefaultDescriptorLimit = 256;
+constexpr uint64_t MaximumDescriptorLimit = 1024;
+// RLIMIT_NOFILE's number, and the pair of limits laid out as struct rlimit.
+constexpr uint64_t ResourceOpenFiles = 7;
+struct ResourceLimits
+{
+    uint64_t current;
+    uint64_t maximum;
+};
 // Duplicate flags: replace exactly the target descriptor, as dup2 does, rather than taking the
 // lowest free one at or above it; and mark the new descriptor close-on-exec.
 constexpr uint64_t DuplicateExact = 1U << 0;
@@ -197,7 +241,8 @@ constexpr uint64_t SocketShutdownBoth = 2;
 
 // Poll takes an array of these, laid out as struct pollfd, and fills in returned_events. A
 // negative descriptor is skipped; one that is not open reports PollInvalid. PollError, PollHangUp
-// and PollInvalid are reported whether asked for or not.
+// and PollInvalid are reported whether asked for or not. At most the soft descriptor limit of
+// entries; more fail with SyscallErrorInvalidArgument.
 struct PollDescriptor
 {
     int32_t descriptor;
@@ -210,7 +255,6 @@ constexpr int16_t PollWritable = 0x4;
 constexpr int16_t PollError = 0x8;
 constexpr int16_t PollHangUp = 0x10;
 constexpr int16_t PollInvalid = 0x20;
-constexpr uint64_t MaximumPollDescriptors = 64;
 // Poll's milliseconds: wait until a descriptor has events.
 constexpr uint64_t PollForever = UINT64_MAX;
 
@@ -261,13 +305,34 @@ struct SocketMessage
     uint64_t address;
 };
 
+// A mode's type bits, with Linux's values, as st_mode holds them; the low 12 bits are the
+// permissions (07777). A directory entry's type is the same bits shifted down, as d_type.
+constexpr uint32_t ModeTypeMask = 0170000;
+constexpr uint32_t ModeFifo = 0010000;
+constexpr uint32_t ModeCharacterDevice = 0020000;
+constexpr uint32_t ModeDirectory = 0040000;
+constexpr uint32_t ModeBlockDevice = 0060000;
+constexpr uint32_t ModeRegular = 0100000;
+constexpr uint32_t ModeSymbolicLink = 0120000;
+constexpr uint32_t ModeSocket = 0140000;
+constexpr uint32_t ModePermissionMask = 07777;
+constexpr uint32_t EntryTypeShift = 12;
+
+// ReadDirectory's entry. The node is the one Stat reports for the file, or 0 when the
+// filesystem cannot tell; size is 0 for directories.
 struct DirectoryEntry
 {
-    // The long name if the file has one, otherwise its 8.3 name, and a terminator.
-    char name[64];
-    bool directory;
+    uint64_t node;
     uint64_t size;
+    // The mode's type bits shifted down by EntryTypeShift (DT_DIR and the rest); 0 if unknown.
+    uint32_t type;
+    uint32_t reserved;
+    char name[MaximumNameLength + 1];
 };
+
+static_assert(sizeof(DirectoryEntry) == 280 && offsetof(DirectoryEntry, size) == 8 &&
+                  offsetof(DirectoryEntry, type) == 16 && offsetof(DirectoryEntry, name) == 24,
+              "the kernel and the C library share DirectoryEntry's layout");
 
 enum class FileType : uint32_t
 {
@@ -276,19 +341,53 @@ enum class FileType : uint32_t
     Regular = 1,
     Directory = 2,
     Terminal = 3,
-    // Under /dev.
+    // Under /dev, a pseudo-terminal's master, or an ext2 device node.
     Device = 4,
     Pipe = 5,
     Socket = 6,
+    SymbolicLink = 7,
 };
 
+// Since 1970-01-01 UTC.
+struct FileTime
+{
+    int64_t seconds;
+    uint32_t nanoseconds;
+    uint32_t reserved;
+};
+
+// Stat's and StatDescriptor's result, which the C library turns into struct stat. Every mount
+// has a device number of its own, and node numbers are unique within it; pipes, sockets and
+// terminals have device 0 and a node number of their own. Filesystems without owners or times,
+// such as FAT16 and the virtual ones, report 0 for them.
 struct FileStatus
 {
+    uint64_t device;
+    uint64_t node;
+    // Type and permission bits; permissions are stored, not enforced.
+    uint32_t mode;
+    uint32_t link_count;
+    uint32_t owner;
+    uint32_t group;
     uint64_t size;
+    FileTime access_time;
+    FileTime modify_time;
+    FileTime change_time;
+    // The kind of open file, which tells terminals apart from the other character devices.
     FileType type;
-    // Files under /system and /proc cannot be changed.
+    // Nothing can be written there: /system, /proc, a read-only mount, or a pipe's read end.
     bool read_only;
 };
+
+static_assert(sizeof(FileTime) == 16 && sizeof(FileStatus) == 96 &&
+                  offsetof(FileStatus, node) == 8 && offsetof(FileStatus, mode) == 16 &&
+                  offsetof(FileStatus, link_count) == 20 && offsetof(FileStatus, owner) == 24 &&
+                  offsetof(FileStatus, group) == 28 && offsetof(FileStatus, size) == 32 &&
+                  offsetof(FileStatus, access_time) == 40 &&
+                  offsetof(FileStatus, modify_time) == 56 &&
+                  offsetof(FileStatus, change_time) == 72 && offsetof(FileStatus, type) == 88 &&
+                  offsetof(FileStatus, read_only) == 92,
+              "the kernel and the C library share FileStatus's layout");
 
 // Results at or above SyscallErrorBase report failures instead of values. As on Linux, the top
 // 4095 values are reserved, which no size, address, or process ID ever reaches.
@@ -361,6 +460,17 @@ constexpr uint64_t SyscallErrorNotTerminal = UINT64_MAX - 44;
 constexpr uint64_t SyscallErrorNoDevice = UINT64_MAX - 45;
 // Opening a pseudo-terminal's slave while it is locked or its master is closed.
 constexpr uint64_t SyscallErrorInputOutput = UINT64_MAX - 46;
+// Mounting a filesystem type the kernel does not have.
+constexpr uint64_t SyscallErrorUnknownFilesystemType = UINT64_MAX - 47;
+// More than MaximumSymbolicLinks links on the way, or OpenNoFollow on a link.
+constexpr uint64_t SyscallErrorLoop = UINT64_MAX - 48;
+constexpr uint64_t SyscallErrorNoSpace = UINT64_MAX - 49;
+// A file, or a directory's subdirectories, past the filesystem's link limit.
+constexpr uint64_t SyscallErrorTooManyLinks = UINT64_MAX - 50;
+constexpr uint64_t SyscallErrorFileTooLarge = UINT64_MAX - 51;
+// More disk files open in the system than the kernel tracks (as ENFILE); a process at its own
+// descriptor limit gets SyscallErrorTooManyOpenFiles.
+constexpr uint64_t SyscallErrorTooManyFilesInSystem = UINT64_MAX - 52;
 
 constexpr bool IsSyscallError(uint64_t value)
 {

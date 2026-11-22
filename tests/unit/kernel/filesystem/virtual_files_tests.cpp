@@ -8,17 +8,25 @@
 #include "kernel/memory/heap.h"
 #include "kernel/random.h"
 #include "kernel/terminal/terminal.h"
+#include "support/heap_failure.h"
 #include "support/terminal_device.h"
 
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
 // The kernel heap and random source, which the host tests do not build.
 namespace FeatherOS::Memory
 {
+
+namespace Testing
+{
+std::size_t failing_zeroed_count = 0;
+std::size_t failing_zeroed_size = 0;
+} // namespace Testing
 
 void* Allocate(size_t size)
 {
@@ -33,6 +41,11 @@ bool Deallocate(void* pointer)
 
 void* AllocateZeroed(size_t count, size_t size)
 {
+    if (Testing::failing_zeroed_count != 0 && count == Testing::failing_zeroed_count &&
+        size == Testing::failing_zeroed_size)
+    {
+        return nullptr;
+    }
     return std::calloc(count, size);
 }
 
@@ -52,6 +65,9 @@ uint64_t Next()
 namespace
 {
 
+// As the kernel does at boot.
+[[maybe_unused]] const bool built_in_mounted = FeatherOS::VFS::MountBuiltIn();
+
 using FeatherOS::User::OpenAppend;
 using FeatherOS::User::OpenCreate;
 using FeatherOS::User::OpenRead;
@@ -64,10 +80,11 @@ constexpr FeatherOS::Tmpfs::Root Etc = FeatherOS::Tmpfs::Root::Etc;
 std::vector<std::string> List(const char* path)
 {
     std::vector<std::string> names;
-    FeatherOS::FAT16::DirectoryEntry entry{};
+    FeatherOS::Filesystem::DirectoryEntry entry{};
     for (uint32_t index = 0; FeatherOS::VFS::ReadDirectory(path, index, &entry); ++index)
     {
-        names.push_back(std::string(entry.name) + (entry.directory ? "/" : ""));
+        names.push_back(std::string(entry.name) +
+                        (entry.type == FeatherOS::User::ModeDirectory ? "/" : ""));
     }
     return names;
 }
@@ -122,6 +139,7 @@ void FakeMemoryStatus(FeatherOS::Procfs::MemoryStatus* status)
     status->free_bytes = 200 * 1024 * 1024;
     status->kernel_heap_bytes = 64 * 1024;
     status->tmp_bytes = FeatherOS::Tmpfs::UsedBytes();
+    status->cached_bytes = 12 * 1024 + 512;
 }
 
 void FakeSystemStatus(FeatherOS::Procfs::SystemStatus* status)
@@ -132,10 +150,31 @@ void FakeSystemStatus(FeatherOS::Procfs::SystemStatus* status)
     status->busy_milliseconds[1] = 30;
 }
 
+bool FakeMountAt(uint32_t index, FeatherOS::Procfs::MountStatus* status)
+{
+    if (index >= 2)
+    {
+        return false;
+    }
+    *status = index == 0 ? FeatherOS::Procfs::MountStatus{"initramfs", "initramfs", "/system", true}
+                         : FeatherOS::Procfs::MountStatus{"vda1", "fat16", "/", false};
+    return true;
+}
+
 void UseFakeProcesses()
 {
     FeatherOS::Procfs::SetSource(
-        {FakeProcessAt, FakeProcessStatus, FakeMemoryStatus, FakeSystemStatus});
+        {FakeProcessAt, FakeProcessStatus, FakeMemoryStatus, FakeSystemStatus, FakeMountAt});
+}
+
+bool NoWorkingDirectory(const char* /*point*/)
+{
+    return false;
+}
+
+bool EveryWorkingDirectory(const char* /*point*/)
+{
+    return true;
 }
 
 } // namespace
@@ -180,7 +219,9 @@ TEST_CASE("tmpfs directories nest, and names are case-sensitive")
     REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "missing/plan.txt", &node));
     REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "docs/Plan.txt/x", &node));
     REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "docs/..", &node));
-    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, std::string(64, 'n').c_str(), &node));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, std::string(256, 'n').c_str(), &node));
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, std::string(255, 'n').c_str(), &node));
+    REQUIRE(FeatherOS::Tmpfs::Remove(Tmp, std::string(255, 'n').c_str()));
     REQUIRE(FeatherOS::Tmpfs::IsDirectory(Tmp, ""));
     REQUIRE(FeatherOS::Tmpfs::IsDirectory(Tmp, "docs/old"));
     REQUIRE_FALSE(FeatherOS::Tmpfs::IsDirectory(Tmp, "docs/plan.txt"));
@@ -216,6 +257,122 @@ TEST_CASE("tmpfs renames move nodes, but never into themselves")
     REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "docs/B.txt", "missing/B.txt"));
     REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "", "root"));
     REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "gone", "here"));
+}
+
+namespace
+{
+
+std::vector<std::string> Sorted(std::vector<std::string> names)
+{
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+std::string Contents(uint32_t node)
+{
+    std::string bytes(FeatherOS::Tmpfs::Size(node), '\0');
+    uint64_t count = 0;
+    REQUIRE(FeatherOS::Tmpfs::Read(node, 0, bytes.data(), bytes.size(), &count));
+    return bytes;
+}
+
+uint32_t Put(const char* path, const std::string& bytes)
+{
+    uint32_t node = 0;
+    uint64_t count = 0;
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, path, &node));
+    REQUIRE(FeatherOS::Tmpfs::Write(node, 0, bytes.data(), bytes.size(), &count));
+    return node;
+}
+
+} // namespace
+
+TEST_CASE("tmpfs replaces a file, a link or an empty directory, and returns the old node's bytes")
+{
+    FeatherOS::Tmpfs::Reset();
+    Put("old.txt", std::string(1000, 'o'));
+    const uint32_t fresh = Put("new.txt", "new");
+    const uint64_t before = FeatherOS::Tmpfs::UsedBytes();
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "new.txt", "old.txt"));
+    uint32_t found = 0;
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "old.txt", &found));
+    REQUIRE(found == fresh);
+    REQUIRE(Contents(found) == "new");
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Find(Tmp, "new.txt", &found));
+    REQUIRE(FeatherOS::Tmpfs::UsedBytes() <= before - 1000);
+    REQUIRE(List("/tmp") == std::vector<std::string>{"old.txt"});
+
+    uint32_t link = 0;
+    REQUIRE(FeatherOS::Tmpfs::SymbolicLink(Tmp, "ln", "old.txt", &link));
+    Put("plain", "plain");
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "plain", "ln"));
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "ln", &found));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::IsLinkNode(found));
+    REQUIRE(Contents(found) == "plain");
+
+    REQUIRE(FeatherOS::Tmpfs::SymbolicLink(Tmp, "ln2", "x", &link));
+    Put("target", "t");
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "ln2", "target"));
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "target", &found));
+    REQUIRE(FeatherOS::Tmpfs::IsLinkNode(found));
+
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "from"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "from/inner"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "to"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "to/empty"));
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "from/inner", "to/empty"));
+    REQUIRE(FeatherOS::Tmpfs::IsDirectory(Tmp, "to/empty"));
+    REQUIRE(List("/tmp/from").empty());
+    REQUIRE(List("/tmp/to") == std::vector<std::string>{"empty/"});
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "to/empty", "to/empty"));
+}
+
+TEST_CASE("a refused tmpfs rename leaves both nodes and every byte as they were")
+{
+    FeatherOS::Tmpfs::Reset();
+    const uint32_t file = Put("file", "file bytes");
+    const uint32_t other = Put("other", "other bytes");
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "full"));
+    Put("full/child", "child");
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "empty"));
+    REQUIRE(FeatherOS::Tmpfs::MakeDirectory(Tmp, "full/in"));
+    const uint64_t used = FeatherOS::Tmpfs::UsedBytes();
+    const std::vector<std::string> root = List("/tmp");
+
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "empty", "full"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "file", "full"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "file", "empty"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "empty", "file"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "full/in", "full"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "full", "full/in/deeper"));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Rename(Tmp, "file", ""));
+
+    uint32_t found = 0;
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "file", &found));
+    REQUIRE(found == file);
+    REQUIRE(Contents(found) == "file bytes");
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "other", &found));
+    REQUIRE(found == other);
+    REQUIRE(Contents(found) == "other bytes");
+    REQUIRE(FeatherOS::Tmpfs::Find(Tmp, "full/child", &found));
+    REQUIRE(Contents(found) == "child");
+    REQUIRE(FeatherOS::Tmpfs::UsedBytes() == used);
+    REQUIRE(Sorted(List("/tmp")) == Sorted(root));
+    REQUIRE(Sorted(List("/tmp/full")) == std::vector<std::string>{"child", "in/"});
+}
+
+TEST_CASE("a tmpfs replacement frees its entry, so a full table takes another create")
+{
+    FeatherOS::Tmpfs::Reset();
+    uint32_t node = 0;
+    for (uint32_t index = 0; index < FeatherOS::Tmpfs::MaximumEntries; ++index)
+    {
+        REQUIRE(FeatherOS::Tmpfs::Create(Tmp, ("f" + std::to_string(index)).c_str(), &node));
+    }
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "one-too-many", &node));
+    REQUIRE(FeatherOS::Tmpfs::Rename(Tmp, "f1", "f2"));
+    REQUIRE(FeatherOS::Tmpfs::Create(Tmp, "one-more", &node));
+    REQUIRE_FALSE(FeatherOS::Tmpfs::Create(Tmp, "and-one-too-many", &node));
 }
 
 TEST_CASE("tmpfs stops at its node and byte limits")
@@ -314,6 +471,85 @@ TEST_CASE("/tmp works through file descriptors with the disk's sharing rules")
     REQUIRE(FeatherOS::Files::Close(&table, open_file) == 0);
     REQUIRE(FeatherOS::Files::Rename("/tmp/a.txt", "/tmp/b.txt") == 0);
     REQUIRE(List("/tmp") == std::vector<std::string>{"b.txt"});
+}
+
+TEST_CASE("/tmp holds 200-byte names and paths near PATH_MAX, listed whole")
+{
+    namespace User = FeatherOS::User;
+    FeatherOS::Tmpfs::Reset();
+    const std::string name(200, 'n');
+    std::string path = "/tmp";
+    for (int level = 0; level < 4; ++level)
+    {
+        path += "/" + name;
+        REQUIRE(FeatherOS::Files::MakeDirectory(path.c_str()) == 0);
+    }
+    const std::string directory = path;
+    path += "/" + name;
+    REQUIRE(path.size() == 1009);
+    FeatherOS::Files::Table table{};
+    const uint64_t file =
+        FeatherOS::Files::Open(&table, path.c_str(), OpenWrite | OpenCreate | OpenTruncate);
+    REQUIRE_FALSE(User::IsSyscallError(file));
+    REQUIRE(FeatherOS::Files::Write(&table, file, "far", 3) == 3);
+    FeatherOS::Files::CloseAll(&table);
+    REQUIRE(ReadAll(path.c_str()) == "far");
+    REQUIRE(List(directory.c_str()) == std::vector<std::string>{name});
+
+    User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat(path.c_str(), &status) == 0);
+    REQUIRE(status.mode == (User::ModeRegular | 0644));
+    REQUIRE(status.size == 3);
+    REQUIRE(status.link_count == 1);
+    User::DirectoryEntry entry{};
+    REQUIRE(FeatherOS::Files::ReadDirectory(directory.c_str(), 0, &entry) == 0);
+    REQUIRE(std::string(entry.name) == name);
+    REQUIRE(entry.node == status.node);
+    REQUIRE(entry.type == User::ModeRegular >> User::EntryTypeShift);
+    REQUIRE(entry.size == 3);
+    REQUIRE(FeatherOS::Files::Stat(directory.c_str(), &status) == 0);
+    REQUIRE(status.mode == (User::ModeDirectory | 0755));
+    // Five more characters would pass PATH_MAX.
+    REQUIRE(FeatherOS::Files::MakeDirectory((path.substr(0, 1004) + "/xxxxxxxxxxxxxxx").c_str()) !=
+            0);
+    FeatherOS::Tmpfs::Reset();
+}
+
+TEST_CASE("the virtual filesystems report fixed modes, and mount points their roots' nodes")
+{
+    namespace User = FeatherOS::User;
+    User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat("/dev/null", &status) == 0);
+    REQUIRE(status.mode == (User::ModeCharacterDevice | 0666));
+    REQUIRE(status.node != 0);
+    const uint64_t dev_device = status.device;
+    REQUIRE(dev_device != 0);
+    REQUIRE(FeatherOS::Files::Stat("/dev/zero", &status) == 0);
+    REQUIRE(status.device == dev_device);
+    REQUIRE(FeatherOS::Files::Stat("/proc", &status) == 0);
+    REQUIRE(status.mode == (User::ModeDirectory | 0555));
+    REQUIRE(status.device != dev_device);
+    REQUIRE(FeatherOS::Files::Stat("/proc/mounts", &status) == 0);
+    REQUIRE(status.mode == (User::ModeRegular | 0444));
+    REQUIRE(FeatherOS::Files::Stat("/tmp", &status) == 0);
+    REQUIRE(status.mode == (User::ModeDirectory | 0755));
+
+    std::map<std::string, uint64_t> nodes;
+    User::DirectoryEntry entry{};
+    for (uint64_t index = 0; FeatherOS::Files::ReadDirectory("/", index, &entry) == 0; ++index)
+    {
+        nodes[entry.name] = entry.node;
+    }
+    for (const char* point : {"dev", "proc", "tmp", "etc"})
+    {
+        REQUIRE(FeatherOS::Files::Stat((std::string("/") + point).c_str(), &status) == 0);
+        REQUIRE(nodes.at(point) == status.node);
+    }
+    REQUIRE(FeatherOS::Files::ReadDirectory("/dev", 0, &entry) == 0);
+    REQUIRE(std::string(entry.name) == "null");
+    REQUIRE(entry.type == User::ModeCharacterDevice >> User::EntryTypeShift);
+    REQUIRE(FeatherOS::Files::Stat("/dev/null", &status) == 0);
+    REQUIRE(entry.node == status.node);
 }
 
 TEST_CASE("Spawn reads program files in pieces and keeps them from changing meanwhile")
@@ -476,7 +712,8 @@ TEST_CASE("/dev/ttyN opens a virtual console's terminal")
 TEST_CASE("/proc lists processes and generates their status and meminfo")
 {
     UseFakeProcesses();
-    REQUIRE(List("/proc") == std::vector<std::string>{"meminfo", "stat", "1/", "4/", "12/"});
+    REQUIRE(List("/proc") ==
+            std::vector<std::string>{"meminfo", "stat", "mounts", "1/", "4/", "12/"});
     REQUIRE(List("/proc/4") == std::vector<std::string>{"status"});
     REQUIRE(ReadAll("/proc/12/status") ==
             "Name:\tshell\nState:\tR (running)\nPid:\t12\nPPid:\t1\nPgid:\t4\nPages:\t37\n"
@@ -485,7 +722,8 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
     REQUIRE(ReadAll("/proc/stat") ==
             "UptimeMs:\t61000\nCpus:\t2\nCpu0BusyMs:\t700\nCpu1BusyMs:\t30\n");
     REQUIRE(ReadAll("/proc/meminfo") ==
-            "MemTotal:\t262144 kB\nMemFree:\t204800 kB\nKernelHeap:\t64 kB\nTmp:\t0 kB\n");
+            "MemTotal:\t262144 kB\nMemFree:\t204800 kB\nKernelHeap:\t64 kB\nTmp:\t0 kB\n"
+            "Cached:\t12 kB\n");
     REQUIRE(FeatherOS::VFS::IsDirectory("/proc/1"));
     REQUIRE_FALSE(FeatherOS::VFS::IsDirectory("/proc/2"));
     REQUIRE_FALSE(FeatherOS::VFS::IsDirectory("/proc/01"));
@@ -509,4 +747,101 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
     REQUIRE(FeatherOS::Files::Read(&table, reader, text, 10) == 10);
     REQUIRE(std::string(text) == "Name:\tshel");
     REQUIRE(FeatherOS::Files::Close(&table, reader) == 0);
+}
+
+TEST_CASE("/proc/mounts has a line per mount, in mount order")
+{
+    UseFakeProcesses();
+    REQUIRE(ReadAll("/proc/mounts") == "initramfs /system initramfs ro 0 0\nvda1 / fat16 rw 0 0\n");
+
+    FeatherOS::Procfs::SetSource({FakeProcessAt, FakeProcessStatus, FakeMemoryStatus,
+                                  FakeSystemStatus, FeatherOS::VFS::DescribeMount});
+    const std::string mounts = ReadAll("/proc/mounts");
+    for (const char* line :
+         {"initramfs /system initramfs ro 0 0\n", "etc /etc tmpfs rw 0 0\n",
+          "devfs /dev devfs rw 0 0\n", "procfs /proc procfs ro 0 0\n", "tmp /tmp tmpfs rw 0 0\n"})
+    {
+        REQUIRE(mounts.find(line) != std::string::npos);
+    }
+    REQUIRE(mounts.find("devfs") < mounts.find("procfs"));
+    UseFakeProcesses();
+}
+
+TEST_CASE("unmounting /tmp waits for its users, and mounting it again keeps its files")
+{
+    using FeatherOS::User::SyscallErrorBusy;
+    using FeatherOS::User::SyscallErrorInvalidArgument;
+    using FeatherOS::User::SyscallErrorNotDirectory;
+    using FeatherOS::User::SyscallErrorNotFound;
+    FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table, nullptr);
+    const uint64_t writer =
+        FeatherOS::Files::Open(&table, "/tmp/mounted.txt", OpenWrite | OpenCreate | OpenTruncate);
+    REQUIRE(FeatherOS::Files::Write(&table, writer, "kept", 4) == 4);
+
+    REQUIRE(FeatherOS::Files::Unmount("/tmp", NoWorkingDirectory) == SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
+    REQUIRE(FeatherOS::Files::Unmount("/tmp", EveryWorkingDirectory) == SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Unmount("/nonexistent", NoWorkingDirectory) == SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Unmount("/dev/null", NoWorkingDirectory) ==
+            SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Unmount("/tmp", NoWorkingDirectory) == 0);
+    REQUIRE(FeatherOS::Files::CheckDirectory("/tmp") != 0);
+    REQUIRE(FeatherOS::Files::Open(&table, "/tmp/mounted.txt", OpenRead) == SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Unmount("/tmp", NoWorkingDirectory) == SyscallErrorNotFound);
+
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/tmp", "nosuchfs") ==
+            FeatherOS::User::SyscallErrorUnknownFilesystemType);
+    REQUIRE(FeatherOS::Files::Mount("nosuch", "/tmp", "tmpfs") == SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/no/such", "tmpfs") == SyscallErrorNotFound);
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/dev/null", "tmpfs") == SyscallErrorNotDirectory);
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/dev", "tmpfs") == SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Mount("etc", "/elsewhere", "tmpfs") == SyscallErrorBusy);
+
+    // A mount inside another keeps the outer one mounted.
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/dev/scratch", "tmpfs") == 0);
+    REQUIRE(ReadAll("/dev/scratch/mounted.txt") == "kept");
+    REQUIRE(FeatherOS::Files::Unmount("/dev", NoWorkingDirectory) == SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Unmount("/dev/scratch", NoWorkingDirectory) == 0);
+
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/tmp", "tmpfs") == 0);
+    REQUIRE(ReadAll("/tmp/mounted.txt") == "kept");
+    REQUIRE(FeatherOS::Files::Mount("tmp", "/tmp", "tmpfs") == SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Remove("/tmp/mounted.txt") == 0);
+}
+
+TEST_CASE("remount changes /tmp, and answers for the mounts that cannot change")
+{
+    namespace User = FeatherOS::User;
+    using FeatherOS::Files::Remount;
+    using FeatherOS::Filesystem::MountMode;
+    REQUIRE(FeatherOS::Files::MakeDirectory("/tmp/inside") == 0);
+    REQUIRE(Remount("/tmp/inside", MountMode::ReadOnly) == User::SyscallErrorInvalidArgument);
+    REQUIRE(Remount("/no/such", MountMode::ReadOnly) == User::SyscallErrorNotFound);
+    REQUIRE(Remount("/system", MountMode::ReadOnly) == 0);
+    REQUIRE(Remount("/system", MountMode::ReadWrite) == User::SyscallErrorReadOnly);
+    REQUIRE(Remount("/proc", MountMode::ReadOnly) == 0);
+    REQUIRE(Remount("/proc", MountMode::ReadWrite) == User::SyscallErrorReadOnly);
+    REQUIRE(Remount("/dev", MountMode::ReadOnly) == User::SyscallErrorInvalidArgument);
+    REQUIRE(Remount("/dev", MountMode::ReadWrite) == User::SyscallErrorInvalidArgument);
+
+    FeatherOS::Files::Table table{};
+    const uint64_t writer =
+        FeatherOS::Files::Open(&table, "/tmp/kept.txt", OpenWrite | OpenCreate | OpenTruncate);
+    REQUIRE_FALSE(User::IsSyscallError(writer));
+    REQUIRE(FeatherOS::Files::Write(&table, writer, "kept", 4) == 4);
+    REQUIRE(Remount("/tmp", MountMode::ReadOnly) == User::SyscallErrorBusy);
+    REQUIRE(FeatherOS::Files::Close(&table, writer) == 0);
+
+    REQUIRE(Remount("/tmp", MountMode::ReadOnly) == 0);
+    REQUIRE(Remount("/tmp", MountMode::ReadOnly) == 0);
+    REQUIRE(FeatherOS::Files::Open(&table, "/tmp/new.txt", OpenWrite | OpenCreate) ==
+            User::SyscallErrorReadOnly);
+    REQUIRE(FeatherOS::Files::Remove("/tmp/kept.txt") == User::SyscallErrorReadOnly);
+    REQUIRE(ReadAll("/tmp/kept.txt") == "kept");
+    REQUIRE(Remount("/tmp", MountMode::ReadWrite) == 0);
+    REQUIRE(Remount("/tmp", MountMode::ReadWrite) == 0);
+    REQUIRE(ReadAll("/tmp/kept.txt") == "kept");
+    REQUIRE(FeatherOS::Files::Remove("/tmp/kept.txt") == 0);
+    REQUIRE(FeatherOS::Files::RemoveDirectory("/tmp/inside") == 0);
 }

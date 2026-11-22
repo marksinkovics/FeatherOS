@@ -34,9 +34,9 @@ EXPECTED_PROGRAMS_OUTPUT = (
     "libctest: written through dup",
     "libctest: stdout is back after posix_spawn",
     "libctest: exit handlers ran in order",
-    # env prints the variables init.conf sets, which the shell passes on.
+    # env prints the variables init sets, which the shell passes on.
+    "PATH=/bin:/sbin:/system",
     "HOME=/home",
-    "PATH=/system:/bin",
     "hello feather os",
     "upper> ",
     "MIXED CASE",
@@ -45,7 +45,7 @@ EXPECTED_PROGRAMS_OUTPUT = (
     "usage: cxxtest",
 )
 # libctest checks the x87 long double functions only on x86-64.
-LIBCTEST_CHECKS = {"x86_64": 529, "aarch64": 517}
+LIBCTEST_CHECKS = {"x86_64": 642, "aarch64": 630}
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE

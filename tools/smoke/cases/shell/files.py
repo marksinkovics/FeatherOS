@@ -21,6 +21,7 @@ EXPECTED_FILES_OUTPUT = (
     "kept in tmp",
     "Name: cat",
     "MemTotal: ",
+    "Cached: ",
 )
 # pwd prints the directory alone; prompts follow it with "> ".
 WORKING_DIRECTORY_OUTPUT = re.compile(r"^(/home(?:/work)?)\r?$", re.MULTILINE)

@@ -1,7 +1,7 @@
 #ifndef FEATHEROS_FILESYSTEM_DEVICES_H
 #define FEATHEROS_FILESYSTEM_DEVICES_H
 
-#include "kernel/filesystem/fat16.h"
+#include "kernel/filesystem/filesystem.h"
 
 #include <stdint.h>
 
@@ -42,8 +42,11 @@ uint32_t PairOf(uint32_t node);
 Terminals::Terminal* ConsoleOf(uint32_t node);
 // "" and "pts".
 bool IsDirectory(const char* path);
+// Numbers for stat: a device's comes from its node, and the two directories have their own.
+uint64_t SerialNumber(uint32_t node);
+uint64_t DirectorySerialNumber(const char* path);
 void Read(Device device, void* buffer, uint64_t length, uint64_t* bytes_read);
-bool ReadDirectory(const char* path, uint32_t index, FAT16::DirectoryEntry* entry);
+bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry* entry);
 
 } // namespace FeatherOS::Devices
 

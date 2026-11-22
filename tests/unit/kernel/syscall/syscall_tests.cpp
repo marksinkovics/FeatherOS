@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "kernel/syscall.h"
+#include "user/syscall_abi.h"
 
 namespace
 {
@@ -184,6 +185,15 @@ constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     .create_session = ReadFixedProcessId,
     .session_id = RecordDescriptor,
     .terminal_control = RecordSeekFrom,
+    .mount = RecordSeekFrom,
+    .unmount = RecordDescriptor,
+    .link_stat = RecordSeek,
+    .read_link = RecordSeekFrom,
+    .symbolic_link = RecordSeek,
+    .link = RecordSeek,
+    .resolve_path = RecordSeekFrom,
+    .sync = ReadFixedProcessId,
+    .resource_limit = RecordSeekFrom,
 };
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
@@ -418,6 +428,19 @@ TEST_CASE("syscall duplicate, descriptor-flags and file-status-flags pass three 
                 .action == Action::Invalid);
 }
 
+TEST_CASE("syscall mount passes a remount's null source and its request through")
+{
+    OutputTarget output;
+    REQUIRE(FeatherOS::User::MountRemount == 32);
+    REQUIRE((FeatherOS::User::MountRemount & FeatherOS::User::MountReadOnly) == 0);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Mount, 0, 0x20, 0x30), AllHandlers,
+                                         &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0);
+    REQUIRE(output.last_arguments[1] == 0x20);
+    REQUIRE(output.last_arguments[2] == 0x30);
+}
+
 TEST_CASE("syscall signal-return is left to the architecture code")
 {
     OutputTarget output;
@@ -458,6 +481,56 @@ TEST_CASE("syscall signal-return is left to the architecture code")
     REQUIRE(output.last_arguments[1] == 1);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::TerminalMode), WriteOnly, &output)
                 .action == Action::Invalid);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Mount, 0x10, 0x20, 0x30), AllHandlers,
+                                         &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0x10);
+    REQUIRE(output.last_arguments[1] == 0x20);
+    REQUIRE(output.last_arguments[2] == 0x30);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Unmount, 0x40), AllHandlers, &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0x40);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Unmount, 0x40), WriteOnly, &output)
+                .action == Action::Invalid);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::LinkStat, 0x50, 0x58), AllHandlers,
+                                         &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0x50);
+    REQUIRE(output.last_arguments[1] == 0x58);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadLink, 0x60, 0x68, 99),
+                                         AllHandlers, &output)
+                .value == 0x68);
+    REQUIRE(output.last_arguments[0] == 0x60);
+    REQUIRE(output.last_arguments[2] == 99);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::SymbolicLink, 0x70, 0x78),
+                                         AllHandlers, &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0x70);
+    REQUIRE(output.last_arguments[1] == 0x78);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Link, 0x80, 0x88), AllHandlers,
+                                         &output)
+                .action == Action::Return);
+    REQUIRE(output.last_arguments[0] == 0x80);
+    REQUIRE(output.last_arguments[1] == 0x88);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ResolvePath, 0x90, 0x98, 64),
+                                         AllHandlers, &output)
+                .value == 0x98);
+    REQUIRE(output.last_arguments[2] == 64);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::Sync), AllHandlers, &output).action ==
+            Action::Return);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ResourceLimit, 7, 0xA0, 0xA8),
+                                         AllHandlers, &output)
+                .value == 0xA0);
+    REQUIRE(output.last_arguments[0] == 7);
+    REQUIRE(output.last_arguments[1] == 0xA0);
+    REQUIRE(output.last_arguments[2] == 0xA8);
+    for (const Number number : {Number::LinkStat, Number::ReadLink, Number::SymbolicLink,
+                                Number::Link, Number::ResolvePath, Number::Sync,
+                                Number::ResourceLimit})
+    {
+        REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(number), WriteOnly, &output).action ==
+                Action::Invalid);
+    }
     const auto create = FeatherOS::Syscall::Dispatch(
         MakeRequest(Number::ThreadCreate, 0x1000, 0x2000, 0x3000), AllHandlers, &output);
     REQUIRE(create.action == Action::Return);

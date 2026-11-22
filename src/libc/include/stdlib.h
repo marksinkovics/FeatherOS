@@ -70,6 +70,10 @@ void qsort(void* base, size_t count, size_t size, int (*compare)(const void*, co
 void* bsearch(const void* key, const void* base, size_t count, size_t size,
               int (*compare)(const void*, const void*));
 
+// The absolute path of an existing file, with every symbolic link, ".", ".." and repeated '/'
+// resolved, in resolved (PATH_MAX bytes) or, when that is null, in a buffer from malloc.
+char* realpath(const char* path, char* resolved);
+
 char* getenv(const char* name);
 int setenv(const char* name, const char* value, int overwrite);
 int unsetenv(const char* name);

@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/reboot.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -22,12 +23,10 @@ namespace
 {
 
 constexpr size_t MaximumWords = 16;
-constexpr size_t MaximumPathLength = 64;
 
 constexpr size_t MaximumRedirects = 4;
 constexpr size_t MaximumStages = 4;
 constexpr size_t MaximumPipelineWords = MaximumStages * MaximumWords;
-constexpr size_t MaximumCommandLineLength = 64;
 constexpr size_t MaximumJobs = 8;
 
 // Opens the files the redirections name, close-on-exec so only the copies the file actions make
@@ -725,6 +724,50 @@ int RunCommand(const char* line)
     return started == stage_count ? status : NotStarted;
 }
 
+// A built-in, because the limit must change the shell's own, which its commands inherit.
+void LimitCommand(const char* arguments)
+{
+    char text[64];
+    snprintf(text, sizeof(text), "%s", arguments);
+    char* option = strtok(text, " ");
+    char* value = option == nullptr ? nullptr : strtok(nullptr, " ");
+    const bool hard = option != nullptr && strcmp(option, "-Hn") == 0;
+    const bool valid =
+        option != nullptr && (hard || strcmp(option, "-n") == 0) && strtok(nullptr, " ") == nullptr;
+    if (!valid)
+    {
+        puts("usage: ulimit -n [limit], ulimit -Hn [limit]");
+        return;
+    }
+    rlimit limits = {};
+    if (getrlimit(RLIMIT_NOFILE, &limits) != 0)
+    {
+        printf("ulimit: %s\n", strerror(errno));
+        return;
+    }
+    if (value == nullptr)
+    {
+        printf("%lu\n", hard ? limits.rlim_max : limits.rlim_cur);
+        return;
+    }
+    char* end = nullptr;
+    const unsigned long wanted = strtoul(value, &end, 10);
+    if (*value == '-' || end == value || *end != '\0')
+    {
+        puts("ulimit: invalid number");
+        return;
+    }
+    (hard ? limits.rlim_max : limits.rlim_cur) = wanted;
+    if (!hard && wanted > limits.rlim_max)
+    {
+        limits.rlim_max = wanted;
+    }
+    if (setrlimit(RLIMIT_NOFILE, &limits) != 0)
+    {
+        printf("ulimit: %s\n", strerror(errno));
+    }
+}
+
 // A built-in, because only the shell's own working directory should change. One pair of double
 // quotes around the directory is dropped, as program arguments drop theirs.
 void ChangeDirectoryCommand(const char* argument)
@@ -748,7 +791,12 @@ void ChangeDirectoryCommand(const char* argument)
         --length;
     }
     path[length] = '\0';
-    const char* target = length == 0 ? "/home" : path;
+    const char* target = length == 0 ? getenv("HOME") : path;
+    if (target == nullptr)
+    {
+        puts("cd: HOME not set");
+        return;
+    }
     if (chdir(target) != 0)
     {
         printf("cd: %s: no such directory\n", target);
@@ -762,7 +810,7 @@ constexpr char Help[] =
     "Runs programs and waits for each one: a name is looked up in the directories\n"
     "of PATH, and a name with a / is a file. Type help for the commands;\n"
     "Ctrl+C stops the running command. The prompt shows the working directory,\n"
-    "which cd changes (cd alone returns to /home) and programs inherit. A command's\n"
+    "which cd changes (cd alone goes to $HOME) and programs inherit. A command's\n"
     "input and output can be redirected: < file, > file, >> file, 2> file, 2>&1;\n"
     "a | b connects one command's output to the next one's input, and a trailing &\n"
     "runs a command in the background. Ctrl+Z stops the running command: jobs\n"
@@ -798,7 +846,7 @@ int main(int argc, char** argv)
     char line[MaximumCommandLineLength];
     LineHistory history;
     // "<working directory>> ", such as "/home/docs> ".
-    char prompt[MaximumPathLength + 3];
+    char prompt[MaximumPromptLength + 1];
     for (;;)
     {
         if (getcwd(prompt, MaximumPathLength) == nullptr)
@@ -825,6 +873,11 @@ int main(int argc, char** argv)
         if (strcmp(command, "cd") == 0 || strncmp(command, "cd ", 3) == 0)
         {
             ChangeDirectoryCommand(command + 2);
+            continue;
+        }
+        if (strcmp(command, "ulimit") == 0 || strncmp(command, "ulimit ", 7) == 0)
+        {
+            LimitCommand(command + 6);
             continue;
         }
         if (strcmp(command, "shutdown") == 0 || strcmp(command, "reboot") == 0)
@@ -883,11 +936,13 @@ int main(int argc, char** argv)
                  "<file> <text>, "
                  "rm <file>, cp <source> <target>, mv <source> <target>, touch <file>, head, tail, "
                  "wc, grep <text>, sort, "
-                 "mkdir <dir>, rmdir <dir>, env, kill [-signal] <pid>, ps, keys, clear, "
+                 "mkdir <dir>, rmdir <dir>, ln [-s] <target> <link>, readlink [-f] <path>, "
+                 "mount [-t type source target], umount <target>, sync, "
+                 "env, kill [-signal] <pid>, ps, keys, clear, "
                  "vi [file], script [-c command] [file], stty, ping [-6] [-c count] <host>, "
                  "host [-4|-6] <name>, net, dhcp, "
                  "top [-n "
-                 "count], cd [dir], pwd, "
+                 "count], cd [dir], pwd, ulimit -n|-Hn [limit], "
                  "jobs, "
                  "fg [n], bg [n], wait, history, "
                  "exit, "
@@ -895,7 +950,7 @@ int main(int argc, char** argv)
             puts("Editing: Left, Right, Home, End, Delete; Up and Down recall lines; Ctrl+A and "
                  "Ctrl+E go to the start and end, Ctrl+U, Ctrl+K and Ctrl+W erase, Ctrl+L "
                  "clears the screen, Ctrl+C discards the line. Ctrl+Z stops a running command.");
-            puts("Programs are found in PATH (/system:/bin); run another file by its path, "
+            puts("Programs are found in PATH (/bin:/sbin:/system); run another file by its path, "
                  "such as ./tool or /tmp/tool.");
             puts("Run <command> --help to see what a command does.");
             continue;

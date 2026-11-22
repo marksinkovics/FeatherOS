@@ -16,7 +16,7 @@ int main(int argc, char** argv)
 }
 ```
 
-Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. The build places it in `/system` as `/system/<name>`, where the shell finds it by name. A copy anywhere else runs too, by its path (`/tmp/tool`, `./tool`) or by name from a directory in `PATH`, which is `/system:/bin`. Every program in `src/user/` is written this way, except `test_program`, a kernel self-test that defines `_start` itself.
+Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt`. The build places it in `/system` as `/system/<name>` and in the test disk's root as `/bin/<name>` (`/sbin/<name>` for `init`, `mount`, `umount`, `sync`, `net` and `dhcp`), where the shell finds it by name. A copy anywhere else runs too, by its path (`/tmp/tool`, `./tool`) or by name from a directory in `PATH`, which is `/bin:/sbin:/system`. Every program in `src/user/` is written this way, except `test_program`, a kernel self-test that defines `_start` itself.
 
 **Startup.** The C library's `_start` does four things before `main`:
 - copies the arguments to writable memory, since the kernel maps them read-only
@@ -24,7 +24,7 @@ Save it as `src/user/<name>.cpp` and add `<name>:<name>` to `FEATHEROS_PROGRAMS`
 - runs `.preinit_array` and `.init_array`, which include C++ static constructors and `__attribute__((constructor))` functions
 - calls `exit(main(argc, argv))`
 
-`argv[0]` is the path the program was started with, or its name for a program in `/system`.
+`argv[0]` is the path the program was started with, or its name for a program in `/system`. The test disk's root also holds every program in `/bin`, which `PATH` lists first, so the shell runs those, with `argv[0]` set to `/bin/<name>`.
 
 **Exit.** `exit` runs `atexit` handlers and C++ static destructors, newest first. It then runs `.fini_array`, flushes the stdio streams, and passes the low 8 bits of the status to the kernel. `abort` raises `SIGABRT`, so a handler runs first, and ends the program with it even if the handler returns.
 
@@ -42,10 +42,12 @@ These come from the kernel and apply everywhere below.
 
 | Limit | Value |
 | --- | --- |
-| Command line passed to a program | 63 characters, at most 16 words including the name |
+| Command line passed to a program | 1023 characters, at most 16 words including the name |
 | Environment | 1 KiB and at most 32 variables |
-| Path | 63 characters |
-| Open files per process | 16 descriptors, plus the console's 0, 1 and 2 |
+| Path | 1023 characters (`PATH_MAX` 1024 with the terminator), each name at most 255 (`NAME_MAX`) |
+| Symbolic links | 40 followed per path, then `ELOOP` |
+| Open files per process | 256 descriptors (`RLIMIT_NOFILE`'s soft limit, which `setrlimit` raises to 1024), the console's 0, 1 and 2 included |
+| Open files system-wide | 1024 distinct disk, `/tmp` and `/etc` files (`ENFILE` past that); any number of descriptors share one |
 | Running children per process | 16 |
 | Memory per process | 16384 pages (64 MiB), including the image and stack |
 | Clocks | the wall clock counts whole seconds; the monotonic clock counts milliseconds |
@@ -59,9 +61,9 @@ These come from the kernel and apply everywhere below.
 | `/system` | The read-only initramfs, which holds every bundled program as `/system/<name>` |
 | `/dev` | `null`, `zero` and `random`, as on Linux; all take writes. `tty` opens the caller's controlling terminal, or fails with `ENXIO` without one |
 | `/tmp` | A RAM filesystem, emptied on restart: at most 128 entries and 4 MiB, with case-sensitive names |
-| `/proc` | Read-only: `meminfo`, `stat` (uptime and CPU use), and `<pid>/status` for each process; `/proc/self` is the caller |
+| `/proc` | Read-only: `meminfo` (with `Cached`, the page cache's size), `stat` (uptime and CPU use), `mounts`, and `<pid>/status` for each process; `/proc/self` is the caller |
 
-`/bin`, an ordinary disk directory, is the second entry of the default `PATH`, for programs copied to the disk. Disk names ignore case and are at most 63 characters, and no file can have holes. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
+`/proc/mounts` lists every mount as Linux does, `<source> <point> <type> <ro|rw> 0 0`, in mount order, and `mount` and `umount` (`sys/mount.h`) change them. `/bin`, an ordinary disk directory, is the second entry of the default `PATH`, for programs copied to the disk. Disk names ignore case and are at most 63 ASCII characters (FAT16's limit; ext2 and `/tmp` take 255 bytes), and no file can have holes. Symbolic links are followed anywhere in a path and across mounts, and `..` after one leads to the parent of its target, as POSIX's physical walk does; `/tmp`, `/etc` and ext2 hold them, FAT16 does not. `/proc` files follow Linux's `Name:\tvalue` layout, but with fewer fields.
 
 ## Headers
 
@@ -79,13 +81,17 @@ There is no locale, so `strcoll` and `strxfrm` are left out. `strerror` knows a 
 
 The `is*` classifiers, `tolower` and `toupper`, for ASCII only, since `"C"` is the only locale.
 
+### `limits.h`
+
+The compiler's own limits, plus `LLONG_MIN`, `LLONG_MAX` and `ULLONG_MAX` where it leaves them out, and the kernel's: `PATH_MAX` 1024 (a path with its terminator, the size of the kernel's path buffers), `NAME_MAX` 255 (one component, as `d_name` holds it with its terminator), `PIPE_BUF` 512 (there is no `OPEN_MAX`, as in glibc: ask `sysconf(_SC_OPEN_MAX)`), and the C library's `PTHREAD_KEYS_MAX` 128 and `PTHREAD_DESTRUCTOR_ITERATIONS` 4. FAT16 names stay at most 63 ASCII characters within `NAME_MAX`.
+
 ### `errno.h`
 
 `errno`, with these error numbers, at Linux's values:
 
-`EPERM ENOENT ESRCH EINTR EIO ENXIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST EXDEV ENOTDIR EISDIR EINVAL EMFILE ENOTTY ENOSPC ESPIPE EROFS EPIPE EDOM ERANGE EDEADLK ENAMETOOLONG ENOSYS ENOTEMPTY EOVERFLOW EILSEQ ENOTSOCK EDESTADDRREQ EMSGSIZE ENOPROTOOPT EPROTONOSUPPORT EOPNOTSUPP/ENOTSUP EAFNOSUPPORT EADDRINUSE EADDRNOTAVAIL ENETDOWN ENETUNREACH ECONNRESET ENOBUFS EISCONN ENOTCONN ETIMEDOUT ECONNREFUSED EHOSTUNREACH EALREADY EINPROGRESS`
+`EPERM ENOENT ESRCH EINTR EIO ENXIO E2BIG ENOEXEC EBADF ECHILD EAGAIN/EWOULDBLOCK ENOMEM EFAULT EBUSY EEXIST EXDEV ENODEV ENOTDIR EISDIR EINVAL ENFILE EMFILE ENOTTY EFBIG ENOSPC ESPIPE EROFS EMLINK EPIPE EDOM ERANGE EDEADLK ENAMETOOLONG ENOSYS ENOTEMPTY ELOOP EOVERFLOW EILSEQ ENOTSOCK EDESTADDRREQ EMSGSIZE ENOPROTOOPT EPROTONOSUPPORT EOPNOTSUPP/ENOTSUP EAFNOSUPPORT EADDRINUSE EADDRNOTAVAIL ENETDOWN ENETUNREACH ECONNRESET ENOBUFS EISCONN ENOTCONN ETIMEDOUT ECONNREFUSED EHOSTUNREACH EALREADY EINPROGRESS`
 
-Each kernel error maps to one of them. A background read of the controlling terminal that ignores or blocks `SIGTTIN`, or comes from an orphaned group, fails with `EIO`, as on Linux.
+Each kernel error maps to one of them. A path of `PATH_MAX` characters or more, as passed, once joined to the working directory or once its symbolic links are expanded (a link's target and the rest of the path still to walk must fit together, too), or with a component over `NAME_MAX`, fails with `ENAMETOOLONG`. More than 40 links on the way, or `O_NOFOLLOW` on a link, fail with `ELOOP`. A background read of the controlling terminal that ignores or blocks `SIGTTIN`, or comes from an orphaned group, fails with `EIO`, as on Linux.
 
 ### `stdlib.h`
 
@@ -101,13 +107,14 @@ Each kernel error maps to one of them. A background read of the controlling term
   - `atoi`, `atol`, `atoll`, `strtol`, `strtoll`, `strtoul` and `strtoull`, with bases 0 and 2–36.
   - `strtod`, `strtof`, `strtold` and `atof`. These are correctly rounded (ties to even), and accept hexadecimal floats, `inf`, `infinity` and `nan(...)`.
 - **Sorting:** `qsort`, a heapsort, so it never needs extra memory but is not stable. `bsearch`.
+- **Paths:** `realpath` asks the kernel's walk for the physical path of an existing file, with every symbolic link, `.`, `..` and repeated `/` resolved; with a null buffer it returns one from `malloc` of `PATH_MAX` bytes. An empty path fails with `ENOENT`.
 - **Environment:** `getenv`, `setenv` and `unsetenv`. `putenv` is left out, because the table keeps its own copies of the strings.
 - **Random numbers:** `rand` and `srand`, a 64-bit linear congruential generator.
 - **Pseudo-terminals:** `posix_openpt`, `grantpt`, `unlockpt`, `ptsname` and `ptsname_r`. `posix_openpt` takes `O_RDWR`, optionally with `O_NOCTTY` and `O_CLOEXEC`, and opens `/dev/ptmx`; there are 16 pairs, after which it fails with `ENXIO`. The slave is `/dev/pts/N`, and opening it fails with `EIO` until `unlockpt`. There are no owners or permissions, so `grantpt` only checks that the descriptor is a master. `isatty` is false for a master and true for a slave. `ptsname` returns a static buffer. Closing the master hangs up the slave: the session it was the controlling terminal of loses it and every process there gets `SIGHUP`, reads on the slave return 0, writes fail with `EIO`, and `poll` reports `POLLHUP`. Once every slave descriptor is closed, reads on the master return the rest of the output and then 0 (end of file, as on macOS and the BSDs, where Linux returns `EIO`), with `POLLHUP`. A process's `tcsetattr` settings are restored on every terminal when it exits.
 
 Not provided:
 - `system`, because there is no `/bin/sh -c`
-- `mkstemp`, `realpath`, `mbtowc` and the other multibyte functions but `uchar.h`'s
+- `mkstemp`, `mbtowc` and the other multibyte functions but `uchar.h`'s
 
 ### `inttypes.h`
 
@@ -130,7 +137,7 @@ FeatherOS's `<cuchar>` and `<string>` take `mbstate_t` from here.
 - **Buffers and errors:** `fclose`, `fflush`, `setvbuf` and `setbuf`. `setvbuf` uses only the mode: every stream keeps its own 512-byte buffer. `feof`, `ferror`, `clearerr` and `fileno` are also provided.
 - **Reading and writing:** `fread`, `fwrite`, `fgetc`, `getc`, `getchar`, `ungetc`, `fgets`, `getline`, `fputc`, `putc`, `putchar`, `fputs` and `puts`.
 - **Seeking:** `fseek`, `ftell` and `rewind`. Offsets past the end of a file fail with `EINVAL`, and the console cannot seek (`ESPIPE`).
-- **Files:** `remove`, `rename` and `perror`. `rename` works within one filesystem only (`EXDEV` between the disk and `/tmp`), replaces a file but not a directory (`EEXIST`), and refuses open files (`EBUSY`).
+- **Files:** `remove`, `rename` and `perror`. `rename` works within one filesystem only (`EXDEV` between the disk and `/tmp`). An existing target of the same kind is replaced by the one filesystem call: a file or link by a file or link, a directory by a directory that is empty (`ENOTEMPTY` otherwise); a file onto a directory is `EISDIR` and a directory onto a file `ENOTDIR`, and a name onto itself or onto another hard link of the same file changes nothing. The replacement is atomic on ext2, ext3, ext4 and `/tmp`: after a crash the target is the old file or the new one (ext2 without a journal may leak the old inode until `e2fsck -fy`). On FAT16 it is not: a crash can lose the target, never the source. An open file, as source or as target, gives `EBUSY`. As on Linux, a last component of `.` or `..` in either name fails with `EBUSY`.
 
 **Formatting.** The family is `printf`, `fprintf`, `dprintf`, `sprintf` and `snprintf`, plus their `v` forms. It supports:
 - every flag, width and precision (including `*`)
@@ -209,8 +216,8 @@ Differences:
 
 - **Descriptors:**
   - `read`, `write`, `close` and `lseek`.
-  - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC O_NONBLOCK O_NOCTTY`. The lowest free descriptor is used, out of 32. A session leader without a controlling terminal takes the first terminal it opens unless it passes `O_NOCTTY`.
-  - `openat` does what `open` does for an absolute path, or a relative one with `AT_FDCWD`. Directories cannot be opened, so a relative path with any other descriptor fails with `ENOTDIR`, or `EBADF` when the descriptor is not open.
+  - `open` and `creat`, with `O_RDONLY O_WRONLY O_RDWR O_CREAT O_EXCL O_TRUNC O_APPEND O_CLOEXEC O_NONBLOCK O_NOCTTY O_NOFOLLOW`. The lowest free descriptor below the soft `RLIMIT_NOFILE` limit is used (`EMFILE` when none is free, `ENFILE` when a new file would be the 1025th tracked system-wide). A session leader without a controlling terminal takes the first terminal it opens unless it passes `O_NOCTTY`. A symbolic link in the last component is followed, and `O_CREAT` through a dangling one creates its target, as on Linux; `O_NOFOLLOW` makes it fail with `ELOOP` instead (its value is Linux's generic `0400000`, which is Linux's on x86-64 but not on AArch64, where FeatherOS uses the same value). `O_CREAT | O_EXCL` fails with `EEXIST` on any link, a dangling one too.
+  - `openat` does what `open` does for an absolute path, or a relative one with `AT_FDCWD`. Directories cannot be opened, so a relative path with any other descriptor fails with `ENOTDIR`, or `EBADF` when the descriptor is not open. `readlinkat`, `symlinkat` and `linkat` follow the same rule; `linkat` takes `AT_SYMLINK_FOLLOW` (it follows `from` through `realpath`), and `fcntl.h` defines `AT_SYMLINK_NOFOLLOW` too, though no function takes it yet.
   - `dup` and `dup2` share the open file, its offset and its `O_APPEND` and `O_NONBLOCK` flags. `fcntl` supports `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD` and `F_SETFD` (`FD_CLOEXEC`), and `F_GETFL` and `F_SETFL`, which reports the access mode and changes `O_APPEND` and `O_NONBLOCK`, ignoring other flags as Linux does. Locks are not provided.
   - `O_NONBLOCK` makes a pipe or socket call that would wait fail with `EAGAIN` instead; on files it changes nothing. A terminal's flags cannot change (`EINVAL`), since every process shares the console's open file; raw mode with `VMIN` 0 reads it without waiting.
   - Programs started with `posix_spawn` inherit every descriptor not marked close-on-exec.
@@ -218,32 +225,37 @@ Differences:
   - With `O_APPEND`, every write goes to the end, as POSIX requires.
   - `O_CREAT` and `O_TRUNC` need write access.
   - Offsets past the end of a file fail with `EINVAL`, because files cannot have holes.
-- **Files and directories:** `unlink`, `rmdir`, `mkdir`, `chdir`, `getcwd`, `stat`, `fstat`, `access` and `isatty`.
-  - There are no users or permissions.
-  - `stat` reports owner 0, and mode bits that only show whether a file is writable: `0644` or `0444`, and `0755` or `0555` for directories.
-  - Every time in `stat` is 0, because FAT16 timestamps are not read.
-  - `access` fails `W_OK` for the read-only initramfs and `/proc`.
+- **Files and directories:** `unlink`, `rmdir`, `mkdir`, `chdir`, `getcwd`, `stat`, `lstat`, `fstat`, `access`, `isatty`, `readlink`, `symlink` and `link`.
+  - There are no users, so owners and permission bits are stored and shown but not enforced.
+  - `struct stat` has every POSIX field: `st_dev` (a number per mount), `st_ino`, `st_mode`, `st_nlink`, `st_uid`, `st_gid`, `st_rdev` (always 0), `st_size`, `st_blksize` (512), `st_blocks` (512-byte units of the size), and `st_atim`, `st_mtim` and `st_ctim` as `struct timespec`, with `st_atime`, `st_mtime` and `st_ctime` as macros for their seconds. The type macros are `S_ISREG`, `S_ISDIR`, `S_ISLNK`, `S_ISCHR`, `S_ISBLK`, `S_ISFIFO` and `S_ISSOCK`, with the `S_IF*` bits and the permission constants (`S_IRWXU` … `S_IXOTH`, `S_ISUID`, `S_ISGID`, `S_ISVTX`) at Linux's values.
+  - What `stat` reports comes from the filesystem: ext2 has real modes, owners, link counts and times, with nanoseconds where its inodes are large enough; FAT16 reports `0644` or `0755` (`0444` or `0555` read-only), one link, owner 0 and times of 0, since its timestamps are not read yet; the initramfs and `/proc` `0444` and `0555`, `/tmp` and `/etc` `0644` and `0755`, `/dev` `S_IFCHR` `0666`, all with times of 0.
+  - `stat`, `chdir`, `opendir` and `access` follow a symbolic link in the last component; `lstat` describes the link itself (`S_IFLNK`, its target's length as `st_size`), and `unlink`, `rmdir`, `mkdir`, `rename`, `readlink`, `symlink` and `link` act on it, as on Linux. `chdir` through a link stores the target's physical path, so `getcwd` never shows a link, and `cd link/..` leads to the target's parent. An ext2 device node, FIFO or socket has no type bits in `st_mode`, since the shared filesystem core does not say which it is.
+  - `readlink` copies the target without a terminator, cut to the buffer, and fails with `EINVAL` for anything but a link. `symlink` stores its target as given, which need not exist (an empty one fails with `ENOENT`); `link` follows neither name. Both fail with `EEXIST`, then `ENOENT` for a missing parent, then (`link` only) `EXDEV` across filesystems, then `EROFS` on a read-only filesystem, then `EPERM` where the filesystem holds no such links, as Linux's vfat answers: FAT16 holds neither kind, `/tmp` and `/etc` only symbolic links, and ext2 both (on a read-write mount). `link` on a directory is `EPERM`, and past ext2's 32000 links `EMLINK`.
+  - `fstat` on a pipe reports `S_IFIFO` `0600`, on a socket `S_IFSOCK` `0777`, and on a terminal `S_IFCHR` `0620`, each with device 0 and a node number of its own.
+  - `access` fails `W_OK` with `EROFS` for anything on a read-only filesystem (the initramfs, `/proc`, a mount made with `MS_RDONLY`); other modes only check that the file exists.
   - `isatty` is true for terminals (the console, `/dev/tty` and pseudo-terminal slaves), not for the other devices in `/dev`, which are also `S_IFCHR`.
-  - `mkdir` ignores its mode.
+  - `mkdir` ignores its mode. `rmdir` of a path whose last component is `.` fails with `EINVAL` and of one ending in `..` with `ENOTEMPTY`, as on Linux.
+  - Failures inside a disk filesystem keep their reason: a full volume gives `ENOSPC` (a `write` that fills it returns the bytes that fit, the next one fails), too many links or subdirectories `EMLINK`, a file past the filesystem's size limit `EFBIG`, a damaged volume `EIO`.
+- **`sync`** syncs every mounted filesystem before it returns (Linux's behaviour; POSIX only asks that the writes be scheduled), so an ext2 volume is clean afterwards until the next change. On ext3 and ext4 it commits the journal's running transaction without checkpointing, as on Linux. A kernel task also syncs every writable ext2, ext3 and ext4 mount every 5 s (fixed; no `commit=` option).
 - **Processes:** `getpid`, `getppid`, `getpgrp`, `getpgid`, `setsid`, `getsid` and `_exit`. The kernel starts init in a session of its own without a controlling terminal; a child joins its parent's session and controlling terminal unless it is started with `POSIX_SPAWN_SETSID`. `setsid` starts a session without a controlling terminal and fails with `EPERM` for a group leader, which every command the shell starts is. `tcgetpgrp` works only on the caller's controlling terminal (`ENOTTY` on others). `tcsetpgrp` only names a group of the caller's session there, otherwise `EPERM`. On the controlling terminal a background group's read gets `SIGTTIN`, and its `tcsetattr` or `tcsetpgrp` gets `SIGTTOU`, both of which stop the group by default; the call runs again once the group continues. A read that ignores or blocks `SIGTTIN` fails with `EIO`; a change that ignores or blocks `SIGTTOU` goes ahead, which is how a shell takes the terminal back. An orphaned group gets `EIO` instead of the signal. Writes from the background are allowed, as with `stty -tostop`. On another terminal there is no such check. Besides the console, pseudo-terminal slaves are terminals (see `stdlib.h`). `setpgid` is not provided: groups are chosen when `posix_spawn` starts the child.
 - **Sleeping:** `sleep` and `usleep`.
 - **`environ`.**
-- **`sysconf`:** `_SC_NPROCESSORS_ONLN` and `_SC_NPROCESSORS_CONF` (the same, from `/proc/stat`), `_SC_PAGESIZE` and `_SC_OPEN_MAX`; other names fail with `EINVAL`.
+- **`sysconf`:** `_SC_NPROCESSORS_ONLN` and `_SC_NPROCESSORS_CONF` (the same, from `/proc/stat`), `_SC_PAGESIZE` and `_SC_OPEN_MAX` (the soft `RLIMIT_NOFILE` limit, through `getrlimit`); other names fail with `EINVAL`.
 - **`sbrk`:** moves the end of the heap that `malloc` also uses. A negative increment returns the whole pages above the new end to the kernel, and going below the heap's start fails with `EINVAL`. `malloc` never lowers the break below memory a program got from `sbrk` itself. `brk` is not provided.
 
 Not provided:
 - `fork` and the `exec*` family, because processes start with `posix_spawn`
-- `link` and `symlink`
+- `fstatat`, `unlinkat` and the other `*at` functions but `openat`, `readlinkat`, `symlinkat` and `linkat`
 - `chmod` and `chown`
 - `getuid` and the other user and group functions
-- `ftruncate` and `fsync`
+- `ftruncate`, `fsync`, `fdatasync` and `syncfs` (`sync` covers every filesystem)
 
 ### `dirent.h`
 
 `opendir`, `readdir`, `rewinddir` and `closedir`.
 
-- **Entries:** each has `d_ino`, `d_type` (`DT_DIR` or `DT_REG`) and `d_name`. `d_ino` numbers the entries from 1 within their directory.
-- **Paths:** `opendir` makes its path absolute, so a later `chdir` does not change which directory the stream reads.
+- **Entries:** each has `d_ino`, `d_type` and `d_name` (up to `NAME_MAX` bytes and a terminator). `d_ino` is the `st_ino` that `lstat` reports for the entry (for a mount point, its filesystem's root), or 0 when the filesystem cannot tell. `d_type` is `DT_REG`, `DT_DIR`, `DT_LNK`, `DT_CHR`, `DT_BLK`, `DT_FIFO` or `DT_SOCK` at Linux's values, or `DT_UNKNOWN` for an ext2 device node, FIFO or socket, so a listing needs no `stat` to tell directories and links apart.
+- **Paths:** `opendir` resolves its path with `realpath`, so neither a later `chdir` nor a symbolic link changed on the way changes which directory the stream reads.
 - **Left out:** listings do not include `.` and `..`. `scandir`, `telldir`, `seekdir` and `fdopendir` are not provided.
 
 ### `spawn.h` and `sys/wait.h`
@@ -251,9 +263,9 @@ Not provided:
 **`posix_spawn` and `posix_spawnp`.** The path names a program file anywhere the VFS can read: the disk, `/tmp`, or `/system`. A relative path such as `./tool` starts at the working directory. FeatherOS difference: a name without a `/` is looked up in `/system`, so `posix_spawn("ls", …)` runs `/system/ls`, where POSIX would look in the working directory.
 - **Programs:** FAT16 has no execute bit, so any regular file may be tried. The kernel checks it like a `/system` program and reads only its segments, so the file's size does not matter; one that is not a valid program fails with `ENOEXEC`, as do devices, one whose segments need more memory than a process may have fails with `ENOMEM`, one open for writing with `EBUSY`, a directory with `EISDIR`, and a missing file with `ENOENT`.
 - **Arguments:** the kernel always makes the path its `argv[0]`, or the bare name for a program in `/system`.
-- **Errors:** the path or an argument containing a double quote fails with `EINVAL`. A command line or environment over the limits fails with `E2BIG`; the path counts toward the 63-character command line, and must resolve to at most 63 characters (`ENAMETOOLONG`).
+- **Errors:** the path or an argument containing a double quote fails with `EINVAL`. A command line or environment over the limits fails with `E2BIG`; the path counts toward the 1023-character command line (16 words at most), and must resolve to at most 1023 characters with components of at most `NAME_MAX` (`ENAMETOOLONG`). A path of up to about 1000 characters therefore fits as an argument.
 - **Console:** by default the child takes the console until it exits.
-- **PATH:** `posix_spawnp` runs the first regular file it finds in the directories of the caller's `PATH`, or `/system:/bin` when `PATH` is unset; empty entries are skipped rather than meaning the working directory. A file name holding a `/` is used as it is. Unlike `execvp`, a file that is not a program is not run as a shell script; `posix_spawnp` returns `ENOEXEC`.
+- **PATH:** `posix_spawnp` runs the first regular file it finds in the directories of the caller's `PATH`, or `/bin:/sbin:/system` when `PATH` is unset; empty entries are skipped rather than meaning the working directory. A file name holding a `/` is used as it is. Unlike `execvp`, a file that is not a program is not run as a shell script; `posix_spawnp` returns `ENOEXEC`.
 
 **Attributes.** The supported flags are:
 
@@ -265,7 +277,7 @@ Not provided:
 
 Other flags fail with `EINVAL`.
 
-**File actions.** `posix_spawn_file_actions_adddup2`, `addopen` and `addclose` run in order, at most 8 per spawn. The C library applies them to the caller's own descriptors around the `Spawn` syscall and puts those back afterwards. Another thread using those descriptors meanwhile would see the child's, so spawn with file actions from one thread at a time. A failing action makes `posix_spawn` return its error without starting the child. `addopen` paths are at most 63 characters, and opens with `O_NOCTTY`, so the caller never takes the terminal meant for the child.
+**File actions.** `posix_spawn_file_actions_adddup2`, `addopen` and `addclose` run in order, at most 8 per spawn. The C library applies them to the caller's own descriptors around the `Spawn` syscall and puts those back afterwards. Another thread using those descriptors meanwhile would see the child's, so spawn with file actions from one thread at a time. A failing action makes `posix_spawn` return its error without starting the child. `addopen` paths are shorter than `PATH_MAX`, and opens with `O_NOCTTY`, so the caller never takes the terminal meant for the child.
 
 **`waitpid` and `wait`.** They use the Linux status encoding with `WIFEXITED`, `WEXITSTATUS`, `WIFSIGNALED`, `WTERMSIG`, `WIFSTOPPED`, `WSTOPSIG` and `WIFCONTINUED`, and the options `WNOHANG`, `WUNTRACED` (also report a child that stopped) and `WCONTINUED` (also report one that `SIGCONT` continued). Each stop or continue is reported once, and a newer one replaces one not yet reported. A CPU exception reports signal 11 (`SIGSEGV`).
 
@@ -337,6 +349,26 @@ Only `ioctl(fd, TIOCGWINSZ, &size)` and `ioctl(fd, TIOCSWINSZ, &size)`, which do
 
 `reboot(RB_POWER_OFF)` and `reboot(RB_AUTOBOOT)`, with Linux's values. Only init and session leaders may call it. The kernel then stops every process, flushes the disk, and powers off or restarts. Anyone else gets `EPERM`.
 
+### `sys/mount.h`
+
+`mount(source, target, filesystemtype, mountflags, data)` and `umount(target)`, with Linux's signatures. Each partition has its own filesystem instance, which keeps its contents while unmounted and can be mounted at one point at a time (volumes of one type mount side by side), so `filesystemtype` and `source` name an instance, as `/proc/mounts` shows them: `ext4` `vda1` (the virtio disk's first partition, the root), `fat16` `vda2` (its second, which nothing mounts at boot), `ext3` `vda3`, `ext4` `vda5` (the test disk's second ext4, a logical partition) and `ext2` `vda6`, `initramfs` `initramfs`, `devfs` `devfs`, `procfs` `procfs`, and `tmpfs` `tmp` or `etc`. Differences from Linux:
+
+- `mountflags` may only be `MS_RDONLY` and `MS_REMOUNT`, and `data` must be null (`EINVAL` otherwise); there is no bind or move, and no `umount2` or lazy unmount. Without `MS_RDONLY` a mount is read-write, except where the filesystem cannot be written (the initramfs, `/proc`) or refuses it (an ext2, ext3 or ext4 volume that was not cleanly unmounted or has errors recorded, or has a journal or features the core does not take, mounts read-only with a kernel log line; ext3 and ext4 are read-write otherwise, and a writable mount replays a journal that needs recovery); after a journal abort or an ext2 error with remount-ro the mount shows `ro` from that call on); `/proc/mounts` shows which. Writes to a read-only mount fail with `EROFS`.
+- `MS_REMOUNT` changes the mode of the mount at `target` (`MS_RDONLY` for read-only, else read-write) and ignores `source` and `filesystemtype`, which may be null. It works on every mount, the root included, and changes only that mount. A read-only remount of ext3 or ext4 closes the journal (the partition is clean while mounted) and of ext2 marks it clean; a read-write one follows a fresh mount's rules (it replays a journal that needs it). `EINVAL` for a path that is not a mount point and for `/dev`, `ENOENT` for a missing one, `EBUSY` for a read-only remount while a file on the mount is open for writing and for a read-write one that must replay the journal while any file on it is open, `EROFS` for a read-write remount of a read-only kind (`/system`, `/proc`) or of a mount the core refuses to write (an unclean or errored volume, unknown features, an aborted journal), and `EIO` if the journal could not be closed. A refusal after a successful mount is sticky: once a journal aborted, `remount,rw` gives `EROFS` and only `umount` followed by `mount` (which replays the journal) brings it back, while `remount,ro` gives 0 and writes nothing. An ext2 volume without a journal keeps showing `rw` after an I/O error and each failing change gives `EIO`. `/system` and `/proc` give 0 for read-only and `EROFS` for read-write; remounting the same mode again writes nothing.
+- An unknown type fails with `ENODEV`, a source the type does not have with `ENOENT`, and an instance mounted elsewhere, or a target that is already a mount point, with `EBUSY`. Mounting over a mount point is not stacking.
+- `target` need not exist, as the built-in mount points have no directory on the disk, but its parent must (`ENOENT`), and an existing one must be a directory (`ENOTDIR`).
+- `umount` fails with `EINVAL` for a path that is not a mount point and `ENOENT` for one that does not exist. It fails with `EBUSY` while a file on the mount is open, a process's working directory is inside it, or another mount point lies inside it, so `/` can never be unmounted from a running shell. Terminal descriptors from `/dev` (`/dev/tty`, `/dev/ttyN`, `/dev/pts/N`) do not keep `/dev` busy. The filesystem's data is flushed to the device first, and an ext3 or ext4 journal is closed, leaving the partition clean.
+- There are no users, so neither call fails with `EPERM`.
+
+### `sys/resource.h`
+
+`getrlimit` and `setrlimit` with `struct rlimit`, `rlim_t` and `RLIM_INFINITY`, for `RLIMIT_NOFILE` (7) only; any other resource fails with `EINVAL`, a bad pointer with `EFAULT`. The limits belong to the process, so its threads share them, and `posix_spawn` hands them to the child.
+
+- The soft limit starts at 256 and the hard limit at 1024, which is also the ceiling: `setrlimit` can lower either limit and raise the hard limit again as far as 1024, with no users to ask. A soft limit above the hard one fails with `EINVAL`, a hard limit above 1024 (`RLIM_INFINITY` included) with `EPERM`. A soft limit of 0 is allowed.
+- Lowering the soft limit closes nothing: descriptors at or above it keep working, but no new descriptor gets a number at or above it (`EMFILE`), `dup2` to such a number fails with `EBADF`, `fcntl(F_DUPFD)` with such a minimum with `EINVAL`, and `poll` takes at most that many entries.
+- There is no `getrusage`, `prlimit` or other resource (`RLIMIT_STACK`, `RLIMIT_AS` and the rest), and no `RLIM_SAVED_*`.
+- The shell's `ulimit -n` prints the soft limit, `ulimit -n N` sets it, `ulimit -Hn` and `ulimit -Hn N` do the same for the hard limit, and a soft limit above the hard one asks for the hard limit to rise with it (`ulimit -n 2000` fails with `Operation not permitted`).
+
 ### `sys/socket.h`, `netinet/in.h`, `arpa/inet.h`, `netinet/ip_icmp.h`, `netinet/icmp6.h`, `sys/time.h`
 
 Sockets are descriptors: `read`, `write`, `close`, `dup`, `fstat` (`S_IFSOCK`), `poll` and inheritance work on them as on files.
@@ -350,7 +382,7 @@ Sockets are descriptors: `read`, `write`, `close`, `dup`, `fstat` (`S_IFSOCK`), 
 
 ### `poll.h`
 
-`poll` with Linux's `struct pollfd` and `POLLIN`, `POLLOUT`, `POLLERR`, `POLLHUP` and `POLLNVAL`, for at most 64 descriptors; a negative timeout waits until one is ready, and a signal ends the wait with `EINTR`. Files are always ready; pipes, sockets and the console report as described in [development.md](development.md). Console input counts as soon as a key is waiting, so a canonical read may still wait for the end of the line. `select`, `ppoll` and `epoll` are not provided.
+`poll` with Linux's `struct pollfd` and `POLLIN`, `POLLOUT`, `POLLERR`, `POLLHUP` and `POLLNVAL`, for at most as many descriptors as the soft `RLIMIT_NOFILE` limit (more fail with `EINVAL`, as on Linux); a negative timeout waits until one is ready, and a signal ends the wait with `EINTR`. Files are always ready; pipes, sockets and the console report as described in [development.md](development.md). Console input counts as soon as a key is waiting, so a canonical read may still wait for the end of the line. `select`, `ppoll` and `epoll` are not provided.
 
 ### `netdb.h`
 

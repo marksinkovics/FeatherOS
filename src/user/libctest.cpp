@@ -26,6 +26,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/reboot.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -131,7 +132,8 @@ int LocalStatic()
 void CheckArguments(int argc, char** argv)
 {
     Check(argc == 3, "argc");
-    Check(strcmp(argv[0], "libctest") == 0, "argv[0]");
+    // A program found in /bin gets its path, one from /system its bare name.
+    Check(strcmp(argv[0], "libctest") == 0 || strcmp(argv[0], "/bin/libctest") == 0, "argv[0]");
     Check(strcmp(argv[1], "one") == 0, "argv[1]");
     Check(strcmp(argv[2], "two words") == 0, "quoted argv[2]");
     Check(argv[argc] == nullptr, "argv terminator");
@@ -502,7 +504,7 @@ void CheckEnvironment()
     // init.conf sets these, and the shell passes them on.
     const char* home = getenv("HOME");
     Check(home != nullptr && strcmp(home, "/home") == 0, "inherited HOME");
-    Check(EnvironHas("PATH=/system:/bin"), "inherited PATH in environ");
+    Check(EnvironHas("PATH=/bin:/sbin:/system"), "inherited PATH in environ");
     Check(getenv("NOT_SET") == nullptr, "missing variable");
 
     Check(setenv("FEATHER", "os", 0) == 0 && strcmp(getenv("FEATHER"), "os") == 0, "setenv");
@@ -522,7 +524,7 @@ void CheckEnvironment()
     errno = 0;
     Check(setenv("LARGE", large, 1) == -1 && errno == ENOMEM, "setenv past the size limit");
     Check(unsetenv("FEATHER") == 0 && getenv("FEATHER") == nullptr &&
-              EnvironHas("PATH=/system:/bin"),
+              EnvironHas("PATH=/bin:/sbin:/system"),
           "unsetenv");
     Check(unsetenv("FEATHER") == 0, "unsetenv a missing variable");
 }
@@ -858,9 +860,9 @@ void CheckFixedParameterCalls()
 
 void CheckDirectories()
 {
-    char directory[64];
+    char directory[PATH_MAX];
     Check(getcwd(directory, sizeof(directory)) != nullptr, "getcwd");
-    char original[64];
+    char original[PATH_MAX];
     strcpy(original, directory);
     Check(mkdir(WorkDirectory, 0755) == 0, "mkdir");
     errno = 0;
@@ -879,6 +881,11 @@ void CheckDirectories()
     const struct dirent* entry = readdir(listing);
     Check(entry != nullptr && strcmp(entry->d_name, "note.txt") == 0 && entry->d_type == DT_REG,
           "readdir after a chdir");
+    struct stat note_status;
+    Check(entry != nullptr && stat("/home/libcwork/note.txt", &note_status) == 0 &&
+              entry->d_ino == note_status.st_ino && note_status.st_ino != 0 &&
+              note_status.st_nlink == 1 && (note_status.st_mode & 07777) == 0666,
+          "d_ino is stat's st_ino");
     Check(readdir(listing) == nullptr, "readdir at the end");
     rewinddir(listing);
     Check(readdir(listing) != nullptr && closedir(listing) == 0, "rewinddir");
@@ -901,6 +908,264 @@ void CheckDirectories()
     Check(chdir(WorkDirectory) == 0 && unlink("note.txt") == 0 && chdir(original) == 0,
           "unlink relative to the working directory");
     Check(rmdir(WorkDirectory) == 0, "rmdir");
+}
+
+// PATH_MAX counts the terminator, so a path of PATH_MAX characters is too long and one of
+// PATH_MAX - 1 fits; NAME_MAX limits each component.
+void CheckPathLimits()
+{
+    static char path[PATH_MAX + 1];
+    memset(path, 'x', PATH_MAX);
+    path[0] = '/';
+    path[PATH_MAX] = '\0';
+    struct stat status;
+    errno = 0;
+    Check(stat(path, &status) == -1 && errno == ENAMETOOLONG, "stat of a PATH_MAX path");
+    errno = 0;
+    Check(open(path, O_RDONLY) == -1 && errno == ENAMETOOLONG, "open of a PATH_MAX path");
+    for (size_t slash = 200; slash < PATH_MAX - 1; slash += 200)
+    {
+        path[slash] = '/';
+    }
+    path[PATH_MAX - 1] = '\0';
+    errno = 0;
+    Check(stat(path, &status) == -1 && errno == ENOENT, "a path of PATH_MAX - 1 fits");
+    char original[PATH_MAX];
+    errno = 0;
+    Check(getcwd(original, sizeof(original)) != nullptr && chdir("/tmp") == 0 &&
+              stat(path + 1, &status) == -1 && errno == ENAMETOOLONG && chdir(original) == 0,
+          "a relative path too long once resolved");
+
+    char name[sizeof("/tmp/") + NAME_MAX + 1] = "/tmp/";
+    memset(name + 5, 'n', NAME_MAX + 1);
+    name[sizeof(name) - 1] = '\0';
+    errno = 0;
+    Check(open(name, O_WRONLY | O_CREAT, 0644) == -1 && errno == ENAMETOOLONG,
+          "a component over NAME_MAX");
+    name[sizeof(name) - 2] = '\0';
+    const int created = open(name, O_WRONLY | O_CREAT, 0644);
+    Check(created >= 0 && close(created) == 0, "a component of NAME_MAX");
+    DIR* listing = opendir("/tmp");
+    bool listed = false;
+    for (const struct dirent* entry = listing == nullptr ? nullptr : readdir(listing);
+         entry != nullptr; entry = readdir(listing))
+    {
+        listed = listed || strcmp(entry->d_name, name + 5) == 0;
+    }
+    Check(listing != nullptr && listed && closedir(listing) == 0 && unlink(name) == 0,
+          "readdir lists a NAME_MAX name whole");
+}
+
+// /tmp holds symbolic links but no hard links, and the ext2 root holds both.
+void CheckSymbolicLinks()
+{
+    const int created = open("/tmp/libc-target.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    Check(created >= 0 && write(created, "linked", 6) == 6 && close(created) == 0,
+          "a file to link to");
+    Check(symlink("libc-target.txt", "/tmp/libc-link") == 0, "symlink");
+    errno = 0;
+    Check(symlink("elsewhere", "/tmp/libc-link") == -1 && errno == EEXIST,
+          "symlink onto an existing name");
+    struct stat followed;
+    struct stat link_status;
+    Check(stat("/tmp/libc-link", &followed) == 0 && S_ISREG(followed.st_mode) &&
+              followed.st_size == 6,
+          "stat follows a link");
+    Check(lstat("/tmp/libc-link", &link_status) == 0 && S_ISLNK(link_status.st_mode) &&
+              link_status.st_size == 15 && link_status.st_ino != followed.st_ino,
+          "lstat describes the link");
+    char target[PATH_MAX];
+    Check(readlink("/tmp/libc-link", target, sizeof(target)) == 15 &&
+              memcmp(target, "libc-target.txt", 15) == 0,
+          "readlink");
+    Check(readlink("/tmp/libc-link", target, 4) == 4 && memcmp(target, "libc", 4) == 0,
+          "readlink cuts the target to the buffer");
+    errno = 0;
+    Check(readlink("/tmp/libc-target.txt", target, sizeof(target)) == -1 && errno == EINVAL,
+          "readlink of a file");
+    Check(readlinkat(AT_FDCWD, "/tmp/libc-link", target, sizeof(target)) == 15, "readlinkat");
+    char resolved[PATH_MAX];
+    Check(realpath("/tmp/../tmp//libc-link", resolved) != nullptr &&
+              strcmp(resolved, "/tmp/libc-target.txt") == 0,
+          "realpath resolves links and dots");
+    char* allocated = realpath("/tmp/libc-link", nullptr);
+    Check(allocated != nullptr && strcmp(allocated, "/tmp/libc-target.txt") == 0,
+          "realpath allocates without a buffer");
+    free(allocated);
+    errno = 0;
+    Check(realpath("/tmp/libc-missing", resolved) == nullptr && errno == ENOENT,
+          "realpath of a missing file");
+
+    Check(symlink("libc-loop-b", "/tmp/libc-loop-a") == 0 &&
+              symlinkat("libc-loop-a", AT_FDCWD, "/tmp/libc-loop-b") == 0,
+          "symlinks that form a loop");
+    errno = 0;
+    Check(open("/tmp/libc-loop-a", O_RDONLY) == -1 && errno == ELOOP, "a loop fails with ELOOP");
+    Check(strcmp(strerror(ELOOP), "Too many levels of symbolic links") == 0, "strerror(ELOOP)");
+    errno = 0;
+    Check(open("/tmp/libc-link", O_RDONLY | O_NOFOLLOW) == -1 && errno == ELOOP,
+          "O_NOFOLLOW refuses a link");
+    errno = 0;
+    Check(open("/tmp/libc-link", O_WRONLY | O_CREAT | O_EXCL, 0644) == -1 && errno == EEXIST,
+          "O_EXCL counts a link");
+    errno = 0;
+    Check(link("/tmp/libc-target.txt", "/tmp/libc-hard") == -1 && errno == EPERM,
+          "link where hard links are not held");
+    errno = 0;
+    Check(link("/tmp/libc-target.txt", "/home/libc-hard") == -1 && errno == EXDEV,
+          "link across filesystems");
+    Check(symlink("x", "/home/libc-link") == 0 && unlink("/home/libc-link") == 0,
+          "symlink on the ext2 root");
+    errno = 0;
+    Check(symlink("x", "/system/libc-link") == -1 && errno == EROFS,
+          "symlink on a read-only filesystem");
+
+    char original[PATH_MAX];
+    Check(mkdir("/tmp/libc-dir", 0755) == 0 && symlink("/tmp/libc-dir", "/tmp/libc-dir-link") == 0,
+          "a link to a directory");
+    Check(getcwd(original, sizeof(original)) != nullptr && chdir("/tmp/libc-dir-link") == 0 &&
+              getcwd(target, sizeof(target)) != nullptr && strcmp(target, "/tmp/libc-dir") == 0,
+          "chdir through a link keeps the directory's own path");
+    Check(chdir("..") == 0 && getcwd(target, sizeof(target)) != nullptr &&
+              strcmp(target, "/tmp") == 0 && chdir(original) == 0,
+          "chdir .. after a link");
+    Check(unlink("/tmp/libc-link") == 0 && stat("/tmp/libc-target.txt", &followed) == 0,
+          "unlink removes the link, not its target");
+    Check(unlink("/tmp/libc-loop-a") == 0 && unlink("/tmp/libc-loop-b") == 0 &&
+              unlink("/tmp/libc-dir-link") == 0 && rmdir("/tmp/libc-dir") == 0 &&
+              unlink("/tmp/libc-target.txt") == 0,
+          "remove the link test's files");
+}
+
+bool Put(const char* path, const char* text)
+{
+    const int descriptor = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    const size_t length = strlen(text);
+    return descriptor >= 0 && write(descriptor, text, length) == static_cast<ssize_t>(length) &&
+           close(descriptor) == 0;
+}
+
+bool Holds(const char* path, const char* text)
+{
+    char contents[64];
+    const int descriptor = open(path, O_RDONLY);
+    if (descriptor < 0)
+    {
+        return false;
+    }
+    const ssize_t length = read(descriptor, contents, sizeof(contents) - 1);
+    close(descriptor);
+    return length >= 0 && static_cast<size_t>(length) == strlen(text) &&
+           memcmp(contents, text, static_cast<size_t>(length)) == 0;
+}
+
+struct Named
+{
+    char text[PATH_MAX];
+};
+
+Named Join(const char* base, const char* name)
+{
+    Named path;
+    snprintf(path.text, sizeof(path.text), "%s/%s", base, name);
+    return path;
+}
+
+// Rename onto an existing name replaces it in one step; base is on a writable filesystem.
+void CheckRenameIn(const char* base, bool hard_links)
+{
+    struct stat status;
+    struct stat parent_before;
+    struct stat parent_after;
+    Check(mkdir(base, 0755) == 0, "mkdir for the rename checks");
+    Check(Put(Join(base, "old").text, "old") && Put(Join(base, "new").text, "new") &&
+              rename(Join(base, "new").text, Join(base, "old").text) == 0 &&
+              Holds(Join(base, "old").text, "new"),
+          "rename onto a file replaces it");
+    errno = 0;
+    Check(stat(Join(base, "new").text, &status) == -1 && errno == ENOENT,
+          "the renamed name is gone");
+
+    Check(symlink("nowhere", Join(base, "link").text) == 0 && Put(Join(base, "plain").text, "p") &&
+              rename(Join(base, "plain").text, Join(base, "link").text) == 0 &&
+              lstat(Join(base, "link").text, &status) == 0 && S_ISREG(status.st_mode) &&
+              Holds(Join(base, "link").text, "p"),
+          "rename onto a symbolic link replaces the link");
+
+    if (hard_links)
+    {
+        Check(link(Join(base, "old").text, Join(base, "twin").text) == 0 &&
+                  rename(Join(base, "old").text, Join(base, "twin").text) == 0 &&
+                  stat(Join(base, "old").text, &status) == 0 && status.st_nlink == 2 &&
+                  stat(Join(base, "twin").text, &status) == 0 && status.st_nlink == 2 &&
+                  unlink(Join(base, "twin").text) == 0,
+              "rename onto its own hard link changes nothing");
+    }
+
+    Check(mkdir(Join(base, "empty").text, 0755) == 0 && mkdir(Join(base, "full").text, 0755) == 0 &&
+              mkdir(Join(base, "full/in").text, 0755) == 0 && Put(Join(base, "file").text, "f"),
+          "directories for the rename checks");
+    errno = 0;
+    Check(rename(Join(base, "file").text, Join(base, "empty").text) == -1 && errno == EISDIR,
+          "a file onto a directory");
+    errno = 0;
+    Check(rename(Join(base, "empty").text, Join(base, "file").text) == -1 && errno == ENOTDIR,
+          "a directory onto a file");
+    errno = 0;
+    Check(rename(Join(base, "empty").text, Join(base, "full").text) == -1 && errno == ENOTEMPTY,
+          "a directory onto a non-empty one");
+    errno = 0;
+    Check(rename(Join(base, "full/in").text, Join(base, "full").text) == -1 && errno == ENOTEMPTY,
+          "a directory onto its parent");
+    errno = 0;
+    Check(rename(Join(base, "full").text, Join(base, "full/in/deeper").text) == -1 &&
+              errno == EINVAL,
+          "a directory into its own subtree");
+    Check(Holds(Join(base, "file").text, "f"), "a refused rename changes nothing");
+
+    Check(mkdir(Join(base, "from").text, 0755) == 0 &&
+              mkdir(Join(base, "from/dir").text, 0755) == 0 &&
+              mkdir(Join(base, "empty/inner").text, 0755) == 0 &&
+              stat(Join(base, "from").text, &parent_before) == 0,
+          "directories to move");
+    Check(rename(Join(base, "from/dir").text, Join(base, "empty/inner").text) == 0 &&
+              stat(Join(base, "from").text, &parent_after) == 0 &&
+              stat(Join(base, "empty/inner/..").text, &status) == 0 && S_ISDIR(status.st_mode),
+          "a directory onto an empty directory");
+    if (hard_links)
+    {
+        Check(parent_after.st_nlink + 1 == parent_before.st_nlink,
+              "the old parent loses the moved directory's link");
+    }
+
+    Check(Put(Join(base, "target").text, "t") && Put(Join(base, "source").text, "s"),
+          "files for an open target");
+    const int target = open(Join(base, "target").text, O_RDONLY);
+    Check(target >= 0, "open the target");
+    errno = 0;
+    Check(rename(Join(base, "source").text, Join(base, "target").text) == -1 && errno == EBUSY,
+          "an open target is busy");
+    Check(close(target) == 0 && Holds(Join(base, "target").text, "t") &&
+              rename(Join(base, "source").text, Join(base, "target").text) == 0 &&
+              Holds(Join(base, "target").text, "s"),
+          "the target replaces once closed");
+
+    const char* const names[] = {"old",   "link", "file",    "target", "empty/inner",
+                                 "empty", "from", "full/in", "full"};
+    for (const char* name : names)
+    {
+        const Named path = Join(base, name);
+        Check(lstat(path.text, &status) == 0 &&
+                  (S_ISDIR(status.st_mode) ? rmdir(path.text) : unlink(path.text)) == 0,
+              "remove a rename check's file");
+    }
+    Check(rmdir(base) == 0, "remove the rename checks' directory");
+}
+
+void CheckRename()
+{
+    CheckRenameIn("/home/libc-rename", true);
+    CheckRenameIn("/tmp/libc-rename", false);
 }
 
 bool FileContains(const char* path, const char* text)
@@ -1168,10 +1433,10 @@ void CheckDiskPrograms()
           "posix_spawn of a relative path");
     Check(SpawnAndWait("disk-echo", true) == ENOENT, "posix_spawnp of a program outside PATH");
     Check(setenv("PATH", "::/nowhere:/tmp/", 1) == 0 && SpawnAndWait("disk-echo", true) == 0 &&
-              SpawnAndWait("echo", true) == ENOENT && setenv("PATH", "/system:/bin", 1) == 0,
+              SpawnAndWait("echo", true) == ENOENT && setenv("PATH", "/bin:/sbin:/system", 1) == 0,
           "posix_spawnp searches PATH");
     Check(unsetenv("PATH") == 0 && SpawnAndWait("echo", true) == 0 &&
-              setenv("PATH", "/system:/bin", 1) == 0,
+              setenv("PATH", "/bin:/sbin:/system", 1) == 0,
           "posix_spawnp without PATH");
     Check(SpawnAndWait("/system/hello.txt", false) == ENOEXEC &&
               SpawnAndWait("hello.txt", true) == ENOEXEC,
@@ -1582,7 +1847,7 @@ void CheckProcessAccounting()
 {
     const long cpus = sysconf(_SC_NPROCESSORS_ONLN);
     Check(cpus >= 1 && sysconf(_SC_NPROCESSORS_CONF) == cpus && sysconf(_SC_PAGESIZE) == 4096 &&
-              sysconf(_SC_OPEN_MAX) == 32,
+              sysconf(_SC_OPEN_MAX) == 256,
           "sysconf");
     errno = 0;
     Check(sysconf(9999) == -1 && errno == EINVAL, "sysconf with an unknown name");
@@ -2831,6 +3096,172 @@ void CheckDescriptors()
           "removing the descriptor test files");
 }
 
+void RemoveLimitFiles(int count)
+{
+    char name[40];
+    for (int index = 0; index < count; ++index)
+    {
+        snprintf(name, sizeof(name), "/tmp/libctest-limit-%d", index);
+        unlink(name);
+    }
+}
+
+int FillDescriptors(int* opened, int count)
+{
+    for (;;)
+    {
+        const int copy = dup(STDOUT_FILENO);
+        if (copy < 0)
+        {
+            return count;
+        }
+        opened[count++] = copy;
+    }
+}
+
+void CheckDescriptorLimits()
+{
+    constexpr int Files = 80;
+    rlimit limits = {};
+    Check(getrlimit(RLIMIT_NOFILE, &limits) == 0 && limits.rlim_cur == 256 &&
+              limits.rlim_max == 1024 && sysconf(_SC_OPEN_MAX) == 256,
+          "the default descriptor limits");
+
+    int opened[320];
+    int count = 0;
+    char name[40];
+    for (; count < Files; ++count)
+    {
+        snprintf(name, sizeof(name), "/tmp/libctest-limit-%d", count);
+        opened[count] = open(name, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        if (opened[count] < 0)
+        {
+            break;
+        }
+    }
+    Check(count == Files, "80 distinct files open at once");
+    errno = 0;
+    count = FillDescriptors(opened, count);
+    Check(errno == EMFILE && opened[count - 1] == 255, "dup stops at the soft limit");
+
+    limits = {300, 1024};
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0 && sysconf(_SC_OPEN_MAX) == 300,
+          "setrlimit raises the soft limit");
+    errno = 0;
+    count = FillDescriptors(opened, count);
+    Check(errno == EMFILE && opened[count - 1] == 299, "dup reaches the new soft limit");
+    errno = 0;
+    Check(dup2(STDOUT_FILENO, 300) == -1 && errno == EBADF &&
+              fcntl(STDOUT_FILENO, F_DUPFD, 300) == -1 && errno == EINVAL,
+          "dup2 and F_DUPFD at the soft limit");
+
+    limits = {2000, 2000};
+    errno = 0;
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == -1 && errno == EPERM, "a hard limit above 1024");
+    limits = {RLIM_INFINITY, RLIM_INFINITY};
+    errno = 0;
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == -1 && errno == EPERM, "an unlimited hard limit");
+    limits = {400, 300};
+    errno = 0;
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == -1 && errno == EINVAL,
+          "a soft limit above the hard");
+    limits = {};
+    Check(getrlimit(RLIMIT_NOFILE, &limits) == 0 && limits.rlim_cur == 300 &&
+              limits.rlim_max == 1024,
+          "a refused setrlimit changes nothing");
+    errno = 0;
+    Check(getrlimit(99, &limits) == -1 && errno == EINVAL && getrlimit(3, &limits) == -1 &&
+              errno == EINVAL && setrlimit(99, &limits) == -1 && errno == EINVAL,
+          "another resource");
+    errno = 0;
+    Check(getrlimit(RLIMIT_NOFILE, reinterpret_cast<rlimit*>(KernelAddress)) == -1 &&
+              errno == EFAULT &&
+              setrlimit(RLIMIT_NOFILE, reinterpret_cast<const rlimit*>(KernelAddress)) == -1 &&
+              errno == EFAULT,
+          "a bad rlimit pointer");
+
+    // Lowering the soft limit closes nothing.
+    for (int index = count - 50; index < count; ++index)
+    {
+        close(opened[index]);
+    }
+    count -= 50;
+    limits = {100, 1024};
+    errno = 0;
+    char byte = 0;
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0 && dup(STDOUT_FILENO) == -1 && errno == EMFILE &&
+              write(opened[count - 1], &byte, 0) == 0 && sysconf(_SC_OPEN_MAX) == 100,
+          "no new descriptor above a lowered soft limit, the old ones keep working");
+    for (int index = 0; index < count; ++index)
+    {
+        close(opened[index]);
+    }
+    RemoveLimitFiles(Files);
+    limits = {256, 1024};
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0, "restoring the descriptor limits");
+}
+
+void CheckLimitInheritance()
+{
+    int pipe_ends[2] = {-1, -1};
+    rlimit limits = {300, 1024};
+    Check(pipe2(pipe_ends, O_CLOEXEC) == 0 && setrlimit(RLIMIT_NOFILE, &limits) == 0 &&
+              dup2(pipe_ends[1], 280) == 280,
+          "a pipe's write end at descriptor 280");
+    pid_t child = 0;
+    char* arguments[] = {const_cast<char*>("libctest"), const_cast<char*>("rlimit-child"), nullptr};
+    const bool spawned = posix_spawn(&child, "libctest", nullptr, nullptr, arguments, environ) == 0;
+    close(pipe_ends[1]);
+    close(280);
+    char reply[4] = {};
+    size_t length = 0;
+    ssize_t got = 1;
+    while (got > 0 && length < sizeof(reply) - 1)
+    {
+        got = read(pipe_ends[0], reply + length, sizeof(reply) - 1 - length);
+        length += got > 0 ? static_cast<size_t>(got) : 0;
+    }
+    int status = -1;
+    Check(spawned && strcmp(reply, "ok") == 0 && waitpid(child, &status, 0) == child &&
+              WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "a child inherits the limits and descriptor 280");
+    close(pipe_ends[0]);
+    limits = {256, 1024};
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0, "restoring the limits after the child");
+}
+
+int RunLimitChild()
+{
+    rlimit limits = {};
+    const bool inherited = getrlimit(RLIMIT_NOFILE, &limits) == 0 && limits.rlim_cur == 300 &&
+                           limits.rlim_max == 1024 && fcntl(280, F_GETFD) == 0;
+    const char* answer = inherited ? "ok" : "no";
+    return write(280, answer, 2) == 2 && inherited ? 0 : 1;
+}
+
+void CheckPollLimit()
+{
+    int pipe_ends[2] = {-1, -1};
+    Check(pipe(pipe_ends) == 0 && write(pipe_ends[1], "x", 1) == 1, "a ready pipe");
+    pollfd entries[257];
+    for (pollfd& entry : entries)
+    {
+        entry = {pipe_ends[0], POLLIN, 0};
+    }
+    Check(poll(entries, 65, 0) == 65 && poll(entries, 256, 0) == 256, "poll past 64 entries");
+    errno = 0;
+    Check(poll(entries, 257, 0) == -1 && errno == EINVAL, "poll above the soft limit");
+    rlimit limits = {16, 1024};
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0 && poll(entries, 16, 0) == 16,
+          "poll at a lowered limit");
+    errno = 0;
+    Check(poll(entries, 17, 0) == -1 && errno == EINVAL, "poll above a lowered soft limit");
+    limits = {256, 1024};
+    Check(setrlimit(RLIMIT_NOFILE, &limits) == 0, "restoring the limits after poll");
+    close(pipe_ends[0]);
+    close(pipe_ends[1]);
+}
+
 // Everything a descriptor yields until its end, up to size - 1 bytes.
 size_t ReadToEnd(int descriptor, char* text, size_t size)
 {
@@ -3254,6 +3685,10 @@ int main(int argc, char** argv)
     {
         return RunBackgroundChild(argv[1]);
     }
+    if (argc == 2 && strcmp(argv[1], "rlimit-child") == 0)
+    {
+        return RunLimitChild();
+    }
     if (argc == 2 && strcmp(argv[1], "window-size") == 0)
     {
         return RunWindowSizeChild();
@@ -3302,6 +3737,9 @@ int main(int argc, char** argv)
     CheckDescriptorFiles();
     CheckFixedParameterCalls();
     CheckDirectories();
+    CheckPathLimits();
+    CheckSymbolicLinks();
+    CheckRename();
     CheckVirtualFiles();
     CheckAddressNames();
     CheckTime();
@@ -3317,6 +3755,9 @@ int main(int argc, char** argv)
     CheckBackgroundTerminal();
     CheckProcessAccounting();
     CheckDescriptors();
+    CheckDescriptorLimits();
+    CheckLimitInheritance();
+    CheckPollLimit();
     CheckPipes();
     CheckNonBlockingPipes();
     CheckNonBlockingSockets();

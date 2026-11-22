@@ -2,7 +2,10 @@ READY_MESSAGE = "KERN/I: Kernel initialization complete"
 TIMER_STARTED_MESSAGE = "KERN/I: Timer started at 100 Hz"
 SHELL_BANNER = "FeatherOS shell. Type 'help' for commands."
 VFS_MESSAGE = "KERN/I: VFS: hello.txt read passed"
-FAT16_MESSAGE = "KERN/I: VFS: FAT16 BLOCK.TXT read passed"
+ROOT_MESSAGE = "KERN/I: VFS: / is vda1 ext4, read-write"
+INIT_MESSAGE = "KERN/I: Init: starting /sbin/init from the root"
+RESCUE_INIT_MESSAGE = "KERN/I: Init: starting /system/init from the initramfs"
+ETC_MESSAGE = "KERN/I: VFS: /etc is the root's own directory"
 ELF_LOAD_MESSAGE = "KERN/I: ELF64: test image loaded into user address space"
 USER_MODE_MESSAGES = {
     "x86_64": "KERN/I: ELF64: ring 3 console and exit syscalls passed",

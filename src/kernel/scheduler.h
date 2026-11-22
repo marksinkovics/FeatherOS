@@ -33,6 +33,14 @@ struct WaitQueue
 {
 };
 
+// State that follows the running task rather than a lock; the boot task's serves any code that
+// runs before there are tasks.
+struct TaskLocal
+{
+    uint64_t filesystem_error;
+    const void* held_volume;
+};
+
 bool Initialize();
 [[noreturn]] void RunSecondaryCpu();
 bool CreateTask(TaskEntry entry, void* context, TaskId* task_id);
@@ -49,6 +57,7 @@ void OnTimerTick(uint64_t tick);
 uint64_t BusyTickCount(uint32_t cpu_index);
 TaskState GetState(TaskId task_id);
 TaskId CurrentTaskId();
+TaskLocal& CurrentLocal();
 // Timer ticks the task has run for, on any CPU, and the CPU it last ran on.
 bool GetUsage(TaskId task_id, uint64_t* run_ticks, uint32_t* last_cpu);
 

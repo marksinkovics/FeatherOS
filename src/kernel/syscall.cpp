@@ -321,6 +321,48 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
         return {Action::Return,
                 handlers.terminal_control(context, arguments[0], arguments[1], arguments[2])};
     }
+    if (request.number == static_cast<uint64_t>(Number::Mount) && handlers.mount != nullptr)
+    {
+        return {Action::Return, handlers.mount(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Unmount) && handlers.unmount != nullptr)
+    {
+        return {Action::Return, handlers.unmount(context, arguments[0])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::LinkStat) && handlers.link_stat != nullptr)
+    {
+        return {Action::Return, handlers.link_stat(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ReadLink) && handlers.read_link != nullptr)
+    {
+        return {Action::Return,
+                handlers.read_link(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::SymbolicLink) &&
+        handlers.symbolic_link != nullptr)
+    {
+        return {Action::Return, handlers.symbolic_link(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Link) && handlers.link != nullptr)
+    {
+        return {Action::Return, handlers.link(context, arguments[0], arguments[1])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ResolvePath) &&
+        handlers.resolve_path != nullptr)
+    {
+        return {Action::Return,
+                handlers.resolve_path(context, arguments[0], arguments[1], arguments[2])};
+    }
+    if (request.number == static_cast<uint64_t>(Number::Sync) && handlers.sync != nullptr)
+    {
+        return {Action::Return, handlers.sync(context)};
+    }
+    if (request.number == static_cast<uint64_t>(Number::ResourceLimit) &&
+        handlers.resource_limit != nullptr)
+    {
+        return {Action::Return,
+                handlers.resource_limit(context, arguments[0], arguments[1], arguments[2])};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

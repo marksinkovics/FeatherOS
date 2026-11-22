@@ -26,6 +26,8 @@ constexpr int ErrorNumber(uint64_t result)
         return EINTR;
     case User::SyscallErrorTooManyOpenFiles:
         return EMFILE;
+    case User::SyscallErrorTooManyFilesInSystem:
+        return ENFILE;
     case User::SyscallErrorBusy:
         return EBUSY;
     case User::SyscallErrorWouldBlock:
@@ -64,6 +66,14 @@ constexpr int ErrorNumber(uint64_t result)
         return ETIMEDOUT;
     case User::SyscallErrorCrossDevice:
         return EXDEV;
+    case User::SyscallErrorLoop:
+        return ELOOP;
+    case User::SyscallErrorNoSpace:
+        return ENOSPC;
+    case User::SyscallErrorTooManyLinks:
+        return EMLINK;
+    case User::SyscallErrorFileTooLarge:
+        return EFBIG;
     case User::SyscallErrorNotSocket:
         return ENOTSOCK;
     case User::SyscallErrorFamilyNotSupported:
@@ -82,6 +92,8 @@ constexpr int ErrorNumber(uint64_t result)
         return ENOTTY;
     case User::SyscallErrorNoDevice:
         return ENXIO;
+    case User::SyscallErrorUnknownFilesystemType:
+        return ENODEV;
     case User::SyscallErrorNetworkUnreachable:
         return ENETUNREACH;
     case User::SyscallErrorHostUnreachable:

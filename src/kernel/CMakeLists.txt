@@ -57,6 +57,7 @@ set(SRC
     ${SRCROOT}/memory/virtual_memory.cpp
     ${SRCROOT}/panic.cpp
     ${SRCROOT}/console.cpp
+    ${SRCROOT}/writeback.cpp
     ${SRCROOT}/terminal/pseudo_terminal.cpp
     ${SRCROOT}/terminal/terminal.cpp
     ${SRCROOT}/files.cpp
@@ -68,6 +69,8 @@ set(SRC
     ${SRCROOT}/process.cpp
     ${SRCROOT}/process_arguments.cpp
     ${SRCROOT}/scheduler.cpp
+    ${SRCROOT}/sync/volume_mutex.cpp
+    ${SRCROOT}/sync/volume_violation.cpp
     ${SRCROOT}/smp.cpp
     ${SRCROOT}/random.cpp
     ${SRCROOT}/cpu.cpp
@@ -88,10 +91,13 @@ set(SRC
     ${SRCROOT}/framebuffer/framebuffer.cpp
     ${SRCROOT}/framebuffer/term.cpp
     ${SRCROOT}/filesystem/initramfs.cpp
-    ${SRCROOT}/filesystem/fat16.cpp
-    ${SRCROOT}/filesystem/fat_names.cpp
+    ${SRCROOT}/filesystem/core_driver.cpp
+    ${SRCROOT}/filesystem/core_host.cpp
     ${SRCROOT}/filesystem/path.cpp
-    ${SRCROOT}/storage/partition.cpp
+    ${SRCROOT}/filesystem/path_walk.cpp
+    ${SRCROOT}/storage/cache_sizing.cpp
+    ${SRCROOT}/storage/core_block_device.cpp
+    ${SRCROOT}/storage/page_cache.cpp
     ${SRCROOT}/network/address.cpp
     ${SRCROOT}/network/arp.cpp
     ${SRCROOT}/network/checksum.cpp
@@ -115,10 +121,15 @@ set(SRC
     ${SRCROOT}/filesystem/devices.cpp
     ${SRCROOT}/filesystem/procfs.cpp
     ${SRCROOT}/filesystem/tmpfs.cpp
+    ${SRCROOT}/filesystem/drivers.cpp
+    ${SRCROOT}/filesystem/filesystem.cpp
+    ${SRCROOT}/filesystem/mount_table.cpp
+    ${SRCROOT}/filesystem/type_registry.cpp
     ${SRCROOT}/filesystem/vfs.cpp
     ${SRCROOT}/elf/elf_loader.cpp
     ${SRCROOT}/input/input.cpp
     ${SRCROOT}/input/keyboard.cpp
+    ${SRCROOT}/boot_options.cpp
     ${SRCROOT}/kernel_runtime.cpp
     ${SRCROOT}/kernel.cpp
 )
@@ -128,4 +139,4 @@ if (FEATHEROS_KERNEL_TESTS)
 endif ()
 
 target_sources(${KERNEL_BINARY} PRIVATE ${SRC})
-target_link_libraries(${KERNEL_BINARY} PRIVATE featheros_cxx_headers)
+target_link_libraries(${KERNEL_BINARY} PRIVATE featheros_cxx_headers featherdisk_core)

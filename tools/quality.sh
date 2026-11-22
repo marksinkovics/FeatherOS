@@ -30,10 +30,22 @@ SHELL_FILES=(
     "$REPO_ROOT/tools/check.sh"
     "$REPO_ROOT/tools/quality.sh"
     "$REPO_ROOT/.claude/hooks/format-edited-file.sh"
+    "$REPO_ROOT/src/fs/core/tests/make_ext2_image.sh"
+    "$REPO_ROOT/src/fs/core/tests/make_fat16_image.sh"
+    "$REPO_ROOT/src/fs/core/tools/fscli/tests/fscli_tests.sh"
 )
 
 ARCHES=(x86_64 aarch64)
-STAGES=(clang-format clang-tidy-x86_64 clang-tidy-aarch64 ruff-check ruff-format shellcheck shfmt)
+STAGES=(clang-format clang-tidy-x86_64 clang-tidy-aarch64 fs-core ruff-check ruff-format shellcheck
+    shfmt)
+
+# The shared filesystem core leaves the repository one day (docs/roadmap.md, M22), so it includes
+# nothing from outside its folder. Its library uses only the standard headers that never allocate,
+# which FeatherOS's library, Apple's libc++ and Microsoft's STL all have; its tests, host/ and
+# tools/ run only on a host and may use any.
+FS_CORE_DIR="$REPO_ROOT/src/fs/core"
+FS_CORE_SPDX="SPDX-License-Identifier: MIT OR Apache-2.0"
+FS_CORE_STD_HEADERS=" cstdint cstddef array span string_view optional expected bit type_traits utility "
 
 fail() {
     printf 'ERROR: %s\n' "$1" >&2
@@ -80,6 +92,59 @@ format_sources() {
 
 check_clang_format() {
     cxx_sources | xargs -0 clang-format --dry-run --Werror
+}
+
+# Every file starts with the SPDX line, and every include resolves inside the folder or is an
+# allowed standard header.
+check_fs_core() {
+    local failed=0 file relative first line number text kind header host_only
+    local pattern='^[[:space:]]*#[[:space:]]*include[[:space:]]*([<"])([^>"]+)[>"]'
+    while IFS= read -r -d '' file; do
+        relative="${file#"$REPO_ROOT"/}"
+        first="$(head -n 1 "$file")"
+        if [[ "$first" != "// $FS_CORE_SPDX" && "$first" != "# $FS_CORE_SPDX" ]]; then
+            printf '%s:1: must start with the line "// %s" (or "#" in scripts)\n' \
+                "$relative" "$FS_CORE_SPDX"
+            failed=1
+        fi
+        case "$file" in
+            *.c | *.cpp | *.h | *.hpp) ;;
+            *) continue ;;
+        esac
+        host_only=false
+        case "$file" in
+            "$FS_CORE_DIR"/tests/* | "$FS_CORE_DIR"/host/* | "$FS_CORE_DIR"/tools/*) host_only=true ;;
+        esac
+        while IFS= read -r line; do
+            number="${line%%:*}"
+            text="${line#*:}"
+            if [[ ! "$text" =~ $pattern ]]; then
+                printf '%s:%s: include must name a header in quotes or angle brackets\n' \
+                    "$relative" "$number"
+                failed=1
+                continue
+            fi
+            kind="${BASH_REMATCH[1]}"
+            header="${BASH_REMATCH[2]}"
+            if [[ "$kind" == '"' ]]; then
+                if [[ "$header" == /* || "/$header/" == */../* ]] \
+                    || { [[ ! -f "$(dirname "$file")/$header" ]] \
+                        && [[ ! -f "$FS_CORE_DIR/$header" ]] \
+                        && [[ ! -f "$FS_CORE_DIR/include/$header" ]]; }; then
+                    printf '%s:%s: "%s" must be a file inside src/fs/core/, named without ".."\n' \
+                        "$relative" "$number" "$header"
+                    failed=1
+                fi
+            elif [[ "$host_only" == false && "$FS_CORE_STD_HEADERS" != *" $header "* ]]; then
+                printf '%s:%s: <%s> is not one of the allowed standard headers:%s\n' \
+                    "$relative" "$number" "$header" "${FS_CORE_STD_HEADERS% }"
+                failed=1
+            fi
+        done < <(grep -nE '^[[:space:]]*#[[:space:]]*include' "$file")
+    done < <(find "$FS_CORE_DIR" -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.h' \
+        -o -name '*.hpp' -o -name '*.py' -o -name '*.sh' -o -name '*.cmake' \
+        -o -name CMakeLists.txt \) -print0)
+    return "$failed"
 }
 
 # Each clang-tidy run compiles its file, so files are checked in parallel.
@@ -189,6 +254,7 @@ is_built() {
 stage_label() {
     case "$1" in
         clang-tidy-*) printf 'clang-tidy %s' "${1#clang-tidy-}" ;;
+        fs-core) printf 'fs core includes' ;;
         ruff-check) printf 'Ruff check' ;;
         ruff-format) printf 'Ruff format check' ;;
         shellcheck) printf 'ShellCheck' ;;
@@ -201,6 +267,7 @@ stage_tools() {
     case "$1" in
         clang-format) echo clang-format ;;
         clang-tidy-*) echo clang-tidy ;;
+        fs-core) echo grep ;;
         ruff-*) echo ruff ;;
         shellcheck) echo shellcheck ;;
         shfmt) echo shfmt ;;
@@ -213,6 +280,7 @@ run_stage() {
     case "$stage" in
         clang-format) check_clang_format ;;
         clang-tidy-*) check_clang_tidy "${stage#clang-tidy-}" "$@" ;;
+        fs-core) check_fs_core ;;
         ruff-check) ruff check "$REPO_ROOT/tools" "$REPO_ROOT/tests" ;;
         ruff-format) ruff format --check "$REPO_ROOT/tools" "$REPO_ROOT/tests" ;;
         shellcheck) shellcheck -x "${SHELL_FILES[@]}" ;;

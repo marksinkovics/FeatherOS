@@ -82,14 +82,6 @@ Moved out of M11 to keep it focused; each can come back as a milestone of its ow
 ## Storage
 
 - **File timestamps** set from the RTC, and shown by `ls`.
-- **A persistent `/etc`.** Since M10 Part 10, `/etc` is a RAM copy of the initramfs's `etc/` (`VFS::LoadEtc` into tmpfs's second root). That is a stopgap with real limits. Edits to `hosts` or `resolv.conf` are lost at every reboot. Every boot copies the files into the heap, and they share `/tmp`'s 128 entries and 4 MiB. Only files directly in `etc/` are copied, not subdirectories. The only way to change the defaults is to rebuild the initramfs. Better options, roughly in order of effort:
-  - `/etc` on the disk, filled from the initramfs only on a first boot or when a file is missing.
-  - An overlay mount, where reads fall through to the initramfs and the first write copies the file up to the disk, so deleting the disk copy restores the default.
-  - A separate configuration partition.
-
-  Each one needs a fallback for boots without a disk, which the QEMU tests do today.
-- **FeatherFS:** a filesystem of our own design with journaling, so files survive a crash in the middle of a write.
-- **Page cache:** keep recently read disk blocks in memory so repeated reads don't go to the disk.
 
 ## Graphics And Sound
 

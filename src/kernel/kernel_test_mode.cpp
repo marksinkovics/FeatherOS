@@ -1,5 +1,7 @@
 #include "kernel/kernel_test_mode.h"
 
+#include "kernel/boot_options.h"
+
 #include <stddef.h>
 
 namespace FeatherOS::KernelTest
@@ -29,19 +31,6 @@ constexpr ModeName mode_names[] = {
 
 constinit Mode selected_mode = Mode::None;
 
-bool MatchesWord(const char* text, size_t length, const char* word)
-{
-    size_t index = 0;
-    for (; index < length; ++index)
-    {
-        if (word[index] == '\0' || word[index] != text[index])
-        {
-            return false;
-        }
-    }
-    return word[index] == '\0';
-}
-
 } // namespace
 
 bool ParseCommandLine(const char* command_line, Mode* mode)
@@ -53,26 +42,19 @@ bool ParseCommandLine(const char* command_line, Mode* mode)
     {
         return true;
     }
-    const char* option = command_line;
-    while (*option != '\0')
+    const char* cursor = command_line;
+    const char* option = nullptr;
+    size_t length = 0;
+    while (BootOptions::NextWord(&cursor, &option, &length))
     {
-        while (*option == ' ')
-        {
-            ++option;
-        }
-        size_t length = 0;
-        while (option[length] != '\0' && option[length] != ' ')
-        {
-            ++length;
-        }
-        if (length >= prefix_length && MatchesWord(option, prefix_length, prefix))
+        if (length >= prefix_length && BootOptions::MatchesWord(option, prefix_length, prefix))
         {
             const char* name = option + prefix_length;
             const size_t name_length = length - prefix_length;
             bool known = false;
             for (const ModeName& entry : mode_names)
             {
-                if (MatchesWord(name, name_length, entry.name))
+                if (BootOptions::MatchesWord(name, name_length, entry.name))
                 {
                     *mode = entry.mode;
                     known = true;
@@ -83,7 +65,6 @@ bool ParseCommandLine(const char* command_line, Mode* mode)
                 return false;
             }
         }
-        option += length;
     }
     return true;
 }

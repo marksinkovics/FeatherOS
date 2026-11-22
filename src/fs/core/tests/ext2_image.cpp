@@ -1,0 +1,762 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+#include "tests/ext2_image.h"
+
+#include "common/crc.h"
+#include "common/little_endian.h"
+#include "ext/ext2_filesystem.h"
+#include "fs/ext2.h"
+#include "tests/filesystem_helpers.h"
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <optional>
+#include <sys/wait.h>
+#include <unistd.h>
+
+namespace FeatherDisk::Tests
+{
+namespace
+{
+
+std::string ReadHostFile(const std::string& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
+
+// Each process has its own files, since CTest may run test cases side by side.
+std::string WorkPath(std::string_view name)
+{
+#ifdef FEATHERDISK_EXT_WORK
+    return std::string(FEATHERDISK_EXT_WORK) + "/" + std::string(name) + "-" +
+           std::to_string(::getpid());
+#else
+    return std::string(name);
+#endif
+}
+
+// Blocks of zeros are left as holes in the file, which saves most of the writing.
+void SaveImage(MemoryDevice& device, const std::string& path)
+{
+    constexpr std::size_t Chunk = 4096;
+    static const std::array<std::uint8_t, Chunk> zeros{};
+    const std::span<std::uint8_t> bytes = device.Bytes();
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        for (std::size_t at = 0; at < bytes.size(); at += Chunk)
+        {
+            const std::size_t length = std::min(Chunk, bytes.size() - at);
+            const std::span<const std::uint8_t> chunk = bytes.subspan(at, length);
+            if (std::memcmp(chunk.data(), zeros.data(), length) != 0)
+            {
+                file.seekp(static_cast<std::streamoff>(at));
+                file.write(reinterpret_cast<const char*>(chunk.data()),
+                           static_cast<std::streamsize>(length));
+            }
+        }
+        REQUIRE(file.good());
+    }
+    std::filesystem::resize_file(path, bytes.size());
+}
+
+[[maybe_unused]] ToolRun Run(const std::string& command, const std::string& output)
+{
+    const int result = std::system(command.c_str());
+    ToolRun run = {.ran = true, .status = -1, .output = ReadHostFile(output)};
+    if (result != -1 && WIFEXITED(result))
+    {
+        run.status = WEXITSTATUS(result);
+    }
+    return run;
+}
+
+// options are debugfs's before the image: -R with a command or -f with a script.
+ToolRun Debugfs([[maybe_unused]] MemoryDevice& device, [[maybe_unused]] std::string_view name,
+                [[maybe_unused]] const std::string& options, [[maybe_unused]] bool writable)
+{
+#ifdef FEATHERDISK_DEBUGFS
+    const std::string image = WorkPath(name) + ".img";
+    const std::string output = image + ".debugfs.txt";
+    SaveImage(device, image);
+    const ToolRun run =
+        Run(std::string("\"") + FEATHERDISK_DEBUGFS + "\"" + (writable ? " -w " : " ") + options +
+                " \"" + image + "\" > \"" + output + "\" 2>/dev/null",
+            output);
+    if (writable)
+    {
+        std::ifstream file(image, std::ios::binary);
+        file.read(reinterpret_cast<char*>(device.Bytes().data()),
+                  static_cast<std::streamsize>(device.Bytes().size()));
+        REQUIRE(file.good());
+    }
+    std::remove(output.c_str());
+    std::remove(image.c_str());
+    return run;
+#else
+    return {.ran = false, .status = 0, .output = {}};
+#endif
+}
+
+std::string CommandOption(std::string_view command)
+{
+    return "-R '" + std::string(command) + "'";
+}
+
+} // namespace
+
+std::vector<std::uint8_t> LoadExtImage(std::string_view variant)
+{
+#ifdef FEATHERDISK_EXT_IMAGES
+    const std::string path =
+        std::string(FEATHERDISK_EXT_IMAGES) + "/" + std::string(variant) + ".img";
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    REQUIRE(file.good());
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(file.tellg()));
+    file.seekg(0);
+    file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    REQUIRE(file.good());
+    REQUIRE(bytes.size() % 4096 == 0);
+    return bytes;
+#else
+    FAIL("no ext2 images for " << variant);
+    return {};
+#endif
+}
+
+std::unique_ptr<MemoryDevice> DeviceFrom(const std::vector<std::uint8_t>& bytes,
+                                         std::uint32_t sector_size)
+{
+    auto device = std::make_unique<MemoryDevice>(sector_size, bytes.size() / sector_size);
+    std::memcpy(device->Bytes().data(), bytes.data(), device->Bytes().size());
+    return device;
+}
+
+std::unique_ptr<MemoryDevice> CopyOf(MemoryDevice& device)
+{
+    auto copy = std::make_unique<MemoryDevice>(device.SectorSize(), device.SectorCount());
+    std::memcpy(copy->Bytes().data(), device.Bytes().data(), device.Bytes().size());
+    return copy;
+}
+
+std::vector<std::uint8_t> BytesOf(MemoryDevice& device)
+{
+    return {device.Bytes().begin(), device.Bytes().end()};
+}
+
+std::uint16_t RawVolume::Load16(std::uint64_t offset) const
+{
+    return LoadLittleEndian<std::uint16_t>(bytes.data() + offset);
+}
+
+std::uint32_t RawVolume::Load32(std::uint64_t offset) const
+{
+    return LoadLittleEndian<std::uint32_t>(bytes.data() + offset);
+}
+
+void RawVolume::Store16(std::uint64_t offset, std::uint16_t value)
+{
+    StoreLittleEndian(bytes.data() + offset, value);
+}
+
+void RawVolume::Store32(std::uint64_t offset, std::uint32_t value)
+{
+    StoreLittleEndian(bytes.data() + offset, value);
+}
+
+std::uint32_t RawVolume::BlockSize() const
+{
+    return 1024U << Load32(1024 + 24);
+}
+
+std::uint32_t RawVolume::BlockCount() const
+{
+    return Load32(1024 + 4);
+}
+
+std::uint32_t RawVolume::InodeCount() const
+{
+    return Load32(1024 + 0);
+}
+
+std::uint64_t RawVolume::BlockOffset(std::uint32_t block) const
+{
+    return std::uint64_t{block} * BlockSize();
+}
+
+std::uint64_t RawVolume::DescriptorOffset() const
+{
+    return BlockOffset(Load32(1024 + 20) + 1);
+}
+
+std::uint32_t RawVolume::DescriptorSize() const
+{
+    return (Load32(1024 + 96) & 0x80U) != 0 ? Load16(1024 + 254) : 32;
+}
+
+std::uint32_t RawVolume::InodeSize() const
+{
+    return Load32(1024 + 76) == 0 ? 128 : Load16(1024 + 88);
+}
+
+std::uint64_t RawVolume::InodeOffset(std::uint32_t inode) const
+{
+    const std::uint32_t per_group = Load32(1024 + 40);
+    const std::uint32_t group = (inode - 1) / per_group;
+    const std::uint32_t table = Load32(DescriptorOffset() + group * DescriptorSize() + 8);
+    return BlockOffset(table) + std::uint64_t{(inode - 1) % per_group} * InodeSize();
+}
+
+void RawVolume::UpdateSuperblockChecksum()
+{
+    Store32(1024 + 1020, Crc32c(~0U, std::span(bytes).subspan(1024, 1020)));
+}
+
+std::uint32_t RawVolume::InodeBlock(std::uint32_t inode, std::uint32_t index) const
+{
+    return Load32(InodeOffset(inode) + 40 + index * 4);
+}
+
+std::vector<std::uint64_t> RawVolume::ExtentPath(std::uint32_t inode, std::uint32_t logical) const
+{
+    std::vector<std::uint64_t> path;
+    std::uint64_t node = InodeOffset(inode) + 40;
+    REQUIRE(Load16(node) == 0xF30A);
+    while (Load16(node + 6) > 0)
+    {
+        const std::uint16_t entries = Load16(node + 2);
+        REQUIRE(entries > 0);
+        std::uint64_t entry = node + 12;
+        for (std::uint16_t index = 1; index < entries && Load32(node + 12 + index * 12) <= logical;
+             ++index)
+        {
+            entry = node + 12 + index * 12;
+        }
+        const std::uint64_t child = Load32(entry + 4) | (std::uint64_t{Load16(entry + 8)} << 32);
+        path.push_back(child);
+        node = child * BlockSize();
+        REQUIRE(Load16(node) == 0xF30A);
+    }
+    return path;
+}
+
+std::uint64_t RawVolume::FileBlock(std::uint32_t inode, std::uint32_t logical) const
+{
+    if ((Load32(InodeOffset(inode) + 32) & 0x80000U) == 0)
+    {
+        if (logical < 12)
+        {
+            return InodeBlock(inode, logical);
+        }
+        // Through the single, double and triple indirect blocks.
+        const std::uint64_t per_block = BlockSize() / 4;
+        std::uint64_t index = logical - 12;
+        std::uint64_t reach = 1;
+        for (std::uint32_t level = 1; level <= 3; ++level)
+        {
+            reach *= per_block;
+            if (index >= reach)
+            {
+                index -= reach;
+                continue;
+            }
+            std::uint64_t block = InodeBlock(inode, 11 + level);
+            for (std::uint64_t span = reach / per_block; span != 0; span /= per_block)
+            {
+                if (block == 0)
+                {
+                    return 0;
+                }
+                block = Load32(block * BlockSize() + (index / span) * 4);
+                index %= span;
+            }
+            return block;
+        }
+        FAIL("block " << logical << " is past the triple indirect block");
+        return 0;
+    }
+    const std::vector<std::uint64_t> path = ExtentPath(inode, logical);
+    const std::uint64_t node = path.empty() ? InodeOffset(inode) + 40 : path.back() * BlockSize();
+    for (std::uint16_t index = 0; index < Load16(node + 2); ++index)
+    {
+        const std::uint64_t entry = node + 12 + std::uint64_t{index} * 12;
+        const std::uint32_t first = Load32(entry);
+        std::uint32_t length = Load16(entry + 4);
+        length = length > 32768 ? length - 32768 : length;
+        if (logical >= first && logical - first < length)
+        {
+            return ((std::uint64_t{Load16(entry + 6)} << 32) | Load32(entry + 8)) + logical - first;
+        }
+    }
+    return 0;
+}
+
+std::uint64_t RawVolume::EntryOffset(std::uint32_t directory, std::string_view name) const
+{
+    const std::uint64_t block = FileBlock(directory, 0) * BlockSize();
+    for (std::uint64_t offset = 0; offset < BlockSize();)
+    {
+        const std::uint16_t length = Load16(block + offset + 4);
+        const std::string_view entry_name(
+            reinterpret_cast<const char*>(bytes.data() + block + offset + 8),
+            bytes[block + offset + 6]);
+        if (entry_name == name)
+        {
+            return block + offset;
+        }
+        REQUIRE(length != 0);
+        offset += length;
+    }
+    FAIL("no entry " << name);
+    return 0;
+}
+
+bool HaveE2fsck()
+{
+#ifdef FEATHERDISK_E2FSCK
+    return true;
+#else
+    return false;
+#endif
+}
+
+namespace
+{
+
+// e2fsck with options over the device's bytes; a repair reads the changed volume back.
+ToolRun E2fsck([[maybe_unused]] MemoryDevice& device, [[maybe_unused]] std::string_view name,
+               [[maybe_unused]] std::string_view options, [[maybe_unused]] bool repair)
+{
+#ifdef FEATHERDISK_E2FSCK
+    const std::string image = WorkPath(name) + ".img";
+    const std::string output = image + ".e2fsck.txt";
+    SaveImage(device, image);
+    const ToolRun run = Run(std::string("\"") + FEATHERDISK_E2FSCK + "\" " + std::string(options) +
+                                " \"" + image + "\" > \"" + output + "\" 2>&1",
+                            output);
+    if (repair)
+    {
+        std::ifstream file(image, std::ios::binary);
+        file.read(reinterpret_cast<char*>(device.Bytes().data()),
+                  static_cast<std::streamsize>(device.Bytes().size()));
+        REQUIRE(file.good());
+    }
+    std::remove(output.c_str());
+    std::remove(image.c_str());
+    return run;
+#else
+    return {.ran = false, .status = 0, .output = {}};
+#endif
+}
+
+} // namespace
+
+ToolRun RunE2fsck(MemoryDevice& device, std::string_view name)
+{
+    return E2fsck(device, name, "-fn", false);
+}
+
+ToolRun PreenWithE2fsck(MemoryDevice& device, std::string_view name)
+{
+    return E2fsck(device, name, "-fp", true);
+}
+
+ToolRun FixWithE2fsck(MemoryDevice& device, std::string_view name)
+{
+    return E2fsck(device, name, "-fy", true);
+}
+
+std::string FreeRangesOf([[maybe_unused]] MemoryDevice& device,
+                         [[maybe_unused]] std::string_view name)
+{
+#ifdef FEATHERDISK_DEBUGFS
+    const std::string tool = std::string(FEATHERDISK_DEBUGFS);
+    const std::string image = WorkPath(name) + ".img";
+    const std::string output = image + ".dumpe2fs.txt";
+    SaveImage(device, image);
+    const ToolRun run =
+        Run("\"" + tool.substr(0, tool.rfind('/') + 1) + "dumpe2fs\" \"" + image +
+                "\" 2>/dev/null | grep -E '^  (Free blocks|Free inodes):' > \"" + output + "\"",
+            output);
+    std::remove(output.c_str());
+    std::remove(image.c_str());
+    return run.output;
+#else
+    return {};
+#endif
+}
+
+void CheckClean(MemoryDevice& device, std::string_view name)
+{
+    const ToolRun run = RunE2fsck(device, name);
+    INFO("e2fsck -fn on " << name << ":\n" << run.output);
+    REQUIRE(run.status == 0);
+}
+
+// A '+' in a bitmap difference would be something in use that its bitmap calls free.
+bool OnlyRoutineRepairs(const std::string& report, bool renames, bool indexes)
+{
+    constexpr std::array<std::string_view, 14> Routine = {
+        "Free blocks count wrong",
+        "Free inodes count wrong",
+        "Directories count wrong",
+        "Unattached inode",
+        "Unattached zero-length inode",
+        "Unconnected directory inode",
+        // The unconnected directory's ".." against the parent e2fsck did not find.
+        "should be <The NULL inode> (0)",
+        "ref count is",
+        ", i_size is",
+        ", i_blocks is",
+        "Block bitmap differences:",
+        "Inode bitmap differences:",
+        // metadata_csum: the descriptors that hold bitmap checksums are written by Sync.
+        "block bitmap does not match checksum",
+        "inode bitmap does not match checksum",
+    };
+    constexpr std::array<std::string_view, 2> Renames = {
+        "is a link to directory",
+        "'..' in ",
+    };
+    // What a hashed directory that stopped while dropping its index leaves: interior index blocks
+    // that a plain directory's blocks must not look like, which e2fsck -n stops at and preen
+    // mode salvages.
+    constexpr std::array<std::string_view, 3> Indexes = {
+        ": directory corrupted",
+        "Salvage? no",
+        "e2fsck: aborted",
+    };
+    constexpr std::array<std::string_view, 12> Noise = {
+        "e2fsck ",
+        "Pass ",
+        "Fix? no",
+        "Clear? no",
+        "Connect to /lost+found? no",
+        "IGNORED.",
+        "WARNING: Filesystem still has errors",
+        " files (",
+        "check forced",
+        // A 64bit volume without extents, as the ext4-csum64 image is made.
+        "needs extents to access the whole disk",
+        // Offers to rebuild an extent tree with fewer nodes, which e2fsck counts as no fault.
+        "could be narrower.  Optimize? no",
+        "could be shorter.  Optimize? no",
+    };
+    const auto contains = [](std::string_view line, const auto& phrases)
+    {
+        return std::any_of(phrases.begin(), phrases.end(), [&](std::string_view phrase)
+                           { return line.find(phrase) != std::string_view::npos; });
+    };
+    std::size_t start = 0;
+    while (start < report.size())
+    {
+        std::size_t end = report.find('\n', start);
+        end = end == std::string::npos ? report.size() : end;
+        const std::string_view line(report.data() + start, end - start);
+        start = end + 1;
+        if (line.empty() || contains(line, Noise))
+        {
+            continue;
+        }
+        if (!contains(line, Routine) && !(renames && contains(line, Renames)) &&
+            !(indexes && contains(line, Indexes)))
+        {
+            return false;
+        }
+        if (line.find("bitmap differences") != std::string_view::npos &&
+            line.find('+') != std::string_view::npos)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+ToolRun RunDebugfs(MemoryDevice& device, std::string_view name, std::string_view command)
+{
+    return Debugfs(device, name, CommandOption(command), false);
+}
+
+ToolRun InspectWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view command)
+{
+    return Debugfs(device, name, "-c " + CommandOption(command), false);
+}
+
+std::optional<std::uint32_t> InodeOfPath(MemoryDevice& device, std::string_view name,
+                                         std::string_view path)
+{
+    const ToolRun run = InspectWithDebugfs(device, name, "stat " + std::string(path));
+    constexpr std::string_view Prefix = "Inode: ";
+    if (run.output.compare(0, Prefix.size(), Prefix) != 0)
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(
+        std::strtoul(run.output.c_str() + Prefix.size(), nullptr, 10));
+}
+
+ToolRun ChangeWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view command)
+{
+    return Debugfs(device, name, CommandOption(command), true);
+}
+
+ToolRun ScriptWithDebugfs(MemoryDevice& device, std::string_view name, std::string_view script,
+                          const std::vector<std::vector<std::uint8_t>>& files)
+{
+    const std::string base = WorkPath(name);
+    std::vector<std::string> paths;
+    for (std::size_t index = 0; index < files.size(); ++index)
+    {
+        paths.push_back(base + ".data" + std::to_string(index));
+        std::ofstream file(paths.back(), std::ios::binary | std::ios::trunc);
+        file.write(reinterpret_cast<const char*>(files[index].data()),
+                   static_cast<std::streamsize>(files[index].size()));
+        REQUIRE(file.good());
+    }
+    std::string text;
+    for (std::size_t at = 0; at < script.size(); ++at)
+    {
+        if (script[at] == '%' && at + 1 < script.size() && script[at + 1] >= '0' &&
+            script[at + 1] <= '9')
+        {
+            const auto index = static_cast<std::size_t>(script[++at] - '0');
+            REQUIRE(index < paths.size());
+            text += paths[index];
+            continue;
+        }
+        text += script[at];
+    }
+    const std::string script_path = base + ".debugfs-script";
+    {
+        std::ofstream file(script_path, std::ios::trunc);
+        file << text;
+        REQUIRE(file.good());
+    }
+    const ToolRun run = Debugfs(device, name, "-f \"" + script_path + "\"", true);
+    std::remove(script_path.c_str());
+    for (const std::string& path : paths)
+    {
+        std::remove(path.c_str());
+    }
+    return run;
+}
+
+std::uint32_t JournalInode(const RawVolume& raw)
+{
+    return raw.Load32(1024 + 224);
+}
+
+std::uint64_t JournalOffset(const RawVolume& raw, std::uint32_t n)
+{
+    return raw.FileBlock(JournalInode(raw), n) * raw.BlockSize();
+}
+
+Ext::JournalSuperblock JournalSuperblockOf(MemoryDevice& device)
+{
+    std::vector<std::uint8_t> bytes = BytesOf(device);
+    const RawVolume raw{bytes};
+    return Ext::DecodeJournalSuperblock(std::span(bytes).subspan(JournalOffset(raw, 0), 1024));
+}
+
+void RequireSameBytes(std::vector<std::uint8_t> ours, std::vector<std::uint8_t> theirs)
+{
+    REQUIRE(ours.size() == theirs.size());
+    const auto difference = std::mismatch(ours.begin(), ours.end(), theirs.begin());
+    INFO("first difference at byte " << (difference.first - ours.begin()));
+    REQUIRE(difference.first == ours.end());
+}
+
+void RequireSameAsDebugfs(MemoryDevice& ours, MemoryDevice& theirs)
+{
+    std::vector<std::uint8_t> left = BytesOf(ours);
+    std::vector<std::uint8_t> right = BytesOf(theirs);
+    // A writable mount also counts itself in s_mtime and s_mnt_count.
+    constexpr std::array<std::pair<std::uint64_t, std::uint64_t>, 7> Written = {{
+        {44, 4},
+        {48, 4},
+        {52, 2},
+        {64, 4},
+        {376, 8},
+        {0x274, 4},
+        {1020, 4},
+    }};
+    constexpr std::array<std::pair<std::uint64_t, std::uint64_t>, 4> JournalFeatures = {{
+        {0x24, 4},
+        {0x28, 4},
+        {0x50, 1},
+        {0xFC, 4},
+    }};
+    for (std::vector<std::uint8_t>* bytes : {&left, &right})
+    {
+        for (const auto& [offset, length] : Written)
+        {
+            for (std::uint64_t index = 0; index < length; ++index)
+            {
+                (*bytes)[1024 + offset + index] = 0;
+            }
+        }
+        // And sets the journal's features as a writer needs them: s_feature_compat,
+        // s_feature_incompat, s_checksum_type and s_checksum.
+        const RawVolume raw{*bytes};
+        if ((raw.Load32(1024 + 92) & 0x4U) != 0)
+        {
+            const std::uint64_t journal = JournalOffset(raw, 0);
+            for (const auto& [offset, length] : JournalFeatures)
+            {
+                for (std::uint64_t index = 0; index < length; ++index)
+                {
+                    (*bytes)[journal + offset + index] = 0;
+                }
+            }
+        }
+    }
+    RequireSameBytes(std::move(left), std::move(right));
+}
+
+void ReplayByMounting(MemoryDevice& device)
+{
+    MountedFilesystem ext(Ext::Ext2Type(), device, false);
+    REQUIRE(ext->GetCapabilities().writable);
+}
+
+namespace
+{
+
+constexpr std::uint64_t MaximumTreeContents = 8 << 20;
+
+void TreeInto(Filesystem& filesystem, NodeId directory, const std::string& path, Tree& tree)
+{
+    std::uint64_t cookie = 0;
+    DirectoryEntry entry{};
+    while (Value(filesystem.ReadDirectory(directory, cookie, entry)))
+    {
+        const std::string name(entry.name.data(), entry.name_length);
+        const Attributes attributes = Value(filesystem.GetAttributes(entry.node));
+        TreeEntry node{attributes.type,
+                       attributes.type == NodeType::Directory ? 0 : attributes.size,
+                       attributes.link_count,
+                       {}};
+        if (attributes.type == NodeType::File && attributes.size <= MaximumTreeContents)
+        {
+            node.contents = ReadAll(filesystem, entry.node);
+        }
+        else if (attributes.type == NodeType::SymbolicLink)
+        {
+            std::string target(attributes.size, '\0');
+            const std::size_t length = Value(filesystem.ReadLink(entry.node, target));
+            target.resize(length);
+            node.contents = target;
+        }
+        tree[path + name] = node;
+        if (attributes.type == NodeType::Directory)
+        {
+            TreeInto(filesystem, entry.node, path + name + "/", tree);
+        }
+    }
+}
+
+} // namespace
+
+Tree TreeOf(Filesystem& filesystem)
+{
+    Tree tree;
+    TreeInto(filesystem, filesystem.Root(), "/", tree);
+    return tree;
+}
+
+Tree TreeOf(MemoryDevice& device)
+{
+    MountedFilesystem ext(Ext::Ext2Type(), device, true);
+    return TreeOf(*ext);
+}
+
+std::string TreeDifference(const Tree& left, const Tree& right, bool contents)
+{
+    auto a = left.begin();
+    auto b = right.begin();
+    while (a != left.end() || b != right.end())
+    {
+        if (b == right.end() || (a != left.end() && a->first < b->first))
+        {
+            return "only on the left: " + a->first;
+        }
+        if (a == left.end() || b->first < a->first)
+        {
+            return "only on the right: " + b->first;
+        }
+        const TreeEntry& x = a->second;
+        const TreeEntry& y = b->second;
+        if (x.type != y.type)
+        {
+            return a->first + ": type " + std::to_string(static_cast<int>(x.type)) + " against " +
+                   std::to_string(static_cast<int>(y.type));
+        }
+        if (x.size != y.size)
+        {
+            return a->first + ": size " + std::to_string(x.size) + " against " +
+                   std::to_string(y.size);
+        }
+        if (x.links != y.links)
+        {
+            return a->first + ": links " + std::to_string(x.links) + " against " +
+                   std::to_string(y.links);
+        }
+        if (contents && x.contents != y.contents)
+        {
+            const auto difference =
+                std::mismatch(x.contents.begin(), x.contents.end(), y.contents.begin());
+            return a->first + ": contents differ at byte " +
+                   std::to_string(difference.first - x.contents.begin());
+        }
+        ++a;
+        ++b;
+    }
+    return {};
+}
+
+Replayed ReplayBothWays(MemoryDevice& crashed, std::string_view name)
+{
+    Replayed replayed;
+    replayed.ours = CopyOf(crashed);
+    {
+        MountedFilesystem ext(Ext::Ext2Type(), *replayed.ours, false);
+        REQUIRE(ext->GetCapabilities().writable);
+        const std::optional<Ext::JournalActivity> activity =
+            static_cast<Ext::Ext2Filesystem&>(*ext).Activity();
+        replayed.orphans = activity ? activity->orphans_processed : 0;
+    }
+    CheckClean(*replayed.ours, std::string(name) + "-ours");
+    replayed.tree = TreeOf(*replayed.ours);
+    if (!HaveE2fsck())
+    {
+        return replayed;
+    }
+    const std::unique_ptr<MemoryDevice> theirs = CopyOf(crashed);
+    const ToolRun fixed = FixWithE2fsck(*theirs, std::string(name) + "-theirs");
+    INFO("e2fsck -fy:\n" << fixed.output);
+    REQUIRE(fixed.status <= 1);
+    REQUIRE(fixed.output.find("hecksum") == std::string::npos);
+    REQUIRE(fixed.output.find("not clean") == std::string::npos);
+    CheckClean(*theirs, std::string(name) + "-theirs");
+    const std::string difference = TreeDifference(replayed.tree, TreeOf(*theirs));
+    INFO("tree: " << difference);
+    REQUIRE(difference.empty());
+    // e2fsck -fy also rehashes the directories it finds linear, which moves blocks, so ours goes
+    // through it as well before the free ranges are compared.
+    const std::unique_ptr<MemoryDevice> ours_fixed = CopyOf(*replayed.ours);
+    REQUIRE(FixWithE2fsck(*ours_fixed, std::string(name) + "-ours-fixed").status <= 1);
+    const std::string free_ours = FreeRangesOf(*ours_fixed, std::string(name) + "-free");
+    const std::string free_theirs = FreeRangesOf(*theirs, std::string(name) + "-free");
+    INFO("free ranges ours:\n" << free_ours << "theirs:\n" << free_theirs);
+    REQUIRE(free_ours == free_theirs);
+    return replayed;
+}
+
+} // namespace FeatherDisk::Tests
