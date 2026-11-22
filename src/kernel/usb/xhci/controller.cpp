@@ -1067,6 +1067,7 @@ bool Controller::ConfigureEndpoints(uint32_t slot, std::span<const EndpointDescr
             EndpointRing& endpoint = endpoint_rings_[slot][indexes[index]];
             endpoint = {};
             endpoint.address = endpoints[index].address;
+            endpoint.descriptor = endpoints[index];
             ready = endpoint.ring.Initialize(entry.rings[indexes[index]]);
         }
     }

@@ -2,6 +2,9 @@
 
 #include "kernel/klogger.h"
 #include "kernel/usb/xhci/registers.h"
+#include "kernel/usb/xhci/td.h"
+
+#include <algorithm>
 
 namespace FeatherOS::Usb::Xhci
 {
@@ -74,10 +77,10 @@ bool Controller::SubmitTransfer(uint32_t slot, Transfer& transfer, const SetupPa
     {
         return refuse(Status::NoDevice);
     }
-    if (transfer.length > MaxTransferBytes ||
+    if (transfer.length > (control ? MaxTransferBytes : MaxBulkTransferBytes) ||
         (transfer.length != 0 &&
          (transfer.buffer == nullptr || transfer.buffer->size < transfer.length ||
-          (transfer.buffer->physical & 0xFFFFU) + transfer.length > 0x10000U)))
+          (control && (transfer.buffer->physical & 0xFFFFU) + transfer.length > 0x10000U))))
     {
         return refuse(Status::ControllerError);
     }
@@ -135,7 +138,7 @@ bool Controller::QueueTransferLocked(PendingTransfer& entry)
     EndpointRing& endpoint = endpoint_rings_[entry.slot][entry.dci];
     const Transfer& transfer = *entry.transfer;
     const uint64_t physical = transfer.length != 0 ? transfer.buffer->physical : 0;
-    Trb td[3];
+    Trb td[MaxTdTrbs];
     uint32_t count = 0;
     if (entry.control)
     {
@@ -166,10 +169,13 @@ bool Controller::QueueTransferLocked(PendingTransfer& entry)
     else
     {
         const bool in = (transfer.endpoint & 0x80U) != 0;
-        td[count++] = MakeTrb(TrbType::Normal,
-                              TrbControl::InterruptOnCompletion |
-                                  (in ? TrbControl::InterruptOnShortPacket : 0),
-                              physical, transfer.length);
+        count = BuildNormalTd(physical, transfer.length, in,
+                              endpoint.descriptor.max_packet_size & 0x7FFU, td);
+        if (count == 0)
+        {
+            return false;
+        }
+        entry.first_chunk = TdTrbLength(physical, transfer.length, 0);
     }
     uint64_t first = 0;
     if (!endpoint.ring.Enqueue(std::span<const Trb>(td, count), &first))
@@ -177,6 +183,7 @@ bool Controller::QueueTransferLocked(PendingTransfer& entry)
         return false;
     }
     entry.first = first;
+    entry.trbs = static_cast<uint8_t>(count);
     entry.last = first + static_cast<uint64_t>(count - 1) * TrbSize;
     Memory::Dma::ProducerBarrier();
     RingDoorbell(entry.slot, entry.dci);
@@ -252,10 +259,21 @@ void Controller::HandleTransferEvent(const Trb& event, Completions& completions)
             EndpointRing& endpoint = endpoint_rings_[slot][dci];
             if (code == CompletionCode::Success || code == CompletionCode::ShortPacket)
             {
-                const uint32_t moved = residue < transfer.length ? transfer.length - residue : 0;
+                const bool short_packet = code == CompletionCode::ShortPacket;
+                uint32_t moved = residue < transfer.length ? transfer.length - residue : 0;
+                if (!entry->control)
+                {
+                    const auto index = static_cast<uint32_t>((pointer - entry->first) / TrbSize);
+                    const uint32_t before =
+                        index == 0 ? 0 : entry->first_chunk + (index - 1) * MaxBulkTransferBytes;
+                    const uint32_t size =
+                        index == 0 ? entry->first_chunk
+                                   : std::min(MaxBulkTransferBytes, transfer.length - before);
+                    moved = before + size - std::min(residue, size);
+                }
                 if (pointer != entry->last)
                 {
-                    if (code == CompletionCode::ShortPacket)
+                    if (short_packet && !entry->short_seen)
                     {
                         entry->actual = moved;
                         entry->short_seen = true;
@@ -263,11 +281,15 @@ void Controller::HandleTransferEvent(const Trb& event, Completions& completions)
                 }
                 else
                 {
-                    const bool short_packet = code == CompletionCode::ShortPacket;
-                    transfer.actual = entry->short_seen ? entry->actual
-                                                        : (short_packet ? moved : transfer.length);
-                    transfer.status =
-                        !entry->control && short_packet ? Status::ShortPacket : Status::Success;
+                    if (short_packet && !entry->short_seen)
+                    {
+                        entry->actual = moved;
+                        entry->short_seen = true;
+                    }
+                    transfer.actual = std::min(entry->short_seen ? entry->actual : transfer.length,
+                                               transfer.length);
+                    transfer.status = !entry->control && entry->short_seen ? Status::ShortPacket
+                                                                           : Status::Success;
                     endpoint.ring.Retire(entry->last);
                     entry->state = TransferState::Free;
                     completions.items[completions.count++] = &transfer;
@@ -431,6 +453,7 @@ void Controller::RecoverEndpoint(uint32_t slot, uint32_t dci)
     uint32_t code = 0;
     uint32_t attempts = 0;
     uint8_t address = 0;
+    bool bulk = false;
     {
         Sync::SpinLockGuard guard(ring_lock_);
         EndpointRing& endpoint = endpoint_rings_[slot][dci];
@@ -450,6 +473,7 @@ void Controller::RecoverEndpoint(uint32_t slot, uint32_t dci)
         code = failed->code;
         attempts = failed->attempts;
         address = endpoint.address;
+        bulk = endpoint.descriptor.type == EndpointType::Bulk;
     }
     const bool gone = DeviceGone(slot);
     const uint32_t target = (dci << TrbControl::EndpointShift) | (slot << TrbControl::SlotShift);
@@ -468,7 +492,8 @@ void Controller::RecoverEndpoint(uint32_t slot, uint32_t dci)
                    Command(MakeTrb(TrbType::SetTrDequeue, target, pointer, 0)).status ==
                        CommandStatus::Success;
     }
-    if (restored && code == CompletionCode::UsbTransactionError && attempts < TransactionRetries)
+    if (restored && !bulk && code == CompletionCode::UsbTransactionError &&
+        attempts < TransactionRetries)
     {
         Sync::SpinLockGuard guard(ring_lock_);
         PendingTransfer* entry = FindFailedLocked(slot, dci);
@@ -504,7 +529,7 @@ void Controller::RecoverEndpoint(uint32_t slot, uint32_t dci)
     }
     if (restored && dci != 1)
     {
-        ClearHalt(slot, address);
+        ClearEndpointFeature(slot, address);
     }
     if (restored)
     {
@@ -524,11 +549,11 @@ void Controller::RecoverEndpoint(uint32_t slot, uint32_t dci)
     }
     if (recovery_handler_ != nullptr)
     {
-        recovery_handler_(recovery_context_, slot, address, recent);
+        recovery_handler_(recovery_context_, slot, address, recent, status);
     }
 }
 
-bool Controller::ClearHalt(uint32_t slot, uint8_t address)
+bool Controller::ClearEndpointFeature(uint32_t slot, uint8_t address)
 {
     constexpr uint8_t StandardToEndpoint = 0x02;
     constexpr uint8_t ClearFeature = 1;
@@ -611,6 +636,111 @@ bool Controller::ResetEndpoint(uint32_t slot, uint8_t endpoint)
     }
     Sync::SpinLockGuard guard(ring_lock_);
     return endpoint_rings_[slot][dci].active && !endpoint_rings_[slot][dci].halted;
+}
+
+bool Controller::CancelEndpoint(uint32_t slot, uint8_t endpoint)
+{
+    const uint32_t dci = DeviceContextIndex(endpoint);
+    if (slot == 0 || slot > MaxSlots || (endpoint & 0x0FU) == 0 || !slots_[slot].in_use)
+    {
+        return false;
+    }
+    {
+        Sync::SpinLockGuard guard(ring_lock_);
+        if (!endpoint_rings_[slot][dci].active)
+        {
+            return false;
+        }
+    }
+    Quiesce(slot, dci, nullptr, Status::Cancelled, true);
+    return true;
+}
+
+bool Controller::ResetSequence(uint32_t slot, uint32_t dci)
+{
+    EndpointDescriptor descriptor{};
+    uint64_t pointer = 0;
+    {
+        Sync::SpinLockGuard guard(ring_lock_);
+        EndpointRing& endpoint = endpoint_rings_[slot][dci];
+        if (!endpoint.active)
+        {
+            return false;
+        }
+        descriptor = endpoint.descriptor;
+        pointer = endpoint.ring.Drain();
+    }
+    Slot& entry = slots_[slot];
+    ClearInput(slot);
+    Memory::Dma::ConsumerBarrier();
+    const auto* output = reinterpret_cast<const volatile uint32_t*>(entry.device.address +
+                                                                    layout_.SlotOffset(false));
+    auto* input =
+        reinterpret_cast<volatile uint32_t*>(entry.input.address + layout_.SlotOffset(true));
+    for (uint32_t word = 0; word < layout_.ContextSize() / 4; ++word)
+    {
+        input[word] = output[word];
+    }
+    WriteEndpoint(layout_, entry.input.address, descriptor, entry.speed, pointer);
+    SetInputFlags(layout_, entry.input.address, 1U << dci, (1U << dci) | 1U);
+    return Command(MakeTrb(TrbType::ConfigureEndpoint, slot << TrbControl::SlotShift,
+                           entry.input.physical, 0))
+               .status == CommandStatus::Success;
+}
+
+bool Controller::ClearHalt(uint32_t slot, uint8_t endpoint)
+{
+    const uint32_t dci = DeviceContextIndex(endpoint);
+    if (slot == 0 || slot > MaxSlots || (endpoint & 0x0FU) == 0 || !slots_[slot].in_use)
+    {
+        return false;
+    }
+    bool halted;
+    {
+        Sync::SpinLockGuard guard(ring_lock_);
+        EndpointRing& ring = endpoint_rings_[slot][dci];
+        if (!ring.active)
+        {
+            return false;
+        }
+        ring.quiescing = true;
+        halted = ring.halted;
+    }
+    const uint32_t target = (dci << TrbControl::EndpointShift) | (slot << TrbControl::SlotShift);
+    bool reset;
+    if (halted)
+    {
+        reset =
+            Command(MakeTrb(TrbType::ResetEndpoint, target, 0, 0)).status == CommandStatus::Success;
+        uint64_t pointer;
+        {
+            Sync::SpinLockGuard guard(ring_lock_);
+            pointer = endpoint_rings_[slot][dci].ring.Drain();
+        }
+        reset = reset && Command(MakeTrb(TrbType::SetTrDequeue, target, pointer, 0)).status ==
+                             CommandStatus::Success;
+    }
+    else
+    {
+        Command(MakeTrb(TrbType::StopEndpoint, target, 0, 0));
+        reset = ResetSequence(slot, dci);
+    }
+    AbortTransfers(slot, 1U << dci, Status::Cancelled);
+    {
+        Sync::SpinLockGuard guard(ring_lock_);
+        EndpointRing& ring = endpoint_rings_[slot][dci];
+        ring.halted = !reset;
+        if (ring.recovery_needed)
+        {
+            ring.recovery_needed = false;
+            recovery_mask_[slot].fetch_and(~(1U << dci));
+            recovery_count_.fetch_sub(1);
+        }
+    }
+    const bool cleared = reset && ClearEndpointFeature(slot, endpoint);
+    Sync::SpinLockGuard guard(ring_lock_);
+    endpoint_rings_[slot][dci].quiescing = false;
+    return cleared;
 }
 
 void Controller::StopEndpoints(uint32_t slot)

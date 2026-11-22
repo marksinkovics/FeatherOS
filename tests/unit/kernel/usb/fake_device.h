@@ -8,6 +8,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -62,6 +63,17 @@ public:
     void FailEndpoint(uint8_t endpoint, Outcome outcome, int count);
     Outcome EndpointOutcome(uint8_t endpoint);
 
+    // Bulk OUT data handed to the device, one entry per call; the default keeps it.
+    virtual void ReceiveBulk(uint8_t endpoint, std::span<const uint8_t> data);
+    // Up to max bytes for a bulk IN TD; the default serves the queued reports, Hang when there
+    // is none (the device answers NAK).
+    virtual Outcome ProduceBulk(uint8_t endpoint, uint32_t max, std::vector<uint8_t>* out);
+    const std::vector<std::vector<uint8_t>>& BulkReceived(uint8_t endpoint) const;
+    // The data toggle the device expects (OUT) or sends next (IN); CLEAR_FEATURE(ENDPOINT_HALT)
+    // resets it.
+    bool Toggle(uint8_t endpoint) const;
+    void FlipToggle(uint8_t endpoint);
+
     // Called as each control request arrives, before it is answered.
     std::function<void(const Request&)> on_request;
 
@@ -91,6 +103,8 @@ private:
     std::vector<Fault> control_faults_;
     std::map<uint8_t, std::deque<std::vector<uint8_t>>> reports_;
     std::map<uint8_t, std::vector<Fault>> endpoint_faults_;
+    std::map<uint8_t, std::vector<std::vector<uint8_t>>> bulk_out_;
+    std::map<uint8_t, bool> toggles_;
     uint8_t configuration_value_ = 0;
 };
 
@@ -192,6 +206,8 @@ private:
 std::shared_ptr<ScriptedHub> MakeHub(Speed speed, uint8_t ports, bool multi_tt = false,
                                      uint8_t think_time = 1);
 
+// A bulk-only mass storage device: IN 0x81 and OUT 0x02.
+std::shared_ptr<ScriptedDevice> MakeMassStorage(Speed speed);
 std::shared_ptr<ScriptedDevice> MakeKeyboard(Speed speed, uint8_t max_packet0 = 0);
 std::shared_ptr<ScriptedDevice> MakeMouse(Speed speed, uint8_t max_packet0 = 0);
 // A report-protocol mouse: buttons, X, Y, wheel and AC Pan, one byte each after the buttons.

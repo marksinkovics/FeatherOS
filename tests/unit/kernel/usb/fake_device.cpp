@@ -10,6 +10,8 @@ namespace
 
 constexpr uint8_t GetDescriptor = 6;
 constexpr uint8_t SetConfiguration = 9;
+constexpr uint8_t ClearFeature = 1;
+constexpr uint16_t EndpointHalt = 0;
 
 void Append(std::vector<uint8_t>& bytes, std::initializer_list<uint8_t> values)
 {
@@ -166,6 +168,10 @@ ScriptedDevice::Outcome ScriptedDevice::Control(const Request& request,
     {
         configuration_value_ = static_cast<uint8_t>(request.value);
     }
+    if (request.type == 0x02 && request.request == ClearFeature && request.value == EndpointHalt)
+    {
+        toggles_[static_cast<uint8_t>(request.index)] = false;
+    }
     return Outcome::Ok;
 }
 
@@ -199,6 +205,53 @@ bool ScriptedDevice::TakeReport(uint8_t endpoint, std::vector<uint8_t>* report)
 void ScriptedDevice::FailEndpoint(uint8_t endpoint, Outcome outcome, int count)
 {
     endpoint_faults_[endpoint].push_back({outcome, count, -1});
+}
+
+void ScriptedDevice::ReceiveBulk(uint8_t endpoint, std::span<const uint8_t> data)
+{
+    bulk_out_[endpoint].emplace_back(data.begin(), data.end());
+}
+
+ScriptedDevice::Outcome ScriptedDevice::ProduceBulk(uint8_t endpoint, uint32_t max,
+                                                    std::vector<uint8_t>* out)
+{
+    out->clear();
+    const Outcome outcome = EndpointOutcome(endpoint);
+    if (outcome != Outcome::Ok)
+    {
+        return outcome;
+    }
+    std::vector<uint8_t> report;
+    if (!TakeReport(endpoint, &report))
+    {
+        return Outcome::Hang;
+    }
+    if (report.size() > max)
+    {
+        reports_[endpoint].push_front(
+            std::vector<uint8_t>(report.begin() + static_cast<long>(max), report.end()));
+        report.resize(max);
+    }
+    *out = std::move(report);
+    return Outcome::Ok;
+}
+
+const std::vector<std::vector<uint8_t>>& ScriptedDevice::BulkReceived(uint8_t endpoint) const
+{
+    static const std::vector<std::vector<uint8_t>> none;
+    const auto found = bulk_out_.find(endpoint);
+    return found == bulk_out_.end() ? none : found->second;
+}
+
+bool ScriptedDevice::Toggle(uint8_t endpoint) const
+{
+    const auto found = toggles_.find(endpoint);
+    return found != toggles_.end() && found->second;
+}
+
+void ScriptedDevice::FlipToggle(uint8_t endpoint)
+{
+    toggles_[endpoint] = !Toggle(endpoint);
 }
 
 ScriptedDevice::Outcome ScriptedDevice::EndpointOutcome(uint8_t endpoint)
@@ -668,6 +721,14 @@ std::shared_ptr<ScriptedHub> MakeHub(Speed speed, uint8_t ports, bool multi_tt, 
         think_time);
     hub->AddString(2, "Scripted Hub");
     return hub;
+}
+
+std::shared_ptr<ScriptedDevice> MakeMassStorage(Speed speed)
+{
+    auto device = std::make_shared<ScriptedDevice>(
+        MakeDeviceDescriptor(0x46f4, 0x0001, MaxPacket0Field(speed)), MassStorageConfiguration());
+    device->AddString(2, "QEMU USB HARDDRIVE");
+    return device;
 }
 
 std::shared_ptr<ScriptedDevice> MakeKeyboard(Speed speed, uint8_t max_packet0)

@@ -46,7 +46,8 @@ private:
     void Forget();
     void Service();
     void Log(const char* path, const char* message, bool warning) const;
-    static void OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_t recent);
+    static void OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_t recent,
+                           Status status);
 
     HostController& host_;
     Bus bus_;

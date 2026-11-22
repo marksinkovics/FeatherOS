@@ -82,6 +82,7 @@ set(SRC
     ${SRCROOT}/usb/xhci/probe.cpp
     ${SRCROOT}/usb/xhci/registers.cpp
     ${SRCROOT}/usb/xhci/ring.cpp
+    ${SRCROOT}/usb/xhci/td.cpp
     ${SRCROOT}/usb/xhci/transfer.cpp
     ${SRCROOT}/console.cpp
     ${SRCROOT}/writeback.cpp

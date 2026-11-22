@@ -64,6 +64,7 @@ add_executable(featheros_unit_tests
     kernel/pci/pci_tests.cpp
     kernel/process/futex_tests.cpp
     kernel/storage/page_cache_tests.cpp
+    kernel/usb/bulk_tests.cpp
     kernel/usb/context_tests.cpp
     kernel/usb/controller_tests.cpp
     kernel/usb/descriptor_tests.cpp
@@ -282,6 +283,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/usb/xhci/controller.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/xhci/registers.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/xhci/ring.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/xhci/td.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/xhci/transfer.cpp"
     "${FEATHEROS_ROOT}/src/kernel/process_arguments.cpp"
     "${FEATHEROS_ROOT}/src/kernel/sync/volume_mutex.cpp"

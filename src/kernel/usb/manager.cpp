@@ -106,7 +106,7 @@ void Manager::Log(const char* path, const char* message, bool warning) const
     }
 }
 
-void Manager::OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_t recent)
+void Manager::OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_t recent, Status)
 {
     auto* manager = static_cast<Manager*>(context);
     if (endpoint != 0 && recent >= UnbindRecoveries && slot <= MaxDeviceSlots)

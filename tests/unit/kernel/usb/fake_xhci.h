@@ -53,7 +53,13 @@ private:
 // packets, stalls, transaction errors, babble when the context's EP0 packet size is wrong, hung
 // requests), interrupt IN TDs fed from the device's queued reports, the endpoint states (running,
 // halted, stopped) with Reset Endpoint, Set TR Dequeue Pointer, Stop Endpoint, Evaluate Context
-// and Configure Endpoint. Slots without a device keep the plain behavior: an event for every
+// and Configure Endpoint. Bulk endpoints run whole TDs of chained Normal TRBs (checked for the
+// 64 KiB windows, CH, IOC, ISP and TD Size: a violation counts as a fault): OUT data goes to the
+// device packet by packet, IN data comes from it, a short IN TD posts the Short Packet event of
+// the TRB that ran out and then the last TRB's event. Every bulk endpoint has a data toggle that
+// the device mirrors; Reset Endpoint and a Configure Endpoint that adds the endpoint reset the
+// xHC's side, CLEAR_FEATURE(ENDPOINT_HALT) the device's, and a packet whose toggle is not the
+// receiver's is acknowledged but dropped. Slots without a device keep the plain behavior: an event for every
 // TRB that asks for one. Not yet: hubs.
 class FakeXhci
 {
@@ -162,6 +168,21 @@ public:
         uint32_t entries;
     };
 
+    struct Reconfigure
+    {
+        uint32_t slot;
+        uint32_t dci;
+        uint32_t drop_flags;
+        uint32_t add_flags;
+        uint64_t pointer;
+    };
+
+    struct DmaWrite
+    {
+        uint64_t physical;
+        uint64_t count;
+    };
+
     struct DequeueSet
     {
         uint32_t slot;
@@ -180,6 +201,11 @@ public:
     const std::vector<std::pair<uint32_t, uint32_t>>& Evaluated() const;
     const std::vector<SlotUpdate>& SlotUpdates() const;
     const std::vector<DequeueSet>& DequeueSets() const;
+    // The Configure Endpoint commands that dropped and added the same endpoint.
+    const std::vector<Reconfigure>& Reconfigured() const;
+    // Every write of device data into a transfer buffer, in order.
+    const std::vector<DmaWrite>& DmaWrites() const;
+    bool HostToggle(uint32_t slot, uint32_t dci) const;
     bool EndpointState(uint32_t slot, uint32_t dci, State* state) const;
     uint32_t SlotOfPort(uint32_t port) const;
 
@@ -221,6 +247,9 @@ private:
         bool cycle = true;
         State state = State::Running;
         bool hung = false;
+        bool bulk = false;
+        bool toggle = false;
+        uint32_t max_packet = 0;
         uint8_t address = 0;
         ControlTd control;
     };
@@ -240,6 +269,7 @@ private:
     void ProcessPlainTransfers(Endpoint& endpoint, uint32_t slot, uint32_t dci);
     void ProcessDeviceTransfers(Endpoint& endpoint, Binding& binding, uint32_t slot, uint32_t dci);
     bool DevicePresent(const Binding& binding) const;
+    bool ProcessBulkTd(Endpoint& endpoint, Binding& binding, uint32_t slot, uint32_t dci);
     void PostTransferEvent(uint32_t slot, uint32_t dci, uint64_t trb, uint32_t code,
                            uint32_t residue);
     bool CopyToBuffer(uint64_t physical, const std::vector<uint8_t>& bytes, size_t count);
@@ -294,6 +324,8 @@ private:
     std::vector<std::pair<uint32_t, uint32_t>> evaluated_;
     std::vector<SlotUpdate> slot_updates_;
     std::vector<DequeueSet> dequeue_sets_;
+    std::vector<Reconfigure> reconfigured_;
+    std::vector<DmaWrite> dma_writes_;
     std::set<uint32_t> enabled_slots_;
     std::vector<uint32_t> protocol_words_;
     bool legacy_present_ = false;
