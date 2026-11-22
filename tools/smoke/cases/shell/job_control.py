@@ -1,9 +1,11 @@
+from smoke.cases.shell.interrupt import SLEEP_PIPELINE
 from smoke.cases.shell.part import Part
 from smoke.script import (
     CONTROL_Z,
     INTERRUPT_RUNNING,
     SUSPEND_RUNNING,
     TypeWhen,
+    WaitFor,
 )
 
 # Ctrl+Z stops a sleep, which bg continues for the time it had left and fg
@@ -18,7 +20,8 @@ SHELL_STOP_INPUT = (
     b"bg\n",
     b"jobs\n",
     b"fg\n",
-    b"sleep 100 | sleep 100\n",
+    SLEEP_PIPELINE,
+    WaitFor("PIPE UP", fresh=True),
     SUSPEND_RUNNING,
     b"jobs\n",
     b"fg 1\n",
@@ -49,7 +52,7 @@ EXPECTED_STOP_OUTPUT = (
     "[1] sleep 4 &",
     "[1] Running  sleep 4",
     "sleep: slept 4 s",
-    "[1] Stopped  sleep 100 | sleep 100",
+    "[1] Stopped  " + SLEEP_PIPELINE.decode().rstrip(),
     "[1] Stopped  upper &",
     "\nREAD AFTER FG",
     "[1] Stopped  vi /tmp/stop.txt",

@@ -1191,7 +1191,7 @@ Pre-rendered, anti-aliased fonts replace the 1-bit 8x16 ASCII font: a monospace 
 
 **Complete when:** on both targets, the console shows UTF-8 text (accents, arrows, box drawing, U+FFFD for invalid bytes) in the anti-aliased monospace font, matching a reference rendering; typed UTF-8 is echoed; programs draw anti-aliased proportional and monospace text in several sizes; damaged font files are refused; and regenerating the fonts gives byte-identical files. (All met.)
 
-**Check:** the final matrix on 2026-11-22 passed 51 of its 52 cases. The failure, `38_aarch64_shell_release` under heavy load from another session, then passed 3 of 3 re-runs: Ctrl+C can reach the foreground group before the second process of `sleep 100 | sleep 100` has joined it, a test race that predates M34.
+**Check:** the full matrix (52 cases, both targets) passed on 2026-11-22, after the shell smoke test was changed to send Ctrl+C and Ctrl+Z only once every stage of its `sleep` pipeline has started. Runs under heavy host load can still fail by timeout or a `virtio-blk` device timeout: one such run failed 3 cases, which then passed.
 
 ## Architecture Boundaries
 

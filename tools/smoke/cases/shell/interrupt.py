@@ -1,5 +1,9 @@
 from smoke.cases.shell.part import Part
-from smoke.script import CONTROL_C, INTERRUPT_RUNNING
+from smoke.script import CONTROL_C, INTERRUPT_RUNNING, WaitFor
+
+SLEEP_PIPELINE = (
+    b"sleep 100 > /dev/tty | sleep 100 > /dev/tty | echo pipe up | upper\n"
+)
 
 # Interrupts a CPU-bound job, a sleep, programs blocked reading input, and the
 # shell's own prompt (which only discards the line).
@@ -14,7 +18,11 @@ SHELL_INTERRUPT_INPUT = (
     b"primes 1 1000000000 | upper\n",
     INTERRUPT_RUNNING,
     # Ctrl+C reaches every command in the foreground group.
-    b"sleep 100 | sleep 100\n",
+    # The last stage prints once the earlier ones have joined the group; the
+    # sleeps report to the terminal, so a survivor's message is not lost to a
+    # closed pipe.
+    SLEEP_PIPELINE,
+    WaitFor("PIPE UP", fresh=True),
     INTERRUPT_RUNNING,
     b"sleep 100\n",
     INTERRUPT_RUNNING,

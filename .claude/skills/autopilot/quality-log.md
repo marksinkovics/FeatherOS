@@ -67,4 +67,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | d4fad81 | M34 P3 UTF-8 console, anti-aliased mono-16, FONTS mode | opus | sonnet | 1 | 7/8 (one equivalent) | |
 | aaf4ffa | M34 P4 UTF-8 in canonical mode, key decoder, line editor | opus | sonnet | 1 | 3/3 | |
 | 1192924 | M34 P5 programs on the new fonts, scale API and font.c gone | opus | sonnet | 0 | 3/3 (two needed new checks) | |
-| (this) | M34 P6 fontview, test card, final docs | opus | sonnet | 0 | 2/2 | |
+| ef163ed | M34 P6 fontview, test card, final docs | opus | sonnet | 0 | 2/2 | |
+| (this) | Shell smoke: wait for every pipeline stage before Ctrl+C/Ctrl+Z | - | sonnet | 0 | not run | |
