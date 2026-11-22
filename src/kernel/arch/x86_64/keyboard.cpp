@@ -1,10 +1,14 @@
 #include "keyboard.h"
 
+#include "acpi.h"
+#include "i8042.h"
 #include "interrupts.h"
 #include "kernel/arch/keyboard.h"
 #include "kernel/boot_options.h"
 #include "kernel/input/input.h"
 #include "kernel/input/keyboard.h"
+#include "kernel/klogger.h"
+#include "kernel/string/format.h"
 
 namespace FeatherOS::Arch::X86_64
 {
@@ -12,9 +16,11 @@ namespace
 {
 
 constexpr uint16_t KeyboardDataPort = 0x60;
-constexpr uint16_t KeyboardStatusPort = 0x64;
-constexpr uint16_t KeyboardCommandPort = 0x64;
+constexpr uint16_t KeyboardStatusPort = I8042::CommandPort;
+constexpr uint16_t KeyboardCommandPort = I8042::CommandPort;
+constexpr uint8_t EnableFirstPortCommand = 0xAE;
 
+constinit KLogger logger;
 Input::Keyboard keyboard;
 bool extended_scan_code = false;
 // Pause sends E1 1D 45 E1 9D C5, which no key code stands for.
@@ -95,16 +101,48 @@ void OnKeyboardScanCode(uint8_t scan_code)
     }
 }
 
-bool WaitForControllerWrite()
+class HardwarePorts final : public I8042::Ports
 {
-    for (uint32_t attempt = 0; attempt < 100000; ++attempt)
+public:
+    uint8_t Read8(uint16_t port) override
     {
-        if ((ReadPort(KeyboardStatusPort) & 0x02U) == 0)
-        {
-            return true;
-        }
+        return ReadPort(port);
     }
-    return false;
+
+    void Write8(uint16_t port, uint8_t value) override
+    {
+        WritePort(port, value);
+    }
+};
+
+void LogFadtFlag()
+{
+    uint16_t flags;
+    if (!Acpi::BootArchitectureFlags(&flags))
+    {
+        logger.Info("ACPI: FADT 8042 flag unknown");
+    }
+    else if ((flags & Acpi::BootArchitecture8042) != 0)
+    {
+        logger.Info("ACPI: FADT 8042 flag set");
+    }
+    else
+    {
+        logger.Info("ACPI: FADT 8042 flag clear");
+    }
+}
+
+void LogSetup(const I8042::Setup& setup)
+{
+    char message[80];
+    if (String::FormatTo(
+            message, sizeof(message), "Keyboard: i8042 config 0x{}{}, was 0x{}{}, flushed {} bytes",
+            "0123456789abcdef"[setup.config >> 4], "0123456789abcdef"[setup.config & 0xF],
+            "0123456789abcdef"[setup.original >> 4], "0123456789abcdef"[setup.original & 0xF],
+            setup.flushed))
+    {
+        logger.Info(message);
+    }
 }
 
 void OnKeyboardInterrupt()
@@ -120,12 +158,29 @@ void OnKeyboardInterrupt()
 
 bool InitializeKeyboard()
 {
-    if (!WaitForControllerWrite())
+    LogFadtFlag();
+    HardwarePorts ports;
+    const I8042::Setup setup = I8042::Configure(ports);
+    if (setup.status == I8042::Status::NoController)
     {
+        logger.Info("Keyboard: no i8042 controller");
+        return false;
+    }
+    if (setup.status == I8042::Status::TimedOut)
+    {
+        logger.Warning("Keyboard: i8042 did not answer");
+        return false;
+    }
+    LogSetup(setup);
+    if (!I8042::WaitForInputEmpty(ports))
+    {
+        logger.Warning("Keyboard: i8042 did not answer");
         return false;
     }
     RegisterInterruptHandler(1, OnKeyboardInterrupt);
-    WritePort(KeyboardCommandPort, 0xAE);
+    WritePort(KeyboardCommandPort, EnableFirstPortCommand);
+    uint32_t flushed;
+    (void)I8042::Flush(ports, &flushed);
     UnmaskIrq(1);
     return true;
 }

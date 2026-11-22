@@ -35,6 +35,13 @@ def Command(qemu, args, case):
         )
         if args.cpu:
             command.extend(["-cpu", args.cpu])
+        if args.firmware:
+            command.extend(
+                [
+                    "-drive",
+                    f"if=pflash,unit=0,format=raw,readonly=on,file={args.firmware}",
+                ]
+            )
     command.extend(
         [
             "-drive",

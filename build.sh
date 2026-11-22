@@ -157,6 +157,29 @@ _aarch64_firmware() {
     return 1
 }
 
+_x86_64_firmware() {
+    if [ -n "${QEMU_OVMF:-}" ] && [ -f "$QEMU_OVMF" ]; then
+        printf '%s\n' "$QEMU_OVMF"
+        return
+    fi
+
+    local firmware
+    for firmware in \
+        /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
+        /usr/local/share/qemu/edk2-x86_64-code.fd \
+        /usr/share/OVMF/OVMF_CODE.fd \
+        /usr/share/OVMF/OVMF_CODE_4M.fd \
+        /usr/share/edk2/ovmf/OVMF_CODE.fd \
+        /usr/share/qemu/OVMF.fd; do
+        if [ -f "$firmware" ]; then
+            printf '%s\n' "$firmware"
+            return
+        fi
+    done
+
+    return 1
+}
+
 # swiftc from a swift.org toolchain: SWIFTC if set, otherwise the toolchain swiftly selects for
 # this checkout (.swift-version). Xcode's swiftc does not reliably target ELF, so it is not used.
 _swift_compiler() {
@@ -589,6 +612,14 @@ smoke_test() {
         smoke_args+=(--firmware "$firmware")
     elif [ "$ARCH" = "x86_64" ]; then
         _require_tools qemu-system-x86_64
+        if _is_on "${X86_UEFI:-OFF}"; then
+            local firmware
+            firmware=$(_x86_64_firmware) || {
+                _print "SKIP: no x86-64 UEFI firmware (edk2/OVMF); set QEMU_OVMF to an OVMF_CODE image"
+                exit 0
+            }
+            smoke_args+=(--firmware "$firmware")
+        fi
     else
         _err "Smoke test is not supported for ARCH='$ARCH'."
         exit 1

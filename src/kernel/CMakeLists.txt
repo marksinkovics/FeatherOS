@@ -14,6 +14,8 @@ if (ARCH STREQUAL "x86_64")
         ${SRCROOT}/arch/x86_64/cpu_features.cpp
         ${SRCROOT}/arch/x86_64/floating_point.cpp
         ${SRCROOT}/arch/x86_64/thread_pointer.cpp
+        ${SRCROOT}/arch/x86_64/acpi.cpp
+        ${SRCROOT}/arch/x86_64/i8042.cpp
         ${SRCROOT}/arch/x86_64/keyboard.cpp
         ${SRCROOT}/arch/x86_64/block_device.cpp
         ${SRCROOT}/arch/x86_64/pci.cpp
