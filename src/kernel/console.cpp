@@ -8,6 +8,7 @@
 #include "kernel/framebuffer/graphics_mode.h"
 #include "kernel/framebuffer/term.h"
 #include "kernel/input/input.h"
+#include "kernel/log_ring.h"
 #include "kernel/network/interface.h"
 #include "kernel/panic.h"
 #include "kernel/poll.h"
@@ -532,6 +533,10 @@ void WriteCharacter(char character)
 
 void WriteLine(const char* text)
 {
+    if (text[0] == 'K' && text[1] == 'E' && text[2] == 'R' && text[3] == 'N' && text[4] == '/')
+    {
+        KernelLog::Append(text);
+    }
     {
         Sync::SpinLockGuard guard(display_lock);
         size_t length = 0;

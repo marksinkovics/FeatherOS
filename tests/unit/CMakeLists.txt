@@ -87,6 +87,7 @@ add_executable(featheros_unit_tests
     kernel/input/i8042_tests.cpp
     kernel/kernel_test/kernel_test_mode_tests.cpp
     kernel/klogger/klogger_tests.cpp
+    kernel/klogger/log_ring_tests.cpp
     kernel/memory/dma_tests.cpp
     kernel/memory/memory_map_tests.cpp
     kernel/process/calculator_tests.cpp
@@ -261,6 +262,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/arch/aarch64/pci_device_tree.cpp"
     "${FEATHEROS_ROOT}/src/kernel/arch/x86_64/i8042.cpp"
     "${FEATHEROS_ROOT}/src/kernel/klogger.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/log_ring.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/dma.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/page_allocator.cpp"

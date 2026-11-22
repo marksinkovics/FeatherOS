@@ -55,6 +55,7 @@ set(SRC
     ${SRCROOT}/exception.cpp
     ${SRCROOT}/halt.cpp
     ${SRCROOT}/klogger.cpp
+    ${SRCROOT}/log_ring.cpp
     ${SRCROOT}/memory/memory_map.cpp
     ${SRCROOT}/memory/heap.cpp
     ${SRCROOT}/memory/kernel_stack.cpp

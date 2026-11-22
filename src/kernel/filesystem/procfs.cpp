@@ -16,6 +16,7 @@ enum class Kind : uint8_t
     SystemStat,
     Mounts,
     UsbDevices,
+    KernelLog,
     ProcessDirectory,
     ProcessStatusFile,
 };
@@ -24,8 +25,11 @@ constexpr char MemoryInfoName[] = "meminfo";
 constexpr char SystemStatName[] = "stat";
 constexpr char MountsName[] = "mounts";
 constexpr char UsbName[] = "usb";
-constexpr const char* FixedNames[] = {MemoryInfoName, SystemStatName, MountsName, UsbName};
-constexpr Kind FixedKinds[] = {Kind::MemoryInfo, Kind::SystemStat, Kind::Mounts, Kind::UsbDevices};
+constexpr char KernelLogName[] = "kmsg";
+constexpr const char* FixedNames[] = {MemoryInfoName, SystemStatName, MountsName, UsbName,
+                                      KernelLogName};
+constexpr Kind FixedKinds[] = {Kind::MemoryInfo, Kind::SystemStat, Kind::Mounts, Kind::UsbDevices,
+                               Kind::KernelLog};
 constexpr uint32_t FixedCount = sizeof(FixedNames) / sizeof(FixedNames[0]);
 constexpr char StatusName[] = "status";
 
@@ -92,6 +96,10 @@ Kind Classify(const char* path, uint64_t* process_id)
     {
         return Kind::UsbDevices;
     }
+    if (Equals(path, KernelLogName))
+    {
+        return Kind::KernelLog;
+    }
     const char* rest;
     if (!ParseProcessId(path, process_id, &rest) || !ProcessExists(*process_id))
     {
@@ -147,6 +155,8 @@ uint64_t SerialNumber(Kind kind, uint64_t process_id)
         return RootSerialNumber + 3;
     case Kind::UsbDevices:
         return RootSerialNumber + 4;
+    case Kind::KernelLog:
+        return RootSerialNumber + 5;
     case Kind::ProcessDirectory:
         return FirstProcessSerialNumber + 2 * process_id;
     case Kind::ProcessStatusFile:
@@ -259,6 +269,14 @@ bool Generate(const char* path, char* buffer, size_t* length)
         }
         formatted = true;
         break;
+    case Kind::KernelLog:
+        buffer[0] = '\0';
+        if (source.kernel_log != nullptr)
+        {
+            source.kernel_log(buffer, MaximumKernelLogFileSize);
+        }
+        formatted = true;
+        break;
     case Kind::ProcessStatusFile:
     {
         ProcessStatus status;
@@ -285,6 +303,14 @@ bool Generate(const char* path, char* buffer, size_t* length)
     }
     *length = Length(buffer);
     return true;
+}
+
+size_t FileCapacity(const char* path)
+{
+    uint64_t process_id = 0;
+    return path != nullptr && Classify(path, &process_id) == Kind::KernelLog
+               ? MaximumKernelLogFileSize
+               : MaximumFileSize;
 }
 
 bool IsDirectory(const char* path)

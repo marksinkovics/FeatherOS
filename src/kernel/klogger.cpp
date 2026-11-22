@@ -2,6 +2,7 @@
 
 #include "kernel/arch/serial.h"
 #include "kernel/framebuffer/term.h"
+#include "kernel/log_ring.h"
 
 namespace FeatherOS
 {
@@ -69,6 +70,7 @@ void KLogger::Write(const char* level, const char* message)
         length = sizeof(line) - 1;
     }
     line[length] = '\0';
+    KernelLog::Append(line);
     Serial::Write(line);
     Serial::Write("\n");
     if (m_term != nullptr)

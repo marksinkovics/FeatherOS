@@ -14,6 +14,7 @@ set(FEATHEROS_PROGRAMS
     umount:umount ln:ln readlink:readlink sync:sync fbtest:fbtest fbdemo:fbdemo fontview:fontview
     umount:umount ln:ln readlink:readlink sync:sync lsusb:lsusb
     umount:umount ln:ln readlink:readlink sync:sync lsusb:lsusb mousetest:mousetest
+    umount:umount ln:ln readlink:readlink sync:sync lsusb:lsusb mousetest:mousetest dmesg:dmesg
 )
 # Programs that define _start themselves instead of linking the C library's, which calls main.
 # The kernel's own tests run test_program and read the raw arguments block.

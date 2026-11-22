@@ -13,6 +13,12 @@ FILE_CONTENTS = re.compile(r"^written without a disk\r?$", re.MULTILINE)
 ROOT_MOUNT = re.compile(r"^root / tmpfs rw 0 0\r?$", re.MULTILINE)
 ETC_MOUNT = re.compile(r"^etc /etc tmpfs rw 0 0\r?$", re.MULTILINE)
 HOME_LISTING = re.compile(r"^nodisk\.txt +23\r?$", re.MULTILINE)
+KERNEL_LOG = re.compile(
+    r"dmesg \| head -n 1\r?\n"
+    r"KERN/I: Limine transferred control to the kernel\r?$"
+    r".*grep -c \"Storage: no disk\" /proc/kmsg\r?\n1\r?$",
+    re.MULTILINE | re.DOTALL,
+)
 SHUTDOWN_MESSAGES = (
     "KERN/I: Shutdown: no disk to flush",
     "KERN/I: Powering off",
@@ -43,6 +49,8 @@ class NoDisk(Case):
             b"cat /home/nodisk.txt\n"
             b"ls /home\n"
             b"mount\n"
+            b"dmesg | head -n 1\n"
+            b'grep -c "Storage: no disk" /proc/kmsg\n'
             b"sync\n"
             b"shutdown\n"
         )
@@ -70,6 +78,7 @@ class NoDisk(Case):
             (HOME_LISTING, "ls /home did not list the new file"),
             (ROOT_MOUNT, "/proc/mounts does not list the tmpfs root"),
             (ETC_MOUNT, "/proc/mounts does not list the RAM /etc"),
+            (KERNEL_LOG, "dmesg or /proc/kmsg did not show the kernel log"),
         ):
             if pattern.search(output) is None:
                 return f"{failure}{result.limit_note}"

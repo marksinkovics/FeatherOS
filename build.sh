@@ -34,6 +34,7 @@ _usage() {
     printf 'KERNEL_USB=off|poll puts usb=off or usb=poll on the kernel command line (no USB, or controller events by timer).\n'
     printf 'KERNEL_USBHID=report puts usbhid=report on it (boot keyboards and mice through their report descriptors);\n'
     printf 'KERNEL_PS2=off puts ps2=off on it (no PS/2 or virtio keyboard).\n'
+    printf 'LIMINE_TIMEOUT=N makes the ISO'"'"'s Limine wait N seconds at its menu (default 0, which hides it).\n'
     printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, unit-test-tsan,\n'
     printf '         benchmark, debug, all, clean, fullclean\n'
 }
@@ -417,7 +418,15 @@ iso() {
     iso_path=$(_kernel_iso)
     rm -rf "$iso_root"
     mkdir -p "$iso_root/EFI/BOOT"
-    cp "$SCRIPT_DIR/configs/$ARCH/limine.conf" "$iso_root/limine.conf"
+    local limine_timeout="${LIMINE_TIMEOUT:-0}"
+    case "$limine_timeout" in
+        *[!0-9]*)
+            _err "LIMINE_TIMEOUT must be a number of seconds, not '$limine_timeout'."
+            exit 1
+            ;;
+    esac
+    sed "s/^timeout: .*/timeout: $limine_timeout/" "$SCRIPT_DIR/configs/$ARCH/limine.conf" \
+        >"$iso_root/limine.conf"
     local command_line
     command_line=$(_kernel_command_line "$test_mode")
     if [ -n "$command_line" ]; then

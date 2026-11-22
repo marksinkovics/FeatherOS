@@ -2,6 +2,7 @@
 
 #include "kernel/arch/pci.h"
 #include "kernel/arch/serial.h"
+#include "kernel/log_ring.h"
 #include "kernel/memory/device_memory.h"
 #include "kernel/sync/spinlock.h"
 
@@ -127,6 +128,7 @@ FeatherOS::Pci::ConfigSpace* Initialize(const void* platform_data)
     }
     if (!PciEcam::host_bridge.dma_coherent)
     {
+        KernelLog::Append("KERN/W: PCI: host bridge is not dma-coherent; PCI disabled");
         Serial::Write("KERN/W: PCI: host bridge is not dma-coherent; PCI disabled\n");
         return nullptr;
     }

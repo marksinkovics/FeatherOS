@@ -235,7 +235,7 @@ public:
         {
             return false;
         }
-        auto* text = static_cast<char*>(Memory::Allocate(Procfs::MaximumFileSize));
+        auto* text = static_cast<char*>(Memory::Allocate(Procfs::FileCapacity(path)));
         size_t length = 0;
         if (text == nullptr)
         {
@@ -262,6 +262,11 @@ public:
         if (directory)
         {
             *info = MakeInfo(serial_number, ReadOnlyDirectoryMode, 0);
+            return true;
+        }
+        if (Procfs::FileCapacity(path) > Procfs::MaximumFileSize)
+        {
+            *info = MakeInfo(serial_number, ReadOnlyFileMode, 0);
             return true;
         }
         const Memory::HeapObject<GeneratedText> generated;

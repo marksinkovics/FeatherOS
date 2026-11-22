@@ -6,13 +6,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// The generated files mounted at /proc: "meminfo", "stat", "mounts", "usb", and a directory per
-// process holding "status". Paths are relative to the mount ("" is the root). A file's text is made
-// when it is opened, so a reader sees one consistent snapshot.
+// The generated files mounted at /proc: "meminfo", "stat", "mounts", "usb", "kmsg", and a directory
+// per process holding "status". Paths are relative to the mount ("" is the root). A file's text is
+// made when it is opened, so a reader sees one consistent snapshot.
 namespace FeatherOS::Procfs
 {
 
 constexpr size_t MaximumFileSize = 1024;
+// "kmsg" is the kernel log's 64 KiB ring and a NUL; its size is reported as 0 like Linux's.
+constexpr size_t MaximumKernelLogFileSize = 64 * 1024 + 1;
 constexpr uint32_t MaximumCpus = 16;
 
 struct ProcessStatus
@@ -71,10 +73,14 @@ struct Source
     bool (*mount_at)(uint32_t index, MountStatus* status);
     // Writes the USB devices' lines, whole ones only, into the buffer; returns the text's length.
     size_t (*usb_devices)(char* buffer, size_t capacity);
+    // Writes a snapshot of the kernel log's newest whole lines that fit; returns its length.
+    size_t (*kernel_log)(char* buffer, size_t capacity) = nullptr;
 };
 
 void SetSource(const Source& source);
-// Writes the file's text into buffer (MaximumFileSize bytes) and its length into *length.
+// The buffer size Generate needs for path.
+size_t FileCapacity(const char* path);
+// Writes the file's text into buffer (FileCapacity(path) bytes) and its length into *length.
 bool Generate(const char* path, char* buffer, size_t* length);
 bool IsDirectory(const char* path);
 // Whether path exists, with its number for stat and whether it is a directory.

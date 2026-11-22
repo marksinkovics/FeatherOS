@@ -7,6 +7,7 @@ from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
 from smoke.cases.shell import (
     calculator,
     cppbench,
+    dmesg,
     editing,
     ext2,
     ext4,
@@ -46,6 +47,7 @@ PARTS = (
     swift_full.PART,
     programs.PART,
     framebuffer.PART,
+    dmesg.PART,
     files.PART,
     mounts.PART,
     remount.PART,

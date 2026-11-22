@@ -3,6 +3,7 @@
 #include "kernel/files.h"
 #include "kernel/filesystem/devices.h"
 #include "kernel/filesystem/procfs.h"
+#include "kernel/log_ring.h"
 #include "kernel/filesystem/tmpfs.h"
 #include "kernel/filesystem/vfs.h"
 #include "kernel/input/pointer.h"
@@ -973,7 +974,7 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
 {
     UseFakeProcesses();
     REQUIRE(List("/proc") ==
-            std::vector<std::string>{"meminfo", "stat", "mounts", "usb", "1/", "4/", "12/"});
+            std::vector<std::string>{"meminfo", "stat", "mounts", "usb", "kmsg", "1/", "4/", "12/"});
     REQUIRE(List("/proc/4") == std::vector<std::string>{"status"});
     REQUIRE(ReadAll("/proc/12/status") ==
             "Name:\tshell\nState:\tR (running)\nPid:\t12\nPPid:\t1\nPgid:\t4\nPages:\t37\n"
@@ -1007,6 +1008,33 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
     REQUIRE(FeatherOS::Files::Read(&table, reader, text, 10) == 10);
     REQUIRE(std::string(text) == "Name:\tshel");
     REQUIRE(FeatherOS::Files::Close(&table, reader) == 0);
+}
+
+TEST_CASE("/proc/kmsg is a snapshot of the kernel log that stats as empty")
+{
+    FeatherOS::Procfs::SetSource({FakeProcessAt, FakeProcessStatus, FakeMemoryStatus,
+                                  FakeSystemStatus, FakeMountAt, nullptr,
+                                  FeatherOS::KernelLog::Snapshot});
+    FeatherOS::KernelLog::Append("KERN/I: kmsg test first");
+    const std::string before = ReadAll("/proc/kmsg");
+    REQUIRE(before.size() >= 24);
+    REQUIRE(before.substr(before.size() - 24) == "KERN/I: kmsg test first\n");
+    FeatherOS::KernelLog::Append("KERN/I: kmsg test second");
+    REQUIRE(ReadAll("/proc/kmsg").size() == before.size() + 25);
+
+    FeatherOS::Files::Table table{};
+    FeatherOS::Files::OpenConsole(&table, nullptr);
+    FeatherOS::User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::Stat("/proc/kmsg", &status) == 0);
+    REQUIRE(status.size == 0);
+    REQUIRE(status.read_only);
+    const uint64_t reader = FeatherOS::Files::Open(&table, "/proc/kmsg", OpenRead);
+    char text[8] = {};
+    REQUIRE(FeatherOS::Files::Read(&table, reader, text, 7) == 7);
+    REQUIRE(FeatherOS::Files::Close(&table, reader) == 0);
+    REQUIRE(FeatherOS::Files::Open(&table, "/proc/kmsg", OpenWrite) ==
+            FeatherOS::User::SyscallErrorReadOnly);
+    UseFakeProcesses();
 }
 
 TEST_CASE("/proc/mounts has a line per mount, in mount order")

@@ -75,7 +75,7 @@ Moved out of M11 to keep it focused; each can come back as a milestone of its ow
 ## Debugging And Observability
 
 - **Stack traces with symbol names on panic:** walk frame pointers and look addresses up in a symbol table built into the kernel image.
-- **`dmesg`:** keep the kernel log in a ring buffer that user programs can read.
+- **`dmesg` (done in M14 Part 5):** a 64 KiB ring read through `/proc/kmsg`. Left over: a consuming reader with blocking reads and log levels, `dmesg -w`, and timestamps on each line.
 - **GDB stub over serial:** our own implementation of GDB's remote protocol, for breakpoints and memory inspection on both architectures.
 - **Sampling profiler:** record the interrupted address on timer ticks and report the busiest functions, like `perf top`.
 

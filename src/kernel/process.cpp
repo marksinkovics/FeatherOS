@@ -7,6 +7,7 @@
 #include "kernel/cpu.h"
 #include "kernel/files.h"
 #include "kernel/futex.h"
+#include "kernel/log_ring.h"
 #include "kernel/filesystem/path.h"
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/tmpfs.h"
@@ -3620,6 +3621,8 @@ bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
 }
 
 static_assert(Cpu::MaximumCpus <= Procfs::MaximumCpus, "/proc/stat reports every CPU");
+static_assert(KernelLog::Capacity + 1 == Procfs::MaximumKernelLogFileSize,
+              "/proc/kmsg holds the whole ring");
 
 void DescribeSystem(Procfs::SystemStatus* status)
 {
@@ -3667,7 +3670,7 @@ UserLayout RandomUserLayout()
 void Initialize(uint64_t offset)
 {
     Procfs::SetSource({ProcessAt, DescribeProcess, DescribeMemory, DescribeSystem,
-                       VFS::DescribeMount, Usb::FormatDevices});
+                       VFS::DescribeMount, Usb::FormatDevices, KernelLog::Snapshot});
     Terminals::SetProcessHooks({InterruptGroup, CallerInterrupted, SignalGroup, HangUpSession});
     hhdm_offset = offset;
     Sync::SpinLockGuard guard(process_lock);
