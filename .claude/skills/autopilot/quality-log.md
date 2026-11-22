@@ -77,4 +77,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | ec05a46 | M14 P2 s3 xHCI TRBs, rings, contexts, PORTSC mask, fake controller (host) | M14.md (opus) | sonnet | 0 | 3/3 (I6 T6, I7 T5, I14 T12) | |
 | 1098cde | M14 P2 s4 xHCI bring-up, UsbEvents/UsbManager, interrupt choice, root-port Address Device, USB_TEST | M14.md (opus) | sonnet | 0 | 3/3 (I10 T9 after test fix, I11 T13, I12 T14) | |
 | cac9c0b | M14 P2 s5a HostController, descriptor parser, control/interrupt transfers, stall and error recovery | M14.md (opus) | sonnet | 0 | 3/3 (I16 T18 after test fix, I17 T15, I19 T16) | |
-| PENDING | M14 P2 s5b Device tree, driver binding, root hot-plug, /proc/usb, lsusb | M14.md (opus) | sonnet | 0 | 2/2 (I20 T28 and I20 tests, I21 lock test) | |
+| 74a1d6e | M14 P2 s5b Device tree, driver binding, root hot-plug, /proc/usb, lsusb | M14.md (opus) | sonnet | 0 | 2/2 (I20 T28 and I20 tests, I21 lock test) | |
