@@ -287,10 +287,10 @@ std::vector<uint8_t> GenericKeyboardConfiguration(uint16_t report_length)
     return Finish(body, 1);
 }
 
-std::vector<uint8_t> GenericMouseConfiguration(uint16_t report_length)
+std::vector<uint8_t> GenericMouseConfiguration(uint16_t report_length, bool boot_interface)
 {
     std::vector<uint8_t> body;
-    Interface(body, 0, 0, 1, 3, 0, 0);
+    Interface(body, 0, 0, 1, 3, boot_interface ? 1 : 0, boot_interface ? 2 : 0);
     Hid(body, report_length);
     Endpoint(body, 0x81, 3, 8, 10);
     return Finish(body, 1);
@@ -374,7 +374,7 @@ std::shared_ptr<ScriptedDevice> MakeMouse(Speed speed, uint8_t max_packet0)
     return device;
 }
 
-std::shared_ptr<ScriptedDevice> MakeWheelMouse(Speed speed)
+std::shared_ptr<ScriptedDevice> MakeWheelMouse(Speed speed, bool boot_interface)
 {
     static const std::vector<uint8_t> descriptor = {
         0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x15, 0x00,
@@ -383,7 +383,7 @@ std::shared_ptr<ScriptedDevice> MakeWheelMouse(Speed speed)
         0x95, 0x03, 0x81, 0x06, 0x05, 0x0C, 0x0A, 0x38, 0x02, 0x95, 0x01, 0x81, 0x06, 0xC0};
     auto device = std::make_shared<ScriptedDevice>(
         MakeDeviceDescriptor(0x0627, 0x0003, MaxPacket0Field(speed)),
-        GenericMouseConfiguration(static_cast<uint16_t>(descriptor.size())));
+        GenericMouseConfiguration(static_cast<uint16_t>(descriptor.size()), boot_interface));
     device->AddString(2, "Wheel Mouse");
     device->SetReportDescriptor(0, descriptor);
     return device;

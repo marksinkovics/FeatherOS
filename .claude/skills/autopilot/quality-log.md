@@ -80,4 +80,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 74a1d6e | M14 P2 s5b Device tree, driver binding, root hot-plug, /proc/usb, lsusb | M14.md (opus) | sonnet | 0 | 2/2 (I20 T28 and I20 tests, I21 lock test) | |
 | 699065e | M14 P3 s6 HID report parser, key map, diff, repeater, global locks (host) | M14.md (opus) | sonnet | 0 | 3/3 (I22 T19/T20, I23 T21, I24 T23) | |
 | 4f52ec7 | M14 P3 s7 HID driver, LEDs, usbhid=, ps2=off, USB keys into the shell | M14.md (opus) | sonnet | 0 | 3/3 (I21, I25 hid test; I23 after test fix) — I21 relaxed: detach releases keys into Input under topology_lock, documented | |
-| PENDING | M14 P3 s8 pointer queue, /dev/mouse, featheros/input.h, mousetest | M14.md (opus) | sonnet | 0 | 2/2 (I27, I28 by T25) | |
+| db74d37 | M14 P3 s8 pointer queue, /dev/mouse, featheros/input.h, mousetest | M14.md (opus) | sonnet | 0 | 2/2 (I27, I28 by T25) | |
+| PENDING | M14 P3 follow-up: mice use report protocol, boot fallback (user decision) | - | sonnet (medium) | 0 | - | |

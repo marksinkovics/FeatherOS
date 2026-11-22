@@ -328,10 +328,11 @@ bool Configure(Port& port, const InterfaceView& interface)
     const bool boot_capable =
         interface.subclass == BootSubclass &&
         (interface.protocol == KeyboardProtocol || interface.protocol == MouseProtocol);
-    const bool by_report =
-        !boot_capable || BootOptions::SelectedUsbHid() == BootOptions::UsbHidMode::Report;
+    const bool mouse_interface = boot_capable && interface.protocol == MouseProtocol;
+    const bool by_report = !boot_capable || mouse_interface ||
+                           BootOptions::SelectedUsbHid() == BootOptions::UsbHidMode::Report;
     if (by_report && LoadReportMap(port, interface) &&
-        (port.map.has_keyboard || port.map.has_mouse))
+        (mouse_interface ? port.map.has_mouse : (port.map.has_keyboard || port.map.has_mouse)))
     {
         port.keyboard = port.map.has_keyboard;
         port.mouse = port.map.has_mouse;

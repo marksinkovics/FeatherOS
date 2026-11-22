@@ -261,8 +261,16 @@ TEST_CASE("hid T31: a boot keyboard and mouse bind, use the boot layouts and que
     {
         REQUIRE(world.Requests(device, SetProtocol) == 1);
         REQUIRE(world.Requests(device, SetIdle) == 1);
-        // The boot layouts need no report descriptor.
-        REQUIRE(device->Count(0x81, GetDescriptor) == 0);
+    }
+    // The keyboard needs no report descriptor, the mouse reads its own.
+    REQUIRE(keyboard->Count(0x81, GetDescriptor) == 0);
+    REQUIRE(mouse->Count(0x81, GetDescriptor) == 1);
+    for (const auto& request : mouse->Requests())
+    {
+        if (request.request == SetProtocol)
+        {
+            REQUIRE(request.value == 1);
+        }
     }
     for (const auto& request : keyboard->Requests())
     {
@@ -346,6 +354,40 @@ TEST_CASE("hid T37: usbhid=report reads the descriptor and types through the par
     REQUIRE(Count(keys, KeyA, true) == 1);
     REQUIRE(Count(keys, KeyA, false) == 1);
     REQUIRE(Count(keys, KeyLeftShift, false) == 1);
+}
+
+TEST_CASE("hid: a boot mouse with a wheel descriptor reports the wheel by default", "[usb][hid]")
+{
+    HidRig world;
+    const Scripted mouse = MakeWheelMouse(Speed::High, true);
+    REQUIRE(world.Plug(1, mouse) != 0);
+    REQUIRE(Listing().find("hid-mouse\n") != std::string::npos);
+    REQUIRE(world.Requests(mouse, SetProtocol) == 1);
+    Input::Pointer::Reader reader = Input::Pointer::Open();
+    world.Send(mouse, {0x00, 0, 0, 2, 0});
+    REQUIRE(ReadPointer(reader) == PointerEvents{Rel(User::InputRelativeWheel, 2), PointerSync});
+}
+
+TEST_CASE("hid: a mouse with a refused descriptor falls back to boot and still moves",
+          "[usb][hid]")
+{
+    HidRig world;
+    const Scripted mouse = MakeMouse(Speed::High);
+    mouse->SetReportDescriptor(0, {0x05, 0x01, 0x09, 0x02, 0xA1, 0x01});
+    REQUIRE(world.Plug(1, mouse) != 0);
+    REQUIRE(Listing() == "1-1 dev 2 high 0627:0002 class 03/01/02 hid-mouse\n");
+    REQUIRE(world.Requests(mouse, SetProtocol) == 1);
+    for (const auto& request : mouse->Requests())
+    {
+        if (request.request == SetProtocol)
+        {
+            REQUIRE(request.value == 0);
+        }
+    }
+    Input::Pointer::Reader reader = Input::Pointer::Open();
+    world.Send(mouse, {0x01, 5, 0xFB});
+    REQUIRE(ReadPointer(reader) == PointerEvents{Button(0x110, 1), Rel(User::InputRelativeX, 5),
+                                                 Rel(User::InputRelativeY, -5), PointerSync});
 }
 
 TEST_CASE("hid: a refused report descriptor falls back to the boot protocol", "[usb][hid]")

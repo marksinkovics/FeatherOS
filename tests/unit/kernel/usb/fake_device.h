@@ -94,7 +94,7 @@ std::vector<uint8_t> ComboConfiguration();
 // One HID interface that is not a boot interface (subclass 0).
 std::vector<uint8_t> GenericKeyboardConfiguration(uint16_t report_length);
 // The same for a mouse, with eight-byte reports.
-std::vector<uint8_t> GenericMouseConfiguration(uint16_t report_length);
+std::vector<uint8_t> GenericMouseConfiguration(uint16_t report_length, bool boot_interface = false);
 std::vector<uint8_t> HubConfiguration();
 std::vector<uint8_t> MassStorageConfiguration();
 
@@ -108,7 +108,7 @@ const std::vector<uint8_t>& BootMouseDescriptor();
 std::shared_ptr<ScriptedDevice> MakeKeyboard(Speed speed, uint8_t max_packet0 = 0);
 std::shared_ptr<ScriptedDevice> MakeMouse(Speed speed, uint8_t max_packet0 = 0);
 // A report-protocol mouse: buttons, X, Y, wheel and AC Pan, one byte each after the buttons.
-std::shared_ptr<ScriptedDevice> MakeWheelMouse(Speed speed);
+std::shared_ptr<ScriptedDevice> MakeWheelMouse(Speed speed, bool boot_interface = false);
 
 } // namespace FeatherOS::Usb::Testing
 

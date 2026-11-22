@@ -69,11 +69,8 @@ def Button(button, down):
     return {"type": "btn", "data": {"button": button, "down": down}}
 
 
-def MouseSteps(wheel):
-    # QEMU's usb-mouse sends a fourth report byte for the wheel, which the
-    # boot layout the kernel selects by default does not have, so only the
-    # report parser (usbhid=report) sees it.
-    count = 9 if wheel else 7
+def MouseSteps():
+    count = 9
     steps = [
         (
             SendkeyNames(f"mousetest {count}\n"),
@@ -87,17 +84,12 @@ def MouseSteps(wheel):
             ),
         ),
     ]
-    if wheel:
-        steps.append(
-            (
-                MouseEvents(
-                    [Button("wheel-up", True), Button("wheel-up", False)]
-                ),
-                re.compile(
-                    rb"^mouse: rel wheel 1\r?\nmouse: syn\r?$", MULTILINE
-                ),
-            )
+    steps.append(
+        (
+            MouseEvents([Button("wheel-up", True), Button("wheel-up", False)]),
+            re.compile(rb"^mouse: rel wheel 1\r?\nmouse: syn\r?$", MULTILINE),
         )
+    )
     steps += [
         (
             MouseEvents([Button("left", True)]),
@@ -142,11 +134,10 @@ class UsbKeys(NormalBoot):
     mouse = "usb-mouse,bus=xhci.0,id=mouse1"
     interrupts = "MSI-X"
     speed = "high"
-    wheel = False
     passed = (
         "the USB keyboard typed text, Caps Lock, Ctrl+C and the cursor keys "
         "into the shell, and the USB mouse's moves and buttons reached "
-        "/dev/mouse"
+        "/dev/mouse, wheel included"
     )
 
     def __init__(self, args):
@@ -156,7 +147,7 @@ class UsbKeys(NormalBoot):
         self.connection = None
         self.channel = None
         self.command_id = 2
-        self.steps = [*KEY_STEPS, *MouseSteps(self.wheel), FINAL_STEP]
+        self.steps = [*KEY_STEPS, *MouseSteps(), FINAL_STEP]
         self.step = 0
         self.position = None
         self.redrawn = False
@@ -295,7 +286,6 @@ class UsbFallback(UsbKeys):
     keyboard = "usb-kbd,bus=xhci.0,id=kbd1,usb_version=1"
     mouse = "usb-mouse,bus=xhci.0,id=mouse1,usb_version=1"
     speed = "full"
-    wheel = True
     passed = (
         "typing and the mouse, wheel included, worked on full-speed devices "
         "through the report parser, with the controller's interrupts as the "
