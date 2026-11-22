@@ -10,6 +10,7 @@ from smoke.cases.base import Case
 from smoke.cases.screen import (
     HEIGHT,
     WIDTH,
+    Difference,
     Hex,
     PixelAt,
     ScreenCase,
@@ -28,12 +29,48 @@ END_LINE = b"END OF SAMPLE"
 # above 0x7F: the QMP keyboard sends scancodes for ASCII keys alone.
 ECHO_TEXT = "café ñandú ΑΩ жэ ┌─┐"
 ECHO_COMMAND = f"echo {ECHO_TEXT}\n"
+REJECTED_LINE = "fontview: font rejected length"
+UNREADABLE_LINE = "fontview: font unreadable No such file or directory"
 ECHO_OUTPUT = re.compile(
     rb"^" + re.escape(ECHO_TEXT.encode()) + rb"\r?$", re.MULTILINE
 )
 TYPED_PROMPT = re.compile(rb"^(/[^\n>]*> )echo ", re.MULTILINE)
 BLACK = 0x000000
 WHITE = 0xFFFFFF
+FONT_DIRECTORY = TOOLS.parent / "initramfs" / "fonts"
+FONT_NAMES = sorted(path.stem for path in FONT_DIRECTORY.glob("*.ffnt"))
+BAD_FONT = "/tmp/bad.ffnt"
+CARD_LINE = b"fontview: card drawn"
+# src/user/fontview.cpp's card: the ten sizes' sample line and a missing box,
+# stacked in the top half (light on dark) and again in the bottom half (dark
+# on light), the pen at x 16 and each line 4 pixels below the one before.
+CARD_FONTS = [
+    "mono-16",
+    "mono-20",
+    "mono-24",
+    "mono-32",
+    "sans-16",
+    "sans-20",
+    "sans-24",
+    "sans-32",
+    "sans-48",
+    "sans-64",
+]
+CARD_SAMPLE = "Hamburgefonstiv 0123 é"
+CARD_MISSING = ("sans-24", "Missing: \u0378")
+CARD_HALVES = ((0, 0x101820, 0xE8E8E8), (384, 0xF4F0E8, 0x182030))
+CARD_MARGIN = 16
+CARD_TOP = 8
+CARD_GAP = 4
+CHECK_COMMANDS = [
+    f"fontview --check /system/fonts/{name}.ffnt\n" for name in FONT_NAMES
+] + [
+    f"cp /system/fonts/sans-16.ffnt {BAD_FONT}\n",
+    f"echo x >> {BAD_FONT}\n",
+    f"fontview --check {BAD_FONT}\n",
+    "fontview --check /nonexistent.ffnt\n",
+    "fontview --card\n",
+]
 # The console's 8x16 cells with one cell of padding all round; row 0 is the
 # status bar.
 CELL_WIDTH = 8
@@ -92,6 +129,40 @@ def ExpectRenderedText(
                     f"{Hex(found)}, expected {Hex(expected)}"
                 )
     return None
+
+
+def CardReference():
+    """The whole card as the 1024x768 RGB bytes ffnt.py renders from the
+    committed files, laid out by the rules above and independent of
+    fontview.cpp."""
+    ffnt = LoadFfnt()
+    screen = bytearray()
+    for top, background, text in CARD_HALVES:
+        half = [background] * (WIDTH * 384)
+        lines = [(name, CARD_SAMPLE) for name in CARD_FONTS] + [CARD_MISSING]
+        y = top + CARD_TOP
+        for name, string in lines:
+            font = FontFile(name)
+            if CARD_MARGIN + ffnt.measure(font, string) > WIDTH:
+                raise RuntimeError(f"the card's {name} line is too wide")
+            box_width, box_height, box = ffnt.render_text(
+                font, string, background, text, 4
+            )
+            for row in range(box_height):
+                for column in range(box_width):
+                    pixel = box[row * box_width + column]
+                    if pixel == background:
+                        continue
+                    px = CARD_MARGIN - 4 + column
+                    py = y - 4 + row - top
+                    if 0 <= px < WIDTH and 0 <= py < 384:
+                        half[py * WIDTH + px] = pixel
+            y += font.line_height + CARD_GAP
+        if y - CARD_GAP > top + 384:
+            raise RuntimeError("the card's lines do not fit their half")
+        for pixel in half:
+            screen += bytes((pixel >> 16, (pixel >> 8) & 255, pixel & 255))
+    return bytes(screen)
 
 
 def IsC1(code_point):
@@ -197,7 +268,9 @@ class Fonts(ScreenCase, Case):
         "Cyrillic, arrows, box drawing, blocks and U+FFFD cells for invalid "
         "bytes, exactly as the reference rendering of mono-16 draws them; "
         "typed accented text and box drawing were echoed by the line editor "
-        "and printed by echo, on the screen and over serial"
+        "and printed by echo, on the screen and over serial; fontview "
+        "accepted every font file and refused one with a byte appended, "
+        "and its test card matched the reference rendering exactly"
     )
 
     def __init__(self, args):
@@ -206,13 +279,21 @@ class Fonts(ScreenCase, Case):
         self.reference = Reference()
         self.state = 0
         self.sampled = False
+        self.echoed = False
+        self.carded = False
         self.finished = False
+        self.card = None
 
     def Script(self, session):
-        return Lines(SAMPLE_COMMAND.encode()) + [
-            WaitUntil(lambda: self.sampled),
-            ECHO_COMMAND.encode(),
-        ]
+        return (
+            Lines(SAMPLE_COMMAND.encode())
+            + [
+                WaitUntil(lambda: self.sampled),
+                ECHO_COMMAND.encode(),
+                WaitUntil(lambda: self.echoed),
+            ]
+            + [command.encode() for command in CHECK_COMMANDS]
+        )
 
     def Markers(self):
         return (PANIC_MARKER.encode(),)
@@ -285,6 +366,9 @@ class Fonts(ScreenCase, Case):
             if self.failure is not None:
                 self.finished = True
             return
+        if self.state >= 2:
+            self.OnCard(clean_output)
+            return
         if self.state != 1:
             return
         printed = ECHO_OUTPUT.search(clean_output)
@@ -302,7 +386,35 @@ class Fonts(ScreenCase, Case):
             )
         except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as e:
             self.failure = f"screendump failed: {e}"
-        self.finished = True
+        self.echoed = True
+        if self.failure is not None:
+            self.finished = True
+
+    def ExpectCard(self, pixels):
+        if self.card is None:
+            self.card = CardReference()
+        return Difference(pixels, self.card)
+
+    def OnCard(self, clean_output):
+        if self.state == 2:
+            if CARD_LINE not in clean_output:
+                return
+            self.state = 3
+            try:
+                self.Step("the test card", self.ExpectCard)
+                self.Tap("esc")
+            except (
+                OSError,
+                RuntimeError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as e:
+                self.failure = f"card check failed: {e}"
+                self.finished = True
+            return
+        marker = clean_output.rfind(CARD_LINE)
+        if SHELL_PROMPT.search(clean_output, marker) is not None:
+            self.finished = True
 
     def Stop(self):
         self.CloseScreen()
@@ -338,6 +450,26 @@ class Fonts(ScreenCase, Case):
             return f"mono-16 lacks echo text characters {lacking}"
         if self.failure is not None:
             return self.failure
+        lines = result.output.replace("\r", "").split("\n")
+        for name in FONT_NAMES:
+            font = FontFile(name)
+            expected = (
+                f"fontview: font ok glyphs {len(font.glyphs)} "
+                f"line {font.line_height}"
+            )
+            if expected not in lines:
+                reported = [line for line in lines if "fontview:" in line]
+                return (
+                    f"fontview --check of {name}.ffnt gave no line "
+                    f"{expected!r}: {reported}{result.limit_note}"
+                )
+        for expected in (REJECTED_LINE, UNREADABLE_LINE):
+            if expected not in lines:
+                reported = [line for line in lines if "fontview:" in line]
+                return (
+                    f"fontview --check gave no line {expected!r}: "
+                    f"{reported}{result.limit_note}"
+                )
         if not self.finished:
             return f"the session ended early{result.limit_note}"
         if f"echo {ECHO_TEXT}" not in result.output:
