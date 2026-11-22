@@ -2,6 +2,9 @@
 
 #include "kernel/arch/interrupts.h"
 #include "kernel/time/timer.h"
+#include "user/text/utf8.h"
+
+#include <stddef.h>
 
 namespace FeatherOS::Terminals
 {
@@ -36,6 +39,81 @@ public:
 
 private:
     uint64_t state;
+};
+
+// The line a canonical read is editing, as bytes. Each unit (a UTF-8 sequence, or the bytes a
+// display draws as one U+FFFD) is one cell, so erase removes one and calls erase_character once.
+class LineBuffer
+{
+public:
+    LineBuffer(const Device* device, char* buffer, size_t capacity, bool echo)
+        : m_device(device), m_buffer(buffer), m_capacity(capacity), m_echo(echo)
+    {
+        Clear();
+    }
+
+    size_t Length() const
+    {
+        return m_length;
+    }
+
+    void Clear()
+    {
+        m_length = 0;
+        m_buffer[0] = '\0';
+    }
+
+    // A unit that does not fit whole is dropped, so the line never ends inside a sequence. Invalid
+    // bytes that would join the ones before them into a sequence are dropped too: the screen
+    // shows a cell for each, and the line must hold as many.
+    void Add(const Text::Utf8Unit& unit)
+    {
+        if (m_length + unit.length > m_capacity - 1)
+        {
+            return;
+        }
+        const size_t cells = unit.valid ? 0 : Text::CellCount(m_buffer, m_length);
+        for (size_t index = 0; index < unit.length; ++index)
+        {
+            m_buffer[m_length + index] = static_cast<char>(unit.bytes[index]);
+        }
+        if (!unit.valid && Text::CellCount(m_buffer, m_length + unit.length) != cells + 1)
+        {
+            m_buffer[m_length] = '\0';
+            return;
+        }
+        m_length += unit.length;
+        m_buffer[m_length] = '\0';
+        if (m_echo)
+        {
+            // The raw bytes of an invalid unit would leave the display waiting for more.
+            static constexpr char Replacement[] = "\xEF\xBF\xBD";
+            m_device->write(m_device->context,
+                            unit.valid ? m_buffer + m_length - unit.length : Replacement,
+                            unit.valid ? unit.length : sizeof(Replacement) - 1);
+        }
+    }
+
+    void Erase()
+    {
+        if (m_length == 0)
+        {
+            return;
+        }
+        m_length = Text::PreviousBoundary(m_buffer, m_length, m_length);
+        m_buffer[m_length] = '\0';
+        if (m_echo)
+        {
+            m_device->erase_character(m_device->context);
+        }
+    }
+
+private:
+    const Device* m_device;
+    char* m_buffer;
+    size_t m_capacity;
+    bool m_echo;
+    size_t m_length = 0;
 };
 
 } // namespace
@@ -152,7 +230,7 @@ uint64_t Terminal::Write(const char* text, size_t length)
         {
             continue;
         }
-        chunk[used++] = byte == '\t' ? ' ' : byte > 0x7E ? '?' : static_cast<char>(byte);
+        chunk[used++] = byte == '\t' ? ' ' : byte == 0x7F ? '?' : static_cast<char>(byte);
         if (used == sizeof(chunk))
         {
             failure = Output(chunk, used);
@@ -323,6 +401,14 @@ uint64_t Terminal::ForegroundGroup()
 {
     Sync::SpinLockGuard guard(lock);
     return foreground_group;
+}
+
+void Terminal::SignalForeground(int signal)
+{
+    if (process_hooks.interrupt_group != nullptr)
+    {
+        process_hooks.interrupt_group(ForegroundGroup(), signal);
+    }
 }
 
 void Terminal::SetForegroundGroup(uint64_t group)
@@ -543,12 +629,46 @@ bool Terminal::EditLine(const char* prompt, char* buffer, size_t capacity, size_
 {
     ShowPrompt(prompt);
     const bool echo = (Settings().flags & User::TerminalEcho) != 0;
-    size_t length = 0;
-    buffer[0] = '\0';
+    LineBuffer edited(device, buffer, capacity, echo);
     const InterruptsEnabled interrupts;
     SequenceState sequence = SequenceState::None;
+    Text::Utf8Units units;
     bool line_complete = false;
     bool interrupted = false;
+    const auto apply = [&](const Text::Utf8Unit& unit)
+    {
+        if (!unit.valid || unit.length != 1)
+        {
+            edited.Add(unit);
+            return;
+        }
+        const char byte = static_cast<char>(unit.bytes[0]);
+        if (byte == InterruptByte)
+        {
+            // Nothing to terminate, so Ctrl+C only discards the line.
+            device->set_cursor_visible(device->context, false);
+            device->write(device->context, "^C\n", 3);
+            edited.Clear();
+            ShowPrompt(prompt);
+        }
+        else if (byte >= 0x20 && byte <= 0x7E)
+        {
+            edited.Add(unit);
+        }
+        else if (byte == '\x7f' || byte == '\b')
+        {
+            edited.Erase();
+        }
+        else if (byte == '\r' || byte == '\n')
+        {
+            device->set_cursor_visible(device->context, false);
+            if (echo)
+            {
+                device->write(device->context, "\n", 1);
+            }
+            line_complete = true;
+        }
+    };
     while (!line_complete && !interrupted)
     {
         Poll();
@@ -557,51 +677,24 @@ bool Terminal::EditLine(const char* prompt, char* buffer, size_t capacity, size_
         // Stop at Enter so input typed ahead stays queued for the next reader.
         while (!line_complete && !interrupted && TryReadByte(&byte))
         {
+            if (byte == '\x1b')
+            {
+                Text::Utf8Unit tail;
+                if (units.Finish(&tail) != 0)
+                {
+                    apply(tail);
+                }
+            }
             if (SkipSequence(&sequence, byte))
             {
                 continue;
             }
-            if (byte == InterruptByte)
+            Text::Utf8Unit finished[Text::Utf8Units::MaximumUnits];
+            const size_t count = units.Push(static_cast<uint8_t>(byte), finished);
+            for (size_t index = 0;
+                 index < count && index < Text::Utf8Units::MaximumUnits && !line_complete; ++index)
             {
-                // Nothing to terminate, so Ctrl+C only discards the line.
-                device->set_cursor_visible(device->context, false);
-                device->write(device->context, "^C\n", 3);
-                length = 0;
-                buffer[0] = '\0';
-                ShowPrompt(prompt);
-                continue;
-            }
-            if (byte >= 0x20 && byte <= 0x7E)
-            {
-                if (length < capacity - 1)
-                {
-                    buffer[length++] = byte;
-                    buffer[length] = '\0';
-                    if (echo)
-                    {
-                        device->write(device->context, &byte, 1);
-                    }
-                }
-            }
-            else if (byte == '\x7f' || byte == '\b')
-            {
-                if (length > 0)
-                {
-                    buffer[--length] = '\0';
-                    if (echo)
-                    {
-                        device->erase_character(device->context);
-                    }
-                }
-            }
-            else if (byte == '\r' || byte == '\n')
-            {
-                device->set_cursor_visible(device->context, false);
-                if (echo)
-                {
-                    device->write(device->context, "\n", 1);
-                }
-                line_complete = true;
+                apply(finished[index]);
             }
         }
         if (!line_complete && !interrupted)
@@ -610,7 +703,7 @@ bool Terminal::EditLine(const char* prompt, char* buffer, size_t capacity, size_
             interrupted = CallerInterrupted() || HungUp();
         }
     }
-    *line_length = length;
+    *line_length = edited.Length();
     return line_complete;
 }
 

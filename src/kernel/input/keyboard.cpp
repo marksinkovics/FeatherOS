@@ -75,6 +75,46 @@ char Keyboard::Character(uint16_t code) const
     return character;
 }
 
+KeyTransition Keyboard::Track(uint16_t code, bool pressed)
+{
+    if (code >= TrackedKeys)
+    {
+        return KeyTransition::None;
+    }
+    uint64_t& word = m_held[code / 64];
+    const uint64_t bit = uint64_t{1} << (code % 64);
+    const bool held = (word & bit) != 0;
+    if (pressed)
+    {
+        word |= bit;
+        return held ? KeyTransition::Repeat : KeyTransition::Press;
+    }
+    word &= ~bit;
+    return held ? KeyTransition::Release : KeyTransition::None;
+}
+
+uint8_t Keyboard::Modifiers() const
+{
+    uint8_t modifiers = 0;
+    if (m_left_shift || m_right_shift)
+    {
+        modifiers |= Modifier::Shift;
+    }
+    if (m_left_control || m_right_control)
+    {
+        modifiers |= Modifier::Control;
+    }
+    if (m_left_alt || m_right_alt)
+    {
+        modifiers |= Modifier::Alt;
+    }
+    if (m_caps_lock)
+    {
+        modifiers |= Modifier::CapsLock;
+    }
+    return modifiers;
+}
+
 size_t Keyboard::Press(uint16_t code, bool pressed, char (&bytes)[MaximumKeyBytes])
 {
     switch (code)

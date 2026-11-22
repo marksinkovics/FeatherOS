@@ -14,3 +14,5 @@ deps/stivale
 .DS_Store
 __pycache__
 .claude/scheduled_tasks.lock
+# The font generator's virtual environment (tools/fonts/requirements.txt)
+tools/fonts/.venv

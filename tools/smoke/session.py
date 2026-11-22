@@ -135,6 +135,8 @@ def Run(command, case, arch, session_path):
                 fresh_seen = None
                 if isinstance(line, TypeWhen):
                     Type(process, line.keys)
+                elif pending_lines and pending_lines[0] in CONTROL_KEYS:
+                    control_due = time.monotonic()
             # A whole line at a time: QEMU takes bytes from the pipe only as
             # fast as the guest's UART has room, and a prompt asks for each.
             while (

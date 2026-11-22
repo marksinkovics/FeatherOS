@@ -709,6 +709,209 @@ TEST_CASE("/dev/ttyN opens a virtual console's terminal")
             std::vector<std::string>{"null", "zero", "random", "tty", "ptmx", "pts/"});
 }
 
+namespace
+{
+
+int framebuffer_releases = 0;
+const void* last_released = nullptr;
+
+void CountRelease(const void* owner)
+{
+    ++framebuffer_releases;
+    last_released = owner;
+}
+
+struct FramebufferDevice
+{
+    FramebufferDevice()
+    {
+        framebuffer_releases = 0;
+        last_released = nullptr;
+        FeatherOS::Devices::SetFramebuffer(true);
+        FeatherOS::Files::SetFramebufferRelease(CountRelease);
+    }
+    ~FramebufferDevice()
+    {
+        FeatherOS::Devices::SetFramebuffer(false);
+        FeatherOS::Files::SetFramebufferRelease(nullptr);
+    }
+    FramebufferDevice(const FramebufferDevice&) = delete;
+    FramebufferDevice& operator=(const FramebufferDevice&) = delete;
+};
+
+} // namespace
+
+TEST_CASE("/dev/fb0 exists only with a framebuffer, and is listed before the consoles")
+{
+    FeatherOS::Files::Table table{};
+    REQUIRE(FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead | OpenWrite) ==
+            FeatherOS::User::SyscallErrorNotFound);
+    {
+        TestTerminalDevice device;
+        FeatherOS::Terminals::Terminal first(device.Device());
+        FeatherOS::Terminals::Terminal second(device.Device());
+        FeatherOS::Terminals::Terminal* const consoles[] = {&first, &second};
+        FeatherOS::Devices::SetConsoles(consoles, 2);
+        const FramebufferDevice framebuffer;
+        REQUIRE(List("/dev") == std::vector<std::string>{"null", "zero", "random", "tty", "ptmx",
+                                                         "fb0", "tty1", "tty2", "pts/"});
+        const uint64_t opened = FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead);
+        REQUIRE_FALSE(FeatherOS::User::IsSyscallError(opened));
+        REQUIRE(FeatherOS::Files::KindOf(&table, opened) == FeatherOS::Files::Kind::Framebuffer);
+        FeatherOS::Terminals::Terminal* found = nullptr;
+        REQUIRE(FeatherOS::Files::FindTerminal(&table, opened, &found) ==
+                FeatherOS::User::SyscallErrorNotTerminal);
+        const uint64_t terminal = FeatherOS::Files::Open(&table, "/dev/tty2", OpenRead);
+        REQUIRE(FeatherOS::Files::KindOf(&table, terminal) == FeatherOS::Files::Kind::Terminal);
+        FeatherOS::Files::CloseAll(&table);
+        FeatherOS::Devices::SetConsoles(nullptr, 0);
+    }
+    REQUIRE(List("/dev") ==
+            std::vector<std::string>{"null", "zero", "random", "tty", "ptmx", "pts/"});
+    REQUIRE(FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead) ==
+            FeatherOS::User::SyscallErrorNotFound);
+}
+
+TEST_CASE("the framebuffer's open file releases once, when its last reference goes")
+{
+    const FramebufferDevice framebuffer;
+    FeatherOS::Files::Table table{};
+    REQUIRE(FeatherOS::Files::OpenConsole(&table, nullptr));
+    const uint64_t first = FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead | OpenWrite);
+    REQUIRE_FALSE(FeatherOS::User::IsSyscallError(first));
+    REQUIRE((FeatherOS::Files::DescriptorFlags(&table, first, false, 0) &
+             FeatherOS::User::DescriptorCloseOnExec) != 0);
+
+    const uint64_t second = FeatherOS::Files::Duplicate(&table, first, 0, 0);
+    REQUIRE_FALSE(FeatherOS::User::IsSyscallError(second));
+    REQUIRE(FeatherOS::Files::Close(&table, first) == 0);
+    REQUIRE(framebuffer_releases == 0);
+    const void* owner = nullptr;
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, second, &owner) == 0);
+    REQUIRE(owner != nullptr);
+    REQUIRE(FeatherOS::Files::Close(&table, second) == 0);
+    REQUIRE(framebuffer_releases == 0);
+    FeatherOS::Files::DropFramebuffer(owner);
+    REQUIRE(framebuffer_releases == 1);
+    REQUIRE(last_released == owner);
+
+    const uint64_t third = FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead);
+    const uint64_t fourth = FeatherOS::Files::Duplicate(&table, third, 0, 0);
+    const uint64_t fifth = FeatherOS::Files::Duplicate(&table, third, 0, 0);
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, fifth, &owner) == 0);
+    REQUIRE(FeatherOS::Files::Close(&table, fourth) == 0);
+    FeatherOS::Files::DropFramebuffer(owner);
+    REQUIRE(framebuffer_releases == 1);
+    FeatherOS::Files::CloseAll(&table);
+    REQUIRE(framebuffer_releases == 2);
+    REQUIRE(last_released == owner);
+}
+
+TEST_CASE("a duplicate that replaces the last descriptor of a framebuffer file releases it")
+{
+    const FramebufferDevice framebuffer;
+    FeatherOS::Files::Table table{};
+    REQUIRE(FeatherOS::Files::OpenConsole(&table, nullptr));
+    const uint64_t opened = FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead);
+    REQUIRE(FeatherOS::Files::Duplicate(&table, 1, opened, FeatherOS::User::DuplicateExact) ==
+            opened);
+    REQUIRE(framebuffer_releases == 1);
+    FeatherOS::Files::CloseAll(&table);
+    REQUIRE(framebuffer_releases == 1);
+}
+
+TEST_CASE("a child never inherits the framebuffer's file, even without close-on-exec")
+{
+    const FramebufferDevice framebuffer;
+    FeatherOS::Files::Table table{};
+    REQUIRE(FeatherOS::Files::OpenConsole(&table, nullptr));
+    const uint64_t opened = FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead);
+    REQUIRE(FeatherOS::Files::DescriptorFlags(&table, opened, true, 0) == 0);
+    const uint64_t file = FeatherOS::Files::Open(&table, "/tmp/fb-file.txt", OpenRead | OpenWrite | OpenCreate);
+    REQUIRE_FALSE(FeatherOS::User::IsSyscallError(file));
+
+    FeatherOS::Files::Table child{};
+    REQUIRE(FeatherOS::Files::Inherit(&child, &table));
+    REQUIRE(FeatherOS::Files::KindOf(&child, opened) == FeatherOS::Files::Kind::None);
+    REQUIRE(FeatherOS::Files::KindOf(&child, file) == FeatherOS::Files::Kind::File);
+    FeatherOS::Files::CloseAll(&child);
+    REQUIRE(framebuffer_releases == 0);
+    FeatherOS::Files::CloseAll(&table);
+    REQUIRE(framebuffer_releases == 1);
+    REQUIRE(FeatherOS::Files::Remove("/tmp/fb-file.txt") == 0);
+}
+
+TEST_CASE("the framebuffer's file cannot be read, written or sought, and is a character device")
+{
+    const FramebufferDevice framebuffer;
+    FeatherOS::Files::Table table{};
+    REQUIRE(FeatherOS::Files::OpenConsole(&table, nullptr));
+    const uint64_t opened = FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead | OpenWrite);
+    char buffer[8];
+    REQUIRE(FeatherOS::Files::Read(&table, opened, buffer, sizeof(buffer)) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Write(&table, opened, buffer, sizeof(buffer)) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    REQUIRE(FeatherOS::Files::Seek(&table, opened, 0, FeatherOS::User::SeekFromStart) ==
+            FeatherOS::User::SyscallErrorNotSeekable);
+    REQUIRE(FeatherOS::Files::PollEvents(&table, opened) == 0);
+    FeatherOS::User::FileStatus status{};
+    REQUIRE(FeatherOS::Files::StatDescriptor(&table, opened, &status) == 0);
+    REQUIRE((status.mode & FeatherOS::User::ModeTypeMask) == FeatherOS::User::ModeCharacterDevice);
+    REQUIRE(status.type == FeatherOS::User::FileType::Device);
+
+    const void* owner = nullptr;
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, 1, &owner) ==
+            FeatherOS::User::SyscallErrorNotTerminal);
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, 99, &owner) ==
+            FeatherOS::User::SyscallErrorBadDescriptor);
+    const uint64_t file = FeatherOS::Files::Open(&table, "/tmp/fb-file.txt", OpenRead | OpenWrite | OpenCreate);
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, file, &owner) ==
+            FeatherOS::User::SyscallErrorNotTerminal);
+    FeatherOS::Files::CloseAll(&table);
+    REQUIRE(framebuffer_releases == 1);
+    REQUIRE(FeatherOS::Files::Remove("/tmp/fb-file.txt") == 0);
+}
+
+TEST_CASE("the framebuffer's file honors O_NONBLOCK from open and from F_SETFL, and reports it")
+{
+    const FramebufferDevice framebuffer;
+    FeatherOS::Files::Table table{};
+    REQUIRE(FeatherOS::Files::OpenConsole(&table, nullptr));
+    constexpr uint64_t NonBlocking = FeatherOS::User::OpenNonBlocking;
+    const uint64_t plain = FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead | OpenWrite);
+    const uint64_t flagged =
+        FeatherOS::Files::Open(&table, "/dev/fb0", OpenRead | OpenWrite | NonBlocking);
+    REQUIRE_FALSE(FeatherOS::User::IsSyscallError(plain));
+    REQUIRE_FALSE(FeatherOS::User::IsSyscallError(flagged));
+    REQUIRE((FeatherOS::Files::StatusFlags(&table, plain, false, 0) & NonBlocking) == 0);
+    REQUIRE((FeatherOS::Files::StatusFlags(&table, flagged, false, 0) & NonBlocking) != 0);
+
+    const void* owner = nullptr;
+    bool nonblocking = true;
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, plain, &owner, &nonblocking) == 0);
+    REQUIRE_FALSE(nonblocking);
+    FeatherOS::Files::DropFramebuffer(owner);
+
+    const uint64_t flags = FeatherOS::Files::StatusFlags(&table, plain, false, 0);
+    REQUIRE((FeatherOS::Files::StatusFlags(&table, plain, true, flags | NonBlocking) &
+             NonBlocking) != 0);
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, plain, &owner, &nonblocking) == 0);
+    REQUIRE(nonblocking);
+    FeatherOS::Files::DropFramebuffer(owner);
+    REQUIRE((FeatherOS::Files::StatusFlags(&table, plain, true, flags) & NonBlocking) == 0);
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, plain, &owner, &nonblocking) == 0);
+    REQUIRE_FALSE(nonblocking);
+    FeatherOS::Files::DropFramebuffer(owner);
+
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, flagged, &owner, &nonblocking) == 0);
+    REQUIRE(nonblocking);
+    FeatherOS::Files::DropFramebuffer(owner);
+    REQUIRE(FeatherOS::Files::HoldFramebuffer(&table, flagged, &owner) == 0);
+    FeatherOS::Files::DropFramebuffer(owner);
+    FeatherOS::Files::CloseAll(&table);
+}
+
 TEST_CASE("/proc lists processes and generates their status and meminfo")
 {
     UseFakeProcesses();

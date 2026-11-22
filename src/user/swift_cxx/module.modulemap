@@ -10,3 +10,26 @@ module CxxInterop {
     requires cplusplus
     export *
 }
+
+module FeatherGraphics {
+    header "../text/font_data.h"
+    header "../graphics/dirty_region.h"
+    header "../graphics/font.h"
+    header "../graphics/surface.h"
+    header "../graphics/display.h"
+    header "../graphics/tile_sheet.h"
+    requires cplusplus
+    export *
+}
+
+module WickdeepArt {
+    header "../wickdeep/art.h"
+    requires cplusplus
+    export *
+}
+
+module GfxCheck {
+    header "../gfx_check.h"
+    requires cplusplus
+    export *
+}

@@ -42,6 +42,7 @@ add_executable(featheros_unit_tests
     kernel/filesystem/virtual_files_tests.cpp
     kernel/elf/elf_loader_tests.cpp
     kernel/framebuffer/framebuffer_tests.cpp
+    kernel/framebuffer/graphics_mode_tests.cpp
     kernel/input/input_tests.cpp
     kernel/network/address_tests.cpp
     kernel/network/arp_tests.cpp
@@ -91,6 +92,13 @@ add_executable(featheros_unit_tests
     kernel/time/calendar_tests.cpp
     kernel/time/wall_clock_tests.cpp
     kernel/string/format_tests.cpp
+    support/font_builder.cpp
+    user/font_data_tests.cpp
+    user/font_tests.cpp
+    user/graphics_tests.cpp
+    user/tile_sheet_tests.cpp
+    user/utf8_tests.cpp
+    user/wickdeep_art_tests.cpp
     libc/address_text_tests.cpp
     libc/dns_message_tests.cpp
     libc/environment_table_tests.cpp
@@ -154,8 +162,9 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/filesystem/type_registry.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/vfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/elf/elf_loader.cpp"
-    "${FEATHEROS_ROOT}/src/kernel/framebuffer/font.c"
+    "${FEATHEROS_ROOT}/src/kernel/framebuffer/console_font.c"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/framebuffer.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/framebuffer/graphics_mode.cpp"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/term.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/input.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/keyboard.cpp"
@@ -212,14 +221,24 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/user/command_line.cpp"
     "${FEATHEROS_ROOT}/src/user/dhcp_lease.cpp"
     "${FEATHEROS_ROOT}/src/user/dhcp_message.cpp"
+    "${FEATHEROS_ROOT}/src/user/gfx_check.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/dirty_region.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/display.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/font.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/font_console.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/surface.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/tile_sheet.cpp"
     "${FEATHEROS_ROOT}/src/user/http_message.cpp"
     "${FEATHEROS_ROOT}/src/user/init_config.cpp"
     "${FEATHEROS_ROOT}/src/user/key_decoder.cpp"
     "${FEATHEROS_ROOT}/src/user/line_editor.cpp"
     "${FEATHEROS_ROOT}/src/user/ntp_message.cpp"
     "${FEATHEROS_ROOT}/src/user/process_table.cpp"
+    "${FEATHEROS_ROOT}/src/user/text/font_data.cpp"
+    "${FEATHEROS_ROOT}/src/user/text/utf8.cpp"
     "${FEATHEROS_ROOT}/src/user/text_tools.cpp"
     "${FEATHEROS_ROOT}/src/user/vi_editor.cpp"
+    "${FEATHEROS_ROOT}/src/user/wickdeep/art.cpp"
     "${FEATHEROS_ROOT}/src/kernel/klogger.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/page_allocator.cpp"
@@ -242,7 +261,9 @@ target_compile_features(featheros_unit_tests PRIVATE cxx_std_23)
 # FeatherOS's C++ library is tested in a namespace of its own, beside the host's std, and with
 # the warnings its usual place as a system include directory hides.
 target_compile_definitions(featheros_unit_tests PRIVATE FEATHEROS_HOST_TEST
-    FEATHEROS_STD_NAMESPACE=featheros_std)
+    FEATHEROS_STD_NAMESPACE=featheros_std
+    FEATHEROS_FONT_DIRECTORY="${FEATHEROS_ROOT}/initramfs/fonts"
+    FEATHEROS_FONT_REFERENCE="${CMAKE_CURRENT_SOURCE_DIR}/user/data/font_reference.txt")
 set_source_files_properties(libcxx/algorithm_tests.cpp libcxx/array_span_tests.cpp
     libcxx/atomic_tests.cpp libcxx/charconv_tests.cpp libcxx/chrono_tests.cpp libcxx/deque_tests.cpp
     libcxx/map_set_tests.cpp libcxx/string_tests.cpp libcxx/unordered_tests.cpp
@@ -284,6 +305,13 @@ if (FEATHERDISK_E2FSCK)
 endif ()
 
 catch_discover_tests(featheros_unit_tests)
+
+# The committed fonts: their checksums and files, and byte-identical regeneration, which needs
+# freetype-py (tools/fonts/requirements.txt) and is skipped without it.
+add_test(NAME fonts.files COMMAND python3 "${FEATHEROS_ROOT}/tools/fonts/check.py")
+add_test(NAME fonts.reproducible
+    COMMAND python3 "${FEATHEROS_ROOT}/tools/fonts/generate.py" --check)
+set_tests_properties(fonts.reproducible PROPERTIES SKIP_RETURN_CODE 77)
 # The Swift programs' host-testable parts, as one host executable per program built with the
 # toolchain's own standard library rather than Embedded Swift. Skipped without a Swift toolchain.
 set(FEATHEROS_SWIFTC "" CACHE FILEPATH "swiftc from a swift.org toolchain, for the Swift tests")

@@ -65,6 +65,10 @@ void InitializeDisplay(KLogger& logger, limine_framebuffer* framebuffer_response
         logger.AttachTerminal(&terms[0]);
         display_ready = true;
         logger.Info("Framebuffer console initialized");
+        if (Term::FontStatus() != Text::FontStatus::Ok)
+        {
+            logger.Warning("Console font rejected, cells draw as missing boxes");
+        }
     }
     else
     {
@@ -454,7 +458,7 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     {
         logger.Warning("Keyboard device unavailable; use serial input");
     }
-    Console::Initialize(display_ready ? terms : nullptr);
+    Console::Initialize(display_ready ? terms : nullptr, display_ready ? &framebuffer : nullptr);
 #if defined(FEATHEROS_KERNEL_TESTS)
     if (KernelTest::Selected(KernelTest::Mode::Input))
     {

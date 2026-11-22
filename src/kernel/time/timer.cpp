@@ -113,6 +113,11 @@ uint32_t TicksPerSecond()
     return ticks_per_second;
 }
 
+uint64_t UptimeMilliseconds()
+{
+    return ticks_per_second == 0 ? 0 : ticks * 1000 / ticks_per_second;
+}
+
 uint64_t CpuTickCount(uint32_t cpu_index)
 {
     return cpu_index < Cpu::MaximumCpus ? cpu_ticks[cpu_index] : 0;

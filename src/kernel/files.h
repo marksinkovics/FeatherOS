@@ -46,6 +46,9 @@ enum class Kind : uint8_t
     Socket,
     // A pseudo-terminal's master; its slave is a Terminal.
     PseudoTerminalMaster,
+    // /dev/fb0: only DeviceControl uses it, which makes it a console's owner. It is always
+    // close-on-exec and never inherited, so one process at most refers to it.
+    Framebuffer,
 };
 
 struct Slot
@@ -74,7 +77,8 @@ struct Table
 // Puts the console, whose terminal is console, at descriptors 0, 1, and 2, and gives the table the
 // default limits. False if the table could not be allocated.
 bool OpenConsole(Table* table, Terminals::Terminal* console);
-// Gives child every descriptor of parent that is not close-on-exec, and parent's limits. False,
+// Gives child every descriptor of parent that is not close-on-exec, and parent's limits, except
+// Framebuffer ones. False,
 // with child empty and nothing shared, if the child's table could not be allocated.
 bool Inherit(Table* child, const Table* parent);
 // Stores the table's limits in previous and then, if requested is not null, sets them:
@@ -82,6 +86,17 @@ bool Inherit(Table* child, const Table* parent);
 // User::MaximumDescriptorLimit.
 uint64_t DescriptorLimits(Table* table, const User::ResourceLimits* requested,
                           User::ResourceLimits* previous);
+// Called, with the open file as its identity, when the last descriptor of a Framebuffer file
+// closes, to end its ownership of a console. Without one, closing does nothing more.
+using FramebufferRelease = void (*)(const void* owner);
+void SetFramebufferRelease(FramebufferRelease release);
+// The open file behind a Framebuffer descriptor, which stays open until DropFramebuffer even if a
+// thread closes the descriptor meanwhile. SyscallErrorBadDescriptor, or SyscallErrorNotTerminal
+// for another kind. nonblocking, if not null, receives whether the file is O_NONBLOCK.
+uint64_t HoldFramebuffer(Table* table, uint64_t descriptor, const void** owner,
+                         bool* nonblocking = nullptr);
+// Ends a hold; the last reference runs the release hook.
+void DropFramebuffer(const void* owner);
 // Reads and writes on terminals go through the process instead of this table.
 Kind KindOf(const Table* table, uint64_t descriptor);
 // "/dev/tty" opens controlling_terminal, or fails with SyscallErrorNoDevice if it is null.

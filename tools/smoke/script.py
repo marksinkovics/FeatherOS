@@ -4,6 +4,7 @@
 CONTROL_C = b"\x03"
 CONTROL_Z = b"\x1a"
 # Ctrl+C for a command that shows no prompt of its own, sent while it runs.
+# After a WaitFor it is sent at once, else shortly after the command's echo.
 INTERRUPT_RUNNING = object()
 # Ctrl+Z, sent the same way.
 SUSPEND_RUNNING = object()
@@ -24,10 +25,9 @@ class WaitFor:
     """Holds back the lines after it until text appears, for a background
     program that reports on its own."""
 
-    fresh = False
-
-    def __init__(self, text):
+    def __init__(self, text, fresh=False):
         self.text = text.encode()
+        self.fresh = fresh
 
 
 class WaitUntil:

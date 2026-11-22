@@ -87,9 +87,9 @@ Moved out of M11 to keep it focused; each can come back as a milestone of its ow
 
 - **Graphical desktop:** windowing and user-facing graphics on top of the framebuffer and input systems.
   - **Terminal windows,** as on macOS: a user-space terminal program per window holds a pty master (M23), parses VT100 with the code moved out of the kernel's `term.cpp`, and draws into its window, so several shells run side by side. The kernel keeps only a minimal console for boot messages and panics.
-- **Framebuffer API for user programs,** with double buffering and a mouse cursor, once a USB or PS/2 mouse is supported.
+- **Mouse cursor for user graphics,** once a USB or PS/2 mouse is supported (the framebuffer API itself is M32).
 - **Image viewer:** BMP first, then PNG with our own DEFLATE decompressor.
-- **Games:** snake, tetris, and a Wolfenstein-style raycaster.
+- **Games:** snake and a raycaster (a falling-block puzzle is M32), and a port of doomgeneric once M32's framebuffer API exists.
 - **Sound:** Intel HDA or virtio-sound, a WAV player, and a `beep` command.
 
 ## Security

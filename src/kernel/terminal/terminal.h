@@ -107,10 +107,10 @@ public:
     // Returns once the input queue has room, or the task was woken, such as by a signal.
     void WaitForRoom();
     bool HasRoom();
-    // Prints printable ASCII and newlines. Escape sequences, \r and \b pass through. Tab prints
-    // as a space, bytes above 0x7F as '?', and other control bytes are dropped. Returns how many
-    // bytes of text it took, or the device's error if it took none; SyscallErrorInputOutput once
-    // hung up.
+    // Prints text and newlines. Escape sequences, \r and \b pass through, and so do the bytes
+    // above 0x7F, which the display decodes as UTF-8. Tab prints as a space, DEL as '?', and
+    // other control bytes are dropped. Returns how many bytes of text it took, or the device's
+    // error if it took none; SyscallErrorInputOutput once hung up.
     uint64_t Write(const char* text, size_t length);
     // For output that bypassed Write, such as kernel messages: wakes readers watching for it.
     void NotifyOutput();
@@ -143,6 +143,9 @@ public:
     void SetForegroundGroup(uint64_t group);
     // True for AnyGroup.
     bool InForeground(uint64_t group);
+    // Sends signal to the foreground group whatever the terminal's modes, and echoes nothing, for
+    // a key that never reaches the terminal. May run in interrupt context.
+    void SignalForeground(int signal);
 
     // The session this is the controlling terminal of, or zero.
     uint64_t Session();

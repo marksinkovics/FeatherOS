@@ -52,3 +52,22 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 5373130 | M30 P6 s3 kernel frames, sizing, reclaim, device counters | opus | sonnet | 0 | 2/2 | |
 | 2436d5d | M30 P6 s4 CoreDriver over CachedDevice, overlap, Cached in meminfo | opus | sonnet | 0 | 4/4 | |
 | 3fb3914 | M30 P6 s5 QEMU page-cache hit and reclaim checks, docs | opus | sonnet | 0 | 2/2 | |
+| 117a4bf | M32 P1 s1 /dev/fb0, syscall 73, graphics mode, fbtest | opus | sonnet | 0 | 3/3 | |
+| 1eaa268 | M32 P1 s2 fbdemo, GRAPHICS_TEST screendumps | - | sonnet | 0 | 1/1 (after widening checks) | |
+| 9d1091c | M32 P2 s1 key events: held keys, queue, read/poll, Ctrl+C | opus | sonnet | 0 | 3/3 | |
+| 87a1cad | M32 P2 s2 fbdemo --keys, QMP key checks | - | sonnet | 0 | 1/1 | |
+| 632727b | M32 P3 graphics library, fbdemo on it, Swift gfxcheck | - | sonnet | 0 | - | |
+| 79e74e6 | M32 P4 featherfall rules, selftest, demo | - | sonnet | 0 | 2/2 | |
+| a764ca4 | M32 P5 playable featherfall, high scores, played GRAPHICS check | - | sonnet | 0 | 1/1 | |
+| 38f5ea4 | M33 P1 tile layer, BlitPart, TileSheet | - | sonnet | 0 | - | |
+| 0bed505 | M33 P2 wickdeep floors, sight, DUNGEON mode | - | sonnet | 0 | 2/2 (connectivity via pinned values) | |
+| e3bd253 | M33 P3 monsters, combat, items, full bot | - | sonnet | 0 | 2/2 | |
+| 432ed22 | M33 P4 saves, hall of runs, --check-save | - | sonnet | 0 | 2/2 | |
+| 0575364 | M33 P5 playable wickdeep, tiles, played DUNGEON check | - | sonnet | 0 | 1/1 | DUNGEON harness walk race, fixed with M34 P3 |
+| 5c41d22 | M34 P1 FFNT format, generator, committed fonts, parser | opus | sonnet | 0 | 4/4 | |
+| 50e8304 | M34 P2 Font, anti-aliased DrawText, sans U+FFFD, gfxcheck | opus | sonnet | 1 | 5/6 (one equivalent) | |
+| d4fad81 | M34 P3 UTF-8 console, anti-aliased mono-16, FONTS mode | opus | sonnet | 1 | 7/8 (one equivalent) | |
+| aaf4ffa | M34 P4 UTF-8 in canonical mode, key decoder, line editor | opus | sonnet | 1 | 3/3 | |
+| 1192924 | M34 P5 programs on the new fonts, scale API and font.c gone | opus | sonnet | 0 | 3/3 (two needed new checks) | |
+| ef163ed | M34 P6 fontview, test card, final docs | opus | sonnet | 0 | 2/2 | |
+| 2c2aea9 | Shell smoke: wait for every pipeline stage before Ctrl+C/Ctrl+Z | - | sonnet | 0 | not run | |

@@ -9,7 +9,7 @@ The user clears the conversation between steps, so these docs are the handover. 
 
 ## 1. Check it is really done
 
-- Tests for the work pass on **both** architectures at the level the cadence asks for: unit tests and the affected smoke mode for a step, the full matrix (`tools/check.sh --matrix` or `./build.sh test-all`) for a part or milestone. If something was not run, say so and do not mark it done.
+- Tests for the work pass on **both** architectures at the level the cadence asks for: unit tests and the affected smoke mode for a step, the full matrix (`tools/check.sh --matrix` or `./build.sh test-all`) for a part that changes shared code (kernel, libc, the build, the disk image or the test harness) and for every finished milestone. If something was not run, say so and do not mark it done.
 - `bash tools/quality.sh check` passes.
 - Any limitation left behind is written down (step 4) and not lost.
 

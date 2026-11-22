@@ -939,6 +939,8 @@ int main(int argc, char** argv)
                  "mkdir <dir>, rmdir <dir>, ln [-s] <target> <link>, readlink [-f] <path>, "
                  "mount [-t type source target], umount <target>, sync, "
                  "env, kill [-signal] <pid>, ps, keys, clear, "
+                 "fbdemo [--keys] [seconds], fontview [name|--card|--check path], featherfall "
+                 "[--seed N], wickdeep [--seed N], "
                  "vi [file], script [-c command] [file], stty, ping [-6] [-c count] <host>, "
                  "host [-4|-6] <name>, net, dhcp, "
                  "top [-n "

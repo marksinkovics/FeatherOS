@@ -1,0 +1,77 @@
+# FFNT reference renderings, written by tools/fonts/generate.py.
+# Each line: font, FNV-1a 32 of the pixels, width, height, text,
+# tab-separated. The text is drawn at the margin 4 px from the
+# top and left of a surface of the measured width plus 8 and the
+# line height plus 8, filled with 0x203050, in 0xF0E0C0;
+# C0 controls and DEL are skipped, a code point the font lacks
+# draws record 0. The checksum is Surface::Checksum's.
+mono-16	1031b4ef	248	24	Hamburg 0123456789 ~!@#$%^&*()
+mono-16	4888e46c	256	24	Árvíztűrő tükörfúrógép ŁÓDŹ čšž
+mono-16	7c7250ef	176	24	Ελληνικά Αλφάβητο ά ώ
+mono-16	9bb3a649	120	24	Привет мир ЖЁЯ
+mono-16	e8222b3d	152	24	┌─┬─┐│▀▄█░▒▓╔═╗╱╲╳
+mono-16	fbd021c6	192	24	←↑→↓↵ ■▲● … – — € ™ ͸ 中
+mono-16	87a1e38d	144	24	Bad � byte �� end
+mono-20	4b346931	308	28	Hamburg 0123456789 ~!@#$%^&*()
+mono-20	55827890	318	28	Árvíztűrő tükörfúrógép ŁÓDŹ čšž
+mono-20	f2c790ad	218	28	Ελληνικά Αλφάβητο ά ώ
+mono-20	813e7328	148	28	Привет мир ЖЁЯ
+mono-20	12aa75ed	188	28	┌─┬─┐│▀▄█░▒▓╔═╗╱╲╳
+mono-20	943713da	238	28	←↑→↓↵ ■▲● … – — € ™ ͸ 中
+mono-20	fcd0df47	178	28	Bad � byte �� end
+mono-24	de6b72f8	368	32	Hamburg 0123456789 ~!@#$%^&*()
+mono-24	4b203031	380	32	Árvíztűrő tükörfúrógép ŁÓDŹ čšž
+mono-24	dd0d2863	260	32	Ελληνικά Αλφάβητο ά ώ
+mono-24	ee27a893	176	32	Привет мир ЖЁЯ
+mono-24	85eb771d	224	32	┌─┬─┐│▀▄█░▒▓╔═╗╱╲╳
+mono-24	df134570	284	32	←↑→↓↵ ■▲● … – — € ™ ͸ 中
+mono-24	b9f09858	212	32	Bad � byte �� end
+mono-32	33b4181b	488	40	Hamburg 0123456789 ~!@#$%^&*()
+mono-32	3f7c73a4	504	40	Árvíztűrő tükörfúrógép ŁÓDŹ čšž
+mono-32	4491d330	344	40	Ελληνικά Αλφάβητο ά ώ
+mono-32	0813318c	232	40	Привет мир ЖЁЯ
+mono-32	2ffea95d	296	40	┌─┬─┐│▀▄█░▒▓╔═╗╱╲╳
+mono-32	cbb3781c	376	40	←↑→↓↵ ■▲● … – — € ™ ͸ 中
+mono-32	bc1da996	280	40	Bad � byte �� end
+sans-16	60f61645	240	24	Hamburg 0123456789 ~!@#$%^&*()
+sans-16	b843b39d	216	24	Árvíztűrő tükörfúrógép ŁÓDŹ čšž
+sans-16	40060cc6	169	24	Ελληνικά Αλφάβητο ά ώ
+sans-16	617315c5	120	24	Привет мир ЖЁЯ
+sans-16	e8222b3d	152	24	┌─┬─┐│▀▄█░▒▓╔═╗╱╲╳
+sans-16	3b1662af	203	24	←↑→↓↵ ■▲● … – — € ™ ͸ 中
+sans-16	db523c96	141	24	Bad � byte �� end
+sans-20	6409a2e2	297	28	Hamburg 0123456789 ~!@#$%^&*()
+sans-20	71528e17	269	28	Árvíztűrő tükörfúrógép ŁÓDŹ čšž
+sans-20	530e990d	208	28	Ελληνικά Αλφάβητο ά ώ
+sans-20	cde4259f	147	28	Привет мир ЖЁЯ
+sans-20	12aa75ed	188	28	┌─┬─┐│▀▄█░▒▓╔═╗╱╲╳
+sans-20	b8cc968d	251	28	←↑→↓↵ ■▲● … – — € ™ ͸ 中
+sans-20	a7808402	173	28	Bad � byte �� end
+sans-24	b1cd48ea	355	32	Hamburg 0123456789 ~!@#$%^&*()
+sans-24	01b32174	326	32	Árvíztűrő tükörfúrógép ŁÓDŹ čšž
+sans-24	515ca644	246	32	Ελληνικά Αλφάβητο ά ώ
+sans-24	7ca3cc10	174	32	Привет мир ЖЁЯ
+sans-24	85eb771d	224	32	┌─┬─┐│▀▄█░▒▓╔═╗╱╲╳
+sans-24	1369c4c4	300	32	←↑→↓↵ ■▲● … – — € ™ ͸ 中
+sans-24	650587dc	206	32	Bad � byte �� end
+sans-32	8586bb8c	474	40	Hamburg 0123456789 ~!@#$%^&*()
+sans-32	9c331e8e	429	40	Árvíztűrő tükörfúrógép ŁÓDŹ čšž
+sans-32	df3af89e	324	40	Ελληνικά Αλφάβητο ά ώ
+sans-32	92684f9e	231	40	Привет мир ЖЁЯ
+sans-32	2ffea95d	296	40	┌─┬─┐│▀▄█░▒▓╔═╗╱╲╳
+sans-32	d0f81fb0	396	40	←↑→↓↵ ■▲● … – — € ™ ͸ 中
+sans-32	2a5281b9	276	40	Bad � byte �� end
+sans-48	4afa21da	706	56	Hamburg 0123456789 ~!@#$%^&*()
+sans-48	1dc35332	638	56	Árvíztűrő tükörfúrógép ŁÓDŹ čšž
+sans-48	92e9eb2e	483	56	Ελληνικά Αλφάβητο ά ώ
+sans-48	f1318709	342	56	Привет мир ЖЁЯ
+sans-48	87c056b5	440	56	┌─┬─┐│▀▄█░▒▓╔═╗╱╲╳
+sans-48	95d22ca4	586	56	←↑→↓↵ ■▲● … – — € ™ ͸ 中
+sans-48	3ffff71f	406	56	Bad � byte �� end
+sans-64	950154d3	936	72	Hamburg 0123456789 ~!@#$%^&*()
+sans-64	60ca713b	846	72	Árvíztűrő tükörfúrógép ŁÓDŹ čšž
+sans-64	ea2f2fe8	637	72	Ελληνικά Αλφάβητο ά ώ
+sans-64	5133a783	452	72	Привет мир ЖЁЯ
+sans-64	29d26c35	584	72	┌─┬─┐│▀▄█░▒▓╔═╗╱╲╳
+sans-64	95802d6b	782	72	←↑→↓↵ ■▲● … – — € ™ ͸ 中
+sans-64	ed503413	541	72	Bad � byte �� end

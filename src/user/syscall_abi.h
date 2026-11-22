@@ -84,6 +84,7 @@ enum class SyscallNumber : uint64_t
     ResolvePath = 70,      // (path, buffer, capacity) -> length of the path without links
     Sync = 71,             // () -> 0 once every mounted filesystem has written its changes
     ResourceLimit = 72,    // (resource, new_limits, old_limits) -> 0; either pointer may be null
+    DeviceControl = 73,    // (descriptor, request, argument) -> the request's result
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec, and joins its
@@ -196,6 +197,73 @@ struct ResourceLimits
     uint64_t current;
     uint64_t maximum;
 };
+// DeviceControl on /dev/fb0, the framebuffer of the caller's virtual console. GetInfo (argument:
+// a FramebufferInfo) works at any time; Acquire (argument 0) makes the open file the console's
+// owner, which then draws only through Present until Release or the last close of the file;
+// Present's argument points to a FramebufferPresentRequest, whose rectangle is clipped to the
+// screen and whose pixels are 0x00RRGGBB.
+constexpr uint64_t FramebufferGetInfo = 0x4600;
+constexpr uint64_t FramebufferAcquire = 0x4601;
+constexpr uint64_t FramebufferPresent = 0x4602;
+constexpr uint64_t FramebufferRelease = 0x4603;
+constexpr uint32_t MaximumFramebufferDimension = 16384;
+// console is the caller's virtual console from 1, or 0 without one.
+struct FramebufferInfo
+{
+    uint32_t width;
+    uint32_t height;
+    uint32_t console;
+    uint32_t dropped_events;
+};
+// read on an owner's file returns whole FramebufferEvents. modifiers is the state after the event;
+// Shown and Hidden have code 0 and modifiers 0. dropped_events counts the events the owner's queue
+// refused since it acquired.
+struct FramebufferEvent
+{
+    uint16_t code;
+    uint8_t kind;
+    uint8_t modifiers;
+    uint32_t time_ms;
+};
+constexpr uint8_t FramebufferEventRelease = 0;
+constexpr uint8_t FramebufferEventPress = 1;
+constexpr uint8_t FramebufferEventRepeat = 2;
+constexpr uint8_t FramebufferEventShown = 3;
+constexpr uint8_t FramebufferEventHidden = 4;
+constexpr uint8_t FramebufferModifierShift = 1;
+constexpr uint8_t FramebufferModifierControl = 2;
+constexpr uint8_t FramebufferModifierAlt = 4;
+constexpr uint8_t FramebufferModifierCapsLock = 8;
+constexpr uint32_t FramebufferEventCapacity = 64;
+static_assert(sizeof(FramebufferEvent) == 8 && offsetof(FramebufferEvent, code) == 0 &&
+                  offsetof(FramebufferEvent, kind) == 2 &&
+                  offsetof(FramebufferEvent, modifiers) == 3 &&
+                  offsetof(FramebufferEvent, time_ms) == 4,
+              "the kernel and the C library share FramebufferEvent");
+struct FramebufferPresentRequest
+{
+    uint64_t pixels;
+    uint32_t stride;
+    int32_t x;
+    int32_t y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t flags;
+};
+static_assert(sizeof(FramebufferInfo) == 16 && offsetof(FramebufferInfo, width) == 0 &&
+                  offsetof(FramebufferInfo, height) == 4 &&
+                  offsetof(FramebufferInfo, console) == 8 &&
+                  offsetof(FramebufferInfo, dropped_events) == 12,
+              "the kernel and the C library share FramebufferInfo");
+static_assert(sizeof(FramebufferPresentRequest) == 32 &&
+                  offsetof(FramebufferPresentRequest, pixels) == 0 &&
+                  offsetof(FramebufferPresentRequest, stride) == 8 &&
+                  offsetof(FramebufferPresentRequest, x) == 12 &&
+                  offsetof(FramebufferPresentRequest, y) == 16 &&
+                  offsetof(FramebufferPresentRequest, width) == 20 &&
+                  offsetof(FramebufferPresentRequest, height) == 24 &&
+                  offsetof(FramebufferPresentRequest, flags) == 28,
+              "the kernel and the C library share FramebufferPresentRequest");
 // Duplicate flags: replace exactly the target descriptor, as dup2 does, rather than taking the
 // lowest free one at or above it; and mark the new descriptor close-on-exec.
 constexpr uint64_t DuplicateExact = 1U << 0;

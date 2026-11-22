@@ -17,6 +17,7 @@ EXPECTED_FILES_OUTPUT = (
     "cd: nowhere: no such directory",
     # /dev, /tmp, and /proc; the console shows tabs as spaces.
     "random                  0",
+    "fb0                     0",
     "tty4                    0",
     "kept in tmp",
     "Name: cat",

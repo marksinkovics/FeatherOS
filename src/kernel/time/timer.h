@@ -12,6 +12,8 @@ bool PrepareSecondaryCpuTimers();
 bool StartSecondaryCpuTimer();
 uint64_t TickCount();
 uint32_t TicksPerSecond();
+// CLOCK_MONOTONIC in milliseconds; 0 before the timer runs.
+uint64_t UptimeMilliseconds();
 uint64_t CpuTickCount(uint32_t cpu_index);
 void WaitForNextTick();
 

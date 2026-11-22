@@ -80,6 +80,8 @@ set(SRC
     ${SRCROOT}/thread_local_storage.cpp
     ${SRCROOT}/thread_stacks.cpp
     ${SRCROOT}/../user/calendar.cpp
+    ${SRCROOT}/../user/text/font_data.cpp
+    ${SRCROOT}/../user/text/utf8.cpp
     ${SRCROOT}/time/timer.cpp
     ${SRCROOT}/time/wall_clock.cpp
     ${SERIAL_SRC}
@@ -87,8 +89,9 @@ set(SRC
     ${VIRTUAL_MEMORY_SRC}
     ${EXCEPTION_SRC}
     ${SCHEDULER_CONTEXT_SRC}
-    ${SRCROOT}/framebuffer/font.c
+    ${SRCROOT}/framebuffer/console_font.c
     ${SRCROOT}/framebuffer/framebuffer.cpp
+    ${SRCROOT}/framebuffer/graphics_mode.cpp
     ${SRCROOT}/framebuffer/term.cpp
     ${SRCROOT}/filesystem/initramfs.cpp
     ${SRCROOT}/filesystem/core_driver.cpp

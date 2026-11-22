@@ -274,6 +274,7 @@ _image_inputs() {
         "$SCRIPT_DIR/initramfs/sample.json" "$SCRIPT_DIR/initramfs/http-request.txt" \
         "$SCRIPT_DIR/initramfs/http-response.txt" "$system_dir/"
     cp -R "$SCRIPT_DIR/initramfs/etc" "$root_dir/"
+    cp -R "$SCRIPT_DIR/initramfs/fonts" "$system_dir/"
     # Debug builds keep their debug information and symbols in build/<arch>/programs for gdb; the
     # copies the system runs leave both out, so they stay small (Embedded Swift's mangled names
     # alone take a quarter of a Swift program, and debug information three quarters of a
@@ -521,6 +522,15 @@ smoke_test() {
     fi
     if [[ "${INPUT_TEST:-OFF}" == ON || "${INPUT_TEST:-OFF}" == 1 ]]; then
         smoke_args+=(--expect-input)
+    fi
+    if _is_on "${GRAPHICS_TEST:-OFF}"; then
+        smoke_args+=(--expect-graphics)
+    fi
+    if _is_on "${DUNGEON_TEST:-OFF}"; then
+        smoke_args+=(--expect-dungeon)
+    fi
+    if _is_on "${FONTS_TEST:-OFF}"; then
+        smoke_args+=(--expect-fonts)
     fi
     if [[ -n "${QEMU_CPU:-}" ]]; then
         smoke_args+=(--cpu "$QEMU_CPU")

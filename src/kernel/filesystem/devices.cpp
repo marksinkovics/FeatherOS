@@ -24,12 +24,14 @@ constexpr Entry Entries[] = {
 };
 constexpr uint32_t EntryCount = sizeof(Entries) / sizeof(Entries[0]);
 constexpr char SlaveDirectory[] = "pts";
+constexpr char FramebufferName[] = "fb0";
 constexpr char ConsolePrefix[] = "tty";
 constexpr uint32_t PairShift = 8;
 constexpr uint32_t MaximumConsoles = 9;
 
 Terminals::Terminal* const* consoles = nullptr;
 uint32_t console_count = 0;
+bool framebuffer_present = false;
 
 bool Equals(const char* left, const char* right)
 {
@@ -97,6 +99,11 @@ bool ParseConsole(const char* path, uint32_t* index)
 
 } // namespace
 
+void SetFramebuffer(bool present)
+{
+    framebuffer_present = present;
+}
+
 void SetConsoles(Terminals::Terminal* const* terminals, uint32_t count)
 {
     consoles = terminals;
@@ -112,6 +119,11 @@ bool Find(const char* path, uint32_t* node)
             *node = static_cast<uint32_t>(entry.device);
             return true;
         }
+    }
+    if (framebuffer_present && Equals(path, FramebufferName))
+    {
+        *node = static_cast<uint32_t>(Device::Framebuffer);
+        return true;
     }
     uint32_t console;
     if (ParseConsole(path, &console))
@@ -199,13 +211,20 @@ bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry*
             SetEntry(entry, Entries[index].name, false);
             return true;
         }
-        if (index < EntryCount + console_count)
+        if (framebuffer_present && index == EntryCount)
         {
-            const char name[] = {'t', 't', 'y', static_cast<char>('1' + index - EntryCount), '\0'};
+            SetEntry(entry, FramebufferName, false);
+            return true;
+        }
+        const uint32_t first_console = EntryCount + (framebuffer_present ? 1 : 0);
+        if (index >= first_console && index < first_console + console_count)
+        {
+            const char name[] = {'t', 't', 'y', static_cast<char>('1' + index - first_console),
+                                 '\0'};
             SetEntry(entry, name, false);
             return true;
         }
-        if (index == EntryCount + console_count)
+        if (index == first_console + console_count)
         {
             SetEntry(entry, SlaveDirectory, true);
             return true;
