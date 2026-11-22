@@ -68,6 +68,7 @@ Wait for the completion notification. Don't predict its result and don't poll it
 - Run `bash tools/quality.sh check` yourself.
 - If the agent said tests passed but you have doubts, read `build/check/` or `build/<arch>/smoke-output.txt`. Re-run tests through the `test-runner` agent only if the evidence is missing.
 - If the step finishes a part that changes shared code (kernel, libc, the build, the disk image or the test harness), or finishes the milestone, run the matrix through `test-runner` (Haiku): `tools/check.sh --arch both --matrix`. A part limited to one program or to docs relies on its affected smoke modes on both architectures.
+- Once every matrix case has passed (failed cases included, after their re-run), delete the matrix output yourself with `rm -rf build/matrix` (about 13 GB; the next matrix rebuilds it). Keep it while a failure is being diagnosed, because `test-diagnoser` and single-case re-runs read `build/matrix/<case>/`.
 - If a test fails, give `test-diagnoser` (Sonnet) the failing cases and log paths from `test-runner`. If its confidence is low, or its fix doesn't work, run it once more with `model: "opus"`.
 - If there's a problem, use `SendMessage` to send it back to the **same** subagent with the specifics (for a test failure, the diagnoser's cause, evidence and fix). Allow at most two such rounds per step, and re-run only the failing cases afterwards through `test-runner`.
 
