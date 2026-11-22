@@ -8,7 +8,7 @@ namespace
 {
 
 // Each root's node is its index.
-constexpr uint32_t RootCount = 2;
+constexpr uint32_t RootCount = 3;
 constexpr uint32_t MaximumNodes = RootCount + MaximumEntries;
 constexpr uint32_t NameCapacity = User::MaximumNameLength + 1;
 constexpr uint64_t MinimumCapacity = 256;

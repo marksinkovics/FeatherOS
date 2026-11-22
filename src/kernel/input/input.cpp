@@ -22,7 +22,18 @@ std::atomic<Terminals::Terminal*> keyboard_target = nullptr;
 void (*console_switch)(uint32_t console) = nullptr;
 bool (*graphics_keys)(const KeyEvent& event) = nullptr;
 std::atomic<uint8_t> current_modifiers = 0;
+std::atomic<uint8_t> lock_state = 0;
+std::atomic<void (*)(uint8_t)> led_callback = nullptr;
 bool previous_was_carriage_return GUARDED_BY(poll_lock) = false;
+
+void Toggle(uint8_t led)
+{
+    const uint8_t state = lock_state.fetch_xor(led, std::memory_order_acq_rel) ^ led;
+    if (auto* callback = led_callback.load(std::memory_order_acquire))
+    {
+        callback(state);
+    }
+}
 
 } // namespace
 
@@ -56,6 +67,49 @@ bool IsInterruptKey(const KeyEvent& event)
 uint8_t CurrentModifiers()
 {
     return current_modifiers.load(std::memory_order_acquire);
+}
+
+bool CapsLock()
+{
+    return (lock_state.load(std::memory_order_acquire) & LedCapsLock) != 0;
+}
+
+bool NumLock()
+{
+    return (lock_state.load(std::memory_order_acquire) & LedNumLock) != 0;
+}
+
+void ToggleCapsLock()
+{
+    Toggle(LedCapsLock);
+}
+
+void ToggleNumLock()
+{
+    Toggle(LedNumLock);
+}
+
+void SetLockState(bool caps_lock, bool num_lock)
+{
+    const auto state =
+        static_cast<uint8_t>((caps_lock ? LedCapsLock : 0) | (num_lock ? LedNumLock : 0));
+    if (lock_state.exchange(state, std::memory_order_acq_rel) != state)
+    {
+        if (auto* callback = led_callback.load(std::memory_order_acquire))
+        {
+            callback(state);
+        }
+    }
+}
+
+uint8_t LedState()
+{
+    return lock_state.load(std::memory_order_acquire);
+}
+
+void SetLedCallback(void (*callback)(uint8_t led_state))
+{
+    led_callback.store(callback, std::memory_order_release);
 }
 
 void SubmitKey(Keyboard& keyboard, uint16_t code, bool pressed)

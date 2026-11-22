@@ -30,6 +30,11 @@ _usage() {
     printf 'KERNEL_TESTS=ON builds the kernel test hooks (test, smoke, test-all and any *_TEST kernel toggle turn it on).\n'
     printf 'KERNEL_ROOT=vdaN puts root=vdaN on the kernel command line, naming the root partition (FAT16, ext2, ext3 or ext4);\n'
     printf 'ROOT_TEST=ON boots with it (vda3 by default) and checks the root.\n'
+    printf 'NODISK_TEST=ON boots with no virtio-blk device and checks the RAM root.\n'
+    printf 'KERNEL_USB=off|poll puts usb=off or usb=poll on the kernel command line (no USB, or controller events by timer).\n'
+    printf 'KERNEL_USBHID=report puts usbhid=report on it (boot keyboards and mice through their report descriptors);\n'
+    printf 'KERNEL_PS2=off puts ps2=off on it (no PS/2 or virtio keyboard).\n'
+    printf 'LIMINE_TIMEOUT=N makes the ISO'"'"'s Limine wait N seconds at its menu (default 0, which hides it).\n'
     printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, unit-test-tsan,\n'
     printf '         benchmark, debug, all, clean, fullclean\n'
 }
@@ -90,7 +95,7 @@ _kernel_test_mode() {
     local -a modes=()
     local toggle variable
     for toggle in PANIC EXCEPTION INTERRUPT MEMORY TIMER SCHEDULER USER_PREEMPTION SMP STORAGE \
-        NETWORK INPUT; do
+        NETWORK INPUT PCI; do
         variable="${toggle}_TEST"
         if _is_on "${!variable:-OFF}"; then
             modes+=("$(printf '%s' "$toggle" | tr '[:upper:]_' '[:lower:]-')")
@@ -115,6 +120,19 @@ _kernel_command_line() {
     if [ -n "$root" ]; then
         words+=("root=$root")
     fi
+    if [ -n "${KERNEL_USB:-}" ]; then
+        words+=("usb=$KERNEL_USB")
+    fi
+    local usbhid="${KERNEL_USBHID:-}"
+    if [ -z "$usbhid" ] && _is_on "${USB_FALLBACK_TEST:-OFF}"; then
+        usbhid=report
+    fi
+    if [ -n "$usbhid" ]; then
+        words+=("usbhid=$usbhid")
+    fi
+    if [ -n "${KERNEL_PS2:-}" ]; then
+        words+=("ps2=$KERNEL_PS2")
+    fi
     if [ -n "$test_mode" ]; then
         words+=("test=$test_mode")
     fi
@@ -132,6 +150,29 @@ _aarch64_firmware() {
         /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
         /usr/share/AAVMF/AAVMF_CODE.fd \
         /usr/share/qemu-efi-aarch64/QEMU_EFI.fd; do
+        if [ -f "$firmware" ]; then
+            printf '%s\n' "$firmware"
+            return
+        fi
+    done
+
+    return 1
+}
+
+_x86_64_firmware() {
+    if [ -n "${QEMU_OVMF:-}" ] && [ -f "$QEMU_OVMF" ]; then
+        printf '%s\n' "$QEMU_OVMF"
+        return
+    fi
+
+    local firmware
+    for firmware in \
+        /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
+        /usr/local/share/qemu/edk2-x86_64-code.fd \
+        /usr/share/OVMF/OVMF_CODE.fd \
+        /usr/share/OVMF/OVMF_CODE_4M.fd \
+        /usr/share/edk2/ovmf/OVMF_CODE.fd \
+        /usr/share/qemu/OVMF.fd; do
         if [ -f "$firmware" ]; then
             printf '%s\n' "$firmware"
             return
@@ -377,7 +418,15 @@ iso() {
     iso_path=$(_kernel_iso)
     rm -rf "$iso_root"
     mkdir -p "$iso_root/EFI/BOOT"
-    cp "$SCRIPT_DIR/configs/$ARCH/limine.conf" "$iso_root/limine.conf"
+    local limine_timeout="${LIMINE_TIMEOUT:-0}"
+    case "$limine_timeout" in
+        *[!0-9]*)
+            _err "LIMINE_TIMEOUT must be a number of seconds, not '$limine_timeout'."
+            exit 1
+            ;;
+    esac
+    sed "s/^timeout: .*/timeout: $limine_timeout/" "$SCRIPT_DIR/configs/$ARCH/limine.conf" \
+        >"$iso_root/limine.conf"
     local command_line
     command_line=$(_kernel_command_line "$test_mode")
     if [ -n "$command_line" ]; then
@@ -532,6 +581,24 @@ smoke_test() {
     if _is_on "${FONTS_TEST:-OFF}"; then
         smoke_args+=(--expect-fonts)
     fi
+    if _is_on "${PCI_TEST:-OFF}"; then
+        smoke_args+=(--expect-pci)
+    fi
+    if _is_on "${USB_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb)
+    fi
+    if _is_on "${USB_KEYS_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb-keys)
+    fi
+    if _is_on "${USB_FALLBACK_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb-fallback)
+    fi
+    if _is_on "${USB_HUB_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb-hub)
+    fi
+    if _is_on "${NODISK_TEST:-OFF}"; then
+        smoke_args+=(--expect-nodisk)
+    fi
     if [[ -n "${QEMU_CPU:-}" ]]; then
         smoke_args+=(--cpu "$QEMU_CPU")
     fi
@@ -558,6 +625,14 @@ smoke_test() {
         smoke_args+=(--firmware "$firmware")
     elif [ "$ARCH" = "x86_64" ]; then
         _require_tools qemu-system-x86_64
+        if _is_on "${X86_UEFI:-OFF}"; then
+            local firmware
+            firmware=$(_x86_64_firmware) || {
+                _print "SKIP: no x86-64 UEFI firmware (edk2/OVMF); set QEMU_OVMF to an OVMF_CODE image"
+                exit 0
+            }
+            smoke_args+=(--firmware "$firmware")
+        fi
     else
         _err "Smoke test is not supported for ARCH='$ARCH'."
         exit 1

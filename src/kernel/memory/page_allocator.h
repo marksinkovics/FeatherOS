@@ -19,11 +19,14 @@ struct PageAllocatorStats
 bool InitializePageAllocator(uint64_t hhdm_offset);
 // When no frame is free it asks the registered reclaimer for some and tries once more.
 bool AllocatePageFrame(uint64_t* physical_address);
-// For devices that need physically contiguous memory, such as a legacy virtqueue.
-bool AllocateContiguousPageFrames(uint64_t count, uint64_t* physical_address);
+// For devices that need physically contiguous memory, such as a legacy virtqueue. The run ends at
+// or below limit (an exclusive physical address).
+bool AllocateContiguousPageFrames(uint64_t count, uint64_t* physical_address,
+                                  uint64_t limit = UINT64_MAX);
 bool FreePageFrame(uint64_t physical_address);
 bool GetPageAllocatorStats(PageAllocatorStats* stats);
 uint64_t FreeFrameCount();
+uint64_t HhdmOffset();
 
 // Called with no allocator lock, from any context that may allocate a frame (heap and page-table
 // locks held), so it must never allocate, log or take such a lock; it returns the frames it freed.

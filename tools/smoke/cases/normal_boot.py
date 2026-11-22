@@ -9,6 +9,8 @@ from smoke.boot import (
     NETWORK_IPV6_MESSAGE,
     NETWORK_MESSAGE,
     PANIC_MARKER,
+    PCI_EXPECTED_DEVICES,
+    PCI_LINE_PATTERN,
     QEMU_CPU_COUNT,
     READY_MESSAGE,
     ROOT_MESSAGE,
@@ -62,6 +64,11 @@ class NormalBoot(BootToShell):
         ]
         if missing_cpus:
             return f"CPUs {missing_cpus} did not report a complete online line"
+        if re.search(PCI_LINE_PATTERN, output) is None:
+            return "the kernel did not list any PCI function"
+        if PCI_EXPECTED_DEVICES[arch] not in output:
+            expected = PCI_EXPECTED_DEVICES[arch]
+            return f"the kernel did not list the PCI device {expected}"
         if VFS_MESSAGE not in output:
             return "kernel did not read a file through the VFS"
         if ROOT_MESSAGE not in output:

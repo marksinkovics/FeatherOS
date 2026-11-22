@@ -7,8 +7,10 @@ from smoke.cases.interrupt import Interrupt
 from smoke.cases.keyboard import Keyboard
 from smoke.cases.memory import Memory
 from smoke.cases.network import Network
+from smoke.cases.no_disk import NoDisk
 from smoke.cases.normal_boot import NormalBoot
 from smoke.cases.panic import Panic
+from smoke.cases.pci import Pci
 from smoke.cases.power import Power
 from smoke.cases.root import RootOption
 from smoke.cases.scheduler import Scheduler
@@ -16,6 +18,9 @@ from smoke.cases.shell import Shell
 from smoke.cases.smp import Smp
 from smoke.cases.storage import Storage
 from smoke.cases.timer import Timer
+from smoke.cases.usb import Usb
+from smoke.cases.usb_hub import UsbHub
+from smoke.cases.usb_keys import UsbFallback, UsbKeys
 from smoke.cases.user_preemption import UserPreemption
 
 # Each --expect-<name> switch: its case and help text.
@@ -50,6 +55,29 @@ SWITCHES = {
     "fonts": (
         Fonts,
         "Print UTF-8 text and compare the screen with the font's glyphs",
+    ),
+    "pci": (Pci, "Expect edu to deliver an MSI and a DMA round trip"),
+    "usb": (
+        Usb,
+        "Expect the xHCI controller to address a keyboard and a mouse",
+    ),
+    "usb-keys": (
+        UsbKeys,
+        "Type on a USB keyboard and expect the shell to receive it",
+    ),
+    "usb-fallback": (
+        UsbFallback,
+        "Type on a full-speed USB keyboard through the report parser, "
+        "without MSI",
+    ),
+    "usb-hub": (
+        UsbHub,
+        "Type and move the mouse behind a USB hub, and hot-plug a keyboard "
+        "into one of its ports",
+    ),
+    "nodisk": (
+        NoDisk,
+        "Boot with no disk and expect a RAM root, a shell and a shutdown",
     ),
     "calc": (Calc, "Send a calculator command and expect its result"),
     "shell": (Shell, "Run shell commands and expect their output"),

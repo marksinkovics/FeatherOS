@@ -1,6 +1,7 @@
 #include "keyboard.h"
 
 #include "kernel/arch/keyboard.h"
+#include "kernel/boot_options.h"
 #include "interrupts.h"
 #include "virtio_mmio.h"
 #include "kernel/input/input.h"
@@ -232,6 +233,10 @@ namespace FeatherOS::Arch::Keyboard
 
 bool Initialize(const void* platform_data, uint64_t hhdm_offset)
 {
+    if (BootOptions::SelectedPs2() == BootOptions::Ps2Mode::Off)
+    {
+        return false;
+    }
     return AArch64::InitializeKeyboard(platform_data, hhdm_offset);
 }
 

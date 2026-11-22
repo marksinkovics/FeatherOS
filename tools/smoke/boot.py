@@ -19,6 +19,15 @@ USER_MODE_OUTPUTS = {
         b"AKERN/I: ELF64: two isolated user programs exited and were reaped"
     ),
 }
+PCI_LINE_PATTERN = (
+    r"KERN/I: PCI: [0-9a-f]{2}:[0-9a-f]{2}\.[0-7] "
+    r"[0-9a-f]{4}:[0-9a-f]{4} class [0-9a-f]{6}"
+)
+# x86-64 lists the legacy virtio-blk device, AArch64 virt's PCIe host bridge.
+PCI_EXPECTED_DEVICES = {
+    "x86_64": "1af4:1001 class 010000",
+    "aarch64": "1b36:0008 class 060000",
+}
 PANIC_MARKER = "KERN/PANIC:"
 MAX_CPU_PROTECTIONS = {
     "x86_64": "KERN/I: CPU protections: SMEP SMAP RDRAND",

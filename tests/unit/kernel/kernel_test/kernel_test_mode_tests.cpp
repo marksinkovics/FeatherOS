@@ -18,6 +18,8 @@ TEST_CASE("Kernel test mode comes from the command line")
     REQUIRE(mode == Mode::UserPreemption);
     REQUIRE(ParseCommandLine("test=input ", &mode));
     REQUIRE(mode == Mode::Input);
+    REQUIRE(ParseCommandLine("root=vda1 test=pci", &mode));
+    REQUIRE(mode == Mode::Pci);
     // Other options, and words that only start like one, are not modes.
     REQUIRE(ParseCommandLine("attest=smp testing=smp", &mode));
     REQUIRE(mode == Mode::None);

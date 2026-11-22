@@ -12,6 +12,7 @@ void Run(const void* platform_data);
 void RunSmpTests();
 void RunStorageTests(uint64_t hhdm_offset);
 void RunNetworkTests();
+void RunPciTests(const void* platform_data);
 // Reports the shown console and each console's foreground program on serial when they change.
 void StartConsoleReports();
 

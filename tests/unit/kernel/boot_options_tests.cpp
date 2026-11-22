@@ -70,3 +70,48 @@ TEST_CASE("the root is the requested partition, else the lowest-numbered volume"
     const size_t none[] = {0, 0, 0, 0};
     REQUIRE(ChooseRoot(none, 4, 0) == NoRoot);
 }
+
+TEST_CASE("usb= switches USB off or to polling")
+{
+    using FeatherOS::BootOptions::ParseUsb;
+    using FeatherOS::BootOptions::UsbMode;
+    REQUIRE(ParseUsb(nullptr) == UsbMode::Default);
+    REQUIRE(ParseUsb("quiet test=usb") == UsbMode::Default);
+    REQUIRE(ParseUsb("usb=off") == UsbMode::Off);
+    REQUIRE(ParseUsb("root=vda3 usb=poll test=pci") == UsbMode::Poll);
+    // The last one wins, and anything else counts as absent.
+    REQUIRE(ParseUsb("usb=off usb=poll") == UsbMode::Poll);
+    REQUIRE(ParseUsb("usb=poll usb=on") == UsbMode::Default);
+    REQUIRE(ParseUsb("usb= usb=offx xusb=off usbhid=off") == UsbMode::Default);
+
+    FeatherOS::BootOptions::SelectUsb(UsbMode::Poll);
+    REQUIRE(FeatherOS::BootOptions::SelectedUsb() == UsbMode::Poll);
+    FeatherOS::BootOptions::SelectUsb(UsbMode::Default);
+    REQUIRE(FeatherOS::BootOptions::SelectedUsb() == UsbMode::Default);
+}
+
+TEST_CASE("usbhid=report and ps2=off")
+{
+    using FeatherOS::BootOptions::ParsePs2;
+    using FeatherOS::BootOptions::ParseUsbHid;
+    using FeatherOS::BootOptions::Ps2Mode;
+    using FeatherOS::BootOptions::UsbHidMode;
+    REQUIRE(ParseUsbHid(nullptr) == UsbHidMode::Default);
+    REQUIRE(ParseUsbHid("quiet usb=off") == UsbHidMode::Default);
+    REQUIRE(ParseUsbHid("usbhid=report") == UsbHidMode::Report);
+    REQUIRE(ParseUsbHid("root=vda3 usbhid=report test=usb") == UsbHidMode::Report);
+    REQUIRE(ParseUsbHid("usbhid=report usbhid=boot") == UsbHidMode::Default);
+    REQUIRE(ParseUsbHid("usbhid= usbhid=reports xusbhid=report usb=report") == UsbHidMode::Default);
+    REQUIRE(ParsePs2(nullptr) == Ps2Mode::Default);
+    REQUIRE(ParsePs2("ps2=off") == Ps2Mode::Off);
+    REQUIRE(ParsePs2("usb=off ps2=off test=input") == Ps2Mode::Off);
+    REQUIRE(ParsePs2("ps2=off ps2=on") == Ps2Mode::Default);
+    REQUIRE(ParsePs2("ps2= ps2=offx xps2=off") == Ps2Mode::Default);
+
+    FeatherOS::BootOptions::SelectUsbHid(UsbHidMode::Report);
+    REQUIRE(FeatherOS::BootOptions::SelectedUsbHid() == UsbHidMode::Report);
+    FeatherOS::BootOptions::SelectUsbHid(UsbHidMode::Default);
+    FeatherOS::BootOptions::SelectPs2(Ps2Mode::Off);
+    REQUIRE(FeatherOS::BootOptions::SelectedPs2() == Ps2Mode::Off);
+    FeatherOS::BootOptions::SelectPs2(Ps2Mode::Default);
+}

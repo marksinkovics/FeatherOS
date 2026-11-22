@@ -17,7 +17,11 @@ def main():
     parser.add_argument(
         "--arch", choices=("x86_64", "aarch64"), default="x86_64"
     )
-    parser.add_argument("--firmware", help="AArch64 UEFI firmware image")
+    parser.add_argument(
+        "--firmware",
+        help="UEFI firmware image: required for AArch64, optional for x86-64 "
+        "(OVMF instead of SeaBIOS)",
+    )
     parser.add_argument("--disk", required=True, help="Raw virtio block image")
     parser.add_argument(
         "--build-dir", required=True, help="The build's folder, build/<arch>"

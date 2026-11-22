@@ -6,6 +6,7 @@
 #include "kernel/arch/serial.h"
 #include "kernel/cpu.h"
 #include "kernel/exception.h"
+#include "kernel/log_ring.h"
 #include "kernel/panic.h"
 #include "kernel/scheduler.h"
 #include "kernel/string/format.h"
@@ -68,6 +69,7 @@ void OnIpi()
     {
         Panic("Secondary CPU timer did not start");
     }
+    KernelLog::Append(message);
     Serial::Write(message);
     online_cpu_count.fetch_add(1U, std::memory_order_release);
     Scheduler::RunSecondaryCpu();

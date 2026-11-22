@@ -11,7 +11,41 @@ constexpr char RootPrefix[] = "root=vda";
 constexpr size_t RootPrefixLength = sizeof(RootPrefix) - 1;
 constexpr size_t MaximumPartition = 9999;
 
+constexpr char UsbOption[] = "usb=";
+constexpr size_t UsbOptionLength = sizeof(UsbOption) - 1;
+
+constexpr char UsbHidOption[] = "usbhid=";
+constexpr size_t UsbHidOptionLength = sizeof(UsbHidOption) - 1;
+constexpr char Ps2Option[] = "ps2=";
+constexpr size_t Ps2OptionLength = sizeof(Ps2Option) - 1;
+
 constinit Root selected_root = {RootRequest::Absent, 0};
+constinit UsbMode selected_usb = UsbMode::Default;
+constinit UsbHidMode selected_usb_hid = UsbHidMode::Default;
+constinit Ps2Mode selected_ps2 = Ps2Mode::Default;
+
+bool LastValue(const char* command_line, const char* option, size_t option_length,
+               const char** value, size_t* value_length)
+{
+    bool found = false;
+    if (command_line == nullptr)
+    {
+        return false;
+    }
+    const char* cursor = command_line;
+    const char* word = nullptr;
+    size_t length = 0;
+    while (NextWord(&cursor, &word, &length))
+    {
+        if (length >= option_length && MatchesWord(word, option_length, option))
+        {
+            *value = word + option_length;
+            *value_length = length - option_length;
+            found = true;
+        }
+    }
+    return found;
+}
 
 Root ParseRootWord(const char* word, size_t length)
 {
@@ -105,6 +139,94 @@ void SelectRoot(Root root)
 Root SelectedRoot()
 {
     return selected_root;
+}
+
+UsbMode ParseUsb(const char* command_line)
+{
+    UsbMode mode = UsbMode::Default;
+    if (command_line == nullptr)
+    {
+        return mode;
+    }
+    const char* cursor = command_line;
+    const char* word = nullptr;
+    size_t length = 0;
+    while (NextWord(&cursor, &word, &length))
+    {
+        if (length < UsbOptionLength || !MatchesWord(word, UsbOptionLength, UsbOption))
+        {
+            continue;
+        }
+        const char* value = word + UsbOptionLength;
+        const size_t value_length = length - UsbOptionLength;
+        if (MatchesWord(value, value_length, "off"))
+        {
+            mode = UsbMode::Off;
+        }
+        else if (MatchesWord(value, value_length, "poll"))
+        {
+            mode = UsbMode::Poll;
+        }
+        else
+        {
+            mode = UsbMode::Default;
+        }
+    }
+    return mode;
+}
+
+void SelectUsb(UsbMode mode)
+{
+    selected_usb = mode;
+}
+
+UsbMode SelectedUsb()
+{
+    return selected_usb;
+}
+
+UsbHidMode ParseUsbHid(const char* command_line)
+{
+    const char* value = nullptr;
+    size_t length = 0;
+    if (LastValue(command_line, UsbHidOption, UsbHidOptionLength, &value, &length) &&
+        MatchesWord(value, length, "report"))
+    {
+        return UsbHidMode::Report;
+    }
+    return UsbHidMode::Default;
+}
+
+void SelectUsbHid(UsbHidMode mode)
+{
+    selected_usb_hid = mode;
+}
+
+UsbHidMode SelectedUsbHid()
+{
+    return selected_usb_hid;
+}
+
+Ps2Mode ParsePs2(const char* command_line)
+{
+    const char* value = nullptr;
+    size_t length = 0;
+    if (LastValue(command_line, Ps2Option, Ps2OptionLength, &value, &length) &&
+        MatchesWord(value, length, "off"))
+    {
+        return Ps2Mode::Off;
+    }
+    return Ps2Mode::Default;
+}
+
+void SelectPs2(Ps2Mode mode)
+{
+    selected_ps2 = mode;
+}
+
+Ps2Mode SelectedPs2()
+{
+    return selected_ps2;
 }
 
 } // namespace FeatherOS::BootOptions

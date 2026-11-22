@@ -59,17 +59,36 @@ add_executable(featheros_unit_tests
     kernel/network/tcp_socket_tests.cpp
     kernel/network/tcp_tests.cpp
     kernel/network/udp_tests.cpp
+    kernel/pci/msi_tests.cpp
+    kernel/pci/pci_device_tree_tests.cpp
+    kernel/pci/pci_tests.cpp
     kernel/process/futex_tests.cpp
     kernel/storage/page_cache_tests.cpp
+    kernel/usb/context_tests.cpp
+    kernel/usb/controller_tests.cpp
+    kernel/usb/descriptor_tests.cpp
+    kernel/usb/device_tests.cpp
+    kernel/usb/fake_device.cpp
+    kernel/usb/fake_hardware.cpp
+    kernel/usb/fake_xhci.cpp
+    kernel/usb/hid_driver_tests.cpp
+    kernel/usb/hid_keyboard_tests.cpp
+    kernel/usb/hid_report_tests.cpp
+    kernel/usb/hub_tests.cpp
+    kernel/usb/ring_tests.cpp
     kernel/sync/volume_mutex_tests.cpp
     support/network_stubs.cpp
     support/page_cache_host.cpp
     support/scheduler_stubs.cpp
     support/terminal_device.cpp
     kernel/input/keyboard_tests.cpp
+    kernel/input/pointer_tests.cpp
     kernel/boot_options_tests.cpp
+    kernel/input/i8042_tests.cpp
     kernel/kernel_test/kernel_test_mode_tests.cpp
     kernel/klogger/klogger_tests.cpp
+    kernel/klogger/log_ring_tests.cpp
+    kernel/memory/dma_tests.cpp
     kernel/memory/memory_map_tests.cpp
     kernel/process/calculator_tests.cpp
     kernel/process/command_line_tests.cpp
@@ -168,6 +187,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/term.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/input.cpp"
     "${FEATHEROS_ROOT}/src/kernel/input/keyboard.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/input/pointer.cpp"
     "${FEATHEROS_ROOT}/src/kernel/boot_options.cpp"
     "${FEATHEROS_ROOT}/src/kernel/kernel_test_mode.cpp"
     "${FEATHEROS_ROOT}/src/kernel/network/address.cpp"
@@ -239,9 +259,30 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/user/text_tools.cpp"
     "${FEATHEROS_ROOT}/src/user/vi_editor.cpp"
     "${FEATHEROS_ROOT}/src/user/wickdeep/art.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/arch/aarch64/pci_device_tree.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/arch/x86_64/i8042.cpp"
     "${FEATHEROS_ROOT}/src/kernel/klogger.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/log_ring.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/memory/dma.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/page_allocator.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/pci/msi.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/pci/pci.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/descriptors.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/device.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/driver.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/hub.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/hub_state.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/hid/driver.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/hid/keyboard.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/hid/report.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/manager.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/text.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/xhci/context.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/xhci/controller.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/xhci/registers.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/xhci/ring.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/xhci/transfer.cpp"
     "${FEATHEROS_ROOT}/src/kernel/process_arguments.cpp"
     "${FEATHEROS_ROOT}/src/kernel/sync/volume_mutex.cpp"
     "${FEATHEROS_ROOT}/src/kernel/syscall.cpp"

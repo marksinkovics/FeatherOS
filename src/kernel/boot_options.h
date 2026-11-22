@@ -33,6 +33,43 @@ Root ParseRoot(const char* command_line);
 void SelectRoot(Root root);
 Root SelectedRoot();
 
+enum class UsbMode : uint8_t
+{
+    Default,
+    Off,
+    Poll,
+};
+
+// usb=off leaves USB alone, usb=poll takes controller events from the timer instead of an
+// interrupt. The last usb= wins and a value that is neither counts as absent.
+UsbMode ParseUsb(const char* command_line);
+void SelectUsb(UsbMode mode);
+UsbMode SelectedUsb();
+
+enum class UsbHidMode : uint8_t
+{
+    Default,
+    Report,
+};
+
+// usbhid=report drives boot keyboards and mice through their report descriptors instead of the
+// fixed boot layouts. The last usbhid= wins and a value that is not report counts as absent.
+UsbHidMode ParseUsbHid(const char* command_line);
+void SelectUsbHid(UsbHidMode mode);
+UsbHidMode SelectedUsbHid();
+
+enum class Ps2Mode : uint8_t
+{
+    Default,
+    Off,
+};
+
+// ps2=off leaves the keyboard that is not on USB (PS/2 on x86-64, virtio-input on AArch64)
+// uninitialized. The last ps2= wins and a value that is not off counts as absent.
+Ps2Mode ParsePs2(const char* command_line);
+void SelectPs2(Ps2Mode mode);
+Ps2Mode SelectedPs2();
+
 } // namespace FeatherOS::BootOptions
 
 #endif

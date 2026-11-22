@@ -136,7 +136,7 @@ ISR_ERROR 30
 ISR_NO_ERROR 31
 
 %assign irq_vector 32
-%rep 18
+%rep 26
 global x86_64_irq_%+irq_vector
 x86_64_irq_%+irq_vector:
     push qword 0
@@ -229,4 +229,6 @@ x86_64_irq_stub_table:
     dq x86_64_irq_36, x86_64_irq_37, x86_64_irq_38, x86_64_irq_39
     dq x86_64_irq_40, x86_64_irq_41, x86_64_irq_42, x86_64_irq_43
     dq x86_64_irq_44, x86_64_irq_45, x86_64_irq_46, x86_64_irq_47
-    dq x86_64_irq_48, x86_64_irq_49
+    dq x86_64_irq_48, x86_64_irq_49, x86_64_irq_50, x86_64_irq_51
+    dq x86_64_irq_52, x86_64_irq_53, x86_64_irq_54, x86_64_irq_55
+    dq x86_64_irq_56, x86_64_irq_57

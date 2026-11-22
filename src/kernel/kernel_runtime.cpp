@@ -2,6 +2,7 @@
 
 #include "kernel/arch/cpu_features.h"
 #include "kernel/arch/keyboard.h"
+#include "kernel/arch/pci.h"
 #include "kernel/arch/rtc.h"
 #include "kernel/arch/serial.h"
 #include "kernel/boot_options.h"
@@ -19,6 +20,8 @@
 #include "kernel/network/interface.h"
 #include "kernel/network/neighbor_discovery.h"
 #include "kernel/panic.h"
+#include "kernel/pci/pci.h"
+#include "kernel/usb/usb.h"
 #include "kernel/process.h"
 #include "kernel/process_arguments.h"
 #include "kernel/scheduler.h"
@@ -243,12 +246,45 @@ void LoadTestExecutable(KLogger& logger, const BootInfo& boot_info)
     logger.Info("ELF64: test image loaded into user address space");
 }
 
+bool LogPciFunction(const Pci::Function& function, void* context)
+{
+    char line[48];
+    if (Pci::Describe(function, line, sizeof(line)))
+    {
+        static_cast<KLogger*>(context)->Info(line);
+    }
+    return true;
+}
+
+void LogPciDevices(KLogger& logger, const BootInfo& boot_info)
+{
+    Pci::ConfigSpace* config = Arch::Pci::Initialize(boot_info.platform_data);
+    if (config == nullptr)
+    {
+        logger.Warning("PCI: no host bridge");
+        return;
+    }
+    Pci::Enumerate(*config, LogPciFunction, &logger);
+}
+
+void MountRamRoot(KLogger& logger)
+{
+    logger.Info("Storage: no disk; running from the initramfs");
+    if (!VFS::MountRamRoot())
+    {
+        Panic("Could not mount the RAM root");
+    }
+    logger.Info("VFS: / is tmpfs root, read-write");
+    logger.Info("VFS: /etc is the initramfs's RAM copy: there is no disk");
+}
+
 void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
 {
     if (!BlockDevice::Initialize(boot_info.platform_data, boot_info.hhdm_offset) ||
         BlockDevice::SectorCount() < 2)
     {
-        Panic("Virtio block device initialization failed");
+        MountRamRoot(logger);
+        return;
     }
     if (!BlockDevice::InitializeCache(boot_info.hhdm_offset))
     {
@@ -454,9 +490,23 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     StartNetwork(logger, boot_info);
     Writeback::Start();
     logger.Info("Kernel initialization complete");
+#if defined(FEATHEROS_KERNEL_TESTS)
+    if (KernelTest::Selected(KernelTest::Mode::Pci))
+    {
+        KernelTest::RunPciTests(boot_info.platform_data);
+    }
+#endif
+    Usb::Initialize(boot_info.platform_data);
     if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
     {
-        logger.Warning("Keyboard device unavailable; use serial input");
+        if (BootOptions::SelectedPs2() == BootOptions::Ps2Mode::Off)
+        {
+            logger.Info("Keyboard: ps2=off, no PS/2 or virtio keyboard");
+        }
+        else
+        {
+            logger.Warning("Keyboard device unavailable; use serial input");
+        }
     }
     Console::Initialize(display_ready ? terms : nullptr, display_ready ? &framebuffer : nullptr);
 #if defined(FEATHEROS_KERNEL_TESTS)
@@ -506,6 +556,7 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     InitializeDisplay(logger, boot_info.framebuffer);
     MountInitramfs(logger, boot_info);
     LoadTestExecutable(logger, boot_info);
+    LogPciDevices(logger, boot_info);
     MountAndVerifyDisk(logger, boot_info);
     LogBootSummary(logger, boot_info.memory_summary);
     RunConsole(logger, boot_info);

@@ -95,6 +95,10 @@ size_t ChooseRoot(const size_t* partitions, size_t count, size_t requested);
 // whether requested was used (true for 0). A volume mounted elsewhere is kept; one that refuses
 // writes becomes a read-only root; a journal needing recovery is replayed.
 bool MountBlockDevice(size_t requested = 0, bool* honored = nullptr);
+// For a machine with no disk: the RAM filesystem's third root (tmpfs, root) at "/", replacing any
+// earlier root, with an empty "/home". It shares the 128 entries and 4 MiB of /tmp and /etc, and
+// MountBlockDevice replaces it. /etc stays the initramfs's RAM copy.
+bool MountRamRoot();
 // Copies the initramfs's "etc" files into /etc, so they can be changed until the next boot.
 bool LoadEtc();
 // Never overwrites a file the root's /etc has. Callable again after the root is mounted anew.

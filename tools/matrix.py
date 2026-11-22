@@ -32,6 +32,13 @@ TOGGLES = (
     "GRAPHICS_TEST",
     "DUNGEON_TEST",
     "FONTS_TEST",
+    "PCI_TEST",
+    "USB_TEST",
+    "USB_KEYS_TEST",
+    "USB_FALLBACK_TEST",
+    "USB_HUB_TEST",
+    "NODISK_TEST",
+    "X86_UEFI",
 )
 # Rough minutes each kind of case takes, so the longest start first.
 WEIGHTS = {
@@ -111,6 +118,14 @@ CASES = [
     *Both(47, "graphics", GRAPHICS_TEST=ON),
     *Both(49, "dungeon", DUNGEON_TEST=ON),
     *Both(51, "fonts", FONTS_TEST=ON),
+    *Both(53, "pci", PCI_TEST=ON),
+    *Both(55, "usb", USB_TEST=ON),
+    *Both(57, "usb_keys", USB_KEYS_TEST=ON),
+    *Both(59, "usb_fallback", USB_FALLBACK_TEST=ON),
+    *Both(61, "usb_hub", USB_HUB_TEST=ON),
+    # OVMF instead of SeaBIOS; skipped when no edk2 x86-64 firmware is found.
+    Case("63_x86_64_usb_uefi", "x86_64", USB_TEST=ON, X86_UEFI=ON),
+    *Both(64, "nodisk", NODISK_TEST=ON),
 ]
 
 
@@ -124,6 +139,9 @@ def Environment(arch, build_type, settings=None, out_dir=None):
         "DISK_LAYOUT",
         "OUT_DIR",
         "KERNEL_ROOT",
+        "KERNEL_USB",
+        "KERNEL_USBHID",
+        "KERNEL_PS2",
     ):
         environment.pop(key, None)
     environment.update(settings or {})
@@ -174,6 +192,11 @@ def FailureLines(log_path):
     return picked or lines[-5:]
 
 
+def Skipped(log_path):
+    with open(log_path, encoding="utf-8", errors="replace") as log:
+        return any("SKIP:" in line for line in log)
+
+
 def RunCase(case, print_lock):
     out_dir = os.path.join(MATRIX_DIR, case.name)
     subprocess.run(["rm", "-rf", out_dir], check=False)
@@ -187,7 +210,12 @@ def RunCase(case, print_lock):
     )
     seconds = time.monotonic() - started
     with print_lock:
-        if status == 0:
+        if status == 0 and Skipped(log_path):
+            print(
+                f"skip  {case.name}: no UEFI firmware (see its log)",
+                flush=True,
+            )
+        elif status == 0:
             print(f"ok    {case.name} ({seconds:.0f} s)", flush=True)
         else:
             session = os.path.join(out_dir, "smoke-output.txt")

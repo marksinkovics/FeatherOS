@@ -7,8 +7,9 @@
 namespace FeatherOS::Input
 {
 
-// Key codes as virtio-input reports them. PS/2 scancode set 1 uses the same numbers for the main
-// keys; its E0-prefixed keys map to the codes from KeypadEnter on.
+// Key codes as virtio-input reports them (Linux evdev, which USB HID keyboards map to as well).
+// PS/2 scancode set 1 uses the same numbers for the main keys and the keypad; its E0-prefixed keys
+// map to the codes from KeypadEnter on.
 namespace KeyCode
 {
 constexpr uint16_t Escape = 1;
@@ -24,6 +25,8 @@ constexpr uint16_t LeftAlt = 56;
 constexpr uint16_t CapsLock = 58;
 constexpr uint16_t F1 = 59;
 constexpr uint16_t F4 = 62;
+constexpr uint16_t NumLock = 69;
+constexpr uint16_t ScrollLock = 70;
 constexpr uint16_t KeypadEnter = 96;
 constexpr uint16_t RightControl = 97;
 constexpr uint16_t RightAlt = 100;
@@ -37,6 +40,8 @@ constexpr uint16_t Down = 108;
 constexpr uint16_t PageDown = 109;
 constexpr uint16_t Insert = 110;
 constexpr uint16_t Delete = 111;
+constexpr uint16_t LeftMeta = 125;
+constexpr uint16_t RightMeta = 126;
 } // namespace KeyCode
 
 // The bits of Keyboard::Modifiers, the same as User::FramebufferModifier*.
@@ -58,7 +63,9 @@ enum class KeyTransition : uint8_t
 
 // Turns key presses into the bytes a VT100 terminal sends: ASCII for characters, 1-26 for
 // Ctrl+A to Ctrl+Z, '\r' for Enter, 0x7F for Backspace, and escape sequences such as ESC [ A for
-// the cursor keys. Alt+F1 to Alt+F4 send nothing; they ask for a virtual console instead.
+// the cursor keys. Alt+F1 to Alt+F4 send nothing; they ask for a virtual console instead. The
+// keypad sends digits with Num Lock on and the keys printed below them otherwise. Caps Lock and Num
+// Lock are shared by every keyboard (see Input::CapsLock); the modifiers are the keyboard's own.
 class Keyboard
 {
 public:
@@ -85,9 +92,9 @@ private:
     bool m_right_control = false;
     bool m_left_alt = false;
     bool m_right_alt = false;
-    bool m_caps_lock = false;
-    // Held keys repeat their presses, and Caps Lock toggles only on the first.
+    // Held keys repeat their presses, and a lock key toggles only on the first.
     bool m_caps_lock_held = false;
+    bool m_num_lock_held = false;
     uint32_t m_console_switch = NoConsole;
     uint64_t m_held[TrackedKeys / 64] = {};
 

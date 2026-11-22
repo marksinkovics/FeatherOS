@@ -1,6 +1,7 @@
 #include "exceptions.h"
 
 #include "local_apic.h"
+#include "msi.h"
 
 #include "kernel/arch/floating_point.h"
 #include "kernel/arch/serial.h"
@@ -251,8 +252,8 @@ void InitializeExceptions()
         SetEntry(vector, reinterpret_cast<uintptr_t>(x86_64_exception_stub_table[vector]), 0x08,
                  ist);
     }
-    // Vectors 32-47 are the legacy PIC; 48 and 49 are the local APIC IPI and timer.
-    for (size_t irq = 0; irq < 18; ++irq)
+    // Vectors 32-47 are the legacy PIC, 48 and 49 the local APIC IPI and timer, 50-57 MSIs.
+    for (size_t irq = 0; irq < 26; ++irq)
     {
         SetEntry(32 + irq, reinterpret_cast<uintptr_t>(x86_64_irq_stub_table[irq]), 0x08, 0);
     }
@@ -493,6 +494,14 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
     if (context->vector >= 32 && context->vector < 48)
     {
         FeatherOS_x86_64_HandleHardwareInterrupt(context->vector);
+        RestoreCurrentUserKernelStack();
+        DeliverSignals(context);
+        return;
+    }
+    if (context->vector >= LocalApic::FirstMsiVector &&
+        context->vector < LocalApic::FirstMsiVector + LocalApic::MsiVectorCount)
+    {
+        Msi::HandleInterrupt(context->vector);
         RestoreCurrentUserKernelStack();
         DeliverSignals(context);
         return;

@@ -7,6 +7,7 @@
 #include "kernel/cpu.h"
 #include "kernel/files.h"
 #include "kernel/futex.h"
+#include "kernel/log_ring.h"
 #include "kernel/filesystem/path.h"
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/tmpfs.h"
@@ -32,6 +33,7 @@
 #include "kernel/thread_stacks.h"
 #include "kernel/time/timer.h"
 #include "kernel/time/wall_clock.h"
+#include "kernel/usb/device.h"
 #if defined(ARCH_x86_64)
 #include "kernel/arch/x86_64/exceptions.h"
 #elif defined(ARCH_aarch64)
@@ -1696,7 +1698,8 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
                    : ReceiveSocketData(process, socket, buffer, length, 0, nonblocking);
     }
     // One chunk at most, since a pipe read returns as soon as any data is there.
-    if (kind == Files::Kind::Pipe || kind == Files::Kind::PseudoTerminalMaster)
+    if (kind == Files::Kind::Pipe || kind == Files::Kind::PseudoTerminalMaster ||
+        kind == Files::Kind::PointerEvents)
     {
         if (!UserRangeWritable(*process, buffer, length))
         {
@@ -3618,6 +3621,8 @@ bool DescribeProcess(uint64_t process_id, Procfs::ProcessStatus* status)
 }
 
 static_assert(Cpu::MaximumCpus <= Procfs::MaximumCpus, "/proc/stat reports every CPU");
+static_assert(KernelLog::Capacity + 1 == Procfs::MaximumKernelLogFileSize,
+              "/proc/kmsg holds the whole ring");
 
 void DescribeSystem(Procfs::SystemStatus* status)
 {
@@ -3664,8 +3669,8 @@ UserLayout RandomUserLayout()
 
 void Initialize(uint64_t offset)
 {
-    Procfs::SetSource(
-        {ProcessAt, DescribeProcess, DescribeMemory, DescribeSystem, VFS::DescribeMount});
+    Procfs::SetSource({ProcessAt, DescribeProcess, DescribeMemory, DescribeSystem,
+                       VFS::DescribeMount, Usb::FormatDevices, KernelLog::Snapshot});
     Terminals::SetProcessHooks({InterruptGroup, CallerInterrupted, SignalGroup, HangUpSession});
     hhdm_offset = offset;
     Sync::SpinLockGuard guard(process_lock);

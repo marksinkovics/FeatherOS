@@ -2008,6 +2008,48 @@ TEST_CASE("a root= that names no usable partition falls back to the default root
     REQUIRE(RootDescription() == "vda1 fat16 rw");
 }
 
+TEST_CASE("with no disk the root is a tmpfs with /home, and a disk's root replaces it")
+{
+    namespace VFS = FeatherOS::VFS;
+    REQUIRE(VFS::ChooseRoot(nullptr, 0, 0) == VFS::NoRoot);
+
+    REQUIRE(VFS::MountRamRoot());
+    REQUIRE(VFS::MountRamRoot());
+    REQUIRE(RootDescription() == "root tmpfs rw");
+    REQUIRE(MountSource("/") == "root tmpfs rw");
+    REQUIRE(MountSource("/etc") == "etc tmpfs rw");
+    REQUIRE(VFS::IsDirectory("/home"));
+    REQUIRE(ListDirectory("/") ==
+            std::vector<std::string>{"system/", "etc/", "dev/", "proc/", "tmp/", "home/"});
+
+    VFS::FileHandle file{};
+    uint64_t written = 0;
+    REQUIRE(VFS::Create("/home/note.txt", &file));
+    REQUIRE(VFS::Write(&file, "no disk", 7, &written));
+    VFS::Close(&file);
+    REQUIRE(ReadWhole("/home/note.txt") == "no disk");
+    REQUIRE(VFS::MakeDirectory("/docs"));
+    REQUIRE(ListDirectory("/home") == std::vector<std::string>{"note.txt"});
+    REQUIRE(VFS::SyncAll());
+    REQUIRE(VFS::SyncPeriodic());
+    REQUIRE(VFS::DetachAll());
+    REQUIRE(VFS::Unmount("/") == FeatherOS::VFS::MountResult::Busy);
+
+    MakeFat16Disk("contents");
+    REQUIRE(VFS::MountBlockDevice());
+    REQUIRE(RootDescription() == "vda1 fat16 rw");
+    REQUIRE(ReadWhole("/BLOCK.TXT") == "contents");
+    REQUIRE_FALSE(VFS::IsDirectory("/home"));
+    REQUIRE_FALSE(VFS::IsDirectory("/docs"));
+
+    REQUIRE(VFS::MountRamRoot());
+    REQUIRE(ReadWhole("/home/note.txt") == "no disk");
+    REQUIRE(VFS::Remove("/home/note.txt"));
+    REQUIRE(VFS::RemoveDirectory("/docs"));
+    REQUIRE(VFS::MountBlockDevice());
+    REQUIRE(RootDescription() == "vda1 fat16 rw");
+}
+
 TEST_CASE("an ext4 root the core refuses to write is mounted read-only")
 {
     uint32_t ext3_start = 0;

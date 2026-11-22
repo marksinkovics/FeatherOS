@@ -49,6 +49,9 @@ enum class Kind : uint8_t
     // /dev/fb0: only DeviceControl uses it, which makes it a console's owner. It is always
     // close-on-exec and never inherited, so one process at most refers to it.
     Framebuffer,
+    // "/dev/mouse": reads whole User::InputEvent records from the pointer queue, from the cursor
+    // the open file keeps; writes are discarded.
+    PointerEvents,
 };
 
 struct Slot

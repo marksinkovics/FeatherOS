@@ -1,6 +1,7 @@
 #include "files.h"
 
 #include "kernel/filesystem/devices.h"
+#include "kernel/input/pointer.h"
 #include "kernel/memory/heap.h"
 #include "kernel/sync/mutex.h"
 #include "kernel/terminal/pseudo_terminal.h"
@@ -56,6 +57,8 @@ struct OpenFile
     Terminals::Terminal* terminal;
     // A master's pair, or a slave's, which the descriptor holds open.
     PseudoTerminals::Pair* pair;
+    // A PointerEvents file's cursor; Input::Pointer serializes its use.
+    Input::Pointer::Reader pointer;
 };
 
 namespace
@@ -71,6 +74,7 @@ constexpr uint32_t InitialDescriptors = 32;
 // Linux's permissions for terminals, pipes and sockets.
 constexpr uint32_t TerminalMode = 0620;
 constexpr uint32_t PipeMode = 0600;
+constexpr uint32_t PointerMode = 0666;
 constexpr uint32_t SocketMode = 0777;
 constexpr uint32_t FramebufferMode = 0660;
 
@@ -91,8 +95,8 @@ uint32_t disk_file_capacity GUARDED_BY(table_lock) = 0;
 uint32_t disk_file_count GUARDED_BY(table_lock) = 0;
 FramebufferRelease framebuffer_release GUARDED_BY(table_lock) = nullptr;
 // Every process's console descriptors share this one, which is never freed.
-OpenFile console = {{},    nullptr, 1,       Kind::Terminal, true,   true,
-                    false, false,   nullptr, nullptr,        nullptr};
+OpenFile console = {{},    nullptr, 1,       Kind::Terminal, true,    true,
+                    false, false,   nullptr, nullptr,        nullptr, {}};
 
 DiskFileUse* FindUse(const VFS::FileKey& key) REQUIRES(table_lock)
 {
@@ -229,6 +233,11 @@ OpenFile* DropReferenceLocked(OpenFile* file) REQUIRES(table_lock)
         {
             framebuffer_release(file);
         }
+        Memory::Deallocate(file);
+        return nullptr;
+    }
+    if (file->kind == Kind::PointerEvents)
+    {
         Memory::Deallocate(file);
         return nullptr;
     }
@@ -666,6 +675,7 @@ OpenFile* NewFile(Kind kind, bool readable, bool writable) NO_THREAD_SAFETY_ANAL
             .socket = nullptr,
             .terminal = nullptr,
             .pair = nullptr,
+            .pointer = {},
         };
     }
     return file;
@@ -694,9 +704,32 @@ uint64_t AddTerminalLocked(Table* table, uint64_t flags, Kind kind, Terminals::T
     return descriptor;
 }
 
+uint64_t AddPointerLocked(Table* table, uint64_t flags) REQUIRES(table_lock)
+{
+    const uint64_t descriptor = FreeSlotLocked(table, 0);
+    if (User::IsSyscallError(descriptor))
+    {
+        return descriptor;
+    }
+    OpenFile* const file =
+        NewFile(Kind::PointerEvents, (flags & User::OpenRead) != 0, (flags & User::OpenWrite) != 0);
+    if (file == nullptr)
+    {
+        return User::SyscallErrorNoMemory;
+    }
+    file->nonblocking = (flags & User::OpenNonBlocking) != 0;
+    file->pointer = Input::Pointer::Open();
+    table->slots[descriptor] = {file, (flags & User::OpenCloseOnExec) != 0};
+    return descriptor;
+}
+
 uint64_t OpenDeviceLocked(Table* table, uint64_t flags, uint32_t node,
                           Terminals::Terminal* controlling_terminal) REQUIRES(table_lock)
 {
+    if (Devices::DeviceOf(node) == Devices::Device::Mouse)
+    {
+        return AddPointerLocked(table, flags);
+    }
     PseudoTerminals::Pair* pair = nullptr;
     Terminals::Terminal* terminal = controlling_terminal;
     Kind kind = Kind::Terminal;
@@ -807,7 +840,7 @@ bool IsSpecialDevice(const VFS::FileHandle& handle)
     return device == Devices::Device::ControllingTerminal ||
            device == Devices::Device::PseudoTerminalMaster ||
            device == Devices::Device::PseudoTerminalSlave || device == Devices::Device::Console ||
-           device == Devices::Device::Framebuffer;
+           device == Devices::Device::Framebuffer || device == Devices::Device::Mouse;
 }
 
 } // namespace
@@ -1066,6 +1099,29 @@ PseudoTerminals::Pair* FindMaster(Table* table, uint64_t descriptor, bool write,
     return slot->file->pair;
 }
 
+// The file stays pinned while the reader waits for events.
+uint64_t ReadPointer(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
+                     Pipes::InterruptCheck interrupted)
+{
+    OpenFile* file = nullptr;
+    bool nonblocking = false;
+    {
+        Sync::MutexGuard guard(table_lock);
+        Slot* slot = FindSlot(table, descriptor);
+        if (slot == nullptr || slot->file->kind != Kind::PointerEvents || !slot->file->readable)
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        file = slot->file;
+        nonblocking = file->nonblocking;
+        ++file->references;
+    }
+    const uint64_t result =
+        Input::Pointer::Read(file->pointer, buffer, length, nonblocking, interrupted);
+    Unpin(file);
+    return result;
+}
+
 uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
               Pipes::InterruptCheck interrupted)
 {
@@ -1081,6 +1137,10 @@ uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
         return pair == nullptr
                    ? User::SyscallErrorBadDescriptor
                    : PseudoTerminals::ReadMaster(pair, buffer, length, interrupted, nonblocking);
+    }
+    if (kind == Kind::PointerEvents)
+    {
+        return ReadPointer(table, descriptor, buffer, length, interrupted);
     }
     if (kind == Kind::Pipe)
     {
@@ -1128,6 +1188,14 @@ uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t l
         return pair == nullptr
                    ? User::SyscallErrorBadDescriptor
                    : PseudoTerminals::WriteMaster(pair, buffer, length, interrupted, nonblocking);
+    }
+    if (kind == Kind::PointerEvents)
+    {
+        Sync::MutexGuard guard(table_lock);
+        const Slot* slot = FindSlot(table, descriptor);
+        return slot != nullptr && slot->file->kind == Kind::PointerEvents && slot->file->writable
+                   ? length
+                   : User::SyscallErrorBadDescriptor;
     }
     if (kind == Kind::Pipe)
     {
@@ -1254,6 +1322,9 @@ int16_t PollEvents(Table* table, uint64_t descriptor)
         return PseudoTerminals::PollMaster(file->pair);
     case Kind::Framebuffer:
         return 0;
+    case Kind::PointerEvents:
+        return static_cast<int16_t>(Input::Pointer::PollEvents(file->pointer) |
+                                    (file->writable ? User::PollWritable : 0));
     default:
         // Files never make a reader or writer wait.
         return static_cast<int16_t>((file->readable ? User::PollReadable : 0) |
@@ -2118,6 +2189,10 @@ uint64_t StatDescriptor(Table* table, uint64_t descriptor, User::FileStatus* sta
             return 0;
         case Kind::Framebuffer:
             *status = UnmountedStatus(file, User::ModeCharacterDevice | FramebufferMode,
+                                      User::FileType::Device, 0, false);
+            return 0;
+        case Kind::PointerEvents:
+            *status = UnmountedStatus(file, User::ModeCharacterDevice | PointerMode,
                                       User::FileType::Device, 0, false);
             return 0;
         case Kind::File:

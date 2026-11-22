@@ -12,6 +12,7 @@ set(FEATHEROS_PROGRAMS
     grep:grep sort:sort ping:ping dhcp:dhcp net:net host:host nc:nc fetch:fetch httpd:httpd
     ntp:ntp echod:echod script:script stty:stty cppbench:cppbench cxxtest:cxxtest mount:mount
     umount:umount ln:ln readlink:readlink sync:sync fbtest:fbtest fbdemo:fbdemo fontview:fontview
+    lsusb:lsusb mousetest:mousetest dmesg:dmesg
 )
 # Programs that define _start themselves instead of linking the C library's, which calls main.
 # The kernel's own tests run test_program and read the raw arguments block.

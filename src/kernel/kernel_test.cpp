@@ -2,6 +2,8 @@
 
 #include "fs/partition.h"
 #include "kernel/arch/cpu_features.h"
+#include "kernel/arch/msi.h"
+#include "kernel/arch/pci.h"
 #include "kernel/arch/serial.h"
 #include "kernel/console.h"
 #include "kernel/cpu.h"
@@ -10,6 +12,8 @@
 #include "kernel/filesystem/initramfs.h"
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/vfs.h"
+#include "kernel/memory/device_memory.h"
+#include "kernel/memory/dma.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/kernel_stack.h"
 #include "kernel/memory/page_allocator.h"
@@ -17,6 +21,8 @@
 #include "kernel/network/interface.h"
 #include "kernel/network/neighbor_discovery.h"
 #include "kernel/panic.h"
+#include "kernel/pci/msi.h"
+#include "kernel/pci/pci.h"
 #include "kernel/process.h"
 #include "kernel/scheduler.h"
 #include "kernel/storage/block_device.h"
@@ -2386,6 +2392,239 @@ void StartConsoleReports()
     {
         Panic("Could not start the console report task");
     }
+}
+
+namespace
+{
+
+constexpr uint16_t EduVendor = 0x1234;
+constexpr uint16_t EduDevice = 0x11E8;
+constexpr uint32_t EduIdentification = 0x00;
+constexpr uint32_t EduLiveness = 0x04;
+constexpr uint32_t EduInterruptStatus = 0x24;
+constexpr uint32_t EduRaiseInterrupt = 0x60;
+constexpr uint32_t EduAcknowledgeInterrupt = 0x64;
+constexpr uint32_t EduDmaSource = 0x80;
+constexpr uint32_t EduDmaDestination = 0x88;
+constexpr uint32_t EduDmaCount = 0x90;
+constexpr uint32_t EduDmaCommand = 0x98;
+constexpr uint32_t EduDmaRun = 1U << 0;
+constexpr uint32_t EduDmaToHost = 1U << 1;
+constexpr uint64_t EduDmaWindow = 0x40000;
+constexpr uint64_t EduInterruptWaitTicks = 300;
+#if defined(ARCH_x86_64)
+// edu masks DMA addresses to 28 bits unless told otherwise.
+constexpr uint64_t EduDmaLimit = 256ULL << 20;
+#else
+// virt's RAM starts at 1 GiB, so the harness widens edu's mask to 32 bits.
+constexpr uint64_t EduDmaLimit = 4ULL << 30;
+#endif
+
+struct EduFinder
+{
+    Pci::Function function;
+    bool found;
+};
+
+bool FindEdu(const Pci::Function& function, void* context)
+{
+    auto* finder = static_cast<EduFinder*>(context);
+    if (function.vendor != EduVendor || function.device != EduDevice)
+    {
+        return true;
+    }
+    finder->function = function;
+    finder->found = true;
+    return false;
+}
+
+std::atomic<uint32_t> edu_interrupt_count = 0;
+
+void OnEduInterrupt(void*)
+{
+    edu_interrupt_count.fetch_add(1);
+}
+
+volatile uint32_t& EduRegister(uintptr_t base, uint32_t offset)
+{
+    return *reinterpret_cast<volatile uint32_t*>(base + offset);
+}
+
+// A level-triggered line fires again as soon as the handler returns, so it has to quiet edu.
+void OnEduLevelInterrupt(void* context)
+{
+    const uintptr_t base = *static_cast<uintptr_t*>(context);
+    EduRegister(base, EduAcknowledgeInterrupt) = EduRegister(base, EduInterruptStatus);
+    edu_interrupt_count.fetch_add(1);
+}
+
+volatile uint64_t& EduWideRegister(uintptr_t base, uint32_t offset)
+{
+    return *reinterpret_cast<volatile uint64_t*>(base + offset);
+}
+
+bool WaitForEduInterrupt(uint32_t count)
+{
+    const uint64_t deadline = Time::TickCount() + EduInterruptWaitTicks;
+    while (edu_interrupt_count.load() < count)
+    {
+        if (Time::TickCount() > deadline)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool RunEduDma(uintptr_t base, uint64_t source, uint64_t destination, uint64_t count,
+               uint32_t command)
+{
+    EduWideRegister(base, EduDmaSource) = source;
+    EduWideRegister(base, EduDmaDestination) = destination;
+    EduWideRegister(base, EduDmaCount) = count;
+    Memory::Dma::ProducerBarrier();
+    EduRegister(base, EduDmaCommand) = command | EduDmaRun;
+    // edu finishes a transfer from a timer 100 ms of virtual time later.
+    const uint64_t deadline = Time::TickCount() + EduInterruptWaitTicks;
+    while ((EduRegister(base, EduDmaCommand) & EduDmaRun) != 0)
+    {
+        if (Time::TickCount() > deadline)
+        {
+            return false;
+        }
+    }
+    Memory::Dma::ConsumerBarrier();
+    return true;
+}
+
+void CheckEduDma(uintptr_t base)
+{
+    Memory::Dma::Buffer outgoing;
+    Memory::Dma::Buffer incoming;
+    if (!Memory::Dma::Allocate(Memory::PageSize, EduDmaLimit, &outgoing) ||
+        !Memory::Dma::Allocate(Memory::PageSize, EduDmaLimit, &incoming) ||
+        outgoing.physical + outgoing.size > EduDmaLimit ||
+        incoming.physical + incoming.size > EduDmaLimit)
+    {
+        Panic("PCI test could not allocate DMA buffers below the device's limit");
+    }
+    for (uint64_t offset = 0; offset < outgoing.size; ++offset)
+    {
+        if (outgoing.address[offset] != 0 || incoming.address[offset] != 0)
+        {
+            Panic("DMA buffers were not zeroed");
+        }
+        outgoing.address[offset] = static_cast<uint8_t>(offset * 7 + 3);
+    }
+    if (!RunEduDma(base, outgoing.physical, EduDmaWindow, outgoing.size, 0) ||
+        !RunEduDma(base, EduDmaWindow, incoming.physical, incoming.size, EduDmaToHost))
+    {
+        Panic("edu DMA did not finish");
+    }
+    for (uint64_t offset = 0; offset < incoming.size; ++offset)
+    {
+        if (incoming.address[offset] != outgoing.address[offset])
+        {
+            Panic("DMA round trip returned different bytes");
+        }
+    }
+    char message[96];
+    if (!String::FormatTo(message, sizeof(message),
+                          "KERN/PCI: DMA round trip passed with buffers at {} and {}\n",
+                          outgoing.physical, incoming.physical))
+    {
+        Panic("PCI test message formatting failed");
+    }
+    Serial::Write(message);
+    Memory::Dma::Free(outgoing);
+    Memory::Dma::Free(incoming);
+
+    Memory::Dma::Buffer refused;
+    if (Memory::Dma::Allocate(Memory::PageSize, Memory::PageSize, &refused))
+    {
+        Panic("DMA allocation ignored its limit");
+    }
+    Serial::Write("KERN/PCI: DMA below the first frame refused\n");
+}
+
+} // namespace
+
+void RunPciTests(const void* platform_data)
+{
+    Pci::ConfigSpace* config = Arch::Pci::Initialize(platform_data);
+    EduFinder finder = {};
+    if (config == nullptr)
+    {
+        Panic("PCI test needs a PCI host bridge");
+    }
+    Pci::Enumerate(*config, FindEdu, &finder);
+    if (!finder.found)
+    {
+        Panic("PCI test needs the edu device");
+    }
+    Pci::Bar bar;
+    if (!Pci::ReadBar(*config, finder.function, 0, &bar) || bar.is_io || bar.address == 0)
+    {
+        Panic("edu has no memory BAR");
+    }
+    const uintptr_t base = Memory::MapDevice(bar.address, bar.size);
+    if (base == 0)
+    {
+        Panic("Could not map the edu registers");
+    }
+    Pci::EnableDevice(*config, finder.function, false);
+    EduRegister(base, EduLiveness) = 0x12345678;
+    if ((EduRegister(base, EduIdentification) & 0xFF) != 0xED ||
+        EduRegister(base, EduLiveness) != ~0x12345678U)
+    {
+        Panic("edu did not answer its identification and liveness registers");
+    }
+    Serial::Write("KERN/PCI: edu answered\n");
+
+#if defined(ARCH_aarch64)
+    uint32_t intx;
+    static uintptr_t intx_context;
+    intx_context = base;
+    if (!Arch::Pci::RouteIntx(finder.function, &intx) ||
+        !Arch::Msi::RegisterIntx(intx, OnEduLevelInterrupt, &intx_context))
+    {
+        Panic("edu's INTx pin has no route");
+    }
+    EduRegister(base, EduRaiseInterrupt) = 1;
+    if (!WaitForEduInterrupt(1))
+    {
+        Panic("INTx interrupt did not arrive");
+    }
+    Serial::Write("KERN/PCI: INTx delivered\n");
+#endif
+
+    const uint32_t before = edu_interrupt_count.load();
+    Pci::MsiMessage message;
+    if (!Arch::Msi::Allocate(OnEduInterrupt, nullptr, &message) ||
+        !Pci::EnableMsi(*config, finder.function, message))
+    {
+        Panic("Could not set up an MSI for edu");
+    }
+    // The second one only arrives if the first was ended correctly.
+    for (uint32_t round = 1; round <= 2; ++round)
+    {
+        EduRegister(base, EduRaiseInterrupt) = 1;
+        if (!WaitForEduInterrupt(before + round) || EduRegister(base, EduInterruptStatus) != 1)
+        {
+            Panic("MSI did not arrive");
+        }
+        EduRegister(base, EduAcknowledgeInterrupt) = 1;
+    }
+    char line[64];
+    if (!String::FormatTo(line, sizeof(line), "KERN/PCI: MSI delivered with data {}\n",
+                          message.data))
+    {
+        Panic("PCI test message formatting failed");
+    }
+    Serial::Write(line);
+
+    CheckEduDma(base);
+    Serial::Write("KERN/PCI: tests passed\n");
 }
 
 namespace

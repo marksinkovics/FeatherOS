@@ -27,6 +27,9 @@ constexpr uint32_t GicDistributorControl = 0x000;
 constexpr uint32_t GicDistributorType = 0x004;
 constexpr uint32_t GicDistributorGroup = 0x080;
 constexpr uint32_t GicDistributorEnable = 0x100;
+constexpr uint32_t GicDistributorDisable = 0x180;
+constexpr uint32_t GicDistributorClearPending = 0x280;
+constexpr uint32_t GicDistributorConfiguration = 0xC00;
 constexpr uint32_t GicDistributorPriority = 0x0400;
 constexpr uint32_t GicDistributorTargets = 0x0800;
 constexpr uint32_t GicSoftwareInterrupt = 0x0F00;
@@ -58,7 +61,17 @@ struct GicV2Registers
     uintptr_t cpu_interface;
 };
 
+enum class Trigger : uint8_t
+{
+    Unchanged,
+    Level,
+    Edge,
+};
+
 InterruptHandler handlers[GicArchitectedMaximumInterruptCount] = {};
+ContextHandler context_handlers[GicArchitectedMaximumInterruptCount] = {};
+void* handler_contexts[GicArchitectedMaximumInterruptCount] = {};
+Trigger triggers[GicArchitectedMaximumInterruptCount] = {};
 uintptr_t distributor_base = 0;
 uintptr_t cpu_interface_base = 0;
 uint32_t supported_interrupt_count = 0;
@@ -319,8 +332,35 @@ volatile uint32_t& CpuRegister(uint32_t offset)
     return *reinterpret_cast<volatile uint32_t*>(cpu_interface_base + offset);
 }
 
+bool HasHandler(uint32_t interrupt_id)
+{
+    return handlers[interrupt_id] != nullptr || context_handlers[interrupt_id] != nullptr;
+}
+
+void ConfigureSpi(uint32_t interrupt_id)
+{
+    const uint32_t register_group = interrupt_id / 32;
+    const uint32_t bit = 1U << (interrupt_id % 32);
+    // The configuration register only takes writes while the interrupt is disabled.
+    DistributorRegister(GicDistributorDisable + register_group * 4) = bit;
+    volatile uint32_t& configuration =
+        DistributorRegister(GicDistributorConfiguration + (interrupt_id / 16) * 4);
+    const uint32_t edge_bit = 2U << ((interrupt_id % 16) * 2);
+    configuration = triggers[interrupt_id] == Trigger::Edge ? configuration | edge_bit
+                                                            : configuration & ~edge_bit;
+    const uint32_t target_shift = (interrupt_id % 4) * 8;
+    volatile uint32_t& target = DistributorRegister(GicDistributorTargets + (interrupt_id / 4) * 4);
+    const uint32_t mask = cpu_target_masks[0] != 0 ? cpu_target_masks[0] : 1;
+    target = (target & ~(0xFFU << target_shift)) | (mask << target_shift);
+    DistributorRegister(GicDistributorClearPending + register_group * 4) = bit;
+}
+
 void ConfigureInterrupt(uint32_t interrupt_id)
 {
+    if (interrupt_id >= 32 && triggers[interrupt_id] != Trigger::Unchanged)
+    {
+        ConfigureSpi(interrupt_id);
+    }
     const uint32_t register_group = interrupt_id / 32;
     const uint32_t bit = 1U << (interrupt_id % 32);
     volatile uint32_t& group = DistributorRegister(GicDistributorGroup + register_group * 4);
@@ -396,7 +436,7 @@ bool InitializeInterruptController(const void* device_tree)
     EnableCpuInterface();
     for (uint32_t interrupt_id = 0; interrupt_id < supported_interrupt_count; ++interrupt_id)
     {
-        if (handlers[interrupt_id] != nullptr)
+        if (HasHandler(interrupt_id))
         {
             ConfigureInterrupt(interrupt_id);
         }
@@ -418,6 +458,44 @@ void RegisterInterruptHandler(uint32_t interrupt_id, InterruptHandler handler)
     }
 }
 
+void RegisterInterruptHandler(uint32_t interrupt_id, ContextHandler handler, void* context)
+{
+    if (interrupt_id >= GicArchitectedMaximumInterruptCount || handler == nullptr)
+    {
+        Panic("Invalid AArch64 interrupt handler registration");
+    }
+    handler_contexts[interrupt_id] = context;
+    context_handlers[interrupt_id] = handler;
+    if (distributor_base != 0 && interrupt_id < supported_interrupt_count)
+    {
+        ConfigureInterrupt(interrupt_id);
+        asm volatile("dsb sy" ::: "memory");
+    }
+}
+
+bool HasInterruptHandler(uint32_t interrupt_id)
+{
+    return interrupt_id < GicArchitectedMaximumInterruptCount && HasHandler(interrupt_id);
+}
+
+void ConfigureEdge(uint32_t interrupt_id)
+{
+    if (interrupt_id < 32 || interrupt_id >= GicArchitectedMaximumInterruptCount)
+    {
+        Panic("Invalid AArch64 SPI configuration");
+    }
+    triggers[interrupt_id] = Trigger::Edge;
+}
+
+void ConfigureLevel(uint32_t interrupt_id)
+{
+    if (interrupt_id < 32 || interrupt_id >= GicArchitectedMaximumInterruptCount)
+    {
+        Panic("Invalid AArch64 SPI configuration");
+    }
+    triggers[interrupt_id] = Trigger::Level;
+}
+
 void TriggerSoftwareInterrupt(uint8_t interrupt_id)
 {
     if (interrupt_id >= GicSoftwareInterruptCount || distributor_base == 0)
@@ -437,7 +515,15 @@ extern "C" void FeatherOS_AArch64_IrqDispatch()
         return;
     }
     CpuRegister(GicCpuEndOfInterrupt) = acknowledge;
-    if (interrupt_id < supported_interrupt_count && handlers[interrupt_id] != nullptr)
+    if (interrupt_id >= supported_interrupt_count)
+    {
+        return;
+    }
+    if (context_handlers[interrupt_id] != nullptr)
+    {
+        context_handlers[interrupt_id](handler_contexts[interrupt_id]);
+    }
+    else if (handlers[interrupt_id] != nullptr)
     {
         handlers[interrupt_id]();
     }

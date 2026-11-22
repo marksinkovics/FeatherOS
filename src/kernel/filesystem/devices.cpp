@@ -21,6 +21,7 @@ constexpr Entry Entries[] = {
     {"random", Device::Random},
     {"tty", Device::ControllingTerminal},
     {"ptmx", Device::PseudoTerminalMaster},
+    {"mouse", Device::Mouse},
 };
 constexpr uint32_t EntryCount = sizeof(Entries) / sizeof(Entries[0]);
 constexpr char SlaveDirectory[] = "pts";

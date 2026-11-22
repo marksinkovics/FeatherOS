@@ -147,6 +147,21 @@ bool StartPeriodicTimer(Handler handler)
     return true;
 }
 
+void EndOfInterrupt()
+{
+    Register(EndOfInterruptRegister) = 0;
+}
+
+bool BootCpuId(uint32_t* apic_id)
+{
+    if (register_base == 0)
+    {
+        return false;
+    }
+    *apic_id = apic_ids[0];
+    return true;
+}
+
 void HandleInterrupt(uint64_t vector)
 {
     if (vector == SpuriousVector)
@@ -154,7 +169,7 @@ void HandleInterrupt(uint64_t vector)
         return;
     }
     // Acknowledge first: the handler may switch to another task before returning.
-    Register(EndOfInterruptRegister) = 0;
+    EndOfInterrupt();
     // A TLB shootdown also arrives as an IPI; it is served before the handler may switch tasks.
     if (vector == IpiVector)
     {

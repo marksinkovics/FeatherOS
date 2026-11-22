@@ -235,7 +235,7 @@ public:
         {
             return false;
         }
-        auto* text = static_cast<char*>(Memory::Allocate(Procfs::MaximumFileSize));
+        auto* text = static_cast<char*>(Memory::Allocate(Procfs::FileCapacity(path)));
         size_t length = 0;
         if (text == nullptr)
         {
@@ -262,6 +262,11 @@ public:
         if (directory)
         {
             *info = MakeInfo(serial_number, ReadOnlyDirectoryMode, 0);
+            return true;
+        }
+        if (Procfs::FileCapacity(path) > Procfs::MaximumFileSize)
+        {
+            *info = MakeInfo(serial_number, ReadOnlyFileMode, 0);
             return true;
         }
         const Memory::HeapObject<GeneratedText> generated;
@@ -473,6 +478,7 @@ constinit DeviceDriver device_driver;
 constinit ProcDriver proc_driver;
 constinit MemoryDriver tmp_driver(Tmpfs::Root::Tmp);
 constinit MemoryDriver etc_driver(Tmpfs::Root::Etc);
+constinit MemoryDriver ram_root_driver(Tmpfs::Root::Ram);
 
 } // namespace
 
@@ -553,6 +559,11 @@ Driver& Tmp()
 Driver& Etc()
 {
     return etc_driver;
+}
+
+Driver& RamRoot()
+{
+    return ram_root_driver;
 }
 
 } // namespace Drivers

@@ -318,6 +318,33 @@ struct PollDescriptor
     int16_t returned_events;
 };
 
+// One record of /dev/mouse, the layout of Linux's struct input_event on 64-bit targets. The time is
+// the monotonic uptime. Types and codes are Linux's (<featheros/input.h>).
+struct InputEvent
+{
+    int64_t seconds;
+    int64_t microseconds;
+    uint16_t type;
+    uint16_t code;
+    int32_t value;
+};
+
+static_assert(sizeof(InputEvent) == 24 && offsetof(InputEvent, microseconds) == 8 &&
+                  offsetof(InputEvent, type) == 16 && offsetof(InputEvent, code) == 18 &&
+                  offsetof(InputEvent, value) == 20,
+              "the kernel and the C library share InputEvent");
+
+constexpr uint16_t InputEventSync = 0;
+constexpr uint16_t InputEventKey = 1;
+constexpr uint16_t InputEventRelative = 2;
+constexpr uint16_t InputSyncReport = 0;
+constexpr uint16_t InputSyncDropped = 3;
+constexpr uint16_t InputRelativeX = 0;
+constexpr uint16_t InputRelativeY = 1;
+constexpr uint16_t InputRelativeHorizontalWheel = 6;
+constexpr uint16_t InputRelativeWheel = 8;
+constexpr uint16_t InputButtonLeft = 0x110;
+
 constexpr int16_t PollReadable = 0x1;
 constexpr int16_t PollWritable = 0x4;
 constexpr int16_t PollError = 0x8;

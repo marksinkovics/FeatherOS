@@ -19,6 +19,7 @@ uint64_t next_search_index GUARDED_BY(allocator_lock) = 0;
 uint64_t bitmap_physical_address = 0;
 uint64_t bitmap_frame_count = 0;
 size_t bitmap_size_bytes = 0;
+uint64_t hhdm_base GUARDED_BY(allocator_lock) = 0;
 bool initialized = false;
 constexpr uint64_t ReclaimBatch = 32;
 std::atomic<FeatherOS::Memory::FrameReclaimer> reclaimer = nullptr;
@@ -309,6 +310,7 @@ bool InitializePageAllocator(uint64_t hhdm_offset)
     }
 
     next_search_index = 0;
+    hhdm_base = hhdm_offset;
     initialized = true;
     return true;
 }
@@ -329,10 +331,11 @@ bool AllocatePageFrame(uint64_t* physical_address)
     return TryAllocatePageFrame(physical_address) == Attempt::Allocated;
 }
 
-bool AllocateContiguousPageFrames(uint64_t count, uint64_t* physical_address)
+bool AllocateContiguousPageFrames(uint64_t count, uint64_t* physical_address, uint64_t limit)
 {
     Sync::SpinLockGuard guard(allocator_lock);
-    if (!initialized || physical_address == nullptr || count == 0 || count > free_frame_count)
+    if (!initialized || physical_address == nullptr || count == 0 || count > free_frame_count ||
+        count > limit / PageSize)
     {
         return false;
     }
@@ -343,7 +346,8 @@ bool AllocateContiguousPageFrames(uint64_t count, uint64_t* physical_address)
     for (uint64_t index = 0; index < frame_count; ++index)
     {
         uint64_t address;
-        if (IsAllocated(index) || !GetPhysicalAddress(index, &address))
+        if (IsAllocated(index) || !GetPhysicalAddress(index, &address) ||
+            address > limit - PageSize)
         {
             run_length = 0;
             continue;
@@ -411,6 +415,12 @@ uint64_t FreeFrameCount()
 {
     Sync::SpinLockGuard guard(allocator_lock);
     return initialized ? free_frame_count : 0;
+}
+
+uint64_t HhdmOffset()
+{
+    Sync::SpinLockGuard guard(allocator_lock);
+    return hhdm_base;
 }
 
 void SetFrameReclaimer(FrameReclaimer reclaim)
