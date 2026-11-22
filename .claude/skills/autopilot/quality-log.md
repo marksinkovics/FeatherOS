@@ -71,18 +71,17 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 1192924 | M34 P5 programs on the new fonts, scale API and font.c gone | opus | sonnet | 0 | 3/3 (two needed new checks) | |
 | ef163ed | M34 P6 fontview, test card, final docs | opus | sonnet | 0 | 2/2 | |
 | 2c2aea9 | Shell smoke: wait for every pipeline stage before Ctrl+C/Ctrl+Z | - | sonnet | 0 | not run | |
-| PENDING | M14 P1 s1 PCI layer, x86 port config, AArch64 ECAM, MapDevice ranges | - | sonnet | 0 | 2/2 (I2 step limit caught as a hang) | |
-| 03a768e | M14 P1 s1 PCI layer, x86 port config, AArch64 ECAM, MapDevice ranges | - | sonnet | 0 | 2/2 (I2 step limit caught as a hang) | |
-| fe9200a | M14 P1 s2 DMA, MSI/MSI-X, GICv2m, AArch64 INTx, test=pci with edu | M14.md (opus) | sonnet | 0 | 4/4 (I3, I4 by T3/T4; I5 both arches by T30) | |
-| ec05a46 | M14 P2 s3 xHCI TRBs, rings, contexts, PORTSC mask, fake controller (host) | M14.md (opus) | sonnet | 0 | 3/3 (I6 T6, I7 T5, I14 T12) | |
-| 1098cde | M14 P2 s4 xHCI bring-up, UsbEvents/UsbManager, interrupt choice, root-port Address Device, USB_TEST | M14.md (opus) | sonnet | 0 | 3/3 (I10 T9 after test fix, I11 T13, I12 T14) | |
-| cac9c0b | M14 P2 s5a HostController, descriptor parser, control/interrupt transfers, stall and error recovery | M14.md (opus) | sonnet | 0 | 3/3 (I16 T18 after test fix, I17 T15, I19 T16) | |
-| 74a1d6e | M14 P2 s5b Device tree, driver binding, root hot-plug, /proc/usb, lsusb | M14.md (opus) | sonnet | 0 | 2/2 (I20 T28 and I20 tests, I21 lock test) | |
-| 699065e | M14 P3 s6 HID report parser, key map, diff, repeater, global locks (host) | M14.md (opus) | sonnet | 0 | 3/3 (I22 T19/T20, I23 T21, I24 T23) | |
-| 4f52ec7 | M14 P3 s7 HID driver, LEDs, usbhid=, ps2=off, USB keys into the shell | M14.md (opus) | sonnet | 0 | 3/3 (I21, I25 hid test; I23 after test fix) — I21 relaxed: detach releases keys into Input under topology_lock, documented | |
-| db74d37 | M14 P3 s8 pointer queue, /dev/mouse, featheros/input.h, mousetest | M14.md (opus) | sonnet | 0 | 2/2 (I27, I28 by T25) | |
-| fc362df | M14 P3 follow-up: mice use report protocol, boot fallback (user decision) | - | sonnet (medium) | 0 | - | |
-| 7a9acc0 | M14 P4 s9 hubs: state machine, hub driver, TT, recursive detach, USB_HUB_TEST | M14.md (opus) | sonnet | 0 | 3/3 (I29 T26, I30 T27, I20 T28) | |
-| 741db2d | M14 P5 s10a i8042 after handoff, ACPI FindTable, FADT flag, OVMF usb case | M14.md (opus) | sonnet | 0 | I32 bits by [i8042]; I32 order not caught (laptop only); I31 by INPUT with usb=off | |
-| b8ad2cd | M14 P5 s10b boot without a disk: tmpfs root with /home, nodisk case | M14.md (opus) | sonnet | 0 (agent ran out of turns; coordinator finished verification) | I33 by NODISK case (2 mutations) | |
-| 391d216 | M14 P5 s10c log ring, /proc/kmsg, dmesg, LIMINE_TIMEOUT, USB stick image, docs/hardware.md | M14.md (opus) | sonnet | 0 | 2/2 (wrap by [logring], lock by TSan) | |
+| 20459bb | M14 P1 s1 PCI layer, x86 port config, AArch64 ECAM, MapDevice ranges | - | sonnet | 0 | 2/2 (I2 step limit caught as a hang) | |
+| be681f8 | M14 P1 s2 DMA, MSI/MSI-X, GICv2m, AArch64 INTx, test=pci with edu | M14.md (opus) | sonnet | 0 | 4/4 (I3, I4 by T3/T4; I5 both arches by T30) | |
+| 0af9637 | M14 P2 s3 xHCI TRBs, rings, contexts, PORTSC mask, fake controller (host) | M14.md (opus) | sonnet | 0 | 3/3 (I6 T6, I7 T5, I14 T12) | |
+| b3d7599 | M14 P2 s4 xHCI bring-up, UsbEvents/UsbManager, interrupt choice, root-port Address Device, USB_TEST | M14.md (opus) | sonnet | 0 | 3/3 (I10 T9 after test fix, I11 T13, I12 T14) | |
+| bb77cee | M14 P2 s5a HostController, descriptor parser, control/interrupt transfers, stall and error recovery | M14.md (opus) | sonnet | 0 | 3/3 (I16 T18 after test fix, I17 T15, I19 T16) | |
+| 507b749 | M14 P2 s5b Device tree, driver binding, root hot-plug, /proc/usb, lsusb | M14.md (opus) | sonnet | 0 | 2/2 (I20 T28 and I20 tests, I21 lock test) | |
+| 55bcf46 | M14 P3 s6 HID report parser, key map, diff, repeater, global locks (host) | M14.md (opus) | sonnet | 0 | 3/3 (I22 T19/T20, I23 T21, I24 T23) | |
+| 7dac9c9 | M14 P3 s7 HID driver, LEDs, usbhid=, ps2=off, USB keys into the shell | M14.md (opus) | sonnet | 0 | 3/3 (I21, I25 hid test; I23 after test fix) — I21 relaxed: detach releases keys into Input under topology_lock, documented | |
+| 5a66ca0 | M14 P3 s8 pointer queue, /dev/mouse, featheros/input.h, mousetest | M14.md (opus) | sonnet | 0 | 2/2 (I27, I28 by T25) | |
+| fb12ce9 | M14 P3 follow-up: mice use report protocol, boot fallback (user decision) | - | sonnet (medium) | 0 | - | |
+| 0deaa8d | M14 P4 s9 hubs: state machine, hub driver, TT, recursive detach, USB_HUB_TEST | M14.md (opus) | sonnet | 0 | 3/3 (I29 T26, I30 T27, I20 T28) | |
+| e686dd9 | M14 P5 s10a i8042 after handoff, ACPI FindTable, FADT flag, OVMF usb case | M14.md (opus) | sonnet | 0 | I32 bits by [i8042]; I32 order not caught (laptop only); I31 by INPUT with usb=off | |
+| 4623da9 | M14 P5 s10b boot without a disk: tmpfs root with /home, nodisk case | M14.md (opus) | sonnet | 0 (agent ran out of turns; coordinator finished verification) | I33 by NODISK case (2 mutations) | |
+| c931dda | M14 P5 s10c log ring, /proc/kmsg, dmesg, LIMINE_TIMEOUT, USB stick image, docs/hardware.md | M14.md (opus) | sonnet | 0 | 2/2 (wrap by [logring], lock by TSan) | |
