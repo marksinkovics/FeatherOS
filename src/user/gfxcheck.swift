@@ -10,12 +10,28 @@ typealias TileSheet = FeatherOS.Graphics.TileSheet
 typealias Font = FeatherOS.Graphics.Font
 typealias Check = FeatherOS.User.GfxCheck
 
+func loadFont(_ name: String) -> UnsafeMutablePointer<Font> {
+    let font = UnsafeMutablePointer<Font>.allocate(capacity: 1)
+    font.initialize(to: Font())
+    let status = font.pointee.LoadNamed(name)
+    if status != .Ok {
+        print("gfxcheck: font \(name) rejected \(String(cString: FeatherOS.Text.FontStatusName(status)))")
+        exit(.failure)
+    }
+    return font
+}
+
+let sansPath = "/system/fonts/sans-16.ffnt"
+let monoPath = "/system/fonts/mono-32.ffnt"
+let sans = loadFont("sans-16")
+let mono = loadFont("mono-32")
+
 var surface = Surface(Check.Width, Check.Height)
 surface.Fill(0x101820)
 surface.FillRectangle(4, 4, 30, 20, 0xC03030)
 surface.DrawRectangle(-2, -2, 20, 12, 0xFFFFFF)
-surface.DrawText(6, 6, "Feather", 0xFFFF00, 1)
-surface.DrawText(20, 24, "OS", 0x00FF00, 2)
+_ = surface.DrawText(sans, 6, 6, "Feather", 0xFFFF00)
+_ = surface.DrawText(mono, 12, 22, "OS", 0x00FF00)
 
 var sprite = Surface(8, 8)
 sprite.Fill(0xFF00FF)
@@ -23,7 +39,7 @@ sprite.FillRectangle(2, 2, 4, 4, 0x00FFFF)
 withUnsafePointer(to: &sprite) { surface.BlitKeyed($0, 50, 30, 0xFF00FF) }
 
 let actual = surface.Checksum()
-let expected = Check.ExpectedChecksum()
+let expected = Check.ExpectedChecksum(sansPath, monoPath)
 print("gfxcheck: surface \(surface.Width())x\(surface.Height()), sprite \(sprite.Width())x\(sprite.Height())")
 print("gfxcheck: checksum \(actual), match \(actual == expected)")
 if actual != expected {
@@ -56,14 +72,6 @@ if tileActual != tileExpected {
     exit(.failure)
 }
 
-let fontPath = "/system/fonts/sans-16.ffnt"
-let sans = UnsafeMutablePointer<Font>.allocate(capacity: 1)
-sans.initialize(to: Font())
-let fontStatus = sans.pointee.LoadNamed("sans-16")
-if fontStatus != .Ok {
-    print("gfxcheck: font rejected \(String(cString: FeatherOS.Text.FontStatusName(fontStatus)))")
-    exit(.failure)
-}
 var textPicture = Surface(Check.FontPictureWidth, Check.FontPictureHeight)
 textPicture.Fill(0x203050)
 let textEnd = textPicture.DrawText(sans, 4, 4, Check.FontText(), 0xF0E0C0)
@@ -75,7 +83,7 @@ guard let console = Font.Console() else {
 _ = textPicture.DrawText(console, 50, 26, Check.ConsoleText(), 0xFFFF00)
 _ = textPicture.DrawText(console, 70, 40, "cut", 0xFF8080)
 let fontActual = textPicture.Checksum()
-let fontExpected = Check.ExpectedFontChecksum(fontPath)
+let fontExpected = Check.ExpectedFontChecksum(sansPath)
 print("gfxcheck: font checksum \(fontActual), match \(fontActual == fontExpected)")
 if fontActual != fontExpected {
     print("gfxcheck: expected \(fontExpected)")

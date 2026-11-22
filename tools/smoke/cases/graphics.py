@@ -7,6 +7,7 @@ import time
 
 from smoke.boot import PANIC_MARKER
 from smoke.cases.base import Case
+from smoke.cases.fonts import ExpectRenderedText, FontFile, LoadFfnt
 from smoke.cases.screen import (
     BLACK,
     HEIGHT,
@@ -74,6 +75,7 @@ WELL_X = (WIDTH - 10 * CELL) // 2
 WELL_Y = (HEIGHT - 20 * CELL) // 2
 LEFT_PANEL_X = WELL_X - 24 - 216
 BACKGROUND = 0x12141F
+PANEL_FILL = 0x1B1F2E
 PANEL_BORDER = 0x3A4160
 WELL_FILL = 0x0A0C14
 GRID = 0x131724
@@ -89,6 +91,27 @@ PIECE_COLORS = (
     0xEB5757,
     0x4F7BE8,
     0xF2994A,
+)
+# Text boxes in the well, from the fonts' advances: sans-48 "PAUSED" is 163
+# pixels wide and 48 tall, centered in the 320-pixel well; sans-32 "ABC" is 54
+# wide. An initials slot is 64x80, three of them 16 apart, centered.
+PAUSED_BOX = (WELL_X + (10 * CELL - 163) // 2, WELL_Y + 270, 163, 48)
+FIRST_INITIALS_BOX = (WELL_X + 68, WELL_Y + 160, 54, 32)
+SLOT_X = (10 * CELL - (3 * 64 + 2 * 16)) // 2
+SLOT_STEP = 64 + 16
+SLOT_SIZE = (64, 80)
+# The three numbers of the left panel are mono-32 text of nine cells of 16x32,
+# padded with spaces on the right, in a box filled with the panel's color.
+NUMBER_X = LEFT_PANEL_X + 16
+NUMBER_ROWS = tuple(WELL_Y + 202 + 90 * index for index in range(3))
+NUMBER_CELLS = 9
+NUMBER_CELL = (16, 32)
+# Unmounting the initramfs from /system hides the fonts (the rescue programs go
+# too, so this is the last thing the case does), and the game draws with the
+# console font, mono-16.
+HIDE_FONTS = "umount /system\n"
+FONT_WARNING = re.compile(
+    r"cannot load the font sans-48, using the console font"
 )
 HARD_DROP_ROUNDS = 12
 HARD_DROPS_PER_ROUND = 5
@@ -208,6 +231,8 @@ def ExpectEmptyWell(pixels):
 def ExpectLockedPiece(pixels):
     failure = ExpectFrame(pixels)
     if failure is None:
+        failure = ExpectNumbers(pixels)
+    if failure is None:
         found = PixelAt(pixels, *CellCenter(1, 19))
         if found not in PIECE_COLORS:
             failure = (
@@ -217,13 +242,64 @@ def ExpectLockedPiece(pixels):
     return failure
 
 
+@functools.cache
+def NumberCells():
+    """Every cell a number can show, rendered by ffnt.py from the committed
+    mono-32 file as the game draws it: a digit or a space in TEXT over the
+    panel's fill."""
+    ffnt = LoadFfnt()
+    font = FontFile("mono-32")
+    cells = {}
+    for symbol in "0123456789 ":
+        width, height, pixels = ffnt.render_text(
+            font, symbol, PANEL_FILL, TEXT, margin=0
+        )
+        if (width, height) != NUMBER_CELL:
+            raise StepFailed(f"mono-32 {symbol!r} is {width}x{height}")
+        cells[symbol] = tuple(pixels)
+    return cells
+
+
+def CellPixels(pixels, x, y):
+    width, height = NUMBER_CELL
+    return tuple(
+        PixelAt(pixels, x + column, y + row)
+        for row in range(height)
+        for column in range(width)
+    )
+
+
+def NumberText(pixels, y):
+    cells = NumberCells()
+    text = ""
+    for index in range(NUMBER_CELLS):
+        found = CellPixels(pixels, NUMBER_X + index * NUMBER_CELL[0], y)
+        symbol = next((s for s, cell in cells.items() if cell == found), None)
+        if symbol is None:
+            return None, index
+        text += symbol
+    return text, None
+
+
+# A value drawn over its old one would leave pixels of both digits in a cell:
+# every cell must be exactly a digit or a space, the digits first.
+def ExpectNumbers(pixels):
+    for name, y in zip(("score", "level", "lines"), NUMBER_ROWS):
+        text, bad = NumberText(pixels, y)
+        if text is None:
+            return (
+                f"cell {bad} of the {name} at y={y} is not a digit or a space"
+            )
+        if not re.fullmatch(r"\d+ *", text):
+            return f"the {name} reads {text!r}, expected digits then spaces"
+    return None
+
+
 def ExpectPaused(pixels):
     failure = ExpectColor(
         pixels, "the pause box", (WELL_X + 8, WELL_Y + 8), OVERLAY_FILL
     )
-    if failure is None and not Found(
-        pixels, WELL_X + 60, WELL_Y + 270, 200, 30, ACCENT
-    ):
+    if failure is None and not Found(pixels, *PAUSED_BOX, ACCENT):
         failure = "the word PAUSED is not drawn"
     if failure is None:
         failure = ExpectColor(
@@ -240,14 +316,14 @@ def ExpectEntry(pixels):
         failure = ExpectColor(
             pixels,
             "the current initials slot",
-            (WELL_X + 60, WELL_Y + 200),
+            (WELL_X + SLOT_X, WELL_Y + 200),
             ACCENT,
         )
     if failure is None:
         failure = ExpectColor(
             pixels,
             "the next initials slot",
-            (WELL_X + 60 + 72, WELL_Y + 200),
+            (WELL_X + SLOT_X + SLOT_STEP, WELL_Y + 200),
             PANEL_BORDER,
         )
     return failure
@@ -255,8 +331,15 @@ def ExpectEntry(pixels):
 
 def ExpectInitials(pixels):
     for slot in range(3):
-        left = WELL_X + 60 + 72 * slot
-        if not Found(pixels, left + 1, WELL_Y + 181, 54, 78, TEXT):
+        left = WELL_X + SLOT_X + SLOT_STEP * slot
+        if not Found(
+            pixels,
+            left + 1,
+            WELL_Y + 181,
+            SLOT_SIZE[0] - 2,
+            SLOT_SIZE[1] - 2,
+            TEXT,
+        ):
             return f"initials slot {slot} shows no letter"
     return None
 
@@ -265,9 +348,7 @@ def ExpectTable(pixels):
     failure = ExpectColor(
         pixels, "the table box", (WELL_X + 8, WELL_Y + 8), OVERLAY_FILL
     )
-    if failure is None and not Found(
-        pixels, WELL_X + 68, WELL_Y + 160, 48, 32, ACCENT
-    ):
+    if failure is None and not Found(pixels, *FIRST_INITIALS_BOX, ACCENT):
         failure = "the new entry is not highlighted in the first row"
     return failure
 
@@ -374,7 +455,9 @@ class Graphics(ScreenCase, Case):
     fbdemo --keys and checks the key events QMP key presses produce; last it
     plays featherfall with QMP keys and checks the well, a locked piece, the
     pause box, the redraw after a console switch, the game-over screen, the
-    initials entry, the high score table and the saved file."""
+    initials entry, the high score table and the saved file; last it unmounts
+    /system to hide the fonts and checks that it falls back to the console
+    font."""
 
     serial_input = True
     timeout = GRAPHICS_TIMEOUT_SECONDS
@@ -385,7 +468,8 @@ class Graphics(ScreenCase, Case):
         "events, switching, overflow and Ctrl+C behaved as specified, "
         "featherfall's self-test and demo runs gave the expected results, "
         "and featherfall drew its well, paused, redrew after a console "
-        "switch, took initials for a high score and saved them"
+        "switch, took initials for a high score, saved them and drew with the "
+        "console font when its fonts were gone"
     )
 
     def __init__(self, args):
@@ -565,6 +649,42 @@ class Graphics(ScreenCase, Case):
             raise StepFailed(f"{SCORE_FILE} has no 'ABC <score>' line")
         if int(found.group(1)) < 1:
             raise StepFailed("the saved score is not positive")
+        self.RunWithoutFonts(session, events)
+
+    def ExpectFallbackFrame(self, pixels):
+        failure = ExpectEmptyWell(pixels)
+        if failure is None:
+            failure = ExpectRenderedText(
+                pixels,
+                "mono-16",
+                "FEATHERFALL",
+                0,
+                14,
+                ACCENT,
+                BACKGROUND,
+                WIDTH,
+            )
+        return failure
+
+    def RunWithoutFonts(self, session, events):
+        events.origin = len(events.Text())
+        session.process.stdin.write(HIDE_FONTS.encode())
+        session.process.stdin.write(
+            f"featherfall --seed {GAME_SEED}\n".encode()
+        )
+        session.process.stdin.flush()
+        self.Step(
+            "featherfall without fonts",
+            self.ExpectFallbackFrame,
+            GAME_START_SECONDS,
+        )
+        if events.WaitText(FONT_WARNING) is None:
+            raise StepFailed("featherfall did not say it fell back")
+        events.origin = len(events.Text())
+        self.Tap("esc")
+        if events.WaitText(SHELL_PROMPT_TEXT) is None:
+            raise StepFailed("the prompt did not return after Esc")
+        self.Step("after featherfall without fonts", ExpectTextAgain)
 
     def OnOutput(self, session, clean_output):
         if self.finished:

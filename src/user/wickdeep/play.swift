@@ -187,6 +187,12 @@ func screenFailure(_ display: inout Display, _ what: String) -> Int32 {
 }
 
 func runGame(seed: UInt64?) -> Int32 {
+    let fonts = Fonts()
+    defer { fonts.release() }
+    return play(seed: seed, fonts: fonts)
+}
+
+func play(seed: UInt64?, fonts: Fonts) -> Int32 {
     var display = Display()
     if display.Open() != .Ok {
         return screenFailure(&display, "cannot take the screen of this console")
@@ -198,7 +204,7 @@ func runGame(seed: UInt64?) -> Int32 {
         warn("the screen is too small, \(layoutWidth)x\(layoutHeight) is needed")
         return 1
     }
-    guard var renderer = Renderer(screen) else {
+    guard var renderer = Renderer(screen, fonts) else {
         display.Close()
         warn("the tile art does not load")
         return 1

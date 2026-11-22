@@ -104,6 +104,24 @@ TEST_CASE("a font loads from a file, from memory, or not at all", "[graphics][fo
     CHECK(font.LoadMemory(nullptr, 0) == FontStatus::Short);
 }
 
+TEST_CASE("a font that cannot be loaded falls back to the console font", "[graphics][font]")
+{
+    const Font* console = Font::Console();
+    REQUIRE(console != nullptr);
+    Font storage;
+    CHECK(Graphics::LoadFontOrConsole("sans-16", &storage) == console);
+    CHECK_FALSE(storage.Valid());
+    CHECK(Graphics::LoadFontOrConsole("../sans-16", &storage) == console);
+    CHECK(Graphics::LoadFontOrConsole(nullptr, &storage) == console);
+    CHECK(Graphics::LoadFontOrConsole("sans-16", nullptr) == console);
+
+    Surface surface(40, 20);
+    surface.Fill(Background);
+    const int32_t end = surface.DrawText(console, 2, 2, "Hi", Foreground);
+    CHECK(end == 2 + 2 * console->CellWidth());
+    CHECK(Pixels(surface) != std::vector<uint32_t>(800, Background));
+}
+
 namespace
 {
 
@@ -470,6 +488,59 @@ TEST_CASE("DrawTextOn fills the measured box first", "[graphics][font]")
     other.Fill(0x000000);
     CHECK(other.DrawTextOn(&font, -3000, 5, "Box", Foreground, Background) == -3000 + width);
     CHECK(Pixels(other) == std::vector<uint32_t>(4000, 0));
+}
+
+TEST_CASE("text redrawn in place keeps nothing of the old text", "[graphics][font]")
+{
+    const Font font = LoadFont("mono-32");
+    REQUIRE(font.Monospace());
+    const std::string old_text = "98765  ";
+    const std::string new_text = "0      ";
+    CHECK(font.MeasureText(old_text.c_str()) == font.MeasureText(new_text.c_str()));
+    const int32_t width = font.MeasureText(new_text.c_str());
+
+    Surface fresh(width + 8, font.LineHeight() + 8);
+    fresh.Fill(Background);
+    fresh.DrawTextOn(&font, 4, 4, new_text.c_str(), Foreground, Background);
+
+    Surface redrawn(width + 8, font.LineHeight() + 8);
+    redrawn.Fill(Background);
+    redrawn.DrawTextOn(&font, 4, 4, old_text.c_str(), Foreground, Background);
+    redrawn.DrawTextOn(&font, 4, 4, new_text.c_str(), Foreground, Background);
+    CHECK(Pixels(redrawn) == Pixels(fresh));
+
+    Surface stacked(width + 8, font.LineHeight() + 8);
+    stacked.Fill(Background);
+    stacked.DrawText(&font, 4, 4, old_text.c_str(), Foreground);
+    stacked.DrawText(&font, 4, 4, new_text.c_str(), Foreground);
+    CHECK(Pixels(stacked) != Pixels(fresh));
+}
+
+TEST_CASE("text outside the surface at any edge draws nothing, spaces get a background",
+          "[graphics][font]")
+{
+    const Font font = LoadFont("sans-16");
+    Surface surface(40, 40);
+    surface.Fill(Background);
+    const std::vector<uint32_t> before = Pixels(surface);
+    const int32_t width = font.MeasureText("!!");
+    CHECK(surface.DrawText(&font, -width, 10, "!!", Foreground) == 0);
+    CHECK(surface.DrawText(&font, 40, 10, "!!", Foreground) == 40 + width);
+    CHECK(surface.DrawText(&font, 10, -font.LineHeight(), "!!", Foreground) == 10 + width);
+    CHECK(surface.DrawText(&font, 10, 40, "!!", Foreground) == 10 + width);
+    CHECK(surface.DrawText(&font, -100, INT32_MIN, "!!", Foreground) < 0);
+    CHECK(Pixels(surface) == before);
+
+    surface.DrawTextOn(&font, 2, 3, "  ", Foreground, 0x00FF00);
+    const int32_t blank = font.MeasureText("  ");
+    for (int32_t y = 0; y < 40; ++y)
+    {
+        for (int32_t x = 0; x < 40; ++x)
+        {
+            const bool inside = x >= 2 && x < 2 + blank && y >= 3 && y < 3 + font.LineHeight();
+            CHECK(surface.PixelAt(x, y) == (inside ? 0x00FF00U : Background));
+        }
+    }
 }
 
 TEST_CASE("no font, no text, or no pixels draws nothing", "[graphics][font]")

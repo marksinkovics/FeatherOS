@@ -7,11 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern "C"
-{
-#include "kernel/framebuffer/font.h"
-}
-
 namespace FeatherOS::Graphics
 {
 
@@ -350,77 +345,6 @@ int32_t Surface::DrawTextOn(const Font* font, int32_t x, int32_t y, const char* 
     }
     FillRectangle(x, y, font->MeasureText(utf8), font->LineHeight(), background);
     return DrawText(font, x, y, utf8, color);
-}
-
-void Surface::DrawText(int32_t x, int32_t y, const char* text, uint32_t color, int32_t scale)
-{
-    DrawString(x, y, text, color, false, 0, scale);
-}
-
-void Surface::DrawTextOn(int32_t x, int32_t y, const char* text, uint32_t color,
-                         uint32_t background, int32_t scale)
-{
-    DrawString(x, y, text, color, true, background, scale);
-}
-
-int32_t Surface::TextWidth(const char* text, int32_t scale)
-{
-    if (text == nullptr || scale < 1 || scale > MaximumScale)
-    {
-        return 0;
-    }
-    const size_t length = strlen(text);
-    const size_t width = length * static_cast<size_t>(GlyphWidth * scale);
-    return width > static_cast<size_t>(INT32_MAX) ? INT32_MAX : static_cast<int32_t>(width);
-}
-
-void Surface::DrawString(int32_t x, int32_t y, const char* text, uint32_t color, bool opaque,
-                         uint32_t background, int32_t scale)
-{
-    if (text == nullptr || scale < 1 || scale > MaximumScale)
-    {
-        return;
-    }
-    const int32_t advance = GlyphWidth * scale;
-    const int32_t height = GlyphHeight * scale;
-    if (y >= m_height || static_cast<int64_t>(y) + height <= 0)
-    {
-        return;
-    }
-    int64_t position = x;
-    for (; *text != '\0' && position < m_width; ++text)
-    {
-        if (position + advance > 0)
-        {
-            DrawGlyph(static_cast<int32_t>(position), y, *text, color, opaque, background, scale);
-        }
-        position += advance;
-    }
-}
-
-void Surface::DrawGlyph(int32_t x, int32_t y, char character, uint32_t color, bool opaque,
-                        uint32_t background, int32_t scale)
-{
-    if (opaque)
-    {
-        FillRectangle(x, y, GlyphWidth * scale, GlyphHeight * scale, background);
-    }
-    uint8_t index = 0;
-    if (indexForCharacter(character, &index) != 0)
-    {
-        return;
-    }
-    const uint8_t* glyph = font16_8 + static_cast<size_t>(index) * FONT_HEIGHT;
-    for (int32_t row = 0; row < GlyphHeight; ++row)
-    {
-        for (int32_t column = 0; column < GlyphWidth; ++column)
-        {
-            if ((glyph[row] & (1U << column)) != 0)
-            {
-                FillRectangle(x + column * scale, y + row * scale, scale, scale, color);
-            }
-        }
-    }
 }
 
 } // namespace FeatherOS::Graphics

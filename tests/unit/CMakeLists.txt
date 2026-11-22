@@ -162,7 +162,6 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/filesystem/vfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/elf/elf_loader.cpp"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/console_font.c"
-    "${FEATHEROS_ROOT}/src/kernel/framebuffer/font.c"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/framebuffer.cpp"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/graphics_mode.cpp"
     "${FEATHEROS_ROOT}/src/kernel/framebuffer/term.cpp"

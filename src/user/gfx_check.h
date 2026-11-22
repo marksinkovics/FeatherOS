@@ -4,12 +4,12 @@
 #include <stdint.h>
 
 // What gfxcheck, a Swift program, draws with the graphics library: the checksum of the picture
-// its steps make on a 64x40 surface, computed here without the library.
+// its steps make on a 64x56 surface, computed here without the library.
 namespace FeatherOS::User::GfxCheck
 {
 
 constexpr int32_t Width = 64;
-constexpr int32_t Height = 40;
+constexpr int32_t Height = 56;
 
 constexpr int32_t TileSize = 8;
 constexpr int32_t TileCount = 2;
@@ -17,7 +17,9 @@ constexpr int32_t PaletteSize = 4;
 constexpr int32_t TilePictureWidth = 40;
 constexpr int32_t TilePictureHeight = 20;
 
-uint32_t ExpectedChecksum();
+// The first picture draws "Feather" in sans-16 and "OS" in mono-32, read from these files; 0 if
+// either cannot be read.
+uint32_t ExpectedChecksum(const char* sans_path, const char* mono_path);
 
 // The two-tile sheet gfxcheck loads, and the checksum of the 40x20 picture it draws from it.
 const char* const* TileRows();

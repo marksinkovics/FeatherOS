@@ -2,13 +2,9 @@
 
 #include <limine.h>
 
+#include "kernel/framebuffer/console_font.h"
 #include "kernel/framebuffer/framebuffer.h"
 #include "kernel/framebuffer/term.h"
-
-extern "C"
-{
-#include "kernel/framebuffer/font.h"
-}
 
 #include <algorithm>
 #include <array>
@@ -40,23 +36,6 @@ limine_framebuffer MakeFramebuffer(uint8_t* pixels, uint64_t width, uint64_t hei
 }
 
 } // namespace
-
-TEST_CASE("every printable character has its own glyph")
-{
-    uint8_t index = 0;
-    CHECK(indexForCharacter('!', &index) == 0);
-    CHECK(index == 0);
-    CHECK(indexForCharacter('~', &index) == 0);
-    CHECK(index == 93);
-    uint8_t apostrophe = 0;
-    uint8_t backtick = 0;
-    CHECK(indexForCharacter('\'', &apostrophe) == 0);
-    CHECK(indexForCharacter('`', &backtick) == 0);
-    CHECK(apostrophe != backtick);
-    CHECK(indexForCharacter(' ', &index) == -1);
-    CHECK(indexForCharacter('\0', &index) == -1);
-    CHECK(indexForCharacter('\x7f', &index) == -1);
-}
 
 TEST_CASE("framebuffer initializes and draws masked RGB pixels")
 {
@@ -114,7 +93,7 @@ TEST_CASE("terminal rendering keeps padding around the status bar and text")
     terminal.Print("x");
     terminal.EraseCharacter();
 
-    for (uint64_t y = 0; y < FeatherOS::TermConfig::Padding * FONT_HEIGHT; ++y)
+    for (uint64_t y = 0; y < FeatherOS::TermConfig::Padding * ConsoleFontCellHeight; ++y)
     {
         for (uint64_t x = 0; x < width * 4; ++x)
         {
@@ -123,16 +102,16 @@ TEST_CASE("terminal rendering keeps padding around the status bar and text")
     }
     for (uint64_t y = 0; y < height; ++y)
     {
-        for (uint64_t x = 0; x < FeatherOS::TermConfig::Padding * FONT_WIDTH; ++x)
+        for (uint64_t x = 0; x < FeatherOS::TermConfig::Padding * ConsoleFontCellWidth; ++x)
         {
             REQUIRE(pixels[y * pitch + x * 4] == 0);
         }
-        for (uint64_t x = width - FeatherOS::TermConfig::Padding * FONT_WIDTH; x < width; ++x)
+        for (uint64_t x = width - FeatherOS::TermConfig::Padding * ConsoleFontCellWidth; x < width; ++x)
         {
             REQUIRE(pixels[y * pitch + x * 4] == 0);
         }
     }
-    for (uint64_t y = height - FeatherOS::TermConfig::Padding * FONT_HEIGHT; y < height; ++y)
+    for (uint64_t y = height - FeatherOS::TermConfig::Padding * ConsoleFontCellHeight; y < height; ++y)
     {
         for (uint64_t x = 0; x < pitch; ++x)
         {

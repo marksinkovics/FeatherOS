@@ -228,4 +228,13 @@ const Text::FontView& Font::View() const
     return m_view;
 }
 
+const Font* LoadFontOrConsole(const char* name, Font* storage)
+{
+    if (storage != nullptr && storage->LoadNamed(name) == Text::FontStatus::Ok)
+    {
+        return storage;
+    }
+    return Font::Console();
+}
+
 } // namespace FeatherOS::Graphics

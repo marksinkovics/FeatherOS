@@ -65,4 +65,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 5c41d22 | M34 P1 FFNT format, generator, committed fonts, parser | opus | sonnet | 0 | 4/4 | |
 | 50e8304 | M34 P2 Font, anti-aliased DrawText, sans U+FFFD, gfxcheck | opus | sonnet | 1 | 5/6 (one equivalent) | |
 | d4fad81 | M34 P3 UTF-8 console, anti-aliased mono-16, FONTS mode | opus | sonnet | 1 | 7/8 (one equivalent) | |
-| (this) | M34 P4 UTF-8 in canonical mode, key decoder, line editor | opus | sonnet | 1 | 3/3 | |
+| aaf4ffa | M34 P4 UTF-8 in canonical mode, key decoder, line editor | opus | sonnet | 1 | 3/3 | |
+| (this) | M34 P5 programs on the new fonts, scale API and font.c gone | opus | sonnet | 0 | 3/3 (two needed new checks) | |

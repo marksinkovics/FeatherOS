@@ -90,7 +90,6 @@ set(SRC
     ${EXCEPTION_SRC}
     ${SCHEDULER_CONTEXT_SRC}
     ${SRCROOT}/framebuffer/console_font.c
-    ${SRCROOT}/framebuffer/font.c
     ${SRCROOT}/framebuffer/framebuffer.cpp
     ${SRCROOT}/framebuffer/graphics_mode.cpp
     ${SRCROOT}/framebuffer/term.cpp

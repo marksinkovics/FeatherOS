@@ -1,7 +1,9 @@
 import FeatherGraphics
+import FeatherSupport
 import WickdeepArt
 
 typealias Surface = FeatherOS.Graphics.Surface
+typealias Font = FeatherOS.Graphics.Font
 typealias TileSheet = FeatherOS.Graphics.TileSheet
 typealias Art = FeatherOS.User.WickdeepArt
 
@@ -145,6 +147,37 @@ struct Region {
     var height: Int
 }
 
+// The fonts the game draws with, each loaded once; one that cannot be read becomes the console font.
+struct Fonts {
+    let body: UnsafePointer<Font>
+    let heading: UnsafePointer<Font>
+    private let owned: [UnsafeMutablePointer<Font>]
+
+    init() {
+        var owned: [UnsafeMutablePointer<Font>] = []
+        func load(_ name: String) -> UnsafePointer<Font> {
+            let storage = UnsafeMutablePointer<Font>.allocate(capacity: 1)
+            storage.initialize(to: Font())
+            owned.append(storage)
+            let font = FeatherOS.Graphics.LoadFontOrConsole(name, storage)!
+            if font != UnsafePointer(storage) {
+                warn("cannot load the font \(name), using the console font")
+            }
+            return font
+        }
+        body = load("mono-16")
+        heading = load("sans-32")
+        self.owned = owned
+    }
+
+    func release() {
+        for font in owned {
+            font.deinitialize(count: 1)
+            font.deallocate()
+        }
+    }
+}
+
 struct Canvas {
     let surface: UnsafeMutablePointer<Surface>
 
@@ -156,17 +189,19 @@ struct Canvas {
         surface.pointee.DrawRectangle(Int32(x), Int32(y), Int32(width), Int32(height), color)
     }
 
-    func text(_ x: Int, _ y: Int, _ text: String, _ color: UInt32, scale: Int = 1) {
-        surface.pointee.DrawText(Int32(x), Int32(y), text, color, Int32(scale))
+    func text(_ x: Int, _ y: Int, _ text: String, _ color: UInt32, _ font: UnsafePointer<Font>) {
+        _ = surface.pointee.DrawText(font, Int32(x), Int32(y), text, color)
     }
 
-    func textWidth(_ text: String, scale: Int) -> Int {
-        Int(Surface.TextWidth(text, Int32(scale)))
+    func textWidth(_ text: String, _ font: UnsafePointer<Font>) -> Int {
+        Int(font.pointee.MeasureText(text))
     }
 
-    func centered(_ x: Int, _ width: Int, _ y: Int, _ text: String, _ color: UInt32, scale: Int) {
-        let offset = (width - textWidth(text, scale: scale)) / 2
-        self.text(x + max(offset, 0), y, text, color, scale: scale)
+    func centered(
+        _ x: Int, _ width: Int, _ y: Int, _ text: String, _ color: UInt32, _ font: UnsafePointer<Font>
+    ) {
+        let offset = (width - textWidth(text, font)) / 2
+        self.text(x + max(offset, 0), y, text, color, font)
     }
 }
 
@@ -212,6 +247,7 @@ func mapView(_ game: Game) -> [UInt32] {
 
 struct Renderer {
     let canvas: Canvas
+    let fonts: Fonts
     let sheet: UnsafeMutablePointer<TileSheet>
     let width: Int
     let height: Int
@@ -223,8 +259,9 @@ struct Renderer {
     var previousMessages: [String] = []
     var needsFull = true
 
-    init?(_ surface: UnsafeMutablePointer<Surface>) {
+    init?(_ surface: UnsafeMutablePointer<Surface>, _ fonts: Fonts) {
         canvas = Canvas(surface: surface)
+        self.fonts = fonts
         sheet = UnsafeMutablePointer<TileSheet>.allocate(capacity: 1)
         sheet.initialize(to: TileSheet())
         guard Art.LoadWickdeepTiles(sheet) == .Ok else {
@@ -393,7 +430,7 @@ struct Renderer {
         canvas.outline(x + 1, y + 1, panelWidth - 2, panelHeight - 2, panelBorder)
         canvas.text(
             x + 8, y + 92,
-            "Arrows move  Space wait  Enter stairs  I pack  H help  Esc save and quit", dimColor)
+            "Arrows move  Space wait  Enter stairs  I pack  H help  Esc save and quit", dimColor, fonts.body)
     }
 
     private func drawBar(_ x: Int, _ y: Int, _ value: Int, _ maximum: Int, _ color: UInt32) {
@@ -408,16 +445,16 @@ struct Renderer {
         let x = originX + panelX + 10
         let y = originY + panelY + 8
         drawIcon(Int32(Art.TileHeart), x, y)
-        canvas.text(x + 24, y, "\(game.hp)/\(game.maxHitPoints)", textColor)
+        canvas.text(x + 24, y, "\(game.hp)/\(game.maxHitPoints)", textColor, fonts.body)
         drawBar(x + 112, y + 4, game.hp, game.maxHitPoints, hitPointColor)
         drawIcon(Int32(Art.TileLamp), x, y + 22)
-        canvas.text(x + 24, y + 22, "\(game.oil)", textColor)
+        canvas.text(x + 24, y + 22, "\(game.oil)", textColor, fonts.body)
         drawBar(x + 112, y + 26, game.oil, maximumOil, oilColor)
         canvas.text(
             x, y + 46, "Floor \(game.depth) of \(finalDepth)   Level \(game.level)   Embers \(game.embers)",
-            labelColor)
+            labelColor, fonts.body)
         canvas.text(
-            x, y + 64, "Attack \(game.attack)   Defense \(game.defense)   Score \(game.score)", labelColor)
+            x, y + 64, "Attack \(game.attack)   Defense \(game.defense)   Score \(game.score)", labelColor, fonts.body)
     }
 
     private func drawMessages(_ messages: [String]) {
@@ -427,7 +464,7 @@ struct Renderer {
         let skipped = recentLimit - messages.count
         for (index, message) in messages.enumerated() {
             canvas.text(
-                region.x + 8, region.y + 6 + (index + skipped) * 22, message, colors[index + skipped])
+                region.x + 8, region.y + 6 + (index + skipped) * 22, message, colors[index + skipped], fonts.body)
         }
     }
 
@@ -449,13 +486,13 @@ struct Renderer {
     }
 
     private func drawPack(_ game: Game, _ selected: Int, _ region: Region) {
-        canvas.centered(region.x, region.width, region.y + 14, "PACK", accentColor, scale: 2)
+        canvas.centered(region.x, region.width, region.y + 14, "PACK", accentColor, fonts.heading)
         let wielding = game.weapon.map { itemName(Int($0.rawValue)) } ?? "nothing"
         let wearing = game.coat.map { itemName(Int($0.rawValue)) } ?? "nothing"
-        canvas.text(region.x + 24, region.y + 54, "Wielding: \(wielding)", labelColor)
-        canvas.text(region.x + 24, region.y + 74, "Wearing:  \(wearing)", labelColor)
+        canvas.text(region.x + 24, region.y + 54, "Wielding: \(wielding)", labelColor, fonts.body)
+        canvas.text(region.x + 24, region.y + 74, "Wearing:  \(wearing)", labelColor, fonts.body)
         if game.pack.isEmpty {
-            canvas.text(region.x + 24, region.y + 120, "You carry nothing.", textColor)
+            canvas.text(region.x + 24, region.y + 120, "You carry nothing.", textColor, fonts.body)
         }
         for (slot, kind) in game.pack.enumerated() {
             let y = region.y + 104 + slot * 26
@@ -464,33 +501,33 @@ struct Renderer {
                 canvas.outline(region.x + 16, y - 4, region.width - 32, 24, accentColor)
             }
             drawIcon(Int32(Art.TileFirstItem) + Int32(kind.rawValue) - 1, region.x + 24, y)
-            canvas.text(region.x + 52, y, itemName(Int(kind.rawValue)), textColor)
+            canvas.text(region.x + 52, y, itemName(Int(kind.rawValue)), textColor, fonts.body)
         }
         if selected < game.pack.count {
             let kind = Int(game.pack[selected].rawValue)
             canvas.text(
                 region.x + 24, region.y + 376, "\(itemName(kind)): \(itemEffects[kind - 1])",
-                accentColor)
+                accentColor, fonts.body)
         }
         canvas.centered(
             region.x, region.width, region.y + 444,
-            "Up Down choose   Enter use or equip   D drop   Esc close", labelColor, scale: 1)
+            "Up Down choose   Enter use or equip   D drop   Esc close", labelColor, fonts.body)
     }
 
     private func drawHelp(_ region: Region) {
-        canvas.centered(region.x, region.width, region.y + 14, "WICKDEEP", accentColor, scale: 2)
+        canvas.centered(region.x, region.width, region.y + 14, "WICKDEEP", accentColor, fonts.heading)
         for (index, line) in helpLines.enumerated() {
-            canvas.text(region.x + 24, region.y + 64 + index * 22, line, index < 5 ? textColor : labelColor)
+            canvas.text(region.x + 24, region.y + 64 + index * 22, line, index < 5 ? textColor : labelColor, fonts.body)
         }
-        canvas.centered(region.x, region.width, region.y + 444, "Any key closes", dimColor, scale: 1)
+        canvas.centered(region.x, region.width, region.y + 444, "Any key closes", dimColor, fonts.body)
     }
 
     private func drawOver(_ game: Game, _ hall: Hall, _ rank: Int?, _ region: Region) {
         let title = game.outcome == .victory ? "THE HEARTWICK IS YOURS" : "YOU HAVE FALLEN"
-        canvas.centered(region.x, region.width, region.y + 14, title, accentColor, scale: 2)
+        canvas.centered(region.x, region.width, region.y + 14, title, accentColor, fonts.heading)
         let summary = "Floor \(game.depth)   Level \(game.level)   \(game.turn) turns   Score \(game.score)"
-        canvas.centered(region.x, region.width, region.y + 56, summary, textColor, scale: 1)
-        canvas.centered(region.x, region.width, region.y + 96, "HALL OF RUNS", labelColor, scale: 1)
+        canvas.centered(region.x, region.width, region.y + 56, summary, textColor, fonts.body)
+        canvas.centered(region.x, region.width, region.y + 96, "HALL OF RUNS", labelColor, fonts.body)
         for (index, run) in hall.runs.enumerated() {
             let color = index == rank ? accentColor : textColor
             let y = region.y + 124 + index * 24
@@ -498,8 +535,8 @@ struct Renderer {
                 padded(String(index + 1), width: 2) + "  " + padded(String(run.score), width: 7)
                 + "  floor " + String(run.depth) + "  " + padded(String(run.turns), width: 6)
                 + " turns  " + outcomeWord(run.outcome)
-            canvas.text(region.x + 80, y, line, color)
+            canvas.text(region.x + 80, y, line, color, fonts.body)
         }
-        canvas.centered(region.x, region.width, region.y + 444, "Enter or Esc leaves", labelColor, scale: 1)
+        canvas.centered(region.x, region.width, region.y + 444, "Enter or Esc leaves", labelColor, fonts.body)
     }
 }

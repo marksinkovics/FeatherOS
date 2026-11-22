@@ -1,3 +1,4 @@
+import functools
 import importlib.util
 import json
 import re
@@ -6,7 +7,14 @@ from pathlib import Path
 
 from smoke.boot import PANIC_MARKER
 from smoke.cases.base import Case
-from smoke.cases.screen import HEIGHT, WIDTH, ScreenCase, StepFailed
+from smoke.cases.screen import (
+    HEIGHT,
+    WIDTH,
+    Hex,
+    PixelAt,
+    ScreenCase,
+    StepFailed,
+)
 from smoke.script import Lines, WaitUntil
 from smoke.terminal import SHELL_PROMPT
 
@@ -38,6 +46,7 @@ REPLACEMENT = 0xFFFD
 REPLACEMENT_CELLS = 14
 
 
+@functools.cache
 def LoadFfnt():
     spec = importlib.util.spec_from_file_location(
         "ffnt", TOOLS / "fonts" / "ffnt.py"
@@ -46,6 +55,43 @@ def LoadFfnt():
     sys.modules["ffnt"] = module
     spec.loader.exec_module(module)
     return module
+
+
+@functools.cache
+def FontFile(name):
+    return LoadFfnt().read(
+        (TOOLS.parent / "initramfs" / "fonts" / f"{name}.ffnt").read_bytes()
+    )
+
+
+def ExpectRenderedText(
+    pixels, font_name, text, x, y, foreground, background, width=None
+):
+    """The text a program drew with the committed font, compared pixel by
+    pixel with ffnt.py's rendering, plus a margin of background around it. x
+    and y are the pen and the top of the line box; with a width the text is
+    centered in [x, x + width)."""
+    margin = 4
+    ffnt = LoadFfnt()
+    font = FontFile(font_name)
+    left = x
+    if width is not None:
+        left = x + (width - ffnt.measure(font, text)) // 2
+    box_width, box_height, wanted = ffnt.render_text(
+        font, text, background, foreground, margin
+    )
+    for row in range(box_height):
+        for column in range(box_width):
+            px = left - margin + column
+            py = y - margin + row
+            found = PixelAt(pixels, px, py)
+            expected = wanted[row * box_width + column]
+            if found != expected:
+                return (
+                    f"{text!r} in {font_name} differs at ({px},{py}): "
+                    f"{Hex(found)}, expected {Hex(expected)}"
+                )
+    return None
 
 
 def IsC1(code_point):

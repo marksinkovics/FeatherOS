@@ -86,7 +86,6 @@ add_library(featheros_user_support STATIC
     vi_editor.cpp
     window_size.cpp
     ${SRCROOT}/kernel/framebuffer/console_font.c
-    ${SRCROOT}/kernel/framebuffer/font.c
 )
 set(FEATHEROS_USER_C_FLAGS ${FEATHEROS_USER_FLAGS})
 list(REMOVE_ITEM FEATHEROS_USER_C_FLAGS -fno-rtti)

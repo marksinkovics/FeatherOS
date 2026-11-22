@@ -1,6 +1,8 @@
 import FeatherGraphics
+import FeatherSupport
 
 typealias Surface = FeatherOS.Graphics.Surface
+typealias Font = FeatherOS.Graphics.Font
 
 let visibleRows = wellRows - hiddenRows
 let cellSize = 32
@@ -27,9 +29,14 @@ let pieceColors: [UInt32] = [
 ]
 
 let helpLines = [
-    "Left Right  move", "Down        soft drop", "Space       hard drop", "Up or X      turn right",
-    "Z           turn left", "C or Shift  hold", "P           pause", "Esc         quit",
+    ("Left Right", "move"), ("Down", "soft drop"), ("Space", "hard drop"), ("Up or X", "turn right"),
+    ("Z", "turn left"), ("C or Shift", "hold"), ("P", "pause"), ("Esc", "quit"),
 ]
+let helpActionX = 88
+let numberDigits = 9
+let initialSlotWidth = 64
+let initialSlotHeight = 80
+let initialSlotGap = 16
 
 enum Overlay {
     case none
@@ -69,12 +76,41 @@ func shade(_ color: UInt32, percent: UInt32) -> UInt32 {
     return red << 16 | green << 8 | blue
 }
 
-func padded(_ text: String, width: Int) -> String {
-    var result = text
-    while result.utf8.count < width {
-        result = " " + result
+// The fonts a game draws with, each loaded once; one that cannot be read becomes the console font.
+struct Fonts {
+    let label: UnsafePointer<Font>
+    let heading: UnsafePointer<Font>
+    let title: UnsafePointer<Font>
+    let initial: UnsafePointer<Font>
+    let number: UnsafePointer<Font>
+    private let owned: [UnsafeMutablePointer<Font>]
+
+    init() {
+        var owned: [UnsafeMutablePointer<Font>] = []
+        func load(_ name: String) -> UnsafePointer<Font> {
+            let storage = UnsafeMutablePointer<Font>.allocate(capacity: 1)
+            storage.initialize(to: Font())
+            owned.append(storage)
+            let font = FeatherOS.Graphics.LoadFontOrConsole(name, storage)!
+            if font != UnsafePointer(storage) {
+                warn("cannot load the font \(name), using the console font")
+            }
+            return font
+        }
+        label = load("sans-16")
+        heading = load("sans-32")
+        title = load("sans-48")
+        initial = load("sans-64")
+        number = load("mono-32")
+        self.owned = owned
     }
-    return result
+
+    func release() {
+        for font in owned {
+            font.deinitialize(count: 1)
+            font.deallocate()
+        }
+    }
 }
 
 struct Canvas {
@@ -88,17 +124,34 @@ struct Canvas {
         surface.pointee.DrawRectangle(Int32(x), Int32(y), Int32(width), Int32(height), color)
     }
 
-    func text(_ x: Int, _ y: Int, _ text: String, _ color: UInt32, scale: Int = 1) {
-        surface.pointee.DrawText(Int32(x), Int32(y), text, color, Int32(scale))
+    func text(_ x: Int, _ y: Int, _ text: String, _ color: UInt32, _ font: UnsafePointer<Font>) {
+        _ = surface.pointee.DrawText(font, Int32(x), Int32(y), text, color)
     }
 
-    func textWidth(_ text: String, scale: Int) -> Int {
-        Int(Surface.TextWidth(text, Int32(scale)))
+    func textWidth(_ text: String, _ font: UnsafePointer<Font>) -> Int {
+        Int(font.pointee.MeasureText(text))
     }
 
-    func centered(_ x: Int, _ width: Int, _ y: Int, _ text: String, _ color: UInt32, scale: Int) {
-        let offset = (width - textWidth(text, scale: scale)) / 2
-        self.text(x + max(offset, 0), y, text, color, scale: scale)
+    func centered(
+        _ x: Int, _ width: Int, _ y: Int, _ text: String, _ color: UInt32, _ font: UnsafePointer<Font>
+    ) {
+        let offset = (width - textWidth(text, font)) / 2
+        self.text(x + max(offset, 0), y, text, color, font)
+    }
+
+    func rightAligned(
+        _ right: Int, _ y: Int, _ text: String, _ color: UInt32, _ font: UnsafePointer<Font>
+    ) {
+        self.text(right - textWidth(text, font), y, text, color, font)
+    }
+
+    // Padded to a fixed number of cells of a monospace font, so the box it fills covers the old value.
+    func number(_ x: Int, _ y: Int, _ value: Int, _ color: UInt32, _ font: UnsafePointer<Font>) {
+        var text = String(min(value, highScoreMaximum))
+        while text.utf8.count < numberDigits {
+            text += " "
+        }
+        _ = surface.pointee.DrawTextOn(font, Int32(x), Int32(y), text, color, panelFill)
     }
 
     func block(_ x: Int, _ y: Int, _ size: Int, _ color: UInt32) {
@@ -144,6 +197,7 @@ func wellView(_ game: Game) -> [UInt8] {
 
 struct Renderer {
     let canvas: Canvas
+    let fonts: Fonts
     let width: Int
     let height: Int
     let wellX: Int
@@ -156,8 +210,9 @@ struct Renderer {
     var previousRight: [Int] = []
     var needsFull = true
 
-    init(_ surface: UnsafeMutablePointer<Surface>) {
+    init(_ surface: UnsafeMutablePointer<Surface>, _ fonts: Fonts) {
         canvas = Canvas(surface: surface)
+        self.fonts = fonts
         width = Int(surface.pointee.Width())
         height = Int(surface.pointee.Height())
         wellX = (width - cellSize * wellWidth) / 2
@@ -258,9 +313,21 @@ struct Renderer {
 
     private func drawFrame() {
         canvas.fill(0, 0, width, height, backgroundColor)
-        canvas.centered(0, width, 14, "FEATHERFALL", accentColor, scale: 3)
+        canvas.centered(0, width, 14, "FEATHERFALL", accentColor, fonts.title)
         canvas.fill(wellX - 4, wellY - 4, cellSize * wellWidth + 8, cellSize * visibleRows + 8, wellBorder)
         canvas.fill(wellX, wellY, cellSize * wellWidth, cellSize * visibleRows, wellFill)
+        drawPanel(leftRegion)
+        canvas.text(leftX + 16, wellY + 14, "HOLD", labelColor, fonts.heading)
+        for (index, name) in ["SCORE", "LEVEL", "LINES"].enumerated() {
+            canvas.text(leftX + 16, wellY + 170 + index * 90, name, labelColor, fonts.heading)
+        }
+        drawPanel(rightRegion)
+        canvas.text(rightX + 16, wellY + 14, "NEXT", labelColor, fonts.heading)
+        for (index, (key, action)) in helpLines.enumerated() {
+            let y = wellY + 330 + index * 20
+            canvas.text(rightX + 16, y, key, labelColor, fonts.label)
+            canvas.text(rightX + 16 + helpActionX, y, action, labelColor, fonts.label)
+        }
     }
 
     private func drawPanel(_ region: Region) {
@@ -290,29 +357,16 @@ struct Renderer {
     }
 
     private func drawLeftPanel(_ game: Game) {
-        drawPanel(leftRegion)
-        let x = leftX + 16
-        canvas.text(x, wellY + 14, "HOLD", labelColor, scale: 2)
         drawPreview(leftX + (panelWidth - boxWidth) / 2, wellY + 54, game.held)
-        let values = [("SCORE", game.score), ("LEVEL", game.level), ("LINES", game.lines)]
-        var y = wellY + 170
-        for (name, value) in values {
-            canvas.text(x, y, name, labelColor, scale: 2)
-            canvas.text(x, y + 32, String(min(value, highScoreMaximum)), textColor, scale: 2)
-            y += 90
+        let values = [game.score, game.level, game.lines]
+        for (index, value) in values.enumerated() {
+            canvas.number(leftX + 16, wellY + 202 + index * 90, value, textColor, fonts.number)
         }
     }
 
     private func drawRightPanel(_ game: Game) {
-        drawPanel(rightRegion)
-        canvas.text(rightX + 16, wellY + 14, "NEXT", labelColor, scale: 2)
         for (index, kind) in game.preview.enumerated() {
             drawPreview(rightX + (panelWidth - boxWidth) / 2, wellY + 54 + index * 84, kind)
-        }
-        var y = wellY + 330
-        for line in helpLines {
-            canvas.text(rightX + 16, y, line, labelColor)
-            y += 20
         }
     }
 
@@ -325,8 +379,8 @@ struct Renderer {
         case .none:
             break
         case .paused:
-            canvas.centered(region.x, region.width, region.y + 270, "PAUSED", accentColor, scale: 3)
-            canvas.centered(region.x, region.width, region.y + 330, "P resumes", labelColor, scale: 2)
+            canvas.centered(region.x, region.width, region.y + 270, "PAUSED", accentColor, fonts.title)
+            canvas.centered(region.x, region.width, region.y + 330, "P resumes", labelColor, fonts.heading)
         case .entry(let initials):
             drawGameOver(game, region)
             drawEntry(initials, region)
@@ -337,48 +391,53 @@ struct Renderer {
     }
 
     private func drawGameOver(_ game: Game, _ region: Region) {
-        canvas.centered(region.x, region.width, region.y + 24, "GAME OVER", accentColor, scale: 3)
+        canvas.centered(region.x, region.width, region.y + 24, "GAME OVER", accentColor, fonts.title)
         let score = "SCORE " + String(min(game.score, highScoreMaximum))
-        canvas.centered(region.x, region.width, region.y + 72, score, textColor, scale: 2)
+        canvas.centered(region.x, region.width, region.y + 72, score, textColor, fonts.heading)
     }
 
     private func drawEntry(_ initials: [UInt8], _ region: Region) {
-        canvas.centered(region.x, region.width, region.y + 130, "NEW HIGH SCORE", accentColor, scale: 2)
-        let slotWidth = 56
-        let slotGap = 16
-        let originX = region.x + (region.width - 3 * slotWidth - 2 * slotGap) / 2
+        canvas.centered(region.x, region.width, region.y + 130, "NEW HIGH SCORE", accentColor, fonts.heading)
+        let originX =
+            region.x
+            + (region.width - highScoreInitialCount * initialSlotWidth
+                - (highScoreInitialCount - 1) * initialSlotGap) / 2
         for slot in 0..<highScoreInitialCount {
-            let x = originX + slot * (slotWidth + slotGap)
+            let x = originX + slot * (initialSlotWidth + initialSlotGap)
             let y = region.y + 180
-            canvas.fill(x, y, slotWidth, 80, wellFill)
-            canvas.outline(x, y, slotWidth, 80, slot == initials.count ? accentColor : panelBorder)
+            canvas.fill(x, y, initialSlotWidth, initialSlotHeight, wellFill)
+            canvas.outline(
+                x, y, initialSlotWidth, initialSlotHeight, slot == initials.count ? accentColor : panelBorder)
             if slot < initials.count {
-                canvas.text(x + 12, y + 8, String(decoding: [initials[slot]], as: UTF8.self), textColor, scale: 4)
+                let letter = String(decoding: [initials[slot]], as: UTF8.self)
+                let font = fonts.initial
+                canvas.text(
+                    x + (initialSlotWidth - canvas.textWidth(letter, font)) / 2,
+                    y + (initialSlotHeight - Int(font.pointee.LineHeight())) / 2, letter, textColor, font)
             }
         }
         let lines = ["Type your initials", "Backspace erases", "Enter saves", "Esc skips"]
         var y = region.y + 300
         for line in lines {
             let ready = line == "Enter saves" && initials.count == highScoreInitialCount
-            canvas.centered(region.x, region.width, y, line, ready ? accentColor : labelColor, scale: 1)
+            canvas.centered(region.x, region.width, y, line, ready ? accentColor : labelColor, fonts.label)
             y += 22
         }
     }
 
     private func drawTable(_ scores: HighScores, _ rank: Int?, _ region: Region) {
-        canvas.centered(region.x, region.width, region.y + 120, "HIGH SCORES", textColor, scale: 2)
+        canvas.centered(region.x, region.width, region.y + 120, "HIGH SCORES", textColor, fonts.heading)
         if scores.entries.isEmpty {
-            canvas.centered(region.x, region.width, region.y + 180, "None yet", labelColor, scale: 2)
+            canvas.centered(region.x, region.width, region.y + 180, "None yet", labelColor, fonts.heading)
         }
         for (index, entry) in scores.entries.enumerated() {
             let y = region.y + 160 + index * 34
             let color = index == rank ? accentColor : textColor
-            canvas.text(region.x + 20, y, padded(String(index + 1), width: 2), color, scale: 2)
-            canvas.text(region.x + 68, y, String(decoding: entry.initials, as: UTF8.self), color, scale: 2)
-            let score = String(entry.score)
-            canvas.text(region.x + region.width - 20 - canvas.textWidth(score, scale: 2), y, score, color, scale: 2)
+            canvas.rightAligned(region.x + 56, y, String(index + 1), color, fonts.heading)
+            canvas.text(region.x + 68, y, String(decoding: entry.initials, as: UTF8.self), color, fonts.heading)
+            canvas.rightAligned(region.x + region.width - 20, y, String(entry.score), color, fonts.number)
         }
-        canvas.centered(region.x, region.width, region.y + 560, "Enter plays again", accentColor, scale: 1)
-        canvas.centered(region.x, region.width, region.y + 582, "Esc quits", labelColor, scale: 1)
+        canvas.centered(region.x, region.width, region.y + 560, "Enter plays again", accentColor, fonts.label)
+        canvas.centered(region.x, region.width, region.y + 582, "Esc quits", labelColor, fonts.label)
     }
 }

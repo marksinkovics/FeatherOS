@@ -216,6 +216,12 @@ func screenFailure(_ display: inout Display, _ what: String) -> Int32 {
 }
 
 func runGame(seed: UInt64) -> Int32 {
+    let fonts = Fonts()
+    defer { fonts.release() }
+    return play(seed: seed, fonts: fonts)
+}
+
+func play(seed: UInt64, fonts: Fonts) -> Int32 {
     var display = Display()
     if display.Open() != .Ok {
         return screenFailure(&display, "cannot take the screen of this console")
@@ -228,7 +234,7 @@ func runGame(seed: UInt64) -> Int32 {
         return 1
     }
     signal(SIGINT) { _ in interruptRequested = true }
-    var renderer = Renderer(screen)
+    var renderer = Renderer(screen, fonts)
     var player = Player(seed: seed, scorePath: highScorePath())
     var dropped: UInt32 = 0
     var event = DisplayEvent()

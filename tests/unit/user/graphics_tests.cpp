@@ -3,12 +3,14 @@
 #include "libc/include/featheros/framebuffer.h"
 #include "user/gfx_check.h"
 #include "user/graphics/display.h"
+#include "user/graphics/font.h"
 #include "user/graphics/surface.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace Graphics = FeatherOS::Graphics;
@@ -37,17 +39,6 @@ size_t Count(const Surface& surface, uint32_t color)
         }
     }
     return count;
-}
-
-// The rows of the font's '!' glyph; bit x of a row is the pixel x columns from the left.
-constexpr uint8_t ExclamationRows[16] = {0x00, 0x00, 0x00, 0x00, 0x08, 0x08, 0x08, 0x08,
-                                         0x08, 0x08, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00};
-
-constexpr size_t GlyphPixels = 10;
-
-bool ExclamationPixel(int32_t x, int32_t y)
-{
-    return (ExclamationRows[y] & (1U << x)) != 0;
 }
 
 } // namespace
@@ -347,81 +338,6 @@ TEST_CASE("part blits copy a rectangle of the source and clip it", "[graphics]")
     }
 }
 
-TEST_CASE("text is drawn in the kernel's font", "[graphics]")
-{
-    Surface surface(40, 40);
-
-    SECTION("a known glyph at scale 1")
-    {
-        surface.DrawText(3, 5, "!", Green, 1);
-        for (int32_t y = 0; y < Graphics::GlyphHeight; ++y)
-        {
-            for (int32_t x = 0; x < Graphics::GlyphWidth; ++x)
-            {
-                INFO("pixel " << x << ", " << y);
-                CHECK(surface.PixelAt(3 + x, 5 + y) == (ExclamationPixel(x, y) ? Green : 0));
-            }
-        }
-        CHECK(Count(surface, Green) == GlyphPixels);
-    }
-    SECTION("a known glyph at scale 2")
-    {
-        surface.DrawText(1, 2, "!", Green, 2);
-        for (int32_t y = 0; y < 2 * Graphics::GlyphHeight; ++y)
-        {
-            for (int32_t x = 0; x < 2 * Graphics::GlyphWidth; ++x)
-            {
-                INFO("pixel " << x << ", " << y);
-                CHECK(surface.PixelAt(1 + x, 2 + y) == (ExclamationPixel(x / 2, y / 2) ? Green : 0));
-            }
-        }
-        CHECK(Count(surface, Green) == GlyphPixels * 4);
-    }
-    SECTION("glyphs advance by their width, and spaces and other bytes stay blank")
-    {
-        surface.DrawText(0, 0, "! !\xC3", Green, 1);
-        CHECK(Count(surface, Green) == 2 * GlyphPixels);
-        CHECK(surface.PixelAt(3, 4) == Green);
-        CHECK(surface.PixelAt(16 + 3, 4) == Green);
-        CHECK(surface.PixelAt(8 + 3, 4) == 0);
-    }
-    SECTION("a background fills every cell, spaces too")
-    {
-        surface.DrawTextOn(0, 0, "! ", Green, Blue, 1);
-        CHECK(Count(surface, Blue) == 2 * 8 * 16 - GlyphPixels);
-        CHECK(Count(surface, Green) == GlyphPixels);
-    }
-    SECTION("text is clipped at every edge")
-    {
-        surface.DrawText(-4, -6, "!", Green, 1);
-        CHECK(Count(surface, Green) > 0);
-        CHECK(surface.PixelAt(0, 0) == 0);
-        surface.DrawText(32, 28, "!!", Blue, 1);
-        CHECK(Count(surface, Blue) > 0);
-        surface.DrawText(100, 0, "!", Red, 1);
-        surface.DrawText(0, 100, "!", Red, 1);
-        surface.DrawText(-100, 0, "!", Red, 1);
-        surface.DrawText(0, INT32_MIN, "!", Red, 1);
-        CHECK(Count(surface, Red) == 0);
-    }
-    SECTION("a bad text or scale draws nothing")
-    {
-        surface.DrawText(0, 0, nullptr, Green, 1);
-        surface.DrawText(0, 0, "!", Green, 0);
-        surface.DrawText(0, 0, "!", Green, -1);
-        surface.DrawText(0, 0, "!", Green, Graphics::MaximumScale + 1);
-        CHECK(Count(surface, Green) == 0);
-    }
-    SECTION("the text width")
-    {
-        CHECK(Surface::TextWidth("abc", 1) == 24);
-        CHECK(Surface::TextWidth("abc", 3) == 72);
-        CHECK(Surface::TextWidth("", 2) == 0);
-        CHECK(Surface::TextWidth("abc", 0) == 0);
-        CHECK(Surface::TextWidth(nullptr, 1) == 0);
-    }
-}
-
 TEST_CASE("the checksum follows the pixels", "[graphics]")
 {
     Surface first(3, 2);
@@ -435,21 +351,31 @@ TEST_CASE("the checksum follows the pixels", "[graphics]")
     CHECK(empty.Checksum() == 2166136261U);
 }
 
-TEST_CASE("the picture gfxcheck draws matches its independent checksum", "[graphics]")
+TEST_CASE("the picture gfxcheck draws matches its independent checksum", "[graphics][font]")
 {
     namespace Check = FeatherOS::User::GfxCheck;
+    const std::string directory = FEATHEROS_FONT_DIRECTORY;
+    const std::string sans_path = directory + "/sans-16.ffnt";
+    const std::string mono_path = directory + "/mono-32.ffnt";
+    Graphics::Font sans;
+    Graphics::Font mono;
+    REQUIRE(sans.Load(sans_path.c_str()) == FeatherOS::Text::FontStatus::Ok);
+    REQUIRE(mono.Load(mono_path.c_str()) == FeatherOS::Text::FontStatus::Ok);
     Surface surface(Check::Width, Check::Height);
     surface.Fill(0x101820);
     surface.FillRectangle(4, 4, 30, 20, 0xC03030);
     surface.DrawRectangle(-2, -2, 20, 12, 0xFFFFFF);
-    surface.DrawText(6, 6, "Feather", 0xFFFF00, 1);
-    surface.DrawText(20, 24, "OS", 0x00FF00, 2);
+    surface.DrawText(&sans, 6, 6, "Feather", 0xFFFF00);
+    surface.DrawText(&mono, 12, 22, "OS", 0x00FF00);
     Surface sprite(8, 8);
     sprite.Fill(0xFF00FF);
     sprite.FillRectangle(2, 2, 4, 4, 0x00FFFF);
     surface.BlitKeyed(&sprite, 50, 30, 0xFF00FF);
-    CHECK(Check::ExpectedChecksum() == 1833110056U);
-    CHECK(surface.Checksum() == Check::ExpectedChecksum());
+    const uint32_t expected = Check::ExpectedChecksum(sans_path.c_str(), mono_path.c_str());
+    CHECK(expected == 569184433U);
+    CHECK(surface.Checksum() == expected);
+    CHECK(Check::ExpectedChecksum("/nonexistent", mono_path.c_str()) == 0);
+    CHECK(Check::ExpectedChecksum(sans_path.c_str(), "/nonexistent") == 0);
 }
 
 namespace

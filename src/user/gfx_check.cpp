@@ -6,17 +6,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-extern "C" const uint8_t font16_8[];
-
 namespace FeatherOS::User::GfxCheck
 {
 
 namespace
 {
 
-constexpr int32_t GlyphWidth = 8;
-constexpr int32_t GlyphHeight = 16;
-constexpr int32_t Scale = 2;
+constexpr int32_t OsX = 12;
+constexpr int32_t OsY = 22;
 constexpr int32_t SpriteX = 50;
 constexpr int32_t SpriteY = 30;
 
@@ -46,28 +43,6 @@ void Box(int32_t left, int32_t top, int32_t width, int32_t height, uint32_t colo
         for (int32_t x = left; x < left + width; ++x)
         {
             Plot(x, y, color);
-        }
-    }
-}
-
-void Text(int32_t left, int32_t top, const char* text, uint32_t color, int32_t scale)
-{
-    for (; *text != '\0'; ++text, left += GlyphWidth * scale)
-    {
-        if (*text < '!' || *text > '~')
-        {
-            continue;
-        }
-        const int32_t index = *text - '!';
-        for (int32_t row = 0; row < GlyphHeight; ++row)
-        {
-            for (int32_t column = 0; column < GlyphWidth; ++column)
-            {
-                if ((font16_8[index * GlyphHeight + row] >> column & 1) != 0)
-                {
-                    Box(left + column * scale, top + row * scale, scale, scale, color);
-                }
-            }
         }
     }
 }
@@ -119,13 +94,20 @@ void PlaceTile(int32_t tile, int32_t left, int32_t top, bool dim, bool keyed)
     }
 }
 
-void FontPlot(int32_t x, int32_t y, uint32_t color)
+struct Target
 {
-    if (x >= 0 && x < FontPictureWidth && y >= 0 && y < FontPictureHeight)
+    uint32_t* pixels;
+    int32_t width;
+    int32_t height;
+
+    void Plot(int32_t x, int32_t y, uint32_t color) const
     {
-        FontPicture[y * FontPictureWidth + x] = color;
+        if (x >= 0 && x < width && y >= 0 && y < height)
+        {
+            pixels[y * width + x] = color;
+        }
     }
-}
+};
 
 struct PlainFont
 {
@@ -218,8 +200,8 @@ uint32_t PlainDecode(const char*& text)
     return code;
 }
 
-int32_t PlainText(const PlainFont& font, int32_t left, int32_t top, const char* text,
-                  uint32_t color, bool on, uint32_t background)
+int32_t PlainText(const Target& target, const PlainFont& font, int32_t left, int32_t top,
+                  const char* text, uint32_t color, bool on, uint32_t background)
 {
     const int32_t ascent = font.Signed16(20);
     const int32_t line = static_cast<int32_t>(font.Le(18, 2));
@@ -239,7 +221,7 @@ int32_t PlainText(const PlainFont& font, int32_t left, int32_t top, const char* 
         {
             for (int32_t x = left; x < left + width; ++x)
             {
-                FontPlot(x, y, background);
+                target.Plot(x, y, background);
             }
         }
     }
@@ -266,10 +248,9 @@ int32_t PlainText(const PlainFont& font, int32_t left, int32_t top, const char* 
                 const uint32_t coverage = (column % 2 == 0 ? pair >> 4 : pair) & 0x0FU;
                 const int32_t x = left + glyph_left + column;
                 const int32_t y = top + ascent - glyph_top + row;
-                if (coverage != 0 && x >= 0 && x < FontPictureWidth && y >= 0 &&
-                    y < FontPictureHeight)
+                if (coverage != 0 && x >= 0 && x < target.width && y >= 0 && y < target.height)
                 {
-                    uint32_t& pixel = FontPicture[y * FontPictureWidth + x];
+                    uint32_t& pixel = target.pixels[y * target.width + x];
                     pixel = PlainBlend(pixel, color, coverage);
                 }
             }
@@ -277,6 +258,25 @@ int32_t PlainText(const PlainFont& font, int32_t left, int32_t top, const char* 
         left += static_cast<int32_t>(font.Le(record + 16, 2));
     }
     return left;
+}
+
+uint8_t* ReadFont(const char* path, size_t* size)
+{
+    FILE* file = fopen(path, "rb");
+    if (file == nullptr)
+    {
+        return nullptr;
+    }
+    constexpr size_t Capacity = size_t{1} << 20;
+    auto* bytes = static_cast<uint8_t*>(malloc(Capacity));
+    *size = bytes == nullptr ? 0 : fread(bytes, 1, Capacity, file);
+    fclose(file);
+    if (*size == 0)
+    {
+        free(bytes);
+        return nullptr;
+    }
+    return bytes;
 }
 
 } // namespace
@@ -299,29 +299,22 @@ const char* ConsoleText()
 
 uint32_t ExpectedFontChecksum(const char* path)
 {
-    FILE* file = fopen(path, "rb");
-    if (file == nullptr)
+    size_t size = 0;
+    uint8_t* bytes = ReadFont(path, &size);
+    if (bytes == nullptr)
     {
-        return 0;
-    }
-    constexpr size_t Capacity = size_t{1} << 20;
-    auto* bytes = static_cast<uint8_t*>(malloc(Capacity));
-    const size_t size = bytes == nullptr ? 0 : fread(bytes, 1, Capacity, file);
-    fclose(file);
-    if (size == 0)
-    {
-        free(bytes);
         return 0;
     }
     for (uint32_t& pixel : FontPicture)
     {
         pixel = 0x203050;
     }
-    PlainText({bytes, size}, 4, 4, FontText(), 0xF0E0C0, false, 0);
-    PlainText({bytes, size}, 4, 26, OnText(), 0x00FF00, true, 0x602020);
+    const Target target{FontPicture, FontPictureWidth, FontPictureHeight};
+    PlainText(target, {bytes, size}, 4, 4, FontText(), 0xF0E0C0, false, 0);
+    PlainText(target, {bytes, size}, 4, 26, OnText(), 0x00FF00, true, 0x602020);
     const PlainFont console{ConsoleFontData, ConsoleFontSize};
-    PlainText(console, 50, 26, ConsoleText(), 0xFFFF00, false, 0);
-    PlainText(console, 70, 40, "cut", 0xFF8080, false, 0);
+    PlainText(target, console, 50, 26, ConsoleText(), 0xFFFF00, false, 0);
+    PlainText(target, console, 70, 40, "cut", 0xFF8080, false, 0);
     free(bytes);
     return Hash(FontPicture, FontPictureWidth * FontPictureHeight);
 }
@@ -351,8 +344,18 @@ uint32_t ExpectedTileChecksum()
     return Hash(TilePicture, TilePictureWidth * TilePictureHeight);
 }
 
-uint32_t ExpectedChecksum()
+uint32_t ExpectedChecksum(const char* sans_path, const char* mono_path)
 {
+    size_t sans_size = 0;
+    size_t mono_size = 0;
+    uint8_t* sans = ReadFont(sans_path, &sans_size);
+    uint8_t* mono = ReadFont(mono_path, &mono_size);
+    if (sans == nullptr || mono == nullptr)
+    {
+        free(sans);
+        free(mono);
+        return 0;
+    }
     Box(0, 0, Width, Height, 0x101820);
     Box(4, 4, 30, 20, 0xC03030);
     for (int32_t x = -2; x < 18; ++x)
@@ -365,10 +368,13 @@ uint32_t ExpectedChecksum()
         Plot(-2, y, 0xFFFFFF);
         Plot(17, y, 0xFFFFFF);
     }
-    Text(6, 6, "Feather", 0xFFFF00, 1);
-    Text(20, 24, "OS", 0x00FF00, Scale);
+    const Target target{Picture, Width, Height};
+    PlainText(target, {sans, sans_size}, 6, 6, "Feather", 0xFFFF00, false, 0);
+    PlainText(target, {mono, mono_size}, OsX, OsY, "OS", 0x00FF00, false, 0);
     // An 8x8 sprite of magenta with a cyan 4x4 square, where magenta is the transparent color.
     Box(SpriteX + 2, SpriteY + 2, 4, 4, 0x00FFFF);
+    free(sans);
+    free(mono);
 
     return Hash(Picture, Width * Height);
 }

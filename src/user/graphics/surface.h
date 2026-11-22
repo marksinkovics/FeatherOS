@@ -10,10 +10,7 @@ namespace FeatherOS::Graphics
 class Font;
 
 constexpr uint32_t ColorMask = 0x00FFFFFF;
-constexpr int32_t GlyphWidth = 8;
-constexpr int32_t GlyphHeight = 16;
 constexpr int32_t MaximumDimension = 16384;
-constexpr int32_t MaximumScale = 64;
 
 class Surface
 {
@@ -43,18 +40,8 @@ public:
     int32_t DrawText(const Font* font, int32_t x, int32_t y, const char* utf8, uint32_t color);
     int32_t DrawTextOn(const Font* font, int32_t x, int32_t y, const char* utf8, uint32_t color,
                        uint32_t background);
-    void DrawText(int32_t x, int32_t y, const char* text, uint32_t color, int32_t scale);
-    void DrawTextOn(int32_t x, int32_t y, const char* text, uint32_t color, uint32_t background,
-                    int32_t scale);
-
-    static int32_t TextWidth(const char* text, int32_t scale);
 
 private:
-    void DrawString(int32_t x, int32_t y, const char* text, uint32_t color, bool opaque,
-                    uint32_t background, int32_t scale);
-    void DrawGlyph(int32_t x, int32_t y, char character, uint32_t color, bool opaque,
-                   uint32_t background, int32_t scale);
-
     uint32_t* m_pixels;
     int32_t m_width;
     int32_t m_height;

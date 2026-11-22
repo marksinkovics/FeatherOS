@@ -3,6 +3,7 @@ import re
 
 from smoke.boot import PANIC_MARKER
 from smoke.cases.base import Case
+from smoke.cases.fonts import ExpectRenderedText
 from smoke.cases.graphics import (
     SHELL_PROMPT_TEXT,
     EventStream,
@@ -56,6 +57,15 @@ OVERLAY_FILL = 0x1E1A2A
 SELECTION = 0x3A2F4A
 ACCENT = 0xFFC857
 TEXT = 0xE8E0D0
+# An overlay's title: sans-32 text centered in the box, 14 pixels from its top.
+TITLE_Y = 14
+# Unmounting the initramfs from /system hides the fonts (the rescue programs go
+# too, so this is the last thing the case does), and the game draws with the
+# console font, mono-16.
+HIDE_FONTS = "umount /system\n"
+FONT_WARNING = re.compile(
+    r"cannot load the font sans-32, using the console font"
+)
 # Only the wick-keeper's tile has the glow color inside the floor area.
 GLOW = 0xFFF08C
 LIT_FLOOR = 0x3E4560
@@ -112,7 +122,13 @@ def ExpectFrame(pixels):
     return None
 
 
-def ExpectBox(pixels):
+def ExpectTitle(pixels, title, font="sans-32"):
+    return ExpectRenderedText(
+        pixels, font, title, BOX_X, BOX_Y + TITLE_Y, ACCENT, OVERLAY_FILL, 640
+    )
+
+
+def ExpectBox(pixels, title=None, font="sans-32"):
     failure = ExpectColor(
         pixels, "the overlay box", (BOX_X + 8, BOX_Y + 8), OVERLAY_FILL
     )
@@ -120,6 +136,8 @@ def ExpectBox(pixels):
         failure = ExpectColor(
             pixels, "the box's border", (BOX_X, BOX_Y + 100), ACCENT
         )
+    if failure is None and title is not None:
+        failure = ExpectTitle(pixels, title, font)
     return failure
 
 
@@ -128,8 +146,10 @@ class Dungeon(ScreenCase, Case):
     saves a demo run at turn 500, checks the file and checks that it is
     refused with a reason once a byte is appended; last it plays wickdeep
     with QMP keys and checks the frame, the lit floor and the wick-keeper,
-    the pack, a walk, a console switch, the save on Esc, the resumed floor and
-    a corrupted save that is set aside."""
+    the pack and help (their titles pixel for pixel against ffnt.py), a walk, a
+    console switch, the save on Esc, the resumed floor and a corrupted save
+    that is set aside; last it unmounts /system to hide the fonts and
+    checks that the game falls back to the console font."""
 
     serial_input = True
     timeout = DUNGEON_TIMEOUT_SECONDS
@@ -138,8 +158,8 @@ class Dungeon(ScreenCase, Case):
         "turns, depth, score and state hashes, its saved state was accepted, "
         "then refused after a byte was appended, and the played game drew "
         "its frame, floor and panel, opened its pack, redrew after a console "
-        "switch, saved on Esc, resumed to the same floor and set a corrupted "
-        "save aside"
+        "switch, saved on Esc, resumed to the same floor, set a corrupted "
+        "save aside and drew with the console font when its fonts were gone"
     )
 
     def __init__(self, args):
@@ -226,8 +246,14 @@ class Dungeon(ScreenCase, Case):
     def Selected(self, pixels, row):
         return PixelAt(pixels, BOX_X + 19, BOX_Y + 108 + 26 * row) == SELECTION
 
+    def ExpectPack(self, pixels):
+        return ExpectBox(pixels, "PACK")
+
+    def ExpectHelp(self, pixels):
+        return ExpectBox(pixels, "WICKDEEP")
+
     def ExpectItems(self, pixels):
-        failure = ExpectBox(pixels)
+        failure = ExpectBox(pixels, "PACK")
         if failure is None and not self.Selected(pixels, 0):
             failure = "the first pack row is not highlighted"
         if failure is None and not Found(
@@ -291,11 +317,11 @@ class Dungeon(ScreenCase, Case):
             raise StepFailed(self.failure)
 
         self.Tap("i")
-        self.Step("the pack", ExpectBox)
+        self.Step("the pack", self.ExpectPack)
         self.Tap("esc")
         self.Step("after closing the pack", self.ExpectFloorClosed)
         self.Tap("h")
-        self.Step("the help", ExpectBox)
+        self.Step("the help", self.ExpectHelp)
         self.Tap("spc")
         self.Step("after closing the help", self.ExpectFloorClosed)
 
@@ -303,7 +329,7 @@ class Dungeon(ScreenCase, Case):
             self.Tap(key)
         # Keys are handled in order: an open pack means the walk is done.
         self.Tap("i")
-        self.Step("the pack after the walk", ExpectBox)
+        self.Step("the pack after the walk", self.ExpectPack)
         self.Tap("esc")
         self.Step("after 20 arrow presses", self.ExpectWalked)
         if self.last_floor is None:
@@ -363,6 +389,22 @@ class Dungeon(ScreenCase, Case):
             raise StepFailed(
                 "the save made on Ctrl+C is not of the later turn"
             )
+        self.RunWithoutFonts(session, events)
+
+    def RunWithoutFonts(self, session, events):
+        events.origin = len(events.Text())
+        self.Type(session, HIDE_FONTS)
+        self.Type(session, "wickdeep\n")
+        self.Step("wickdeep without fonts", ExpectFrame, GAME_START_SECONDS)
+        if events.WaitText(FONT_WARNING) is None:
+            raise StepFailed("wickdeep did not say it fell back")
+        self.Tap("i")
+        self.Step(
+            "the pack without fonts",
+            lambda pixels: ExpectBox(pixels, "PACK", "mono-16"),
+        )
+        self.Tap("esc")
+        self.Leave(session, events, "Esc without fonts")
 
     def OnOutput(self, session, clean_output):
         if self.state != 0:

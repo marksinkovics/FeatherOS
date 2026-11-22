@@ -55,6 +55,10 @@ private:
     Text::FontView m_view;
 };
 
+// The font `name` loaded into `storage`, else the console font, so a program that cannot read its
+// fonts still draws; the result is `storage` only when the load worked.
+const Font* LoadFontOrConsole(const char* name, Font* storage);
+
 } // namespace FeatherOS::Graphics
 
 #endif
