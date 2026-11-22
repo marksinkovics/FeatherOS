@@ -1,0 +1,16 @@
+FeatherOS console font sample
+ASCII: !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~
+Latin-1: ÀÁÂÃÄÅ ÈÉÊË ÌÍÎÏ ÒÓÔÕÖ ÙÚÛÜ ÇÑÝ àáâãäå èéêë ìíîï òóôõö ùúûü çñýÿ ß ¡¿ « » × ÷ £ ¥ © ® ° ± µ ¶ §
+Latin Extended-A: Ăă Ćć Čč Đđ Ęę Ğğ Łł Ńń Őő Řř Śś Şş Ťť Űű Żż Žž
+Greek: ΑΒΓΔΕΖΗΘ αβγδεζηθ ΩΏώ άέήίόύ
+Cyrillic: АБВГДЕЖЗ абвгдежз ЩЪЫЬЭЮЯ ёђє
+Arrows: ← ↑ → ↓ ↔ ↕ ↖ ↗ ↘ ↙ ⇥ ⇧
+Punctuation: – — ‘ ’ “ ” • … † ‰ € ™
+Blocks: ▀▄█▌▐░▒▓ ■ □ ▲ ▶ ▼ ◀ ◆ ○ ●
+┌──┬──┐ ╔══╦══╗
+│ a│ b│ ║ c║ d║
+├──┼──┤ ╠══╬══╣
+└──┴──┘ ╚══╩══╝
+Dropped C1: abc
+Invalid: [�] [��] [�] [���] [����] [��] [�] end
+END OF SAMPLE

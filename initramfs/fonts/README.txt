@@ -14,6 +14,9 @@ sans-*.ffnt: derived from Inter Regular 4.0
   Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
   Licence: LICENSE-Inter.txt
 
-These files are under the SIL Open Font License 1.1, not under the
-licence of the rest of FeatherOS.
+sample.txt is plain text for the FONTS smoke check, not a font:
+characters the console font has, and some invalid UTF-8 bytes.
+
+The font files are under the SIL Open Font License 1.1, not under
+the licence of the rest of FeatherOS.
 SHA256SUMS lists the SHA-256 of every other file in this folder.

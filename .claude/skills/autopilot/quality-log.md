@@ -61,6 +61,7 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 0bed505 | M33 P2 wickdeep floors, sight, DUNGEON mode | - | sonnet | 0 | 2/2 (connectivity via pinned values) | |
 | e3bd253 | M33 P3 monsters, combat, items, full bot | - | sonnet | 0 | 2/2 | |
 | 432ed22 | M33 P4 saves, hall of runs, --check-save | - | sonnet | 0 | 2/2 | |
-| 0575364 | M33 P5 playable wickdeep, tiles, played DUNGEON check | - | sonnet | 0 | 1/1 | |
+| 0575364 | M33 P5 playable wickdeep, tiles, played DUNGEON check | - | sonnet | 0 | 1/1 | DUNGEON harness walk race, fixed with M34 P3 |
 | 5c41d22 | M34 P1 FFNT format, generator, committed fonts, parser | opus | sonnet | 0 | 4/4 | |
-| (this) | M34 P2 Font, anti-aliased DrawText, sans U+FFFD, gfxcheck | opus | sonnet | 1 | 5/6 (one equivalent) | |
+| 50e8304 | M34 P2 Font, anti-aliased DrawText, sans U+FFFD, gfxcheck | opus | sonnet | 1 | 5/6 (one equivalent) | |
+| (this) | M34 P3 UTF-8 console, anti-aliased mono-16, FONTS mode | opus | sonnet | 1 | 7/8 (one equivalent) | |

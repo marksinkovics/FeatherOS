@@ -152,7 +152,7 @@ uint64_t Terminal::Write(const char* text, size_t length)
         {
             continue;
         }
-        chunk[used++] = byte == '\t' ? ' ' : byte > 0x7E ? '?' : static_cast<char>(byte);
+        chunk[used++] = byte == '\t' ? ' ' : byte == 0x7F ? '?' : static_cast<char>(byte);
         if (used == sizeof(chunk))
         {
             failure = Output(chunk, used);

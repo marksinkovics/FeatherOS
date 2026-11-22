@@ -64,6 +64,9 @@ public:
     Glyph Find(char32_t code_point) const;
     // Coverage 0 to 15; 0 outside the bitmap.
     uint8_t Coverage(const Glyph& glyph, int32_t x, int32_t y) const;
+    // The glyph's rows of packed coverage, BitmapStride(width) bytes each, the high nibble first.
+    const uint8_t* Bitmap(const Glyph& glyph) const;
+    static size_t BitmapStride(uint32_t width);
 
 private:
     bool Lookup(char32_t code_point, uint32_t* index) const;

@@ -55,12 +55,11 @@ EXPECTED_SWIFT_FULL_OUTPUT = (
     'label=Optional("diagonal")',
     'reflect: mirror class tricks=["sit", "roll"] super name=Rex score=0',
     'reflect: mirror badCharacter=("x", at: 1) .0=1 label=a celsius=27',
-    # The terminal shows bytes above 0x7E, here dump's UTF-8 triangles, as '?'.
-    "??? reflect.Dog #0\r\n"
-    "  ??? super: reflect.Animal\r\n"
+    "▿ reflect.Dog #0\r\n"
+    "  ▿ super: reflect.Animal\r\n"
     '    - name: "Rex"\r\n'
     "    - score: 0\r\n"
-    "  ??? tricks: 2 elements\r\n"
+    "  ▿ tricks: 2 elements\r\n"
     '    - "sit"\r\n'
     '    - "roll"',
     'reflect: keypaths Point(x: 10, y: 20) 4 ["Point(x: 0, y: 0)", '

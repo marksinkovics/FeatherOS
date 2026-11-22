@@ -4,11 +4,70 @@
 namespace FeatherOS
 {
 
+namespace
+{
+
+// Parsed once from the compiled-in font and then only read, so drawing never allocates.
+Text::FontView console_font;
+Text::FontStatus console_font_status = Text::FontStatus::Missing;
+
+bool IsControl(char32_t code_point)
+{
+    return code_point < 0x20 || code_point == 0x7F;
+}
+
+bool IsC1Control(char32_t code_point)
+{
+    return code_point >= 0x80 && code_point <= 0x9F;
+}
+
+// Fills out with the code points of text, at most capacity of them, and returns how many.
+uint32_t DecodeStatus(const char* text, char32_t* out, uint32_t capacity)
+{
+    uint32_t count = 0;
+    Text::Utf8Decoder decoder;
+    const auto keep = [&](char32_t code_point)
+    {
+        if (!IsC1Control(code_point) && count < capacity)
+        {
+            out[count++] = code_point;
+        }
+    };
+    char32_t decoded[2];
+    for (uint32_t index = 0; text != nullptr && text[index] != '\0'; ++index)
+    {
+        const size_t found = decoder.Push(static_cast<uint8_t>(text[index]), decoded);
+        for (size_t item = 0; item < found; ++item)
+        {
+            keep(decoded[item]);
+        }
+    }
+    const size_t found = decoder.Finish(decoded);
+    for (size_t item = 0; item < found; ++item)
+    {
+        keep(decoded[item]);
+    }
+    return count;
+}
+
+} // namespace
+
+Text::FontStatus Term::FontStatus()
+{
+    return console_font_status;
+}
+
 void Term::Init(Framebuffer* framebuffer)
 {
+    if (!console_font.Valid())
+    {
+        console_font_status =
+            Text::FontView::Parse(ConsoleFontData, ConsoleFontSize, &console_font);
+    }
     m_framebuffer = framebuffer;
-    m_rows = framebuffer == nullptr ? 0 : framebuffer->GetHeight() / FONT_HEIGHT;
-    m_columns = framebuffer == nullptr ? 0 : framebuffer->GetWidth() / FONT_WIDTH;
+    m_decoder = Text::Utf8Decoder();
+    m_rows = framebuffer == nullptr ? 0 : framebuffer->GetHeight() / TermConfig::CellHeight;
+    m_columns = framebuffer == nullptr ? 0 : framebuffer->GetWidth() / TermConfig::CellWidth;
     m_pending_scroll_rows = 0;
     m_redraw_all = true;
     m_cursor_visible = false;
@@ -32,14 +91,29 @@ void Term::Init(Framebuffer* framebuffer)
     m_cursor_enabled = true;
     m_saved_row = FirstContentRow;
     m_saved_column = 0;
+    RebuildPalettes();
 
     for (uint32_t row = 0; row < TermConfig::Row; ++row)
     {
         for (uint32_t column = 0; column < TermConfig::Column; ++column)
         {
-            m_buffer[row][column] = ' ';
-            m_attributes[row][column] = 0;
+            m_buffer[row][column] = BlankCell;
         }
+    }
+}
+
+void Term::RebuildPalettes()
+{
+    if (m_framebuffer == nullptr)
+    {
+        return;
+    }
+    for (uint32_t coverage = 0; coverage < 16; ++coverage)
+    {
+        m_palette[coverage] =
+            m_framebuffer->packColor(Text::Blend(m_bg_color, m_fg_color, coverage));
+        m_reversed_palette[coverage] =
+            m_framebuffer->packColor(Text::Blend(m_fg_color, m_bg_color, coverage));
     }
 }
 
@@ -67,14 +141,28 @@ void Term::Write(const char* str)
 
     for (uint32_t index = 0; str[index] != '\0'; ++index)
     {
-        if (!HandleEscape(str[index]))
+        char32_t decoded[2];
+        const size_t count = m_decoder.Push(static_cast<uint8_t>(str[index]), decoded);
+        for (size_t item = 0; item < count; ++item)
         {
-            WriteCharacter(str[index]);
+            Accept(decoded[item]);
         }
     }
 }
 
-void Term::WriteCharacter(char character)
+void Term::Accept(char32_t code_point)
+{
+    if (IsC1Control(code_point))
+    {
+        return;
+    }
+    if (!HandleEscape(code_point))
+    {
+        WriteCharacter(code_point);
+    }
+}
+
+void Term::WriteCharacter(char32_t character)
 {
     if (character == '\r')
     {
@@ -88,8 +176,8 @@ void Term::WriteCharacter(char character)
     }
     if (character != '\n')
     {
-        m_buffer[m_row_index][m_column_index] = character;
-        m_attributes[m_row_index][m_column_index] = m_attribute;
+        m_buffer[m_row_index][m_column_index] =
+            (character & CodePointMask) | (static_cast<uint32_t>(m_attribute) << AttributeShift);
         ++m_column_index;
     }
     // The cursor wraps as soon as a row fills, so it always rests on a visible cell.
@@ -105,7 +193,7 @@ void Term::WriteCharacter(char character)
 }
 
 // Sequences may arrive split across writes, so the parser keeps its state between calls.
-bool Term::HandleEscape(char character)
+bool Term::HandleEscape(char32_t character)
 {
     switch (m_escape_state)
     {
@@ -161,7 +249,7 @@ bool Term::HandleEscape(char character)
     // Bytes from @ to ~ end the sequence; others, such as intermediate bytes, are skipped.
     if (character >= '@' && character <= '~')
     {
-        ExecuteControl(character);
+        ExecuteControl(static_cast<char>(character));
         m_escape_state = EscapeState::Text;
     }
     return true;
@@ -188,14 +276,11 @@ void Term::SwitchScreen(bool alternate)
             if (alternate)
             {
                 m_main_buffer[row][column] = m_buffer[row][column];
-                m_main_attributes[row][column] = m_attributes[row][column];
-                m_buffer[row][column] = ' ';
-                m_attributes[row][column] = 0;
+                m_buffer[row][column] = BlankCell;
             }
             else
             {
                 m_buffer[row][column] = m_main_buffer[row][column];
-                m_attributes[row][column] = m_main_attributes[row][column];
             }
         }
     }
@@ -215,8 +300,7 @@ void Term::ClearCells(uint32_t row, uint32_t first_column, uint32_t end_column)
 {
     for (uint32_t column = first_column; column < end_column && column < m_columns; ++column)
     {
-        m_buffer[row][column] = ' ';
-        m_attributes[row][column] = 0;
+        m_buffer[row][column] = BlankCell;
     }
 }
 
@@ -310,7 +394,6 @@ void Term::Scroll()
         for (uint32_t column = 0; column < m_columns; ++column)
         {
             m_buffer[row - 1][column] = m_buffer[row][column];
-            m_attributes[row - 1][column] = m_attributes[row][column];
         }
     }
     ClearCells(m_rows - 1, 0, m_columns);
@@ -337,8 +420,7 @@ void Term::EraseCharacter()
     {
         return;
     }
-    m_buffer[m_row_index][m_column_index] = ' ';
-    m_attributes[m_row_index][m_column_index] = 0;
+    m_buffer[m_row_index][m_column_index] = BlankCell;
     Refresh();
 }
 
@@ -363,39 +445,38 @@ void Term::SetStatus(const char* left, const char* right)
     {
         return;
     }
+    char32_t left_text[TermConfig::Column];
+    char32_t right_text[TermConfig::Column];
+    const uint32_t left_length = DecodeStatus(left, left_text, TermConfig::Column);
+    const uint32_t right_length = DecodeStatus(right, right_text, TermConfig::Column);
     for (uint32_t column = 0; column < m_columns; ++column)
     {
-        m_buffer[StatusRow][column] = ' ';
+        m_buffer[StatusRow][column] = BlankCell;
     }
     // One blank cell separates the text from each edge of the bar.
-    uint32_t right_length = 0;
-    while (right != nullptr && right[right_length] != '\0')
-    {
-        ++right_length;
-    }
     const uint32_t right_end = m_columns > 1 ? m_columns - 1 : m_columns;
     const uint32_t right_start = right_length < right_end ? right_end - right_length : 0;
     for (uint32_t index = 0; right_start + index < right_end; ++index)
     {
-        m_buffer[StatusRow][right_start + index] = static_cast<uint8_t>(right[index]);
+        m_buffer[StatusRow][right_start + index] = right_text[index];
     }
     const uint32_t left_end = right_length == 0 ? right_end : right_start;
-    for (uint32_t index = 0; left != nullptr && left[index] != '\0' && 2 + index < left_end;
-         ++index)
+    for (uint32_t index = 0; index < left_length && 2 + index < left_end; ++index)
     {
-        m_buffer[StatusRow][1 + index] = static_cast<uint8_t>(left[index]);
+        m_buffer[StatusRow][1 + index] = left_text[index];
     }
     Refresh();
 }
 
-uint8_t Term::CharacterAt(uint32_t row, uint32_t column) const
+char32_t Term::CharacterAt(uint32_t row, uint32_t column) const
 {
-    return row < m_rows && column < m_columns ? m_buffer[row][column] : 0;
+    return row < m_rows && column < m_columns ? (m_buffer[row][column] & CodePointMask) : 0;
 }
 
 bool Term::ReversedAt(uint32_t row, uint32_t column) const
 {
-    return row < m_rows && column < m_columns && (m_attributes[row][column] & Reverse) != 0;
+    return row < m_rows && column < m_columns &&
+           ((m_buffer[row][column] >> AttributeShift) & Reverse) != 0;
 }
 
 uint32_t Term::CursorRow() const
@@ -430,14 +511,14 @@ bool Term::CursorAt(uint32_t row, uint32_t column) const
 
 void Term::MarkDirty(uint32_t row, uint32_t* dirty_top, uint32_t* dirty_bottom) const
 {
-    const uint32_t top = (row + m_row_offset) * FONT_HEIGHT;
+    const uint32_t top = (row + m_row_offset) * TermConfig::CellHeight;
     if (top < *dirty_top)
     {
         *dirty_top = top;
     }
-    if (top + FONT_HEIGHT > *dirty_bottom)
+    if (top + TermConfig::CellHeight > *dirty_bottom)
     {
-        *dirty_bottom = top + FONT_HEIGHT;
+        *dirty_bottom = top + TermConfig::CellHeight;
     }
 }
 
@@ -454,11 +535,10 @@ void Term::Refresh()
         for (uint32_t row = 0; row < TermConfig::Row; ++row)
         {
             // Bar cells are drawn in inverted colors, so even its spaces must be painted.
-            const uint8_t rendered = row == StatusRow ? 0 : ' ';
+            const uint32_t rendered = row == StatusRow ? 0 : BlankCell;
             for (uint32_t column = 0; column < TermConfig::Column; ++column)
             {
                 m_screen[row][column] = rendered;
-                m_screen_attributes[row][column] = 0;
             }
         }
         m_pending_scroll_rows = 0;
@@ -479,14 +559,12 @@ void Term::Refresh()
     {
         for (uint32_t column = 0; column < m_columns; ++column)
         {
-            if (m_buffer[row][column] == m_screen[row][column] &&
-                m_attributes[row][column] == m_screen_attributes[row][column])
+            if (m_buffer[row][column] == m_screen[row][column])
             {
                 continue;
             }
             DrawCell(row, column);
             m_screen[row][column] = m_buffer[row][column];
-            m_screen_attributes[row][column] = m_attributes[row][column];
             MarkDirty(row, &dirty_top, &dirty_bottom);
         }
     }
@@ -591,16 +669,15 @@ void Term::ApplyPendingScroll()
     const uint32_t scroll_rows = m_pending_scroll_rows;
     const uint32_t content_rows = m_rows - FirstContentRow;
     m_pending_scroll_rows = 0;
-    m_framebuffer->scrollUp((m_row_offset + FirstContentRow) * FONT_HEIGHT,
-                            content_rows * FONT_HEIGHT, scroll_rows * FONT_HEIGHT, m_bg_color);
+    m_framebuffer->scrollUp((m_row_offset + FirstContentRow) * TermConfig::CellHeight,
+                            content_rows * TermConfig::CellHeight,
+                            scroll_rows * TermConfig::CellHeight, m_bg_color);
     for (uint32_t row = FirstContentRow; row < m_rows; ++row)
     {
         const uint32_t source_row = row + scroll_rows;
         for (uint32_t column = 0; column < m_columns; ++column)
         {
-            m_screen[row][column] = source_row < m_rows ? m_screen[source_row][column] : ' ';
-            m_screen_attributes[row][column] =
-                source_row < m_rows ? m_screen_attributes[source_row][column] : 0;
+            m_screen[row][column] = source_row < m_rows ? m_screen[source_row][column] : BlankCell;
         }
     }
     // The rendered cursor moved up with the pixels, or scrolled off.
@@ -616,32 +693,49 @@ void Term::ApplyPendingScroll()
 
 void Term::DrawCell(uint32_t row, uint32_t column)
 {
-    const uint32_t x = (column + m_column_offset) * FONT_WIDTH;
-    const uint32_t y = (row + m_row_offset) * FONT_HEIGHT;
+    const uint32_t x = (column + m_column_offset) * TermConfig::CellWidth;
+    const uint32_t y = (row + m_row_offset) * TermConfig::CellHeight;
+    const uint32_t cell = m_buffer[row][column];
+    const char32_t code_point = cell & CodePointMask;
     // The cursor shows as the opposite of the cell's own colors.
-    const bool reversed = row == StatusRow || (m_attributes[row][column] & Reverse) != 0;
+    const bool reversed = row == StatusRow || ((cell >> AttributeShift) & Reverse) != 0;
     const bool inverted = CursorAt(row, column) ? !reversed : reversed;
     const uint32_t background = inverted ? m_fg_color : m_bg_color;
     const uint32_t foreground = inverted ? m_bg_color : m_fg_color;
-    const char character = static_cast<char>(m_buffer[row][column]);
-    uint8_t font_index = 0;
-    if (indexForCharacter(character, &font_index) == 0)
+    m_framebuffer->drawRectangle(x, y, TermConfig::CellWidth, TermConfig::CellHeight, background);
+    if (row == StatusRow && (code_point == StatusGreenDot || code_point == StatusRedDot))
     {
-        m_framebuffer->drawCharacter(font_index, x, y, background, foreground);
+        DrawDot(x, y, code_point == StatusGreenDot ? DotGreen : DotRed);
         return;
     }
-    m_framebuffer->drawRectangle(x, y, FONT_WIDTH, FONT_HEIGHT, background);
-    if (row == StatusRow && (character == StatusGreenDot || character == StatusRedDot))
+    if (IsControl(code_point) || code_point == ' ')
     {
-        DrawDot(x, y, character == StatusGreenDot ? DotGreen : DotRed);
+        return;
     }
+    if (!console_font.Valid())
+    {
+        DrawMissingBox(x, y, foreground);
+        return;
+    }
+    m_framebuffer->drawGlyph(console_font, console_font.Find(code_point), x, y,
+                             inverted ? m_reversed_palette : m_palette);
+}
+
+void Term::DrawMissingBox(uint32_t x, uint32_t y, uint32_t color)
+{
+    constexpr uint32_t width = TermConfig::CellWidth - 2;
+    constexpr uint32_t height = TermConfig::CellHeight - 4;
+    m_framebuffer->drawRectangle(x + 1, y + 2, width, 1, color);
+    m_framebuffer->drawRectangle(x + 1, y + 1 + height, width, 1, color);
+    m_framebuffer->drawRectangle(x + 1, y + 2, 1, height, color);
+    m_framebuffer->drawRectangle(x + width, y + 2, 1, height, color);
 }
 
 void Term::DrawDot(uint32_t x, uint32_t y, uint32_t color)
 {
-    const int32_t radius = FONT_WIDTH / 2 - 1;
-    const int32_t center_x = FONT_WIDTH / 2;
-    const int32_t center_y = FONT_HEIGHT / 2;
+    const int32_t radius = TermConfig::CellWidth / 2 - 1;
+    const int32_t center_x = TermConfig::CellWidth / 2;
+    const int32_t center_y = TermConfig::CellHeight / 2;
     for (int32_t dy = -radius; dy <= radius; ++dy)
     {
         for (int32_t dx = -radius; dx <= radius; ++dx)

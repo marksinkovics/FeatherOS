@@ -390,6 +390,16 @@ uint8_t FontView::Coverage(const Glyph& glyph, int32_t x, int32_t y) const
     return (x % 2) != 0 ? (byte & 0x0F) : (byte >> 4);
 }
 
+const uint8_t* FontView::Bitmap(const Glyph& glyph) const
+{
+    return m_bitmaps + glyph.bitmap_offset;
+}
+
+size_t FontView::BitmapStride(uint32_t width)
+{
+    return Stride(width);
+}
+
 uint32_t Blend(uint32_t background, uint32_t foreground, uint32_t coverage)
 {
     const uint32_t alpha = (coverage > 15 ? 15 : coverage) * 17;

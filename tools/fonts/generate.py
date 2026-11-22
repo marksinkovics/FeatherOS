@@ -678,8 +678,11 @@ def readme_text(versions: dict[str, tuple[str, str]]) -> str:
             "",
         ]
     lines += [
-        "These files are under the SIL Open Font License 1.1, not under the",
-        "licence of the rest of FeatherOS.",
+        "sample.txt is plain text for the FONTS smoke check, not a font:",
+        "characters the console font has, and some invalid UTF-8 bytes.",
+        "",
+        "The font files are under the SIL Open Font License 1.1, not under",
+        "the licence of the rest of FeatherOS.",
         "SHA256SUMS lists the SHA-256 of every other file in this folder.",
     ]
     return "\n".join(lines) + "\n"
@@ -788,6 +791,7 @@ def generate(out: Path, console_c: Path, console_h: Path, reference: Path):
             parsed[name] = ffnt.read(data)
             report.append((name, built, len(data)))
         files[family.licence_output] = (SOURCES / family.licence).read_bytes()
+    files["sample.txt"] = (HERE / "sample.txt").read_bytes()
     files["README.txt"] = readme_text(versions).encode("utf-8")
     sums = "".join(
         f"{hashlib.sha256(files[name]).hexdigest()}  {name}\n"

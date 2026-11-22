@@ -65,6 +65,10 @@ void InitializeDisplay(KLogger& logger, limine_framebuffer* framebuffer_response
         logger.AttachTerminal(&terms[0]);
         display_ready = true;
         logger.Info("Framebuffer console initialized");
+        if (Term::FontStatus() != Text::FontStatus::Ok)
+        {
+            logger.Warning("Console font rejected, cells draw as missing boxes");
+        }
     }
     else
     {

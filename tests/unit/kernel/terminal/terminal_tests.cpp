@@ -262,9 +262,14 @@ TEST_CASE("the process that changed the mode keeps it until it releases it")
 TEST_CASE("output keeps text and escape sequences and drops other control bytes")
 {
     Fixture fixture;
-    const std::string text = "a\tb\x01\x80\x1b[7mc\r\b\n";
+    const std::string text = "a\tb\x01\x7f\x1b[7mc\r\b\n";
     fixture.terminal.Write(text.data(), text.size());
     REQUIRE(fixture.device.output == "a b?\x1b[7mc\r\b\n");
+
+    const std::string utf8 = "caf\xC3\xA9 \xE2\x86\x92 \x80\xFF";
+    fixture.device.output.clear();
+    fixture.terminal.Write(utf8.data(), utf8.size());
+    REQUIRE(fixture.device.output == utf8);
 
     const std::string long_text(300, 'x');
     fixture.device.output.clear();

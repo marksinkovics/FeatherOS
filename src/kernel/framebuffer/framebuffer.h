@@ -6,6 +6,7 @@
 struct limine_framebuffer;
 
 #include "kernel/config.h"
+#include "user/text/font_data.h"
 
 struct PixelFormat
 {
@@ -35,8 +36,11 @@ public:
     void draw();
     void draw(uint32_t y, uint32_t height);
     void drawRectangle(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
-    void drawCharacter(uint8_t ch, uint32_t x, uint32_t y, uint32_t bg_color, uint32_t fg_color);
-    void drawString(const char* str, uint32_t x, uint32_t y, uint32_t bg_color, uint32_t fg_color);
+    // Draws a glyph into the cell whose top-left pixel is (x, y), clipped to the cell and the
+    // screen. palette holds the 16 packed pixels for coverage 0 to 15; a coverage of 0 leaves the
+    // pixel as it is.
+    void drawGlyph(const FeatherOS::Text::FontView& view, const FeatherOS::Text::Glyph& glyph,
+                   uint32_t x, uint32_t y, const uint32_t* palette);
     // Moves back-buffer rows [y + distance, y + height) up by distance and fills the vacated rows.
     void scrollUp(uint32_t y, uint32_t height, uint32_t distance, uint32_t color);
     // Converts count colors into back-buffer row y from column x, which may be negative; only the
@@ -45,9 +49,9 @@ public:
 
     uint32_t GetHeight() const;
     uint32_t GetWidth() const;
+    uint32_t packColor(uint32_t color) const;
 
 private:
-    uint32_t packColor(uint32_t color) const;
     void writePixel(uint8_t* destination, uint32_t pixel) const;
     void fillSpan(uint8_t* destination, uint32_t count, uint32_t pixel) const;
 

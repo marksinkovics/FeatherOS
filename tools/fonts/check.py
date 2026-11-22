@@ -28,6 +28,31 @@ EXPECTED = {
 RESERVED_NAMES = ("jetbrains", "inter")
 
 
+def check_sample() -> list[str]:
+    path = FONTS / "sample.txt"
+    if not path.exists():
+        return ["sample.txt is missing"]
+    if path.read_bytes() != (HERE / "sample.txt").read_bytes():
+        return ["sample.txt differs from tools/fonts/sample.txt"]
+    mono = FONTS / "mono-16.ffnt"
+    if not mono.exists():
+        return []
+    have = {glyph.code_point for glyph in ffnt.read(mono.read_bytes()).glyphs}
+    problems = []
+    for number, line in enumerate(path.read_bytes().split(b"\n"), 1):
+        text = line.decode("utf-8", errors="replace")
+        lacking = sorted(
+            {
+                c
+                for c in text
+                if ord(c) not in have and not 0x80 <= ord(c) <= 0x9F
+            }
+        )
+        if lacking:
+            problems.append(f"sample.txt line {number} has {lacking!r}")
+    return problems
+
+
 def check() -> list[str]:
     problems = []
     for name, original in LICENCES.items():
@@ -38,6 +63,7 @@ def check() -> list[str]:
             problems.append(f"{name} differs from sources/{original}")
     if not (FONTS / "README.txt").exists():
         problems.append("README.txt is missing")
+    problems += check_sample()
 
     sums = FONTS / "SHA256SUMS"
     listed = {}

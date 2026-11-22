@@ -3,11 +3,6 @@
 
 #include "kernel/framebuffer/framebuffer.h"
 
-extern "C"
-{
-#include "kernel/framebuffer/font.h"
-}
-
 namespace
 {
 
@@ -220,27 +215,47 @@ void Framebuffer::drawRectangle(uint32_t x, uint32_t y, uint32_t w, uint32_t h, 
     }
 }
 
-void Framebuffer::drawCharacter(uint8_t ch_index, uint32_t x, uint32_t y, uint32_t bg_color,
-                                uint32_t fg_color)
+void Framebuffer::drawGlyph(const FeatherOS::Text::FontView& view,
+                            const FeatherOS::Text::Glyph& glyph, uint32_t x, uint32_t y,
+                            const uint32_t* palette)
 {
     if (x >= m_width || y >= m_height)
     {
         return;
     }
-    const uint32_t columns = m_width - x < FONT_WIDTH ? m_width - x : FONT_WIDTH;
-    const uint32_t rows = m_height - y < FONT_HEIGHT ? m_height - y : FONT_HEIGHT;
-    const uint32_t fg_pixel = packColor(fg_color);
-    const uint32_t bg_pixel = packColor(bg_color);
-    const uint8_t* glyph = font16_8 + static_cast<size_t>(ch_index) * FONT_HEIGHT;
-    for (uint32_t i = 0; i < rows; i++)
+    const int32_t cell_width = view.CellWidth();
+    const int32_t cell_height = view.LineHeight();
+    const int32_t left = glyph.left;
+    const int32_t top = view.Ascent() - glyph.top;
+    const int32_t screen_columns = static_cast<int32_t>(m_width - x);
+    const int32_t screen_rows = static_cast<int32_t>(m_height - y);
+    const int32_t width_limit = cell_width < screen_columns ? cell_width : screen_columns;
+    const int32_t height_limit = cell_height < screen_rows ? cell_height : screen_rows;
+    const int32_t first_column = left < 0 ? -left : 0;
+    const int32_t first_row = top < 0 ? -top : 0;
+    const int32_t end_column = glyph.width < width_limit - left ? glyph.width : width_limit - left;
+    const int32_t end_row = glyph.height < height_limit - top ? glyph.height : height_limit - top;
+    if (first_column >= end_column || first_row >= end_row)
     {
-        uint8_t* destination = m_backbuffer + static_cast<size_t>(m_pitch) * (y + i) +
-                               static_cast<size_t>(m_format.bytes_per_pixel) * x;
-        const uint8_t bits = glyph[i];
-        for (uint32_t j = 0; j < columns; j++)
+        return;
+    }
+    const size_t stride = FeatherOS::Text::FontView::BitmapStride(glyph.width);
+    const uint8_t* source = view.Bitmap(glyph) + stride * static_cast<size_t>(first_row);
+    const size_t bytes_per_pixel = m_format.bytes_per_pixel;
+    for (int32_t row = first_row; row < end_row; ++row, source += stride)
+    {
+        uint8_t* destination =
+            m_backbuffer + static_cast<size_t>(m_pitch) * (y + static_cast<uint32_t>(top + row)) +
+            bytes_per_pixel * (x + static_cast<uint32_t>(left + first_column));
+        for (int32_t column = first_column; column < end_column;
+             ++column, destination += bytes_per_pixel)
         {
-            writePixel(destination + static_cast<size_t>(j) * m_format.bytes_per_pixel,
-                       (bits & (1U << j)) != 0 ? fg_pixel : bg_pixel);
+            const uint8_t packed = source[column >> 1];
+            const uint32_t coverage = (column & 1) != 0 ? packed & 0x0FU : packed >> 4;
+            if (coverage != 0)
+            {
+                writePixel(destination, palette[coverage]);
+            }
         }
     }
 }
@@ -269,29 +284,6 @@ void Framebuffer::scrollUp(uint32_t y, uint32_t height, uint32_t distance, uint3
     for (uint32_t row = y + height - distance; row < y + height; ++row)
     {
         fillSpan(m_backbuffer + static_cast<size_t>(m_pitch) * row, m_width, pixel);
-    }
-}
-
-void Framebuffer::drawString(const char* str, uint32_t x, uint32_t y, uint32_t bg_color,
-                             uint32_t fg_color)
-{
-    if (str == nullptr)
-    {
-        return;
-    }
-
-    int i = 0;
-    char character = str[0];
-    while (character != '\0')
-    {
-        uint32_t character_x = x + (i * 8) + 2;
-        uint32_t character_y = y;
-        uint8_t font_index = 0;
-        if (indexForCharacter(character, &font_index) == 0)
-        {
-            drawCharacter(font_index, character_x, character_y, bg_color, fg_color);
-        }
-        character = str[++i];
     }
 }
 

@@ -529,6 +529,9 @@ smoke_test() {
     if _is_on "${DUNGEON_TEST:-OFF}"; then
         smoke_args+=(--expect-dungeon)
     fi
+    if _is_on "${FONTS_TEST:-OFF}"; then
+        smoke_args+=(--expect-fonts)
+    fi
     if [[ -n "${QEMU_CPU:-}" ]]; then
         smoke_args+=(--cpu "$QEMU_CPU")
     fi

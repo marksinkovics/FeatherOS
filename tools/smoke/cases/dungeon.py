@@ -209,6 +209,8 @@ class Dungeon(ScreenCase, Case):
         return None
 
     def ExpectWalked(self, pixels):
+        if ExpectBox(pixels) is None:
+            return "the pack is still open"
         floor = FloorBytes(pixels)
         if floor == self.first_floor:
             return "the floor did not change after 20 arrow presses"
@@ -299,6 +301,10 @@ class Dungeon(ScreenCase, Case):
 
         for key in WALK:
             self.Tap(key)
+        # Keys are handled in order: an open pack means the walk is done.
+        self.Tap("i")
+        self.Step("the pack after the walk", ExpectBox)
+        self.Tap("esc")
         self.Step("after 20 arrow presses", self.ExpectWalked)
         if self.last_floor is None:
             raise StepFailed(self.failure)

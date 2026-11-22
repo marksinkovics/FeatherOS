@@ -746,3 +746,396 @@ TEST_CASE("a hidden terminal leaving graphics mode waits to be shown")
     second.SetShown(true);
     REQUIRE_FALSE(screen->pixels == first_pixels);
 }
+
+namespace
+{
+
+namespace Text = FeatherOS::Text;
+using FeatherOS::TermConfig;
+
+constexpr uint32_t CellWidth = TermConfig::CellWidth;
+constexpr uint32_t CellHeight = TermConfig::CellHeight;
+constexpr uint32_t White = 0xFFFFFF;
+constexpr uint32_t Black = 0x000000;
+
+Text::FontView ConsoleView()
+{
+    Text::FontView view;
+    REQUIRE(Text::FontView::Parse(ConsoleFontData, ConsoleFontSize, &view) == Text::FontStatus::Ok);
+    return view;
+}
+
+std::array<uint32_t, CellWidth * CellHeight> ReferenceCell(const Text::FontView& view,
+                                                           char32_t code_point,
+                                                           uint32_t background,
+                                                           uint32_t foreground)
+{
+    std::array<uint32_t, CellWidth * CellHeight> cell;
+    cell.fill(background);
+    const Text::Glyph glyph = view.Find(code_point);
+    for (int32_t row = 0; row < glyph.height; ++row)
+    {
+        for (int32_t column = 0; column < glyph.width; ++column)
+        {
+            const int32_t x = glyph.left + column;
+            const int32_t y = view.Ascent() - glyph.top + row;
+            const uint8_t coverage = view.Coverage(glyph, column, row);
+            if (x >= 0 && x < static_cast<int32_t>(CellWidth) && y >= 0 &&
+                y < static_cast<int32_t>(CellHeight) && coverage != 0)
+            {
+                cell[static_cast<size_t>(y) * CellWidth + static_cast<size_t>(x)] =
+                    Text::Blend(background, foreground, coverage);
+            }
+        }
+    }
+    return cell;
+}
+
+std::array<uint32_t, CellWidth * CellHeight> CellAt(const TestScreen& screen, uint32_t row,
+                                                    uint32_t column)
+{
+    std::array<uint32_t, CellWidth * CellHeight> cell;
+    const uint32_t x0 = (column + TermConfig::Padding) * CellWidth;
+    const uint32_t y0 = (row + TermConfig::Padding) * CellHeight;
+    for (uint32_t y = 0; y < CellHeight; ++y)
+    {
+        for (uint32_t x = 0; x < CellWidth; ++x)
+        {
+            const size_t offset = ((y0 + y) * TestScreen::Width + x0 + x) * 4;
+            cell[y * CellWidth + x] = screen.pixels[offset] | (screen.pixels[offset + 1] << 8) |
+                                      (screen.pixels[offset + 2] << 16);
+        }
+    }
+    return cell;
+}
+
+std::vector<char32_t> RowCodePoints(const FeatherOS::Term& terminal, uint32_t row, uint32_t length)
+{
+    std::vector<char32_t> result;
+    for (uint32_t column = 0; column < length; ++column)
+    {
+        result.push_back(terminal.CharacterAt(row, column));
+    }
+    return result;
+}
+
+bool HasInk(const std::array<uint32_t, CellWidth * CellHeight>& cell, uint32_t background)
+{
+    return std::any_of(cell.begin(), cell.end(),
+                       [background](uint32_t pixel) { return pixel != background; });
+}
+
+} // namespace
+
+TEST_CASE("the compiled-in console font parses and fits the console cell")
+{
+    TestScreen screen;
+    FeatherOS::Term terminal;
+    terminal.Init(&screen.framebuffer);
+    REQUIRE(FeatherOS::Term::FontStatus() == Text::FontStatus::Ok);
+    const Text::FontView view = ConsoleView();
+    REQUIRE(view.Monospace());
+    REQUIRE(view.CellWidth() == CellWidth);
+    REQUIRE(view.LineHeight() == CellHeight);
+    REQUIRE(std::string(view.Name()) == "mono 16");
+    for (char32_t code_point = 0x20; code_point < 0x7F; ++code_point)
+    {
+        REQUIRE(view.Contains(code_point));
+    }
+    REQUIRE(TermConfig::Row == 48);
+    REQUIRE(TermConfig::Column == 128);
+}
+
+TEST_CASE("a terminal draws every glyph of the console font as the reference does")
+{
+    const Text::FontView view = ConsoleView();
+    for (const PixelFormat& format : AllFormats)
+    {
+        INFO("bytes per pixel " << format.bytes_per_pixel);
+        constexpr uint32_t width = 3 * CellWidth;
+        constexpr uint32_t height = 3 * CellHeight;
+        std::vector<uint8_t> hardware(width * height * format.bytes_per_pixel);
+        limine_framebuffer descriptor = FormatFramebuffer(hardware.data(), width, height, format);
+        auto framebuffer = std::make_unique<Framebuffer>();
+        REQUIRE(framebuffer->init(&descriptor));
+        uint32_t palette[16];
+        for (uint32_t coverage = 0; coverage < 16; ++coverage)
+        {
+            palette[coverage] = framebuffer->packColor(Text::Blend(Black, White, coverage));
+        }
+        for (uint32_t index = 0; index < view.GlyphCount(); ++index)
+        {
+            const Text::Glyph glyph = view.GlyphAt(index);
+            INFO("code point " << static_cast<uint32_t>(glyph.code_point));
+            framebuffer->clear(Black);
+            framebuffer->drawGlyph(view, glyph, CellWidth, CellHeight, palette);
+            framebuffer->draw();
+            const auto expected = ReferenceCell(view, glyph.code_point, Black, White);
+            for (uint32_t y = 0; y < height; ++y)
+            {
+                for (uint32_t x = 0; x < width; ++x)
+                {
+                    const bool inside = x >= CellWidth && x < 2 * CellWidth && y >= CellHeight &&
+                                        y < 2 * CellHeight;
+                    const uint32_t color =
+                        inside ? expected[(y - CellHeight) * CellWidth + x - CellWidth] : Black;
+                    const auto want = Packed(format, {color});
+                    const auto offset = (y * width + x) * format.bytes_per_pixel;
+                    REQUIRE(std::equal(want.begin(), want.end(), hardware.begin() + offset));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("a glyph at the screen's edge is clipped to the screen")
+{
+    const Text::FontView view = ConsoleView();
+    TestScreen screen;
+    uint32_t palette[16];
+    for (uint32_t coverage = 0; coverage < 16; ++coverage)
+    {
+        palette[coverage] = screen.framebuffer.packColor(Text::Blend(Black, White, coverage));
+    }
+    const Text::Glyph block = view.Find(0x2588);
+    screen.framebuffer.drawGlyph(view, block, TestScreen::Width - 3, TestScreen::Height - 5,
+                                 palette);
+    screen.framebuffer.drawGlyph(view, block, TestScreen::Width, 0, palette);
+    screen.framebuffer.drawGlyph(view, block, 0, TestScreen::Height, palette);
+    screen.framebuffer.draw();
+    size_t lit = 0;
+    for (size_t offset = 0; offset < screen.pixels.size(); offset += 4)
+    {
+        lit += screen.pixels[offset] != 0;
+    }
+    REQUIRE(lit == 15);
+}
+
+TEST_CASE("a terminal draws a known glyph into its cell")
+{
+    TestScreen screen;
+    FeatherOS::Term terminal;
+    terminal.Init(&screen.framebuffer);
+    const Text::FontView view = ConsoleView();
+    terminal.Print("A\xC3\xA9\xE2\x96\x88");
+    const auto a = CellAt(screen, 1, 0);
+    REQUIRE(a == ReferenceCell(view, 'A', Black, White));
+    REQUIRE(HasInk(a, Black));
+    REQUIRE(std::count(a.begin(), a.end(), White) > 0);
+    REQUIRE(std::any_of(a.begin(), a.end(),
+                        [](uint32_t pixel) { return pixel != Black && pixel != White; }));
+    REQUIRE(CellAt(screen, 1, 1) == ReferenceCell(view, 0xE9, Black, White));
+    const auto block = CellAt(screen, 1, 2);
+    REQUIRE(std::all_of(block.begin(), block.end(), [](uint32_t pixel) { return pixel == White; }));
+    REQUIRE(CellAt(screen, 1, 5) == ReferenceCell(view, ' ', Black, White));
+}
+
+TEST_CASE("a code point the font lacks draws the missing box and a control draws nothing")
+{
+    TestScreen screen;
+    FeatherOS::Term terminal;
+    terminal.Init(&screen.framebuffer);
+    const Text::FontView view = ConsoleView();
+    REQUIRE_FALSE(view.Contains(0x4E2D));
+    REQUIRE_FALSE(view.Contains(0x132));
+    terminal.Print("\xE4\xB8\xAD\xC4\xB2\t");
+    const auto missing = ReferenceCell(view, 0x4E2D, Black, White);
+    REQUIRE(HasInk(missing, Black));
+    REQUIRE(CellAt(screen, 1, 0) == missing);
+    REQUIRE(CellAt(screen, 1, 1) == missing);
+    REQUIRE(terminal.CharacterAt(1, 0) == 0x4E2D);
+    REQUIRE(terminal.CharacterAt(1, 2) == '\t');
+    REQUIRE_FALSE(HasInk(CellAt(screen, 1, 2), Black));
+}
+
+TEST_CASE("UTF-8 split over Print calls fills one cell and each terminal keeps its own state")
+{
+    TestScreen screen;
+    FeatherOS::Term first;
+    FeatherOS::Term second;
+    first.Init(&screen.framebuffer);
+    second.Init(&screen.framebuffer);
+    second.SetShown(false);
+
+    first.Print("caf\xC3");
+    second.Print("\xE2\x86");
+    first.Print("\xA9");
+    second.Print("ab");
+    REQUIRE(RowCodePoints(first, 1, 5) == std::vector<char32_t>{'c', 'a', 'f', 0xE9, ' '});
+    REQUIRE(first.CursorColumn() == 4);
+    REQUIRE(RowCodePoints(second, 1, 3) == std::vector<char32_t>{0xFFFD, 'a', 'b'});
+    REQUIRE(second.CursorColumn() == 3);
+
+    first.Print("\xE2");
+    second.Print("\xE2\x86");
+    first.Print("\x86");
+    second.Print("\x92");
+    first.Print("\x92");
+    REQUIRE(first.CharacterAt(1, 4) == 0x2192);
+    REQUIRE(second.CharacterAt(1, 3) == 0x2192);
+
+    first.Print("\xF0\x9F");
+    first.Print("\x98");
+    first.Print("\x80");
+    REQUIRE(first.CharacterAt(1, 5) == 0x1F600);
+    REQUIRE(first.CursorColumn() == 6);
+
+    first.Print("\xC3");
+    first.Init(&screen.framebuffer);
+    first.Print("x");
+    REQUIRE(first.CharacterAt(1, 0) == 'x');
+}
+
+TEST_CASE("invalid UTF-8 becomes replacement cells and C1 controls are dropped")
+{
+    TestScreen screen;
+    FeatherOS::Term terminal;
+    terminal.Init(&screen.framebuffer);
+    const auto row = [&](uint32_t length) { return RowCodePoints(terminal, 1, length); };
+
+    terminal.Print("\xFF\x80\xC0\x80z");
+    REQUIRE(row(6) == std::vector<char32_t>{0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD, 'z', ' '});
+
+    terminal.Print("\x1b[1;1H\x1b[2K");
+    terminal.Print("\xE2\x82");
+    terminal.Print("x");
+    REQUIRE(row(3) == std::vector<char32_t>{0xFFFD, 'x', ' '});
+
+    terminal.Print("\x1b[1;1H\x1b[2K");
+    terminal.Print("\xED\xA0\x80\xF4\x90\x80\x80");
+    REQUIRE(row(8) == std::vector<char32_t>{0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD, 0xFFFD,
+                                            ' '});
+
+    terminal.Print("\x1b[1;1H\x1b[2K");
+    terminal.Print("a\xC2\x85\xC2\x9F" "b\xC2\xA0");
+    REQUIRE(row(4) == std::vector<char32_t>{'a', 'b', 0xA0, ' '});
+
+    terminal.Print("\x1b[1;1H\x1b[2K");
+    terminal.Print("\xC3\x1b[7mR\x1b[0m");
+    REQUIRE(row(3) == std::vector<char32_t>{0xFFFD, 'R', ' '});
+    REQUIRE_FALSE(terminal.ReversedAt(1, 0));
+    REQUIRE(terminal.ReversedAt(1, 1));
+
+    terminal.Print("\x1b[1;1H\x1b[2K");
+    terminal.Print("\xE2\x86\nq");
+    REQUIRE(RowCodePoints(terminal, 1, 2) == std::vector<char32_t>{0xFFFD, ' '});
+    REQUIRE(terminal.CharacterAt(2, 0) == 'q');
+
+    terminal.Print("\x1b[1;1H\x1b[2K");
+    terminal.Print("\xF0\x9F\x1b" "7\x1b[3;1H");
+    REQUIRE(terminal.CharacterAt(1, 0) == 0xFFFD);
+    REQUIRE(terminal.CursorRow() == 3);
+
+    terminal.Print("\x1b[?25\xC3\xA9l.");
+    REQUIRE(terminal.CharacterAt(3, 0) == '.');
+}
+
+TEST_CASE("a code point above U+00FF keeps its bits and the attributes stay separate")
+{
+    TestScreen screen;
+    FeatherOS::Term terminal;
+    terminal.Init(&screen.framebuffer);
+    terminal.Print("\x1b[7m\xF4\x8F\xBF\xBF\xE2\x96\x88\x1b[0m\xE2\x96\x88");
+    REQUIRE(terminal.CharacterAt(1, 0) == 0x10FFFF);
+    REQUIRE(terminal.CharacterAt(1, 1) == 0x2588);
+    REQUIRE(terminal.CharacterAt(1, 2) == 0x2588);
+    REQUIRE(terminal.ReversedAt(1, 0));
+    REQUIRE(terminal.ReversedAt(1, 1));
+    REQUIRE_FALSE(terminal.ReversedAt(1, 2));
+    REQUIRE(terminal.CharacterAt(1, 3) == ' ');
+    REQUIRE_FALSE(terminal.ReversedAt(1, 3));
+}
+
+TEST_CASE("reverse video, the cursor and the status bar use the inverted palette")
+{
+    TestScreen screen;
+    FeatherOS::Term terminal;
+    terminal.Init(&screen.framebuffer);
+    const Text::FontView view = ConsoleView();
+    terminal.SetStatus("g\xC3\xA9", "");
+    terminal.Print("\x1b[7mgW\x1b[0m\xE2\x96\x88Q");
+    terminal.SetCursorVisible(true);
+
+    REQUIRE(CellAt(screen, 1, 0) == ReferenceCell(view, 'g', White, Black));
+    REQUIRE(CellAt(screen, 1, 1) == ReferenceCell(view, 'W', White, Black));
+    REQUIRE(CellAt(screen, 1, 2) == ReferenceCell(view, 0x2588, Black, White));
+    REQUIRE(CellAt(screen, 1, 3) == ReferenceCell(view, 'Q', Black, White));
+    // The cursor rests on the blank cell after the text, the opposite of a normal cell.
+    const auto cursor = CellAt(screen, 1, 4);
+    REQUIRE(std::all_of(cursor.begin(), cursor.end(),
+                        [](uint32_t pixel) { return pixel == White; }));
+    REQUIRE(CellAt(screen, 0, 1) == ReferenceCell(view, 'g', White, Black));
+    REQUIRE(CellAt(screen, 0, 2) == ReferenceCell(view, 0xE9, White, Black));
+    REQUIRE(CellAt(screen, 0, 5) == ReferenceCell(view, ' ', White, Black));
+
+    terminal.Print("\x1b[1;1H\x1b[7m");
+    terminal.SetCursorVisible(false);
+    terminal.SetCursorVisible(true);
+    // A reversed cell under the cursor shows in normal colors.
+    REQUIRE(CellAt(screen, 1, 0) == ReferenceCell(view, 'g', Black, White));
+}
+
+TEST_CASE("status text is decoded into cells, aligned by character and cut by cells")
+{
+    TestScreen screen;
+    FeatherOS::Term terminal;
+    terminal.Init(&screen.framebuffer);
+    const auto bar = [&](uint32_t length) { return RowCodePoints(terminal, 0, length); };
+    terminal.SetStatus("\xC3\xA9t\xC3", "\xCE\xB1\xCE\xB2\xC2\x85\xFF");
+    std::vector<char32_t> expected(38, ' ');
+    expected[1] = 0xE9;
+    expected[2] = 't';
+    expected[3] = 0xFFFD;
+    expected[34] = 0x3B1;
+    expected[35] = 0x3B2;
+    expected[36] = 0xFFFD;
+    REQUIRE(bar(38) == expected);
+    terminal.SetStatus("\xE2\x86\x92" "ab", "");
+    REQUIRE(RowCodePoints(terminal, 0, 5) == std::vector<char32_t>{' ', 0x2192, 'a', 'b', ' '});
+    terminal.SetStatus("", "x\xE2\x86");
+    REQUIRE(terminal.CharacterAt(0, 35) == 'x');
+    REQUIRE(terminal.CharacterAt(0, 36) == 0xFFFD);
+}
+
+TEST_CASE("scrolling and the alternate screen keep whole code points")
+{
+    TestScreen screen;
+    FeatherOS::Term terminal;
+    terminal.Init(&screen.framebuffer);
+    terminal.Print("\xCE\xB1\n\xCE\xB2\xE2\x86\x92\n\xD0\x96\n\xE2\x95\x94\xE2\x95\x90\nlast\n\xC3\xA9");
+    REQUIRE(terminal.CharacterAt(1, 0) == 0x416);
+    REQUIRE(RowCodePoints(terminal, 2, 2) == std::vector<char32_t>{0x2554, 0x2550});
+    REQUIRE(terminal.CharacterAt(3, 0) == 'l');
+    REQUIRE(terminal.CharacterAt(4, 0) == 0xE9);
+    const auto scrolled = screen.pixels;
+
+    terminal.Print("\x1b[?1049h\x1b[1;1H\xD0\x96\xD0\x96");
+    REQUIRE(terminal.CharacterAt(1, 0) == 0x416);
+    REQUIRE(terminal.CharacterAt(4, 0) == ' ');
+    terminal.Print("\x1b[?1049l");
+    REQUIRE(terminal.CharacterAt(1, 0) == 0x416);
+    REQUIRE(RowCodePoints(terminal, 2, 2) == std::vector<char32_t>{0x2554, 0x2550});
+    REQUIRE(terminal.CharacterAt(3, 0) == 'l');
+    REQUIRE(terminal.CharacterAt(4, 0) == 0xE9);
+    REQUIRE(screen.pixels == scrolled);
+
+    terminal.Redraw();
+    REQUIRE(screen.pixels == scrolled);
+}
+
+TEST_CASE("incremental rendering of wide code points matches a full redraw")
+{
+    TestScreen screen;
+    FeatherOS::Term terminal;
+    terminal.Init(&screen.framebuffer);
+    terminal.SetStatus("\xCE\xB1\xCE\xB2", "\xD0\x96");
+    terminal.SetCursorVisible(true);
+    for (int line = 0; line < 12; ++line)
+    {
+        terminal.PrintLn("\xE2\x94\x8C\xE2\x94\x80\xE2\x94\x90 \xC3\xA1\xC5\x91 \xCE\xA9\xD0\xAF");
+    }
+    terminal.Print("\x1b[7m\xE2\x86\x92\x1b[0m");
+    const auto incremental = screen.pixels;
+    terminal.Redraw();
+    REQUIRE(screen.pixels == incremental);
+}
