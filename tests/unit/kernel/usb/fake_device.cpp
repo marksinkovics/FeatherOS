@@ -116,6 +116,11 @@ ScriptedDevice::Outcome ScriptedDevice::Control(const Request& request,
             return fault.outcome;
         }
     }
+    Outcome handled = Outcome::Ok;
+    if (HandleClass(request, response, &handled))
+    {
+        return handled;
+    }
     if (request.type == 0x80 && request.request == GetDescriptor)
     {
         const auto type = static_cast<uint8_t>(request.value >> 8);
@@ -162,6 +167,11 @@ ScriptedDevice::Outcome ScriptedDevice::Control(const Request& request,
         configuration_value_ = static_cast<uint8_t>(request.value);
     }
     return Outcome::Ok;
+}
+
+bool ScriptedDevice::HandleClass(const Request&, std::vector<uint8_t>*, Outcome*)
+{
+    return false;
 }
 
 void ScriptedDevice::QueueReport(uint8_t endpoint, std::vector<uint8_t> report)
@@ -306,6 +316,15 @@ std::vector<uint8_t> HubConfiguration()
     return Finish(body, 1);
 }
 
+std::vector<uint8_t> SuperSpeedHubConfiguration()
+{
+    std::vector<uint8_t> body;
+    Interface(body, 0, 0, 1, 9, 0, 0);
+    Endpoint(body, 0x81, 3, 2, 12);
+    Append(body, {6, 0x30, 0, 0, 2, 0});
+    return Finish(body, 1);
+}
+
 std::vector<uint8_t> MassStorageConfiguration()
 {
     std::vector<uint8_t> body;
@@ -352,6 +371,303 @@ const std::vector<uint8_t>& BootMouseDescriptor()
         0x75, 0x05, 0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7F,
         0x75, 0x08, 0x95, 0x02, 0x81, 0x06, 0xC0, 0xC0};
     return descriptor;
+}
+
+ScriptedHub::ScriptedHub(bool super_speed, uint8_t ports, std::vector<uint8_t> device,
+                         std::vector<uint8_t> configuration, uint8_t think_time)
+    : ScriptedDevice(std::move(device), std::move(configuration)),
+      super_speed_(super_speed),
+      think_time_(think_time),
+      ports_(static_cast<size_t>(ports) + 1)
+{
+}
+
+uint16_t ScriptedHub::SpeedBits(Speed speed) const
+{
+    if (super_speed_)
+    {
+        return 0;
+    }
+    return speed == Speed::Low ? 0x0200 : (speed == Speed::High ? 0x0400 : 0);
+}
+
+void ScriptedHub::Plug(uint8_t port, std::shared_ptr<ScriptedDevice> child, Speed speed)
+{
+    Port& entry = ports_[port];
+    entry.child = std::move(child);
+    entry.speed = speed;
+    entry.status = static_cast<uint16_t>((entry.status & ~(0x0600 | StatusEnable)) |
+                                         StatusConnection | SpeedBits(speed));
+    entry.change |= 0x0001;
+}
+
+void ScriptedHub::Unplug(uint8_t port)
+{
+    Port& entry = ports_[port];
+    entry.child.reset();
+    entry.status = static_cast<uint16_t>(entry.status &
+                                         ~(StatusConnection | StatusEnable | 0x0600));
+    entry.change |= 0x0001;
+}
+
+void ScriptedHub::OverCurrent(uint8_t port)
+{
+    Port& entry = ports_[port];
+    entry.status |= StatusOverCurrent;
+    entry.change |= 0x0008;
+}
+
+void ScriptedHub::Flap(uint8_t port)
+{
+    ports_[port].change |= 0x0001;
+}
+
+void ScriptedHub::HoldReset(uint8_t port, bool hold)
+{
+    ports_[port].hold_reset = hold;
+}
+
+void ScriptedHub::SkipResetChange(uint8_t port, bool skip)
+{
+    ports_[port].skip_reset_change = skip;
+}
+
+std::shared_ptr<ScriptedDevice> ScriptedHub::Child(uint8_t port) const
+{
+    return port < ports_.size() ? ports_[port].child : nullptr;
+}
+
+uint8_t ScriptedHub::Ports() const
+{
+    return static_cast<uint8_t>(ports_.size() - 1);
+}
+
+bool ScriptedHub::SuperSpeed() const
+{
+    return super_speed_;
+}
+
+uint16_t ScriptedHub::Status(uint8_t port) const
+{
+    return ports_[port].status;
+}
+
+uint16_t ScriptedHub::Change(uint8_t port) const
+{
+    return ports_[port].change;
+}
+
+bool ScriptedHub::Powered(uint8_t port) const
+{
+    return ports_[port].powered;
+}
+
+uint32_t ScriptedHub::Resets(uint8_t port) const
+{
+    return ports_[port].resets;
+}
+
+const std::vector<std::pair<uint8_t, uint8_t>>& ScriptedHub::PortSets() const
+{
+    return sets_;
+}
+
+const std::vector<std::pair<uint8_t, uint8_t>>& ScriptedHub::PortClears() const
+{
+    return clears_;
+}
+
+const std::vector<uint16_t>& ScriptedHub::Depths() const
+{
+    return depths_;
+}
+
+const std::vector<uint16_t>& ScriptedHub::Alternates() const
+{
+    return alternates_;
+}
+
+const std::vector<uint8_t>& ScriptedHub::ResetOrder() const
+{
+    return reset_order_;
+}
+
+std::vector<uint8_t> ScriptedHub::Descriptor() const
+{
+    const uint8_t ports = Ports();
+    const uint8_t characteristics = static_cast<uint8_t>(think_time_ << 5);
+    std::vector<uint8_t> bytes;
+    if (super_speed_)
+    {
+        Append(bytes, {12, 0x2A, ports, characteristics, 0, 5, 0, 0, 0, 0, 0, 0});
+        return bytes;
+    }
+    const uint8_t removable = static_cast<uint8_t>((ports + 8) / 8);
+    Append(bytes, {static_cast<uint8_t>(7 + 2 * removable), 0x29, ports, characteristics, 0, 5, 0});
+    bytes.insert(bytes.end(), static_cast<size_t>(removable) * 2, 0);
+    return bytes;
+}
+
+bool ScriptedHub::HasReport(uint8_t endpoint) const
+{
+    if (ScriptedDevice::HasReport(endpoint))
+    {
+        return true;
+    }
+    for (const Port& port : ports_)
+    {
+        if (port.change != 0)
+        {
+            return endpoint == 0x81;
+        }
+    }
+    return false;
+}
+
+bool ScriptedHub::TakeReport(uint8_t endpoint, std::vector<uint8_t>* report)
+{
+    if (ScriptedDevice::HasReport(endpoint))
+    {
+        return ScriptedDevice::TakeReport(endpoint, report);
+    }
+    if (endpoint != 0x81)
+    {
+        return false;
+    }
+    uint32_t bits = 0;
+    for (size_t port = 1; port < ports_.size(); ++port)
+    {
+        bits |= ports_[port].change != 0 ? 1U << port : 0;
+    }
+    if (bits == 0)
+    {
+        return false;
+    }
+    report->assign({static_cast<uint8_t>(bits), static_cast<uint8_t>(bits >> 8)});
+    if (ports_.size() <= 8)
+    {
+        report->resize(1);
+    }
+    return true;
+}
+
+bool ScriptedHub::HandleClass(const Request& request, std::vector<uint8_t>* response,
+                              Outcome* outcome)
+{
+    const auto port_index = static_cast<uint8_t>(request.index);
+    if (request.type == 0xA0 && request.request == GetDescriptor)
+    {
+        const std::vector<uint8_t> descriptor = Descriptor();
+        const auto type = static_cast<uint8_t>(request.value >> 8);
+        if (type != descriptor[1])
+        {
+            *outcome = Outcome::Stall;
+            return true;
+        }
+        const size_t count = std::min<size_t>(request.length, descriptor.size());
+        response->assign(descriptor.begin(), descriptor.begin() + static_cast<long>(count));
+        return true;
+    }
+    if (request.type == 0xA0 && request.request == 0)
+    {
+        response->assign({0, 0, 0, 0});
+        return true;
+    }
+    if (request.type == 0x20 && request.request == 12)
+    {
+        depths_.push_back(request.value);
+        return true;
+    }
+    if (request.type == 0x01 && request.request == 11)
+    {
+        alternates_.push_back(request.value);
+        return true;
+    }
+    if (request.type != 0x23 && request.type != 0xA3)
+    {
+        return false;
+    }
+    if (port_index == 0 || port_index >= ports_.size())
+    {
+        *outcome = Outcome::Stall;
+        return true;
+    }
+    Port& port = ports_[port_index];
+    const auto feature = static_cast<uint8_t>(request.value);
+    if (request.type == 0xA3 && request.request == 0)
+    {
+        response->assign({static_cast<uint8_t>(port.status), static_cast<uint8_t>(port.status >> 8),
+                          static_cast<uint8_t>(port.change), static_cast<uint8_t>(port.change >> 8)});
+        return true;
+    }
+    if (request.request == 3)
+    {
+        sets_.emplace_back(port_index, feature);
+        if (feature == 8)
+        {
+            port.powered = true;
+            port.status |= super_speed_ ? 0x0200 : 0x0100;
+        }
+        else if (feature == 4)
+        {
+            ++port.resets;
+            reset_order_.push_back(port_index);
+            if (port.child != nullptr && !port.hold_reset)
+            {
+                port.status = static_cast<uint16_t>((port.status | StatusEnable) & ~StatusReset);
+                port.status = static_cast<uint16_t>((port.status & ~0x0600) | SpeedBits(port.speed));
+                if (!port.skip_reset_change)
+                {
+                    port.change |= 0x0010;
+                }
+            }
+        }
+        return true;
+    }
+    if (request.request == 1)
+    {
+        clears_.emplace_back(port_index, feature);
+        if (feature >= 16 && feature <= 20)
+        {
+            port.change &= static_cast<uint16_t>(~(1U << (feature - 16)));
+        }
+        else if (feature == 29)
+        {
+            port.change &= static_cast<uint16_t>(~0x0020U);
+        }
+        else if (feature == 25)
+        {
+            port.change &= static_cast<uint16_t>(~0x0040U);
+        }
+        else if (feature == 26)
+        {
+            port.change &= static_cast<uint16_t>(~0x0080U);
+        }
+        else if (feature == 1)
+        {
+            port.status &= static_cast<uint16_t>(~StatusEnable);
+        }
+        else if (feature == 8)
+        {
+            port.powered = false;
+            port.status &= static_cast<uint16_t>(~(super_speed_ ? 0x0200 : 0x0100));
+        }
+        return true;
+    }
+    return false;
+}
+
+std::shared_ptr<ScriptedHub> MakeHub(Speed speed, uint8_t ports, bool multi_tt, uint8_t think_time)
+{
+    const bool super = speed >= Speed::Super;
+    std::vector<uint8_t> device = MakeDeviceDescriptor(
+        0x05E3, 0x0608, MaxPacket0Field(speed), 9, 2, super ? 0x0300 : (speed == Speed::High ? 0x0200 : 0x0110));
+    device[6] = speed == Speed::High ? (multi_tt ? 2 : 1) : 0;
+    auto hub = std::make_shared<ScriptedHub>(
+        super, ports, std::move(device), super ? SuperSpeedHubConfiguration() : HubConfiguration(),
+        think_time);
+    hub->AddString(2, "Scripted Hub");
+    return hub;
 }
 
 std::shared_ptr<ScriptedDevice> MakeKeyboard(Speed speed, uint8_t max_packet0)

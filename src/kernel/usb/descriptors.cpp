@@ -171,6 +171,30 @@ ParseStatus ParseConfiguration(std::span<const uint8_t> bytes, ConfigurationView
     return ParseStatus::Ok;
 }
 
+ParseStatus ParseHub(std::span<const uint8_t> bytes, bool super_speed, HubDescriptor* hub)
+{
+    constexpr size_t FixedBytes = 7;
+    constexpr uint32_t ThinkTimeShift = 5;
+    if (bytes.size() < FixedBytes || bytes[0] < FixedBytes)
+    {
+        return ParseStatus::Truncated;
+    }
+    if (bytes[0] > bytes.size())
+    {
+        return ParseStatus::Truncated;
+    }
+    if (bytes[1] != (super_speed ? DescriptorType::SuperSpeedHub : DescriptorType::Hub) ||
+        bytes[2] == 0)
+    {
+        return ParseStatus::Malformed;
+    }
+    hub->ports = bytes[2];
+    hub->characteristics = Word(bytes, 3);
+    hub->think_time = static_cast<uint8_t>((hub->characteristics >> ThinkTimeShift) & 3U);
+    hub->power_on_to_good = bytes[5];
+    return ParseStatus::Ok;
+}
+
 uint16_t HidReportLength(const InterfaceView& interface)
 {
     for (uint32_t index = 0; index < interface.class_descriptor_count; ++index)

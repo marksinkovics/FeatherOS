@@ -250,14 +250,14 @@ class UsbKeys(NormalBoot):
                 f"{self.Interrupts()}"
             )
         device = re.search(
-            rf"KERN/I: USB 1-\d+: {self.speed}-speed 0627:0001 "
+            rf"KERN/I: USB 1-\d+(?:\.\d+)*: {self.speed}-speed 0627:0001 "
             r"\"QEMU USB Keyboard\" hid-keyboard",
             output,
         )
         if device is None:
             return f"no {self.speed}-speed USB keyboard bound to hid-keyboard"
         if not re.search(
-            rf"KERN/I: USB 1-\d+: {self.speed}-speed 0627:0001 "
+            rf"KERN/I: USB 1-\d+(?:\.\d+)*: {self.speed}-speed 0627:0001 "
             r"\"QEMU USB Mouse\" hid-mouse",
             output,
         ):

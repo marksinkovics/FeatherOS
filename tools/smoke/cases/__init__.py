@@ -18,6 +18,7 @@ from smoke.cases.smp import Smp
 from smoke.cases.storage import Storage
 from smoke.cases.timer import Timer
 from smoke.cases.usb import Usb
+from smoke.cases.usb_hub import UsbHub
 from smoke.cases.usb_keys import UsbFallback, UsbKeys
 from smoke.cases.user_preemption import UserPreemption
 
@@ -67,6 +68,11 @@ SWITCHES = {
         UsbFallback,
         "Type on a full-speed USB keyboard through the report parser, "
         "without MSI",
+    ),
+    "usb-hub": (
+        UsbHub,
+        "Type and move the mouse behind a USB hub, and hot-plug a keyboard "
+        "into one of its ports",
     ),
     "calc": (Calc, "Send a calculator command and expect its result"),
     "shell": (Shell, "Run shell commands and expect their output"),

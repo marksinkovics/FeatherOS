@@ -4,6 +4,7 @@
 #include "kernel/usb/descriptors.h"
 #include "kernel/usb/device.h"
 #include "kernel/usb/driver.h"
+#include "kernel/usb/hub.h"
 #include "kernel/usb/host_controller.h"
 
 #include <atomic>
@@ -34,13 +35,17 @@ private:
     enum class Step : uint8_t;
 
     void HandlePort(uint32_t port);
-    bool Enumerate(uint32_t port);
+    void HandleHub(const DeviceWork& work);
+    void ServiceHubPort(Device& hub_device, Hub& hub, uint32_t port);
+    void ServiceHubStatus(Hub& hub);
+    bool ReadPortStatus(Hub& hub, uint32_t port, HubPort::Event* event);
+    Device* Enumerate(const Location& location, Device* parent, uint8_t port);
     bool ReadDescriptors(Device& info, Memory::Dma::Buffer& buffer, Step* failed);
     Status GetDescriptor(uint32_t slot, uint8_t type, uint8_t index, uint16_t language,
                          uint16_t length, Memory::Dma::Buffer& buffer, uint32_t* actual);
     void Forget();
     void Service();
-    void Log(uint32_t port, const char* message, bool warning) const;
+    void Log(const char* path, const char* message, bool warning) const;
     static void OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_t recent);
 
     HostController& host_;

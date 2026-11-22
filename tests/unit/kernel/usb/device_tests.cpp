@@ -9,6 +9,7 @@
 #include "kernel/sync/mutex.h"
 #include "kernel/usb/device.h"
 #include "kernel/usb/driver.h"
+#include "kernel/usb/hub.h"
 #include "kernel/usb/xhci/trb.h"
 
 #include <algorithm>
@@ -27,6 +28,7 @@ namespace T = FeatherOS::Usb;
 namespace X = FeatherOS::Usb::Xhci;
 using FeatherOS::Usb::Speed;
 using FeatherOS::Usb::Status;
+using FeatherOS::Usb::Testing::MakeHub;
 using FeatherOS::Usb::Testing::MakeKeyboard;
 using FeatherOS::Usb::Testing::MakeMouse;
 using FeatherOS::Usb::Testing::Rig;
@@ -153,7 +155,7 @@ void Detach(T::Device& device, void* state)
 }
 
 const T::Driver ProbeDriver = {"hid-test", Matches, Attach, Detach};
-const T::Driver* const ProbeDrivers[] = {&ProbeDriver};
+const T::Driver* const ProbeDrivers[] = {&T::HubDriver, &ProbeDriver};
 
 class DriverRig
 {
@@ -261,12 +263,13 @@ TEST_CASE("usb I20: a device's children are detached before it", "[usb][xhci]")
 {
     DriverRig world;
     Rig& rig = world.rig;
-    const uint32_t parent_slot = world.Plug(1, MakeKeyboard(Speed::High));
-    const uint32_t child_slot = world.Plug(2, MakeMouse(Speed::High));
-    REQUIRE(parent_slot != 0);
-    REQUIRE(child_slot != 0);
-    // Hubs arrive in step 9; until then a root-port device stands in for the hub.
-    world.Device(child_slot)->parent = world.Device(parent_slot);
+    const auto hub = MakeHub(Speed::High, 4);
+    hub->Plug(2, MakeKeyboard(Speed::High), Speed::High);
+    hub->Plug(3, MakeMouse(Speed::High), Speed::High);
+    const uint32_t hub_slot = world.Plug(1, hub);
+    REQUIRE(hub_slot != 0);
+    REQUIRE(recording.Count("attach") == 2);
+    const uint32_t keyboard_slot = rig.manager->SlotOfPort(1) + 1;
     recording.events.clear();
     rig.fake.Disconnect(1);
     rig.Settle();
@@ -278,11 +281,10 @@ TEST_CASE("usb I20: a device's children are detached before it", "[usb][xhci]")
             order.push_back(event.path);
         }
     }
-    REQUIRE(order == (std::vector<std::string>{"1-2", "1-1"}));
-    REQUIRE(rig.fake.DisabledSlots() == (std::vector<uint32_t>{child_slot, parent_slot}));
+    REQUIRE(order == (std::vector<std::string>{"1-1.2", "1-1.3"}));
+    REQUIRE(rig.fake.DisabledSlots() ==
+            (std::vector<uint32_t>{keyboard_slot, keyboard_slot + 1, hub_slot}));
     REQUIRE(Listing().empty());
-    rig.fake.Disconnect(2);
-    rig.Settle();
     REQUIRE(rig.hardware.Outstanding() == rig.baseline);
 }
 

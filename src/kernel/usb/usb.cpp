@@ -7,6 +7,7 @@
 #include "kernel/pci/pci.h"
 #include "kernel/scheduler.h"
 #include "kernel/sync/spinlock.h"
+#include "kernel/usb/device.h"
 #include "kernel/usb/hid/driver.h"
 #include "kernel/usb/manager.h"
 #include "kernel/usb/xhci/controller.h"
@@ -202,6 +203,7 @@ bool Initialize(const void* platform_data)
         managers[index] = new Manager(*controllers[index], index + 1);
     }
     Input::SetLedCallback(OnLockChange);
+    SetWorkWake(WakeManager);
     bool started = StartTask(ManagerTask, nullptr, Scheduler::TaskPriority::Normal);
     for (uint32_t index = 0; index < controller_count; ++index)
     {

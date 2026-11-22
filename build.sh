@@ -560,6 +560,9 @@ smoke_test() {
     if _is_on "${USB_FALLBACK_TEST:-OFF}"; then
         smoke_args+=(--expect-usb-fallback)
     fi
+    if _is_on "${USB_HUB_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb-hub)
+    fi
     if [[ -n "${QEMU_CPU:-}" ]]; then
         smoke_args+=(--cpu "$QEMU_CPU")
     fi

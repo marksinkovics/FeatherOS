@@ -2,6 +2,7 @@
 #define FEATHEROS_USB_DEVICE_H
 
 #include "kernel/sync/mutex.h"
+#include "kernel/sync/spinlock.h"
 #include "kernel/usb/descriptors.h"
 #include "kernel/usb/driver.h"
 #include "kernel/usb/host_controller.h"
@@ -26,6 +27,7 @@ constexpr uint32_t MaxBuses = 4;
 extern Sync::Mutex topology_lock;
 
 struct Device;
+class Bus;
 
 // A transfer a driver submits through its Device, so the core can count it and drop its
 // completion once the device was detached. callback runs from the controller's event task.
@@ -48,7 +50,9 @@ struct Device
     bool Submit(DeviceTransfer& transfer);
     HostController& Host() const;
     void Reset(HostController& host, uint32_t bus_number, uint32_t slot_number,
-               const Location& where);
+               const Location& where, Bus* tree = nullptr);
+    // From the event task: asks the manager task to look at this device (a hub) again.
+    void PostWork();
 
     uint32_t bus = 0;
     uint32_t slot = 0;
@@ -71,7 +75,22 @@ struct Device
 
 private:
     HostController* host_ = nullptr;
+    Bus* tree_ = nullptr;
 };
+
+// Work the event task posts for the manager: a device, by number, and its generation when
+// posted; work for a generation that is gone is dropped.
+struct DeviceWork
+{
+    uint32_t number;
+    uint32_t generation;
+};
+
+// Called after work was posted, from any task; the kernel wakes the manager task with it.
+void SetWorkWake(void (*wake)());
+
+// The name of a device: the bus and root port, or its hub's name, a dot and the hub's port.
+void MakePath(char* out, size_t capacity, uint32_t bus, const Device* parent, uint32_t port);
 
 // The device tree of one controller (bus). Only the manager task changes it; /proc/usb reads it
 // under topology_lock.
@@ -91,7 +110,13 @@ public:
     void DropAll();
     Device* Find(uint32_t slot);
     const Device* Find(uint32_t slot) const;
+    Device* FindNumber(uint32_t number);
+    Device* ChildAt(const Device& parent, uint8_t port);
     uint32_t Count() const;
+    void PostWork(uint32_t number, uint32_t generation);
+    bool TakeWork(DeviceWork* work);
+    bool HasWork() const;
+    void ClearWork();
 
 private:
     friend size_t FormatDevices(char* buffer, size_t capacity);
@@ -108,6 +133,14 @@ private:
     std::span<const Driver* const> drivers_;
     Device devices_[MaxDeviceSlots + 1];
     uint32_t used_[(MaxDeviceNumber + 32) / 32] GUARDED_BY(topology_lock) = {};
+
+    // At most one entry per hub is queued, and a hub is at most a device slot.
+    static constexpr uint32_t WorkCapacity = 2 * MaxDeviceSlots;
+    Sync::SpinLock work_lock_;
+    DeviceWork work_[WorkCapacity] GUARDED_BY(work_lock_) = {};
+    uint32_t work_head_ GUARDED_BY(work_lock_) = 0;
+    uint32_t work_count_ GUARDED_BY(work_lock_) = 0;
+    std::atomic<uint32_t> work_pending_ = 0;
 };
 
 // One line per attached device, in bus and number order, as /proc/usb shows them; whole lines

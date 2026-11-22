@@ -603,6 +603,8 @@ void FakeXhci::ConfigureEndpoint(uint32_t slot, uint64_t input_physical, uint32_
     const uint32_t drop = Fetch(control);
     const uint32_t add = Fetch(control + 1);
     const uint32_t entries = Fetch(slot_context) >> 27;
+    SlotUpdate update = {slot, add, {Fetch(slot_context), Fetch(slot_context + 1), Fetch(slot_context + 2)}};
+    slot_updates_.push_back(update);
     for (uint32_t dci = 2; dci < 32; ++dci)
     {
         if ((drop & (1U << dci)) != 0)
@@ -685,6 +687,11 @@ void FakeXhci::ChangeEndpointState(uint32_t type, uint32_t slot, uint32_t dci, u
 const std::vector<FakeXhci::ConfiguredEndpoint>& FakeXhci::Configured() const
 {
     return configured_;
+}
+
+const std::vector<FakeXhci::SlotUpdate>& FakeXhci::SlotUpdates() const
+{
+    return slot_updates_;
 }
 
 const std::vector<std::pair<uint32_t, uint32_t>>& FakeXhci::Evaluated() const
@@ -802,6 +809,10 @@ void FakeXhci::AddressDevice(uint32_t slot, uint64_t input_physical, uint32_t* c
     record.ep0_max_packet = Fetch(ep0 + 1) >> 16;
     record.ep0_ring = (static_cast<uint64_t>(Fetch(ep0 + 3)) << 32) | Fetch(ep0 + 2);
     record.add_flags = add_flags;
+    for (uint32_t word = 0; word < 3; ++word)
+    {
+        record.slot_words[word] = Fetch(slot_context + word);
+    }
     addressed_.push_back(record);
 
     auto* out_slot = reinterpret_cast<volatile uint32_t*>(device);
@@ -814,12 +825,12 @@ void FakeXhci::AddressDevice(uint32_t slot, uint64_t input_physical, uint32_t* c
     out_slot[3] = (2U << 27) | slot;
     out_ep0[0] = (out_ep0[0] & ~7U) | 1U;
     SetEndpointRing(slot, 1, record.ep0_ring & ~0xFULL, (record.ep0_ring & 1U) != 0);
-    const auto attached = port_devices_.find(record.root_port);
-    if (attached != port_devices_.end())
+    const std::shared_ptr<ScriptedDevice> attached = Resolve(record.root_port, record.route);
+    if (attached != nullptr)
     {
         Speed speed = Speed::Full;
         X::SpeedFromId(static_cast<uint8_t>(record.speed_id), &speed);
-        bindings_[slot] = {attached->second, record.root_port, speed};
+        bindings_[slot] = {attached, record.root_port, speed, record.route};
     }
 }
 
@@ -881,10 +892,43 @@ void FakeXhci::ProcessPlainTransfers(Endpoint& endpoint, uint32_t slot, uint32_t
     }
 }
 
+std::shared_ptr<ScriptedDevice> FakeXhci::Resolve(uint32_t root_port, uint32_t route) const
+{
+    const auto root = port_devices_.find(root_port);
+    if (root == port_devices_.end())
+    {
+        return nullptr;
+    }
+    std::shared_ptr<ScriptedDevice> device = root->second;
+    for (uint32_t shift = 0; (route >> shift) != 0 && device != nullptr; shift += 4)
+    {
+        const auto hub = std::dynamic_pointer_cast<ScriptedHub>(device);
+        device = hub != nullptr ? hub->Child(static_cast<uint8_t>((route >> shift) & 0xFU)) : nullptr;
+    }
+    return device;
+}
+
 bool FakeXhci::DevicePresent(const Binding& binding) const
 {
-    const auto attached = port_devices_.find(binding.root_port);
-    return attached != port_devices_.end() && attached->second == binding.device;
+    return Resolve(binding.root_port, binding.route) == binding.device;
+}
+
+void FakeXhci::Wake(const std::shared_ptr<ScriptedDevice>& device)
+{
+    for (auto& [slot, binding] : bindings_)
+    {
+        if (binding.device != device)
+        {
+            continue;
+        }
+        for (uint32_t dci = 2; dci < 32; ++dci)
+        {
+            if (endpoints_.count(slot << 5 | dci) != 0)
+            {
+                ProcessTransfers(slot, dci);
+            }
+        }
+    }
 }
 
 void FakeXhci::PostTransferEvent(uint32_t slot, uint32_t dci, uint64_t trb, uint32_t code,

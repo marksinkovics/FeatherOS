@@ -17,6 +17,7 @@ constexpr uint8_t SetConfigurationRequest = 9;
 
 constinit KLogger logger;
 constinit Bus* buses[MaxBuses] GUARDED_BY(topology_lock) = {};
+constinit std::atomic<void (*)()> work_wake = nullptr;
 
 const char* SpeedName(Speed speed, bool full)
 {
@@ -77,10 +78,33 @@ void Complete(Transfer& base)
 
 } // namespace
 
+void SetWorkWake(void (*wake)())
+{
+    work_wake.store(wake);
+}
+
+void MakePath(char* out, size_t capacity, uint32_t bus, const Device* parent, uint32_t port)
+{
+    Text name(out, capacity);
+    if (parent == nullptr)
+    {
+        name.Decimal(bus);
+        name.Put('-');
+    }
+    else
+    {
+        name.Words(parent->path);
+        name.Put('.');
+    }
+    name.Decimal(port);
+    name.Finish();
+}
+
 void Device::Reset(HostController& host, uint32_t bus_number, uint32_t slot_number,
-                   const Location& where)
+                   const Location& where, Bus* tree)
 {
     host_ = &host;
+    tree_ = tree;
     bus = bus_number;
     slot = slot_number;
     location = where;
@@ -103,6 +127,14 @@ void Device::Reset(HostController& host, uint32_t bus_number, uint32_t slot_numb
 HostController& Device::Host() const
 {
     return *host_;
+}
+
+void Device::PostWork()
+{
+    if (tree_ != nullptr)
+    {
+        tree_->PostWork(number, generation.load(std::memory_order_acquire));
+    }
 }
 
 bool Device::Submit(DeviceTransfer& transfer)
@@ -160,7 +192,7 @@ uint32_t Bus::Number() const
 Device& Bus::Prepare(uint32_t slot, const Location& location)
 {
     Device& device = devices_[slot];
-    device.Reset(host_, number_, slot, location);
+    device.Reset(host_, number_, slot, location, this);
     return device;
 }
 
@@ -174,6 +206,74 @@ const Device* Bus::Find(uint32_t slot) const
 {
     return slot != 0 && slot <= MaxDeviceSlots && devices_[slot].attached ? &devices_[slot]
                                                                           : nullptr;
+}
+
+Device* Bus::FindNumber(uint32_t number)
+{
+    for (Device& device : devices_)
+    {
+        if (device.attached && device.number == number)
+        {
+            return &device;
+        }
+    }
+    return nullptr;
+}
+
+Device* Bus::ChildAt(const Device& parent, uint8_t port)
+{
+    for (Device& device : devices_)
+    {
+        if (device.attached && device.parent == &parent && device.parent_port == port)
+        {
+            return &device;
+        }
+    }
+    return nullptr;
+}
+
+void Bus::PostWork(uint32_t number, uint32_t generation)
+{
+    {
+        Sync::SpinLockGuard guard(work_lock_);
+        if (work_count_ < WorkCapacity)
+        {
+            work_[(work_head_ + work_count_) % WorkCapacity] = {number, generation};
+            ++work_count_;
+            work_pending_.store(work_count_);
+        }
+    }
+    void (*wake)() = work_wake.load();
+    if (wake != nullptr)
+    {
+        wake();
+    }
+}
+
+bool Bus::TakeWork(DeviceWork* work)
+{
+    Sync::SpinLockGuard guard(work_lock_);
+    if (work_count_ == 0)
+    {
+        return false;
+    }
+    *work = work_[work_head_];
+    work_head_ = (work_head_ + 1) % WorkCapacity;
+    --work_count_;
+    work_pending_.store(work_count_);
+    return true;
+}
+
+bool Bus::HasWork() const
+{
+    return work_pending_.load() != 0;
+}
+
+void Bus::ClearWork()
+{
+    Sync::SpinLockGuard guard(work_lock_);
+    work_count_ = 0;
+    work_pending_.store(0);
 }
 
 uint32_t Bus::Count() const
@@ -312,20 +412,8 @@ void Bus::Attach(Device& device, Device* parent, uint8_t parent_port)
         device.number = AllocateNumber();
         device.parent = parent;
         device.parent_port = parent_port;
-        Text name(device.path, sizeof(device.path));
-        if (parent == nullptr)
-        {
-            name.Decimal(number_);
-            name.Put('-');
-            name.Decimal(device.location.root_port);
-        }
-        else
-        {
-            name.Words(parent->path);
-            name.Put('.');
-            name.Decimal(parent_port);
-        }
-        name.Finish();
+        MakePath(device.path, sizeof(device.path), number_, parent,
+                 parent == nullptr ? device.location.root_port : parent_port);
         warning = Bind(device);
         device.attached = true;
         for (uint32_t index = 0; index < MaxPathName; ++index)
@@ -447,27 +535,33 @@ void Bus::UnbindDrivers(Device& device)
 
 void Bus::DropAll()
 {
-    for (uint32_t slot = 1; slot <= MaxDeviceSlots; ++slot)
+    for (bool dropped = true; dropped;)
     {
-        Device& device = devices_[slot];
-        if (!device.attached)
+        dropped = false;
+        for (uint32_t slot = 1; slot <= MaxDeviceSlots; ++slot)
         {
-            continue;
-        }
-        char path[MaxPathName];
-        {
-            Sync::MutexGuard guard(topology_lock);
-            for (uint32_t index = 0; index < MaxPathName; ++index)
+            Device& device = devices_[slot];
+            if (!device.attached || ChildOf(device) != nullptr)
             {
-                path[index] = device.path[index];
+                continue;
             }
-            Unbind(device, !Quiesce(device));
-            used_[device.number / 32] &= ~(1U << (device.number % 32));
-            device.attached = false;
-            device.detaching.store(false);
+            char path[MaxPathName];
+            {
+                Sync::MutexGuard guard(topology_lock);
+                for (uint32_t index = 0; index < MaxPathName; ++index)
+                {
+                    path[index] = device.path[index];
+                }
+                Unbind(device, !Quiesce(device));
+                used_[device.number / 32] &= ~(1U << (device.number % 32));
+                device.attached = false;
+                device.detaching.store(false);
+            }
+            LogLine(path, "disconnected", false);
+            dropped = true;
         }
-        LogLine(path, "disconnected", false);
     }
+    ClearWork();
 }
 
 size_t FormatDevices(char* buffer, size_t capacity)

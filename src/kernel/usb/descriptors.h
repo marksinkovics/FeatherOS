@@ -80,6 +80,15 @@ struct ConfigurationView
     InterfaceView interfaces[MaxInterfaces];
 };
 
+// bPwrOn2PwrGood in units of 2 ms; think_time is wHubCharacteristics bits 5 and 6.
+struct HubDescriptor
+{
+    uint8_t ports;
+    uint8_t power_on_to_good;
+    uint8_t think_time;
+    uint16_t characteristics;
+};
+
 enum class ParseStatus : uint8_t
 {
     Ok,
@@ -92,6 +101,8 @@ ParseStatus ParseDevice(std::span<const uint8_t> bytes, DeviceDescriptor* device
 // Reads nothing past wTotalLength or the buffer; a descriptor shorter than 2 bytes or reaching
 // beyond wTotalLength is malformed.
 ParseStatus ParseConfiguration(std::span<const uint8_t> bytes, ConfigurationView* configuration);
+// A hub class descriptor (0x29 for USB 2, 0x2A for SuperSpeed) of at least its fixed part.
+ParseStatus ParseHub(std::span<const uint8_t> bytes, bool super_speed, HubDescriptor* hub);
 // The length of the HID report descriptor the interface's HID descriptor announces, else 0.
 uint16_t HidReportLength(const InterfaceView& interface);
 // Converts a string descriptor to ASCII ('?' for anything else); false if it is not one.

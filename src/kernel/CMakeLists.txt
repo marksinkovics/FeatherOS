@@ -66,6 +66,8 @@ set(SRC
     ${SRCROOT}/usb/descriptors.cpp
     ${SRCROOT}/usb/device.cpp
     ${SRCROOT}/usb/driver.cpp
+    ${SRCROOT}/usb/hub.cpp
+    ${SRCROOT}/usb/hub_state.cpp
     ${SRCROOT}/usb/hid/driver.cpp
     ${SRCROOT}/usb/hid/keyboard.cpp
     ${SRCROOT}/usb/hid/report.cpp

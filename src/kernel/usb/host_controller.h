@@ -23,7 +23,8 @@ enum class Speed : uint8_t
 };
 
 // root_port is the controller's port number, counting from 1; a route holds one nibble per hub
-// tier, the nearest hub's port in the lowest nibble.
+// tier, the port of the hub on the root port in the lowest nibble. depth is the number of hubs
+// above the device, so a hub on a root port has depth 0.
 struct Location
 {
     Speed speed = Speed::Full;

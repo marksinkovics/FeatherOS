@@ -90,6 +90,8 @@ public:
     void Connect(uint32_t port, Speed speed, bool trained = true,
                  std::shared_ptr<ScriptedDevice> device = nullptr);
     void Disconnect(uint32_t port);
+    // Runs the interrupt IN TDs of the device's slots, after a hub's ports changed.
+    void Wake(const std::shared_ptr<ScriptedDevice>& device);
     // Queues a report and runs any interrupt IN TD that waits for one.
     void DeliverReport(const std::shared_ptr<ScriptedDevice>& device, uint8_t endpoint,
                        std::vector<uint8_t> report);
@@ -138,6 +140,15 @@ public:
         uint32_t ep0_max_packet;
         uint64_t ep0_ring;
         uint32_t add_flags;
+        uint32_t slot_words[3];
+    };
+
+    // The slot context words of one Configure Endpoint command, with its add flags.
+    struct SlotUpdate
+    {
+        uint32_t slot;
+        uint32_t add_flags;
+        uint32_t slot_words[3];
     };
 
     struct ConfiguredEndpoint
@@ -167,6 +178,7 @@ public:
 
     const std::vector<ConfiguredEndpoint>& Configured() const;
     const std::vector<std::pair<uint32_t, uint32_t>>& Evaluated() const;
+    const std::vector<SlotUpdate>& SlotUpdates() const;
     const std::vector<DequeueSet>& DequeueSets() const;
     bool EndpointState(uint32_t slot, uint32_t dci, State* state) const;
     uint32_t SlotOfPort(uint32_t port) const;
@@ -218,7 +230,10 @@ private:
         std::shared_ptr<ScriptedDevice> device;
         uint32_t root_port;
         Speed speed;
+        uint32_t route;
     };
+
+    std::shared_ptr<ScriptedDevice> Resolve(uint32_t root_port, uint32_t route) const;
 
     void ProcessCommands();
     void ProcessTransfers(uint32_t slot, uint32_t dci);
@@ -277,6 +292,7 @@ private:
     std::map<uint32_t, Binding> bindings_;
     std::vector<ConfiguredEndpoint> configured_;
     std::vector<std::pair<uint32_t, uint32_t>> evaluated_;
+    std::vector<SlotUpdate> slot_updates_;
     std::vector<DequeueSet> dequeue_sets_;
     std::set<uint32_t> enabled_slots_;
     std::vector<uint32_t> protocol_words_;

@@ -48,13 +48,17 @@ public:
     // Descriptor length 0: bMaxPacketSize0 as bytes; a SuperSpeed device writes the exponent.
     uint32_t MaxPacket0(Speed speed) const;
 
+    virtual ~ScriptedDevice() = default;
+    ScriptedDevice(const ScriptedDevice&) = delete;
+    ScriptedDevice& operator=(const ScriptedDevice&) = delete;
+
     Outcome Control(const Request& request, std::vector<uint8_t>* response);
     // The next count requests (of one request code, or any) end this way.
     void FailControl(Outcome outcome, int count, int request = -1);
 
     void QueueReport(uint8_t endpoint, std::vector<uint8_t> report);
-    bool TakeReport(uint8_t endpoint, std::vector<uint8_t>* report);
-    bool HasReport(uint8_t endpoint) const;
+    virtual bool TakeReport(uint8_t endpoint, std::vector<uint8_t>* report);
+    virtual bool HasReport(uint8_t endpoint) const;
     void FailEndpoint(uint8_t endpoint, Outcome outcome, int count);
     Outcome EndpointOutcome(uint8_t endpoint);
 
@@ -64,6 +68,11 @@ public:
     const std::vector<Request>& Requests() const;
     uint32_t Count(uint8_t type, uint8_t request) const;
     uint8_t configuration() const;
+
+protected:
+    // Class requests a subclass answers; returns false for the ones it leaves to the base.
+    virtual bool HandleClass(const Request& request, std::vector<uint8_t>* response,
+                             Outcome* outcome);
 
 private:
     struct Fault
@@ -96,6 +105,7 @@ std::vector<uint8_t> GenericKeyboardConfiguration(uint16_t report_length);
 // The same for a mouse, with eight-byte reports.
 std::vector<uint8_t> GenericMouseConfiguration(uint16_t report_length, bool boot_interface = false);
 std::vector<uint8_t> HubConfiguration();
+std::vector<uint8_t> SuperSpeedHubConfiguration();
 std::vector<uint8_t> MassStorageConfiguration();
 
 // bMaxPacketSize0 a device of this speed reports (the exponent at SuperSpeed).
@@ -104,6 +114,83 @@ uint8_t MaxPacket0Field(Speed speed);
 // The report descriptors of QEMU's boot keyboard and boot mouse.
 const std::vector<uint8_t>& BootKeyboardDescriptor();
 const std::vector<uint8_t>& BootMouseDescriptor();
+
+// A hub: its ports hold devices that are plugged in and out, and a port reports changes the way a
+// hub does (status and change words, C_PORT_RESET after a reset). The hub's status change
+// endpoint 0x81 has data while any change bit is set.
+class ScriptedHub : public ScriptedDevice
+{
+public:
+    static constexpr uint16_t StatusConnection = 0x0001;
+    static constexpr uint16_t StatusEnable = 0x0002;
+    static constexpr uint16_t StatusOverCurrent = 0x0008;
+    static constexpr uint16_t StatusReset = 0x0010;
+
+    ScriptedHub(bool super_speed, uint8_t ports, std::vector<uint8_t> device,
+                std::vector<uint8_t> configuration, uint8_t think_time = 1);
+
+    void Plug(uint8_t port, std::shared_ptr<ScriptedDevice> child, Speed speed);
+    void Unplug(uint8_t port);
+    void OverCurrent(uint8_t port);
+    // Raises the connection change without a change of state, as a flapping connector does.
+    void Flap(uint8_t port);
+    // A reset on this port never completes.
+    void HoldReset(uint8_t port, bool hold);
+    // The port enables but reports no reset change.
+    void SkipResetChange(uint8_t port, bool skip);
+    std::shared_ptr<ScriptedDevice> Child(uint8_t port) const;
+    uint8_t Ports() const;
+    bool SuperSpeed() const;
+
+    uint16_t Status(uint8_t port) const;
+    uint16_t Change(uint8_t port) const;
+    bool Powered(uint8_t port) const;
+    uint32_t Resets(uint8_t port) const;
+    // The feature selectors of every SET_FEATURE and CLEAR_FEATURE sent to a port, in order.
+    const std::vector<std::pair<uint8_t, uint8_t>>& PortSets() const;
+    const std::vector<std::pair<uint8_t, uint8_t>>& PortClears() const;
+    // wValue of every SET_HUB_DEPTH, and the alternate settings selected.
+    const std::vector<uint16_t>& Depths() const;
+    const std::vector<uint16_t>& Alternates() const;
+    // The ports in the order resets were requested.
+    const std::vector<uint8_t>& ResetOrder() const;
+
+    bool HasReport(uint8_t endpoint) const override;
+    bool TakeReport(uint8_t endpoint, std::vector<uint8_t>* report) override;
+
+protected:
+    bool HandleClass(const Request& request, std::vector<uint8_t>* response,
+                     Outcome* outcome) override;
+
+private:
+    struct Port
+    {
+        uint16_t status = 0;
+        uint16_t change = 0;
+        bool powered = false;
+        bool hold_reset = false;
+        bool skip_reset_change = false;
+        uint32_t resets = 0;
+        Speed speed = Speed::Full;
+        std::shared_ptr<ScriptedDevice> child;
+    };
+
+    uint16_t SpeedBits(Speed speed) const;
+    std::vector<uint8_t> Descriptor() const;
+
+    bool super_speed_;
+    uint8_t think_time_;
+    std::vector<Port> ports_;
+    std::vector<std::pair<uint8_t, uint8_t>> sets_;
+    std::vector<std::pair<uint8_t, uint8_t>> clears_;
+    std::vector<uint16_t> depths_;
+    std::vector<uint16_t> alternates_;
+    std::vector<uint8_t> reset_order_;
+};
+
+// speed is Full, High or Super; a high-speed hub with multi_tt reports protocol 2.
+std::shared_ptr<ScriptedHub> MakeHub(Speed speed, uint8_t ports, bool multi_tt = false,
+                                     uint8_t think_time = 1);
 
 std::shared_ptr<ScriptedDevice> MakeKeyboard(Speed speed, uint8_t max_packet0 = 0);
 std::shared_ptr<ScriptedDevice> MakeMouse(Speed speed, uint8_t max_packet0 = 0);

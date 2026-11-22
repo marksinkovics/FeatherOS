@@ -36,6 +36,7 @@ TOGGLES = (
     "USB_TEST",
     "USB_KEYS_TEST",
     "USB_FALLBACK_TEST",
+    "USB_HUB_TEST",
 )
 # Rough minutes each kind of case takes, so the longest start first.
 WEIGHTS = {
@@ -119,6 +120,7 @@ CASES = [
     *Both(55, "usb", USB_TEST=ON),
     *Both(57, "usb_keys", USB_KEYS_TEST=ON),
     *Both(59, "usb_fallback", USB_FALLBACK_TEST=ON),
+    *Both(61, "usb_hub", USB_HUB_TEST=ON),
 ]
 
 

@@ -9,7 +9,12 @@ namespace FeatherOS::Usb
 namespace
 {
 
-constexpr uint32_t DebounceMs = 100;
+constexpr uint32_t DebounceMs = HubPort::DebounceMilliseconds;
+constexpr uint32_t ResetPollMs = 10;
+constexpr uint32_t MaxPortRounds = 256;
+constexpr uint32_t HubStatusChangeBits = 2;
+constexpr uint8_t ClearLocalPower = 0;
+constexpr uint8_t ClearHubOverCurrent = 1;
 constexpr uint8_t DeviceToHostStandard = 0x80;
 constexpr uint8_t GetDescriptorRequest = 6;
 constexpr uint32_t ShortDeviceBytes = 8;
@@ -80,14 +85,12 @@ Manager::Manager(HostController& host, uint32_t bus, std::span<const Driver* con
     host_.SetRecoveryHandler(OnRecovery, this);
 }
 
-void Manager::Log(uint32_t port, const char* message, bool warning) const
+void Manager::Log(const char* path, const char* message, bool warning) const
 {
     char line[96];
     Text text(line, sizeof(line));
     text.Words("USB ");
-    text.Decimal(bus_.Number());
-    text.Put('-');
-    text.Decimal(port);
+    text.Words(path);
     text.Words(": ");
     text.Words(message);
     if (text.Finish())
@@ -114,7 +117,7 @@ void Manager::OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_
 
 bool Manager::HasWork() const
 {
-    return host_.HasWork();
+    return host_.HasWork() || bus_.HasWork();
 }
 
 const Device* Manager::Find(uint32_t slot) const
@@ -149,7 +152,7 @@ void Manager::Service()
         Device* device = bus_.Find(slot);
         if (device != nullptr)
         {
-            Log(device->location.root_port, "too many transfer errors, drivers unbound", true);
+            Log(device->path, "too many transfer errors, drivers unbound", true);
             bus_.UnbindDrivers(*device);
         }
     }
@@ -162,10 +165,22 @@ void Manager::Run()
         Forget();
     }
     Service();
-    uint32_t port;
-    while (host_.TakePortChange(&port))
+    for (;;)
     {
-        HandlePort(port);
+        uint32_t port;
+        DeviceWork work;
+        if (host_.TakePortChange(&port))
+        {
+            HandlePort(port);
+        }
+        else if (bus_.TakeWork(&work))
+        {
+            HandleHub(work);
+        }
+        else
+        {
+            return;
+        }
         Service();
     }
 }
@@ -209,7 +224,22 @@ void Manager::HandlePort(uint32_t port)
     {
         return;
     }
-    port_failed_[port] = !Enumerate(port);
+    Speed speed;
+    char path[MaxPathName];
+    MakePath(path, sizeof(path), bus_.Number(), nullptr, port);
+    if (!host_.ResetRootPort(port, &speed))
+    {
+        Log(path, "port did not reset", true);
+        port_failed_[port] = true;
+        return;
+    }
+    const Location location = {speed, static_cast<uint8_t>(port), 0, 0, 0, 0, false};
+    Device* device = Enumerate(location, nullptr, static_cast<uint8_t>(port));
+    port_failed_[port] = device == nullptr;
+    if (device != nullptr)
+    {
+        port_slot_[port] = device->slot;
+    }
 }
 
 Status Manager::GetDescriptor(uint32_t slot, uint8_t type, uint8_t index, uint16_t language,
@@ -220,32 +250,27 @@ Status Manager::GetDescriptor(uint32_t slot, uint8_t type, uint8_t index, uint16
     return host_.Control(slot, setup, buffer, actual);
 }
 
-bool Manager::Enumerate(uint32_t port)
+Device* Manager::Enumerate(const Location& location, Device* parent, uint8_t port)
 {
-    Speed speed;
-    if (!host_.ResetRootPort(port, &speed))
-    {
-        Log(port, "port did not reset", true);
-        return false;
-    }
-    const Location location = {speed, static_cast<uint8_t>(port), 0, 0, 0, 0, false};
+    char path[MaxPathName];
+    MakePath(path, sizeof(path), bus_.Number(), parent, port);
     uint32_t slot = 0;
     switch (host_.CreateDevice(location, &slot))
     {
     case CreateStatus::Created:
         break;
     case CreateStatus::NoSlots:
-        Log(port, "no device slots left", true);
-        return false;
+        Log(path, "no device slots left", true);
+        return nullptr;
     case CreateStatus::SlotFailed:
-        Log(port, "could not set up its device slot", true);
-        return false;
+        Log(path, "could not set up its device slot", true);
+        return nullptr;
     case CreateStatus::AddressFailed:
-        Log(port, "could not be addressed", true);
-        return false;
+        Log(path, "could not be addressed", true);
+        return nullptr;
     case CreateStatus::Unavailable:
-        Log(port, "got no device slot", true);
-        return false;
+        Log(path, "got no device slot", true);
+        return nullptr;
     }
     Device& info = bus_.Prepare(slot, location);
     Memory::Dma::Buffer buffer{};
@@ -262,23 +287,22 @@ bool Manager::Enumerate(uint32_t port)
         switch (failed)
         {
         case Step::Gone:
-            Log(port, "the device went away during enumeration", true);
+            Log(path, "the device went away during enumeration", true);
             break;
         case Step::ConfigurationSize:
-            Log(port, "configuration descriptor over 4096 bytes, refused", true);
+            Log(path, "configuration descriptor over 4096 bytes, refused", true);
             break;
         case Step::ControlPacket:
-            Log(port, "invalid control endpoint packet size", true);
+            Log(path, "invalid control endpoint packet size", true);
             break;
         default:
-            Log(port, "enumeration failed", true);
+            Log(path, "enumeration failed", true);
             break;
         }
-        return false;
+        return nullptr;
     }
-    port_slot_[port] = slot;
-    bus_.Attach(info, nullptr, 0);
-    return true;
+    bus_.Attach(info, parent, parent == nullptr ? 0 : port);
+    return &info;
 }
 
 bool Manager::ReadDescriptors(Device& info, Memory::Dma::Buffer& buffer, Step* failed)
@@ -385,6 +409,178 @@ bool Manager::ReadDescriptors(Device& info, Memory::Dma::Buffer& buffer, Step* f
         }
     }
     return true;
+}
+
+bool Manager::ReadPortStatus(Hub& hub, uint32_t port, HubPort::Event* event)
+{
+    uint16_t status = 0;
+    uint16_t change = 0;
+    if (hub.GetPortStatus(port, &status, &change) != Status::Success)
+    {
+        return false;
+    }
+    *event = {HubPort::EventKind::Status, status, change};
+    return true;
+}
+
+void Manager::ServiceHubStatus(Hub& hub)
+{
+    uint16_t status = 0;
+    uint16_t change = 0;
+    if (hub.GetHubStatus(&status, &change) != Status::Success)
+    {
+        return;
+    }
+    if ((change & 1U) != 0)
+    {
+        hub.ClearHubFeature(ClearLocalPower);
+    }
+    if ((change & HubStatusChangeBits & ~1U) != 0)
+    {
+        hub.ClearHubFeature(ClearHubOverCurrent);
+    }
+}
+
+void Manager::HandleHub(const DeviceWork& work)
+{
+    Device* device = bus_.FindNumber(work.number);
+    if (device == nullptr || device->detaching.load() ||
+        device->generation.load() != work.generation)
+    {
+        return;
+    }
+    Hub* hub = HubOf(*device);
+    if (hub == nullptr)
+    {
+        return;
+    }
+    const uint32_t bits = hub->TakePending();
+    if ((bits & 1U) != 0)
+    {
+        ServiceHubStatus(*hub);
+    }
+    for (uint32_t port = 1; port <= hub->ports; ++port)
+    {
+        if ((bits & (1U << port)) != 0 && !device->detaching.load())
+        {
+            ServiceHubPort(*device, *hub, port);
+        }
+    }
+    if (!device->detaching.load())
+    {
+        hub->Listen();
+    }
+}
+
+void Manager::ServiceHubPort(Device& hub_device, Hub& hub, uint32_t port)
+{
+    HubPort::State& state = hub.port[port];
+    HubPort::Event event = {HubPort::EventKind::Status};
+    char path[MaxPathName];
+    MakePath(path, sizeof(path), bus_.Number(), &hub_device, port);
+    if (state.phase == HubPort::Phase::PowerOn)
+    {
+        event.kind = HubPort::EventKind::PoweredUp;
+    }
+    else if (!ReadPortStatus(hub, port, &event))
+    {
+        return;
+    }
+    uint64_t reset_deadline = 0;
+    for (uint32_t round = 0; round < MaxPortRounds; ++round)
+    {
+        const HubPort::Phase before = state.phase;
+        const HubPort::EventKind kind = event.kind;
+        const HubPort::Action action = HubPort::Step(state, event);
+        for (uint16_t bit = 1; bit != 0 && bit <= HubPort::ChangeBit::ConfigError; bit <<= 1)
+        {
+            const uint8_t selector = HubPort::ClearSelector(state.usb3, bit);
+            if ((action.clear & bit) != 0 && selector != 0 &&
+                hub.ClearPortFeature(port, selector) != Status::Success)
+            {
+                return;
+            }
+        }
+        if (action.detach)
+        {
+            Device* child = bus_.ChildAt(hub_device, static_cast<uint8_t>(port));
+            if (child != nullptr)
+            {
+                bus_.Detach(*child);
+            }
+        }
+        if (action.power_off)
+        {
+            hub.ClearPortFeature(port, HubPort::Feature::PortPower);
+            Log(path, "over-current, port powered off", true);
+        }
+        if (kind == HubPort::EventKind::ResetTimeout)
+        {
+            Log(path, "port did not reset", true);
+        }
+        else if (before == HubPort::Phase::Debounce && state.phase == HubPort::Phase::Failed)
+        {
+            Log(path, "connection did not settle", true);
+        }
+        else if (before == HubPort::Phase::Reset && state.phase == HubPort::Phase::Failed)
+        {
+            Log(path, "port did not enable after its reset", true);
+        }
+        switch (action.next)
+        {
+        case HubPort::Next::None:
+            return;
+        case HubPort::Next::ReadStatus:
+            if (!ReadPortStatus(hub, port, &event))
+            {
+                return;
+            }
+            break;
+        case HubPort::Next::Debounce:
+            host_.Delay(DebounceMs);
+            if (!ReadPortStatus(hub, port, &event))
+            {
+                return;
+            }
+            break;
+        case HubPort::Next::Reset:
+            if (hub.SetPortFeature(port, HubPort::Feature::PortReset) != Status::Success)
+            {
+                event = {HubPort::EventKind::ResetTimeout};
+                break;
+            }
+            reset_deadline = host_.NowMilliseconds() + HubPort::ResetTimeoutMilliseconds;
+            [[fallthrough]];
+        case HubPort::Next::WaitReset:
+            if (host_.NowMilliseconds() >= reset_deadline)
+            {
+                event = {HubPort::EventKind::ResetTimeout};
+                break;
+            }
+            host_.Delay(ResetPollMs);
+            if (!ReadPortStatus(hub, port, &event))
+            {
+                return;
+            }
+            break;
+        case HubPort::Next::Enumerate:
+        {
+            Location location;
+            const HubPort::HubSite site = {hub_device.location, hub_device.slot, hub.multi_tt};
+            if (!HubPort::ChildLocation(site, static_cast<uint8_t>(port), action.speed, &location))
+            {
+                Log(path, "too many hub tiers, port refused", true);
+                hub.ClearPortFeature(port, HubPort::Feature::PortEnable);
+                event = {HubPort::EventKind::EnumerationFailed};
+                break;
+            }
+            Device* child = Enumerate(location, &hub_device, static_cast<uint8_t>(port));
+            event = {child != nullptr ? HubPort::EventKind::Enumerated
+                                      : HubPort::EventKind::EnumerationFailed};
+            break;
+        }
+        }
+    }
 }
 
 } // namespace FeatherOS::Usb
