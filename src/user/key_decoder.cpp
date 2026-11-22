@@ -90,11 +90,7 @@ KeyPress KeyDecoder::Single(char byte)
         const char base = static_cast<char>(value + 0x40);
         return {Key::Control, base >= 'A' && base <= 'Z' ? static_cast<char>(base + 0x20) : base};
     }
-    if (value < 0x7F)
-    {
-        return {Key::Character, byte};
-    }
-    return {Key::Unknown, '\0'};
+    return {Key::Character, byte};
 }
 
 unsigned KeyDecoder::Parameter() const

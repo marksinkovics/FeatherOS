@@ -5,6 +5,7 @@
 #include "kernel/framebuffer/framebuffer.h"
 #include "kernel/framebuffer/term.h"
 #include "user/line_editor.h"
+#include "user/text/utf8.h"
 
 #include <array>
 #include <string>
@@ -39,6 +40,18 @@ void Type(LineEditor& editor, const std::string& text)
         REQUIRE(editor.Press(Character(character)) == LineEditor::Status::Editing);
     }
 }
+
+void TypeBytes(LineEditor& editor, const std::string& bytes)
+{
+    for (const char byte : bytes)
+    {
+        REQUIRE(editor.Press(Character(byte)) == LineEditor::Status::Editing);
+    }
+}
+
+const std::string Acute = "\xC3\xA9";
+const std::string Euro = "\xE2\x82\xAC";
+const std::string Grin = "\xF0\x9F\x98\x80";
 
 std::string TakeOutput(LineEditor& editor)
 {
@@ -344,4 +357,284 @@ TEST_CASE("line edits redraw correctly on a terminal where the line wraps")
     show();
     expect_cursor(1);
     REQUIRE(screen(1, prompt.size() + line.size()) == prompt + line);
+}
+
+TEST_CASE("the cursor moves and erases by character over two to four byte characters")
+{
+    LineEditor editor;
+    editor.Begin("> ", 80, nullptr);
+    const std::string line = "a" + Acute + "b" + Euro + "c" + Grin;
+    TypeBytes(editor, line);
+    REQUIRE(std::string(editor.Line()) == line);
+    REQUIRE(editor.Cursor() == 12);
+
+    // a 0, e-acute 1, b 3, euro 4, c 7, grin 8.
+    const size_t lefts[] = {8, 7, 4, 3, 1, 0, 0};
+    for (const size_t expected : lefts)
+    {
+        editor.Press(Special(Key::Left));
+        REQUIRE(editor.Cursor() == expected);
+    }
+    const size_t rights[] = {1, 3, 4, 7, 8, 12, 12};
+    for (const size_t expected : rights)
+    {
+        editor.Press(Special(Key::Right));
+        REQUIRE(editor.Cursor() == expected);
+    }
+    editor.Press(Control('b'));
+    editor.Press(Control('b'));
+    REQUIRE(editor.Cursor() == 7);
+    editor.Press(Control('f'));
+    REQUIRE(editor.Cursor() == 8);
+
+    TakeOutput(editor);
+    editor.Press(Special(Key::Left));
+    // Four cells and the prompt come before the cursor, so it sits in column 7.
+    REQUIRE(TakeOutput(editor) == "\r> " + line + "\x1b[J\x1b[7G");
+
+    editor.Press(Special(Key::End));
+    TakeOutput(editor);
+    editor.Press(Special(Key::Backspace));
+    REQUIRE(TakeOutput(editor) == "\b \b");
+    REQUIRE(std::string(editor.Line()) == "a" + Acute + "b" + Euro + "c");
+    editor.Press(Special(Key::Backspace));
+    editor.Press(Special(Key::Backspace));
+    REQUIRE(std::string(editor.Line()) == "a" + Acute + "b");
+    TakeOutput(editor);
+
+    editor.Press(Special(Key::Home));
+    editor.Press(Special(Key::Right));
+    editor.Press(Special(Key::Delete));
+    REQUIRE(std::string(editor.Line()) == "ab");
+    REQUIRE(editor.Cursor() == 1);
+    editor.Press(Special(Key::End));
+    TypeBytes(editor, Acute);
+    editor.Press(Special(Key::Left));
+    editor.Press(Special(Key::Backspace));
+    REQUIRE(std::string(editor.Line()) == "a" + Acute);
+    REQUIRE(editor.Cursor() == 1);
+    editor.Press(Special(Key::Delete));
+    REQUIRE(std::string(editor.Line()) == "a");
+    editor.Press(Special(Key::Delete));
+    REQUIRE(std::string(editor.Line()) == "a");
+    REQUIRE(editor.Cursor() == 1);
+}
+
+TEST_CASE("typing, Ctrl+U, Ctrl+K and Ctrl+W work on whole characters")
+{
+    LineEditor editor;
+    editor.Begin("> ", 80, nullptr);
+    TypeBytes(editor, "ab");
+    editor.Press(Special(Key::Left));
+    TakeOutput(editor);
+    TypeBytes(editor, Euro);
+    REQUIRE(std::string(editor.Line()) == "a" + Euro + "b");
+    REQUIRE(editor.Cursor() == 4);
+    REQUIRE(TakeOutput(editor) == "\r> a" + Euro + "b\x1b[J\x1b[5G");
+
+    editor.Press(Control('k'));
+    REQUIRE(std::string(editor.Line()) == "a" + Euro);
+    editor.Press(Control('u'));
+    REQUIRE(std::string(editor.Line()).empty());
+
+    TypeBytes(editor, "go " + Acute + Acute + " " + Grin + "x");
+    editor.Press(Control('w'));
+    REQUIRE(std::string(editor.Line()) == "go " + Acute + Acute + " ");
+    editor.Press(Control('w'));
+    REQUIRE(std::string(editor.Line()) == "go ");
+    editor.Press(Special(Key::Left));
+    editor.Press(Control('d'));
+    REQUIRE(std::string(editor.Line()) == "go");
+}
+
+TEST_CASE("a character split across reads is neither shown nor edited in pieces")
+{
+    LineEditor editor;
+    editor.Begin("> ", 80, nullptr);
+    TakeOutput(editor);
+    editor.Press(Character('\xE2'));
+    editor.Press(Character('\x82'));
+    REQUIRE(TakeOutput(editor).empty());
+    REQUIRE(std::string(editor.Line()).empty());
+    REQUIRE(editor.Cursor() == 0);
+    editor.Press(Character('\xAC'));
+    REQUIRE(TakeOutput(editor) == Euro);
+    REQUIRE(std::string(editor.Line()) == Euro);
+    REQUIRE(editor.Cursor() == 3);
+
+    // Another key ends an incomplete sequence as one invalid cell, which is drawn as the line.
+    editor.Press(Character('\xF0'));
+    editor.Press(Character('\x9F'));
+    TakeOutput(editor);
+    editor.Press(Special(Key::Left));
+    REQUIRE(std::string(editor.Line()) == Euro + "\xF0\x9F");
+    REQUIRE(editor.Cursor() == 3);
+    editor.Press(Special(Key::Right));
+    REQUIRE(editor.Cursor() == 5);
+
+    LineHistory history;
+    editor.Begin("> ", 80, &history);
+    editor.Press(Character('\xC3'));
+    REQUIRE(editor.Press(Special(Key::Enter)) == LineEditor::Status::Accepted);
+    REQUIRE(std::string(editor.Line()) == "\xC3");
+    REQUIRE(std::string(history.Entry(0)) == "\xC3");
+
+    editor.Begin("> ", 80, nullptr);
+    editor.Press(Character('\xC3'));
+    editor.Begin("> ", 80, nullptr);
+    editor.Press(Character('\xA9'));
+    REQUIRE(std::string(editor.Line()) == "\xA9");
+}
+
+TEST_CASE("invalid bytes are one cell each, and bytes that would join are redrawn")
+{
+    LineEditor editor;
+    editor.Begin("> ", 80, nullptr);
+    TypeBytes(editor, "\x80\x80");
+    REQUIRE(editor.Cursor() == 2);
+    TakeOutput(editor);
+    editor.Press(Special(Key::Left));
+    REQUIRE(editor.Cursor() == 1);
+    editor.Press(Special(Key::Left));
+    REQUIRE(editor.Cursor() == 0);
+    const std::string output = TakeOutput(editor);
+    REQUIRE(output.find("\x1b[4G") != std::string::npos);
+    REQUIRE(output.substr(output.size() - 4) == "\x1b[3G");
+
+    editor.Begin("> ", 80, nullptr);
+    TypeBytes(editor, "\xE2\x82x");
+    editor.Press(Special(Key::Backspace));
+    TakeOutput(editor);
+    TypeBytes(editor, "\xAC");
+    REQUIRE(std::string(editor.Line()) == Euro);
+    REQUIRE(editor.Cursor() == 3);
+    REQUIRE(TakeOutput(editor) == "\r> " + Euro + "\x1b[J\x1b[4G");
+    editor.Press(Special(Key::Left));
+    REQUIRE(editor.Cursor() == 0);
+
+    // Deleting the byte between a truncated sequence and a continuation byte joins them, so a
+    // cursor that was between them now sits at the start of the character.
+    editor.Begin("> ", 80, nullptr);
+    TypeBytes(editor, "\xE2\x82x\xAC");
+    REQUIRE(editor.Cursor() == 4);
+    editor.Press(Special(Key::Left));
+    editor.Press(Special(Key::Left));
+    REQUIRE(editor.Cursor() == 2);
+    editor.Press(Special(Key::Delete));
+    REQUIRE(std::string(editor.Line()) == Euro);
+    REQUIRE(editor.Cursor() == 0);
+}
+
+TEST_CASE("history recalls lines with multi-byte characters and puts the cursor after them")
+{
+    LineHistory history;
+    LineEditor editor;
+    editor.Begin("> ", 80, &history);
+    TypeBytes(editor, "echo " + Acute + Grin);
+    editor.Press(Special(Key::Enter));
+    editor.Begin("> ", 80, &history);
+    TypeBytes(editor, Euro);
+    TakeOutput(editor);
+    editor.Press(Special(Key::Up));
+    REQUIRE(std::string(editor.Line()) == "echo " + Acute + Grin);
+    REQUIRE(editor.Cursor() == 11);
+    REQUIRE(TakeOutput(editor) == "\r> echo " + Acute + Grin + "\x1b[J\x1b[10G");
+    editor.Press(Special(Key::Down));
+    REQUIRE(std::string(editor.Line()) == Euro);
+
+    const std::string prompt = Acute + "> ";
+    editor.Begin(prompt.c_str(), 80, &history);
+    TakeOutput(editor);
+    TypeBytes(editor, "ab");
+    TakeOutput(editor);
+    editor.Press(Special(Key::Home));
+    REQUIRE(TakeOutput(editor) == "\r" + prompt + "ab\x1b[J\x1b[4G");
+}
+
+TEST_CASE("line edits with multi-byte characters redraw correctly on a terminal where the line wraps")
+{
+    constexpr uint64_t width = 320;
+    constexpr uint64_t height = 112;
+    std::array<uint8_t, width * height * 4> pixels{};
+    limine_framebuffer descriptor{};
+    descriptor.address = pixels.data();
+    descriptor.width = width;
+    descriptor.height = height;
+    descriptor.pitch = width * 4;
+    descriptor.bpp = 32;
+    descriptor.memory_model = LIMINE_FRAMEBUFFER_RGB;
+    descriptor.red_mask_size = 8;
+    descriptor.red_mask_shift = 16;
+    descriptor.green_mask_size = 8;
+    descriptor.green_mask_shift = 8;
+    descriptor.blue_mask_size = 8;
+    Framebuffer framebuffer;
+    REQUIRE(framebuffer.init(&descriptor));
+    FeatherOS::Term terminal;
+    terminal.Init(&framebuffer);
+    const uint32_t columns = terminal.Columns();
+    REQUIRE(columns == 38);
+
+    const auto row_text = [&](uint32_t row)
+    {
+        std::u32string text;
+        for (uint32_t column = 0; column < columns; ++column)
+        {
+            text += terminal.CharacterAt(row, column);
+        }
+        return text;
+    };
+    LineEditor editor;
+    const auto show = [&]()
+    {
+        terminal.Print(std::string(editor.Output(), editor.OutputLength()).c_str());
+        editor.ClearOutput();
+    };
+    const std::string prompt = "/home/work> ";
+    const auto expect_cursor = [&](uint32_t first_row)
+    {
+        const size_t position = prompt.size() + FeatherOS::Text::CellCount(editor.Line(), editor.Cursor());
+        REQUIRE(terminal.CursorRow() == first_row + position / columns);
+        REQUIRE(terminal.CursorColumn() == position % columns);
+    };
+
+    editor.Begin(prompt.c_str(), columns, nullptr);
+    show();
+    std::string line;
+    for (int index = 0; index < 26; ++index)
+    {
+        line += Acute;
+    }
+    TypeBytes(editor, line);
+    show();
+    expect_cursor(1);
+    REQUIRE(row_text(1) == U"/home/work> " + std::u32string(26, U'\u00E9'));
+    TypeBytes(editor, "b" + Euro + Grin);
+    show();
+    expect_cursor(1);
+    REQUIRE(row_text(2).substr(0, 4) == std::u32string{U'b', U'\u20AC', U'\U0001F600', U' '});
+
+    editor.Press(Special(Key::Home));
+    editor.Press(Special(Key::Right));
+    editor.Press(Special(Key::Right));
+    show();
+    expect_cursor(1);
+    TypeBytes(editor, Euro);
+    show();
+    expect_cursor(1);
+    REQUIRE(row_text(1).substr(12, 4) == std::u32string{U'\u00E9', U'\u00E9', U'\u20AC', U'\u00E9'});
+
+    editor.Press(Special(Key::End));
+    for (int index = 0; index < 4; ++index)
+    {
+        editor.Press(Special(Key::Backspace));
+        show();
+        expect_cursor(1);
+    }
+    REQUIRE(row_text(1).substr(12, 4) == std::u32string{U'\u00E9', U'\u00E9', U'\u20AC', U'\u00E9'});
+    REQUIRE(row_text(2) == std::u32string(columns, U' '));
+    editor.Press(Control('u'));
+    show();
+    expect_cursor(1);
+    REQUIRE(row_text(1) == U"/home/work> " + std::u32string(columns - 12, U' '));
 }

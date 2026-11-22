@@ -3,6 +3,7 @@
 
 #include "key_decoder.h"
 #include "process.h"
+#include "text/utf8.h"
 
 #include <stddef.h>
 
@@ -35,7 +36,10 @@ private:
 // within it, Up and Down walk the history, and the Emacs keys most shells have work too (Ctrl+A,
 // E, B, F, P, N, D, H, U, K, W, and L to clear the screen). Each key appends what the terminal must
 // show to Output, using \b and the VT100 sequences, so a line that wraps redraws correctly when
-// the terminal is `columns` wide and wraps as soon as a row fills.
+// the terminal is `columns` wide and wraps as soon as a row fills. The line is UTF-8 bytes, and
+// every move, erase and column count is by character, as the terminal draws it: a sequence that
+// arrives in pieces joins the line when it is complete, and invalid bytes count one cell each, as
+// the terminal draws them.
 class LineEditor
 {
 public:
@@ -58,6 +62,7 @@ public:
     // drawn kept their places.
     void Resize(size_t columns);
     const char* Line() const;
+    // A byte offset into Line(), always at the start of a character.
     size_t Cursor() const;
     const char* Output() const;
     size_t OutputLength() const;
@@ -75,6 +80,7 @@ private:
     char m_draft[MaximumEditedLineLength + 1] = {};
     size_t m_length = 0;
     size_t m_cursor = 0;
+    Text::Utf8Units m_units;
     // Rows between the prompt's first row and the terminal's cursor.
     size_t m_cursor_row = 0;
     // Room for a redraw of the longest prompt and line, with the cursor movements around them.
@@ -89,7 +95,9 @@ private:
     // clears what a longer line left behind.
     void Refresh();
 
-    void Insert(char character);
+    // Cells from the prompt's start to byte offset position of the line.
+    size_t Column(size_t position) const;
+    void Insert(const Text::Utf8Unit& unit);
     void EraseBefore();
     void Erase(size_t start, size_t count);
     void ErasePreviousWord();

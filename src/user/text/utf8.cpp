@@ -139,6 +139,59 @@ bool Utf8Decoder::Pending() const
     return m_remaining != 0;
 }
 
+size_t Utf8Units::Push(uint8_t byte, Utf8Unit out[MaximumUnits])
+{
+    const bool was_pending = m_decoder.Pending();
+    char32_t code[2];
+    const size_t produced = m_decoder.Push(byte, code);
+    if (produced == 0)
+    {
+        m_length = was_pending ? m_length : 0;
+        m_bytes[m_length++] = byte;
+        return 0;
+    }
+    if (!was_pending)
+    {
+        out[0] = {{byte, 0, 0, 0}, 1, byte < 0x80};
+        return 1;
+    }
+    if (produced == 1 && !m_decoder.Pending())
+    {
+        m_bytes[m_length++] = byte;
+        out[0] = {{m_bytes[0], m_bytes[1], m_bytes[2], m_bytes[3]}, m_length, true};
+        m_length = 0;
+        return 1;
+    }
+    out[0] = {{m_bytes[0], m_bytes[1], m_bytes[2], m_bytes[3]}, m_length, false};
+    if (produced == 1)
+    {
+        m_bytes[0] = byte;
+        m_length = 1;
+        return 1;
+    }
+    m_length = 0;
+    out[1] = {{byte, 0, 0, 0}, 1, byte < 0x80};
+    return 2;
+}
+
+size_t Utf8Units::Finish(Utf8Unit* out)
+{
+    if (!m_decoder.Pending())
+    {
+        return 0;
+    }
+    char32_t ignored[2];
+    m_decoder.Finish(ignored);
+    *out = {{m_bytes[0], m_bytes[1], m_bytes[2], m_bytes[3]}, m_length, false};
+    m_length = 0;
+    return 1;
+}
+
+bool Utf8Units::Pending() const
+{
+    return m_decoder.Pending();
+}
+
 char32_t DecodeNext(const char* text, size_t length, size_t* used)
 {
     if (length == 0)
@@ -165,6 +218,60 @@ bool IsValidUtf8(const char* text, size_t length)
         offset += used;
     }
     return true;
+}
+
+size_t CellCount(const char* text, size_t length)
+{
+    size_t cells = 0;
+    for (size_t offset = 0; offset < length; ++cells)
+    {
+        size_t used = 0;
+        DecodeNext(text + offset, length - offset, &used);
+        offset += used;
+    }
+    return cells;
+}
+
+size_t PreviousBoundary(const char* text, size_t length, size_t position)
+{
+    size_t start = 0;
+    size_t offset = 0;
+    while (offset < position && offset < length)
+    {
+        size_t used = 0;
+        DecodeNext(text + offset, length - offset, &used);
+        start = offset;
+        offset += used;
+    }
+    return start;
+}
+
+size_t NextBoundary(const char* text, size_t length, size_t position)
+{
+    size_t offset = 0;
+    while (offset <= position && offset < length)
+    {
+        size_t used = 0;
+        DecodeNext(text + offset, length - offset, &used);
+        offset += used;
+    }
+    return offset;
+}
+
+size_t FloorBoundary(const char* text, size_t length, size_t position)
+{
+    size_t offset = 0;
+    while (offset < length)
+    {
+        size_t used = 0;
+        DecodeNext(text + offset, length - offset, &used);
+        if (offset + used > position)
+        {
+            return offset;
+        }
+        offset += used;
+    }
+    return length;
 }
 
 } // namespace FeatherOS::Text

@@ -182,6 +182,42 @@ TEST_CASE("the key decoder resolves Escape, split sequences and unknown ones")
     REQUIRE(presses[0].key == Key::Unknown);
 }
 
+TEST_CASE("the key decoder passes bytes above 0x7F as characters and keeps sequences intact")
+{
+    KeyDecoder decoder;
+    std::vector<KeyPress> keys = Decode(decoder, "a\xC3\xA9\xE2\x82\xAC\x80\xFF");
+    REQUIRE(keys.size() == 8);
+    const unsigned char expected[] = {'a', 0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0x80, 0xFF};
+    for (size_t index = 0; index < keys.size(); ++index)
+    {
+        REQUIRE(keys[index].key == Key::Character);
+        REQUIRE(static_cast<unsigned char>(keys[index].character) == expected[index]);
+    }
+
+    // Escape followed by such a byte is Escape and a character, as for Alt with an ASCII key.
+    keys = Decode(decoder, "\x1b\xC3\xA9");
+    REQUIRE(keys.size() == 3);
+    REQUIRE(keys[0].key == Key::Escape);
+    REQUIRE(keys[1].key == Key::Character);
+    REQUIRE(static_cast<unsigned char>(keys[1].character) == 0xC3);
+    REQUIRE(keys[2].key == Key::Character);
+
+    // Cursor keys either side of a multi-byte character still decode.
+    keys = Decode(decoder, "\x1b[D\xC3\xA9\x1bOC\x1b[3~");
+    REQUIRE(keys.size() == 5);
+    REQUIRE(keys[0].key == Key::Left);
+    REQUIRE(keys[1].key == Key::Character);
+    REQUIRE(keys[2].key == Key::Character);
+    REQUIRE(keys[3].key == Key::Right);
+    REQUIRE(keys[4].key == Key::Delete);
+
+    // A byte above 0x7F inside a sequence still ends it as unknown.
+    keys = Decode(decoder, "\x1b[1\xC3");
+    REQUIRE(keys.size() == 1);
+    REQUIRE(keys[0].key == Key::Unknown);
+    REQUIRE_FALSE(decoder.Pending());
+}
+
 TEST_CASE("Alt+F1 to Alt+F4 ask for a console instead of sending bytes")
 {
     Keyboard keyboard;

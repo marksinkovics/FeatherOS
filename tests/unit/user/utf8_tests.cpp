@@ -284,3 +284,132 @@ TEST_CASE("byte-at-a-time and whole-string decoding match a table-driven referen
         CHECK(DecodeStream(bytes) == expected);
     }
 }
+
+namespace
+{
+
+struct UnitView
+{
+    std::string bytes;
+    bool valid;
+
+    bool operator==(const UnitView&) const = default;
+};
+
+std::vector<UnitView> SplitUnits(const std::string& bytes)
+{
+    std::vector<UnitView> out;
+    Text::Utf8Units units;
+    const auto take = [&](const Text::Utf8Unit& unit)
+    {
+        REQUIRE(unit.length >= 1);
+        REQUIRE(unit.length <= 4);
+        out.push_back({std::string(reinterpret_cast<const char*>(unit.bytes), unit.length),
+                       unit.valid});
+    };
+    for (const char byte : bytes)
+    {
+        Text::Utf8Unit produced[2];
+        const size_t count = units.Push(static_cast<uint8_t>(byte), produced);
+        REQUIRE(count <= 2);
+        for (size_t index = 0; index < count; ++index)
+        {
+            take(produced[index]);
+        }
+    }
+    Text::Utf8Unit last;
+    if (units.Finish(&last) != 0)
+    {
+        take(last);
+    }
+    REQUIRE_FALSE(units.Pending());
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("units are whole sequences or the maximal subpart of an invalid one", "[utf8]")
+{
+    using Units = std::vector<UnitView>;
+    CHECK(SplitUnits("a") == Units{{"a", true}});
+    CHECK(SplitUnits(Bytes({0xC3, 0xA9})) == Units{{Bytes({0xC3, 0xA9}), true}});
+    CHECK(SplitUnits(Bytes({0xF0, 0x9F, 0x98, 0x80, 'x'})) ==
+          Units{{Bytes({0xF0, 0x9F, 0x98, 0x80}), true}, {"x", true}});
+    CHECK(SplitUnits(Bytes({0x80, 0x80})) == Units{{Bytes({0x80}), false}, {Bytes({0x80}), false}});
+    CHECK(SplitUnits(Bytes({0xE2, 0x82, 'A'})) == Units{{Bytes({0xE2, 0x82}), false}, {"A", true}});
+    CHECK(SplitUnits(Bytes({0xE2, 0x82})) == Units{{Bytes({0xE2, 0x82}), false}});
+    CHECK(SplitUnits(Bytes({0xE2, 0xE2, 0x82, 0xAC})) ==
+          Units{{Bytes({0xE2}), false}, {Bytes({0xE2, 0x82, 0xAC}), true}});
+    CHECK(SplitUnits(Bytes({0xE0, 0x80})) == Units{{Bytes({0xE0}), false}, {Bytes({0x80}), false}});
+    CHECK(SplitUnits(Bytes({0xC0, 0xF5, 0xFF})) ==
+          Units{{Bytes({0xC0}), false}, {Bytes({0xF5}), false}, {Bytes({0xFF}), false}});
+    CHECK(SplitUnits(Bytes({0xEF, 0xBF, 0xBD})) == Units{{Bytes({0xEF, 0xBF, 0xBD}), true}});
+
+    Text::Utf8Units units;
+    Text::Utf8Unit produced[2];
+    CHECK(units.Push(0xE2, produced) == 0);
+    CHECK(units.Pending());
+    CHECK(units.Push(0x82, produced) == 0);
+    CHECK(units.Push(0xAC, produced) == 1);
+    CHECK_FALSE(units.Pending());
+    CHECK(units.Finish(produced) == 0);
+}
+
+TEST_CASE("units, cell counts and boundaries agree with decoding", "[utf8]")
+{
+    std::mt19937 generator(20261122);
+    for (int round = 0; round < 5000; ++round)
+    {
+        const std::string bytes = RandomBytes(generator);
+        const std::vector<UnitView> units = SplitUnits(bytes);
+        INFO("round " << round << " of " << bytes.size() << " bytes");
+        std::string joined;
+        std::vector<size_t> starts;
+        for (const UnitView& unit : units)
+        {
+            starts.push_back(joined.size());
+            joined += unit.bytes;
+            CHECK(unit.valid == Text::IsValidUtf8(unit.bytes.data(), unit.bytes.size()));
+        }
+        CHECK(joined == bytes);
+        CHECK(Text::CellCount(bytes.data(), bytes.size()) == units.size());
+        CHECK(units.size() == DecodeWhole(bytes).size());
+        for (size_t position = 0; position <= bytes.size(); ++position)
+        {
+            size_t previous = 0;
+            size_t next = bytes.size();
+            size_t floor = bytes.size();
+            for (size_t index = 0; index < starts.size(); ++index)
+            {
+                const size_t end = index + 1 < starts.size() ? starts[index + 1] : bytes.size();
+                previous = starts[index] < position ? starts[index] : previous;
+                if (next == bytes.size() && end > position)
+                {
+                    next = end;
+                }
+                if (floor == bytes.size() && end > position)
+                {
+                    floor = starts[index];
+                }
+            }
+            CHECK(Text::PreviousBoundary(bytes.data(), bytes.size(), position) == previous);
+            CHECK(Text::NextBoundary(bytes.data(), bytes.size(), position) == next);
+            CHECK(Text::FloorBoundary(bytes.data(), bytes.size(), position) == floor);
+        }
+    }
+}
+
+TEST_CASE("CellCount counts a cell for each character and each invalid subpart", "[utf8]")
+{
+    CHECK(Text::CellCount("", 0) == 0);
+    CHECK(Text::CellCount("abc", 3) == 3);
+    const std::string mixed = "a" + Bytes({0xC3, 0xA9, 0xE2, 0x82, 0xAC, 0xF0, 0x9F, 0x98, 0x80});
+    CHECK(Text::CellCount(mixed.data(), mixed.size()) == 4);
+    CHECK(Text::CellCount(mixed.data(), 3) == 2);
+    const std::string broken = Bytes({0x80, 0xE2, 0x82, 'x', 0xF0, 0x9F});
+    CHECK(Text::CellCount(broken.data(), broken.size()) == 4);
+    CHECK(Text::PreviousBoundary(mixed.data(), mixed.size(), 0) == 0);
+    CHECK(Text::PreviousBoundary(mixed.data(), mixed.size(), mixed.size()) == 6);
+    CHECK(Text::NextBoundary(mixed.data(), mixed.size(), mixed.size()) == mixed.size());
+    CHECK(Text::FloorBoundary(mixed.data(), mixed.size(), 4) == 3);
+}

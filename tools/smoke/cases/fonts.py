@@ -1,12 +1,13 @@
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
 from smoke.boot import PANIC_MARKER
 from smoke.cases.base import Case
 from smoke.cases.screen import HEIGHT, WIDTH, ScreenCase, StepFailed
-from smoke.script import Lines
+from smoke.script import Lines, WaitUntil
 from smoke.terminal import SHELL_PROMPT
 
 FONTS_TIMEOUT_SECONDS = 120
@@ -15,6 +16,14 @@ SAMPLE = TOOLS / "fonts" / "sample.txt"
 CONSOLE_FONT = TOOLS.parent / "initramfs" / "fonts" / "mono-16.ffnt"
 SAMPLE_COMMAND = "cat /system/fonts/sample.txt\n"
 END_LINE = b"END OF SAMPLE"
+# Typed on the serial line, which is the only input path that carries bytes
+# above 0x7F: the QMP keyboard sends scancodes for ASCII keys alone.
+ECHO_TEXT = "café ñandú ΑΩ жэ ┌─┐"
+ECHO_COMMAND = f"echo {ECHO_TEXT}\n"
+ECHO_OUTPUT = re.compile(
+    rb"^" + re.escape(ECHO_TEXT.encode()) + rb"\r?$", re.MULTILINE
+)
+TYPED_PROMPT = re.compile(rb"^(/[^\n>]*> )echo ", re.MULTILINE)
 BLACK = 0x000000
 WHITE = 0xFFFFFF
 # The console's 8x16 cells with one cell of padding all round; row 0 is the
@@ -90,6 +99,14 @@ class Reference:
         self.cells[code_point] = rows
         return rows
 
+    def Render(self, text):
+        cells = [ord(character) for character in text]
+        cells += [0x20] * (COLUMNS - len(cells))
+        return [
+            b"".join(self.Cell(cell)[y] for cell in cells)
+            for y in range(CELL_HEIGHT)
+        ]
+
     def Row(self, index):
         cells = self.lines[index] + [0x20] * (COLUMNS - len(self.lines[index]))
         return [
@@ -122,14 +139,19 @@ class Fonts(ScreenCase, Case):
     """Prints a sample of UTF-8 text with `cat` and matches the screen, cell
     by cell, against the cells ffnt.py renders from the committed console
     font: accented Latin, Greek, Cyrillic, arrows, box drawing, blocks, a
-    dropped C1 control and invalid bytes that must show as U+FFFD."""
+    dropped C1 control and invalid bytes that must show as U+FFFD. Then types
+    `echo` with accented text and box drawing on the serial line, and matches
+    the line editor's echo and the program's output on screen and in the
+    session."""
 
     serial_input = True
     timeout = FONTS_TIMEOUT_SECONDS
     passed = (
         "the console drew the UTF-8 sample, rows of accented Latin, Greek, "
         "Cyrillic, arrows, box drawing, blocks and U+FFFD cells for invalid "
-        "bytes, exactly as the reference rendering of mono-16 draws them"
+        "bytes, exactly as the reference rendering of mono-16 draws them; "
+        "typed accented text and box drawing were echoed by the line editor "
+        "and printed by echo, on the screen and over serial"
     )
 
     def __init__(self, args):
@@ -137,10 +159,14 @@ class Fonts(ScreenCase, Case):
         self.InitScreen()
         self.reference = Reference()
         self.state = 0
+        self.sampled = False
         self.finished = False
 
     def Script(self, session):
-        return Lines(SAMPLE_COMMAND.encode())
+        return Lines(SAMPLE_COMMAND.encode()) + [
+            WaitUntil(lambda: self.sampled),
+            ECHO_COMMAND.encode(),
+        ]
 
     def Markers(self):
         return (PANIC_MARKER.encode(),)
@@ -171,19 +197,63 @@ class Fonts(ScreenCase, Case):
             return None
         return "the sample's first line is nowhere on the screen"
 
+    def ExpectEcho(self, prompt):
+        typed = self.reference.Render(prompt + "echo " + ECHO_TEXT)
+        printed = self.reference.Render(ECHO_TEXT)
+
+        def Check(pixels):
+            for first in range(1, ROWS - 1):
+                if FirstDifference(pixels, first, typed) is not None:
+                    continue
+                difference = FirstDifference(pixels, first + 1, printed)
+                if difference is None:
+                    return None
+                return (
+                    f"the echoed line differs from the reference at column "
+                    f"{difference[0]}, pixel row {difference[1]}"
+                )
+            return "the typed line is nowhere on the screen"
+
+        return Check
+
     def OnOutput(self, session, clean_output):
-        if self.state != 0:
+        if self.state == 0:
+            marker = clean_output.rfind(END_LINE)
+            if marker < 0 or SHELL_PROMPT.search(clean_output, marker) is None:
+                return
+            self.state = 1
+            try:
+                self.OpenScreen()
+                self.Step("the UTF-8 sample", self.ExpectSample)
+            except StepFailed as failure:
+                if self.failure is None:
+                    self.failure = str(failure)
+            except (
+                OSError,
+                RuntimeError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as e:
+                self.failure = f"screendump failed: {e}"
+            self.sampled = True
+            if self.failure is not None:
+                self.finished = True
             return
-        marker = clean_output.rfind(END_LINE)
-        if marker < 0 or SHELL_PROMPT.search(clean_output, marker) is None:
+        if self.state != 1:
             return
-        self.state = 1
+        printed = ECHO_OUTPUT.search(clean_output)
+        typed = TYPED_PROMPT.search(clean_output)
+        if (
+            printed is None
+            or typed is None
+            or SHELL_PROMPT.search(clean_output, printed.end()) is None
+        ):
+            return
+        self.state = 2
         try:
-            self.OpenScreen()
-            self.Step("the UTF-8 sample", self.ExpectSample)
-        except StepFailed as failure:
-            if self.failure is None:
-                self.failure = str(failure)
+            self.Step(
+                "the typed text", self.ExpectEcho(typed.group(1).decode())
+            )
         except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as e:
             self.failure = f"screendump failed: {e}"
         self.finished = True
@@ -211,8 +281,21 @@ class Fonts(ScreenCase, Case):
         )
         if lacking:
             return f"mono-16 lacks sample code points {lacking}"
+        lacking = sorted(
+            {
+                character
+                for character in ECHO_TEXT
+                if character != " " and not reference.Contains(ord(character))
+            }
+        )
+        if lacking:
+            return f"mono-16 lacks echo text characters {lacking}"
         if self.failure is not None:
             return self.failure
         if not self.finished:
             return f"the session ended early{result.limit_note}"
+        if f"echo {ECHO_TEXT}" not in result.output:
+            return "the line editor did not echo the typed text over serial"
+        if ECHO_OUTPUT.search(result.captured) is None:
+            return "echo did not print the typed text over serial"
         return None

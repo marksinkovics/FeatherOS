@@ -82,6 +82,95 @@ TEST_CASE("line editing skips escape sequences and stops at the line's capacity"
     REQUIRE(fixture.device.output == "abc\n> abc\n");
 }
 
+TEST_CASE("canonical mode keeps UTF-8 and erases a whole character at a time")
+{
+    Fixture fixture;
+    fixture.Type("caf\xC3\xA9" "x\x7f\x7f" "e\xE2\x82\xAC" "\xF0\x9F\x98\x80\x7f\r");
+    REQUIRE(fixture.Read() == "cafe\xE2\x82\xAC\n");
+    REQUIRE(fixture.device.output == "caf\xC3\xA9x<BS><BS>e\xE2\x82\xAC\xF0\x9F\x98\x80<BS>\n");
+}
+
+TEST_CASE("canonical erase follows what the display draws for invalid bytes")
+{
+    Fixture fixture;
+    // Each stray continuation byte is one replacement cell, and erase never goes past the start.
+    fixture.Type("\x80\x80\x80\x7f\x7f\x7f\x7f\x7f" "a\x80\x80\x7f\r");
+    REQUIRE(fixture.Read() == "a\x80\n");
+    REQUIRE(fixture.device.output ==
+            "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD<BS><BS><BS>a\xEF\xBF\xBD\xEF\xBF\xBD<BS>\n");
+
+    // A truncated sequence is one cell, ended by the byte after it.
+    fixture.device.output.clear();
+    fixture.Type("\xE2\x82" "A\x7f\x7f\xF0\x9F\x98" "B\x7f\r");
+    REQUIRE(fixture.Read() == "\xF0\x9F\x98\n");
+    REQUIRE(fixture.device.output ==
+            "\xEF\xBF\xBD" "A<BS><BS>\xEF\xBF\xBD" "B<BS>\n");
+
+    // C0 and F5 to FF are one cell each.
+    fixture.device.output.clear();
+    fixture.Type("\xC0\xF5\xFF\x7f\r");
+    REQUIRE(fixture.Read() == "\xC0\xF5\n");
+}
+
+TEST_CASE("canonical mode does not let bytes after an erase join into a sequence")
+{
+    Fixture fixture;
+    fixture.Type("\xE2\x82" "A\x7f\xAC\r");
+    REQUIRE(fixture.Read() == "\xE2\x82\n");
+    REQUIRE(fixture.device.output == "\xEF\xBF\xBD" "A<BS>\n");
+
+    char line[8];
+    fixture.Type("\xE2\x82" "A\x7f\xAC\r");
+    REQUIRE(fixture.terminal.ReadLine(Group, "", line, sizeof(line)) == 2);
+    REQUIRE(std::string(line) == "\xE2\x82");
+}
+
+TEST_CASE("a sequence that ends at Enter, Ctrl+C or an escape sequence is its own cell")
+{
+    Fixture fixture;
+    fixture.Type("a\xE2\x82\r");
+    REQUIRE(fixture.Read() == "a\xE2\x82\n");
+    REQUIRE(fixture.device.output == "a\xEF\xBF\xBD\n");
+
+    fixture.device.output.clear();
+    fixture.Type("x\xE2\x82\x1b[A\xAC" "b\r");
+    REQUIRE(fixture.Read() == "x\xE2\x82" "b\n");
+    REQUIRE(fixture.device.output == "x\xEF\xBF\xBD" "b\n");
+
+    fixture.device.output.clear();
+    fixture.Type("\xC3\x03\xC3\xA9\r");
+    REQUIRE(fixture.Read() == "\xC3\xA9\n");
+}
+
+TEST_CASE("a line that fills inside a sequence takes none of it")
+{
+    Fixture fixture;
+    char line[4];
+    fixture.Type("ab\xC3\xA9" "c\r");
+    REQUIRE(fixture.terminal.ReadLine(Group, "", line, sizeof(line)) == 3);
+    REQUIRE(std::string(line) == "abc");
+
+    char larger[5];
+    fixture.Type("ab\xC3\xA9\xC3\xA9\xE2\x82\xAC" "z\r");
+    REQUIRE(fixture.terminal.ReadLine(Group, "", larger, sizeof(larger)) == 4);
+    REQUIRE(std::string(larger) == "ab\xC3\xA9");
+    REQUIRE(fixture.device.output == "abc\nab\xC3\xA9\n");
+}
+
+TEST_CASE("bytes above 0x7F are kept without echo and in raw mode")
+{
+    Fixture fixture;
+    fixture.terminal.SetSettings({User::TerminalCanonical | User::TerminalSignals, 1, 0, 0}, 3);
+    fixture.Type("\xC3\xA9\x80\x7f\r");
+    REQUIRE(fixture.Read() == "\xC3\xA9\n");
+    REQUIRE(fixture.device.output.empty());
+
+    fixture.terminal.SetSettings({0, 1, 0, 0}, 3);
+    fixture.Type("\xC3\xA9\xFF");
+    REQUIRE(fixture.Read(2) == "\xC3\xA9");
+    REQUIRE(fixture.Read() == "\xFF");
+}
+
 TEST_CASE("echo off keeps typed text off the screen")
 {
     Fixture fixture;
