@@ -162,6 +162,8 @@ public:
     virtual bool Detach();
     // Wants Sync every Writeback::IntervalSeconds while mounted.
     virtual bool SyncsInBackground() const;
+    // The medium is gone: every call fails with SyscallErrorInputOutput, whatever the path.
+    virtual bool Dead() const;
     // Why the call that just failed did, as a User::SyscallError code; drivers that cannot say
     // give SyscallErrorFailed.
     virtual uint64_t LastError();

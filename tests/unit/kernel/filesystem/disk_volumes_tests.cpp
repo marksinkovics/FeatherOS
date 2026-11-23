@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include "kernel/files.h"
 #include "kernel/filesystem/core_driver.h"
 #include "kernel/filesystem/drivers.h"
 #include "kernel/filesystem/procfs.h"
@@ -16,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -69,6 +71,10 @@ public:
     {
         ++reads;
         std::memcpy(buffer, image.data() + sector * sector_size, uint64_t{count} * sector_size);
+        if (on_read)
+        {
+            std::exchange(on_read, nullptr)();
+        }
         return {};
     }
 
@@ -113,6 +119,8 @@ public:
     std::atomic<bool> removable = true;
     std::atomic<bool> read_only = false;
     std::atomic<bool> fail_flush = false;
+    // Runs once, inside the first Read that follows.
+    std::function<void()> on_read;
 
     // The (first sector, count) of every Write, in order.
     std::vector<std::pair<uint64_t, uint32_t>> Writes()
@@ -522,7 +530,7 @@ TEST_CASE("a dead volume fails every operation before the device, shows ro, and 
     REQUIRE(ReadFile("/usb1/BLOCK.TXT") == "<open failed>");
     VFS::FileHandle created{};
     REQUIRE_FALSE(VFS::Create("/usb1/NEW.TXT", &created));
-    REQUIRE(VFS::LastError() == User::SyscallErrorReadOnly);
+    REQUIRE(VFS::LastError() == User::SyscallErrorInputOutput);
     REQUIRE_FALSE(VFS::SyncAll());
     REQUIRE(rig.driver.Calls() == calls);
 
@@ -540,6 +548,57 @@ TEST_CASE("a dead volume fails every operation before the device, shows ro, and 
     REQUIRE(Absent(Mount("fat16", rig.Source(2).c_str(), "/usb2")));
     REQUIRE(rig.driver.releases == 0);
     REQUIRE(rig.driver.Calls() == calls);
+}
+
+TEST_CASE("USB T28 a dead volume answers EIO to the system calls that would say not found")
+{
+    Rig rig(PartitionedImage());
+    REQUIRE(Drivers::OpenDiskVolumes(*rig.disk) == 2);
+    REQUIRE(Mount("fat16", rig.Source(1).c_str(), "/usb1") == VFS::MountResult::Done);
+    REQUIRE_FALSE(VFS::IsDead("/usb1/BLOCK.TXT"));
+    FeatherOS::Files::Table table{};
+    const uint64_t descriptor = FeatherOS::Files::Open(&table, "/usb1/BLOCK.TXT", User::OpenRead);
+    REQUIRE_FALSE(User::IsSyscallError(descriptor));
+    const uint64_t written =
+        FeatherOS::Files::Open(&table, "/usb1/OPEN.TXT", User::OpenWrite | User::OpenCreate);
+    REQUIRE_FALSE(User::IsSyscallError(written));
+    REQUIRE(FeatherOS::Files::Open(&table, "/usb1/MISSING.TXT", User::OpenRead) ==
+            User::SyscallErrorNotFound);
+
+    rig.Unplug();
+    const uint64_t calls = rig.driver.Calls();
+    REQUIRE(VFS::IsDead("/usb1/BLOCK.TXT"));
+    REQUIRE_FALSE(VFS::IsDead("/tmp"));
+    char buffer[8] = {};
+    REQUIRE(User::IsSyscallError(FeatherOS::Files::Read(&table, descriptor, buffer, sizeof(buffer))));
+    REQUIRE(FeatherOS::Files::Write(&table, written, buffer, sizeof(buffer)) ==
+            User::SyscallErrorInputOutput);
+    REQUIRE(FeatherOS::Files::MakeDirectory("/usb1/DIR") == User::SyscallErrorInputOutput);
+    REQUIRE(FeatherOS::Files::Open(&table, "/usb1/BLOCK.TXT", User::OpenRead) ==
+            User::SyscallErrorInputOutput);
+    REQUIRE(FeatherOS::Files::Open(&table, "/usb1/NEW.TXT", User::OpenWrite | User::OpenCreate) ==
+            User::SyscallErrorInputOutput);
+    User::FileStatus status = {};
+    REQUIRE(FeatherOS::Files::Stat("/usb1/BLOCK.TXT", &status) == User::SyscallErrorInputOutput);
+    User::DirectoryEntry entry = {};
+    REQUIRE(FeatherOS::Files::ReadDirectory("/usb1", 0, &entry) == User::SyscallErrorInputOutput);
+    REQUIRE(FeatherOS::Files::Remove("/usb1/BLOCK.TXT") == User::SyscallErrorInputOutput);
+    FeatherOS::Files::CloseAll(&table);
+    REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
+    REQUIRE(rig.driver.Calls() == calls);
+}
+
+TEST_CASE("USB T28 a disk unplugged during the volume scan logs nothing about its volumes")
+{
+    const size_t before = LogLines("no supported filesystem");
+    {
+        Rig rig(PartitionedImage());
+        rig.driver.on_read = [&rig] { rig.Unplug(); };
+        REQUIRE(Drivers::OpenDiskVolumes(*rig.disk) == 0);
+        RunWorker();
+        REQUIRE(Absent(Mount("fat16", rig.Source(1).c_str(), "/usb1")));
+    }
+    REQUIRE(LogLines("no supported filesystem") == before);
 }
 
 TEST_CASE("the worker forgets unmounted dead volumes and keeps a mounted one until umount")

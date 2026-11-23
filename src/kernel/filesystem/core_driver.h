@@ -73,7 +73,7 @@ public:
     // The disk is gone: from now on every operation fails with EIO before reaching the core and
     // the mount shows read-only. Any task, no lock.
     void MarkDead();
-    bool Dead() const;
+    bool Dead() const override;
     // For a slot about to serve another volume.
     void ClearDead();
     // Frees the core's filesystem with no device I/O and leaves the driver without a volume.

@@ -123,6 +123,11 @@ bool Driver::SyncsInBackground() const
     return false;
 }
 
+bool Driver::Dead() const
+{
+    return false;
+}
+
 uint64_t Driver::LastError()
 {
     return User::SyscallErrorFailed;

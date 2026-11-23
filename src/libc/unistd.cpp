@@ -385,7 +385,7 @@ char* realpath(const char* path, char* resolved)
 
 void sync()
 {
-    FeatherOS::User::SyncFilesystems();
+    Check<int>(FeatherOS::User::SyncFilesystems());
 }
 
 int rmdir(const char* path)

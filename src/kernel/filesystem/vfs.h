@@ -186,6 +186,9 @@ bool IsDirectory(const char* path);
 // True where nothing can be created or changed: /system and /proc, the bare names kernel code
 // uses for the initramfs, /dev apart from its devices, and read-only mounts.
 bool IsReadOnly(const char* path);
+// The volume at path lost its medium (an unplugged USB drive): its calls fail with EIO, which
+// a failed Open or Stat does not say.
+bool IsDead(const char* path);
 // "/" and the mount points, which can never be removed.
 bool IsMountPoint(const char* path);
 // Disk, /tmp and /etc files are tracked while open, so they are not removed or written twice at

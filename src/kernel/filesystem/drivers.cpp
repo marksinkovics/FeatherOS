@@ -624,7 +624,7 @@ bool OpenOtherVolume(Storage::Disk& disk, const FeatherDisk::Partition::Range& r
             ReleaseOtherSlot(index);
         }
     }
-    if (opened || report_failure)
+    if (opened || (report_failure && !disk.Gone()))
     {
         LogVolume(source, opened ? driver.TypeName() : nullptr,
                   range.sector_count * disk.SectorSize() / 1024);
@@ -758,7 +758,7 @@ size_t OpenDiskVolumes(Storage::Disk& disk)
     }
     std::array<FeatherDisk::Partition::Range, MaximumVolumes> ranges{};
     const size_t found = FeatherDisk::Partition::Find(disk, ranges);
-    if (found == 0)
+    if (found == 0 && !disk.Gone())
     {
         LogVolume(disk.Name(), nullptr, 0);
     }

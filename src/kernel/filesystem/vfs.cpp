@@ -93,6 +93,10 @@ bool MayChange(const Driver* driver, const char* inner)
     {
         return Refuse(User::SyscallErrorNotFound);
     }
+    if (driver->Dead())
+    {
+        return Refuse(User::SyscallErrorInputOutput);
+    }
     if (driver->IsMountedReadOnly())
     {
         return Refuse(User::SyscallErrorReadOnly);
@@ -834,6 +838,10 @@ bool Write(FileHandle* file, const void* buffer, uint64_t length, uint64_t* byte
     {
         return Refuse(User::SyscallErrorBadDescriptor);
     }
+    if (file->driver->Dead())
+    {
+        return Refuse(User::SyscallErrorInputOutput);
+    }
     if (file->driver->IsMountedReadOnly())
     {
         return Refuse(User::SyscallErrorReadOnly);
@@ -854,6 +862,10 @@ bool Truncate(FileHandle* file, uint64_t size)
     if (file == nullptr || !file->open || file->driver == nullptr)
     {
         return Refuse(User::SyscallErrorBadDescriptor);
+    }
+    if (file->driver->Dead())
+    {
+        return Refuse(User::SyscallErrorInputOutput);
     }
     if (file->driver->IsMountedReadOnly())
     {
@@ -947,6 +959,16 @@ bool IsReadOnly(const char* path)
     const Use use(path);
     return use.driver != nullptr &&
            (use.driver->IsMountedReadOnly() || use.driver->IsReadOnly(use.inner));
+}
+
+bool IsDead(const char* path)
+{
+    if (path == nullptr)
+    {
+        return false;
+    }
+    const Use use(path);
+    return use.driver != nullptr && use.driver->Dead();
 }
 
 bool IsMountPoint(const char* path)

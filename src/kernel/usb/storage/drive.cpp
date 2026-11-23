@@ -528,6 +528,7 @@ void Drive::Detached()
     environment_.Wake(this);
     if (disk != nullptr)
     {
+        LogLine("gone");
         FeatherOS::Storage::Remove(*disk);
     }
     Release();
