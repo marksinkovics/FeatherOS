@@ -90,3 +90,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | a54e4cc | M19 P2 s2a SCSI encoders/parsers, sense table, BOT Execute over a model pipe | M19-P2.md (opus) | sonnet | 0 | 2/2 (I7 by T10/T11, I8 by T11) | |
 | 1307480 | M19 P2 s2b mass-storage drive, driver, TaskPipe, worker, probe, USB_STORAGE_TEST | M19-P2.md (opus) | sonnet | 0 (resumed once after a session restart) | 3/3 (I5 by I5 pipe test, I14 by I14 test/T12/T22, I15 by I15 replug test) | fake device sent the CSW as data on a failed IN command (test fake only; fixed in s2c) |
 | a2ab688 | M19 P2 s2c port reset and re-enumeration, drive retries, media change | M19-P2.md (opus) | sonnet | 0 | 3/3 (I8 by T12, retries by T14, I18 by T24/T12/T15) | |
+| 70f5dea | M19 P2 s3a Storage::Disk, disk registry, virtio as vda, USB drive as sda | M19-P2.md (opus) | sonnet (high) | 0 | 4/4 (I16 x2 by T16, I19 by T16, chunking by T17) | |
