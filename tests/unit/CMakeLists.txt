@@ -66,8 +66,10 @@ add_executable(featheros_unit_tests
     kernel/process/futex_tests.cpp
     kernel/storage/disk_tests.cpp
     kernel/storage/model_disk.cpp
+    kernel/storage/fake_nvme.cpp
     kernel/storage/model_disk_tests.cpp
     kernel/storage/nvme_command_tests.cpp
+    kernel/storage/nvme_controller_tests.cpp
     kernel/storage/nvme_identify_tests.cpp
     kernel/storage/page_cache_tests.cpp
     kernel/storage/storage_rig_tests.cpp
@@ -187,7 +189,10 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/storage/core_block_device.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/disk.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/nvme/command.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/nvme/controller.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/nvme/identify.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/nvme/namespace.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/nvme/queue.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/page_cache.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/worker.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/write_policy.cpp"

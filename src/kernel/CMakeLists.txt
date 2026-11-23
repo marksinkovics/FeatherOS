@@ -137,7 +137,10 @@ set(SRC
     ${SRCROOT}/storage/disk.cpp
     ${SRCROOT}/storage/page_cache.cpp
     ${SRCROOT}/storage/nvme/command.cpp
+    ${SRCROOT}/storage/nvme/controller.cpp
     ${SRCROOT}/storage/nvme/identify.cpp
+    ${SRCROOT}/storage/nvme/namespace.cpp
+    ${SRCROOT}/storage/nvme/queue.cpp
     ${SRCROOT}/storage/pci_hardware.cpp
     ${SRCROOT}/storage/virtio_disk.cpp
     ${SRCROOT}/storage/write_policy.cpp
