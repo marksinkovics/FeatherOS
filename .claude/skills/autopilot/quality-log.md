@@ -93,7 +93,7 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 70f5dea | M19 P2 s3a Storage::Disk, disk registry, virtio as vda, USB drive as sda | M19-P2.md (opus) | sonnet (high) | 0 | 4/4 (I16 x2 by T16, I19 by T16, chunking by T17) | |
 | e777096 | M19 P2 s3b volumes per disk, dead volumes, core Discard, /proc/partitions | M19-P2.md (opus) | sonnet (high) | 0 | 4/4 (I20, I21 by T18; I22 by filesystem_tests boot numbering; Discard by T19) | |
 | 2d597d1 | M19 P2 s4a USB writes, host checks, write protect, FAT16 dirty bits, flush rules | M19-P2.md (opus) | sonnet (high) | 1 (tolerated poweroff panic in the case; DATA PROTECT on flush) | 4/4 (I24 by T20, I27 by T33, I13 by USB I13, I23 by T17) | |
-| 25d50a2 | M19 P2 s4b hot-unplug in QEMU, EIO on dead volumes, cp short writes, sync EIO | M19-P2.md (opus) | sonnet (high) | 0 | 2/2 (I21 by T28 round 4, I19 by T28 round 5) | |
+| 25d50a2 | M19 P2 s4b hot-unplug in QEMU, EIO on dead volumes, cp short writes, sync EIO | M19-P2.md (opus) | sonnet (high) | 0 | 2/2 (I21 by T28 round 4, I19 by T28 round 5) | hotplug checked the FAT copies of the drive pulled mid-copy (flaky under matrix load; fixed 6731359) |
 | 4e0bf26 | M19 P2 s4c eject: syscall 74, libc, /sbin/eject, all-or-nothing unmount | M19-P2.md (opus) | sonnet (high) | 0 | 2/2 (I25 by T21, I24 by T21) | |
 | 603df33 | M19 P2 s4d drives above 2 TiB, 4096-byte sectors, behind a hub | M19-P2.md (opus) | sonnet (high) | 0 | 2/2 (I12 by T8/T30, sector size by partition host test and T30) | |
 | 9af0e78 | M19 P2 s5a stick log partition, boot-from-stick harness, USB_STICK_TEST | M19-P2.md (opus) | sonnet (medium) | 0 | 1/1 (I26 by T32) | |
@@ -103,5 +103,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | be088fe | M16 B1 NVMe registers, SQE/CQE, PRPs, status map, identify parsing | M16.md (opus) | sonnet (high) | 0 | 3/3 (I13 x2 by T5, I11 by T6) | |
 | 5be2ce2 | M16 B2a NVMe queue pair, controller, namespaces, fake controller | M16.md (opus) | sonnet (high) | 0 | 3/3 (I1 by T12, I4 by T8, I6 by T7) | |
 | 5fb5794 | M16 B2b NVMe recovery ladder (CSTS, abort, reset, dead), T23 concurrency | M16.md (opus) | sonnet (high) | 0 | 3/3 (I3 by T9, I10 by T9, I14 by T23) | |
-| 99cb311 | M16 B3 NVMe probe, test=nvme, storage-controller image, NVME_TEST | M16.md (opus) | sonnet (high) | 0 | 1/2 (I16 by T24; I8 not caught in QEMU, covered by host T10) | |
+| 99cb311 | M16 B3 NVMe probe, test=nvme, storage-controller image, NVME_TEST | M16.md (opus) | sonnet (high) | 0 | 1/2 (I16 by T24; I8 not caught in QEMU, covered by host T10) | image built under build/<arch>, shared by nvme and nvme_without_usb running concurrently (fixed 6731359) |
 | 5391e59 | M16 B4 NVMe namespaces, storage-policy case, test=storage-policy, command counters | M16.md (opus) | sonnet (medium) | 0 | 2/2 (I1 by T27, I11 by T25) | |
