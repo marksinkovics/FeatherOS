@@ -136,6 +136,7 @@ set(SRC
     ${SRCROOT}/storage/core_block_device.cpp
     ${SRCROOT}/storage/disk.cpp
     ${SRCROOT}/storage/page_cache.cpp
+    ${SRCROOT}/storage/pci_hardware.cpp
     ${SRCROOT}/storage/virtio_disk.cpp
     ${SRCROOT}/storage/write_policy.cpp
     ${SRCROOT}/storage/worker.cpp

@@ -65,7 +65,10 @@ add_executable(featheros_unit_tests
     kernel/pci/pci_tests.cpp
     kernel/process/futex_tests.cpp
     kernel/storage/disk_tests.cpp
+    kernel/storage/model_disk.cpp
+    kernel/storage/model_disk_tests.cpp
     kernel/storage/page_cache_tests.cpp
+    kernel/storage/storage_rig_tests.cpp
     kernel/storage/write_policy_tests.cpp
     kernel/usb/bot_tests.cpp
     kernel/usb/bulk_tests.cpp
@@ -86,6 +89,7 @@ add_executable(featheros_unit_tests
     kernel/usb/service_tests.cpp
     kernel/usb/storage_driver_tests.cpp
     kernel/sync/volume_mutex_tests.cpp
+    kernel/support/physical_memory.cpp
     support/network_stubs.cpp
     support/page_cache_host.cpp
     support/scheduler_stubs.cpp
