@@ -102,3 +102,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | c2a80ad | M16 A3 ControllerHardware, PciHardware, test support (PhysicalMemory, ModelDisk, rigs) | M16.md (opus) | sonnet (high) | 0 | - (no invariant yet; ModelDisk power-loss mutation caught) | |
 | be088fe | M16 B1 NVMe registers, SQE/CQE, PRPs, status map, identify parsing | M16.md (opus) | sonnet (high) | 0 | 3/3 (I13 x2 by T5, I11 by T6) | |
 | 5be2ce2 | M16 B2a NVMe queue pair, controller, namespaces, fake controller | M16.md (opus) | sonnet (high) | 0 | 3/3 (I1 by T12, I4 by T8, I6 by T7) | |
+| 5fb5794 | M16 B2b NVMe recovery ladder (CSTS, abort, reset, dead), T23 concurrency | M16.md (opus) | sonnet (high) | 0 | 3/3 (I3 by T9, I10 by T9, I14 by T23) | |
