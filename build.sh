@@ -602,6 +602,9 @@ smoke_test() {
     if _is_on "${USB_STORAGE_HOTPLUG_TEST:-OFF}"; then
         smoke_args+=(--expect-usb-storage-hotplug)
     fi
+    if _is_on "${USB_STORAGE_LARGE_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb-storage-large)
+    fi
     if _is_on "${NODISK_TEST:-OFF}"; then
         smoke_args+=(--expect-nodisk)
     fi

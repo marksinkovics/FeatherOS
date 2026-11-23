@@ -46,7 +46,7 @@ constexpr std::uint8_t Extended = 0x05;
 constexpr std::uint8_t ExtendedLba = 0x0F;
 constexpr std::uint8_t ExtendedLinux = 0x85;
 
-std::vector<Range> Find(MemoryDevice& device, std::size_t capacity = 16)
+std::vector<Range> Find(FeatherDisk::BlockDevice& device, std::size_t capacity = 16)
 {
     std::vector<Range> ranges(capacity);
     ranges.resize(FeatherDisk::Partition::Find(device, ranges));
@@ -102,6 +102,83 @@ public:
 
 private:
     MemoryDevice& inner;
+};
+
+// A device of a huge size whose first sectors are a MemoryDevice and whose other written sectors
+// are kept in a map, for partitions past 2^32 sectors.
+class HighSectorDevice final : public FeatherDisk::BlockDevice
+{
+public:
+    HighSectorDevice(MemoryDevice& low_sectors, std::uint64_t sector_count)
+        : low(low_sectors), total(sector_count)
+    {
+    }
+
+    std::uint32_t SectorSize() const override
+    {
+        return low.SectorSize();
+    }
+    std::uint64_t SectorCount() const override
+    {
+        return total;
+    }
+    FeatherDisk::Status Read(std::uint64_t first_sector, std::span<std::uint8_t> buffer) override
+    {
+        const std::uint32_t sector_size = low.SectorSize();
+        for (std::size_t offset = 0; offset < buffer.size(); offset += sector_size)
+        {
+            const std::uint64_t sector = first_sector + offset / sector_size;
+            const std::span<std::uint8_t> part = buffer.subspan(offset, sector_size);
+            if (sector < low.SectorCount())
+            {
+                if (const FeatherDisk::Status status = low.Read(sector, part); !status)
+                {
+                    return status;
+                }
+                continue;
+            }
+            const auto found = high.find(sector);
+            if (found == high.end())
+            {
+                std::memset(part.data(), 0, part.size());
+            }
+            else
+            {
+                std::memcpy(part.data(), found->second.data(), part.size());
+            }
+        }
+        return {};
+    }
+    FeatherDisk::Status Write(std::uint64_t first_sector,
+                              std::span<const std::uint8_t> data) override
+    {
+        const std::uint32_t sector_size = low.SectorSize();
+        for (std::size_t offset = 0; offset < data.size(); offset += sector_size)
+        {
+            const std::uint64_t sector = first_sector + offset / sector_size;
+            const std::span<const std::uint8_t> part = data.subspan(offset, sector_size);
+            if (sector < low.SectorCount())
+            {
+                if (const FeatherDisk::Status status = low.Write(sector, part); !status)
+                {
+                    return status;
+                }
+                continue;
+            }
+            high[sector].assign(part.begin(), part.end());
+        }
+        return {};
+    }
+    FeatherDisk::Status Flush() override
+    {
+        return {};
+    }
+
+    std::map<std::uint64_t, std::vector<std::uint8_t>> high;
+
+private:
+    MemoryDevice& low;
+    std::uint64_t total;
 };
 
 // The container of most tests: sectors 1000 to 20999 of a 30000-sector disk.
@@ -256,6 +333,33 @@ TEST_CASE("4096-byte sectors hold the MBR, the GPT header and 32 entries each")
     MemoryDevice gpt_disk(4096, 1024);
     WriteGpt(gpt_disk, {{0, 8, 263}, {40, 300, 999}});
     REQUIRE(Find(gpt_disk) == std::vector<Range>{{8, 256}, {300, 700}});
+}
+
+TEST_CASE("a GPT partition past 2^32 sectors is listed whole and its volume reaches the sectors")
+{
+    constexpr std::uint64_t Sectors = 3ULL << 31;
+    constexpr std::uint64_t First = 5ULL << 30;
+    constexpr std::uint64_t Count = 65536;
+    for (const std::uint32_t sector_size : {512U, 4096U})
+    {
+        MemoryDevice low(sector_size, 64);
+        WriteGpt(low, {{0, First, First + Count - 1}});
+        HighSectorDevice disk(low, Sectors);
+        REQUIRE(Find(disk) == std::vector<Range>{{First, Count}});
+
+        FeatherDisk::Partition::Volume volume(disk, {First, Count, 1});
+        std::vector<std::uint8_t> first(sector_size, 0x5A);
+        std::vector<std::uint8_t> last(sector_size, 0xA5);
+        REQUIRE(volume.Write(0, first));
+        REQUIRE(volume.Write(Count - 1, last));
+        REQUIRE(disk.high.size() == 2);
+        REQUIRE(disk.high.contains(First));
+        REQUIRE(disk.high.contains(First + Count - 1));
+        std::vector<std::uint8_t> read(sector_size);
+        REQUIRE(volume.Read(Count - 1, read));
+        REQUIRE(read == last);
+        REQUIRE(!volume.Write(Count, first));
+    }
 }
 
 TEST_CASE("read errors and unsupported sector sizes find no partitions")

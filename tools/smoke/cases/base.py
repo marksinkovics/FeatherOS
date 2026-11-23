@@ -9,6 +9,11 @@ SHELL_TIMEOUT_SECONDS = 300
 INPUT_TIMEOUT_SECONDS = 60
 
 
+class SkipCase(Exception):
+    """Raised by Start when the host cannot run the case; the run prints the
+    message as SKIP and counts as passed."""
+
+
 class Case:
     """One mode of the smoke test. The harness calls Start before QEMU runs
     and Stop after it ends, even on failure; Check returns a failure message

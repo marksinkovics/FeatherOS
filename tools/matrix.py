@@ -39,6 +39,7 @@ TOGGLES = (
     "USB_HUB_TEST",
     "USB_STORAGE_TEST",
     "USB_STORAGE_HOTPLUG_TEST",
+    "USB_STORAGE_LARGE_TEST",
     "NODISK_TEST",
     "X86_UEFI",
 )
@@ -130,6 +131,7 @@ CASES = [
     *Both(64, "nodisk", NODISK_TEST=ON),
     *Both(66, "usb_storage", USB_STORAGE_TEST=ON),
     *Both(68, "usb_storage_hotplug", USB_STORAGE_HOTPLUG_TEST=ON),
+    *Both(70, "usb_storage_large", USB_STORAGE_LARGE_TEST=ON),
 ]
 
 
