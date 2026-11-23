@@ -180,6 +180,9 @@ public:
     virtual Result<Filesystem*> Mount(BlockDevice& volume, MountOptions options) = 0;
     // Syncs and then frees the filesystem. If syncing fails, it stays mounted.
     virtual Status Unmount(Filesystem& filesystem) = 0;
+    // Frees the filesystem without any device I/O, for a volume whose device is gone: what was not
+    // written is lost.
+    virtual void Discard(Filesystem& filesystem) = 0;
 
 protected:
     ~FilesystemType() = default;

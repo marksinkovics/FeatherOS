@@ -14,6 +14,7 @@
 #include "support/terminal_device.h"
 
 #include <algorithm>
+#include <string_view>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -974,7 +975,8 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
 {
     UseFakeProcesses();
     REQUIRE(List("/proc") ==
-            std::vector<std::string>{"meminfo", "stat", "mounts", "usb", "kmsg", "1/", "4/", "12/"});
+            std::vector<std::string>{"meminfo", "stat", "mounts", "usb", "kmsg", "partitions",
+                                                     "1/", "4/", "12/"});
     REQUIRE(List("/proc/4") == std::vector<std::string>{"status"});
     REQUIRE(ReadAll("/proc/12/status") ==
             "Name:\tshell\nState:\tR (running)\nPid:\t12\nPPid:\t1\nPgid:\t4\nPages:\t37\n"
@@ -1008,6 +1010,31 @@ TEST_CASE("/proc lists processes and generates their status and meminfo")
     REQUIRE(FeatherOS::Files::Read(&table, reader, text, 10) == 10);
     REQUIRE(std::string(text) == "Name:\tshel");
     REQUIRE(FeatherOS::Files::Close(&table, reader) == 0);
+}
+
+namespace
+{
+
+size_t FakePartitions(char* buffer, size_t capacity)
+{
+    constexpr std::string_view Text = "vda 1024 512 virtio\nvda1 512 512 ext4\n";
+    const size_t length = std::min(Text.size(), capacity - 1);
+    std::copy(Text.begin(), Text.begin() + static_cast<std::ptrdiff_t>(length), buffer);
+    buffer[length] = '\0';
+    return length;
+}
+
+} // namespace
+
+TEST_CASE("/proc/partitions is what the storage layer formats")
+{
+    FeatherOS::Procfs::SetSource({FakeProcessAt, FakeProcessStatus, FakeMemoryStatus,
+                                  FakeSystemStatus, FakeMountAt, nullptr, nullptr,
+                                  FakePartitions});
+    REQUIRE(ReadAll("/proc/partitions") == "vda 1024 512 virtio\nvda1 512 512 ext4\n");
+    FeatherOS::Procfs::SetSource({FakeProcessAt, FakeProcessStatus, FakeMemoryStatus,
+                                  FakeSystemStatus, FakeMountAt});
+    REQUIRE(ReadAll("/proc/partitions").empty());
 }
 
 TEST_CASE("/proc/kmsg is a snapshot of the kernel log that stats as empty")

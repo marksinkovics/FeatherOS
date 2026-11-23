@@ -176,6 +176,8 @@ protected:
     virtual bool ReopenForRemount(MountMode mode, bool* writable);
     // The medium was asked to take writes and no longer does.
     virtual bool RefusesWrites() const;
+    // For a medium that is gone: the mount shows read-only at once, from any task.
+    void ForceReadOnly();
 
 private:
     Properties properties;

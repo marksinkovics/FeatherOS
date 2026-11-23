@@ -158,6 +158,11 @@ void Driver::RefreshMode()
     }
 }
 
+void Driver::ForceReadOnly()
+{
+    mounted_read_only.store(true, std::memory_order_relaxed);
+}
+
 bool Driver::Remount(MountMode mode)
 {
     bool writable = false;

@@ -318,6 +318,25 @@ void DiskRegistry::SetRemovalHandler(RemovalHandler handler)
     handler_.store(handler, std::memory_order_release);
 }
 
+void DiskRegistry::SetScanHandler(ScanHandler handler)
+{
+    scan_handler_.store(handler, std::memory_order_release);
+}
+
+void DiskRegistry::SetVolumeLister(VolumeLister lister)
+{
+    lister_.store(lister, std::memory_order_release);
+}
+
+void DiskRegistry::Scan(Disk& disk)
+{
+    const ScanHandler handler = scan_handler_.load(std::memory_order_acquire);
+    if (handler != nullptr && !disk.Gone())
+    {
+        handler(disk);
+    }
+}
+
 size_t DiskRegistry::Count()
 {
     Sync::SpinLockGuard guard(lock_);
@@ -373,6 +392,7 @@ size_t DiskRegistry::FormatPartitions(char* out, size_t capacity)
             }
         }
     }
+    const VolumeLister lister = lister_.load(std::memory_order_acquire);
     size_t length = 0;
     for (Disk* disk : held)
     {
@@ -397,6 +417,10 @@ size_t DiskRegistry::FormatPartitions(char* out, size_t capacity)
                 std::copy(line, line + size, out + length);
                 length += size;
             }
+        }
+        if (lister != nullptr && length + 1 < capacity)
+        {
+            length += lister(*disk, out + length, capacity - length - 1);
         }
         disk->Release();
     }
@@ -440,6 +464,21 @@ Disk* BootDisk()
 void SetRemovalHandler(RemovalHandler handler)
 {
     global_registry.SetRemovalHandler(handler);
+}
+
+void SetScanHandler(ScanHandler handler)
+{
+    global_registry.SetScanHandler(handler);
+}
+
+void SetVolumeLister(VolumeLister lister)
+{
+    global_registry.SetVolumeLister(lister);
+}
+
+void Scan(Disk& disk)
+{
+    global_registry.Scan(disk);
 }
 
 bool FlushAll()

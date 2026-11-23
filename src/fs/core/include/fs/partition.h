@@ -34,7 +34,7 @@ Scheme Identify(BlockDevice& device);
 
 // Partitions that may hold a filesystem: the used entries of a GUID partition table, whatever
 // their type, when the MBR is protective (numbered by entry; no extended partitions are read),
-// otherwise the MBR's FAT16 (0x06, 0x0E) and Linux (0x83) entries. Callers probe each for the
+// otherwise the MBR's FAT16 (0x04, 0x06, 0x0E) and Linux (0x83) entries. Callers probe each for the
 // filesystem they want. A GPT whose header or entry array fails its CRC32 check yields none
 // rather than falling back to the MBR.
 //

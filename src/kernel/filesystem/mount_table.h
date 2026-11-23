@@ -24,6 +24,8 @@ enum class MountResult : uint8_t
     Failed,
     // A remount to read-write of what refuses writes.
     ReadOnly,
+    // A volume whose disk is gone.
+    NoDevice,
 };
 
 // Mount points are absolute paths without "." or "..", repeated '/' or a trailing '/', such as

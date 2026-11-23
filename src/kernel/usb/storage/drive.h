@@ -58,6 +58,9 @@ public:
     uint8_t MaxLun();
     // The worker's job: false when the drive was refused or went away.
     bool Probe();
+    // A counted reference to the registered disk, for the caller to Release; null before the
+    // probe registers it and after the drive is gone.
+    FeatherOS::Storage::Disk* AcquireDisk();
     // Manager task, from the driver's service hook; true asks for a port reset.
     bool Service(Device& device);
     // Manager task, from the driver's detach: drops every Device pointer and the binding's

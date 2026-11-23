@@ -37,6 +37,7 @@ using FeatherDisk::Tests::SetMbrEntry;
 using FeatherDisk::Tests::WriteEbr;
 using FeatherDisk::Tests::WriteGpt;
 
+constexpr std::uint8_t Fat16Small = 0x04;
 constexpr std::uint8_t Fat16 = 0x06;
 constexpr std::uint8_t Fat16Lba = 0x0E;
 constexpr std::uint8_t Linux = 0x83;
@@ -132,6 +133,14 @@ TEST_CASE("the MBR's FAT16 and Linux entries are found in table order and other 
     SetMbrEntry(device, 2, Linux, 2048, 1000);
     SetMbrEntry(device, 3, Fat16, 100, 50);
     REQUIRE(Find(device) == std::vector<Range>{{200, 100}, {2048, 1000}, {100, 50}});
+}
+
+TEST_CASE("the MBR's FAT16 type below 32 MiB, 0x04, is found")
+{
+    MemoryDevice device(512, 4096);
+    SetMbrEntry(device, 0, Fat16Small, 64, 100);
+    SetMbrEntry(device, 1, Fat16, 200, 100);
+    REQUIRE(Find(device) == std::vector<Range>{{64, 100}, {200, 100}});
 }
 
 TEST_CASE("a GUID partition table's Linux filesystem entries are found")

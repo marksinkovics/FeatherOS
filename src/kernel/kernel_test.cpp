@@ -2418,6 +2418,74 @@ void FillPattern(uint8_t* buffer, uint64_t length, uint32_t seed)
     }
 }
 
+constexpr const char UsbMountPoint[] = "/usb";
+
+// The worker opens a drive's volumes after the probe registers its disk.
+void WaitForUsbVolumes()
+{
+    for (uint32_t waited = 0; waited < UsbStorageWaitTicks; waited += UsbStorageSettleTicks)
+    {
+        const VFS::MountResult result = VFS::Mount("fat16", "sda1", UsbMountPoint);
+        if (result == VFS::MountResult::Done)
+        {
+            if (VFS::Unmount(UsbMountPoint) != VFS::MountResult::Done)
+            {
+                UsbStorageFail("unmounting sda1 before the test");
+            }
+            return;
+        }
+        if (result != VFS::MountResult::NotFound && result != VFS::MountResult::UnknownType)
+        {
+            UsbStorageFail("sda1 could not be mounted");
+        }
+        Scheduler::SleepUntil(Time::TickCount() + UsbStorageSettleTicks);
+    }
+    UsbStorageFail("the drive's volumes were not opened");
+}
+
+void CheckUsbVolumes()
+{
+    WaitForUsbVolumes();
+    char text[Procfs::MaximumPartitionsFileSize] = {};
+    VFS::FileHandle file;
+    uint64_t length = 0;
+    if (!VFS::Open("/proc/partitions", &file) || !VFS::Read(&file, text, sizeof(text) - 1, &length))
+    {
+        UsbStorageFail("reading /proc/partitions");
+    }
+    VFS::Close(&file);
+    text[length] = '\0';
+    for (const char* line = text; *line != '\0';)
+    {
+        char buffer[96];
+        size_t used = 0;
+        while (*line != '\0' && *line != '\n' && used + 1 < sizeof(buffer))
+        {
+            buffer[used++] = *line++;
+        }
+        buffer[used] = '\0';
+        line += *line == '\n' ? 1 : 0;
+        Serial::Write("KERN/USBSTORAGE: partitions: ");
+        Serial::Write(buffer);
+        Serial::Write("\n");
+    }
+    if (VFS::Mount("fat16", "/dev/sda1", UsbMountPoint) != VFS::MountResult::Done ||
+        !ReadsAs("/usb/USBFILE.TXT", "fat16 on a stick\n") ||
+        VFS::Unmount(UsbMountPoint) != VFS::MountResult::Done)
+    {
+        UsbStorageFail("the FAT16 volume sda1 did not mount and read");
+    }
+    Serial::Write("KERN/USBSTORAGE: sda1 mounted, read and unmounted\n");
+    if (VFS::Mount("ext2", "sda2", UsbMountPoint, Filesystem::MountMode::ReadOnly) !=
+            VFS::MountResult::Done ||
+        !ReadsAs("/usb/hello.txt", "Hello from the ext2 partition.\n") ||
+        VFS::Unmount(UsbMountPoint) != VFS::MountResult::Done)
+    {
+        UsbStorageFail("the ext2 volume sda2 did not mount and read");
+    }
+    Serial::Write("KERN/USBSTORAGE: sda2 mounted, read and unmounted\n");
+}
+
 uint64_t UsbStorageTask(void*)
 {
     Storage::Disk* disk = nullptr;
@@ -2434,6 +2502,7 @@ uint64_t UsbStorageTask(void*)
     {
         UsbStorageFail("no USB drive was probed");
     }
+    CheckUsbVolumes();
     const Storage::DiskInfo info = disk->Info();
     const Storage::DiskCounters before = disk->Counters();
     char line[96];

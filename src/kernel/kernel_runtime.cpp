@@ -9,6 +9,7 @@
 #include "kernel/console.h"
 #include "kernel/elf/elf_loader.h"
 #include "kernel/filesystem/initramfs.h"
+#include "kernel/filesystem/drivers.h"
 #include "kernel/filesystem/vfs.h"
 #include "kernel/framebuffer/framebuffer.h"
 #include "kernel/framebuffer/term.h"
@@ -290,6 +291,7 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
     {
         Panic("Disk registry initialization failed");
     }
+    Filesystem::Drivers::AttachStorage();
     if (!BlockDevice::Initialize(boot_info.platform_data, boot_info.hhdm_offset) ||
         BlockDevice::SectorCount() < 2 || !BlockDevice::RegisterVirtioDisk())
     {

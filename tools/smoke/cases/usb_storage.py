@@ -2,10 +2,12 @@ import os
 import re
 import tempfile
 
+from smoke import usb_image
 from smoke.cases.base import KernelTest
 
-IMAGE_MEBIBYTES = 4
-SECTOR_SIZE = 512
+SECTOR_SIZE = usb_image.disks.SECTOR_SIZE
+IMAGE_MEBIBYTES = usb_image.IMAGE_SECTORS * SECTOR_SIZE // (1024 * 1024)
+PARTITION_KIBIBYTES = usb_image.PARTITION_SECTORS * SECTOR_SIZE // 1024
 DEVICE_LINE = re.compile(
     r"KERN/I: USB 1-(\d+): super-speed 46f4:0001 \"QEMU USB HARDDRIVE\" "
     r"usb-storage"
@@ -16,12 +18,40 @@ STORAGE_LINE = re.compile(
     r"removable\r?$",
     re.MULTILINE,
 )
+VOLUME_LINES = (
+    re.compile(
+        rf"KERN/I: Storage: sda1: fat16, {PARTITION_KIBIBYTES} KiB\r?$",
+        re.MULTILINE,
+    ),
+    re.compile(
+        rf"KERN/I: Storage: sda2: ext2, {PARTITION_KIBIBYTES} KiB\r?$",
+        re.MULTILINE,
+    ),
+)
+PARTITION_LINES = (
+    re.compile(
+        r"KERN/USBSTORAGE: partitions: sda +\d+ 512 usb removable rw\r?$",
+        re.MULTILINE,
+    ),
+    re.compile(
+        rf"KERN/USBSTORAGE: partitions: sda1 +{PARTITION_KIBIBYTES} 512 "
+        r"fat16\r?$",
+        re.MULTILINE,
+    ),
+    re.compile(
+        rf"KERN/USBSTORAGE: partitions: sda2 +{PARTITION_KIBIBYTES} 512 "
+        r"ext2\r?$",
+        re.MULTILINE,
+    ),
+)
 SECTORS_LINE = (
     "KERN/USBSTORAGE: sda "
     f"{IMAGE_MEBIBYTES * 1024 * 1024 // SECTOR_SIZE} sectors of "
     f"{SECTOR_SIZE} bytes"
 )
 STEPS = (
+    "KERN/USBSTORAGE: sda1 mounted, read and unmounted",
+    "KERN/USBSTORAGE: sda2 mounted, read and unmounted",
     "KERN/USBSTORAGE: last sector written and read back",
     "KERN/USBSTORAGE: transfer past the end refused",
     "KERN/USBSTORAGE: multi-command transfer matched",
@@ -38,9 +68,12 @@ FAILURES = (
 
 class UsbStorage(KernelTest):
     """QEMU's usb-storage on its xHCI controller, backed by a scratch raw
-    image: the kernel enumerates it at SuperSpeed, binds usb-storage, probes
-    it through INQUIRY, TEST UNIT READY, READ CAPACITY and MODE SENSE, and
-    its test hook writes and reads a pattern at the last sector, checks that
+    image with an MBR, a FAT16 partition and an ext2 partition: the kernel
+    enumerates it at SuperSpeed, binds usb-storage, probes it through
+    INQUIRY, TEST UNIT READY, READ CAPACITY and MODE SENSE, and the storage
+    worker opens its volumes. The test hook lists /proc/partitions, mounts,
+    reads and unmounts sda1 and sda2, then writes and reads a pattern at the
+    last sector, checks that
     transfers past the end are refused, and writes and reads back 128 KiB
     that takes several commands, all through the registry's disk sda, whose
     counters it checks."""
@@ -62,8 +95,7 @@ class UsbStorage(KernelTest):
     def Start(self):
         self.directory = tempfile.TemporaryDirectory(prefix="fq-")
         self.image = os.path.join(self.directory.name, "usb.img")
-        with open(self.image, "wb") as image:
-            image.truncate(IMAGE_MEBIBYTES * 1024 * 1024)
+        usb_image.BuildImage(self.image)
 
     def Stop(self):
         if self.directory is not None:
@@ -88,6 +120,14 @@ class UsbStorage(KernelTest):
             return "the boot log has no line for the USB storage device"
         if STORAGE_LINE.search(output) is None:
             return "the probe did not log the drive's model and size"
+        for pattern in VOLUME_LINES:
+            if pattern.search(output) is None:
+                return f"the worker did not log a volume: {pattern.pattern}"
+        for pattern in PARTITION_LINES:
+            if pattern.search(output) is None:
+                return (
+                    f"/proc/partitions lacks a line matching {pattern.pattern}"
+                )
         if SECTORS_LINE not in output:
             return f"the test hook did not report '{SECTORS_LINE}'"
         position = 0

@@ -15,6 +15,8 @@ namespace FeatherOS::Procfs
 constexpr size_t MaximumFileSize = 1024;
 // "kmsg" is the kernel log's 64 KiB ring and a NUL; its size is reported as 0 like Linux's.
 constexpr size_t MaximumKernelLogFileSize = 64 * 1024 + 1;
+// "partitions" lists up to eight disks and 32 volumes.
+constexpr size_t MaximumPartitionsFileSize = 2048;
 constexpr uint32_t MaximumCpus = 16;
 
 struct ProcessStatus
@@ -55,10 +57,12 @@ struct SystemStatus
 
 struct MountStatus
 {
+    // VFS::DescribeMount points it at source_text, so the name outlives the mount.
     const char* source;
     const char* type;
     char point[User::MaximumPathLength];
     bool read_only;
+    char source_text[16];
 };
 
 // The kernel's process table, memory counters and mounts, which the host tests replace.
@@ -75,6 +79,8 @@ struct Source
     size_t (*usb_devices)(char* buffer, size_t capacity);
     // Writes a snapshot of the kernel log's newest whole lines that fit; returns its length.
     size_t (*kernel_log)(char* buffer, size_t capacity) = nullptr;
+    // Writes /proc/partitions' lines, whole ones only; returns the text's length.
+    size_t (*partitions)(char* buffer, size_t capacity) = nullptr;
 };
 
 void SetSource(const Source& source);

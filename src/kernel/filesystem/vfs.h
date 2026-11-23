@@ -12,6 +12,11 @@ namespace FeatherOS::Procfs
 struct MountStatus;
 } // namespace FeatherOS::Procfs
 
+namespace FeatherOS::Filesystem
+{
+class CoreDriver;
+} // namespace FeatherOS::Filesystem
+
 // One tree over the mounted filesystems. At boot, with their type and source: the initramfs's
 // "system" directory at "/system" (initramfs, initramfs), the RAM filesystem's two roots at "/etc"
 // (tmpfs, etc) and "/tmp" (tmpfs, tmp), devices at "/dev" (devfs, devfs), generated process files
@@ -104,9 +109,15 @@ bool LoadEtc();
 // Never overwrites a file the root's /etc has. Callable again after the root is mounted anew.
 // False, with /etc as it was, for a read-only root or when the copy failed.
 bool UseRootEtc();
+// Registers a disk volume under its type and source name for Mount, or drops the registration if
+// it holds no filesystem or has no name.
+void RegisterVolume(Filesystem::CoreDriver& driver);
+// Drops the volume's registration unless it is mounted; false, unchanged, if it is.
+bool UnregisterVolumeIfUnmounted(const Filesystem::Driver* driver);
 // point is an absolute path without ".", "..", repeated or trailing '/'. UnknownType for a type
-// nothing registered, NotFound for a source the type does not have, Busy if the point is taken or
-// the instance is mounted elsewhere, Failed if the driver could not reopen its volume. A driver
+// nothing registered, NotFound for a source the type does not have, NoDevice for a volume whose
+// disk is gone, Busy if the point is taken or the instance is mounted elsewhere, Failed if the
+// driver could not reopen its volume. A source may start with "/dev/". A driver
 // that is read-only or whose volume refuses writes mounts read-only whatever mode asks; callers
 // mount one at a time.
 MountResult Mount(const char* type, const char* source, const char* point,

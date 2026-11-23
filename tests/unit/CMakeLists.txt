@@ -34,6 +34,7 @@ add_subdirectory("${FEATHEROS_ROOT}/src/fs/core" "${CMAKE_CURRENT_BINARY_DIR}/fs
 
 add_executable(featheros_unit_tests
     kernel/filesystem/concurrency_tests.cpp
+    kernel/filesystem/disk_volumes_tests.cpp
     kernel/filesystem/filesystem_tests.cpp
     kernel/filesystem/mount_table_tests.cpp
     kernel/filesystem/path_tests.cpp

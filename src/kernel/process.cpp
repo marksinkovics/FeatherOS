@@ -23,6 +23,7 @@
 #include "kernel/random.h"
 #include "kernel/scheduler.h"
 #include "kernel/smp.h"
+#include "kernel/storage/disk.h"
 #include "kernel/storage/page_cache.h"
 #include "kernel/string/memory_functions.h"
 #include "kernel/sync/spinlock.h"
@@ -3670,7 +3671,8 @@ UserLayout RandomUserLayout()
 void Initialize(uint64_t offset)
 {
     Procfs::SetSource({ProcessAt, DescribeProcess, DescribeMemory, DescribeSystem,
-                       VFS::DescribeMount, Usb::FormatDevices, KernelLog::Snapshot});
+                       VFS::DescribeMount, Usb::FormatDevices, KernelLog::Snapshot,
+                       Storage::FormatPartitions});
     Terminals::SetProcessHooks({InterruptGroup, CallerInterrupted, SignalGroup, HangUpSession});
     hhdm_offset = offset;
     Sync::SpinLockGuard guard(process_lock);

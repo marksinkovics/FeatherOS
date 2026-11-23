@@ -1,6 +1,7 @@
 #include "driver.h"
 
 #include "kernel/klogger.h"
+#include "kernel/storage/disk.h"
 #include "kernel/storage/worker.h"
 #include "kernel/usb/storage/drive.h"
 #include "kernel/usb/text.h"
@@ -65,7 +66,14 @@ bool Matches(const InterfaceView& interface)
 void ProbeJob(void* context)
 {
     auto* drive = static_cast<Drive*>(context);
-    drive->Probe();
+    if (drive->Probe())
+    {
+        if (FeatherOS::Storage::Disk* disk = drive->AcquireDisk())
+        {
+            FeatherOS::Storage::Scan(*disk);
+            disk->Release();
+        }
+    }
     drive->Release();
 }
 

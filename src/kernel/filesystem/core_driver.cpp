@@ -129,6 +129,29 @@ bool CoreDriver::Fail(Error error)
     return false;
 }
 
+void CoreDriver::MarkDead()
+{
+    dead.store(true, std::memory_order_release);
+    ForceReadOnly();
+}
+
+bool CoreDriver::Dead() const
+{
+    return dead.load(std::memory_order_acquire);
+}
+
+void CoreDriver::ClearDead()
+{
+    dead.store(false, std::memory_order_release);
+}
+
+void CoreDriver::SetIdentity(const FeatherDisk::BlockDevice* disk,
+                             const FeatherDisk::Partition::Range& partition, const char* type_name)
+{
+    Sync::SpinLockGuard guard(identity_lock);
+    identity = {disk, partition, type_name};
+}
+
 uint64_t CoreDriver::LastError()
 {
     return last_error;
@@ -168,6 +191,7 @@ bool CoreDriver::OpenPartition(std::span<const CoreKind> kinds, FeatherDisk::Blo
             options = kind.options;
             name = kind.name;
             last_error = User::SyscallErrorFailed;
+            SetIdentity(&disk, partition, kind.name);
             return true;
         }
     }
@@ -177,6 +201,11 @@ bool CoreDriver::OpenPartition(std::span<const CoreKind> kinds, FeatherDisk::Blo
 
 bool CoreDriver::Forget()
 {
+    if (Dead())
+    {
+        Discard();
+        return true;
+    }
     if (filesystem != nullptr && !type->Unmount(*filesystem))
     {
         return false;
@@ -189,13 +218,46 @@ bool CoreDriver::Forget()
     partition_number = 0;
     options = {};
     core_read_only = true;
+    SetIdentity(nullptr, {}, nullptr);
     return true;
 }
 
-bool CoreDriver::Overlaps(const FeatherDisk::Partition::Range& other) const
+void CoreDriver::Discard()
 {
-    return type != nullptr && range.first_sector < other.first_sector + other.sector_count &&
-           other.first_sector < range.first_sector + range.sector_count;
+    if (filesystem != nullptr)
+    {
+        type->Discard(*filesystem);
+    }
+    cached.Detach();
+    filesystem = nullptr;
+    type = nullptr;
+    name = nullptr;
+    range = {};
+    partition_number = 0;
+    options = {};
+    core_read_only = true;
+    SetIdentity(nullptr, {}, nullptr);
+}
+
+bool CoreDriver::Overlaps(const FeatherDisk::BlockDevice& disk,
+                          const FeatherDisk::Partition::Range& other) const
+{
+    Sync::SpinLockGuard guard(identity_lock);
+    return identity.disk == &disk &&
+           identity.range.first_sector < other.first_sector + other.sector_count &&
+           other.first_sector < identity.range.first_sector + identity.range.sector_count;
+}
+
+bool CoreDriver::Summarize(const FeatherDisk::BlockDevice& disk, Summary* summary) const
+{
+    Sync::SpinLockGuard guard(identity_lock);
+    if (identity.disk != &disk)
+    {
+        return false;
+    }
+    *summary = {identity.range.first_sector, identity.range.sector_count, identity.range.number,
+                identity.type_name};
+    return true;
 }
 
 void CoreDriver::InvalidateCache()
@@ -210,7 +272,7 @@ const char* CoreDriver::TypeName() const
 
 bool CoreDriver::OpenForMount(MountMode mode, bool* writable)
 {
-    if (type == nullptr)
+    if (Dead() || type == nullptr)
     {
         return Fail(Error::Io);
     }
@@ -245,6 +307,10 @@ bool CoreDriver::OpenForMount(MountMode mode, bool* writable)
 
 bool CoreDriver::RefusesWrites() const
 {
+    if (Dead())
+    {
+        return true;
+    }
     if (filesystem == nullptr)
     {
         return type != nullptr;
@@ -254,7 +320,7 @@ bool CoreDriver::RefusesWrites() const
 
 bool CoreDriver::RemountReplays()
 {
-    if (!core_read_only || filesystem == nullptr)
+    if (Dead() || !core_read_only || filesystem == nullptr)
     {
         return false;
     }
@@ -265,6 +331,13 @@ bool CoreDriver::RemountReplays()
 
 bool CoreDriver::ReopenForRemount(MountMode mode, bool* writable)
 {
+    if (Dead())
+    {
+        *writable = false;
+        last_error = mode == MountMode::ReadWrite ? User::SyscallErrorReadOnly
+                                                  : User::SyscallErrorInputOutput;
+        return true;
+    }
     if (filesystem == nullptr)
     {
         if (!OpenForMount(mode, writable))
@@ -321,7 +394,7 @@ size_t CoreDriver::PartitionNumber() const
 
 bool CoreDriver::Statistics(FeatherDisk::VolumeStatistics* statistics)
 {
-    if (filesystem == nullptr || statistics == nullptr)
+    if (Dead() || filesystem == nullptr || statistics == nullptr)
     {
         return false;
     }
@@ -336,6 +409,11 @@ bool CoreDriver::Statistics(FeatherDisk::VolumeStatistics* statistics)
 
 Result<NodeId> CoreDriver::ResolveParent(const char* path, std::string_view* leaf)
 {
+    if (Dead())
+    {
+        Fail(Error::Io);
+        return std::unexpected(Error::Io);
+    }
     if (filesystem == nullptr)
     {
         return std::unexpected(FeatherDisk::Error::Io);
@@ -411,7 +489,7 @@ bool CoreDriver::Stat(const char* path, FileInfo* info)
 
 bool CoreDriver::StatNode(const Node& node, FileInfo* info)
 {
-    if (filesystem == nullptr)
+    if (Dead() || filesystem == nullptr)
     {
         return Fail(Error::Io);
     }
@@ -428,7 +506,7 @@ bool CoreDriver::Read(const Node& node, uint64_t size, uint64_t offset, void* bu
                       uint64_t length, uint64_t* bytes_read)
 {
     *bytes_read = 0;
-    if (filesystem == nullptr)
+    if (Dead() || filesystem == nullptr)
     {
         return Fail(Error::Io);
     }
@@ -477,7 +555,7 @@ bool CoreDriver::Write(Node* node, uint64_t* size, uint64_t offset, const void* 
                        uint64_t length, uint64_t* bytes_written)
 {
     *bytes_written = 0;
-    if (filesystem == nullptr)
+    if (Dead() || filesystem == nullptr)
     {
         return Fail(Error::Io);
     }
@@ -503,7 +581,7 @@ bool CoreDriver::Write(Node* node, uint64_t* size, uint64_t offset, const void* 
 
 bool CoreDriver::Truncate(Node* node, uint64_t* size, uint64_t new_size)
 {
-    if (filesystem == nullptr)
+    if (Dead() || filesystem == nullptr)
     {
         return Fail(Error::Io);
     }
@@ -652,7 +730,7 @@ bool CoreDriver::ReadDirectory(const char* path, uint32_t index, DirectoryEntry*
 
 bool CoreDriver::SupportsLinks(LinkKind kind)
 {
-    if (filesystem == nullptr)
+    if (Dead() || filesystem == nullptr)
     {
         return false;
     }
@@ -768,6 +846,10 @@ bool CoreDriver::Link(const char* from, const char* to)
 
 bool CoreDriver::Sync()
 {
+    if (Dead())
+    {
+        return Fail(Error::Io);
+    }
     if (filesystem == nullptr)
     {
         return true;
@@ -778,6 +860,11 @@ bool CoreDriver::Sync()
 
 bool CoreDriver::Detach()
 {
+    if (Dead())
+    {
+        Discard();
+        return true;
+    }
     const bool done = DetachCore();
     cached.Invalidate();
     return done;
@@ -807,7 +894,7 @@ bool CoreDriver::DetachCore()
 
 bool CoreDriver::SyncsInBackground() const
 {
-    return options.periodic_sync && filesystem != nullptr && !core_read_only &&
+    return !Dead() && options.periodic_sync && filesystem != nullptr && !core_read_only &&
            filesystem->GetCapabilities().writable;
 }
 

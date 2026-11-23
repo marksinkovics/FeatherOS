@@ -484,6 +484,16 @@ bool Drive::Usable()
     return !gone_ && !broken_;
 }
 
+FeatherOS::Storage::Disk* Drive::AcquireDisk()
+{
+    Sync::SpinLockGuard guard(state_lock_);
+    if (disk_ != nullptr)
+    {
+        disk_->Retain();
+    }
+    return disk_;
+}
+
 FeatherOS::Storage::Disk* Drive::TakeDisk()
 {
     Sync::SpinLockGuard guard(state_lock_);

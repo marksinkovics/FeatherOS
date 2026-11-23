@@ -626,6 +626,8 @@ uint64_t MountError(VFS::MountResult result)
         return User::SyscallErrorInputOutput;
     case VFS::MountResult::ReadOnly:
         return User::SyscallErrorReadOnly;
+    case VFS::MountResult::NoDevice:
+        return User::SyscallErrorNoDevice;
     case VFS::MountResult::Invalid:
         break;
     }

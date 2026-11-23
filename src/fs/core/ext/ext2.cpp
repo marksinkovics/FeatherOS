@@ -126,6 +126,7 @@ public:
     bool Probe(BlockDevice& volume) override;
     Result<Filesystem*> Mount(BlockDevice& volume, MountOptions options) override;
     Status Unmount(Filesystem& filesystem) override;
+    void Discard(Filesystem& filesystem) override;
 
 private:
     std::string_view variant;
@@ -1102,6 +1103,13 @@ Status ExtFilesystemType::Unmount(Filesystem& filesystem)
     ext2.~Ext2Filesystem();
     Host::Free(&ext2);
     return {};
+}
+
+void ExtFilesystemType::Discard(Filesystem& filesystem)
+{
+    auto& ext2 = static_cast<Ext2Filesystem&>(filesystem);
+    ext2.~Ext2Filesystem();
+    Host::Free(&ext2);
 }
 
 constinit ExtFilesystemType ext2_type("ext2");

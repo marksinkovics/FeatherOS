@@ -302,6 +302,7 @@ public:
     bool Probe(BlockDevice& volume) override;
     Result<Filesystem*> Mount(BlockDevice& volume, MountOptions options) override;
     Status Unmount(Filesystem& filesystem) override;
+    void Discard(Filesystem& filesystem) override;
 };
 
 Fat16Filesystem::Fat16Filesystem(BlockDevice& device, const Geometry& layout,
@@ -1833,6 +1834,13 @@ Status Fat16FilesystemType::Unmount(Filesystem& filesystem)
     fat.~Fat16Filesystem();
     Host::Free(&fat);
     return {};
+}
+
+void Fat16FilesystemType::Discard(Filesystem& filesystem)
+{
+    auto& fat = static_cast<Fat16Filesystem&>(filesystem);
+    fat.~Fat16Filesystem();
+    Host::Free(&fat);
 }
 
 constinit Fat16FilesystemType fat16_type;

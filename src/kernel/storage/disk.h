@@ -75,6 +75,9 @@ private:
 };
 
 using RemovalHandler = void (*)(Disk&);
+using ScanHandler = void (*)(Disk&);
+// Appends the whole lines of disk's volumes to out, at most capacity bytes; returns their length.
+using VolumeLister = size_t (*)(Disk& disk, char* out, size_t capacity);
 
 class DiskRegistry
 {
@@ -92,6 +95,11 @@ public:
     // The disk registered as vda, with no reference taken: virtio disks are never removed.
     Disk* BootDisk();
     void SetRemovalHandler(RemovalHandler handler);
+    void SetScanHandler(ScanHandler handler);
+    void SetVolumeLister(VolumeLister lister);
+    // What a disk's owner calls once it is registered and no command is in progress: the volumes
+    // on it are opened. A gone disk is skipped.
+    void Scan(Disk& disk);
     // Flushes every registered disk that is neither gone nor ejected; false when one failed.
     bool FlushAll();
     size_t Count();
@@ -107,6 +115,8 @@ private:
     Disk* disks_[MaxDisks] GUARDED_BY(lock_) = {};
     bool letters_[DiskNamePools][DiskLetters] GUARDED_BY(lock_) = {};
     std::atomic<RemovalHandler> handler_ = nullptr;
+    std::atomic<ScanHandler> scan_handler_ = nullptr;
+    std::atomic<VolumeLister> lister_ = nullptr;
 };
 
 DiskRegistry& Registry();
@@ -117,6 +127,9 @@ void Remove(Disk& disk);
 Disk* Acquire(const char* name);
 Disk* BootDisk();
 void SetRemovalHandler(RemovalHandler handler);
+void SetScanHandler(ScanHandler handler);
+void SetVolumeLister(VolumeLister lister);
+void Scan(Disk& disk);
 bool FlushAll();
 size_t DiskCount();
 size_t FormatPartitions(char* out, size_t capacity);

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <string_view>
 
 namespace FeatherOS::VFS
 {
@@ -49,8 +50,9 @@ constinit Sync::SpinLock mount_lock;
 constinit MountTable mounts GUARDED_BY(mount_lock);
 constinit TypeRegistry types GUARDED_BY(mount_lock);
 
-static_assert(TypeRegistry::Capacity >=
-              sizeof(BuiltIns) / sizeof(BuiltIns[0]) + Filesystem::Drivers::MaximumVolumes);
+static_assert(TypeRegistry::Capacity >= sizeof(BuiltIns) / sizeof(BuiltIns[0]) +
+                                            Filesystem::Drivers::MaximumVolumes +
+                                            Filesystem::Drivers::MaximumOtherVolumes);
 
 bool Refuse(uint64_t error)
 {
@@ -209,11 +211,17 @@ void RegisterVolumeLocked(Filesystem::CoreDriver& driver) REQUIRES(mount_lock)
 {
     types.Unregister(&driver);
     const char* const type = driver.TypeName();
-    const char* const source = Filesystem::Drivers::PartitionSource(driver.PartitionNumber());
+    const char* const source = Filesystem::Drivers::SourceOf(&driver);
     if (type != nullptr && source != nullptr)
     {
         types.Register(type, source, &driver);
     }
+}
+
+const char* StripDevicePrefix(const char* source)
+{
+    constexpr std::string_view Prefix = "/dev/";
+    return std::string_view(source).starts_with(Prefix) ? source + Prefix.size() : source;
 }
 
 MountResult FindMountableLocked(const char* type, const char* source, const char* point,
@@ -227,6 +235,11 @@ MountResult FindMountableLocked(const char* type, const char* source, const char
         return MountResult::NotFound;
     case TypeRegistry::Lookup::Found:
         break;
+    }
+    const Filesystem::CoreDriver* const volume = Filesystem::Drivers::VolumeOf(*driver);
+    if (volume != nullptr && volume->Dead())
+    {
+        return MountResult::NoDevice;
     }
     if (!MountTable::IsValidPoint(point))
     {
@@ -492,6 +505,23 @@ bool UseRootEtc()
     return done;
 }
 
+void RegisterVolume(Filesystem::CoreDriver& driver)
+{
+    Sync::SpinLockGuard guard(mount_lock);
+    RegisterVolumeLocked(driver);
+}
+
+bool UnregisterVolumeIfUnmounted(const Filesystem::Driver* driver)
+{
+    Sync::SpinLockGuard guard(mount_lock);
+    if (mounts.Holds(driver))
+    {
+        return false;
+    }
+    types.Unregister(driver);
+    return true;
+}
+
 MountResult Mount(const char* type, const char* source, const char* point,
                   Filesystem::MountMode mode)
 {
@@ -499,6 +529,7 @@ MountResult Mount(const char* type, const char* source, const char* point,
     {
         return MountResult::Invalid;
     }
+    source = StripDevicePrefix(source);
     Driver* driver = nullptr;
     {
         Sync::SpinLockGuard guard(mount_lock);
@@ -544,13 +575,16 @@ MountResult Unmount(const char* point)
         const Held held(driver);
         detached = driver->Detach();
     }
-    Sync::SpinLockGuard guard(mount_lock);
-    if (!detached)
     {
-        mounts.CancelUnmount(point);
-        return MountResult::Failed;
+        Sync::SpinLockGuard guard(mount_lock);
+        if (!detached)
+        {
+            mounts.CancelUnmount(point);
+            return MountResult::Failed;
+        }
+        mounts.FinishUnmount(point);
     }
-    mounts.FinishUnmount(point);
+    Filesystem::Drivers::Unmounted(driver);
     return MountResult::Done;
 }
 
@@ -637,11 +671,14 @@ bool DescribeMount(uint32_t index, Procfs::MountStatus* status)
     {
         return false;
     }
-    if (!types.Describe(driver, &status->type, &status->source))
+    const char* source = nullptr;
+    if (!types.Describe(driver, &status->type, &source))
     {
         status->type = "unknown";
-        status->source = "none";
+        source = "none";
     }
+    CopyText(status->source_text, sizeof(status->source_text), source);
+    status->source = status->source_text;
     CopyText(status->point, sizeof(status->point), point);
     status->read_only = driver->IsMountedReadOnly();
     return true;
