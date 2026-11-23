@@ -20,7 +20,18 @@ uint32_t PoolOf(DiskKind kind)
 
 const char* KindName(DiskKind kind)
 {
-    return kind == DiskKind::Virtio ? "virtio" : "usb";
+    switch (kind)
+    {
+    case DiskKind::Virtio:
+        return "virtio";
+    case DiskKind::Usb:
+        return "usb";
+    case DiskKind::Nvme:
+        return "nvme";
+    case DiskKind::Ahci:
+        return "ahci";
+    }
+    return "";
 }
 
 size_t Length(const char* text)
@@ -63,6 +74,10 @@ DiskInfo Disk::Info() const
 {
     DiskInfo info = driver_.Info();
     info.read_only = info.read_only || read_only_.load(std::memory_order_relaxed);
+    if (info.read_only && info.read_only_reason == ReadOnlyReason::None)
+    {
+        info.read_only_reason = ReadOnlyReason::Medium;
+    }
     return info;
 }
 
@@ -184,6 +199,10 @@ FeatherDisk::Status Disk::Flush()
     {
         return std::unexpected(FeatherDisk::Error::Io);
     }
+    if (Info().read_only)
+    {
+        return {};
+    }
     flushes_.fetch_add(1, std::memory_order_relaxed);
     return driver_.Flush();
 }
@@ -217,7 +236,14 @@ bool DiskRegistry::Initialize()
 Disk* DiskRegistry::Register(DiskDriver& driver)
 {
     const DiskInfo info = driver.Info();
+    const bool nvme = info.kind == DiskKind::Nvme;
     const uint32_t pool = PoolOf(info.kind);
+    char nvme_name[MaxDiskName] = {};
+    if (nvme && !String::FormatTo(nvme_name, sizeof(nvme_name), "nvme{}n{}",
+                                  static_cast<uint32_t>(info.controller_index), info.namespace_id))
+    {
+        return nullptr;
+    }
     auto* disk = new Disk(*this, driver);
     disk->read_only_.store(info.read_only, std::memory_order_relaxed);
     {
@@ -231,21 +257,53 @@ Disk* DiskRegistry::Register(DiskDriver& driver)
             }
         }
         uint32_t letter = DiskLetters;
-        for (uint32_t index = 0; index < DiskLetters && letter == DiskLetters; ++index)
+        uint32_t nvme_slot = MaxDisks;
+        bool duplicate = false;
+        if (nvme)
         {
-            if (!letters_[pool][index])
+            for (uint32_t index = 0; index < MaxDisks; ++index)
             {
-                letter = index;
+                const NvmeName& entry = nvme_names_[index];
+                if (!entry.used)
+                {
+                    nvme_slot = std::min(nvme_slot, index);
+                }
+                else if (entry.controller_index == info.controller_index &&
+                         entry.namespace_id == info.namespace_id)
+                {
+                    duplicate = true;
+                }
             }
         }
-        if (initialized_ && slot != MaxDisks && letter != DiskLetters && !driver.Gone())
+        else
         {
-            letters_[pool][letter] = true;
-            disk->pool_ = static_cast<uint8_t>(pool);
-            disk->letter_ = static_cast<uint8_t>(letter);
-            disk->name_[0] = PoolPrefixes[pool][0];
-            disk->name_[1] = PoolPrefixes[pool][1];
-            disk->name_[2] = static_cast<char>('a' + letter);
+            for (uint32_t index = 0; index < DiskLetters && letter == DiskLetters; ++index)
+            {
+                if (!letters_[pool][index])
+                {
+                    letter = index;
+                }
+            }
+        }
+        const bool named = nvme ? nvme_slot != MaxDisks && !duplicate : letter != DiskLetters;
+        if (initialized_ && slot != MaxDisks && named && !driver.Gone())
+        {
+            if (nvme)
+            {
+                nvme_names_[nvme_slot] = {true, info.controller_index, info.namespace_id};
+                disk->nvme_slot_ = static_cast<uint8_t>(nvme_slot);
+                std::copy(nvme_name, nvme_name + MaxDiskName, disk->name_);
+            }
+            else
+            {
+                letters_[pool][letter] = true;
+                disk->lettered_ = true;
+                disk->pool_ = static_cast<uint8_t>(pool);
+                disk->letter_ = static_cast<uint8_t>(letter);
+                disk->name_[0] = PoolPrefixes[pool][0];
+                disk->name_[1] = PoolPrefixes[pool][1];
+                disk->name_[2] = static_cast<char>('a' + letter);
+            }
             disks_[slot] = disk;
             return disk;
         }
@@ -285,7 +343,14 @@ void DiskRegistry::Free(Disk& disk)
 {
     {
         Sync::SpinLockGuard guard(lock_);
-        letters_[disk.pool_][disk.letter_] = false;
+        if (disk.lettered_)
+        {
+            letters_[disk.pool_][disk.letter_] = false;
+        }
+        else
+        {
+            nvme_names_[disk.nvme_slot_].used = false;
+        }
     }
     disk.driver_.Release();
     delete &disk;

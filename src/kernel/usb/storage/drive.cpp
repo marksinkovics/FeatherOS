@@ -789,6 +789,8 @@ bool Drive::ProbeLocked()
     info.max_transfer_bytes = Scsi::MaxTransferBytes;
     info.removable = inquiry.removable;
     info.read_only = write_protected;
+    info.read_only_reason = write_protected ? FeatherOS::Storage::ReadOnlyReason::Medium
+                                            : FeatherOS::Storage::ReadOnlyReason::None;
     Copy(info.location, sizeof(info.location), location_);
     {
         Text text(info.model, sizeof(info.model));
@@ -887,6 +889,7 @@ FeatherDisk::Status Drive::Move(uint64_t sector, uint32_t count, uint8_t* in, co
         {
             Sync::SpinLockGuard guard(state_lock_);
             info_.read_only = true;
+            info_.read_only_reason = FeatherOS::Storage::ReadOnlyReason::Medium;
             return std::unexpected(FeatherDisk::Error::ReadOnly);
         }
         if (disposition != Disposition::Good)
@@ -939,6 +942,7 @@ FeatherDisk::Status Drive::Flush()
     {
         Sync::SpinLockGuard state(state_lock_);
         info_.read_only = true;
+        info_.read_only_reason = FeatherOS::Storage::ReadOnlyReason::Medium;
         return {};
     }
     if (disposition != Disposition::Good)

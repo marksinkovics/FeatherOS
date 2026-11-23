@@ -13,7 +13,7 @@
 namespace FeatherOS::Storage
 {
 
-constexpr uint32_t MaxDisks = 8;
+constexpr uint32_t MaxDisks = 16;
 constexpr uint32_t MaxDiskName = 16;
 constexpr uint32_t DiskLetters = 26;
 constexpr uint32_t DiskNamePools = 2;
@@ -27,6 +27,13 @@ struct DiskCounters
 };
 
 class DiskRegistry;
+
+struct NvmeName
+{
+    bool used;
+    uint16_t controller_index;
+    uint32_t namespace_id;
+};
 
 // A registered disk as the filesystem core sees it. Counted by the registry until Remove, by each
 // open volume and by each Acquire; the last Release frees it and drops the driver's reference.
@@ -74,6 +81,8 @@ private:
     char name_[MaxDiskName] = {};
     uint8_t pool_ = 0;
     uint8_t letter_ = 0;
+    bool lettered_ = false;
+    uint8_t nvme_slot_ = 0;
 };
 
 using RemovalHandler = void (*)(Disk&);
@@ -116,6 +125,7 @@ private:
     bool initialized_ GUARDED_BY(lock_) = false;
     Disk* disks_[MaxDisks] GUARDED_BY(lock_) = {};
     bool letters_[DiskNamePools][DiskLetters] GUARDED_BY(lock_) = {};
+    NvmeName nvme_names_[MaxDisks] GUARDED_BY(lock_) = {};
     std::atomic<RemovalHandler> handler_ = nullptr;
     std::atomic<ScanHandler> scan_handler_ = nullptr;
     std::atomic<VolumeLister> lister_ = nullptr;
