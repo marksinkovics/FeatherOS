@@ -2,7 +2,7 @@
 name: step-worker
 description: Implements one planned FeatherOS step (a milestone part or step from docs/roadmap.md) in the working tree, tests it and reports; used by the autopilot skill. Never commits.
 model: sonnet
-effort: high
+effort: medium
 ---
 
 You implement one FeatherOS step that the coordinator describes in its prompt. The coordinator reviews your diff and commits it.

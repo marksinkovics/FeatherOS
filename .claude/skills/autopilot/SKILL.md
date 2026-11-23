@@ -25,9 +25,9 @@ You are the coordinator. Subagents write the code; you choose the work, review i
 - A part that is too big for one subagent (a rough guide: more than about 15 files or more than one subsystem) gets split into steps. Read enough of the code to split it sensibly, or use the `Plan` agent for a large part. Write the step list into that part's roadmap text (`steps: 1 ..., 2 ..., 3 ...`) so it survives a cleared conversation, and include that edit in the first step's commit.
 - **Usage budget.** The user keeps hitting the 5-hour limit. Most of the cost is subagents re-reading code from scratch and running the full test suite again and again (4b: ~566k tokens; 4c with these rules: ~416k). Follow the rules marked *budget* below.
 - Pick the model and effort per step. Sonnet is the default.
-  - `sonnet` at `medium`: mechanical work (renames, moving code, docs, tests for existing behaviour, small programs, tooling, test-disk and harness changes).
-  - `sonnet` at `high` (the agent's default): everything else, including read-only filesystem code, parsers, and wiring an existing core feature into the kernel.
-  - Risky steps (code that writes on-disk structures, crash ordering, concurrency, memory management or ABI changes): designed on Opus (section 1b), implemented on `sonnet` at `high`.
+  - `sonnet` at `medium` (the agent's default): mechanical work (renames, moving code, docs, tests for existing behaviour, small programs, tooling, test-disk and harness changes).
+  - `sonnet` at `high`, passed as `effort: "high"`: everything else, including read-only filesystem code, parsers, and wiring an existing core feature into the kernel.
+  - Risky steps (code that writes on-disk structures, crash ordering, concurrency, memory management or ABI changes): designed on Opus (section 1b), implemented on `sonnet` at `high` (pass `effort: "high"`).
   - Never `xhigh`. If a Sonnet step fails both fix rounds, retry it once on Opus before stopping.
 
 ## 1b. Design (risky steps only)
@@ -44,7 +44,7 @@ You are the coordinator. Subagents write the code; you choose the work, review i
 
 ## 2. Spawn the subagent
 
-`Agent` with `subagent_type: "step-worker"` (`.claude/agents/step-worker.md`: Sonnet at `high`, with the standing rules, test cadence, docs and report format). Pass `model`/`effort` only to move off that default. No worktree isolation. The prompt has to stand on its own, because the agent doesn't see this conversation, but leave out what the agent file already says. Include:
+`Agent` with `subagent_type: "step-worker"` (`.claude/agents/step-worker.md`: Sonnet at `medium`, with the standing rules, test cadence, docs and report format). Pass `model`/`effort` only to move off that default. No worktree isolation. The prompt has to stand on its own, because the agent doesn't see this conversation, but leave out what the agent file already says. Include:
 
 1. **Task:** the milestone, part and step, quoted from the roadmap, plus the decisions already made in earlier steps (files and types it should build on).
 2. **Where to read:** the roadmap line range for this part and the earlier summaries it builds on (`grep -n` for them), so the agent doesn't read the whole milestone section.
