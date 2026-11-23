@@ -106,3 +106,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 99cb311 | M16 B3 NVMe probe, test=nvme, storage-controller image, NVME_TEST | M16.md (opus) | sonnet (high) | 0 | 1/2 (I16 by T24; I8 not caught in QEMU, covered by host T10) | image built under build/<arch>, shared by nvme and nvme_without_usb running concurrently (fixed 6731359) |
 | 5391e59 | M16 B4 NVMe namespaces, storage-policy case, test=storage-policy, command counters | M16.md (opus) | sonnet (medium) | 0 | 2/2 (I1 by T27, I11 by T25) | |
 | 62fea08 | M16 C1 AHCI registers, FIS, PRD, signatures, ATA identify | M16.md (opus) | sonnet (high) | 0 | 2/2 (I12 by T16, I13 PRD by T15) | |
+| 01f22c8 | M16 C2a AHCI HBA, ports, I/O, flush, policy, standby, fake HBA | M16.md (opus) | sonnet (high) | 0 | 3/3 (I6 by T17, I17 by T21, I1 driver half by T22) | |
