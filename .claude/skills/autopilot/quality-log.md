@@ -88,4 +88,5 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 7a08c5a | M19 P2 s1a xHCI bulk TDs, residue, CancelEndpoint, ClearHalt | M19-P2.md (opus) | sonnet | 0 | 3/3 (I1 by T1, I4 by T6, I5 by T7) | |
 | aaf571c | M19 P2 s1b driver service hook, stalls_are_protocol, device work dispatch | M19-P2.md (opus) | sonnet | 0 | 3/4 (stall count by T23, hub branch by [hub], generation by [service]; detaching check not testable single-threaded) | |
 | a54e4cc | M19 P2 s2a SCSI encoders/parsers, sense table, BOT Execute over a model pipe | M19-P2.md (opus) | sonnet | 0 | 2/2 (I7 by T10/T11, I8 by T11) | |
-| 1307480 | M19 P2 s2b mass-storage drive, driver, TaskPipe, worker, probe, USB_STORAGE_TEST | M19-P2.md (opus) | sonnet | 0 (resumed once after a session restart) | 3/3 (I5 by I5 pipe test, I14 by I14 test/T12/T22, I15 by I15 replug test) | |
+| 1307480 | M19 P2 s2b mass-storage drive, driver, TaskPipe, worker, probe, USB_STORAGE_TEST | M19-P2.md (opus) | sonnet | 0 (resumed once after a session restart) | 3/3 (I5 by I5 pipe test, I14 by I14 test/T12/T22, I15 by I15 replug test) | fake device sent the CSW as data on a failed IN command (test fake only; fixed in s2c) |
+| a2ab688 | M19 P2 s2c port reset and re-enumeration, drive retries, media change | M19-P2.md (opus) | sonnet | 0 | 3/3 (I8 by T12, retries by T14, I18 by T24/T12/T15) | |
