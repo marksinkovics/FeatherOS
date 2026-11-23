@@ -78,7 +78,7 @@ set(SRC
     ${SRCROOT}/usb/storage/bot.cpp
     ${SRCROOT}/usb/storage/drive.cpp
     ${SRCROOT}/usb/storage/driver.cpp
-    ${SRCROOT}/usb/storage/kernel_environment.cpp
+    ${SRCROOT}/storage/kernel_environment.cpp
     ${SRCROOT}/usb/storage/scsi.cpp
     ${SRCROOT}/usb/text.cpp
     ${SRCROOT}/usb/usb.cpp
@@ -132,10 +132,12 @@ set(SRC
     ${SRCROOT}/filesystem/path.cpp
     ${SRCROOT}/filesystem/path_walk.cpp
     ${SRCROOT}/storage/cache_sizing.cpp
+    ${SRCROOT}/storage/controllers.cpp
     ${SRCROOT}/storage/core_block_device.cpp
     ${SRCROOT}/storage/disk.cpp
     ${SRCROOT}/storage/page_cache.cpp
     ${SRCROOT}/storage/virtio_disk.cpp
+    ${SRCROOT}/storage/write_policy.cpp
     ${SRCROOT}/storage/worker.cpp
     ${SRCROOT}/network/address.cpp
     ${SRCROOT}/network/arp.cpp

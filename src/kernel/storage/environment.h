@@ -1,9 +1,9 @@
-#ifndef FEATHEROS_USB_STORAGE_ENVIRONMENT_H
-#define FEATHEROS_USB_STORAGE_ENVIRONMENT_H
+#ifndef FEATHEROS_STORAGE_ENVIRONMENT_H
+#define FEATHEROS_STORAGE_ENVIRONMENT_H
 
 #include <stdint.h>
 
-namespace FeatherOS::Usb::Storage
+namespace FeatherOS::Storage
 {
 
 class Environment
@@ -24,6 +24,6 @@ protected:
     Environment& operator=(const Environment&) = default;
 };
 
-} // namespace FeatherOS::Usb::Storage
+} // namespace FeatherOS::Storage
 
 #endif

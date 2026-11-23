@@ -70,6 +70,19 @@ Ps2Mode ParsePs2(const char* command_line);
 void SelectPs2(Ps2Mode mode);
 Ps2Mode SelectedPs2();
 
+enum class StorageMode : uint8_t
+{
+    Auto,
+    ReadOnly,
+    ReadWrite,
+};
+
+// storage=ro makes every NVMe and AHCI disk read-only, storage=rw writable; without either only
+// QEMU's controllers are writable. The last storage= wins and any other value counts as absent.
+StorageMode ParseStorage(const char* command_line);
+void SelectStorage(StorageMode mode);
+StorageMode SelectedStorage();
+
 } // namespace FeatherOS::BootOptions
 
 #endif

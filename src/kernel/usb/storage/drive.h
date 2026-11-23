@@ -9,7 +9,7 @@
 #include "kernel/usb/device.h"
 #include "kernel/usb/host_controller.h"
 #include "kernel/usb/storage/bot.h"
-#include "kernel/usb/storage/environment.h"
+#include "kernel/storage/environment.h"
 #include "kernel/usb/storage/scsi.h"
 #include "user/thread_safety.h"
 
@@ -19,6 +19,8 @@
 
 namespace FeatherOS::Usb::Storage
 {
+
+using Environment = FeatherOS::Storage::Environment;
 
 constexpr uint32_t RecoveryTimeoutMs = 30000;
 constexpr uint32_t SettleTimeoutMs = 2000;

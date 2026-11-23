@@ -8,7 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-namespace FeatherOS::Usb::Storage
+namespace FeatherOS::Storage
 {
 namespace
 {
@@ -74,4 +74,4 @@ Environment& KernelEnvironment()
     return kernel;
 }
 
-} // namespace FeatherOS::Usb::Storage
+} // namespace FeatherOS::Storage

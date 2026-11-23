@@ -32,6 +32,7 @@
 #include "kernel/smp.h"
 #include "kernel/string/format.h"
 #include "kernel/storage/block_device.h"
+#include "kernel/storage/controllers.h"
 #include "kernel/storage/disk.h"
 #include "kernel/storage/page_cache.h"
 #include "kernel/storage/virtio_disk.h"
@@ -504,6 +505,7 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
         KernelTest::RunPciTests(boot_info.platform_data);
     }
 #endif
+    Storage::StartControllers(boot_info.platform_data);
     Usb::Initialize(boot_info.platform_data);
 #if defined(FEATHEROS_KERNEL_TESTS)
     if (KernelTest::Selected(KernelTest::Mode::UsbStorage))

@@ -19,10 +19,14 @@ constexpr size_t UsbHidOptionLength = sizeof(UsbHidOption) - 1;
 constexpr char Ps2Option[] = "ps2=";
 constexpr size_t Ps2OptionLength = sizeof(Ps2Option) - 1;
 
+constexpr char StorageOption[] = "storage=";
+constexpr size_t StorageOptionLength = sizeof(StorageOption) - 1;
+
 constinit Root selected_root = {RootRequest::Absent, 0};
 constinit UsbMode selected_usb = UsbMode::Default;
 constinit UsbHidMode selected_usb_hid = UsbHidMode::Default;
 constinit Ps2Mode selected_ps2 = Ps2Mode::Default;
+constinit StorageMode selected_storage = StorageMode::Auto;
 
 bool LastValue(const char* command_line, const char* option, size_t option_length,
                const char** value, size_t* value_length)
@@ -227,6 +231,34 @@ void SelectPs2(Ps2Mode mode)
 Ps2Mode SelectedPs2()
 {
     return selected_ps2;
+}
+
+StorageMode ParseStorage(const char* command_line)
+{
+    const char* value = nullptr;
+    size_t length = 0;
+    if (LastValue(command_line, StorageOption, StorageOptionLength, &value, &length))
+    {
+        if (MatchesWord(value, length, "ro"))
+        {
+            return StorageMode::ReadOnly;
+        }
+        if (MatchesWord(value, length, "rw"))
+        {
+            return StorageMode::ReadWrite;
+        }
+    }
+    return StorageMode::Auto;
+}
+
+void SelectStorage(StorageMode mode)
+{
+    selected_storage = mode;
+}
+
+StorageMode SelectedStorage()
+{
+    return selected_storage;
 }
 
 } // namespace FeatherOS::BootOptions

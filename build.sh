@@ -35,6 +35,7 @@ _usage() {
     printf 'KERNEL_USB=off|poll puts usb=off or usb=poll on the kernel command line (no USB, or controller events by timer).\n'
     printf 'KERNEL_USBHID=report puts usbhid=report on it (boot keyboards and mice through their report descriptors);\n'
     printf 'KERNEL_PS2=off puts ps2=off on it (no PS/2 or virtio keyboard).\n'
+    printf 'KERNEL_STORAGE=ro|rw puts storage=ro or storage=rw on it (NVMe and AHCI disks read-only, or writable on real hardware too).\n'
     printf 'LIMINE_TIMEOUT=N makes the ISO'"'"'s Limine wait N seconds at its menu (default 0, which hides it).\n'
     printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, unit-test-tsan,\n'
     printf '         benchmark, debug, all, clean, fullclean\n'
@@ -133,6 +134,9 @@ _kernel_command_line() {
     fi
     if [ -n "${KERNEL_PS2:-}" ]; then
         words+=("ps2=$KERNEL_PS2")
+    fi
+    if [ -n "${KERNEL_STORAGE:-}" ]; then
+        words+=("storage=$KERNEL_STORAGE")
     fi
     if [ -n "$test_mode" ]; then
         words+=("test=$test_mode")

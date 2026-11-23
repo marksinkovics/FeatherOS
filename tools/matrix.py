@@ -151,6 +151,7 @@ def Environment(arch, build_type, settings=None, out_dir=None):
         "KERNEL_USB",
         "KERNEL_USBHID",
         "KERNEL_PS2",
+        "KERNEL_STORAGE",
     ):
         environment.pop(key, None)
     environment.update(settings or {})

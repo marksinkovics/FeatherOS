@@ -66,6 +66,7 @@ add_executable(featheros_unit_tests
     kernel/process/futex_tests.cpp
     kernel/storage/disk_tests.cpp
     kernel/storage/page_cache_tests.cpp
+    kernel/storage/write_policy_tests.cpp
     kernel/usb/bot_tests.cpp
     kernel/usb/bulk_tests.cpp
     kernel/usb/context_tests.cpp
@@ -181,6 +182,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/storage/disk.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/page_cache.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/worker.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/write_policy.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/devices.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/procfs.cpp"

@@ -115,3 +115,27 @@ TEST_CASE("usbhid=report and ps2=off")
     REQUIRE(FeatherOS::BootOptions::SelectedPs2() == Ps2Mode::Off);
     FeatherOS::BootOptions::SelectPs2(Ps2Mode::Default);
 }
+
+TEST_CASE("storage= selects the NVMe and AHCI write mode")
+{
+    using FeatherOS::BootOptions::ParseStorage;
+    using FeatherOS::BootOptions::StorageMode;
+    REQUIRE(ParseStorage(nullptr) == StorageMode::Auto);
+    REQUIRE(ParseStorage("") == StorageMode::Auto);
+    REQUIRE(ParseStorage("quiet test=storage") == StorageMode::Auto);
+    REQUIRE(ParseStorage("storage=ro") == StorageMode::ReadOnly);
+    REQUIRE(ParseStorage("storage=rw") == StorageMode::ReadWrite);
+    REQUIRE(ParseStorage("root=vda3 storage=rw test=pci") == StorageMode::ReadWrite);
+    // The last one wins, and anything else counts as absent.
+    REQUIRE(ParseStorage("storage=ro storage=rw") == StorageMode::ReadWrite);
+    REQUIRE(ParseStorage("storage=rw storage=ro") == StorageMode::ReadOnly);
+    REQUIRE(ParseStorage("storage=rw storage=bogus") == StorageMode::Auto);
+    REQUIRE(ParseStorage("storage=ro storage=") == StorageMode::Auto);
+    REQUIRE(ParseStorage("storage=bogus") == StorageMode::Auto);
+    REQUIRE(ParseStorage("storage=ROx storage=rwx xstorage=ro test=storage") == StorageMode::Auto);
+
+    FeatherOS::BootOptions::SelectStorage(StorageMode::ReadOnly);
+    REQUIRE(FeatherOS::BootOptions::SelectedStorage() == StorageMode::ReadOnly);
+    FeatherOS::BootOptions::SelectStorage(StorageMode::Auto);
+    REQUIRE(FeatherOS::BootOptions::SelectedStorage() == StorageMode::Auto);
+}
