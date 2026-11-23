@@ -96,3 +96,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 25d50a2 | M19 P2 s4b hot-unplug in QEMU, EIO on dead volumes, cp short writes, sync EIO | M19-P2.md (opus) | sonnet (high) | 0 | 2/2 (I21 by T28 round 4, I19 by T28 round 5) | |
 | 4e0bf26 | M19 P2 s4c eject: syscall 74, libc, /sbin/eject, all-or-nothing unmount | M19-P2.md (opus) | sonnet (high) | 0 | 2/2 (I25 by T21, I24 by T21) | |
 | 603df33 | M19 P2 s4d drives above 2 TiB, 4096-byte sectors, behind a hub | M19-P2.md (opus) | sonnet (high) | 0 | 2/2 (I12 by T8/T30, sector size by partition host test and T30) | |
+| 9af0e78 | M19 P2 s5a stick log partition, boot-from-stick harness, USB_STICK_TEST | M19-P2.md (opus) | sonnet (medium) | 0 | 1/1 (I26 by T32) | |
