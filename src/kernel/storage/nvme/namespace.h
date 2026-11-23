@@ -3,6 +3,7 @@
 
 #include "kernel/storage/disk_driver.h"
 
+#include <atomic>
 #include <stdint.h>
 
 namespace FeatherOS::Storage::Nvme
@@ -20,6 +21,9 @@ public:
     uint32_t SectorSize() const;
     uint64_t SectorCount() const;
     bool ReadOnly() const;
+    // A reset found this namespace changed or gone: only its disk goes, the controller lives on.
+    void MarkGone();
+    bool Vanished() const;
 
     DiskInfo Info() override;
     bool Gone() override;
@@ -32,6 +36,7 @@ public:
 private:
     Controller* controller_ = nullptr;
     DiskInfo info_{};
+    std::atomic<bool> vanished_ = false;
 };
 
 } // namespace FeatherOS::Storage::Nvme

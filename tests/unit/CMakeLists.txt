@@ -71,6 +71,7 @@ add_executable(featheros_unit_tests
     kernel/storage/nvme_command_tests.cpp
     kernel/storage/nvme_controller_tests.cpp
     kernel/storage/nvme_identify_tests.cpp
+    kernel/storage/nvme_recovery_tests.cpp
     kernel/storage/page_cache_tests.cpp
     kernel/storage/storage_rig_tests.cpp
     kernel/storage/write_policy_tests.cpp

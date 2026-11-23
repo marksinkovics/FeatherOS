@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,28 @@ public:
         uint32_t shutdown_delay_reads = 0;
         bool fail_set_queue_count = false;
         uint32_t allocations_before_failure = ~0U;
+        // Abort completes with an error status instead of acting.
+        bool fail_abort = false;
+    };
+
+    // What happens to a command the controller fetched and holds.
+    enum class Hold : uint8_t
+    {
+        // Never completes; dropped when the controller stops.
+        Never,
+        // Completes with "aborted" when an Abort names it.
+        UntilAborted,
+        // Never completes, but its DMA lands at the moment the controller stops (RDY goes 0).
+        LateDma,
+    };
+
+    enum class Effect : uint8_t
+    {
+        None,
+        // CSTS.CFS is set while the command is held.
+        Fatal,
+        // CSTS reads all ones from then on.
+        Unplug,
     };
 
     struct NamespaceFlags
@@ -70,6 +93,9 @@ public:
         Write,
         Flush,
         ShutdownRequested,
+        Abort,
+        LateDma,
+        Stopped,
     };
 
     struct IoRecord
@@ -100,11 +126,15 @@ public:
     void Pump();
     // The next count I/O commands are fetched and never completed.
     void StallIo(uint32_t count);
+    void HoldIo(Hold mode, uint32_t count = 1, Effect effect = Effect::None);
+    // The next count admin commands are fetched and never completed.
+    void StallAdmin(uint32_t count);
     // A completion with this CID and an internal-error status comes before the next I/O one.
     void InjectStale(uint16_t cid);
     void Unplug();
 
     uint32_t Count(Event event) const;
+    bool HoldActive() const;
     const std::vector<Event>& Events() const;
     const std::vector<IoRecord>& IoLog() const;
     const std::vector<std::string>& Faults() const;
@@ -158,7 +188,20 @@ private:
         uint8_t code = 0;
     };
 
+    class Scope;
+    friend class Scope;
+
+    struct HeldCommand
+    {
+        Nvme::Sqe sqe{};
+        uint16_t cid = 0;
+        Hold mode = Hold::Never;
+        bool active = false;
+    };
+
     void Fault(const std::string& what);
+    void Stop();
+    void HoldCommand(const Nvme::Sqe& sqe, uint16_t cid);
     uint32_t ReadCsts();
     void WriteCc(uint32_t value);
     void WriteRegister(uint32_t offset, uint32_t value);
@@ -193,6 +236,13 @@ private:
     uint32_t allocations_ = 0;
     uint32_t io_commands_ = 0;
     uint32_t stall_ = 0;
+    uint32_t stall_admin_ = 0;
+    Hold hold_mode_ = Hold::Never;
+    Effect hold_effect_ = Effect::None;
+    HeldCommand held_;
+    std::recursive_mutex lock_;
+    uint32_t depth_ = 0;
+    uint32_t interrupts_due_ = 0;
 
     bool initialized_ = false;
     uint32_t cc_ = 0;

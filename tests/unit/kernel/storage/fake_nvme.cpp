@@ -3,7 +3,6 @@
 #include "kernel/storage/nvme/registers.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cstring>
 
 namespace FeatherOS::Storage::Testing
@@ -23,6 +22,8 @@ constexpr uint8_t TypeCommand = 1;
 constexpr uint8_t CodeInvalidOpcode = 0x01;
 constexpr uint8_t CodeInvalidField = 0x02;
 constexpr uint8_t CodeInternalError = 0x06;
+constexpr uint8_t CodeAborted = 0x07;
+constexpr uint8_t CodeAbortLimit = 0x03;
 constexpr uint8_t CodeInvalidNamespace = 0x0B;
 constexpr uint8_t CodeWriteProtected = 0x20;
 constexpr uint8_t CodeLbaRange = 0x80;
@@ -58,6 +59,41 @@ uint32_t Log2(uint32_t value)
 }
 
 } // namespace
+
+// Every public entry point holds the lock; interrupts are raised after the outermost one lets go,
+// as a device raises them without holding anything the handler may need.
+class FakeNvme::Scope
+{
+public:
+    explicit Scope(FakeNvme& fake) : fake_(fake)
+    {
+        fake_.lock_.lock();
+        ++fake_.depth_;
+    }
+
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+
+    ~Scope()
+    {
+        uint32_t due = 0;
+        void (*handler)(void*) = fake_.handler_;
+        void* context = fake_.handler_context_;
+        if (--fake_.depth_ == 0)
+        {
+            due = fake_.interrupts_due_;
+            fake_.interrupts_due_ = 0;
+        }
+        fake_.lock_.unlock();
+        for (; due != 0 && handler != nullptr; --due)
+        {
+            handler(context);
+        }
+    }
+
+private:
+    FakeNvme& fake_;
+};
 
 FakeNvme::FakeNvme(FeatherOS::Testing::PhysicalMemory& memory) : memory_(memory) {}
 
@@ -129,6 +165,7 @@ void FakeNvme::Initialize()
 
 uint32_t FakeNvme::Read32(uint32_t offset)
 {
+    const Scope scope(*this);
     Initialize();
     if (gone_)
     {
@@ -166,6 +203,7 @@ uint32_t FakeNvme::Read32(uint32_t offset)
 
 uint64_t FakeNvme::Read64(uint32_t offset)
 {
+    const Scope scope(*this);
     const uint64_t low = Read32(offset);
     const uint64_t high = Read32(offset + 4);
     return low | (high << 32);
@@ -173,6 +211,7 @@ uint64_t FakeNvme::Read64(uint32_t offset)
 
 void FakeNvme::Write64(uint32_t offset, uint64_t value)
 {
+    const Scope scope(*this);
     Write32(offset, static_cast<uint32_t>(value));
     Write32(offset + 4, static_cast<uint32_t>(value >> 32));
 }
@@ -189,6 +228,10 @@ uint32_t FakeNvme::ReadCsts()
         {
             ready_ = transition_target_ != 0;
             transition_target_ = -1;
+            if (!ready_)
+            {
+                Stop();
+            }
         }
     }
     if (shutdown_pending_ && !options.never_shutdown)
@@ -209,6 +252,7 @@ uint32_t FakeNvme::ReadCsts()
 
 void FakeNvme::Write32(uint32_t offset, uint32_t value)
 {
+    const Scope scope(*this);
     Initialize();
     if (offset >= N::Reg::DoorbellBase)
     {
@@ -300,6 +344,10 @@ void FakeNvme::WriteCc(uint32_t value)
 
 void FakeNvme::Enable()
 {
+    if (transition_target_ == 0)
+    {
+        Fault("controller enabled before it finished stopping");
+    }
     ResetQueues();
     sq_[0].exists = true;
     sq_[0].base = asq_;
@@ -344,6 +392,7 @@ void FakeNvme::Disable()
     {
         ready_ = false;
         transition_target_ = -1;
+        Stop();
     }
 }
 
@@ -399,6 +448,7 @@ void FakeNvme::WriteDoorbell(uint32_t offset, uint32_t value)
 
 void FakeNvme::Pump()
 {
+    const Scope scope(*this);
     if (pending_doorbell_)
     {
         Process();
@@ -451,8 +501,14 @@ void FakeNvme::Drain(uint32_t qid)
             if (stall_ > 0)
             {
                 stall_--;
+                HoldCommand(sqe, cid);
                 continue;
             }
+        }
+        else if (stall_admin_ > 0)
+        {
+            stall_admin_--;
+            continue;
         }
         Post(qid, cid, qid == 0 ? Admin(sqe) : Io(sqe));
     }
@@ -479,7 +535,22 @@ FakeNvme::Outcome FakeNvme::Admin(const N::Sqe& sqe)
         }
         return {0, TypeGeneric, 0};
     case N::AdminOpcode::Abort:
+    {
+        events_.push_back(Event::Abort);
+        if (options.fail_abort)
+        {
+            return {0, TypeCommand, CodeAbortLimit};
+        }
+        const uint16_t target = static_cast<uint16_t>(sqe.cdw10 >> 16);
+        if ((sqe.cdw10 & 0xFFFF) == 1 && held_.active && held_.cid == target &&
+            held_.mode == Hold::UntilAborted)
+        {
+            held_.active = false;
+            Post(1, target, {0, TypeGeneric, CodeAborted});
+            return {};
+        }
         return {1, TypeGeneric, 0};
+    }
     default:
         return {0, TypeGeneric, CodeInvalidOpcode};
     }
@@ -832,10 +903,9 @@ void FakeNvme::PostRaw(uint32_t cqid, uint16_t sq_head, uint16_t sqid, uint16_t 
     slot[0] = result;
     slot[1] = 0;
     slot[2] = sq_head | (static_cast<uint32_t>(sqid) << 16);
-    std::atomic_thread_fence(std::memory_order_release);
     const uint32_t status = (cq.phase ? 1U : 0U) | (static_cast<uint32_t>(code) << 1) |
                             (static_cast<uint32_t>(type) << 9);
-    slot[3] = cid | (status << 16);
+    __atomic_store_n(&slot[3], cid | (status << 16), __ATOMIC_RELEASE);
     cq.tail = (cq.tail + 1) % cq.entries;
     if (cq.tail == 0)
     {
@@ -845,7 +915,7 @@ void FakeNvme::PostRaw(uint32_t cqid, uint16_t sq_head, uint16_t sqid, uint16_t 
         options.interrupts != InterruptKind::Polling && (cqid == 0 || cq.interrupts))
     {
         interrupts_++;
-        handler_(handler_context_);
+        interrupts_due_++;
     }
 }
 
@@ -860,6 +930,7 @@ uint32_t FakeNvme::ReadConfig32(uint16_t offset)
 
 bool FakeNvme::AllocateDma(uint64_t bytes, uint64_t below, Memory::Dma::Buffer* buffer)
 {
+    const Scope scope(*this);
     if (allocations_ >= options.allocations_before_failure)
     {
         return false;
@@ -878,6 +949,7 @@ bool FakeNvme::AllocateDma(uint64_t bytes, uint64_t below, Memory::Dma::Buffer* 
 
 void FakeNvme::FreeDma(const Memory::Dma::Buffer& buffer)
 {
+    const Scope scope(*this);
     const auto it = std::find_if(live_.begin(), live_.end(), [&](const Memory::Dma::Buffer& b)
                                  { return b.physical == buffer.physical; });
     if (it == live_.end())
@@ -894,6 +966,7 @@ void FakeNvme::FreeDma(const Memory::Dma::Buffer& buffer)
 
 InterruptKind FakeNvme::SetUpInterrupts(void (*handler)(void* context), void* context)
 {
+    const Scope scope(*this);
     handler_ = handler;
     handler_context_ = context;
     return options.interrupts;
@@ -901,16 +974,64 @@ InterruptKind FakeNvme::SetUpInterrupts(void (*handler)(void* context), void* co
 
 void FakeNvme::StallIo(uint32_t count)
 {
+    HoldIo(Hold::Never, count);
+}
+
+void FakeNvme::HoldIo(Hold mode, uint32_t count, Effect effect)
+{
+    const Scope scope(*this);
     stall_ = count;
+    hold_mode_ = mode;
+    hold_effect_ = effect;
+}
+
+void FakeNvme::StallAdmin(uint32_t count)
+{
+    const Scope scope(*this);
+    stall_admin_ = count;
+}
+
+void FakeNvme::HoldCommand(const N::Sqe& sqe, uint16_t cid)
+{
+    held_ = {sqe, cid, hold_mode_, true};
+    if (hold_effect_ == Effect::Fatal)
+    {
+        fatal_ = true;
+    }
+    else if (hold_effect_ == Effect::Unplug)
+    {
+        gone_ = true;
+    }
+}
+
+void FakeNvme::Stop()
+{
+    if (held_.active)
+    {
+        if (held_.mode == Hold::LateDma)
+        {
+            events_.push_back(Event::LateDma);
+            Io(held_.sqe);
+        }
+        held_.active = false;
+    }
+    events_.push_back(Event::Stopped);
+}
+
+bool FakeNvme::HoldActive() const
+{
+    return held_.active;
 }
 
 void FakeNvme::InjectStale(uint16_t cid)
 {
+    const Scope scope(*this);
     stale_.push_back(cid);
 }
 
 void FakeNvme::Unplug()
 {
+    const Scope scope(*this);
     gone_ = true;
 }
 

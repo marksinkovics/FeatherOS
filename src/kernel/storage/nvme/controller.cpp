@@ -108,6 +108,16 @@ uint32_t Controller::StaleCount() const
     return stale_completions_.load(std::memory_order_relaxed);
 }
 
+uint32_t Controller::AbortCount() const
+{
+    return aborts_.load(std::memory_order_relaxed);
+}
+
+uint32_t Controller::ResetCount() const
+{
+    return resets_.load(std::memory_order_relaxed);
+}
+
 uint32_t Controller::NamespaceCount() const
 {
     return namespace_count_;
@@ -584,8 +594,26 @@ void Controller::LogStale()
     Say(Level::Warning, index_, "stale completion cid {}", cid);
 }
 
+bool Controller::AwaitCompletion(Which which, uint64_t deadline_ms)
+{
+    Waiter waiter{this, which};
+    for (;;)
+    {
+        const uint64_t now = environment_.NowMilliseconds();
+        const uint64_t until = std::min<uint64_t>(now + WaitStepMs, deadline_ms);
+        if (environment_.WaitUntil(this, until, ReadyCommand, &waiter))
+        {
+            return true;
+        }
+        if (environment_.NowMilliseconds() >= deadline_ms)
+        {
+            return false;
+        }
+    }
+}
+
 Controller::Outcome Controller::Execute(Which which, const Sqe& sqe, Cqe* completion,
-                                        uint32_t budget_ms)
+                                        uint32_t budget_ms, uint16_t* cid_out)
 {
     {
         Sync::SpinLockGuard guard(completion_lock_);
@@ -597,30 +625,24 @@ Controller::Outcome Controller::Execute(Which which, const Sqe& sqe, Cqe* comple
             return Outcome::Full;
         }
         pending = {cid, true, false, {}};
-    }
-    Waiter waiter{this, which};
-    const uint64_t deadline = environment_.NowMilliseconds() + budget_ms;
-    for (;;)
-    {
-        const uint64_t now = environment_.NowMilliseconds();
-        const uint64_t until = std::min<uint64_t>(now + WaitStepMs, deadline);
-        if (environment_.WaitUntil(this, until, ReadyCommand, &waiter))
+        if (cid_out != nullptr)
         {
-            break;
-        }
-        if (environment_.NowMilliseconds() >= deadline)
-        {
-            Sync::SpinLockGuard guard(completion_lock_);
-            Pending& pending = which == Which::Admin ? admin_pending_ : io_pending_;
-            pending.active = false;
-            return Outcome::TimedOut;
+            *cid_out = cid;
         }
     }
+    const bool finished = AwaitCompletion(which, environment_.NowMilliseconds() + budget_ms);
     {
         Sync::SpinLockGuard guard(completion_lock_);
         Pending& pending = which == Which::Admin ? admin_pending_ : io_pending_;
-        *completion = pending.cqe;
+        if (finished)
+        {
+            *completion = pending.cqe;
+        }
         pending.active = false;
+    }
+    if (!finished)
+    {
+        return Outcome::TimedOut;
     }
     LogStale();
     return Outcome::Done;
@@ -629,10 +651,11 @@ Controller::Outcome Controller::Execute(Which which, const Sqe& sqe, Cqe* comple
 FeatherDisk::Status Controller::IoCommand(const Sqe& sqe)
 {
     Cqe cqe{};
-    const Outcome outcome = Execute(Which::Io, sqe, &cqe, IoTimeoutMs);
+    uint16_t cid = NoCid;
+    const Outcome outcome = Execute(Which::Io, sqe, &cqe, IoTimeoutMs, &cid);
     if (outcome == Outcome::TimedOut)
     {
-        Recover();
+        Recover(cid);
         return std::unexpected(FeatherDisk::Error::Io);
     }
     if (outcome != Outcome::Done)
@@ -669,7 +692,7 @@ FeatherDisk::Status Controller::Io(const Namespace& ns, bool write, uint64_t sec
         return {};
     }
     Sync::MutexGuard guard(io_lock_);
-    if (Dead() || shutting_down_.load(std::memory_order_acquire))
+    if (Dead() || ns.Vanished() || shutting_down_.load(std::memory_order_acquire))
     {
         return std::unexpected(FeatherDisk::Error::Io);
     }
@@ -711,26 +734,183 @@ FeatherDisk::Status Controller::FlushNamespace(const Namespace& ns)
         return {};
     }
     Sync::MutexGuard guard(io_lock_);
-    if (Dead() || shutting_down_.load(std::memory_order_acquire))
+    if (Dead() || ns.Vanished() || shutting_down_.load(std::memory_order_acquire))
     {
         return std::unexpected(FeatherDisk::Error::Io);
     }
     return IoCommand(Flush(0, ns.Id()));
 }
 
-void Controller::Recover()
+void Controller::Recover(uint16_t cid)
 {
-    MakeDead();
+    const uint32_t csts = hardware_.Read32(Reg::Csts);
+    if (csts == Gone32)
+    {
+        Say(Level::Warning, index_, "controller is gone");
+        MakeDead(false);
+        return;
+    }
+    if ((csts & CstsBit::FatalStatus) != 0)
+    {
+        Say(Level::Warning, index_, "controller reports a fatal status");
+        ResetOrDie();
+        return;
+    }
+    if (AbortCommand(cid))
+    {
+        Say(Level::Warning, index_, "command timed out; aborted");
+        return;
+    }
+    ResetOrDie();
 }
 
-void Controller::MakeDead()
+bool Controller::AbortCommand(uint16_t cid)
+{
+    aborts_.fetch_add(1, std::memory_order_relaxed);
+    {
+        Sync::MutexGuard admin_guard(admin_lock_);
+        if (!Admin(Abort(0, cid, 1), nullptr))
+        {
+            return false;
+        }
+    }
+    {
+        Sync::SpinLockGuard guard(completion_lock_);
+        io_pending_ = {cid, true, false, {}};
+    }
+    const bool finished = AwaitCompletion(Which::Io, environment_.NowMilliseconds() + AbortWaitMs);
+    Sync::SpinLockGuard guard(completion_lock_);
+    io_pending_.active = false;
+    return finished;
+}
+
+void Controller::ResetOrDie()
+{
+    const uint64_t now = environment_.NowMilliseconds();
+    if (resets_.load(std::memory_order_relaxed) != 0 && now - last_reset_ms_ < ResetWindowMs)
+    {
+        Say(Level::Warning, index_, "second reset within {} s", ResetWindowMs / 1000);
+        MakeDead(true);
+        return;
+    }
+    last_reset_ms_ = now;
+    resets_.fetch_add(1, std::memory_order_relaxed);
+    if (!Reset())
+    {
+        MakeDead(!buffers_pinned_);
+        return;
+    }
+    Say(Level::Warning, index_, "command timed out; controller reset");
+}
+
+bool Controller::Reset()
+{
+    // Once RDY is 0 the device does no more DMA: the bounce buffer and the rings are ours (I3).
+    if (!Disable(false))
+    {
+        buffers_pinned_ = true;
+        return false;
+    }
+    Sync::MutexGuard admin_guard(admin_lock_);
+    return ResetLocked();
+}
+
+bool Controller::ResetLocked()
+{
+    const uint32_t admin_entries = std::min(caps_.max_queue_entries, MaxAdminQueueEntries);
+    {
+        Sync::SpinLockGuard guard(completion_lock_);
+        admin_queue_.Reset();
+        io_queue_.Reset();
+        admin_pending_ = {};
+        io_pending_ = {};
+    }
+    hardware_.Write32(Reg::Aqa, AdminQueueAttributes(admin_entries, admin_entries));
+    hardware_.Write64(Reg::Asq, admin_sq_.physical);
+    hardware_.Write64(Reg::Acq, admin_cq_.physical);
+    Memory::Dma::ProducerBarrier();
+    hardware_.Write32(Reg::Cc, ControllerCc(CcBit::Enable));
+    if (WaitReady(true, std::max(caps_.timeout_ms, MinimumTimeoutMs)) != Wait::Reached)
+    {
+        return false;
+    }
+
+    Cqe cqe{};
+    if (!Admin(Identify(0, 0, IdentifyCns::Controller, identify_.physical), &cqe))
+    {
+        return false;
+    }
+    for (uint32_t i = 0; i < IdentifyBytes; i++)
+    {
+        identify_copy_[i] = identify_.address[i];
+    }
+    const ControllerData data =
+        ParseController(std::span<const uint8_t, IdentifyBytes>(identify_copy_));
+    if (!SupportsEntrySizes(data) || BounceBufferBytes(data) != bounce_bytes_)
+    {
+        return false;
+    }
+
+    if (!Admin(SetQueueCount(0, 0, 0), &cqe))
+    {
+        return false;
+    }
+    {
+        Sync::SpinLockGuard guard(completion_lock_);
+        io_queue_.Initialize(hardware_, 1, static_cast<uint16_t>(io_depth_), caps_.doorbell_stride,
+                             io_sq_, io_cq_);
+    }
+    const bool interrupts = interrupts_ != InterruptKind::Polling;
+    return Admin(CreateIoCq(0, 1, static_cast<uint16_t>(io_depth_), io_cq_.physical, 0, interrupts),
+                 &cqe) &&
+           Admin(CreateIoSq(0, 1, static_cast<uint16_t>(io_depth_), io_sq_.physical, 1), &cqe) &&
+           Revalidate();
+}
+
+bool Controller::Revalidate()
+{
+    for (uint32_t i = 0; i < namespace_count_; i++)
+    {
+        Namespace& ns = namespaces_[i];
+        if (ns.Vanished())
+        {
+            continue;
+        }
+        Cqe cqe{};
+        if (!Admin(Identify(0, ns.Id(), IdentifyCns::Namespace, identify_.physical), &cqe))
+        {
+            return false;
+        }
+        for (uint32_t b = 0; b < IdentifyBytes; b++)
+        {
+            identify_copy_[b] = identify_.address[b];
+        }
+        const NamespaceData now =
+            ParseNamespace(std::span<const uint8_t, IdentifyBytes>(identify_copy_));
+        if (now.refusal == Refusal::None && now.sector_size == ns.SectorSize() &&
+            now.sector_count == ns.SectorCount())
+        {
+            continue;
+        }
+        ns.MarkGone();
+        Say(Level::Warning, index_, "namespace {} changed during the reset; its disk is gone",
+            ns.Id());
+        if (Disk* disk = disks_[i].load(std::memory_order_acquire))
+        {
+            Remove(*disk);
+        }
+    }
+    return true;
+}
+
+void Controller::MakeDead(bool disable)
 {
     if (dead_.exchange(true, std::memory_order_acq_rel))
     {
         return;
     }
     // After this the controller does no more DMA, so the buffers stay safe to reuse (I3).
-    if (!Disable(false))
+    if (disable && !Disable(false))
     {
         buffers_pinned_ = true;
     }

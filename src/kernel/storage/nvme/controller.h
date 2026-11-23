@@ -27,6 +27,8 @@ constexpr uint32_t WaitStepMs = 10;
 constexpr uint32_t MaxIoQueueEntries = 32;
 constexpr uint32_t MaxAdminQueueEntries = 32;
 constexpr uint32_t MaxProbedNamespaces = 32;
+constexpr uint32_t AbortWaitMs = 1000;
+constexpr uint32_t ResetWindowMs = 60000;
 
 // One command in flight per controller (I9): every transfer goes through the bounce buffer
 // under io_lock_. Lock order: io_lock_, then admin_lock_, then completion_lock_.
@@ -47,6 +49,8 @@ public:
     static void OnInterrupt(void* context);
 
     uint32_t StaleCount() const;
+    uint32_t AbortCount() const;
+    uint32_t ResetCount() const;
     uint32_t NamespaceCount() const;
     Namespace& NamespaceAt(uint32_t index);
 
@@ -116,13 +120,20 @@ private:
 
     FeatherDisk::Status Admin(const Sqe& sqe, Cqe* completion) REQUIRES(admin_lock_);
     FeatherDisk::Status IoCommand(const Sqe& sqe) REQUIRES(io_lock_);
-    Outcome Execute(Which which, const Sqe& sqe, Cqe* completion, uint32_t budget_ms);
+    Outcome Execute(Which which, const Sqe& sqe, Cqe* completion, uint32_t budget_ms,
+                    uint16_t* cid = nullptr);
+    bool AwaitCompletion(Which which, uint64_t deadline_ms);
     bool ReapPending(Which which);
     void LogStale();
     uint64_t Prp2For(uint32_t bytes) const;
-    // A command that timed out; the recovery ladder of step B2b replaces this body.
-    void Recover() REQUIRES(io_lock_);
-    void MakeDead() REQUIRES(io_lock_);
+    // The ladder for a command that timed out: CSTS, Abort, controller reset, dead.
+    void Recover(uint16_t cid) REQUIRES(io_lock_);
+    bool AbortCommand(uint16_t cid) REQUIRES(io_lock_);
+    void ResetOrDie() REQUIRES(io_lock_);
+    bool Reset() REQUIRES(io_lock_);
+    bool ResetLocked() REQUIRES(io_lock_, admin_lock_);
+    bool Revalidate() REQUIRES(io_lock_, admin_lock_);
+    void MakeDead(bool disable) REQUIRES(io_lock_);
     static bool ReadyCommand(void* context);
     static bool ReadyRegister(void* context);
 
@@ -140,6 +151,7 @@ private:
     Pending admin_pending_ GUARDED_BY(completion_lock_) = {};
     Pending io_pending_ GUARDED_BY(completion_lock_) = {};
     uint16_t last_stale_cid_ GUARDED_BY(completion_lock_) = 0;
+    uint64_t last_reset_ms_ GUARDED_BY(io_lock_) = 0;
 
     Capabilities caps_{};
     uint32_t version_ = 0;
@@ -166,6 +178,8 @@ private:
     std::atomic<bool> dead_ = false;
     std::atomic<bool> shutting_down_ = false;
     std::atomic<uint32_t> stale_completions_ = 0;
+    std::atomic<uint32_t> aborts_ = 0;
+    std::atomic<uint32_t> resets_ = 0;
     std::atomic<bool> stale_logged_ = false;
 };
 

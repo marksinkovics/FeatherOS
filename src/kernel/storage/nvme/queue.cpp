@@ -91,7 +91,8 @@ bool QueuePair::Reap(uint16_t wanted_cid, Cqe* out, StaleCompletions* stale)
     for (;;)
     {
         volatile uint32_t* slot = Words(cq_, head_, CqeWords);
-        const uint32_t dw3 = slot[3];
+        // Acquire, so a race detector pairs it with the fake device's release store.
+        const uint32_t dw3 = __atomic_load_n(&slot[3], __ATOMIC_ACQUIRE);
         if ((((dw3 >> 16) & 1) != 0) != phase_)
         {
             break;

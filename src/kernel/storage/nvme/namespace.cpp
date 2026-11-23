@@ -31,6 +31,16 @@ bool Namespace::ReadOnly() const
     return info_.read_only;
 }
 
+void Namespace::MarkGone()
+{
+    vanished_.store(true, std::memory_order_release);
+}
+
+bool Namespace::Vanished() const
+{
+    return vanished_.load(std::memory_order_acquire);
+}
+
 DiskInfo Namespace::Info()
 {
     return info_;
@@ -38,7 +48,7 @@ DiskInfo Namespace::Info()
 
 bool Namespace::Gone()
 {
-    return controller_->Dead();
+    return controller_->Dead() || Vanished();
 }
 
 FeatherDisk::Status Namespace::Read(uint64_t sector, uint32_t count, uint8_t* buffer)
