@@ -99,3 +99,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | 9af0e78 | M19 P2 s5a stick log partition, boot-from-stick harness, USB_STICK_TEST | M19-P2.md (opus) | sonnet (medium) | 0 | 1/1 (I26 by T32) | |
 | 3ec8ee8 | M16 A1 disk kinds, nvme names, read-only reason, flush skip, 16 disks | M16.md (opus) | sonnet (high) | 0 | 2/2 (I1 Disk half by T2, I15 by T1) | |
 | eed52ef | M16 A2 storage start, environment move, storage=, write policy, shutdown hook | M16.md (opus) | sonnet (high) | 0 | 1/1 (I2 by T4) | |
+| c2a80ad | M16 A3 ControllerHardware, PciHardware, test support (PhysicalMemory, ModelDisk, rigs) | M16.md (opus) | sonnet (high) | 0 | - (no invariant yet; ModelDisk power-loss mutation caught) | |
