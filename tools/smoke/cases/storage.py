@@ -1,15 +1,10 @@
-import os
 import re
-import shutil
-import struct
-import subprocess
 import tempfile
 from pathlib import Path
 
 from create_test_disk import (
     DATA_END,
     DATA_START,
-    E2FSPROGS_DIRECTORIES,
     EXT2_END,
     EXT2_FILES,
     EXT2_START,
@@ -18,12 +13,25 @@ from create_test_disk import (
     EXT3_START,
     FAT16_START,
     ROOT_START,
-    SECTOR_SIZE,
     ext4_block,
 )
 
 from smoke.boot import PANIC_MARKER, ROOT_MESSAGE
 from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
+from smoke.disk_checks import (
+    Debugfs,
+    E2fsck,
+    FatCopiesAgree,
+    FindE2fsprogs,
+    IsMarkedClean,
+    Mdir,
+    MtoolsSpec,
+    Mtype,
+    NeedsRecovery,
+    NotFound,
+    PartitionBytes,
+    ReplayOnCopy,
+)
 from smoke.script import Lines
 
 ETC_DEFAULTS = Path(__file__).resolve().parents[3] / "initramfs" / "etc"
@@ -57,11 +65,6 @@ JOURNALLED_PARTITIONS = {
     "ext4": (ROOT_START, FAT16_START),
     "data": (DATA_START, DATA_END),
 }
-# The superblock sits 1024 bytes into a volume: s_state at 0x3A (1 is clean)
-# and the incompatible features at 0x60, where bit 0x4 is needs_recovery.
-STATE_OFFSET = 1024 + 0x3A
-INCOMPATIBLE_OFFSET = 1024 + 0x60
-NEEDS_RECOVERY = 0x4
 REPLAYED = re.compile(
     r"ext2: journal recovered; transactions replayed: 0x([0-9a-fA-F]+)"
 )
@@ -171,127 +174,33 @@ STORAGE_SHELL_OUTPUT = {
 
 def VerifyDiskImage(disk_path, boot_count):
     """Checks the guest's FAT16 writes with mtools, a separate FAT reader."""
-    partition_offset = FAT16_START * SECTOR_SIZE
-    with open(disk_path, "rb") as disk:
-        disk.seek(partition_offset)
-        boot_sector = disk.read(512)
-        reserved_sectors = struct.unpack_from("<H", boot_sector, 14)[0]
-        fat_count = boot_sector[16]
-        fat_bytes = struct.unpack_from("<H", boot_sector, 22)[0] * 512
-        disk.seek(partition_offset + reserved_sectors * 512)
-        fats = [disk.read(fat_bytes) for _ in range(fat_count)]
-    if any(fat != fats[0] for fat in fats):
+    if not FatCopiesAgree(disk_path, FAT16_START):
         return "the FAT copies differ"
 
-    image = f"{disk_path}@@{partition_offset}"
-    environment = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+    image = MtoolsSpec(disk_path, FAT16_START)
     expected = "".join(
         f"FeatherOS boot {boot_count} line {line}\n"
         for line in range(PERSISTENT_FILE_LINES)
     ).encode()
-    contents = subprocess.run(
-        ["mtype", "-i", image, "::PERSIST.TXT"],
-        capture_output=True,
-        env=environment,
-        check=False,
-    )
-    if contents.returncode != 0 or contents.stdout != expected:
+    if Mtype(image, "PERSIST.TXT") != expected:
         return "mtools read different PERSIST.TXT contents"
-    listing = subprocess.run(
-        ["mdir", "-b", "-i", image, "::"],
-        capture_output=True,
-        text=True,
-        env=environment,
-        check=False,
-    )
-    if listing.returncode != 0 or "SCRATCH" in listing.stdout:
+    listing = Mdir(image)
+    if listing is None or "SCRATCH" in listing:
         return "mtools still lists the removed scratch file"
-    notes = subprocess.run(
-        ["mtype", "-i", image, "::home/notes.txt"],
-        capture_output=True,
-        env=environment,
-        check=False,
-    )
-    plan = subprocess.run(
-        ["mtype", "-i", image, "::home/docs/plan.txt"],
-        capture_output=True,
-        env=environment,
-        check=False,
-    )
-    if boot_count == 1 and notes.stdout != NOTES_CONTENTS:
+    if boot_count == 1 and Mtype(image, "home/notes.txt") != NOTES_CONTENTS:
         return "mtools read different home/notes.txt contents"
-    long_name = subprocess.run(
-        ["mtype", "-i", image, "::home/My Plans.txt"],
-        capture_output=True,
-        env=environment,
-        check=False,
-    )
-    if boot_count == 1 and plan.stdout != PLAN_CONTENTS:
+    if boot_count == 1 and Mtype(image, "home/docs/plan.txt") != PLAN_CONTENTS:
         return "mtools read different home/docs/plan.txt contents"
-    if boot_count == 1 and long_name.stdout != LONG_NAME_CONTENTS:
+    if (
+        boot_count == 1
+        and Mtype(image, "home/My Plans.txt") != LONG_NAME_CONTENTS
+    ):
         return "mtools read different 'My Plans.txt' contents"
-    home_listing = subprocess.run(
-        ["mdir", "-b", "-i", image, "::home"],
-        capture_output=True,
-        text=True,
-        env=environment,
-        check=False,
-    )
-    listed = home_listing.stdout.upper()
+    listed = Mdir(image, "home") or ""
     if boot_count == 2 and any(
         name in listed for name in ("NOTES", "DOCS", "MY PLANS")
     ):
         return "mtools still lists a file or directory the shell removed"
-    return None
-
-
-def FindE2fsprogs(name):
-    """Homebrew's keg-only e2fsprogs first, as create_test_disk.py looks."""
-    for directory in E2FSPROGS_DIRECTORIES:
-        candidate = Path(directory) / name
-        if candidate.is_file():
-            return str(candidate)
-    return shutil.which(name) or shutil.which(name, path="/usr/sbin:/sbin")
-
-
-def Debugfs(debugfs, volume, command):
-    return subprocess.run(
-        [debugfs, "-R", command, volume], capture_output=True, check=False
-    ).stdout
-
-
-def RunDebugfsWrite(debugfs, volume, commands_file):
-    """Runs debugfs -w over a command file, failing on any error."""
-    done = subprocess.run(
-        [debugfs, "-w", "-f", commands_file, volume],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return done.stdout
-
-
-def DebugfsMessages(debugfs, volume, command):
-    """What debugfs prints for the command, errors included."""
-    done = subprocess.run(
-        [debugfs, "-R", command, volume], capture_output=True, check=False
-    )
-    return (done.stdout + done.stderr).decode(errors="replace")
-
-
-def E2fsck(volume):
-    """e2fsck -fn must find nothing to fix."""
-    e2fsck = FindE2fsprogs("e2fsck")
-    if e2fsck is None:
-        return "e2fsck not found; install e2fsprogs"
-    check = subprocess.run(
-        [e2fsck, "-fn", volume], capture_output=True, text=True, check=False
-    )
-    if check.returncode != 0:
-        return (
-            f"e2fsck -fn exited with {check.returncode}:\n"
-            f"{check.stdout}{check.stderr}"
-        )
     return None
 
 
@@ -332,28 +241,6 @@ def VerifyExtVolume(volume, boot_count, name="ext2"):
     return None
 
 
-def NotFound(debugfs, volume, path):
-    return "File not found" in DebugfsMessages(debugfs, volume, f"stat {path}")
-
-
-def PartitionBytes(disk_path, first, end):
-    with open(disk_path, "rb") as disk:
-        disk.seek(first * SECTOR_SIZE)
-        return disk.read((end - first) * SECTOR_SIZE)
-
-
-def NeedsRecovery(volume):
-    with open(volume, "rb") as image:
-        image.seek(INCOMPATIBLE_OFFSET)
-        return bool(image.read(1)[0] & NEEDS_RECOVERY)
-
-
-def IsMarkedClean(volume):
-    with open(volume, "rb") as image:
-        image.seek(STATE_OFFSET)
-        return struct.unpack("<H", image.read(2))[0] & 1 == 1
-
-
 def VerifyExt2(disk_path, boot_count=None):
     """Checks the ext2 partition, copied out of the disk image: with e2fsck and
     the original files alone without a boot count (after the shell session),
@@ -380,24 +267,6 @@ def VerifyExt2(disk_path, boot_count=None):
             return "debugfs read a different /hello.txt"
         if not NotFound(debugfs, str(volume), "/made"):
             return "/made is still there"
-    return None
-
-
-def ReplayOnCopy(volume):
-    """What a mount that takes writes does: e2fsck -fy replays the journal."""
-    e2fsck = FindE2fsprogs("e2fsck")
-    if e2fsck is None:
-        return "e2fsck not found; install e2fsprogs"
-    repaired = subprocess.run(
-        [e2fsck, "-fy", str(volume)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if repaired.returncode not in (0, 1):
-        return (
-            f"e2fsck -fy exited with {repaired.returncode}:\n{repaired.stdout}"
-        )
     return None
 
 

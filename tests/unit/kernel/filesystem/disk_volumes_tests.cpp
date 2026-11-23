@@ -1,9 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include "kernel/filesystem/core_driver.h"
 #include "kernel/filesystem/drivers.h"
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/vfs.h"
+#include "kernel/log_ring.h"
 #include "kernel/storage/disk.h"
 #include "kernel/storage/worker.h"
 #include "kernel/sync/mutex.h"
@@ -15,9 +17,11 @@
 #include <cstring>
 #include <expected>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // Volumes of USB disks (sda, sdb, ...) beside the boot disk's, opened by the storage worker and
@@ -51,7 +55,8 @@ public:
         info.sector_size = sector_size;
         info.sector_count = image.size() / sector_size;
         info.max_transfer_bytes = 64 * 1024;
-        info.removable = true;
+        info.removable = removable;
+        info.read_only = read_only;
         return info;
     }
 
@@ -71,12 +76,18 @@ public:
     {
         ++writes;
         std::memcpy(image.data() + sector * sector_size, buffer, uint64_t{count} * sector_size);
+        std::lock_guard guard(log_mutex);
+        write_log.emplace_back(sector, count);
         return {};
     }
 
     FeatherDisk::Status Flush() override
     {
         ++flushes;
+        if (fail_flush)
+        {
+            return std::unexpected(FeatherDisk::Error::Io);
+        }
         return {};
     }
 
@@ -99,8 +110,25 @@ public:
     std::atomic<uint64_t> writes = 0;
     std::atomic<uint64_t> flushes = 0;
     std::atomic<int> releases = 0;
+    std::atomic<bool> removable = true;
+    std::atomic<bool> read_only = false;
+    std::atomic<bool> fail_flush = false;
+
+    // The (first sector, count) of every Write, in order.
+    std::vector<std::pair<uint64_t, uint32_t>> Writes()
+    {
+        std::lock_guard guard(log_mutex);
+        return write_log;
+    }
+
+    uint8_t Byte(uint64_t offset) const
+    {
+        return image[offset];
+    }
 
 private:
+    std::mutex log_mutex;
+    std::vector<std::pair<uint64_t, uint32_t>> write_log;
     std::vector<uint8_t> image;
     uint32_t sector_size;
 };
@@ -313,6 +341,58 @@ CoreDriver& VolumeAt(const char* point)
 bool Absent(VFS::MountResult result)
 {
     return result == VFS::MountResult::NotFound || result == VFS::MountResult::UnknownType;
+}
+
+size_t LogLines(const std::string& needle)
+{
+    static char text[FeatherOS::KernelLog::Capacity];
+    const size_t length = FeatherOS::KernelLog::Snapshot(text, sizeof(text));
+    const std::string all(text, length);
+    size_t count = 0;
+    for (size_t at = all.find(needle); at != std::string::npos; at = all.find(needle, at + 1))
+    {
+        ++count;
+    }
+    return count;
+}
+
+// FAT[1], the status word of a volume that starts at start in an image of FakeUsbDisk.
+uint64_t StatusOffset(uint32_t start)
+{
+    return (uint64_t{start} + 1) * SectorBytes + 2;
+}
+
+uint16_t StatusWord(FakeUsbDisk& driver, uint32_t start)
+{
+    return static_cast<uint16_t>(driver.Byte(StatusOffset(start)) |
+                                 (driver.Byte(StatusOffset(start) + 1) << 8));
+}
+
+bool Reaches(FakeUsbDisk& driver, uint32_t start)
+{
+    const uint64_t sector = start + 1;
+    for (const auto& [first, count] : driver.Writes())
+    {
+        if (first <= sector && sector < first + count)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Created(const char* path)
+{
+    VFS::FileHandle file{};
+    if (!VFS::Create(path, &file))
+    {
+        return false;
+    }
+    // Data allocates a cluster, which writes the FAT sector that holds FAT[1].
+    uint64_t written = 0;
+    const bool wrote = VFS::Write(&file, "created", 7, &written) && written == 7;
+    VFS::Close(&file);
+    return wrote;
 }
 
 constexpr auto Mount = [](const char* type, const char* source, const char* point)
@@ -643,4 +723,152 @@ TEST_CASE("detaching a disk takes no volume lock", "[concurrency]")
     REQUIRE(TestScheduler::volume_violations == violations);
     RunWorker();
     REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
+}
+
+TEST_CASE("USB T33 a removable FAT16 volume with a status bit clear mounts read-only and is never written")
+{
+    struct Bit
+    {
+        const char* name;
+        uint8_t high_byte_mask;
+    };
+    const Bit bit = GENERATE(Bit{"bit 15", 0x80}, Bit{"bit 14", 0x40}, Bit{"both", 0xC0});
+    INFO(bit.name);
+    std::vector<uint8_t> image = PartitionedImage();
+    constexpr uint32_t FirstStart = 1;
+    constexpr uint32_t SecondStart = 1 + VolumeSectors;
+    image[StatusOffset(FirstStart) + 1] &= static_cast<uint8_t>(~bit.high_byte_mask);
+    Rig rig(image);
+    REQUIRE(Drivers::OpenDiskVolumes(*rig.disk) == 2);
+    const std::string message = "VFS: " + rig.Source(1) +
+                                " was not cleanly unmounted (FAT16 dirty bits); mounted "
+                                "read-only, run fsck.fat";
+    const size_t logged = LogLines(message);
+
+    REQUIRE(Mount("fat16", rig.Source(1).c_str(), "/usb1") == VFS::MountResult::Done);
+    REQUIRE(LogLines(message) == logged + 1);
+    REQUIRE(IsReadOnly("/usb1"));
+    REQUIRE(ReadFile("/usb1/BLOCK.TXT") == FileText);
+    REQUIRE_FALSE(Created("/usb1/NEW.TXT"));
+    REQUIRE(VFS::LastError() == User::SyscallErrorReadOnly);
+    REQUIRE(VFS::Remount("/usb1", FeatherOS::Filesystem::MountMode::ReadWrite) ==
+            VFS::MountResult::ReadOnly);
+    REQUIRE(IsReadOnly("/usb1"));
+    REQUIRE_FALSE(Created("/usb1/NEW.TXT"));
+    REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
+    REQUIRE(rig.driver.Writes().empty());
+
+    REQUIRE(Mount("fat16", rig.Source(2).c_str(), "/usb2") == VFS::MountResult::Done);
+    REQUIRE_FALSE(IsReadOnly("/usb2"));
+    REQUIRE(Created("/usb2/NEW.TXT"));
+    REQUIRE(VFS::Unmount("/usb2") == VFS::MountResult::Done);
+    REQUIRE_FALSE(rig.driver.Writes().empty());
+    REQUIRE(Reaches(rig.driver, SecondStart));
+    REQUIRE_FALSE(Reaches(rig.driver, FirstStart));
+    REQUIRE(StatusWord(rig.driver, SecondStart) == 0xFFFF);
+    REQUIRE((StatusWord(rig.driver, FirstStart) & (bit.high_byte_mask << 8)) == 0);
+}
+
+TEST_CASE("USB T33 the same dirty volume on a non-removable disk mounts read-write and keeps its bits")
+{
+    std::vector<uint8_t> image = PartitionedImage();
+    image[StatusOffset(1) + 1] &= 0x3F;
+    Rig rig(image);
+    rig.driver.removable = false;
+    REQUIRE(Drivers::OpenDiskVolumes(*rig.disk) == 2);
+    const size_t logged = LogLines("was not cleanly unmounted");
+
+    REQUIRE(Mount("fat16", rig.Source(1).c_str(), "/usb1") == VFS::MountResult::Done);
+    REQUIRE_FALSE(IsReadOnly("/usb1"));
+    REQUIRE(Created("/usb1/NEW.TXT"));
+    REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
+    REQUIRE(LogLines("was not cleanly unmounted") == logged);
+    REQUIRE(Reaches(rig.driver, 1));
+    REQUIRE(StatusWord(rig.driver, 1) == 0x3FFF);
+}
+
+TEST_CASE("USB T33 a removable FAT16 volume that was never dirty stays writable and keeps clean bits")
+{
+    Rig rig(SuperfloppyImage());
+    REQUIRE(Drivers::OpenDiskVolumes(*rig.disk) == 1);
+    REQUIRE(Mount("fat16", rig.Source().c_str(), "/usb0") == VFS::MountResult::Done);
+    REQUIRE_FALSE(IsReadOnly("/usb0"));
+    REQUIRE(Created("/usb0/NEW.TXT"));
+    REQUIRE(VFS::Unmount("/usb0") == VFS::MountResult::Done);
+    REQUIRE(StatusWord(rig.driver, 0) == 0xFFFF);
+}
+
+TEST_CASE("USB I13 a write-protected disk's volumes mount read-only and receive no write")
+{
+    Rig rig(PartitionedImage());
+    rig.driver.read_only = true;
+    REQUIRE(Drivers::OpenDiskVolumes(*rig.disk) == 2);
+    const std::string message = "VFS: " + rig.Source(1) + " is write-protected, mounted read-only";
+    const size_t logged = LogLines(message);
+
+    REQUIRE(Mount("fat16", rig.Source(1).c_str(), "/usb1") == VFS::MountResult::Done);
+    REQUIRE(LogLines(message) == logged + 1);
+    REQUIRE(IsReadOnly("/usb1"));
+    REQUIRE(ReadFile("/usb1/BLOCK.TXT") == FileText);
+    REQUIRE_FALSE(Created("/usb1/NEW.TXT"));
+    REQUIRE(VFS::LastError() == User::SyscallErrorReadOnly);
+    REQUIRE(VFS::Remount("/usb1", FeatherOS::Filesystem::MountMode::ReadWrite) ==
+            VFS::MountResult::ReadOnly);
+    REQUIRE(IsReadOnly("/usb1"));
+    REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
+    REQUIRE(rig.driver.Writes().empty());
+}
+
+TEST_CASE("USB I13 a write-protected superfloppy is named like its disk in the log")
+{
+    Rig rig(SuperfloppyImage());
+    rig.driver.read_only = true;
+    REQUIRE(Drivers::OpenDiskVolumes(*rig.disk) == 1);
+    const std::string message = "VFS: " + rig.Source() + " is write-protected, mounted read-only";
+    const size_t logged = LogLines(message);
+    REQUIRE(Mount("fat16", rig.Source().c_str(), "/usb0") == VFS::MountResult::Done);
+    REQUIRE(LogLines(message) == logged + 1);
+    REQUIRE(IsReadOnly("/usb0"));
+    REQUIRE(VFS::Unmount("/usb0") == VFS::MountResult::Done);
+}
+
+TEST_CASE("USB T20 sync and unmount of a USB volume each reach the drive's flush, and a failure is reported")
+{
+    Rig rig(PartitionedImage());
+    REQUIRE(Drivers::OpenDiskVolumes(*rig.disk) == 2);
+    REQUIRE(Mount("fat16", rig.Source(1).c_str(), "/usb1") == VFS::MountResult::Done);
+    REQUIRE(Created("/usb1/NEW.TXT"));
+
+    uint64_t flushes = rig.driver.flushes;
+    REQUIRE(VFS::SyncAll());
+    REQUIRE(rig.driver.flushes == flushes + 1);
+    REQUIRE(VFS::SyncAll());
+    REQUIRE(rig.driver.flushes == flushes + 2);
+
+    rig.driver.fail_flush = true;
+    REQUIRE_FALSE(VFS::SyncAll());
+    REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Failed);
+    REQUIRE(VFS::MountedAt("/usb1") != nullptr);
+    REQUIRE(ReadFile("/usb1/BLOCK.TXT") == FileText);
+
+    rig.driver.fail_flush = false;
+    flushes = rig.driver.flushes;
+    REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
+    REQUIRE(rig.driver.flushes == flushes + 1);
+    REQUIRE(VFS::MountedAt("/usb1") == nullptr);
+}
+
+TEST_CASE("USB T20 detaching every mount at shutdown flushes each volume")
+{
+    Rig rig(PartitionedImage());
+    REQUIRE(Drivers::OpenDiskVolumes(*rig.disk) == 2);
+    REQUIRE(Mount("fat16", rig.Source(1).c_str(), "/usb1") == VFS::MountResult::Done);
+    REQUIRE(Mount("fat16", rig.Source(2).c_str(), "/usb2") == VFS::MountResult::Done);
+    const uint64_t flushes = rig.driver.flushes;
+    REQUIRE(VFS::DetachAll(false));
+    REQUIRE(rig.driver.flushes == flushes + 2);
+    REQUIRE(rig.disk->Flush());
+    REQUIRE(rig.driver.flushes == flushes + 3);
+    REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
+    REQUIRE(VFS::Unmount("/usb2") == VFS::MountResult::Done);
 }

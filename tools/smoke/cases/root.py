@@ -14,9 +14,19 @@ from create_test_disk import (
 )
 
 from smoke.boot import PANIC_MARKER, RESCUE_INIT_MESSAGE, SHELL_BANNER
-from smoke.cases import storage
 from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
 from smoke.cases.normal_boot import NormalBoot
+from smoke.cases.storage import ETC_DEFAULTS
+from smoke.disk_checks import (
+    Debugfs,
+    E2fsck,
+    FindE2fsprogs,
+    IsMarkedClean,
+    NeedsRecovery,
+    NotFound,
+    PartitionBytes,
+    RunDebugfsWrite,
+)
 from smoke.script import Lines
 
 # The partitions of the test disk that root= can name instead of the default
@@ -75,7 +85,7 @@ class NamedRoot(Case):
     def Start(self):
         if self.name != EMPTY_ROOT:
             return
-        mke2fs = storage.FindE2fsprogs("mke2fs")
+        mke2fs = FindE2fsprogs("mke2fs")
         if mke2fs is None:
             raise RuntimeError("mke2fs not found; install e2fsprogs")
         sectors = self.end - self.first
@@ -106,7 +116,7 @@ class NamedRoot(Case):
                 disk.write(volume.read_bytes())
 
     def AddServices(self, work, volume):
-        debugfs = storage.FindE2fsprogs("debugfs")
+        debugfs = FindE2fsprogs("debugfs")
         if debugfs is None:
             raise RuntimeError("debugfs not found; install e2fsprogs")
         broken = Path(work) / "broken"
@@ -123,7 +133,7 @@ class NamedRoot(Case):
             f"write {good} /etc/init.d/good\n"
             f"mkdir /sbin\nwrite {broken} /sbin/init\n"
         )
-        storage.RunDebugfsWrite(debugfs, str(volume), str(commands))
+        RunDebugfsWrite(debugfs, str(volume), str(commands))
 
     def Script(self, session):
         return Lines(
@@ -181,25 +191,25 @@ class NamedRoot(Case):
             return f"the system did not power off{result.limit_note}"
         if not result.exited_by_itself:
             return "QEMU kept running after shutdown"
-        debugfs = storage.FindE2fsprogs("debugfs")
+        debugfs = FindE2fsprogs("debugfs")
         if debugfs is None:
             return "debugfs not found; install e2fsprogs"
         with tempfile.TemporaryDirectory() as work:
             volume = Path(work) / "root.img"
             volume.write_bytes(
-                storage.PartitionBytes(self.args.disk, self.first, self.end)
+                PartitionBytes(self.args.disk, self.first, self.end)
             )
-            if storage.NeedsRecovery(volume):
+            if NeedsRecovery(volume):
                 return "the shutdown did not close the root's journal"
-            if not storage.IsMarkedClean(volume):
+            if not IsMarkedClean(volume):
                 return "the shutdown did not mark the root clean"
-            checked = storage.E2fsck(str(volume))
+            checked = E2fsck(str(volume))
             if checked is not None:
                 return checked
-            found = storage.Debugfs(debugfs, str(volume), "cat /rootwrite.txt")
+            found = Debugfs(debugfs, str(volume), "cat /rootwrite.txt")
             if found != WRITTEN:
                 return "debugfs read a different /rootwrite.txt"
-            listed = storage.Debugfs(debugfs, str(volume), "ls -p /").decode()
+            listed = Debugfs(debugfs, str(volume), "ls -p /").decode()
             names = {
                 line.split("/")[5] for line in listed.splitlines() if line
             }
@@ -217,13 +227,13 @@ class NamedRoot(Case):
             if self.name != EMPTY_ROOT and names.intersection(TEST_FILES):
                 return "the root holds test files the boot should not need"
             for name in ("hosts", "resolv.conf"):
-                expected = (storage.ETC_DEFAULTS / name).read_bytes()
+                expected = (ETC_DEFAULTS / name).read_bytes()
                 if (
-                    storage.Debugfs(debugfs, str(volume), f"cat /etc/{name}")
+                    Debugfs(debugfs, str(volume), f"cat /etc/{name}")
                     != expected
                 ):
                     return f"the root's /etc/{name} is not the default"
-            if not storage.NotFound(debugfs, str(volume), "/etc/init.conf"):
+            if not NotFound(debugfs, str(volume), "/etc/init.conf"):
                 return "the root's /etc has an init.conf"
             if broken:
                 for name, expected in (
@@ -231,7 +241,7 @@ class NamedRoot(Case):
                     ("good", GOOD_SERVICE),
                 ):
                     if (
-                        storage.Debugfs(
+                        Debugfs(
                             debugfs, str(volume), f"cat /etc/init.d/{name}"
                         )
                         != expected

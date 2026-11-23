@@ -2549,8 +2549,11 @@ uint64_t UsbStorageTask(void*)
     }
     Serial::Write("KERN/USBSTORAGE: transfer past the end refused\n");
 
+    // The drive's unused tail, below the last sector: the shell session owns the volumes.
+    const uint64_t span_start = last - UsbStorageSpanSectors;
     FillPattern(pattern, span_bytes, 2);
-    if (!disk->Write(0, {pattern, span_bytes}) || !disk->Read(0, {readback, span_bytes}))
+    if (!disk->Write(span_start, {pattern, span_bytes}) ||
+        !disk->Read(span_start, {readback, span_bytes}))
     {
         UsbStorageFail("the multi-command transfer");
     }

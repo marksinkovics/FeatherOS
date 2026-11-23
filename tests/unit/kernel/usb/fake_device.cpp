@@ -893,6 +893,11 @@ void ScriptedMassStorage::NoMedium(bool missing)
     no_medium_ = missing;
 }
 
+void ScriptedMassStorage::SynchronizeCacheDataProtect(bool protect)
+{
+    sync_data_protect_ = protect;
+}
+
 void ScriptedMassStorage::SynchronizeCacheUnsupported(bool unsupported)
 {
     sync_unsupported_ = unsupported;
@@ -1084,7 +1089,11 @@ ScriptedMassStorage::Answer ScriptedMassStorage::Check(const Cbw& cbw)
         answer.data = {3, 0, static_cast<uint8_t>(model_.write_protected ? 0x80 : 0), 0};
         break;
     case OpSynchronizeCache:
-        if (sync_unsupported_)
+        if (sync_data_protect_)
+        {
+            CheckCondition(&answer, cbw, 7, 0x27, 0);
+        }
+        else if (sync_unsupported_)
         {
             CheckCondition(&answer, cbw, 5, 0x20, 0);
         }

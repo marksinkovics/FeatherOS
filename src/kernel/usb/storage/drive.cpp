@@ -918,6 +918,11 @@ FeatherDisk::Status Drive::Flush()
         {
             return std::unexpected(FeatherDisk::Error::Io);
         }
+        // A write-protected medium has nothing cached to write.
+        if (info_.read_only)
+        {
+            return {};
+        }
     }
     Sync::MutexGuard guard(io_lock_);
     if (sync_unsupported_)
@@ -929,6 +934,12 @@ FeatherDisk::Status Drive::Flush()
     Bot::Result result{};
     const Disposition disposition =
         Perform(command, nullptr, environment_.NowMilliseconds() + WaitBudgetMs, false, &result);
+    if (disposition == Disposition::ReadOnly)
+    {
+        Sync::SpinLockGuard state(state_lock_);
+        info_.read_only = true;
+        return {};
+    }
     if (disposition != Disposition::Good)
     {
         return std::unexpected(FeatherDisk::Error::Io);

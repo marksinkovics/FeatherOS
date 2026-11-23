@@ -175,6 +175,8 @@ public:
     void WriteProtect(bool protect);
     void NoMedium(bool missing);
     void SynchronizeCacheUnsupported(bool unsupported);
+    // SYNCHRONIZE CACHE answers DATA PROTECT, as a drive whose switch was flipped may.
+    void SynchronizeCacheDataProtect(bool protect);
     void ReportBlocks(uint64_t blocks);
     // GET MAX LUN answers this, or stalls.
     void SetMaxLun(uint8_t lun, bool stall = false);
@@ -242,6 +244,7 @@ private:
     std::deque<uint8_t> unit_attentions_;
     bool no_medium_ = false;
     bool sync_unsupported_ = false;
+    bool sync_data_protect_ = false;
     bool ejected_ = false;
     uint64_t reported_blocks_ = 0;
     uint8_t max_lun_ = 0;

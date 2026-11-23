@@ -78,8 +78,8 @@ SWITCHES = {
     ),
     "usb-storage": (
         UsbStorage,
-        "Read and write a USB mass-storage drive through the kernel's test "
-        "hook",
+        "Read and write four USB mass-storage drives through the kernel's "
+        "test hook and the shell, then check their images on the host",
     ),
     "nodisk": (
         NoDisk,

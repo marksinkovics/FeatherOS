@@ -3,6 +3,8 @@
 #include "kernel/klogger.h"
 
 #include "fs/ext2.h"
+#include "fs/fat.h"
+#include "kernel/string/format.h"
 
 #include <span>
 #include <stddef.h>
@@ -162,7 +164,42 @@ bool CoreDriver::CoreReadOnly(MountMode mode) const
     return Attributes().read_only || mode == MountMode::ReadOnly;
 }
 
-bool CoreDriver::OpenPartition(std::span<const CoreKind> kinds, FeatherDisk::BlockDevice& disk,
+bool CoreDriver::MediaAllowsWrites()
+{
+    if (media == nullptr)
+    {
+        return true;
+    }
+    const Storage::DiskInfo info = media->Info();
+    const bool protected_disk = info.read_only;
+    if (!protected_disk && (!info.removable || type != &FeatherDisk::Fat::Fat16Type() ||
+                            FeatherDisk::Fat::StatusBitsClean(cached).value_or(true)))
+    {
+        return true;
+    }
+    char source[Storage::MaxDiskName + 8];
+    if (partition_number == 0)
+    {
+        String::FormatTo(source, sizeof(source), "{}", media->Name());
+    }
+    else
+    {
+        Storage::PartitionName(media->Name(), static_cast<uint32_t>(partition_number), source,
+                               sizeof(source));
+    }
+    char line[128];
+    if (String::FormatTo(line, sizeof(line),
+                         protected_disk ? "VFS: {} is write-protected, mounted read-only"
+                                        : "VFS: {} was not cleanly unmounted (FAT16 dirty bits); "
+                                          "mounted read-only, run fsck.fat",
+                         source))
+    {
+        logger.Warning(line);
+    }
+    return false;
+}
+
+bool CoreDriver::OpenPartition(std::span<const CoreKind> kinds, Storage::Disk& disk,
                                const FeatherDisk::Partition::Range& partition,
                                FeatherDisk::PageCache* cache)
 {
@@ -186,6 +223,7 @@ bool CoreDriver::OpenPartition(std::span<const CoreKind> kinds, FeatherDisk::Blo
             type = &candidate;
             filesystem = *mounted;
             range = partition;
+            media = &disk;
             partition_number = partition.number;
             core_read_only = true;
             options = kind.options;
@@ -215,6 +253,7 @@ bool CoreDriver::Forget()
     type = nullptr;
     name = nullptr;
     range = {};
+    media = nullptr;
     partition_number = 0;
     options = {};
     core_read_only = true;
@@ -233,6 +272,7 @@ void CoreDriver::Discard()
     type = nullptr;
     name = nullptr;
     range = {};
+    media = nullptr;
     partition_number = 0;
     options = {};
     core_read_only = true;
@@ -276,7 +316,7 @@ bool CoreDriver::OpenForMount(MountMode mode, bool* writable)
     {
         return Fail(Error::Io);
     }
-    const bool read_only = CoreReadOnly(mode);
+    const bool read_only = CoreReadOnly(mode) || !MediaAllowsWrites();
     if (filesystem == nullptr || read_only != core_read_only)
     {
         if (filesystem != nullptr)

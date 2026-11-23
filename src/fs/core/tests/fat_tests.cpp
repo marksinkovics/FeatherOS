@@ -745,3 +745,39 @@ TEST_CASE("partition volumes offset sectors and stay inside the partition")
     Succeeds(empty.Read(0, sector));
     REQUIRE(sector[0] == 0xCD);
 }
+
+TEST_CASE("FAT16 reports FAT[1]'s clean-shutdown and no-error bits and never writes them")
+{
+    Fat16Image image;
+    image.SetFatEntry(1, 0xFFFF);
+    REQUIRE(Value(FeatherDisk::Fat::StatusBitsClean(image.Device())));
+
+    SECTION("bit 15 clear")
+    {
+        image.SetFatEntry(1, 0x7FFF);
+        REQUIRE_FALSE(Value(FeatherDisk::Fat::StatusBitsClean(image.Device())));
+    }
+    SECTION("bit 14 clear")
+    {
+        image.SetFatEntry(1, 0xBFFF);
+        REQUIRE_FALSE(Value(FeatherDisk::Fat::StatusBitsClean(image.Device())));
+    }
+    SECTION("other bits do not matter")
+    {
+        image.SetFatEntry(1, 0xC000);
+        REQUIRE(Value(FeatherDisk::Fat::StatusBitsClean(image.Device())));
+    }
+    SECTION("a mounted, written volume keeps the word")
+    {
+        image.SetFatEntry(1, 0x7FFF);
+        MountedFilesystem mounted(Fat16Type(), image.Device());
+        WriteNewFile(*mounted, "A.TXT", Alphabet(2000));
+        REQUIRE(image.FatEntry(1) == 0x7FFF);
+    }
+}
+
+TEST_CASE("FAT16 status bits of a device that is no FAT16 volume is Unsupported")
+{
+    MemoryDevice device(512, 64);
+    REQUIRE(ErrorOf(FeatherDisk::Fat::StatusBitsClean(device)) == Error::Unsupported);
+}

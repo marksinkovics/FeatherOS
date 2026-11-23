@@ -22,6 +22,8 @@ constexpr std::uint16_t BootSignature = 0xAA55;
 // FAT12 below this many clusters, FAT32 from the upper bound.
 constexpr std::uint32_t MinimumClusters = 4085;
 constexpr std::uint32_t MaximumClusters = 65525;
+constexpr std::uint16_t Fat16CleanShutdownBit = 0x8000;
+constexpr std::uint16_t Fat16NoErrorBit = 0x4000;
 constexpr std::uint16_t Fat16EndOfChain = 0xFFF8;
 constexpr std::uint16_t Fat16EndOfChainMark = 0xFFFF;
 constexpr std::uint16_t Fat16FreeCluster = 0;
@@ -1850,6 +1852,23 @@ constinit Fat16FilesystemType fat16_type;
 FilesystemType& Fat16Type()
 {
     return fat16_type;
+}
+
+Result<bool> StatusBitsClean(BlockDevice& volume)
+{
+    const Result<Geometry> geometry = ReadVolumeGeometry(volume);
+    if (!geometry)
+    {
+        return Failure(geometry);
+    }
+    Sector sector;
+    if (const Status read = volume.Read(geometry->reserved_sectors, sector); !read)
+    {
+        return Failure(read);
+    }
+    const std::uint16_t status = Load16(sector.data() + 2);
+    constexpr std::uint16_t Required = Fat16CleanShutdownBit | Fat16NoErrorBit;
+    return (status & Required) == Required;
 }
 
 } // namespace FeatherDisk::Fat

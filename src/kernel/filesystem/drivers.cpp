@@ -823,7 +823,7 @@ bool OpenVolume(const FeatherDisk::Partition::Range& range)
     {
         return false;
     }
-    FeatherDisk::BlockDevice& disk = BlockDevice::CoreDevice();
+    Storage::Disk& disk = *Storage::BootDisk();
     FeatherDisk::PageCache* cache = BlockDevice::CacheReady() ? &BlockDevice::Cache() : nullptr;
     if (cache != nullptr && OverlapsOpenVolume(disk, range, volume))
     {

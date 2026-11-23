@@ -895,6 +895,107 @@ TEST_CASE("usb-storage sense rules: SYNCHRONIZE CACHE unsupported is success and
     REQUIRE(fixture.disk->BotResets() == 0);
 }
 
+TEST_CASE("usb-storage T20: every flush through the disk sends SYNCHRONIZE CACHE once",
+          "[usb][usbstorage]")
+{
+    Fixture fixture;
+    FeatherOS::Storage::Disk* disk = FeatherOS::Storage::Acquire("sda");
+    REQUIRE(disk != nullptr);
+    for (size_t flushes = 1; flushes <= 3; ++flushes)
+    {
+        REQUIRE(disk->Flush());
+        REQUIRE(CountOpcode(fixture.disk, OpSynchronizeCache) == flushes);
+    }
+    REQUIRE(disk->Counters().flushes == 3);
+    disk->Release();
+}
+
+TEST_CASE("usb-storage T20: ILLEGAL REQUEST once means success now and no command ever again",
+          "[usb][usbstorage]")
+{
+    Fixture fixture;
+    fixture.disk->SynchronizeCacheUnsupported(true);
+    FeatherOS::Storage::Disk* disk = FeatherOS::Storage::Acquire("sda");
+    REQUIRE(disk != nullptr);
+    REQUIRE(disk->Flush());
+    REQUIRE(CountOpcode(fixture.disk, OpSynchronizeCache) == 1);
+    fixture.disk->SynchronizeCacheUnsupported(false);
+    for (int flushes = 0; flushes < 3; ++flushes)
+    {
+        REQUIRE(disk->Flush());
+    }
+    REQUIRE(CountOpcode(fixture.disk, OpSynchronizeCache) == 1);
+    REQUIRE(disk->Counters().flushes == 4);
+    disk->Release();
+}
+
+TEST_CASE("usb-storage T20: a flush that times out runs recovery and fails with an I/O error",
+          "[usb][usbstorage]")
+{
+    SECTION("one timeout is recovered and the retry succeeds")
+    {
+        Fixture fixture;
+        fixture.disk->FailStage(Stage::Status, Fault::Hang);
+        REQUIRE(fixture.drive->Flush());
+        REQUIRE(fixture.disk->BotResets() == 1);
+        REQUIRE(CountOpcode(fixture.disk, OpSynchronizeCache) == 2);
+    }
+    SECTION("three in a row fail, each after a recovery")
+    {
+        Fixture fixture;
+        fixture.disk->FailStage(Stage::Status, Fault::Hang, 3);
+        const auto failed = fixture.drive->Flush();
+        REQUIRE_FALSE(failed);
+        REQUIRE(failed.error() == Error::Io);
+        REQUIRE(fixture.disk->BotResets() == 3);
+        REQUIRE(CountOpcode(fixture.disk, OpSynchronizeCache) == 3);
+        REQUIRE(fixture.drive->Flush());
+    }
+}
+
+TEST_CASE("usb-storage T20: a write-protected disk gets no SYNCHRONIZE CACHE and flushes with success",
+          "[usb][usbstorage]")
+{
+    SECTION("known from MODE SENSE at the probe")
+    {
+        World world;
+        Model model;
+        model.write_protected = true;
+        const Disk disk = MakeDefaultDisk(model);
+        world.Attach(disk);
+        FeatherOS::Storage::Disk* registered = FeatherOS::Storage::Acquire("sda");
+        REQUIRE(registered != nullptr);
+        REQUIRE(registered->Info().read_only);
+        REQUIRE(registered->Flush());
+        REQUIRE(registered->Flush());
+        REQUIRE(CountOpcode(disk, OpSynchronizeCache) == 0);
+        registered->Release();
+    }
+    SECTION("known from an earlier DATA PROTECT on a write")
+    {
+        Fixture fixture;
+        fixture.disk->WriteProtect(true);
+        const std::vector<uint8_t> data(512, 0x3C);
+        REQUIRE_FALSE(fixture.drive->Write(9, 1, data.data()));
+        REQUIRE(fixture.drive->Flush());
+        REQUIRE(CountOpcode(fixture.disk, OpSynchronizeCache) == 0);
+    }
+}
+
+TEST_CASE("usb-storage T20: DATA PROTECT in answer to SYNCHRONIZE CACHE is success",
+          "[usb][usbstorage]")
+{
+    Fixture fixture;
+    fixture.disk->SynchronizeCacheDataProtect(true);
+    REQUIRE_FALSE(fixture.drive->Info().read_only);
+    REQUIRE(fixture.drive->Flush());
+    REQUIRE(CountOpcode(fixture.disk, OpSynchronizeCache) == 1);
+    REQUIRE(fixture.drive->Info().read_only);
+    REQUIRE(fixture.drive->Flush());
+    REQUIRE(CountOpcode(fixture.disk, OpSynchronizeCache) == 1);
+    REQUIRE(fixture.disk->BotResets() == 0);
+}
+
 TEST_CASE("usb-storage sense rules: DATA PROTECT on a write makes the drive read-only",
           "[usb][usbstorage]")
 {
