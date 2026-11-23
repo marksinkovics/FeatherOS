@@ -64,6 +64,8 @@ add_executable(featheros_unit_tests
     kernel/pci/pci_device_tree_tests.cpp
     kernel/pci/pci_tests.cpp
     kernel/process/futex_tests.cpp
+    kernel/storage/ahci_fis_tests.cpp
+    kernel/storage/ata_identify_tests.cpp
     kernel/storage/disk_tests.cpp
     kernel/storage/model_disk.cpp
     kernel/storage/fake_nvme.cpp
@@ -189,6 +191,8 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/storage/cache_sizing.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/core_block_device.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/disk.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/ahci/fis.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/ata/identify.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/nvme/command.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/nvme/controller.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/nvme/identify.cpp"

@@ -136,6 +136,8 @@ set(SRC
     ${SRCROOT}/storage/core_block_device.cpp
     ${SRCROOT}/storage/disk.cpp
     ${SRCROOT}/storage/page_cache.cpp
+    ${SRCROOT}/storage/ahci/fis.cpp
+    ${SRCROOT}/storage/ata/identify.cpp
     ${SRCROOT}/storage/nvme/command.cpp
     ${SRCROOT}/storage/nvme/controller.cpp
     ${SRCROOT}/storage/nvme/identify.cpp
