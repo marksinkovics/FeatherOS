@@ -140,6 +140,7 @@ set(SRC
     ${SRCROOT}/storage/nvme/controller.cpp
     ${SRCROOT}/storage/nvme/identify.cpp
     ${SRCROOT}/storage/nvme/namespace.cpp
+    ${SRCROOT}/storage/nvme/probe.cpp
     ${SRCROOT}/storage/nvme/queue.cpp
     ${SRCROOT}/storage/pci_hardware.cpp
     ${SRCROOT}/storage/virtio_disk.cpp

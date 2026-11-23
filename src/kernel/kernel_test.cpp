@@ -2597,6 +2597,207 @@ void StartUsbStorageTests()
 namespace
 {
 
+constexpr uint32_t NvmeWaitTicks = 1500;
+constexpr uint32_t NvmeSettleTicks = 5;
+constexpr uint32_t NvmeSpanSectors = 1024;
+constexpr const char NvmeMountPoint[] = "/nvme";
+
+void NvmeFail(const char* what)
+{
+    Serial::Write("KERN/NVME: FAILED ");
+    Serial::Write(what);
+    Serial::Write("\n");
+    Panic("NVMe test failed");
+}
+
+bool MountsAndReads(const char* type, const char* source, const char* path, const char* expected,
+                    Filesystem::MountMode mode)
+{
+    return VFS::Mount(type, source, NvmeMountPoint, mode) == VFS::MountResult::Done &&
+           ReadsAs(path, expected) && VFS::Unmount(NvmeMountPoint) == VFS::MountResult::Done;
+}
+
+void WaitForNvmeVolumes()
+{
+    for (uint32_t waited = 0; waited < NvmeWaitTicks; waited += NvmeSettleTicks)
+    {
+        const VFS::MountResult result =
+            VFS::Mount("ext4", "nvme0n1p4", NvmeMountPoint, Filesystem::MountMode::ReadOnly);
+        if (result == VFS::MountResult::Done)
+        {
+            if (VFS::Unmount(NvmeMountPoint) != VFS::MountResult::Done)
+            {
+                NvmeFail("unmounting nvme0n1p4 before the test");
+            }
+            return;
+        }
+        if (result != VFS::MountResult::NotFound && result != VFS::MountResult::UnknownType)
+        {
+            NvmeFail("nvme0n1p4 could not be mounted");
+        }
+        Scheduler::SleepUntil(Time::TickCount() + NvmeSettleTicks);
+    }
+    NvmeFail("the namespace's volumes were not opened");
+}
+
+void CheckNvmeVolumes()
+{
+    WaitForNvmeVolumes();
+    char text[Procfs::MaximumPartitionsFileSize] = {};
+    VFS::FileHandle file;
+    uint64_t length = 0;
+    if (!VFS::Open("/proc/partitions", &file) || !VFS::Read(&file, text, sizeof(text) - 1, &length))
+    {
+        NvmeFail("reading /proc/partitions");
+    }
+    VFS::Close(&file);
+    text[length] = '\0';
+    for (const char* line = text; *line != '\0';)
+    {
+        char buffer[96];
+        size_t used = 0;
+        while (*line != '\0' && *line != '\n' && used + 1 < sizeof(buffer))
+        {
+            buffer[used++] = *line++;
+        }
+        buffer[used] = '\0';
+        line += *line == '\n' ? 1 : 0;
+        Serial::Write("KERN/NVME: partitions: ");
+        Serial::Write(buffer);
+        Serial::Write("\n");
+    }
+    constexpr Filesystem::MountMode ReadOnly = Filesystem::MountMode::ReadOnly;
+    if (!MountsAndReads("fat16", "nvme0n1p1", "/nvme/NVME.TXT", "fat16 on nvme\n", ReadOnly))
+    {
+        NvmeFail("the FAT16 volume nvme0n1p1 did not mount and read");
+    }
+    if (!MountsAndReads("ext2", "nvme0n1p2", "/nvme/hello.txt", "Hello from the ext2 partition.\n",
+                        ReadOnly))
+    {
+        NvmeFail("the ext2 volume nvme0n1p2 did not mount and read");
+    }
+    if (!MountsAndReads("ext3", "nvme0n1p3", "/nvme/hello.txt", "Hello from the ext3 partition.\n",
+                        ReadOnly))
+    {
+        NvmeFail("the ext3 volume nvme0n1p3 did not mount and read");
+    }
+    if (!MountsAndReads("ext4", "nvme0n1p4", "/nvme/hello.txt",
+                        "Hello from the second ext4 partition.\n", ReadOnly))
+    {
+        NvmeFail("the ext4 volume nvme0n1p4 did not mount and read");
+    }
+    Serial::Write("KERN/NVME: nvme0n1p1 to p4 mounted, read and unmounted\n");
+}
+
+uint64_t NvmeTask(void*)
+{
+    Storage::Disk* disk = nullptr;
+    for (uint32_t waited = 0; disk == nullptr && waited < NvmeWaitTicks; waited += NvmeSettleTicks)
+    {
+        disk = Storage::Acquire("nvme0n1");
+        if (disk == nullptr)
+        {
+            Scheduler::SleepUntil(Time::TickCount() + NvmeSettleTicks);
+        }
+    }
+    if (disk == nullptr)
+    {
+        NvmeFail("no NVMe namespace was probed");
+    }
+    CheckNvmeVolumes();
+    const Storage::DiskInfo info = disk->Info();
+    const Storage::DiskCounters before = disk->Counters();
+    char line[96];
+    if (!String::FormatTo(line, sizeof(line), "KERN/NVME: {} {} sectors of {} bytes\n",
+                          disk->Name(), info.sector_count, info.sector_size))
+    {
+        NvmeFail("formatting");
+    }
+    Serial::Write(line);
+    if (info.sector_count < NvmeSpanSectors + 2 || info.sector_size > 4096 || info.read_only)
+    {
+        NvmeFail("the namespace is too small or read-only");
+    }
+    const uint64_t last = info.sector_count - 1;
+    const uint32_t size = info.sector_size;
+    const uint64_t span_bytes = static_cast<uint64_t>(NvmeSpanSectors) * size;
+    auto* pattern = new uint8_t[span_bytes];
+    auto* readback = new uint8_t[span_bytes];
+
+    FillPattern(pattern, size, 1);
+    if (!disk->Write(last, {pattern, size}) || !disk->Flush())
+    {
+        NvmeFail("writing the last sector");
+    }
+    if (!disk->Read(last, {readback, size}))
+    {
+        NvmeFail("reading the last sector");
+    }
+    for (uint32_t index = 0; index < size; ++index)
+    {
+        if (readback[index] != pattern[index])
+        {
+            NvmeFail("the last sector differs");
+        }
+    }
+    Serial::Write("KERN/NVME: last sector written and read back\n");
+
+    const auto past_end = disk->Read(info.sector_count, {readback, size});
+    const auto straddle = disk->Write(last, {pattern, 2 * static_cast<uint64_t>(size)});
+    if (past_end || past_end.error() != FeatherDisk::Error::InvalidArgument || straddle ||
+        straddle.error() != FeatherDisk::Error::InvalidArgument)
+    {
+        NvmeFail("a transfer past the end was not refused");
+    }
+    Serial::Write("KERN/NVME: transfer past the end refused\n");
+
+    // The image's free tail, below the last sector: the shell session owns the volumes.
+    const uint64_t span_start = last - NvmeSpanSectors;
+    FillPattern(pattern, span_bytes, 2);
+    if (!disk->Write(span_start, {pattern, span_bytes}) ||
+        !disk->Read(span_start, {readback, span_bytes}))
+    {
+        NvmeFail("the multi-command transfer");
+    }
+    for (uint64_t index = 0; index < span_bytes; ++index)
+    {
+        if (readback[index] != pattern[index])
+        {
+            NvmeFail("the multi-command transfer differs");
+        }
+    }
+    Serial::Write("KERN/NVME: multi-command transfer matched\n");
+
+    const Storage::DiskCounters counters = disk->Counters();
+    const uint64_t expected = 1 + NvmeSpanSectors;
+    if (counters.read_sectors - before.read_sectors != expected ||
+        counters.written_sectors - before.written_sectors != expected ||
+        counters.flushes - before.flushes != 1)
+    {
+        NvmeFail("the disk's counters are wrong");
+    }
+    Serial::Write("KERN/NVME: counters matched\n");
+    delete[] pattern;
+    delete[] readback;
+    disk->Release();
+    Serial::Write("KERN/NVME: tests passed\n");
+    return 0;
+}
+
+} // namespace
+
+void StartNvmeTests()
+{
+    Scheduler::TaskId task;
+    if (!Scheduler::CreateTask(NvmeTask, nullptr, &task))
+    {
+        Panic("Could not start the NVMe test task");
+    }
+}
+
+namespace
+{
+
 constexpr uint16_t EduVendor = 0x1234;
 constexpr uint16_t EduDevice = 0x11E8;
 constexpr uint32_t EduIdentification = 0x00;

@@ -97,7 +97,7 @@ _kernel_test_mode() {
     local -a modes=()
     local toggle variable
     for toggle in PANIC EXCEPTION INTERRUPT MEMORY TIMER SCHEDULER USER_PREEMPTION SMP STORAGE \
-        NETWORK INPUT PCI USB_STORAGE; do
+        NETWORK INPUT PCI USB_STORAGE NVME; do
         variable="${toggle}_TEST"
         if _is_on "${!variable:-OFF}"; then
             modes+=("$(printf '%s' "$toggle" | tr '[:upper:]_' '[:lower:]-')")
@@ -609,6 +609,9 @@ smoke_test() {
     fi
     if _is_on "${USB_STORAGE_LARGE_TEST:-OFF}"; then
         smoke_args+=(--expect-usb-storage-large)
+    fi
+    if _is_on "${NVME_TEST:-OFF}"; then
+        smoke_args+=(--expect-nvme)
     fi
     if _is_on "${USB_STICK_TEST:-OFF}"; then
         smoke_args+=(--expect-usb-stick)

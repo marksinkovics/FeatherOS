@@ -4,6 +4,7 @@
 #include "kernel/klogger.h"
 #include "kernel/pci/pci.h"
 #include "kernel/storage/kernel_environment.h"
+#include "kernel/storage/nvme/probe.h"
 #include "kernel/storage/worker.h"
 #include "kernel/sync/spinlock.h"
 #include "kernel/usb/storage/driver.h"
@@ -64,7 +65,7 @@ void LogRaidMode(const Pci::Function& function)
     logger.Warning(line);
 }
 
-bool Visit(const Pci::Function& function, void*)
+bool Visit(const Pci::Function& function, void* context)
 {
     if (function.class_code != MassStorageClass)
     {
@@ -72,6 +73,7 @@ bool Visit(const Pci::Function& function, void*)
     }
     if (function.subclass == NvmSubclass && function.prog_if == NvmeInterface)
     {
+        Nvme::Probe(*static_cast<Pci::ConfigSpace*>(context), function);
         return true;
     }
     if (function.subclass == SataSubclass && function.prog_if == AhciInterface)
@@ -98,7 +100,7 @@ bool StartControllers(const void* platform_data)
     Pci::ConfigSpace* config = Arch::Pci::Initialize(platform_data);
     if (config != nullptr)
     {
-        Pci::Enumerate(*config, Visit, nullptr);
+        Pci::Enumerate(*config, Visit, config);
     }
     return started;
 }

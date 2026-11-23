@@ -512,6 +512,10 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     {
         KernelTest::StartUsbStorageTests();
     }
+    if (KernelTest::Selected(KernelTest::Mode::Nvme))
+    {
+        KernelTest::StartNvmeTests();
+    }
 #endif
     if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
     {

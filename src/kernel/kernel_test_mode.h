@@ -23,6 +23,7 @@ enum class Mode : uint8_t
     Input,
     Pci,
     UsbStorage,
+    Nvme,
 };
 
 // False for a test= option that names no mode; options are separated by spaces.

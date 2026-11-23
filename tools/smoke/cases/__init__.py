@@ -9,6 +9,7 @@ from smoke.cases.memory import Memory
 from smoke.cases.network import Network
 from smoke.cases.no_disk import NoDisk
 from smoke.cases.normal_boot import NormalBoot
+from smoke.cases.nvme import Nvme
 from smoke.cases.panic import Panic
 from smoke.cases.pci import Pci
 from smoke.cases.power import Power
@@ -94,6 +95,12 @@ SWITCHES = {
         UsbStorageLarge,
         "Mount a sparse 3 TiB USB drive, a 4096-byte-sector drive and a "
         "drive behind a hub, write them and check their images on the host",
+    ),
+    "nvme": (
+        Nvme,
+        "Mount, write and check the four volumes of an NVMe namespace "
+        "through the kernel's test hook and the shell, then check its image "
+        "on the host",
     ),
     "usb-stick": (
         UsbStick,
