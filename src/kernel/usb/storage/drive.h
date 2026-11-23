@@ -1,6 +1,7 @@
 #ifndef FEATHEROS_USB_STORAGE_DRIVE_H
 #define FEATHEROS_USB_STORAGE_DRIVE_H
 
+#include "kernel/storage/disk.h"
 #include "kernel/storage/disk_driver.h"
 #include "kernel/sync/mutex.h"
 #include "kernel/sync/spinlock.h"
@@ -63,10 +64,10 @@ public:
     // reference.
     void Detached();
     void Retain();
-    bool Gone();
     TaskPipe& Transport();
 
     FeatherOS::Storage::DiskInfo Info() override;
+    bool Gone() override;
     FeatherDisk::Status Read(uint64_t sector, uint32_t count, uint8_t* buffer) override;
     FeatherDisk::Status Write(uint64_t sector, uint32_t count, const uint8_t* buffer) override;
     FeatherDisk::Status Flush() override;
@@ -89,6 +90,7 @@ private:
     bool Allocate();
     bool Usable();
     void MarkLost();
+    FeatherOS::Storage::Disk* TakeDisk();
     void Free();
     Bot::Result Run(const Bot::Command& command, Scsi::Sense* sense) REQUIRES(io_lock_);
     Disposition Perform(const Bot::Command& command, const uint8_t* out_data,
@@ -102,6 +104,7 @@ private:
     Usb::Status RecoverEndpoints(Device& device);
     void LogRecovery(Bot::Stage stage, Usb::Status cause);
     void LogLine(const char* message);
+    void Name(char* out, size_t capacity);
     static void OnTransferDone(DeviceTransfer& transfer);
     static bool ReadyDone(void* context);
     static bool ReadyIdle(void* context);
@@ -135,6 +138,8 @@ private:
     Bot::Stage last_stage_ GUARDED_BY(state_lock_) = Bot::Stage::Command;
     Usb::Status last_status_ GUARDED_BY(state_lock_) = Usb::Status::Success;
     bool registered_ GUARDED_BY(state_lock_) = false;
+    FeatherOS::Storage::Disk* disk_ GUARDED_BY(state_lock_) = nullptr;
+    char name_[FeatherOS::Storage::MaxDiskName] GUARDED_BY(state_lock_) = {};
     bool ejected_ GUARDED_BY(state_lock_) = false;
     FeatherOS::Storage::DiskInfo info_ GUARDED_BY(state_lock_) = {};
     DeviceTransfer transfer_ GUARDED_BY(state_lock_);
@@ -143,10 +148,6 @@ private:
     uint32_t tag_ GUARDED_BY(io_lock_) = 0;
     bool sync_unsupported_ GUARDED_BY(io_lock_) = false;
 };
-
-// The one drive the kernel test hook reads and writes until the disk registry exists; the caller
-// drops its reference with Release. Null when no probed drive is attached.
-Drive* TestDrive();
 
 } // namespace FeatherOS::Usb::Storage
 

@@ -133,7 +133,9 @@ set(SRC
     ${SRCROOT}/filesystem/path_walk.cpp
     ${SRCROOT}/storage/cache_sizing.cpp
     ${SRCROOT}/storage/core_block_device.cpp
+    ${SRCROOT}/storage/disk.cpp
     ${SRCROOT}/storage/page_cache.cpp
+    ${SRCROOT}/storage/virtio_disk.cpp
     ${SRCROOT}/storage/worker.cpp
     ${SRCROOT}/network/address.cpp
     ${SRCROOT}/network/arp.cpp

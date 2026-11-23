@@ -11,13 +11,13 @@ DEVICE_LINE = re.compile(
     r"usb-storage"
 )
 STORAGE_LINE = re.compile(
-    r"KERN/I: Storage: USB 1-(\d+), \"QEMU\" \"QEMU HARDDISK\", "
+    r"KERN/I: Storage: sda: USB 1-(\d+), \"QEMU\" \"QEMU HARDDISK\", "
     rf"{IMAGE_MEBIBYTES * 1024} KiB, {SECTOR_SIZE}-byte sectors, "
     r"removable\r?$",
     re.MULTILINE,
 )
 SECTORS_LINE = (
-    "KERN/USBSTORAGE: "
+    "KERN/USBSTORAGE: sda "
     f"{IMAGE_MEBIBYTES * 1024 * 1024 // SECTOR_SIZE} sectors of "
     f"{SECTOR_SIZE} bytes"
 )
@@ -25,6 +25,7 @@ STEPS = (
     "KERN/USBSTORAGE: last sector written and read back",
     "KERN/USBSTORAGE: transfer past the end refused",
     "KERN/USBSTORAGE: multi-command transfer matched",
+    "KERN/USBSTORAGE: counters matched",
     "KERN/USBSTORAGE: tests passed",
 )
 FAILURES = (
@@ -41,7 +42,8 @@ class UsbStorage(KernelTest):
     it through INQUIRY, TEST UNIT READY, READ CAPACITY and MODE SENSE, and
     its test hook writes and reads a pattern at the last sector, checks that
     transfers past the end are refused, and writes and reads back 128 KiB
-    that takes several commands."""
+    that takes several commands, all through the registry's disk sda, whose
+    counters it checks."""
 
     timeout = 40
     expected = "KERN/USBSTORAGE: tests passed"

@@ -7,6 +7,7 @@
 #include "kernel/filesystem/tmpfs.h"
 #include "kernel/filesystem/vfs.h"
 #include "kernel/storage/block_device.h"
+#include "kernel/storage/disk.h"
 #include "kernel/storage/page_cache.h"
 
 #include "support/filesystem_support.h"
@@ -23,6 +24,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <expected>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -221,48 +223,83 @@ std::vector<uint8_t> MakeTarArchive(const std::string& path, const std::string& 
 
 } // namespace
 
-namespace FeatherOS::BlockDevice
+namespace
 {
 
-uint64_t SectorCount()
+class FakeDriver final : public FeatherOS::Storage::DiskDriver
 {
-    return disk.size();
-}
+public:
+    FeatherOS::Storage::DiskInfo Info() override
+    {
+        FeatherOS::Storage::DiskInfo info = {};
+        info.kind = FeatherOS::Storage::DiskKind::Virtio;
+        info.sector_size = FeatherOS::BlockDevice::SectorSize;
+        info.sector_count = disk.size();
+        info.max_transfer_bytes = 64 * 1024;
+        return info;
+    }
 
-bool ReadSector(uint64_t sector, void* buffer)
-{
-    ++read_sector_count;
-    if (buffer == nullptr || sector >= disk.size() || reads_fail)
+    bool Gone() override
     {
         return false;
     }
-    std::memcpy(buffer, disk[sector].data(), SectorSize);
-    return true;
-}
 
-bool WriteSector(uint64_t sector, const void* buffer)
-{
-    if (buffer == nullptr || sector >= disk.size() || writes_fail ||
-        (write_fails_at && write_fails_at(sector)))
+    FeatherDisk::Status Read(uint64_t sector, uint32_t count, uint8_t* buffer) override
     {
-        return false;
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            ++read_sector_count;
+            if (sector + index >= disk.size() || reads_fail)
+            {
+                return std::unexpected(FeatherDisk::Error::Io);
+            }
+            std::memcpy(buffer + index * FeatherOS::BlockDevice::SectorSize,
+                        disk[sector + index].data(), FeatherOS::BlockDevice::SectorSize);
+        }
+        return {};
     }
-    ++write_sector_count;
-    if (on_write)
+
+    FeatherDisk::Status Write(uint64_t sector, uint32_t count, const uint8_t* buffer) override
     {
-        on_write(sector, buffer);
+        for (uint32_t index = 0; index < count; ++index)
+        {
+            const uint64_t at = sector + index;
+            if (at >= disk.size() || writes_fail || (write_fails_at && write_fails_at(at)))
+            {
+                return std::unexpected(FeatherDisk::Error::Io);
+            }
+            const uint8_t* data = buffer + index * FeatherOS::BlockDevice::SectorSize;
+            ++write_sector_count;
+            if (on_write)
+            {
+                on_write(at, data);
+            }
+            std::memcpy(disk[at].data(), data, FeatherOS::BlockDevice::SectorSize);
+        }
+        return {};
     }
-    std::memcpy(disk[sector].data(), buffer, SectorSize);
-    return true;
-}
 
-bool Flush()
-{
-    ++flush_count;
-    return true;
-}
+    FeatherDisk::Status Flush() override
+    {
+        ++flush_count;
+        return {};
+    }
 
-} // namespace FeatherOS::BlockDevice
+    FeatherDisk::Status Stop() override
+    {
+        return std::unexpected(FeatherDisk::Error::Unsupported);
+    }
+
+    void Release() override {}
+};
+
+FakeDriver fake_driver;
+
+// The kernel registers the virtio disk as vda before any volume opens.
+[[maybe_unused]] const bool boot_disk_registered =
+    FeatherOS::Storage::Initialize() && FeatherOS::Storage::Register(fake_driver) != nullptr;
+
+} // namespace
 
 TEST_CASE("USTAR initramfs exposes file contents")
 {

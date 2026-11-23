@@ -31,7 +31,9 @@
 #include "kernel/smp.h"
 #include "kernel/string/format.h"
 #include "kernel/storage/block_device.h"
+#include "kernel/storage/disk.h"
 #include "kernel/storage/page_cache.h"
+#include "kernel/storage/virtio_disk.h"
 #include "kernel/time/timer.h"
 #include "kernel/writeback.h"
 #include "kernel/memory/virtual_memory.h"
@@ -280,15 +282,19 @@ void MountRamRoot(KLogger& logger)
 
 void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
 {
-    if (!BlockDevice::Initialize(boot_info.platform_data, boot_info.hhdm_offset) ||
-        BlockDevice::SectorCount() < 2)
-    {
-        MountRamRoot(logger);
-        return;
-    }
     if (!BlockDevice::InitializeCache(boot_info.hhdm_offset))
     {
         Panic("Page cache initialization failed");
+    }
+    if (!Storage::Initialize())
+    {
+        Panic("Disk registry initialization failed");
+    }
+    if (!BlockDevice::Initialize(boot_info.platform_data, boot_info.hhdm_offset) ||
+        BlockDevice::SectorCount() < 2 || !BlockDevice::RegisterVirtioDisk())
+    {
+        MountRamRoot(logger);
+        return;
     }
     const char* root_type = nullptr;
     const char* root_source = nullptr;

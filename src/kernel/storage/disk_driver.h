@@ -35,6 +35,8 @@ class DiskDriver
 {
 public:
     virtual DiskInfo Info() = 0;
+    // True once the hardware is gone; the registry refuses such a driver.
+    virtual bool Gone() = 0;
     virtual FeatherDisk::Status Read(uint64_t sector, uint32_t count, uint8_t* buffer) = 0;
     virtual FeatherDisk::Status Write(uint64_t sector, uint32_t count, const uint8_t* buffer) = 0;
     virtual FeatherDisk::Status Flush() = 0;

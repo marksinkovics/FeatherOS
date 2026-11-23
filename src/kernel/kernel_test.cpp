@@ -27,13 +27,13 @@
 #include "kernel/scheduler.h"
 #include "kernel/storage/block_device.h"
 #include "kernel/storage/core_block_device.h"
+#include "kernel/storage/disk.h"
 #include "kernel/storage/page_cache.h"
 #include "kernel/storage/page_cache.h"
 #include "kernel/string/format.h"
 #include "kernel/string/memory_functions.h"
 #include "kernel/terminal/terminal.h"
 #include "kernel/time/timer.h"
-#include "kernel/usb/storage/drive.h"
 
 #if defined(ARCH_x86_64)
 #include "kernel/arch/x86_64/interrupts.h"
@@ -2046,12 +2046,12 @@ void CheckCachedRead(Filesystem::CoreDriver* volume, bool (*reads)(uint64_t), ui
         Panic("A page cache check found no volume");
     }
     volume->InvalidateCache();
-    const uint64_t cold_start = BlockDevice::DeviceStatistics().read_sectors;
+    const uint64_t cold_start = Storage::BootDisk()->Counters().read_sectors;
     if (!reads(boot_count))
     {
         Panic("A file read back different contents with a cold page cache");
     }
-    const uint64_t warm_start = BlockDevice::DeviceStatistics().read_sectors;
+    const uint64_t warm_start = Storage::BootDisk()->Counters().read_sectors;
     const uint64_t hits = BlockDevice::Cache().Statistics().hits;
     if (warm_start - cold_start < sectors)
     {
@@ -2061,7 +2061,7 @@ void CheckCachedRead(Filesystem::CoreDriver* volume, bool (*reads)(uint64_t), ui
     {
         Panic("A file read back different contents from the page cache");
     }
-    if (BlockDevice::DeviceStatistics().read_sectors != warm_start)
+    if (Storage::BootDisk()->Counters().read_sectors != warm_start)
     {
         Panic("A second read of a file went to the disk");
     }
@@ -2420,24 +2420,25 @@ void FillPattern(uint8_t* buffer, uint64_t length, uint32_t seed)
 
 uint64_t UsbStorageTask(void*)
 {
-    Usb::Storage::Drive* drive = nullptr;
-    for (uint32_t waited = 0; drive == nullptr && waited < UsbStorageWaitTicks;
+    Storage::Disk* disk = nullptr;
+    for (uint32_t waited = 0; disk == nullptr && waited < UsbStorageWaitTicks;
          waited += UsbStorageSettleTicks)
     {
-        drive = Usb::Storage::TestDrive();
-        if (drive == nullptr)
+        disk = Storage::Acquire("sda");
+        if (disk == nullptr)
         {
             Scheduler::SleepUntil(Time::TickCount() + UsbStorageSettleTicks);
         }
     }
-    if (drive == nullptr)
+    if (disk == nullptr)
     {
         UsbStorageFail("no USB drive was probed");
     }
-    const Storage::DiskInfo info = drive->Info();
+    const Storage::DiskInfo info = disk->Info();
+    const Storage::DiskCounters before = disk->Counters();
     char line[96];
-    if (!String::FormatTo(line, sizeof(line), "KERN/USBSTORAGE: {} sectors of {} bytes\n",
-                          info.sector_count, info.sector_size))
+    if (!String::FormatTo(line, sizeof(line), "KERN/USBSTORAGE: {} {} sectors of {} bytes\n",
+                          disk->Name(), info.sector_count, info.sector_size))
     {
         UsbStorageFail("formatting");
     }
@@ -2453,11 +2454,11 @@ uint64_t UsbStorageTask(void*)
     auto* readback = new uint8_t[span_bytes];
 
     FillPattern(pattern, size, 1);
-    if (!drive->Write(last, 1, pattern) || !drive->Flush())
+    if (!disk->Write(last, {pattern, size}) || !disk->Flush())
     {
         UsbStorageFail("writing the last sector");
     }
-    if (!drive->Read(last, 1, readback))
+    if (!disk->Read(last, {readback, size}))
     {
         UsbStorageFail("reading the last sector");
     }
@@ -2470,8 +2471,8 @@ uint64_t UsbStorageTask(void*)
     }
     Serial::Write("KERN/USBSTORAGE: last sector written and read back\n");
 
-    const auto past_end = drive->Read(info.sector_count, 1, readback);
-    const auto straddle = drive->Write(last, 2, pattern);
+    const auto past_end = disk->Read(info.sector_count, {readback, size});
+    const auto straddle = disk->Write(last, {pattern, 2 * static_cast<uint64_t>(size)});
     if (past_end || past_end.error() != FeatherDisk::Error::InvalidArgument || straddle ||
         straddle.error() != FeatherDisk::Error::InvalidArgument)
     {
@@ -2480,8 +2481,7 @@ uint64_t UsbStorageTask(void*)
     Serial::Write("KERN/USBSTORAGE: transfer past the end refused\n");
 
     FillPattern(pattern, span_bytes, 2);
-    if (!drive->Write(0, UsbStorageSpanSectors, pattern) ||
-        !drive->Read(0, UsbStorageSpanSectors, readback))
+    if (!disk->Write(0, {pattern, span_bytes}) || !disk->Read(0, {readback, span_bytes}))
     {
         UsbStorageFail("the multi-command transfer");
     }
@@ -2493,9 +2493,20 @@ uint64_t UsbStorageTask(void*)
         }
     }
     Serial::Write("KERN/USBSTORAGE: multi-command transfer matched\n");
+
+    const Storage::DiskCounters counters = disk->Counters();
+    const uint64_t expected_read = 1 + UsbStorageSpanSectors;
+    const uint64_t expected_written = 1 + UsbStorageSpanSectors;
+    if (counters.read_sectors - before.read_sectors != expected_read ||
+        counters.written_sectors - before.written_sectors != expected_written ||
+        counters.flushes - before.flushes != 1)
+    {
+        UsbStorageFail("the disk's counters are wrong");
+    }
+    Serial::Write("KERN/USBSTORAGE: counters matched\n");
     delete[] pattern;
     delete[] readback;
-    drive->Release();
+    disk->Release();
     Serial::Write("KERN/USBSTORAGE: tests passed\n");
     return 0;
 }

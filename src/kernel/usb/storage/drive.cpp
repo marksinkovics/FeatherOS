@@ -23,10 +23,6 @@ constexpr uint32_t TagStep = 0x10000;
 
 constinit KLogger logger;
 
-// Lock order: registry_lock, then a drive's state_lock_.
-constinit Sync::SpinLock registry_lock;
-Drive* registered GUARDED_BY(registry_lock) = nullptr;
-
 uint8_t* Bytes(const Memory::Dma::Buffer& buffer)
 {
     return const_cast<uint8_t*>(buffer.address);
@@ -396,12 +392,20 @@ uint8_t Drive::MaxLun()
     return lun;
 }
 
+void Drive::Name(char* out, size_t capacity)
+{
+    Sync::SpinLockGuard guard(state_lock_);
+    Copy(out, capacity, name_[0] != '\0' ? name_ : location_);
+}
+
 void Drive::LogLine(const char* message)
 {
+    char name[FeatherOS::Storage::MaxDiskName];
+    Name(name, sizeof(name));
     char line[160];
     Text text(line, sizeof(line));
     text.Words("Storage: ");
-    text.Words(location_);
+    text.Words(name);
     text.Words(": ");
     text.Words(message);
     if (text.Finish())
@@ -412,10 +416,12 @@ void Drive::LogLine(const char* message)
 
 void Drive::LogRecovery(Bot::Stage stage, Usb::Status cause)
 {
+    char name[FeatherOS::Storage::MaxDiskName];
+    Name(name, sizeof(name));
     char line[160];
     Text text(line, sizeof(line));
     text.Words("Storage: ");
-    text.Words(location_);
+    text.Words(name);
     text.Words(": reset recovery after ");
     text.Words(StageName(stage));
     text.Put(' ');
@@ -478,6 +484,14 @@ bool Drive::Usable()
     return !gone_ && !broken_;
 }
 
+FeatherOS::Storage::Disk* Drive::TakeDisk()
+{
+    Sync::SpinLockGuard guard(state_lock_);
+    FeatherOS::Storage::Disk* disk = disk_;
+    disk_ = nullptr;
+    return disk;
+}
+
 void Drive::MarkLost()
 {
     {
@@ -485,28 +499,26 @@ void Drive::MarkLost()
         broken_ = true;
     }
     LogLine("the medium may have changed, the drive is dropped");
+    if (FeatherOS::Storage::Disk* disk = TakeDisk())
+    {
+        FeatherOS::Storage::Remove(*disk);
+    }
 }
 
 void Drive::Detached()
 {
+    FeatherOS::Storage::Disk* disk;
     {
         Sync::SpinLockGuard guard(state_lock_);
         device_ = nullptr;
         gone_ = true;
+        disk = disk_;
+        disk_ = nullptr;
     }
     environment_.Wake(this);
-    bool held;
+    if (disk != nullptr)
     {
-        Sync::SpinLockGuard guard(registry_lock);
-        held = registered == this;
-        if (held)
-        {
-            registered = nullptr;
-        }
-    }
-    if (held)
-    {
-        Release();
+        FeatherOS::Storage::Remove(*disk);
     }
     Release();
 }
@@ -614,30 +626,41 @@ Drive::Disposition Drive::Perform(const Bot::Command& command, const uint8_t* ou
 
 bool Drive::Publish(const FeatherOS::Storage::DiskInfo& info)
 {
-    Sync::SpinLockGuard registry(registry_lock);
-    Sync::SpinLockGuard guard(state_lock_);
-    if (gone_)
     {
+        Sync::SpinLockGuard guard(state_lock_);
+        if (gone_)
+        {
+            return false;
+        }
+        info_ = info;
+        registered_ = true;
+    }
+    Retain();
+    FeatherOS::Storage::Disk* disk = FeatherOS::Storage::Register(*this);
+    if (disk == nullptr)
+    {
+        {
+            Sync::SpinLockGuard guard(state_lock_);
+            registered_ = false;
+        }
+        Release();
         return false;
     }
-    info_ = info;
-    registered_ = true;
-    if (registered == nullptr)
+    bool detached;
     {
-        registered = this;
-        Retain();
+        Sync::SpinLockGuard guard(state_lock_);
+        Copy(name_, sizeof(name_), disk->Name());
+        detached = gone_;
+        if (!detached)
+        {
+            disk_ = disk;
+        }
+    }
+    if (detached)
+    {
+        FeatherOS::Storage::Remove(*disk);
     }
     return true;
-}
-
-Drive* TestDrive()
-{
-    Sync::SpinLockGuard guard(registry_lock);
-    if (registered != nullptr)
-    {
-        registered->Retain();
-    }
-    return registered;
 }
 
 Drive::Disposition Drive::Receive(const Scsi::Cdb& cdb, uint32_t length, uint64_t wait_deadline_ms,
@@ -768,12 +791,16 @@ bool Drive::ProbeLocked()
     }
     if (!Publish(info))
     {
-        return refuse("unplugged during the probe");
+        return refuse(Gone() ? "unplugged during the probe" : "no free disk name; ignored");
     }
 
+    char name[FeatherOS::Storage::MaxDiskName];
+    Name(name, sizeof(name));
     char line[192];
     Text text(line, sizeof(line));
     text.Words("Storage: ");
+    text.Words(name);
+    text.Words(": ");
     text.Words(location_);
     text.Words(", \"");
     text.Words(inquiry.vendor);

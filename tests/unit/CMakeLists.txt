@@ -63,6 +63,7 @@ add_executable(featheros_unit_tests
     kernel/pci/pci_device_tree_tests.cpp
     kernel/pci/pci_tests.cpp
     kernel/process/futex_tests.cpp
+    kernel/storage/disk_tests.cpp
     kernel/storage/page_cache_tests.cpp
     kernel/usb/bot_tests.cpp
     kernel/usb/bulk_tests.cpp
@@ -176,6 +177,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/filesystem/path_walk.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/cache_sizing.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/core_block_device.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/disk.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/page_cache.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/worker.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"

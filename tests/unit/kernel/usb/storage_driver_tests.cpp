@@ -7,6 +7,7 @@
 #include "support/scheduler_stubs.h"
 
 #include "kernel/log_ring.h"
+#include "kernel/storage/disk.h"
 #include "kernel/storage/worker.h"
 #include "kernel/usb/device.h"
 #include "kernel/usb/hub.h"
@@ -126,6 +127,19 @@ private:
     uint64_t now_ = 1'000'000;
 };
 
+S::Drive* TestDrive()
+{
+    FeatherOS::Storage::Disk* disk = FeatherOS::Storage::Acquire("sda");
+    if (disk == nullptr)
+    {
+        return nullptr;
+    }
+    auto* drive = static_cast<S::Drive*>(&disk->Driver());
+    drive->Retain();
+    disk->Release();
+    return drive;
+}
+
 struct Held
 {
     explicit Held(S::Drive* held = nullptr) : drive(held) {}
@@ -152,6 +166,7 @@ class World
 public:
     World() : env(rig)
     {
+        FeatherOS::Storage::Initialize();
         rig.drivers = Drivers;
         rig.wrap_host = [this](T::HostController& inner) -> T::HostController&
         {
@@ -245,9 +260,9 @@ TEST_CASE("usb-storage T13: a healthy drive is probed in order and published",
 {
     World world;
     const Disk disk = MakeDefaultDisk();
-    const size_t before = LogLines("Storage: USB 1-1, \"QEMU\" \"QEMU HARDDISK\", 1024 KiB, ");
+    const size_t before = LogLines("Storage: sda: USB 1-1, \"QEMU\" \"QEMU HARDDISK\", 1024 KiB, ");
     world.Attach(disk);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     const FeatherOS::Storage::DiskInfo info = drive->Info();
     REQUIRE(info.kind == FeatherOS::Storage::DiskKind::Usb);
@@ -260,7 +275,7 @@ TEST_CASE("usb-storage T13: a healthy drive is probed in order and published",
     REQUIRE(std::string(info.location) == "USB 1-1");
     REQUIRE(Opcodes(disk) == std::vector<uint8_t>{OpInquiry, OpTestUnitReady, OpReadCapacity10,
                                                   OpModeSense});
-    REQUIRE(LogLines("Storage: USB 1-1, \"QEMU\" \"QEMU HARDDISK\", 1024 KiB, 512-byte sectors, "
+    REQUIRE(LogLines("Storage: sda: USB 1-1, \"QEMU\" \"QEMU HARDDISK\", 1024 KiB, 512-byte sectors, "
                      "removable") == before + 1);
 }
 
@@ -276,7 +291,7 @@ TEST_CASE("usb-storage I14: attach sends no BOT command; the probe waits for the
     REQUIRE(world.DriveOf(slot) != nullptr);
     REQUIRE(disk->Commands().empty());
     REQUIRE(disk->BulkReceived(0x02).empty());
-    REQUIRE(S::TestDrive() == nullptr);
+    REQUIRE(TestDrive() == nullptr);
     REQUIRE(Worker::RunNext());
     REQUIRE_FALSE(Worker::RunNext());
 }
@@ -292,7 +307,7 @@ TEST_CASE("usb-storage T13: GET MAX LUN stalls, answers 0 and 3, and only LUN 0 
         const size_t before = LogLines("LUNs, only LUN 0 is used");
         world.Attach(disk);
         REQUIRE(LogLines("LUNs, only LUN 0 is used") == before);
-        const Held drive(S::TestDrive());
+        const Held drive(TestDrive());
         REQUIRE(drive.drive != nullptr);
     }
     SECTION("three")
@@ -303,7 +318,7 @@ TEST_CASE("usb-storage T13: GET MAX LUN stalls, answers 0 and 3, and only LUN 0 
         const size_t before = LogLines("Storage: USB 1-1: 4 LUNs, only LUN 0 is used");
         world.Attach(disk);
         REQUIRE(LogLines("Storage: USB 1-1: 4 LUNs, only LUN 0 is used") == before + 1);
-        const Held drive(S::TestDrive());
+        const Held drive(TestDrive());
         REQUIRE(drive.drive != nullptr);
         std::vector<uint8_t> out(512);
         REQUIRE(drive->Read(0, 1, out.data()));
@@ -338,7 +353,7 @@ TEST_CASE("usb-storage T13: NOT READY is waited out within the probe budget", "[
         disk->NotReady(3);
         const uint64_t start = world.env.NowMilliseconds();
         world.Attach(disk);
-        const Held drive(S::TestDrive());
+        const Held drive(TestDrive());
         REQUIRE(drive.drive != nullptr);
         REQUIRE(CountOpcode(disk, OpTestUnitReady) == 4);
         REQUIRE(CountOpcode(disk, OpRequestSense) == 3);
@@ -352,7 +367,7 @@ TEST_CASE("usb-storage T13: NOT READY is waited out within the probe budget", "[
         const size_t before = LogLines("Storage: USB 1-1: did not become ready; ignored");
         const uint64_t start = world.env.NowMilliseconds();
         world.Attach(disk);
-        REQUIRE(S::TestDrive() == nullptr);
+        REQUIRE(TestDrive() == nullptr);
         REQUIRE(LogLines("Storage: USB 1-1: did not become ready; ignored") == before + 1);
         const uint64_t spent = world.env.NowMilliseconds() - start;
         REQUIRE(spent >= 9900);
@@ -370,7 +385,7 @@ TEST_CASE("usb-storage T13: UNIT ATTENTION after a power-on or reset is retried"
         const Disk disk = MakeDefaultDisk();
         disk->UnitAttention(0x29);
         world.Attach(disk);
-        const Held drive(S::TestDrive());
+        const Held drive(TestDrive());
         REQUIRE(drive.drive != nullptr);
     }
     SECTION("medium may have changed, at probe")
@@ -379,7 +394,7 @@ TEST_CASE("usb-storage T13: UNIT ATTENTION after a power-on or reset is retried"
         const Disk disk = MakeDefaultDisk();
         disk->UnitAttention(0x28);
         world.Attach(disk);
-        const Held drive(S::TestDrive());
+        const Held drive(TestDrive());
         REQUIRE(drive.drive != nullptr);
     }
     SECTION("more than three in a row give up")
@@ -388,7 +403,7 @@ TEST_CASE("usb-storage T13: UNIT ATTENTION after a power-on or reset is retried"
         const Disk disk = MakeDefaultDisk();
         disk->UnitAttention(0x29, 10);
         world.Attach(disk);
-        REQUIRE(S::TestDrive() == nullptr);
+        REQUIRE(TestDrive() == nullptr);
     }
 }
 
@@ -402,7 +417,7 @@ TEST_CASE("usb-storage T13: no medium and other device types are not registered"
         disk->NoMedium(true);
         const size_t before = LogLines("Storage: USB 1-1: no medium; ignored");
         world.Attach(disk);
-        REQUIRE(S::TestDrive() == nullptr);
+        REQUIRE(TestDrive() == nullptr);
         REQUIRE(LogLines("Storage: USB 1-1: no medium; ignored") == before + 1);
         REQUIRE(CountOpcode(disk, OpReadCapacity10) == 0);
     }
@@ -414,7 +429,7 @@ TEST_CASE("usb-storage T13: no medium and other device types are not registered"
         const Disk disk = MakeDefaultDisk(model);
         const size_t before = LogLines("Storage: USB 1-1: device type 05 is not a disk; ignored");
         world.Attach(disk);
-        REQUIRE(S::TestDrive() == nullptr);
+        REQUIRE(TestDrive() == nullptr);
         REQUIRE(LogLines("Storage: USB 1-1: device type 05 is not a disk; ignored") == before + 1);
         REQUIRE(Opcodes(disk) == std::vector<uint8_t>{OpInquiry});
     }
@@ -429,7 +444,7 @@ TEST_CASE("usb-storage T13: a capacity of 0xFFFFFFFF switches to READ CAPACITY(1
     const Disk disk = MakeDefaultDisk(model);
     disk->ReportBlocks((1ULL << 32) + 100);
     world.Attach(disk);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     REQUIRE(CountOpcode(disk, OpReadCapacity10) == 1);
     REQUIRE(CountOpcode(disk, OpServiceIn16) == 1);
@@ -447,7 +462,7 @@ TEST_CASE("usb-storage T13: sector sizes 512 and 4096 are accepted, 520 refused"
         model.blocks = 64;
         const Disk disk = MakeDefaultDisk(model);
         world.Attach(disk);
-        const Held drive(S::TestDrive());
+        const Held drive(TestDrive());
         REQUIRE(drive.drive != nullptr);
         REQUIRE(drive->Info().sector_size == size);
         REQUIRE(drive->Info().sector_count == 64);
@@ -459,7 +474,7 @@ TEST_CASE("usb-storage T13: sector sizes 512 and 4096 are accepted, 520 refused"
     const size_t before =
         LogLines("Storage: USB 1-1: unusable capacity; ignored");
     world.Attach(MakeDefaultDisk(model));
-    REQUIRE(S::TestDrive() == nullptr);
+    REQUIRE(TestDrive() == nullptr);
     REQUIRE(LogLines("Storage: USB 1-1: unusable capacity; ignored") ==
             before + 1);
 }
@@ -472,7 +487,7 @@ TEST_CASE("usb-storage T13: a write-protected drive is read-only", "[usb][usbsto
     const Disk disk = MakeDefaultDisk(model);
     const size_t before = LogLines("512-byte sectors, removable, write-protected");
     world.Attach(disk);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     REQUIRE(drive->Info().read_only);
     REQUIRE(LogLines("512-byte sectors, removable, write-protected") == before + 1);
@@ -492,7 +507,7 @@ TEST_CASE("usb-storage: transfers outside the disk are refused before any comman
     World world;
     const Disk disk = MakeDefaultDisk();
     world.Attach(disk);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     const size_t sent = disk->Commands().size();
     std::vector<uint8_t> data(1024);
@@ -514,7 +529,7 @@ TEST_CASE("usb-storage T12: a data timeout runs reset recovery in the order of B
     World world;
     const Disk disk = MakeDefaultDisk();
     world.Attach(disk);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     const uint64_t start = world.env.NowMilliseconds();
     world.recording->Clear();
@@ -530,7 +545,7 @@ TEST_CASE("usb-storage T12: a data timeout runs reset recovery in the order of B
     // Nothing was sent between the failure and the end of recovery, and the next command works.
     const std::vector<uint8_t>& image = disk->Image();
     REQUIRE(std::equal(out.begin(), out.end(), image.begin() + 3 * 512));
-    REQUIRE(LogLines("Storage: USB 1-1: reset recovery after data-in timeout") >= 1);
+    REQUIRE(LogLines("Storage: sda: reset recovery after data-in timeout") >= 1);
 }
 
 TEST_CASE("usb-storage T12: a phase error or a bad status runs reset recovery",
@@ -541,7 +556,7 @@ TEST_CASE("usb-storage T12: a phase error or a bad status runs reset recovery",
         World world;
         const Disk disk = MakeDefaultDisk();
         world.Attach(disk);
-        const Held drive(S::TestDrive());
+        const Held drive(TestDrive());
         REQUIRE(drive.drive != nullptr);
         world.recording->Clear();
         disk->FailReply(reply);
@@ -560,7 +575,7 @@ TEST_CASE("usb-storage T12: a stall on the data stage is answered by the CSW, no
     World world;
     const Disk disk = MakeDefaultDisk();
     world.Attach(disk);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     world.recording->Clear();
     disk->FailStage(Stage::Data, Fault::Stall);
@@ -579,7 +594,7 @@ namespace
 {
 
 constexpr char PortResetLine[] =
-    "Storage: USB 1-1: port reset, the drive comes back as a new disk";
+    "Storage: sda: port reset, the drive comes back as a new disk";
 
 // A hung data stage whose BOMS reset stalls: recovery fails and ends in a port reset.
 void FailRecovery(const Disk& disk)
@@ -596,7 +611,7 @@ TEST_CASE("usb-storage T12: a failed BOMS reset ends in a port reset and a new d
     World world;
     const Disk disk = MakeDefaultDisk();
     S::Drive* attached = world.Attach(disk);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive == attached);
     const uint32_t resets = world.rig.fake.PortResets(1);
     const T::Device* before_device = world.rig.manager->Find(world.rig.manager->SlotOfPort(1));
@@ -616,7 +631,7 @@ TEST_CASE("usb-storage T12: a failed BOMS reset ends in a port reset and a new d
     REQUIRE(std::vector<std::string>(recorded.begin(), recorded.begin() + 3) ==
             std::vector<std::string>{"cancel 81", "cancel 02", "control 21 ff 00 00"});
     REQUIRE(drive->Gone());
-    REQUIRE(S::TestDrive() == nullptr);
+    REQUIRE(TestDrive() == nullptr);
     REQUIRE(world.rig.fake.PortResets(1) == resets + 1);
 
     // The device came back as a new one with its own drive; the old drive stays dead.
@@ -633,7 +648,7 @@ TEST_CASE("usb-storage T12: a failed BOMS reset ends in a port reset and a new d
     REQUIRE_FALSE(drive->Read(0, 1, out.data()));
     REQUIRE(disk->Commands().size() == sent);
     REQUIRE(Worker::RunNext());
-    const Held fresh(S::TestDrive());
+    const Held fresh(TestDrive());
     REQUIRE(fresh.drive == replacement);
     REQUIRE(fresh->Read(3, 1, out.data()));
     REQUIRE(std::equal(out.begin(), out.end(), disk->Image().begin() + 3 * 512));
@@ -650,22 +665,22 @@ TEST_CASE("usb-storage T12: a device behind a hub is reset through its hub port"
     world.rig.fake.Connect(1, Speed::High, true, hub);
     world.rig.Settle();
     REQUIRE(Worker::RunNext());
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     REQUIRE(std::string(drive->Info().location) == "USB 1-1.2");
     const uint32_t resets = hub->Resets(2);
     const uint32_t root_resets = world.rig.fake.PortResets(1);
-    const size_t before = LogLines("Storage: USB 1-1.2: port reset, the drive comes back");
+    const size_t before = LogLines("Storage: sda: port reset, the drive comes back");
     FailRecovery(disk);
     std::vector<uint8_t> out(512);
     REQUIRE_FALSE(drive->Read(0, 1, out.data()));
-    REQUIRE(LogLines("Storage: USB 1-1.2: port reset, the drive comes back") == before + 1);
+    REQUIRE(LogLines("Storage: sda: port reset, the drive comes back") == before + 1);
     REQUIRE(drive->Gone());
     REQUIRE(hub->Resets(2) == resets + 1);
     REQUIRE(world.rig.fake.PortResets(1) == root_resets);
     REQUIRE(disk->Count(0xA1, 0xFE) == 2);
     REQUIRE(Worker::RunNext());
-    const Held fresh(S::TestDrive());
+    const Held fresh(TestDrive());
     REQUIRE(fresh.drive != nullptr);
     REQUIRE(fresh.drive != drive.drive);
     REQUIRE(std::string(fresh->Info().location) == "USB 1-1.2");
@@ -683,7 +698,7 @@ TEST_CASE("usb-storage T12: a second port reset within 60 s leaves the port disa
         world.Attach(disk);
         std::vector<uint8_t> out(512);
         {
-            const Held drive(S::TestDrive());
+            const Held drive(TestDrive());
             FailRecovery(disk);
             REQUIRE_FALSE(drive->Read(0, 1, out.data()));
         }
@@ -692,7 +707,7 @@ TEST_CASE("usb-storage T12: a second port reset within 60 s leaves the port disa
         const uint32_t resets = world.rig.fake.PortResets(1);
         const size_t refused = LogLines("USB 1-1: needs another port reset within 60 s");
         {
-            const Held drive(S::TestDrive());
+            const Held drive(TestDrive());
             REQUIRE(drive.drive != nullptr);
             world.env.Advance(3000);
             FailRecovery(disk);
@@ -707,7 +722,7 @@ TEST_CASE("usb-storage T12: a second port reset within 60 s leaves the port disa
         world.rig.fake.Disconnect(1);
         world.rig.Settle();
         world.Attach(disk);
-        const Held again(S::TestDrive());
+        const Held again(TestDrive());
         REQUIRE(again.drive != nullptr);
         REQUIRE(again->Read(0, 1, out.data()));
     }
@@ -718,7 +733,7 @@ TEST_CASE("usb-storage T12: a second port reset within 60 s leaves the port disa
         world.Attach(disk);
         std::vector<uint8_t> out(512);
         {
-            const Held drive(S::TestDrive());
+            const Held drive(TestDrive());
             FailRecovery(disk);
             REQUIRE_FALSE(drive->Read(0, 1, out.data()));
         }
@@ -726,13 +741,13 @@ TEST_CASE("usb-storage T12: a second port reset within 60 s leaves the port disa
         world.env.Advance(T::PortResetWindowMs + 100);
         const uint32_t resets = world.rig.fake.PortResets(1);
         {
-            const Held drive(S::TestDrive());
+            const Held drive(TestDrive());
             FailRecovery(disk);
             REQUIRE_FALSE(drive->Read(0, 1, out.data()));
         }
         REQUIRE(world.rig.fake.PortResets(1) == resets + 1);
         REQUIRE(Worker::RunNext());
-        const Held fresh(S::TestDrive());
+        const Held fresh(TestDrive());
         REQUIRE(fresh.drive != nullptr);
         REQUIRE(fresh->Read(0, 1, out.data()));
     }
@@ -746,7 +761,7 @@ constexpr uint8_t OpSynchronizeCache = 0x35;
 
 struct Fixture
 {
-    Fixture() : disk(MakeDefaultDisk()), drive((world.Attach(disk), S::TestDrive()))
+    Fixture() : disk(MakeDefaultDisk()), drive((world.Attach(disk), TestDrive()))
     {
         REQUIRE(drive.drive != nullptr);
     }
@@ -903,12 +918,13 @@ TEST_CASE("usb-storage sense rules: a medium change after the probe drops the dr
           "[usb][usbstorage]")
 {
     Fixture fixture;
-    const size_t before = LogLines("Storage: USB 1-1: the medium may have changed");
+    const size_t before = LogLines("Storage: sda: the medium may have changed");
     fixture.disk->UnitAttention(0x28);
     const auto failed = fixture.Read();
     REQUIRE_FALSE(failed);
     REQUIRE(failed.error() == Error::Io);
-    REQUIRE(LogLines("Storage: USB 1-1: the medium may have changed") == before + 1);
+    REQUIRE(LogLines("Storage: sda: the medium may have changed") == before + 1);
+    REQUIRE(TestDrive() == nullptr);
     const size_t sent = fixture.disk->Commands().size();
     REQUIRE_FALSE(fixture.Read());
     const std::vector<uint8_t> data(512, 1);
@@ -923,7 +939,7 @@ TEST_CASE("usb-storage I5: a transfer that timed out is not reused until it fini
     World world;
     const Disk disk = MakeDefaultDisk();
     world.Attach(disk);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     S::Drive::TaskPipe& pipe = drive->Transport();
     disk->FailStage(Stage::Command, Fault::Hang);
@@ -987,7 +1003,7 @@ ModelRun RunModelCheck(uint32_t block_size, uint32_t operations, uint32_t seed)
     model.blocks = 4 * 1024 * 1024 / block_size;
     const Disk disk = MakeDefaultDisk(model);
     world.Attach(disk);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     std::vector<uint8_t> expected = disk->Image();
     std::mt19937 random(seed);
@@ -1077,7 +1093,7 @@ void CheckUnplug(Stage stage, bool write)
     const Disk disk = MakeDefaultDisk();
     S::Drive* attached = world.Attach(disk);
     REQUIRE(attached != nullptr);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     disk->on_unplug = [&world] { world.rig.fake.Disconnect(1); };
     disk->FailStage(stage, Fault::Unplug);
@@ -1090,7 +1106,7 @@ void CheckUnplug(Stage stage, bool write)
     REQUIRE(world.env.NowMilliseconds() - start < UnplugBoundMs);
     world.rig.Settle();
     REQUIRE(drive->Gone());
-    REQUIRE(S::TestDrive() == nullptr);
+    REQUIRE(TestDrive() == nullptr);
     const size_t sent = disk->Commands().size();
     Status status = Status::Success;
     REQUIRE_FALSE(drive->Transport().Start(S::Bot::Stage::Command, 31, &status));
@@ -1133,7 +1149,7 @@ TEST_CASE("usb-storage T15: buffers are freed once and the drive goes with its l
     const Disk disk = MakeDefaultDisk();
     world.Attach(disk);
     {
-        const Held drive(S::TestDrive());
+        const Held drive(TestDrive());
         REQUIRE(drive.drive != nullptr);
         REQUIRE(world.rig.hardware.Outstanding() > world.rig.baseline);
         world.rig.fake.Disconnect(1);
@@ -1151,7 +1167,7 @@ TEST_CASE("usb-storage T15: an unplug during recovery ends the wait", "[usb][usb
     World world;
     const Disk disk = MakeDefaultDisk();
     world.Attach(disk);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     disk->on_request = [&world](const ScriptedMassStorage::Request& request)
     {
@@ -1173,7 +1189,7 @@ TEST_CASE("usb-storage I15: a replugged device never sees the old drive's comman
     World world;
     const Disk first = MakeDefaultDisk();
     world.Attach(first);
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     world.rig.fake.Disconnect(1);
     world.rig.Settle();
@@ -1437,7 +1453,7 @@ TEST_CASE("usb-storage T22: two volumes of one drive and an unplug", "[usb][usbs
             const GateGuard guard(world.gate);
             REQUIRE(Worker::RunNext());
         }
-        const Held drive(S::TestDrive());
+        const Held drive(TestDrive());
         REQUIRE(drive.drive != nullptr);
         std::atomic<int> finished = 0;
         std::atomic<int> mismatches = 0;
@@ -1513,7 +1529,7 @@ TEST_CASE("usb-storage T22: a thread waiting for recovery while detach runs",
             const GateGuard guard(world.gate);
             REQUIRE(Worker::RunNext());
         }
-        const Held drive(S::TestDrive());
+        const Held drive(TestDrive());
         REQUIRE(drive.drive != nullptr);
         disk->FailStage(Stage::Data, Fault::Hang);
         std::atomic<int> finished = 0;
@@ -1571,7 +1587,7 @@ TEST_CASE("usb-storage T22: the worker's probe while an unplug happens",
         REQUIRE(JoinWithin(threads, finished, std::chrono::seconds(30)));
         world.Stop();
         // Published or not, a drive that is gone is not left in the registry (I17).
-        REQUIRE(S::TestDrive() == nullptr);
+        REQUIRE(TestDrive() == nullptr);
     }
 }
 
@@ -1587,7 +1603,7 @@ TEST_CASE("usb-storage T22: the manager recovers a drive while another volume wa
         const GateGuard guard(world.gate);
         REQUIRE(Worker::RunNext());
     }
-    const Held drive(S::TestDrive());
+    const Held drive(TestDrive());
     REQUIRE(drive.drive != nullptr);
     disk->FailStage(Stage::Data, Fault::Hang);
     std::atomic<int> finished = 0;
@@ -1636,7 +1652,7 @@ TEST_CASE("usb-storage T24: a thread waiting for recovery while the manager re-e
             const GateGuard guard(world.gate);
             REQUIRE(Worker::RunNext());
         }
-        const Held drive(S::TestDrive());
+        const Held drive(TestDrive());
         REQUIRE(drive.drive != nullptr);
         FailRecovery(disk);
         // Stands for the volume lock a filesystem thread holds while it reads. Detach and the
@@ -1674,7 +1690,7 @@ TEST_CASE("usb-storage T24: a thread waiting for recovery while the manager re-e
         REQUIRE(failed.load() == 2);
         REQUIRE(drive->Gone());
         REQUIRE(world.rig.fake.PortResets(1) == 2);
-        const Held fresh(S::TestDrive());
+        const Held fresh(TestDrive());
         REQUIRE(fresh.drive != nullptr);
         REQUIRE(fresh.drive != drive.drive);
         REQUIRE(disk->Count(0xA1, 0xFE) == 2);
