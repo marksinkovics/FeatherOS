@@ -21,6 +21,7 @@ from smoke.cases.timer import Timer
 from smoke.cases.usb import Usb
 from smoke.cases.usb_hub import UsbHub
 from smoke.cases.usb_keys import UsbFallback, UsbKeys
+from smoke.cases.usb_stick import UsbStick
 from smoke.cases.usb_storage import UsbStorage
 from smoke.cases.usb_storage_hotplug import UsbStorageHotplug
 from smoke.cases.usb_storage_large import UsbStorageLarge
@@ -93,6 +94,11 @@ SWITCHES = {
         UsbStorageLarge,
         "Mount a sparse 3 TiB USB drive, a 4096-byte-sector drive and a "
         "drive behind a hub, write them and check their images on the host",
+    ),
+    "usb-stick": (
+        UsbStick,
+        "Boot from the make_usb_stick.sh image on a USB drive, save dmesg "
+        "to its FAT16 log partition and check the image on the host",
     ),
     "nodisk": (
         NoDisk,

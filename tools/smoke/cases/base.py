@@ -38,6 +38,11 @@ class Case:
     def NetdevOptions(self):
         return ""
 
+    def BootMedia(self):
+        """A disk image the case boots from, on a device it adds in
+        QemuArguments, instead of the ISO."""
+        return None
+
     def QemuArguments(self):
         return []
 

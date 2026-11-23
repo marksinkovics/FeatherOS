@@ -16,7 +16,7 @@ FeatherOS has no disk driver for real machines (only virtio-blk), so on a laptop
 Either of these, after `./build.sh --arch x86_64 build`:
 
 - `LIMINE_TIMEOUT=5 ./build.sh --arch x86_64 iso` writes `build/x86_64/featheros.iso`, a hybrid image with Limine's BIOS install and an EFI partition. Without the timeout Limine's `timeout: 0` hides the menu where the command line is edited. Write it with `sudo dd if=build/x86_64/featheros.iso of=/dev/rdiskN bs=4m` on macOS (find N with `diskutil list`, unmount the stick first) or `of=/dev/sdX` on Linux.
-- `bash tools/make_usb_stick.sh [image]` writes `build/x86_64/featheros-usb.img`: a GPT disk with one FAT32 EFI system partition holding `EFI/BOOT/BOOTX64.EFI` (Limine's), `limine.conf`, `kernel.elf` and `initramfs.tar`. `LIMINE_TIMEOUT=N` (default 5) sets the menu delay and `KERNEL_CMDLINE="usb=poll"` puts words on the kernel command line. It needs mtools (`mformat`, `mcopy`, `mmd`) and python3, about 100 MiB of disk with a Debug build, and writes to a stick with the same `dd` command.
+- `bash tools/make_usb_stick.sh [image]` writes `build/x86_64/featheros-usb.img`: a GPT disk with a FAT32 EFI system partition (entry 1) holding `EFI/BOOT/BOOTX64.EFI` (Limine's), `limine.conf`, `kernel.elf` and `initramfs.tar`, then a 32 MiB FAT16 partition named `FeatherOS log` (entry 2, volume `FEATHERLOG`, a `logs/` directory) for saving the kernel log. `LOG_MIB=N` (16 to 127, default 32) sizes it. `LIMINE_TIMEOUT=N` (default 5) sets the menu delay and `KERNEL_CMDLINE="usb=poll"` puts words on the kernel command line. It needs mtools (`mformat`, `mcopy`, `mmd`) and python3, about 135 MiB of disk with a Debug build, and writes to a stick with the same `dd` command.
 
 Rehearse the stick in QEMU first (Homebrew's edk2 firmware shown):
 
@@ -27,7 +27,9 @@ qemu-system-x86_64 -machine q35 -m 512 -smp 2 -serial stdio \
     -device qemu-xhci -device usb-storage,drive=stick,bootindex=0
 ```
 
-`USB_TEST=ON X86_UEFI=ON ./build.sh --arch x86_64 test` runs the USB checks under the same firmware.
+In the rehearsal the stick is `sda`: the log shows `USB 1-1: ... usb-storage`, `Storage: sda: USB 1-1, ...` and, for the log partition, `Storage: sda2: fat16, 32768 KiB`; the ESP, `sda1`, is FAT32 and gets `Storage: sda1: no supported filesystem`. `/proc/partitions` lists `sda` and `sda2`.
+
+`USB_TEST=ON X86_UEFI=ON ./build.sh --arch x86_64 test` runs the USB checks under the same firmware, and `USB_STICK_TEST=ON X86_UEFI=ON ./build.sh --arch x86_64 test` boots the stick image from a USB drive, saves `dmesg` to the log partition and checks the image on the host.
 
 ## 3. Boot
 
@@ -51,7 +53,8 @@ Every line has a fixed prefix; `dmesg` prints them again from the kernel's 64 Ki
 | `KERN/I: SMP: N CPUs online with IPIs and timers` | the timer and the CPU count |
 | `KERN/I: USB: xHCI vvvv:dddd at bb:dd.f, N ports, N slots, N-byte contexts, <interrupt mode>` | the controller; `interrupts by polling` follows when no MSI worked |
 | `KERN/W: USB: EHCI at bb:dd.f not supported` | an EHCI controller the kernel leaves alone |
-| `KERN/I: USB 1-x: <speed> vvvv:dddd "<product>" <drivers>` | one per device, `1-5.2` behind a hub; no driver means `unbound` |
+| `KERN/I: USB 1-x: <speed> vvvv:dddd "<product>" <drivers>` | one per device, `1-5.2` behind a hub; no driver means `unbound`; a stick shows `USB 1-1: super-speed 46f4:0001 "QEMU USB HARDDRIVE" usb-storage` (QEMU's, yours has its own ids) |
+| `KERN/I: Storage: sda: USB 1-1, "<vendor>" "<product>", N KiB, 512-byte sectors, removable` | a USB drive; `sda1: no supported filesystem` is the stick's FAT32 ESP and `sda2: fat16, 32768 KiB` its log partition |
 | `KERN/I: ACPI: FADT 8042 flag set\|clear\|unknown` | whether the firmware says a PS/2 controller exists |
 | `KERN/I: Keyboard: i8042 config 0xNN, was 0xNN, flushed N bytes` | the PS/2 set-up, or `Keyboard: no i8042 controller` |
 
@@ -63,7 +66,17 @@ Most laptops have none.
 
 - The framebuffer shows the log as it happens. Photograph each screen.
 - `dmesg | head -n 60` and `dmesg | tail -n 60` page through the ring. `/proc/kmsg` is a snapshot of the same text, not Linux's consuming stream: every open starts at the oldest line still in the ring, and a line is dropped whole when the ring is full.
-- A log cannot be saved to the stick yet: the only disk driver is virtio-blk, so writing needs USB mass storage (M19 Part 2) or an NVMe/AHCI driver (M16). Until then, note the photos under "Runs".
+- Save the log to the stick's log partition by hand (the root is still a tmpfs, so nothing is saved otherwise):
+
+```sh
+cat /proc/partitions          # the stick is the sd disk with a fat16 sdX2
+mkdir /mnt
+mount -t fat16 sda2 /mnt
+dmesg > /mnt/logs/dmesg-1.txt # pick a new number per boot
+eject sda                     # then pull the stick
+```
+
+  The file appears under `FEATHERLOG/logs` on the Mac; record it under "Runs". With a USB card reader holding a card, the stick may be `sdb`: `/proc/partitions` shows which. Photos remain the fallback when the stick is not recognised.
 - The xHCI Debug Capability (a USB 3 A-to-A debug cable) is a possible later serial console.
 
 ## 6. Known blockers this milestone does not fix

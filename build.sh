@@ -30,6 +30,7 @@ _usage() {
     printf 'KERNEL_TESTS=ON builds the kernel test hooks (test, smoke, test-all and any *_TEST kernel toggle turn it on).\n'
     printf 'KERNEL_ROOT=vdaN puts root=vdaN on the kernel command line, naming the root partition (FAT16, ext2, ext3 or ext4);\n'
     printf 'ROOT_TEST=ON boots with it (vda3 by default) and checks the root.\n'
+    printf 'USB_STICK_TEST=ON X86_UEFI=ON boots the make_usb_stick.sh image from a USB drive and saves dmesg to its log partition.\n'
     printf 'NODISK_TEST=ON boots with no virtio-blk device and checks the RAM root.\n'
     printf 'KERNEL_USB=off|poll puts usb=off or usb=poll on the kernel command line (no USB, or controller events by timer).\n'
     printf 'KERNEL_USBHID=report puts usbhid=report on it (boot keyboards and mice through their report descriptors);\n'
@@ -604,6 +605,9 @@ smoke_test() {
     fi
     if _is_on "${USB_STORAGE_LARGE_TEST:-OFF}"; then
         smoke_args+=(--expect-usb-storage-large)
+    fi
+    if _is_on "${USB_STICK_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb-stick)
     fi
     if _is_on "${NODISK_TEST:-OFF}"; then
         smoke_args+=(--expect-nodisk)

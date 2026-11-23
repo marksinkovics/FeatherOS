@@ -40,6 +40,7 @@ TOGGLES = (
     "USB_STORAGE_TEST",
     "USB_STORAGE_HOTPLUG_TEST",
     "USB_STORAGE_LARGE_TEST",
+    "USB_STICK_TEST",
     "NODISK_TEST",
     "X86_UEFI",
 )
@@ -132,6 +133,8 @@ CASES = [
     *Both(66, "usb_storage", USB_STORAGE_TEST=ON),
     *Both(68, "usb_storage_hotplug", USB_STORAGE_HOTPLUG_TEST=ON),
     *Both(70, "usb_storage_large", USB_STORAGE_LARGE_TEST=ON),
+    # The make_usb_stick.sh image booted from a USB drive; skipped like 63.
+    Case("72_x86_64_usb_stick_uefi", "x86_64", USB_STICK_TEST=ON, X86_UEFI=ON),
 ]
 
 
