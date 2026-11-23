@@ -194,6 +194,10 @@ Usb::Status Drive::TaskPipe::Recover()
         {
             return Usb::Status::NoDevice;
         }
+        if (drive.broken_)
+        {
+            return Usb::Status::ControllerError;
+        }
         ++drive.request_serial_;
         stage = drive.last_stage_;
         cause = drive.last_status_;
@@ -460,7 +464,27 @@ bool Drive::Service(Device& device)
         reply_status_ = result;
     }
     environment_.Wake(this);
-    return result != Usb::Status::Success && result != Usb::Status::NoDevice;
+    const bool reset = result != Usb::Status::Success && result != Usb::Status::NoDevice;
+    if (reset)
+    {
+        LogLine("port reset, the drive comes back as a new disk");
+    }
+    return reset;
+}
+
+bool Drive::Usable()
+{
+    Sync::SpinLockGuard guard(state_lock_);
+    return !gone_ && !broken_;
+}
+
+void Drive::MarkLost()
+{
+    {
+        Sync::SpinLockGuard guard(state_lock_);
+        broken_ = true;
+    }
+    LogLine("the medium may have changed, the drive is dropped");
 }
 
 void Drive::Detached()
@@ -514,6 +538,7 @@ Drive::Disposition Drive::Perform(const Bot::Command& command, const uint8_t* ou
                                   uint64_t wait_deadline_ms, bool probing, Bot::Result* result)
 {
     uint32_t retries = 0;
+    uint32_t transport_retries = 0;
     const bool synchronize = Scsi::IsSynchronizeCache(command.cdb);
     // A command that returns data, but with a check condition, has lost it to REQUEST SENSE.
     const bool returns_data = command.direction == Scsi::Direction::In && command.length != 0;
@@ -533,7 +558,12 @@ Drive::Disposition Drive::Perform(const Bot::Command& command, const uint8_t* ou
         case Bot::Outcome::NoDevice:
             return Disposition::NoDevice;
         case Bot::Outcome::TransportFailed:
-            return Disposition::Failed;
+            // A recovery that failed leaves the drive unusable; the manager resets the port.
+            if (++transport_retries > TransportRetries || !Usable())
+            {
+                return Disposition::Failed;
+            }
+            continue;
         case Bot::Outcome::CheckCondition:
             break;
         }
@@ -552,7 +582,12 @@ Drive::Disposition Drive::Perform(const Bot::Command& command, const uint8_t* ou
             }
             break;
         case Scsi::Action::MediumChanged:
-            if (!probing || ++retries > SenseRetries)
+            if (!probing)
+            {
+                MarkLost();
+                return Disposition::Failed;
+            }
+            if (++retries > SenseRetries)
             {
                 return Disposition::Failed;
             }

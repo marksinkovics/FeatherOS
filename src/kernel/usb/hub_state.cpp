@@ -167,6 +167,14 @@ Action Step(State& state, const Event& event)
             state.phase = Phase::Failed;
         }
         return action;
+    case EventKind::RequestReset:
+        if (state.phase == Phase::Active)
+        {
+            action.detach = true;
+            state.phase = Phase::Reset;
+            action.next = Next::Reset;
+        }
+        return action;
     case EventKind::Status:
         break;
     }

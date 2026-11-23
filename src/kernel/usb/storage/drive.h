@@ -25,6 +25,7 @@ constexpr uint32_t ProbeBudgetMs = 10000;
 constexpr uint32_t WaitBudgetMs = 5000;
 constexpr uint32_t WaitStepMs = 100;
 constexpr uint32_t SenseRetries = 3;
+constexpr uint32_t TransportRetries = 2;
 constexpr uint32_t CommandPageBytes = 256;
 
 // One bulk-only mass-storage interface. Two references keep it alive: the USB binding's, dropped
@@ -86,6 +87,8 @@ private:
     ~Drive() = default;
 
     bool Allocate();
+    bool Usable();
+    void MarkLost();
     void Free();
     Bot::Result Run(const Bot::Command& command, Scsi::Sense* sense) REQUIRES(io_lock_);
     Disposition Perform(const Bot::Command& command, const uint8_t* out_data,

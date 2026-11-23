@@ -76,6 +76,7 @@ enum class EventKind : uint8_t
     ResetTimeout,
     Enumerated,
     EnumerationFailed,
+    RequestReset,
 };
 
 // status and change are the two words GET_STATUS(port) returned.

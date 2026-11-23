@@ -15,6 +15,8 @@ namespace FeatherOS::Usb
 {
 
 constexpr uint32_t UnbindRecoveries = 3;
+// A port that needs a recovery reset again within this time is left alone.
+constexpr uint32_t PortResetWindowMs = 60000;
 
 // The manager task's work for one controller: root-port changes, enumeration and removal. It is
 // the only caller of the blocking HostController calls, so one device at a time is in the
@@ -38,7 +40,11 @@ private:
     void HandleDeviceWork(const DeviceWork& work);
     void HandleHub(Device& device, Hub& hub);
     void ServiceDrivers(Device& device);
+    void Reenumerate(Device& device);
+    bool AllowPortReset(uint32_t parent_slot, uint8_t port);
+    void EnumerateRootPort(uint32_t port);
     void ServiceHubPort(Device& hub_device, Hub& hub, uint32_t port);
+    void RunHubPort(Device& hub_device, Hub& hub, uint32_t port, HubPort::Event event);
     void ServiceHubStatus(Hub& hub);
     bool ReadPortStatus(Hub& hub, uint32_t port, HubPort::Event* event);
     Device* Enumerate(const Location& location, Device* parent, uint8_t port);
@@ -52,8 +58,19 @@ private:
     static void OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_t recent,
                            Status status);
 
+    struct RecentReset
+    {
+        uint32_t parent_slot = 0;
+        uint8_t port = 0;
+        bool used = false;
+        uint64_t at_ms = 0;
+    };
+
+    static constexpr uint32_t RecentResets = 8;
+
     HostController& host_;
     Bus bus_;
+    RecentReset recent_[RecentResets] = {};
     uint32_t port_slot_[MaxRootPorts + 1] = {};
     bool port_failed_[MaxRootPorts + 1] = {};
     std::atomic<bool> unbind_[MaxDeviceSlots + 1] = {};

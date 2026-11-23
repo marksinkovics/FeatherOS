@@ -85,6 +85,8 @@ protected:
     // Class requests a subclass answers; returns false for the ones it leaves to the base.
     virtual bool HandleClass(const Request& request, std::vector<uint8_t>* response,
                              Outcome* outcome);
+    // SET_CONFIGURATION arrived: what a port reset and a new enumeration also reset.
+    virtual void Configured();
 
 private:
     struct Fault
@@ -167,6 +169,10 @@ public:
     // The next commands but INQUIRY and REQUEST SENSE: NOT READY, becoming ready.
     void NotReady(int count);
     void UnitAttention(uint8_t asc, int count = 1);
+    // The next commands but INQUIRY and REQUEST SENSE: ABORTED COMMAND.
+    void AbortedCommand(int count);
+    // The switch flipped after the probe: WRITE answers DATA PROTECT, MODE SENSE the new state.
+    void WriteProtect(bool protect);
     void NoMedium(bool missing);
     void SynchronizeCacheUnsupported(bool unsupported);
     void ReportBlocks(uint64_t blocks);
@@ -184,6 +190,7 @@ public:
 protected:
     bool HandleClass(const Request& request, std::vector<uint8_t>* response,
                      Outcome* outcome) override;
+    void Configured() override;
 
 private:
     enum class Phase
@@ -196,6 +203,8 @@ private:
     {
         bool status;
         std::vector<uint8_t> bytes;
+        // A failed IN command without data: the data stage stalls, then the CSW follows.
+        bool stall = false;
     };
 
     struct Cbw
@@ -229,6 +238,7 @@ private:
     std::map<Stage, std::deque<Fault>> stage_faults_;
     std::deque<Reply> replies_;
     int not_ready_ = 0;
+    int aborted_ = 0;
     std::deque<uint8_t> unit_attentions_;
     bool no_medium_ = false;
     bool sync_unsupported_ = false;

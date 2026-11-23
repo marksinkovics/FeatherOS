@@ -233,21 +233,33 @@ TEST_CASE("usb: a driver's service runs on the manager after PostWork", "[usb][x
     REQUIRE(bulk.serviced.size() == 1);
 }
 
-TEST_CASE("usb: a service request for a port reset is logged and does not detach the device",
+TEST_CASE("usb: a service request for a port reset detaches the device and enumerates it again",
           "[usb][xhci][service]")
 {
     ServiceRig world;
     const uint32_t slot = world.Plug(1, MakeMassStorage(Speed::High));
     REQUIRE(slot != 0);
     bulk.service_result = true;
-    const size_t before = LogLines("USB 1-1: port reset requested");
+    const uint32_t resets = world.rig.fake.PortResets(1);
+    const size_t refused = LogLines("USB 1-1: needs another port reset");
     world.Device(slot)->PostWork();
     world.rig.Settle();
     REQUIRE(bulk.serviced.size() == 1);
-    REQUIRE(LogLines("USB 1-1: port reset requested") == before + 1);
-    REQUIRE(world.rig.manager->Find(slot) != nullptr);
-    REQUIRE(T::DriverOf(*world.Device(slot), 0) == &BulkDriver);
-    REQUIRE(bulk.detaches == 0);
+    REQUIRE(bulk.detaches == 1);
+    REQUIRE(world.rig.fake.PortResets(1) == resets + 1);
+    const uint32_t again = world.rig.manager->SlotOfPort(1);
+    REQUIRE(again != 0);
+    REQUIRE(T::DriverOf(*world.Device(again), 0) == &BulkDriver);
+    REQUIRE(LogLines("USB 1-1: needs another port reset") == refused);
+
+    // A second request right after is refused: the port stays without a device.
+    world.Device(again)->PostWork();
+    world.rig.Settle();
+    REQUIRE(bulk.serviced.size() == 2);
+    REQUIRE(bulk.detaches == 2);
+    REQUIRE(world.rig.fake.PortResets(1) == resets + 1);
+    REQUIRE(world.rig.manager->SlotOfPort(1) == 0);
+    REQUIRE(LogLines("USB 1-1: needs another port reset") == refused + 1);
 }
 
 TEST_CASE("usb: work posted for a device that was unplugged is not serviced", "[usb][xhci][service]")

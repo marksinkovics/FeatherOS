@@ -167,6 +167,8 @@ ScriptedDevice::Outcome ScriptedDevice::Control(const Request& request,
     if (request.type == 0x00 && request.request == SetConfiguration)
     {
         configuration_value_ = static_cast<uint8_t>(request.value);
+        toggles_.clear();
+        Configured();
     }
     if (request.type == 0x02 && request.request == ClearFeature && request.value == EndpointHalt)
     {
@@ -179,6 +181,8 @@ bool ScriptedDevice::HandleClass(const Request&, std::vector<uint8_t>*, Outcome*
 {
     return false;
 }
+
+void ScriptedDevice::Configured() {}
 
 void ScriptedDevice::QueueReport(uint8_t endpoint, std::vector<uint8_t> report)
 {
@@ -866,6 +870,24 @@ void ScriptedMassStorage::UnitAttention(uint8_t asc, int count)
     }
 }
 
+void ScriptedMassStorage::AbortedCommand(int count)
+{
+    aborted_ = count;
+}
+
+void ScriptedMassStorage::WriteProtect(bool protect)
+{
+    model_.write_protected = protect;
+}
+
+void ScriptedMassStorage::Configured()
+{
+    phase_ = Phase::Command;
+    in_queue_.clear();
+    received_.clear();
+    hung_ = false;
+}
+
 void ScriptedMassStorage::NoMedium(bool missing)
 {
     no_medium_ = missing;
@@ -1032,6 +1054,12 @@ ScriptedMassStorage::Answer ScriptedMassStorage::Check(const Cbw& cbw)
         CheckCondition(&answer, cbw, 2, 0x04, 0x01);
         return answer;
     }
+    if (aborted_ > 0)
+    {
+        --aborted_;
+        CheckCondition(&answer, cbw, 0x0B, 0x00, 0);
+        return answer;
+    }
     switch (opcode)
     {
     case OpTestUnitReady:
@@ -1128,6 +1156,10 @@ void ScriptedMassStorage::QueueStatus(const Cbw& cbw, const Answer& answer)
     if (cbw.in && !data.empty())
     {
         in_queue_.push_back({false, data});
+    }
+    else if (cbw.in && cbw.length != 0 && status == 1)
+    {
+        in_queue_.push_back({false, {}, true});
     }
     std::vector<uint8_t> csw = Csw(tag, status, residue);
     if (faulty && reply == Reply::BadSignature)
@@ -1237,6 +1269,11 @@ ScriptedDevice::Outcome ScriptedMassStorage::ProduceBulk(uint8_t endpoint, uint3
         return Outcome::Hang;
     }
     Item& item = in_queue_.front();
+    if (item.stall)
+    {
+        in_queue_.pop_front();
+        return Outcome::Stall;
+    }
     Fault fault{};
     if (TakeStageFault(item.status ? Stage::Status : Stage::Data, &fault))
     {

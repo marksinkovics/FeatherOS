@@ -520,16 +520,14 @@ TEST_CASE("usb-storage T12: a data timeout runs reset recovery in the order of B
     world.recording->Clear();
     disk->FailStage(Stage::Data, Fault::Hang);
     std::vector<uint8_t> out(512);
-    const auto failed = drive->Read(3, 1, out.data());
-    REQUIRE_FALSE(failed);
-    REQUIRE(failed.error() == Error::Io);
+    // The drive retries the command once recovery ended.
+    REQUIRE(drive->Read(3, 1, out.data()));
     REQUIRE(world.env.NowMilliseconds() - start >= S::RecoveryTimeoutMs / 30);
     REQUIRE(world.Recorded() == std::vector<std::string>{"cancel 81", "cancel 02",
                                                          "control 21 ff 00 00", "clear-halt 81",
                                                          "clear-halt 02"});
     REQUIRE(disk->BotResets() == 1);
     // Nothing was sent between the failure and the end of recovery, and the next command works.
-    REQUIRE(drive->Read(3, 1, out.data()));
     const std::vector<uint8_t>& image = disk->Image();
     REQUIRE(std::equal(out.begin(), out.end(), image.begin() + 3 * 512));
     REQUIRE(LogLines("Storage: USB 1-1: reset recovery after data-in timeout") >= 1);
@@ -548,7 +546,7 @@ TEST_CASE("usb-storage T12: a phase error or a bad status runs reset recovery",
         world.recording->Clear();
         disk->FailReply(reply);
         std::vector<uint8_t> out(512);
-        REQUIRE_FALSE(drive->Read(0, 1, out.data()));
+        REQUIRE(drive->Read(0, 1, out.data()));
         REQUIRE(world.Recorded() == std::vector<std::string>{"cancel 81", "cancel 02",
                                                              "control 21 ff 00 00",
                                                              "clear-halt 81", "clear-halt 02"});
@@ -567,7 +565,7 @@ TEST_CASE("usb-storage T12: a stall on the data stage is answered by the CSW, no
     world.recording->Clear();
     disk->FailStage(Stage::Data, Fault::Stall);
     std::vector<uint8_t> out(512);
-    REQUIRE_FALSE(drive->Read(0, 1, out.data()));
+    REQUIRE(drive->Read(0, 1, out.data()));
     disk->FailStage(Stage::Status, Fault::Stall);
     REQUIRE(drive->Read(0, 1, out.data()));
     REQUIRE(disk->BotResets() == 0);
@@ -577,26 +575,346 @@ TEST_CASE("usb-storage T12: a stall on the data stage is answered by the CSW, no
     }
 }
 
-TEST_CASE("usb-storage T12: a failed BOMS reset fails the command and asks for a port reset",
+namespace
+{
+
+constexpr char PortResetLine[] =
+    "Storage: USB 1-1: port reset, the drive comes back as a new disk";
+
+// A hung data stage whose BOMS reset stalls: recovery fails and ends in a port reset.
+void FailRecovery(const Disk& disk)
+{
+    disk->FailControl(ScriptedMassStorage::Outcome::Stall, 1, 0xFF);
+    disk->FailStage(Stage::Data, Fault::Hang);
+}
+
+} // namespace
+
+TEST_CASE("usb-storage T12: a failed BOMS reset ends in a port reset and a new drive",
           "[usb][usbstorage]")
 {
     World world;
     const Disk disk = MakeDefaultDisk();
-    world.Attach(disk);
+    S::Drive* attached = world.Attach(disk);
     const Held drive(S::TestDrive());
-    REQUIRE(drive.drive != nullptr);
-    disk->FailControl(ScriptedMassStorage::Outcome::Stall, 1, 0xFF);
-    disk->FailStage(Stage::Data, Fault::Hang);
-    const size_t before = LogLines("USB 1-1: port reset requested");
+    REQUIRE(drive.drive == attached);
+    const uint32_t resets = world.rig.fake.PortResets(1);
+    const T::Device* before_device = world.rig.manager->Find(world.rig.manager->SlotOfPort(1));
+    const uint32_t generation = before_device->generation.load();
+    const size_t before = LogLines(PortResetLine);
+    world.recording->Clear();
+    FailRecovery(disk);
     std::vector<uint8_t> out(512);
     const auto failed = drive->Read(0, 1, out.data());
     REQUIRE_FALSE(failed);
     REQUIRE(failed.error() == Error::Io);
-    REQUIRE(LogLines("USB 1-1: port reset requested") == before + 1);
-    // No other command goes out after a recovery that failed.
+    REQUIRE(LogLines(PortResetLine) == before + 1);
+
+    // The command log ends the recovery before anything else, then the device is detached.
+    const std::vector<std::string> recorded = world.Recorded();
+    REQUIRE(recorded.size() >= 3);
+    REQUIRE(std::vector<std::string>(recorded.begin(), recorded.begin() + 3) ==
+            std::vector<std::string>{"cancel 81", "cancel 02", "control 21 ff 00 00"});
+    REQUIRE(drive->Gone());
+    REQUIRE(S::TestDrive() == nullptr);
+    REQUIRE(world.rig.fake.PortResets(1) == resets + 1);
+
+    // The device came back as a new one with its own drive; the old drive stays dead.
+    const uint32_t slot = world.rig.manager->SlotOfPort(1);
+    REQUIRE(slot != 0);
+    const T::Device* device = world.rig.manager->Find(slot);
+    REQUIRE(device != nullptr);
+    REQUIRE((device != before_device || device->generation.load() != generation));
+    S::Drive* replacement = world.DriveOf(slot);
+    REQUIRE(replacement != nullptr);
+    REQUIRE(replacement != drive.drive);
+    REQUIRE(disk->Count(0xA1, 0xFE) == 2);
     const size_t sent = disk->Commands().size();
     REQUIRE_FALSE(drive->Read(0, 1, out.data()));
     REQUIRE(disk->Commands().size() == sent);
+    REQUIRE(Worker::RunNext());
+    const Held fresh(S::TestDrive());
+    REQUIRE(fresh.drive == replacement);
+    REQUIRE(fresh->Read(3, 1, out.data()));
+    REQUIRE(std::equal(out.begin(), out.end(), disk->Image().begin() + 3 * 512));
+}
+
+TEST_CASE("usb-storage T12: a device behind a hub is reset through its hub port",
+          "[usb][usbstorage][hub]")
+{
+    World world;
+    const auto hub = T::Testing::MakeHub(Speed::High, 4);
+    const Disk disk = MakeDefaultDisk();
+    hub->Plug(2, disk, Speed::High);
+    world.plugged.push_back(1);
+    world.rig.fake.Connect(1, Speed::High, true, hub);
+    world.rig.Settle();
+    REQUIRE(Worker::RunNext());
+    const Held drive(S::TestDrive());
+    REQUIRE(drive.drive != nullptr);
+    REQUIRE(std::string(drive->Info().location) == "USB 1-1.2");
+    const uint32_t resets = hub->Resets(2);
+    const uint32_t root_resets = world.rig.fake.PortResets(1);
+    const size_t before = LogLines("Storage: USB 1-1.2: port reset, the drive comes back");
+    FailRecovery(disk);
+    std::vector<uint8_t> out(512);
+    REQUIRE_FALSE(drive->Read(0, 1, out.data()));
+    REQUIRE(LogLines("Storage: USB 1-1.2: port reset, the drive comes back") == before + 1);
+    REQUIRE(drive->Gone());
+    REQUIRE(hub->Resets(2) == resets + 1);
+    REQUIRE(world.rig.fake.PortResets(1) == root_resets);
+    REQUIRE(disk->Count(0xA1, 0xFE) == 2);
+    REQUIRE(Worker::RunNext());
+    const Held fresh(S::TestDrive());
+    REQUIRE(fresh.drive != nullptr);
+    REQUIRE(fresh.drive != drive.drive);
+    REQUIRE(std::string(fresh->Info().location) == "USB 1-1.2");
+    REQUIRE(fresh->Read(5, 1, out.data()));
+    REQUIRE(std::equal(out.begin(), out.end(), disk->Image().begin() + 5 * 512));
+}
+
+TEST_CASE("usb-storage T12: a second port reset within 60 s leaves the port disabled",
+          "[usb][usbstorage]")
+{
+    SECTION("a root port")
+    {
+        World world;
+        const Disk disk = MakeDefaultDisk();
+        world.Attach(disk);
+        std::vector<uint8_t> out(512);
+        {
+            const Held drive(S::TestDrive());
+            FailRecovery(disk);
+            REQUIRE_FALSE(drive->Read(0, 1, out.data()));
+        }
+        REQUIRE(world.rig.manager->SlotOfPort(1) != 0);
+        REQUIRE(Worker::RunNext());
+        const uint32_t resets = world.rig.fake.PortResets(1);
+        const size_t refused = LogLines("USB 1-1: needs another port reset within 60 s");
+        {
+            const Held drive(S::TestDrive());
+            REQUIRE(drive.drive != nullptr);
+            world.env.Advance(3000);
+            FailRecovery(disk);
+            REQUIRE_FALSE(drive->Read(0, 1, out.data()));
+            REQUIRE(drive->Gone());
+        }
+        REQUIRE(LogLines("USB 1-1: needs another port reset within 60 s") == refused + 1);
+        REQUIRE(world.rig.fake.PortResets(1) == resets);
+        REQUIRE(world.rig.manager->SlotOfPort(1) == 0);
+        REQUIRE_FALSE(Worker::RunNext());
+        // Pulling the plug and plugging it in again starts over.
+        world.rig.fake.Disconnect(1);
+        world.rig.Settle();
+        world.Attach(disk);
+        const Held again(S::TestDrive());
+        REQUIRE(again.drive != nullptr);
+        REQUIRE(again->Read(0, 1, out.data()));
+    }
+    SECTION("after the window another reset is allowed")
+    {
+        World world;
+        const Disk disk = MakeDefaultDisk();
+        world.Attach(disk);
+        std::vector<uint8_t> out(512);
+        {
+            const Held drive(S::TestDrive());
+            FailRecovery(disk);
+            REQUIRE_FALSE(drive->Read(0, 1, out.data()));
+        }
+        REQUIRE(Worker::RunNext());
+        world.env.Advance(T::PortResetWindowMs + 100);
+        const uint32_t resets = world.rig.fake.PortResets(1);
+        {
+            const Held drive(S::TestDrive());
+            FailRecovery(disk);
+            REQUIRE_FALSE(drive->Read(0, 1, out.data()));
+        }
+        REQUIRE(world.rig.fake.PortResets(1) == resets + 1);
+        REQUIRE(Worker::RunNext());
+        const Held fresh(S::TestDrive());
+        REQUIRE(fresh.drive != nullptr);
+        REQUIRE(fresh->Read(0, 1, out.data()));
+    }
+}
+
+namespace
+{
+
+constexpr uint8_t OpWrite10 = 0x2A;
+constexpr uint8_t OpSynchronizeCache = 0x35;
+
+struct Fixture
+{
+    Fixture() : disk(MakeDefaultDisk()), drive((world.Attach(disk), S::TestDrive()))
+    {
+        REQUIRE(drive.drive != nullptr);
+    }
+
+    FeatherDisk::Status Read(uint64_t sector = 3)
+    {
+        return drive->Read(sector, 1, out.data());
+    }
+
+    World world;
+    Disk disk;
+    Held drive;
+    std::vector<uint8_t> out = std::vector<uint8_t>(512);
+};
+
+} // namespace
+
+TEST_CASE("usb-storage T14: a command that ended in a transport failure is retried twice",
+          "[usb][usbstorage]")
+{
+    SECTION("two failures, then success")
+    {
+        Fixture fixture;
+        fixture.disk->FailReply(Reply::ShortData, 2);
+        REQUIRE(fixture.Read());
+        REQUIRE(CountOpcode(fixture.disk, OpRead10) == 3);
+        REQUIRE(std::equal(fixture.out.begin(), fixture.out.end(),
+                           fixture.disk->Image().begin() + 3 * 512));
+    }
+    SECTION("three failures end in an I/O error after three attempts")
+    {
+        Fixture fixture;
+        fixture.disk->FailReply(Reply::ShortData, 3);
+        const auto failed = fixture.Read();
+        REQUIRE_FALSE(failed);
+        REQUIRE(failed.error() == Error::Io);
+        REQUIRE(CountOpcode(fixture.disk, OpRead10) == 3);
+        REQUIRE(fixture.Read());
+    }
+    SECTION("a hang is recovered and then retried")
+    {
+        Fixture fixture;
+        fixture.disk->FailStage(Stage::Data, Fault::Hang);
+        REQUIRE(fixture.Read());
+        REQUIRE(fixture.disk->BotResets() == 1);
+        REQUIRE(CountOpcode(fixture.disk, OpRead10) == 2);
+    }
+    SECTION("a write is sent again with its data")
+    {
+        Fixture fixture;
+        fixture.disk->FailReply(Reply::PhaseError);
+        const std::vector<uint8_t> data(512, 0xA7);
+        REQUIRE(fixture.drive->Write(7, 1, data.data()));
+        REQUIRE(CountOpcode(fixture.disk, OpWrite10) == 2);
+        REQUIRE(std::equal(data.begin(), data.end(), fixture.disk->Image().begin() + 7 * 512));
+    }
+}
+
+TEST_CASE("usb-storage sense rules: UNIT ATTENTION 29 and ABORTED COMMAND are retried three times",
+          "[usb][usbstorage]")
+{
+    SECTION("power on, three in a row")
+    {
+        Fixture fixture;
+        fixture.disk->UnitAttention(0x29, 3);
+        REQUIRE(fixture.Read());
+        REQUIRE(CountOpcode(fixture.disk, OpRead10) == 4);
+    }
+    SECTION("power on, four in a row")
+    {
+        Fixture fixture;
+        fixture.disk->UnitAttention(0x29, 4);
+        const auto failed = fixture.Read();
+        REQUIRE_FALSE(failed);
+        REQUIRE(failed.error() == Error::Io);
+        REQUIRE(fixture.Read());
+    }
+    SECTION("aborted command, three in a row")
+    {
+        Fixture fixture;
+        fixture.disk->AbortedCommand(3);
+        REQUIRE(fixture.Read());
+    }
+    SECTION("aborted command, four in a row")
+    {
+        Fixture fixture;
+        fixture.disk->AbortedCommand(4);
+        REQUIRE_FALSE(fixture.Read());
+        REQUIRE(fixture.Read());
+    }
+    SECTION("no recovery runs for a check condition")
+    {
+        Fixture fixture;
+        fixture.disk->AbortedCommand(2);
+        REQUIRE(fixture.Read());
+        REQUIRE(fixture.disk->BotResets() == 0);
+    }
+}
+
+TEST_CASE("usb-storage sense rules: NOT READY waits 100 ms and retries within 5 s",
+          "[usb][usbstorage]")
+{
+    SECTION("becomes ready")
+    {
+        Fixture fixture;
+        fixture.disk->NotReady(3);
+        const uint64_t start = fixture.world.env.NowMilliseconds();
+        REQUIRE(fixture.Read());
+        REQUIRE(fixture.world.env.NowMilliseconds() - start >= 300);
+    }
+    SECTION("never becomes ready")
+    {
+        Fixture fixture;
+        fixture.disk->NotReady(100000);
+        const uint64_t start = fixture.world.env.NowMilliseconds();
+        REQUIRE_FALSE(fixture.Read());
+        const uint64_t spent = fixture.world.env.NowMilliseconds() - start;
+        REQUIRE(spent >= S::WaitBudgetMs - 200);
+        REQUIRE(spent <= S::WaitBudgetMs + 500);
+    }
+}
+
+TEST_CASE("usb-storage sense rules: SYNCHRONIZE CACHE unsupported is success and sent once",
+          "[usb][usbstorage]")
+{
+    Fixture fixture;
+    fixture.disk->SynchronizeCacheUnsupported(true);
+    REQUIRE(fixture.drive->Flush());
+    REQUIRE(fixture.drive->Flush());
+    REQUIRE(CountOpcode(fixture.disk, OpSynchronizeCache) == 1);
+    REQUIRE(fixture.disk->BotResets() == 0);
+}
+
+TEST_CASE("usb-storage sense rules: DATA PROTECT on a write makes the drive read-only",
+          "[usb][usbstorage]")
+{
+    Fixture fixture;
+    REQUIRE_FALSE(fixture.drive->Info().read_only);
+    fixture.disk->WriteProtect(true);
+    const std::vector<uint8_t> data(512, 0x3C);
+    const auto failed = fixture.drive->Write(9, 1, data.data());
+    REQUIRE_FALSE(failed);
+    REQUIRE(failed.error() == Error::ReadOnly);
+    REQUIRE(fixture.drive->Info().read_only);
+    REQUIRE(CountOpcode(fixture.disk, OpWrite10) == 1);
+    const auto again = fixture.drive->Write(9, 1, data.data());
+    REQUIRE_FALSE(again);
+    REQUIRE(again.error() == Error::ReadOnly);
+    REQUIRE(CountOpcode(fixture.disk, OpWrite10) == 1);
+    REQUIRE(fixture.Read());
+}
+
+TEST_CASE("usb-storage sense rules: a medium change after the probe drops the drive",
+          "[usb][usbstorage]")
+{
+    Fixture fixture;
+    const size_t before = LogLines("Storage: USB 1-1: the medium may have changed");
+    fixture.disk->UnitAttention(0x28);
+    const auto failed = fixture.Read();
+    REQUIRE_FALSE(failed);
+    REQUIRE(failed.error() == Error::Io);
+    REQUIRE(LogLines("Storage: USB 1-1: the medium may have changed") == before + 1);
+    const size_t sent = fixture.disk->Commands().size();
+    REQUIRE_FALSE(fixture.Read());
+    const std::vector<uint8_t> data(512, 1);
+    REQUIRE_FALSE(fixture.drive->Write(0, 1, data.data()));
+    REQUIRE_FALSE(fixture.drive->Flush());
+    REQUIRE(fixture.disk->Commands().size() == sent);
 }
 
 TEST_CASE("usb-storage I5: a transfer that timed out is not reused until it finished",
@@ -624,8 +942,7 @@ namespace
 
 struct ModelRun
 {
-    uint32_t failures = 0;
-    uint32_t attempts_max = 0;
+    uint32_t faulted = 0;
     uint32_t commands = 0;
 };
 
@@ -690,31 +1007,28 @@ ModelRun RunModelCheck(uint32_t block_size, uint32_t operations, uint32_t seed)
         {
             fault = Arm(disk, random, write);
         }
-        bool done = false;
-        uint32_t attempts = 0;
-        while (!done && attempts < 3)
-        {
-            ++attempts;
-            if (write)
-            {
-                done = static_cast<bool>(drive->Write(sector, count, data.data()));
-            }
-            else
-            {
-                std::vector<uint8_t> read(data.size());
-                done = static_cast<bool>(drive->Read(sector, count, read.data()));
-                if (done)
-                {
-                    REQUIRE(std::equal(read.begin(), read.end(),
-                                       expected.begin() + static_cast<long>(sector * block_size)));
-                }
-            }
-            run.failures += done ? 0 : 1;
-        }
+        const size_t commands_before = disk->Commands().size();
         INFO("operation " << operation << " fault " << fault << " write " << write << " sector "
                           << sector << " count " << count);
-        REQUIRE(done);
-        run.attempts_max = std::max(run.attempts_max, attempts);
+        if (write)
+        {
+            const auto result = drive->Write(sector, count, data.data());
+            REQUIRE(result);
+        }
+        else
+        {
+            std::vector<uint8_t> read(data.size());
+            const auto result = drive->Read(sector, count, read.data());
+            REQUIRE(result);
+            REQUIRE(std::equal(read.begin(), read.end(),
+                               expected.begin() + static_cast<long>(sector * block_size)));
+        }
+        // The drive retries a faulted command at most twice, so no operation sends more than three
+        // attempts of each chunk, each with a REQUEST SENSE.
+        const uint32_t chunks = (count * block_size + 65535) / 65536;
+        const size_t sent = disk->Commands().size() - commands_before;
+        REQUIRE(sent <= static_cast<size_t>(chunks) * 3 * 2);
+        run.faulted += sent > chunks ? 1 : 0;
         if (write)
         {
             std::copy(data.begin(), data.end(),
@@ -737,23 +1051,19 @@ TEST_CASE("usb-storage T14: random reads and writes with faults match the model"
     SECTION("512-byte sectors")
     {
         const ModelRun run = RunModelCheck(512, 250, 1);
-        REQUIRE(run.failures > 0);
-        REQUIRE(run.attempts_max <= 3);
+        REQUIRE(run.faulted > 0);
     }
     SECTION("4096-byte sectors")
     {
         const ModelRun run = RunModelCheck(4096, 100, 2);
-        REQUIRE(run.failures > 0);
-        REQUIRE(run.attempts_max <= 3);
+        REQUIRE(run.faulted > 0);
     }
 }
 
 TEST_CASE("usb-storage T14: the full 2000-operation model check", "[.slow][usb][usbstorage]")
 {
-    const ModelRun small = RunModelCheck(512, 2000, 3);
-    REQUIRE(small.attempts_max <= 3);
-    const ModelRun large = RunModelCheck(4096, 2000, 4);
-    REQUIRE(large.attempts_max <= 3);
+    REQUIRE(RunModelCheck(512, 2000, 3).faulted > 0);
+    REQUIRE(RunModelCheck(4096, 2000, 4).faulted > 0);
 }
 
 namespace
@@ -1304,7 +1614,73 @@ TEST_CASE("usb-storage T22: the manager recovers a drive while another volume wa
         });
     REQUIRE(JoinWithin(threads, finished, std::chrono::seconds(30)));
     world.Stop();
-    REQUIRE(first_failed.load() == 1);
+    // The first read's retry succeeds after recovery; the second one waited on io_lock.
+    REQUIRE(first_failed.load() == 0);
     REQUIRE(second_ok.load() == 1);
     REQUIRE(disk->BotResets() == 1);
+    world.rig.fake.Disconnect(1);
+    world.rig.Settle();
+}
+
+TEST_CASE("usb-storage T24: a thread waiting for recovery while the manager re-enumerates the device",
+          "[usb][usbstorage][concurrency]")
+{
+    for (int round = 0; round < 4; ++round)
+    {
+        ThreadWorld world;
+        const Disk disk = MakeDefaultDisk();
+        world.rig.fake.Connect(1, Speed::High, true, disk);
+        world.rig.Settle();
+        world.Start();
+        {
+            const GateGuard guard(world.gate);
+            REQUIRE(Worker::RunNext());
+        }
+        const Held drive(S::TestDrive());
+        REQUIRE(drive.drive != nullptr);
+        FailRecovery(disk);
+        // Stands for the volume lock a filesystem thread holds while it reads. Detach and the
+        // port reset must finish without it.
+        std::mutex volume;
+        std::atomic<int> finished = 0;
+        std::atomic<int> failed = 0;
+        std::vector<std::thread> threads;
+        for (int reader = 0; reader < 2; ++reader)
+        {
+            threads.emplace_back(
+                [&, reader, round]
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(reader * (5 + round * 5)));
+                    std::unique_lock lock(volume, std::defer_lock);
+                    while (!lock.try_lock())
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    }
+                    const GateGuard guard(world.gate);
+                    std::vector<uint8_t> out(512);
+                    const auto result = drive->Read(0, 1, out.data());
+                    failed += !result && result.error() == Error::Io ? 1 : 0;
+                    ++finished;
+                });
+        }
+        REQUIRE(JoinWithin(threads, finished, std::chrono::seconds(30)));
+        {
+            const GateGuard guard(world.gate);
+            while (Worker::RunNext())
+            {
+            }
+        }
+        world.Stop();
+        REQUIRE(failed.load() == 2);
+        REQUIRE(drive->Gone());
+        REQUIRE(world.rig.fake.PortResets(1) == 2);
+        const Held fresh(S::TestDrive());
+        REQUIRE(fresh.drive != nullptr);
+        REQUIRE(fresh.drive != drive.drive);
+        REQUIRE(disk->Count(0xA1, 0xFE) == 2);
+        // The next round's world must not find this one's drive in the registry.
+        world.rig.fake.Disconnect(1);
+        world.rig.Settle();
+        REQUIRE(fresh->Gone());
+    }
 }
