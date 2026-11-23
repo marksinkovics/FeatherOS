@@ -193,7 +193,7 @@ class Nvme(Case):
 
     def __init__(self, args):
         super().__init__(args)
-        self.directory = Path(args.build_dir) / "storage-disks"
+        self.directory = Path(args.disk).parent / "storage-disks"
         self.image = None
         self.fsck_note = ""
         self.interrupts = "unknown"

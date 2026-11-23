@@ -127,7 +127,7 @@ class UsbStorageLarge(Case):
 
     def __init__(self, args):
         super().__init__(args)
-        self.directory = Path(args.build_dir) / "usb-large-disks"
+        self.directory = Path(args.disk).parent / "usb-large-disks"
         self.images = {}
         self.fourk_fat16 = b""
         self.fsck_note = ""

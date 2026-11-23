@@ -85,7 +85,7 @@ class StoragePolicy(Case):
 
     def __init__(self, args):
         super().__init__(args)
-        self.directory = Path(args.build_dir) / "storage-policy-disks"
+        self.directory = Path(args.disk).parent / "storage-policy-disks"
         self.image = None
         self.digest = ""
 

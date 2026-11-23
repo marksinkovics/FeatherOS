@@ -96,7 +96,7 @@ class NvmeNamespaces(Case):
 
     def __init__(self, args):
         super().__init__(args)
-        self.directory = Path(args.build_dir) / "storage-namespaces"
+        self.directory = Path(args.disk).parent / "storage-namespaces"
         self.images = {}
         self.fourk_fat16 = b""
         self.fsck_note = ""
