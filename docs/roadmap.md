@@ -491,7 +491,9 @@ The goal is to boot a real x86-64 UEFI laptop and type on it. The xHCI driver an
 - Share one block-device interface so the filesystem does not depend on the controller.
 - Later, SD/eMMC for ARM boards. USB mass storage is M19 Part 2.
 
-**Complete when:** both targets mount and write the FAT test disk through NVMe and AHCI in QEMU, passing the same storage tests as virtio-blk.
+- The user's choices (2026-11-23): M16 comes right after M19 Part 2, on `feat/storage-drivers` cut from `main` once M19 Part 2 is merged. Each controller implements M19 Part 2's `Storage::DiskDriver` and registers with the disk registry, so its volumes are probed and opened like any other disk's. Every filesystem we support (FAT16, ext2, ext3, ext4) is read through NVMe and AHCI, not only FAT. On real hardware NVMe and AHCI disks are read-only by default; writes happen only in QEMU or with an explicit boot option (USB drives keep read-write on request).
+
+**Complete when:** both targets mount and read FAT16, ext2, ext3 and ext4 volumes through NVMe and AHCI in QEMU, and write them, passing the same storage tests as virtio-blk (host checks with mtools and `e2fsck -fn`).
 
 ### 17. Native Toolchain
 
