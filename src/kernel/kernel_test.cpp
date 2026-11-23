@@ -33,6 +33,7 @@
 #include "kernel/string/memory_functions.h"
 #include "kernel/terminal/terminal.h"
 #include "kernel/time/timer.h"
+#include "kernel/usb/storage/drive.h"
 
 #if defined(ARCH_x86_64)
 #include "kernel/arch/x86_64/interrupts.h"
@@ -2391,6 +2392,122 @@ void StartConsoleReports()
     if (!Scheduler::CreateTask(ConsoleReportTask, nullptr, &task))
     {
         Panic("Could not start the console report task");
+    }
+}
+
+namespace
+{
+
+constexpr uint32_t UsbStorageWaitTicks = 1500;
+constexpr uint32_t UsbStorageSettleTicks = 5;
+constexpr uint32_t UsbStorageSpanSectors = 256;
+
+void UsbStorageFail(const char* what)
+{
+    Serial::Write("KERN/USBSTORAGE: FAILED ");
+    Serial::Write(what);
+    Serial::Write("\n");
+    Panic("USB storage test failed");
+}
+
+void FillPattern(uint8_t* buffer, uint64_t length, uint32_t seed)
+{
+    for (uint64_t index = 0; index < length; ++index)
+    {
+        buffer[index] = static_cast<uint8_t>((index * 7 + seed + (index >> 8)) & 0xFF);
+    }
+}
+
+uint64_t UsbStorageTask(void*)
+{
+    Usb::Storage::Drive* drive = nullptr;
+    for (uint32_t waited = 0; drive == nullptr && waited < UsbStorageWaitTicks;
+         waited += UsbStorageSettleTicks)
+    {
+        drive = Usb::Storage::TestDrive();
+        if (drive == nullptr)
+        {
+            Scheduler::SleepUntil(Time::TickCount() + UsbStorageSettleTicks);
+        }
+    }
+    if (drive == nullptr)
+    {
+        UsbStorageFail("no USB drive was probed");
+    }
+    const Storage::DiskInfo info = drive->Info();
+    char line[96];
+    if (!String::FormatTo(line, sizeof(line), "KERN/USBSTORAGE: {} sectors of {} bytes\n",
+                          info.sector_count, info.sector_size))
+    {
+        UsbStorageFail("formatting");
+    }
+    Serial::Write(line);
+    if (info.sector_count < UsbStorageSpanSectors + 2 || info.sector_size > 4096)
+    {
+        UsbStorageFail("the drive is too small");
+    }
+    const uint64_t last = info.sector_count - 1;
+    const uint32_t size = info.sector_size;
+    const uint64_t span_bytes = static_cast<uint64_t>(UsbStorageSpanSectors) * size;
+    auto* pattern = new uint8_t[span_bytes];
+    auto* readback = new uint8_t[span_bytes];
+
+    FillPattern(pattern, size, 1);
+    if (!drive->Write(last, 1, pattern) || !drive->Flush())
+    {
+        UsbStorageFail("writing the last sector");
+    }
+    if (!drive->Read(last, 1, readback))
+    {
+        UsbStorageFail("reading the last sector");
+    }
+    for (uint32_t index = 0; index < size; ++index)
+    {
+        if (readback[index] != pattern[index])
+        {
+            UsbStorageFail("the last sector differs");
+        }
+    }
+    Serial::Write("KERN/USBSTORAGE: last sector written and read back\n");
+
+    const auto past_end = drive->Read(info.sector_count, 1, readback);
+    const auto straddle = drive->Write(last, 2, pattern);
+    if (past_end || past_end.error() != FeatherDisk::Error::InvalidArgument || straddle ||
+        straddle.error() != FeatherDisk::Error::InvalidArgument)
+    {
+        UsbStorageFail("a transfer past the end was not refused");
+    }
+    Serial::Write("KERN/USBSTORAGE: transfer past the end refused\n");
+
+    FillPattern(pattern, span_bytes, 2);
+    if (!drive->Write(0, UsbStorageSpanSectors, pattern) ||
+        !drive->Read(0, UsbStorageSpanSectors, readback))
+    {
+        UsbStorageFail("the multi-command transfer");
+    }
+    for (uint64_t index = 0; index < span_bytes; ++index)
+    {
+        if (readback[index] != pattern[index])
+        {
+            UsbStorageFail("the multi-command transfer differs");
+        }
+    }
+    Serial::Write("KERN/USBSTORAGE: multi-command transfer matched\n");
+    delete[] pattern;
+    delete[] readback;
+    drive->Release();
+    Serial::Write("KERN/USBSTORAGE: tests passed\n");
+    return 0;
+}
+
+} // namespace
+
+void StartUsbStorageTests()
+{
+    Scheduler::TaskId task;
+    if (!Scheduler::CreateTask(UsbStorageTask, nullptr, &task))
+    {
+        Panic("Could not start the USB storage test task");
     }
 }
 

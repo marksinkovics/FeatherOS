@@ -78,8 +78,10 @@ add_executable(featheros_unit_tests
     kernel/usb/hid_report_tests.cpp
     kernel/usb/hub_tests.cpp
     kernel/usb/ring_tests.cpp
+    kernel/usb/recording_host.cpp
     kernel/usb/scsi_tests.cpp
     kernel/usb/service_tests.cpp
+    kernel/usb/storage_driver_tests.cpp
     kernel/sync/volume_mutex_tests.cpp
     support/network_stubs.cpp
     support/page_cache_host.cpp
@@ -175,6 +177,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/storage/cache_sizing.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/core_block_device.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/page_cache.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/worker.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/devices.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/procfs.cpp"
@@ -282,6 +285,8 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/usb/hid/report.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/manager.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/storage/bot.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/storage/drive.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/usb/storage/driver.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/storage/scsi.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/text.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/xhci/context.cpp"

@@ -731,6 +731,555 @@ std::shared_ptr<ScriptedDevice> MakeMassStorage(Speed speed)
     return device;
 }
 
+namespace
+{
+
+constexpr uint8_t OpTestUnitReady = 0x00;
+constexpr uint8_t OpRequestSense = 0x03;
+constexpr uint8_t OpInquiry = 0x12;
+constexpr uint8_t OpModeSense6 = 0x1A;
+constexpr uint8_t OpStartStop = 0x1B;
+constexpr uint8_t OpReadCapacity10 = 0x25;
+constexpr uint8_t OpRead10 = 0x28;
+constexpr uint8_t OpWrite10 = 0x2A;
+constexpr uint8_t OpSynchronizeCache = 0x35;
+constexpr uint8_t OpRead16 = 0x88;
+constexpr uint8_t OpWrite16 = 0x8A;
+constexpr uint8_t OpServiceIn16 = 0x9E;
+constexpr uint8_t BulkIn = 0x81;
+constexpr uint8_t BulkOut = 0x02;
+constexpr uint32_t CbwBytes = 31;
+
+uint64_t BigEndian(const uint8_t* bytes, int count)
+{
+    uint64_t value = 0;
+    for (int index = 0; index < count; ++index)
+    {
+        value = value << 8 | bytes[index];
+    }
+    return value;
+}
+
+void PutBigEndian(std::vector<uint8_t>& out, uint64_t value, int count)
+{
+    for (int index = count - 1; index >= 0; --index)
+    {
+        out.push_back(static_cast<uint8_t>(value >> (8 * index)));
+    }
+}
+
+void PutLittleEndian(std::vector<uint8_t>& out, uint32_t value)
+{
+    for (int index = 0; index < 4; ++index)
+    {
+        out.push_back(static_cast<uint8_t>(value >> (8 * index)));
+    }
+}
+
+uint32_t LittleEndian(std::span<const uint8_t> bytes, size_t at)
+{
+    uint32_t value = 0;
+    for (size_t index = 0; index < 4; ++index)
+    {
+        value |= static_cast<uint32_t>(bytes[at + index]) << (8 * index);
+    }
+    return value;
+}
+
+void PutPadded(std::vector<uint8_t>& out, const std::string& text, size_t width)
+{
+    for (size_t index = 0; index < width; ++index)
+    {
+        out.push_back(index < text.size() ? static_cast<uint8_t>(text[index]) : ' ');
+    }
+}
+
+bool IsRead(uint8_t opcode)
+{
+    return opcode == OpRead10 || opcode == OpRead16;
+}
+
+bool IsWrite(uint8_t opcode)
+{
+    return opcode == OpWrite10 || opcode == OpWrite16;
+}
+
+} // namespace
+
+ScriptedMassStorage::ScriptedMassStorage(Speed speed, Model model)
+    : ScriptedDevice(MakeDeviceDescriptor(0x46f4, 0x0001, MaxPacket0Field(speed)),
+                     MassStorageConfiguration()),
+      model_(std::move(model))
+{
+    AddString(2, "QEMU USB HARDDRIVE");
+    image_.resize(model_.blocks * model_.block_size);
+    for (size_t index = 0; index < image_.size(); ++index)
+    {
+        image_[index] = static_cast<uint8_t>(index * 31 + (index >> 9) * 7 + 5);
+    }
+}
+
+std::vector<uint8_t>& ScriptedMassStorage::Image()
+{
+    return image_;
+}
+
+const ScriptedMassStorage::Model& ScriptedMassStorage::Params() const
+{
+    return model_;
+}
+
+void ScriptedMassStorage::FailStage(Stage stage, Fault fault, int count)
+{
+    if (stage == Stage::Command && fault != Fault::Unplug)
+    {
+        const Outcome outcome = fault == Fault::Stall  ? Outcome::Stall
+                                : fault == Fault::Hang ? Outcome::Hang
+                                                       : Outcome::TransactionError;
+        FailEndpoint(BulkOut, outcome, count);
+        return;
+    }
+    for (int index = 0; index < count; ++index)
+    {
+        stage_faults_[stage].push_back(fault);
+    }
+}
+
+void ScriptedMassStorage::FailReply(Reply reply, int count)
+{
+    for (int index = 0; index < count; ++index)
+    {
+        replies_.push_back(reply);
+    }
+}
+
+void ScriptedMassStorage::NotReady(int count)
+{
+    not_ready_ = count;
+}
+
+void ScriptedMassStorage::UnitAttention(uint8_t asc, int count)
+{
+    for (int index = 0; index < count; ++index)
+    {
+        unit_attentions_.push_back(asc);
+    }
+}
+
+void ScriptedMassStorage::NoMedium(bool missing)
+{
+    no_medium_ = missing;
+}
+
+void ScriptedMassStorage::SynchronizeCacheUnsupported(bool unsupported)
+{
+    sync_unsupported_ = unsupported;
+}
+
+void ScriptedMassStorage::ReportBlocks(uint64_t blocks)
+{
+    reported_blocks_ = blocks;
+}
+
+void ScriptedMassStorage::SetMaxLun(uint8_t lun, bool stall)
+{
+    max_lun_ = lun;
+    stall_max_lun_ = stall;
+}
+
+const std::vector<ScriptedMassStorage::Logged>& ScriptedMassStorage::Commands() const
+{
+    return commands_;
+}
+
+uint32_t ScriptedMassStorage::BotResets() const
+{
+    return resets_;
+}
+
+bool ScriptedMassStorage::HandleClass(const Request& request, std::vector<uint8_t>* response,
+                                      Outcome* outcome)
+{
+    if (request.type == 0xA1 && request.request == 0xFE)
+    {
+        if (stall_max_lun_)
+        {
+            *outcome = Outcome::Stall;
+        }
+        else
+        {
+            response->assign(1, max_lun_);
+        }
+        return true;
+    }
+    if (request.type == 0x21 && request.request == 0xFF)
+    {
+        ++resets_;
+        phase_ = Phase::Command;
+        in_queue_.clear();
+        received_.clear();
+        hung_ = false;
+        return true;
+    }
+    return false;
+}
+
+bool ScriptedMassStorage::TakeStageFault(Stage stage, Fault* fault)
+{
+    std::deque<Fault>& queue = stage_faults_[stage];
+    if (queue.empty())
+    {
+        return false;
+    }
+    *fault = queue.front();
+    queue.pop_front();
+    return true;
+}
+
+bool ScriptedMassStorage::TakeReply(Reply* reply)
+{
+    if (replies_.empty())
+    {
+        return false;
+    }
+    *reply = replies_.front();
+    replies_.pop_front();
+    return true;
+}
+
+std::vector<uint8_t> ScriptedMassStorage::Csw(uint32_t tag, uint8_t status, uint32_t residue)
+{
+    std::vector<uint8_t> bytes;
+    PutLittleEndian(bytes, 0x53425355);
+    PutLittleEndian(bytes, tag);
+    PutLittleEndian(bytes, residue);
+    bytes.push_back(status);
+    return bytes;
+}
+
+void ScriptedMassStorage::CheckCondition(Answer* answer, const Cbw& cbw, uint8_t key, uint8_t asc,
+                                         uint8_t ascq)
+{
+    sense_[0] = key;
+    sense_[1] = asc;
+    sense_[2] = ascq;
+    answer->status = 1;
+    answer->data.clear();
+    answer->residue = cbw.length;
+    answer->apply_write = false;
+}
+
+ScriptedMassStorage::Answer ScriptedMassStorage::Check(const Cbw& cbw)
+{
+    Answer answer;
+    const uint8_t opcode = cbw.cdb[0];
+    uint64_t lba = 0;
+    uint32_t blocks = 0;
+    if (opcode == OpRead10 || opcode == OpWrite10)
+    {
+        lba = BigEndian(&cbw.cdb[2], 4);
+        blocks = static_cast<uint32_t>(BigEndian(&cbw.cdb[7], 2));
+    }
+    else if (opcode == OpRead16 || opcode == OpWrite16)
+    {
+        lba = BigEndian(&cbw.cdb[2], 8);
+        blocks = static_cast<uint32_t>(BigEndian(&cbw.cdb[10], 4));
+    }
+    commands_.push_back({opcode, lba, blocks, cbw.tag});
+    answer.lba = lba;
+    answer.blocks = blocks;
+    answer.residue = 0;
+
+    if (opcode == OpInquiry)
+    {
+        std::vector<uint8_t> data = {model_.type, static_cast<uint8_t>(model_.removable ? 0x80 : 0),
+                                     5, 2, 31, 0, 0, 0};
+        PutPadded(data, model_.vendor, 8);
+        PutPadded(data, model_.product, 16);
+        PutPadded(data, "1.0", 4);
+        data.resize(std::min<size_t>(data.size(), cbw.cdb[4]));
+        answer.data = std::move(data);
+        return answer;
+    }
+    if (opcode == OpRequestSense)
+    {
+        std::vector<uint8_t> data(18, 0);
+        data[0] = 0x70;
+        data[2] = sense_[0];
+        data[7] = 10;
+        data[12] = sense_[1];
+        data[13] = sense_[2];
+        sense_[0] = sense_[1] = sense_[2] = 0;
+        data.resize(std::min<size_t>(data.size(), cbw.cdb[4]));
+        answer.data = std::move(data);
+        return answer;
+    }
+    if (!unit_attentions_.empty())
+    {
+        const uint8_t asc = unit_attentions_.front();
+        unit_attentions_.pop_front();
+        CheckCondition(&answer, cbw, 6, asc, 0);
+        return answer;
+    }
+    if (no_medium_)
+    {
+        CheckCondition(&answer, cbw, 2, 0x3A, 0);
+        return answer;
+    }
+    if (not_ready_ > 0)
+    {
+        --not_ready_;
+        CheckCondition(&answer, cbw, 2, 0x04, 0x01);
+        return answer;
+    }
+    switch (opcode)
+    {
+    case OpTestUnitReady:
+        break;
+    case OpReadCapacity10:
+    {
+        const uint64_t blocks_reported = reported_blocks_ != 0 ? reported_blocks_ : model_.blocks;
+        PutBigEndian(answer.data, blocks_reported - 1 >= 0xFFFFFFFFULL ? 0xFFFFFFFFULL
+                                                                        : blocks_reported - 1, 4);
+        PutBigEndian(answer.data, model_.block_size, 4);
+        break;
+    }
+    case OpServiceIn16:
+    {
+        const uint64_t blocks_reported = reported_blocks_ != 0 ? reported_blocks_ : model_.blocks;
+        PutBigEndian(answer.data, blocks_reported - 1, 8);
+        PutBigEndian(answer.data, model_.block_size, 4);
+        answer.data.resize(32, 0);
+        break;
+    }
+    case OpModeSense6:
+        answer.data = {3, 0, static_cast<uint8_t>(model_.write_protected ? 0x80 : 0), 0};
+        break;
+    case OpSynchronizeCache:
+        if (sync_unsupported_)
+        {
+            CheckCondition(&answer, cbw, 5, 0x20, 0);
+        }
+        break;
+    case OpStartStop:
+        ejected_ = true;
+        break;
+    case OpRead10:
+    case OpRead16:
+        if (lba + blocks > model_.blocks)
+        {
+            CheckCondition(&answer, cbw, 5, 0x21, 0);
+            break;
+        }
+        answer.data.assign(image_.begin() + static_cast<long>(lba * model_.block_size),
+                           image_.begin() + static_cast<long>((lba + blocks) * model_.block_size));
+        break;
+    case OpWrite10:
+    case OpWrite16:
+        if (model_.write_protected)
+        {
+            CheckCondition(&answer, cbw, 7, 0x27, 0);
+        }
+        else if (lba + blocks > model_.blocks)
+        {
+            CheckCondition(&answer, cbw, 5, 0x21, 0);
+        }
+        else
+        {
+            answer.apply_write = true;
+        }
+        break;
+    default:
+        CheckCondition(&answer, cbw, 5, 0x20, 0);
+        break;
+    }
+    return answer;
+}
+
+void ScriptedMassStorage::QueueStatus(const Cbw& cbw, const Answer& answer)
+{
+    uint8_t status = answer.status;
+    uint32_t tag = cbw.tag;
+    uint32_t residue = answer.residue;
+    Reply reply{};
+    const bool faulty = TakeReply(&reply);
+    std::vector<uint8_t> data = answer.data;
+    if (faulty)
+    {
+        switch (reply)
+        {
+        case Reply::PhaseError:
+            status = 2;
+            break;
+        case Reply::ShortData:
+            data.resize(data.size() / 2);
+            residue = cbw.in ? cbw.length - static_cast<uint32_t>(data.size()) : residue;
+            break;
+        case Reply::BadSignature:
+            break;
+        case Reply::BadTag:
+            tag += 1;
+            break;
+        case Reply::ResidueLies:
+            residue = cbw.length != 0 ? 1 : 0;
+            break;
+        }
+    }
+    if (cbw.in && !data.empty())
+    {
+        in_queue_.push_back({false, data});
+    }
+    std::vector<uint8_t> csw = Csw(tag, status, residue);
+    if (faulty && reply == Reply::BadSignature)
+    {
+        csw[0] ^= 1;
+    }
+    in_queue_.push_back({true, std::move(csw)});
+}
+
+void ScriptedMassStorage::Execute(const Cbw& cbw)
+{
+    Answer answer = Check(cbw);
+    if (cbw.in && answer.status == 0)
+    {
+        const auto returned = static_cast<uint32_t>(answer.data.size());
+        answer.residue = cbw.length > returned ? cbw.length - returned : 0;
+        if (answer.data.size() > cbw.length)
+        {
+            answer.data.resize(cbw.length);
+        }
+    }
+    if (cbw.in || cbw.length == 0)
+    {
+        QueueStatus(cbw, answer);
+        return;
+    }
+    Fault fault{};
+    if (TakeStageFault(Stage::Data, &fault))
+    {
+        switch (fault)
+        {
+        case Fault::Stall:
+            FailEndpoint(BulkOut, Outcome::Stall, 1);
+            answer.residue = cbw.length;
+            answer.apply_write = false;
+            QueueStatus(cbw, answer);
+            return;
+        case Fault::Hang:
+            FailEndpoint(BulkOut, Outcome::Hang, 1);
+            break;
+        case Fault::TransactionError:
+            FailEndpoint(BulkOut, Outcome::TransactionError, 1);
+            break;
+        case Fault::Unplug:
+            if (on_unplug)
+            {
+                on_unplug();
+            }
+            break;
+        }
+    }
+    phase_ = Phase::DataOut;
+    pending_cbw_ = cbw;
+    pending_answer_ = answer;
+    received_.clear();
+}
+
+void ScriptedMassStorage::ReceiveBulk(uint8_t endpoint, std::span<const uint8_t> data)
+{
+    ScriptedDevice::ReceiveBulk(endpoint, data);
+    if (endpoint != BulkOut)
+    {
+        return;
+    }
+    if (phase_ == Phase::DataOut)
+    {
+        received_.insert(received_.end(), data.begin(), data.end());
+        if (received_.size() < pending_cbw_.length)
+        {
+            return;
+        }
+        Answer answer = pending_answer_;
+        if (answer.apply_write)
+        {
+            std::copy(received_.begin(), received_.begin() + pending_cbw_.length,
+                      image_.begin() + static_cast<long>(answer.lba * model_.block_size));
+        }
+        phase_ = Phase::Command;
+        received_.clear();
+        answer.residue = answer.status == 0 ? 0 : pending_cbw_.length;
+        QueueStatus(pending_cbw_, answer);
+        return;
+    }
+    if (data.size() != CbwBytes || LittleEndian(data, 0) != 0x43425355)
+    {
+        return;
+    }
+    Cbw cbw{};
+    cbw.tag = LittleEndian(data, 4);
+    cbw.length = LittleEndian(data, 8);
+    cbw.in = (data[12] & 0x80U) != 0;
+    std::copy(data.begin() + 15, data.begin() + 31, cbw.cdb);
+    Fault fault{};
+    if (TakeStageFault(Stage::Command, &fault) && fault == Fault::Unplug && on_unplug)
+    {
+        on_unplug();
+    }
+    Execute(cbw);
+}
+
+ScriptedDevice::Outcome ScriptedMassStorage::ProduceBulk(uint8_t endpoint, uint32_t max,
+                                                         std::vector<uint8_t>* out)
+{
+    out->clear();
+    if (endpoint != BulkIn || in_queue_.empty() || hung_)
+    {
+        return Outcome::Hang;
+    }
+    Item& item = in_queue_.front();
+    Fault fault{};
+    if (TakeStageFault(item.status ? Stage::Status : Stage::Data, &fault))
+    {
+        switch (fault)
+        {
+        case Fault::Stall:
+            if (!item.status)
+            {
+                in_queue_.pop_front();
+            }
+            return Outcome::Stall;
+        case Fault::Hang:
+            hung_ = true;
+            return Outcome::Hang;
+        case Fault::TransactionError:
+            return Outcome::TransactionError;
+        case Fault::Unplug:
+            if (on_unplug)
+            {
+                on_unplug();
+            }
+            hung_ = true;
+            return Outcome::Hang;
+        }
+    }
+    const size_t count = std::min<size_t>(max, item.bytes.size());
+    out->assign(item.bytes.begin(), item.bytes.begin() + static_cast<long>(count));
+    if (count == item.bytes.size())
+    {
+        in_queue_.pop_front();
+    }
+    else
+    {
+        item.bytes.erase(item.bytes.begin(), item.bytes.begin() + static_cast<long>(count));
+    }
+    return Outcome::Ok;
+}
+
+std::shared_ptr<ScriptedMassStorage> MakeDisk(Speed speed, ScriptedMassStorage::Model model)
+{
+    return std::make_shared<ScriptedMassStorage>(speed, std::move(model));
+}
+
 std::shared_ptr<ScriptedDevice> MakeKeyboard(Speed speed, uint8_t max_packet0)
 {
     auto device = std::make_shared<ScriptedDevice>(

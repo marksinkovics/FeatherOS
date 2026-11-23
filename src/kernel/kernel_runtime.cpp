@@ -497,6 +497,12 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     }
 #endif
     Usb::Initialize(boot_info.platform_data);
+#if defined(FEATHEROS_KERNEL_TESTS)
+    if (KernelTest::Selected(KernelTest::Mode::UsbStorage))
+    {
+        KernelTest::StartUsbStorageTests();
+    }
+#endif
     if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
     {
         if (BootOptions::SelectedPs2() == BootOptions::Ps2Mode::Off)

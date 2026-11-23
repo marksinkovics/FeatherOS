@@ -21,6 +21,7 @@ from smoke.cases.timer import Timer
 from smoke.cases.usb import Usb
 from smoke.cases.usb_hub import UsbHub
 from smoke.cases.usb_keys import UsbFallback, UsbKeys
+from smoke.cases.usb_storage import UsbStorage
 from smoke.cases.user_preemption import UserPreemption
 
 # Each --expect-<name> switch: its case and help text.
@@ -74,6 +75,11 @@ SWITCHES = {
         UsbHub,
         "Type and move the mouse behind a USB hub, and hot-plug a keyboard "
         "into one of its ports",
+    ),
+    "usb-storage": (
+        UsbStorage,
+        "Read and write a USB mass-storage drive through the kernel's test "
+        "hook",
     ),
     "nodisk": (
         NoDisk,
