@@ -137,6 +137,9 @@ set(SRC
     ${SRCROOT}/storage/disk.cpp
     ${SRCROOT}/storage/page_cache.cpp
     ${SRCROOT}/storage/ahci/fis.cpp
+    ${SRCROOT}/storage/ahci/hba.cpp
+    ${SRCROOT}/storage/ahci/port.cpp
+    ${SRCROOT}/storage/ahci/register_wait.cpp
     ${SRCROOT}/storage/ata/identify.cpp
     ${SRCROOT}/storage/nvme/command.cpp
     ${SRCROOT}/storage/nvme/controller.cpp
