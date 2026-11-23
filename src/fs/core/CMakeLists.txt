@@ -186,6 +186,7 @@ add_executable(featherdisk_core_tests
     ${featherdisk_helper_tests}
     tests/block_cache_tests.cpp
     tests/common_tests.cpp
+    tests/discard_tests.cpp
     tests/ext2_format_tests.cpp
     tests/ext2_image_tests.cpp
     tests/ext2_tree_tests.cpp

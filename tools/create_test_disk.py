@@ -169,8 +169,16 @@ def write_ebr(disk_file, sector, logical, link=None):
     disk_file.write(ebr)
 
 
-def gpt_header(current, backup, entries_sector, entries_crc):
-    header = bytearray(SECTOR_SIZE)
+def gpt_header(
+    current,
+    backup,
+    entries_sector,
+    entries_crc,
+    sector_size=SECTOR_SIZE,
+    disk_sectors=DISK_SECTORS,
+):
+    table_sectors = 1 + GPT_ENTRY_COUNT * GPT_ENTRY_SIZE // sector_size
+    header = bytearray(sector_size)
     struct.pack_into(
         "<8sIIIIQQQQ16sQIII",
         header,
@@ -182,8 +190,8 @@ def gpt_header(current, backup, entries_sector, entries_crc):
         0,
         current,
         backup,
-        GPT_TABLE_SECTORS + 1,
-        DISK_SECTORS - GPT_TABLE_SECTORS - 1,
+        table_sectors + 1,
+        disk_sectors - table_sectors - 1,
         DISK_GUID.bytes_le,
         entries_sector,
         GPT_ENTRY_COUNT,
@@ -195,7 +203,10 @@ def gpt_header(current, backup, entries_sector, entries_crc):
     return header
 
 
-def write_gpt(disk_file, partitions):
+def write_gpt(
+    disk_file, partitions, sector_size=SECTOR_SIZE, disk_sectors=DISK_SECTORS
+):
+    table_sectors = 1 + GPT_ENTRY_COUNT * GPT_ENTRY_SIZE // sector_size
     entries = bytearray(GPT_ENTRY_COUNT * GPT_ENTRY_SIZE)
     for index, partition in enumerate(partitions):
         if partition is None:
@@ -213,20 +224,30 @@ def write_gpt(disk_file, partitions):
             name.encode("utf-16-le"),
         )
     entries_crc = zlib.crc32(entries)
-    backup_header = DISK_SECTORS - 1
-    backup_entries = DISK_SECTORS - GPT_TABLE_SECTORS
+    backup_header = disk_sectors - 1
+    backup_entries = disk_sectors - table_sectors
     write_mbr(
-        disk_file, mbr_entry(PROTECTIVE_PARTITION_TYPE, 1, DISK_SECTORS - 1)
+        disk_file,
+        mbr_entry(
+            PROTECTIVE_PARTITION_TYPE, 1, min(disk_sectors - 1, 0xFFFFFFFF)
+        ),
     )
     for header_sector, entries_sector, other in (
         (1, 2, backup_header),
         (backup_header, backup_entries, 1),
     ):
-        disk_file.seek(entries_sector * SECTOR_SIZE)
+        disk_file.seek(entries_sector * sector_size)
         disk_file.write(entries)
-        disk_file.seek(header_sector * SECTOR_SIZE)
+        disk_file.seek(header_sector * sector_size)
         disk_file.write(
-            gpt_header(header_sector, other, entries_sector, entries_crc)
+            gpt_header(
+                header_sector,
+                other,
+                entries_sector,
+                entries_crc,
+                sector_size,
+                disk_sectors,
+            )
         )
 
 
@@ -343,6 +364,7 @@ def run_mke2fs(
     volume_path,
     sector_count,
     environment,
+    size_suffix="",
 ):
     # mke2fs warns about 128-byte inodes even with -q, so its output is shown
     # only when it fails.
@@ -361,7 +383,7 @@ def run_mke2fs(
             "-d",
             str(source),
             str(volume_path),
-            str(sector_count * SECTOR_SIZE // 1024),
+            f"{sector_count * SECTOR_SIZE // 1024}{size_suffix}",
         ],
         capture_output=True,
         text=True,

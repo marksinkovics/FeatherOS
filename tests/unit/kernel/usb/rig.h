@@ -9,6 +9,7 @@
 #include "kernel/usb/xhci/controller.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 
@@ -42,7 +43,8 @@ public:
     {
         controller = std::make_unique<Xhci::Controller>(hardware, function);
         const bool created = controller->Initialize(allow_interrupts);
-        manager = std::make_unique<Manager>(*controller, 1, drivers);
+        HostController& host = wrap_host ? wrap_host(*controller) : *controller;
+        manager = std::make_unique<Manager>(host, 1, drivers);
         baseline = hardware.Outstanding();
         return created;
     }
@@ -69,6 +71,8 @@ public:
     std::unique_ptr<Xhci::Controller> controller;
     std::unique_ptr<Manager> manager;
     std::span<const Driver* const> drivers;
+    // Lets a test put its own controller between the manager and the real one.
+    std::function<HostController&(HostController&)> wrap_host;
     uint32_t baseline = 0;
 };
 

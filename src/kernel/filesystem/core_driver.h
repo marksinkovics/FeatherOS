@@ -6,7 +6,11 @@
 #include "fs/filesystem.h"
 #include "fs/page_cache.h"
 #include "fs/partition.h"
+#include "kernel/storage/disk.h"
+#include "kernel/sync/spinlock.h"
+#include "user/thread_safety.h"
 
+#include <atomic>
 #include <stddef.h>
 #include <span>
 #include <stdint.h>
@@ -46,14 +50,37 @@ public:
     // VFS mount asking for read-write reopens the core, as PrepareMount does. The filesystem
     // opened before is unmounted first; false, with the driver as it was, if that fails. Every
     // read and write of the volume goes through its CachedDevice, which uses cache, or none when
-    // that is null.
-    bool OpenPartition(std::span<const CoreKind> kinds, FeatherDisk::BlockDevice& disk,
+    // that is null. The driver asks the disk, which its slot keeps alive, at each read-write
+    // mount whether the volume may be written (see MediaAllowsWrites).
+    bool OpenPartition(std::span<const CoreKind> kinds, Storage::Disk& disk,
                        const FeatherDisk::Partition::Range& range, FeatherDisk::PageCache* cache);
     // Unmounts the core, drops the volume's cached pages and leaves the driver without a volume;
     // false, unchanged, if the core cannot unmount.
     bool Forget();
-    // Whether range shares sectors with the volume this driver holds; not under the volume lock.
-    bool Overlaps(const FeatherDisk::Partition::Range& other) const;
+    // Whether range shares sectors of disk with the volume this driver holds; not under the
+    // volume lock. Ranges on another disk never overlap.
+    bool Overlaps(const FeatherDisk::BlockDevice& disk,
+                  const FeatherDisk::Partition::Range& other) const;
+    struct Summary
+    {
+        uint64_t first_sector;
+        uint64_t sector_count;
+        size_t number;
+        const char* type;
+    };
+    // The volume held on disk; false for any other; not under the volume lock.
+    bool Summarize(const FeatherDisk::BlockDevice& disk, Summary* summary) const;
+    // The disk is gone: from now on every operation fails with EIO before reaching the core and
+    // the mount shows read-only. Any task, no lock.
+    void MarkDead();
+    bool Dead() const override;
+    // For a slot about to serve another volume.
+    void ClearDead();
+    // An eject is unmounting the volume's disk: mounts of it fail with NoDevice. Any task, no lock.
+    void SetEjecting(bool ejecting);
+    bool Ejecting() const;
+    // Frees the core's filesystem with no device I/O and leaves the driver without a volume.
+    void Discard();
     // Drops the volume's cached pages, for tests that change the disk below the cache.
     void InvalidateCache();
     // The kind's registry name, "ext4" for example; null without a volume.
@@ -107,8 +134,14 @@ protected:
 
 private:
     bool Fail(FeatherDisk::Error error);
+    void SetIdentity(const FeatherDisk::BlockDevice* disk, const FeatherDisk::Partition::Range& r,
+                     const char* type_name);
     bool DetachCore();
     bool CoreReadOnly(MountMode mode) const;
+    // False, logging why, for a write-protected disk and for a FAT16 volume of a removable disk
+    // whose status bits say it was not cleanly unmounted: it mounts read-only, remounting
+    // read-write gives EROFS, and the core never writes the bits.
+    bool MediaAllowsWrites();
     // Walks every component of path but the last, which *leaf receives; "" (and "/" repeated)
     // leave *leaf empty, naming the root.
     FeatherDisk::Result<FeatherDisk::NodeId> ResolveParent(const char* path,
@@ -121,6 +154,7 @@ private:
     FeatherDisk::Partition::Volume volume;
     FeatherDisk::CachedDevice cached;
     FeatherDisk::Partition::Range range = {};
+    const Storage::Disk* media = nullptr;
     FeatherDisk::FilesystemType* type = nullptr;
     FeatherDisk::Filesystem* filesystem = nullptr;
     size_t partition_number = 0;
@@ -128,6 +162,17 @@ private:
     bool core_read_only = true;
     // Written and read under the volume lock.
     uint64_t last_error = User::SyscallErrorFailed;
+    std::atomic<bool> dead = false;
+    std::atomic<bool> ejecting = false;
+    // What Overlaps and Summarize read without the volume lock.
+    struct Identity
+    {
+        const FeatherDisk::BlockDevice* disk = nullptr;
+        FeatherDisk::Partition::Range range = {};
+        const char* type_name = nullptr;
+    };
+    mutable Sync::SpinLock identity_lock;
+    Identity identity GUARDED_BY(identity_lock);
 };
 
 } // namespace FeatherOS::Filesystem

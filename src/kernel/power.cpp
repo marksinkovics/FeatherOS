@@ -7,7 +7,7 @@
 #include "kernel/panic.h"
 #include "kernel/process.h"
 #include "kernel/smp.h"
-#include "kernel/storage/block_device.h"
+#include "kernel/storage/disk.h"
 
 namespace FeatherOS::Power
 {
@@ -24,14 +24,14 @@ void Shutdown(Action action, uint64_t caller_process)
     {
         Console::WriteLine("KERN/W: Shutdown: a filesystem did not close cleanly");
     }
-    if (BlockDevice::SectorCount() == 0)
+    if (Storage::DiskCount() == 0)
     {
         Console::WriteLine("KERN/I: Shutdown: no disk to flush");
     }
     else
     {
-        Console::WriteLine(BlockDevice::Flush() ? "KERN/I: Shutdown: disk flushed"
-                                                : "KERN/W: Shutdown: disk flush failed");
+        Console::WriteLine(Storage::FlushAll() ? "KERN/I: Shutdown: disk flushed"
+                                               : "KERN/W: Shutdown: disk flush failed");
     }
     Console::WriteLine(action == Action::PowerOff ? "KERN/I: Powering off" : "KERN/I: Restarting");
     // Nothing may print after this point: a stopped CPU could be holding the console's locks.

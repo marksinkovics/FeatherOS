@@ -284,11 +284,11 @@ TEST_CASE("the type registry gives a driver one name and forgets a driver")
     REQUIRE(types.Register("fat16", "vda1", &disk));
 }
 
-TEST_CASE("the type registry holds five built-ins and sixteen volumes and no more than its capacity")
+TEST_CASE("the type registry holds five built-ins and thirty-two volumes and no more than its capacity")
 {
-    constexpr uint32_t Needed = 5 + 16;
-    std::array<FakeDriver, 40> drivers;
-    std::array<std::string, 40> sources;
+    constexpr uint32_t Needed = 5 + 32;
+    std::array<FakeDriver, TypeRegistry::Capacity + 1> drivers;
+    std::array<std::string, TypeRegistry::Capacity + 1> sources;
     for (uint32_t index = 0; index < sources.size(); ++index)
     {
         sources[index] = "vda" + std::to_string(index);
@@ -299,14 +299,14 @@ TEST_CASE("the type registry holds five built-ins and sixteen volumes and no mor
         REQUIRE(types.Register("ext4", sources[index].c_str(), &drivers[index]));
     }
     Driver* found = nullptr;
-    REQUIRE(types.Find("ext4", "vda20", &found) == TypeRegistry::Lookup::Found);
-    REQUIRE(found == &drivers[20]);
+    REQUIRE(types.Find("ext4", "vda36", &found) == TypeRegistry::Lookup::Found);
+    REQUIRE(found == &drivers[36]);
 
     for (uint32_t index = Needed; index < TypeRegistry::Capacity; ++index)
     {
         REQUIRE(types.Register("ext4", sources[index].c_str(), &drivers[index]));
     }
-    REQUIRE_FALSE(types.Register("ext4", "extra", &drivers[39]));
+    REQUIRE_FALSE(types.Register("ext4", "extra", &drivers[TypeRegistry::Capacity]));
     types.Unregister(&drivers[3]);
-    REQUIRE(types.Register("ext4", "extra", &drivers[39]));
+    REQUIRE(types.Register("ext4", "extra", &drivers[TypeRegistry::Capacity]));
 }

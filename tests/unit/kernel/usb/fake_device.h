@@ -8,6 +8,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -62,6 +63,17 @@ public:
     void FailEndpoint(uint8_t endpoint, Outcome outcome, int count);
     Outcome EndpointOutcome(uint8_t endpoint);
 
+    // Bulk OUT data handed to the device, one entry per call; the default keeps it.
+    virtual void ReceiveBulk(uint8_t endpoint, std::span<const uint8_t> data);
+    // Up to max bytes for a bulk IN TD; the default serves the queued reports, Hang when there
+    // is none (the device answers NAK).
+    virtual Outcome ProduceBulk(uint8_t endpoint, uint32_t max, std::vector<uint8_t>* out);
+    const std::vector<std::vector<uint8_t>>& BulkReceived(uint8_t endpoint) const;
+    // The data toggle the device expects (OUT) or sends next (IN); CLEAR_FEATURE(ENDPOINT_HALT)
+    // resets it.
+    bool Toggle(uint8_t endpoint) const;
+    void FlipToggle(uint8_t endpoint);
+
     // Called as each control request arrives, before it is answered.
     std::function<void(const Request&)> on_request;
 
@@ -73,6 +85,8 @@ protected:
     // Class requests a subclass answers; returns false for the ones it leaves to the base.
     virtual bool HandleClass(const Request& request, std::vector<uint8_t>* response,
                              Outcome* outcome);
+    // SET_CONFIGURATION arrived: what a port reset and a new enumeration also reset.
+    virtual void Configured();
 
 private:
     struct Fault
@@ -91,7 +105,161 @@ private:
     std::vector<Fault> control_faults_;
     std::map<uint8_t, std::deque<std::vector<uint8_t>>> reports_;
     std::map<uint8_t, std::vector<Fault>> endpoint_faults_;
+    std::map<uint8_t, std::vector<std::vector<uint8_t>>> bulk_out_;
+    std::map<uint8_t, bool> toggles_;
     uint8_t configuration_value_ = 0;
+};
+
+// A bulk-only mass-storage device over a model disk image. Faults apply to the next commands, in
+// order; a stage fault is armed for the stage of whichever command comes next.
+class ScriptedMassStorage : public ScriptedDevice
+{
+public:
+    struct Model
+    {
+        uint32_t block_size = 512;
+        uint64_t blocks = 2048;
+        bool removable = true;
+        bool write_protected = false;
+        uint8_t type = 0;
+        std::string vendor = "QEMU";
+        std::string product = "QEMU HARDDISK";
+    };
+
+    enum class Stage
+    {
+        Command,
+        Data,
+        Status,
+    };
+
+    enum class Fault
+    {
+        Stall,
+        Hang,
+        TransactionError,
+        // on_unplug runs as the stage starts; a data or status IN then never completes.
+        Unplug,
+    };
+
+    enum class Reply
+    {
+        PhaseError,
+        ShortData,
+        BadSignature,
+        BadTag,
+        ResidueLies,
+    };
+
+    struct Logged
+    {
+        uint8_t opcode;
+        uint64_t lba;
+        uint32_t blocks;
+        uint32_t tag;
+        // START STOP UNIT's byte 4.
+        uint8_t flags = 0;
+    };
+
+    ScriptedMassStorage(Speed speed, Model model);
+
+    std::vector<uint8_t>& Image();
+    const Model& Params() const;
+
+    void FailStage(Stage stage, Fault fault, int count = 1);
+    void FailReply(Reply reply, int count = 1);
+    // The next commands but INQUIRY and REQUEST SENSE: NOT READY, becoming ready.
+    void NotReady(int count);
+    void UnitAttention(uint8_t asc, int count = 1);
+    // The next commands but INQUIRY and REQUEST SENSE: ABORTED COMMAND.
+    void AbortedCommand(int count);
+    // The switch flipped after the probe: WRITE answers DATA PROTECT, MODE SENSE the new state.
+    void WriteProtect(bool protect);
+    void NoMedium(bool missing);
+    void SynchronizeCacheUnsupported(bool unsupported);
+    // SYNCHRONIZE CACHE answers DATA PROTECT, as a drive whose switch was flipped may.
+    void SynchronizeCacheDataProtect(bool protect);
+    void ReportBlocks(uint64_t blocks);
+    // GET MAX LUN answers this, or stalls.
+    void SetMaxLun(uint8_t lun, bool stall = false);
+
+    std::function<void()> on_unplug;
+
+    const std::vector<Logged>& Commands() const;
+    uint32_t BotResets() const;
+
+    void ReceiveBulk(uint8_t endpoint, std::span<const uint8_t> data) override;
+    Outcome ProduceBulk(uint8_t endpoint, uint32_t max, std::vector<uint8_t>* out) override;
+
+protected:
+    bool HandleClass(const Request& request, std::vector<uint8_t>* response,
+                     Outcome* outcome) override;
+    void Configured() override;
+
+private:
+    enum class Phase
+    {
+        Command,
+        DataOut,
+    };
+
+    struct Item
+    {
+        bool status;
+        std::vector<uint8_t> bytes;
+        // A failed IN command without data: the data stage stalls, then the CSW follows.
+        bool stall = false;
+    };
+
+    struct Cbw
+    {
+        uint32_t tag;
+        uint32_t length;
+        bool in;
+        uint8_t cdb[16];
+    };
+
+    struct Answer
+    {
+        uint8_t status = 0;
+        std::vector<uint8_t> data;
+        uint32_t residue = 0;
+        bool apply_write = false;
+        uint64_t lba = 0;
+        uint32_t blocks = 0;
+    };
+
+    bool TakeStageFault(Stage stage, Fault* fault);
+    bool TakeReply(Reply* reply);
+    void Execute(const Cbw& cbw);
+    Answer Check(const Cbw& cbw);
+    void CheckCondition(Answer* answer, const Cbw& cbw, uint8_t key, uint8_t asc, uint8_t ascq);
+    void QueueStatus(const Cbw& cbw, const Answer& answer);
+    std::vector<uint8_t> Csw(uint32_t tag, uint8_t status, uint32_t residue);
+
+    Model model_;
+    std::vector<uint8_t> image_;
+    std::map<Stage, std::deque<Fault>> stage_faults_;
+    std::deque<Reply> replies_;
+    int not_ready_ = 0;
+    int aborted_ = 0;
+    std::deque<uint8_t> unit_attentions_;
+    bool no_medium_ = false;
+    bool sync_unsupported_ = false;
+    bool sync_data_protect_ = false;
+    bool ejected_ = false;
+    uint64_t reported_blocks_ = 0;
+    uint8_t max_lun_ = 0;
+    bool stall_max_lun_ = false;
+    uint8_t sense_[3] = {0, 0, 0};
+    std::vector<Logged> commands_;
+    uint32_t resets_ = 0;
+    Phase phase_ = Phase::Command;
+    Cbw pending_cbw_{};
+    Answer pending_answer_;
+    std::vector<uint8_t> received_;
+    std::deque<Item> in_queue_;
+    bool hung_ = false;
 };
 
 std::vector<uint8_t> MakeDeviceDescriptor(uint16_t vendor, uint16_t product, uint8_t max_packet0,
@@ -192,6 +360,10 @@ private:
 std::shared_ptr<ScriptedHub> MakeHub(Speed speed, uint8_t ports, bool multi_tt = false,
                                      uint8_t think_time = 1);
 
+// A bulk-only mass storage device: IN 0x81 and OUT 0x02.
+std::shared_ptr<ScriptedDevice> MakeMassStorage(Speed speed);
+std::shared_ptr<ScriptedMassStorage> MakeDisk(Speed speed,
+                                              ScriptedMassStorage::Model model = {});
 std::shared_ptr<ScriptedDevice> MakeKeyboard(Speed speed, uint8_t max_packet0 = 0);
 std::shared_ptr<ScriptedDevice> MakeMouse(Speed speed, uint8_t max_packet0 = 0);
 // A report-protocol mouse: buttons, X, Y, wheel and AC Pan, one byte each after the buttons.

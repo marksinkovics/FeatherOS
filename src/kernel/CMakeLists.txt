@@ -75,6 +75,11 @@ set(SRC
     ${SRCROOT}/usb/hid/keyboard.cpp
     ${SRCROOT}/usb/hid/report.cpp
     ${SRCROOT}/usb/manager.cpp
+    ${SRCROOT}/usb/storage/bot.cpp
+    ${SRCROOT}/usb/storage/drive.cpp
+    ${SRCROOT}/usb/storage/driver.cpp
+    ${SRCROOT}/usb/storage/kernel_environment.cpp
+    ${SRCROOT}/usb/storage/scsi.cpp
     ${SRCROOT}/usb/text.cpp
     ${SRCROOT}/usb/usb.cpp
     ${SRCROOT}/usb/xhci/context.cpp
@@ -82,6 +87,7 @@ set(SRC
     ${SRCROOT}/usb/xhci/probe.cpp
     ${SRCROOT}/usb/xhci/registers.cpp
     ${SRCROOT}/usb/xhci/ring.cpp
+    ${SRCROOT}/usb/xhci/td.cpp
     ${SRCROOT}/usb/xhci/transfer.cpp
     ${SRCROOT}/console.cpp
     ${SRCROOT}/writeback.cpp
@@ -127,7 +133,10 @@ set(SRC
     ${SRCROOT}/filesystem/path_walk.cpp
     ${SRCROOT}/storage/cache_sizing.cpp
     ${SRCROOT}/storage/core_block_device.cpp
+    ${SRCROOT}/storage/disk.cpp
     ${SRCROOT}/storage/page_cache.cpp
+    ${SRCROOT}/storage/virtio_disk.cpp
+    ${SRCROOT}/storage/worker.cpp
     ${SRCROOT}/network/address.cpp
     ${SRCROOT}/network/arp.cpp
     ${SRCROOT}/network/checksum.cpp

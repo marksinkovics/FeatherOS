@@ -525,9 +525,9 @@ bool MatchesGeneric(const InterfaceView& interface)
 
 } // namespace
 
-const Driver KeyboardDriver = {"hid-keyboard", MatchesKeyboard, Attach, Detach};
-const Driver MouseDriver = {"hid-mouse", MatchesMouse, Attach, Detach};
-const Driver GenericDriver = {"hid", MatchesGeneric, Attach, Detach};
+const Driver KeyboardDriver = {"hid-keyboard", MatchesKeyboard, Attach, Detach, nullptr, false};
+const Driver MouseDriver = {"hid-mouse", MatchesMouse, Attach, Detach, nullptr, false};
+const Driver GenericDriver = {"hid", MatchesGeneric, Attach, Detach, nullptr, false};
 
 void SetKeySink(KeySink sink)
 {

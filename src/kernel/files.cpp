@@ -557,9 +557,19 @@ User::FileStatus UnmountedStatus(const void* object, uint32_t mode, User::FileTy
     return status;
 }
 
+// A volume whose medium is gone answers EIO where it would say nothing was found.
+uint64_t NotFoundError(const char* path)
+{
+    return VFS::IsDead(path) ? User::SyscallErrorInputOutput : User::SyscallErrorNotFound;
+}
+
 // Why an operation that changes path could not create it.
 uint64_t CreateError(const char* path)
 {
+    if (VFS::IsDead(path))
+    {
+        return User::SyscallErrorInputOutput;
+    }
     if (Exists(path))
     {
         return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorExists;
@@ -626,6 +636,10 @@ uint64_t MountError(VFS::MountResult result)
         return User::SyscallErrorInputOutput;
     case VFS::MountResult::ReadOnly:
         return User::SyscallErrorReadOnly;
+    case VFS::MountResult::NoDevice:
+        return User::SyscallErrorNoDevice;
+    case VFS::MountResult::NotSupported:
+        return User::SyscallErrorOperationNotSupported;
     case VFS::MountResult::Invalid:
         break;
     }
@@ -805,7 +819,7 @@ uint64_t StatPath(const char* path, User::FileStatus* status, VFS::Follow follow
     VFS::FileInfo info;
     if (!VFS::Stat(resolved.Path(), &info))
     {
-        return User::SyscallErrorNotFound;
+        return NotFoundError(resolved.Path());
     }
     *status = ToFileStatus(info, VFS::IsReadOnly(resolved.Path()));
     return 0;
@@ -996,7 +1010,7 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
         }
         if ((flags & User::OpenCreate) == 0)
         {
-            return User::SyscallErrorNotFound;
+            return NotFoundError(path);
         }
         uint64_t reserved = 0;
         {
@@ -1651,7 +1665,7 @@ uint64_t Remove(const char* path)
     VFS::FileHandle handle;
     if (!VFS::Open(path, &handle))
     {
-        return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorNotFound;
+        return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : NotFoundError(path);
     }
     const bool removable = VFS::IsTracked(handle);
     const bool busy = removable && InUse(VFS::KeyOf(handle));
@@ -1691,7 +1705,7 @@ uint64_t ReadDirectory(const char* path, uint64_t index, User::DirectoryEntry* e
     }
     if (!VFS::ReadDirectory(path, static_cast<uint32_t>(index), &*found))
     {
-        return User::SyscallErrorNotFound;
+        return NotFoundError(path);
     }
     static_assert(sizeof(entry->name) == sizeof(found->name));
     *entry = {};
@@ -1806,6 +1820,16 @@ uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use)
     const VFS::MountResult result = VFS::Unmount(point);
     return result == VFS::MountResult::NotFound ? User::SyscallErrorInvalidArgument
                                                 : MountError(result);
+}
+
+uint64_t Eject(const char* disk, WorkingDirectoryCheck in_use)
+{
+    if (disk == nullptr || in_use == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(namespace_lock);
+    return MountError(VFS::EjectDisk(disk, in_use));
 }
 
 uint64_t Remount(const char* point, Filesystem::MountMode mode)
@@ -2347,7 +2371,7 @@ uint64_t ProgramFile::Open(const char* path)
     const VolumeHold hold(path);
     if (!VFS::Open(path, &handle))
     {
-        return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : User::SyscallErrorNotFound;
+        return VFS::IsDirectory(path) ? User::SyscallErrorIsDirectory : NotFoundError(path);
     }
     if (VFS::IsDevice(handle) || handle.size == 0)
     {

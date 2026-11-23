@@ -76,10 +76,10 @@ def Command(qemu, args, case):
             "none",
             *(() if case.reboots else ("-no-reboot",)),
             *(() if case.shuts_down else ("-no-shutdown",)),
-            "-cdrom",
-            args.iso,
         ]
     )
+    if case.BootMedia() is None:
+        command.extend(["-cdrom", args.iso])
     qmp_socket = case.QmpSocket()
     if qmp_socket is not None:
         command.extend(["-qmp", f"unix:{qmp_socket},server=on,wait=off"])

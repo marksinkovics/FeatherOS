@@ -16,6 +16,7 @@ constexpr std::uint32_t MbrPartitionTable = 446;
 constexpr std::uint32_t MbrEntrySize = 16;
 constexpr std::uint32_t MbrEntryCount = 4;
 constexpr std::uint8_t ProtectiveMbrType = 0xEE;
+constexpr std::uint8_t Fat16SmallType = 0x04;
 constexpr std::uint8_t Fat16Type = 0x06;
 constexpr std::uint8_t Fat16LbaType = 0x0E;
 constexpr std::uint8_t LinuxType = 0x83;
@@ -34,7 +35,7 @@ bool IsExtendedType(std::uint8_t type)
 
 bool IsFilesystemType(std::uint8_t type)
 {
-    return type == Fat16Type || type == Fat16LbaType || type == LinuxType;
+    return type == Fat16SmallType || type == Fat16Type || type == Fat16LbaType || type == LinuxType;
 }
 
 std::uint32_t Load32(const std::uint8_t* bytes)

@@ -25,9 +25,9 @@ You are the coordinator. Subagents write the code; you choose the work, review i
 - A part that is too big for one subagent (a rough guide: more than about 15 files or more than one subsystem) gets split into steps. Read enough of the code to split it sensibly, or use the `Plan` agent for a large part. Write the step list into that part's roadmap text (`steps: 1 ..., 2 ..., 3 ...`) so it survives a cleared conversation, and include that edit in the first step's commit.
 - **Usage budget.** The user keeps hitting the 5-hour limit. Most of the cost is subagents re-reading code from scratch and running the full test suite again and again (4b: ~566k tokens; 4c with these rules: ~416k). Follow the rules marked *budget* below.
 - Pick the model and effort per step. Sonnet is the default.
-  - `sonnet` at `medium`: mechanical work (renames, moving code, docs, tests for existing behaviour, small programs, tooling, test-disk and harness changes).
-  - `sonnet` at `high` (the agent's default): everything else, including read-only filesystem code, parsers, and wiring an existing core feature into the kernel.
-  - Risky steps (code that writes on-disk structures, crash ordering, concurrency, memory management or ABI changes): designed on Opus (section 1b), implemented on `sonnet` at `high`.
+  - `sonnet` at `medium` (the agent's default): mechanical work (renames, moving code, docs, tests for existing behaviour, small programs, tooling, test-disk and harness changes).
+  - `sonnet` at `high`, passed as `effort: "high"`: everything else, including read-only filesystem code, parsers, and wiring an existing core feature into the kernel.
+  - Risky steps (code that writes on-disk structures, crash ordering, concurrency, memory management or ABI changes): designed on Opus (section 1b), implemented on `sonnet` at `high` (pass `effort: "high"`).
   - Never `xhigh`. If a Sonnet step fails both fix rounds, retry it once on Opus before stopping.
 
 ## 1b. Design (risky steps only)
@@ -44,7 +44,7 @@ You are the coordinator. Subagents write the code; you choose the work, review i
 
 ## 2. Spawn the subagent
 
-`Agent` with `subagent_type: "step-worker"` (`.claude/agents/step-worker.md`: Sonnet at `high`, with the standing rules, test cadence, docs and report format). Pass `model`/`effort` only to move off that default. No worktree isolation. The prompt has to stand on its own, because the agent doesn't see this conversation, but leave out what the agent file already says. Include:
+`Agent` with `subagent_type: "step-worker"` (`.claude/agents/step-worker.md`: Sonnet at `medium`, with the standing rules, test cadence, docs and report format). Pass `model`/`effort` only to move off that default. No worktree isolation. The prompt has to stand on its own, because the agent doesn't see this conversation, but leave out what the agent file already says. Include:
 
 1. **Task:** the milestone, part and step, quoted from the roadmap, plus the decisions already made in earlier steps (files and types it should build on).
 2. **Where to read:** the roadmap line range for this part and the earlier summaries it builds on (`grep -n` for them), so the agent doesn't read the whole milestone section.
@@ -67,7 +67,7 @@ Wait for the completion notification. Don't predict its result and don't poll it
 - For a risky step, also check the diff against the design: every invariant visible in the code, every `T<n>` present and asserting what the design says, the departures justified, and the named invariants caught in the mutation check. An invariant that is not caught is a missing test; send it back.
 - Run `bash tools/quality.sh check` yourself.
 - If the agent said tests passed but you have doubts, read `build/check/` or `build/<arch>/smoke-output.txt`. Re-run tests through the `test-runner` agent only if the evidence is missing.
-- If the step finishes a part that changes shared code (kernel, libc, the build, the disk image or the test harness), or finishes the milestone, run the matrix through `test-runner` (Haiku): `tools/check.sh --arch both --matrix`. A part limited to one program or to docs relies on its affected smoke modes on both architectures.
+- If the step finishes a part (or a design's step group) that changes shared code (kernel, libc, the build, the disk image or the test harness), or finishes the milestone, run the matrix through `test-runner` (Haiku): `tools/check.sh --arch both --matrix`. Don't ask first: run it at those points, and don't defer it past a group that reshapes shared code, so regressions don't pile up into the next group. Steps whose changes stay inside one subsystem (a driver stack, one program, docs) rely on their affected smoke modes on both architectures until the next matrix point.
 - Once every matrix case has passed (failed cases included, after their re-run), delete the matrix output yourself with `rm -rf build/matrix` (about 13 GB; the next matrix rebuilds it). Keep it while a failure is being diagnosed, because `test-diagnoser` and single-case re-runs read `build/matrix/<case>/`.
 - If a test fails, give `test-diagnoser` (Sonnet) the failing cases and log paths from `test-runner`. If its confidence is low, or its fix doesn't work, run it once more with `model: "opus"`.
 - If there's a problem, use `SendMessage` to send it back to the **same** subagent with the specifics (for a test failure, the diagnoser's cause, evidence and fix). Allow at most two such rounds per step, and re-run only the failing cases afterwards through `test-runner`.
@@ -88,7 +88,7 @@ Go back to step 1 for the next step. Stop and report to the user when:
 - **A step still fails** after two fix rounds. Don't commit it. Leave the changes in the tree and write `docs/handover.md` with what is done, what fails (log paths), and what to try next.
 - **A decision belongs to the user:** a design choice the roadmap doesn't settle, a change of plan, a new external dependency, or dropping a test. Ask the question with `AskUserQuestion`, then continue with the answer.
 - **The milestone is complete:** all parts are done and the matrix has passed. Squash-merging into `main` is the user's job, so stop there.
-- **A new part or the matrix is next** (*budget*): finishing a step within the current part continues automatically; before starting the next part, or before running the matrix, stop and ask.
+- **A new part is next** (*budget*): finishing a step within the current part continues automatically, and so does running the matrix at its points (section 3); before starting the next part of the milestone, stop and ask.
 - **Something outside the step broke**, such as an unrelated test regression or a toolchain problem.
 
 When you stop, report in a few lines: the commits made (hash and subject), the test status, any open points, and the next step.

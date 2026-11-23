@@ -28,6 +28,7 @@ constexpr ModeName mode_names[] = {
     {"network", Mode::Network},
     {"input", Mode::Input},
     {"pci", Mode::Pci},
+    {"usb-storage", Mode::UsbStorage},
 };
 
 constinit Mode selected_mode = Mode::None;

@@ -42,6 +42,9 @@ void WriteSlot(const ContextLayout& layout, volatile uint8_t* input, const Locat
 void WriteEndpoint(const ContextLayout& layout, volatile uint8_t* input,
                    const EndpointDescriptor& endpoint, Speed speed, uint64_t ring);
 
+void SetInputFlags(const ContextLayout& layout, volatile uint8_t* input, uint32_t drop,
+                   uint32_t add);
+
 uint8_t IntervalExponent(Speed speed, EndpointType type, uint8_t interval);
 
 } // namespace FeatherOS::Usb::Xhci

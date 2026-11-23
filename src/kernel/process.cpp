@@ -23,6 +23,7 @@
 #include "kernel/random.h"
 #include "kernel/scheduler.h"
 #include "kernel/smp.h"
+#include "kernel/storage/disk.h"
 #include "kernel/storage/page_cache.h"
 #include "kernel/string/memory_functions.h"
 #include "kernel/sync/spinlock.h"
@@ -3019,6 +3020,14 @@ uint64_t UnmountSyscall(void* context, uint64_t target)
     return copied != 0 ? copied : Files::Unmount(target_text->resolved, AnyWorkingDirectoryWithin);
 }
 
+uint64_t EjectSyscall(void* context, uint64_t disk)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    char name[User::MaximumDiskNameLength];
+    const uint64_t copied = CopyStringFromUser(*process, disk, name, sizeof(name));
+    return copied != 0 ? copied : Files::Eject(name, AnyWorkingDirectoryWithin);
+}
+
 uint64_t ShutdownSyscall(void* context, uint64_t action)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
@@ -3456,6 +3465,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     .sync = SyncSyscall,
     .resource_limit = ResourceLimitSyscall,
     .device_control = DeviceControlSyscall,
+    .eject = EjectSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.
@@ -3670,7 +3680,8 @@ UserLayout RandomUserLayout()
 void Initialize(uint64_t offset)
 {
     Procfs::SetSource({ProcessAt, DescribeProcess, DescribeMemory, DescribeSystem,
-                       VFS::DescribeMount, Usb::FormatDevices, KernelLog::Snapshot});
+                       VFS::DescribeMount, Usb::FormatDevices, KernelLog::Snapshot,
+                       Storage::FormatPartitions});
     Terminals::SetProcessHooks({InterruptGroup, CallerInterrupted, SignalGroup, HangUpSession});
     hhdm_offset = offset;
     Sync::SpinLockGuard guard(process_lock);

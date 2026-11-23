@@ -622,7 +622,14 @@ void FakeXhci::ConfigureEndpoint(uint32_t slot, uint64_t input_physical, uint32_
         endpoint.dequeue = ring & ~0xFULL;
         endpoint.cycle = (ring & 1U) != 0;
         endpoint.address = static_cast<uint8_t>((dci / 2) | ((dci & 1U) != 0 ? 0x80U : 0U));
+        const uint32_t type = (Fetch(context + 1) >> 3) & 7U;
+        endpoint.bulk = type == 2 || type == 6;
+        endpoint.max_packet = Fetch(context + 1) >> 16;
         endpoints_[slot << 5 | dci] = endpoint;
+        if ((drop & add & (1U << dci)) != 0)
+        {
+            reconfigured_.push_back({slot, dci, drop, add, ring});
+        }
         configured_.push_back({slot, dci, (Fetch(context + 1) >> 3) & 7U, Fetch(context + 1) >> 16,
                                (Fetch(context) >> 16) & 0xFFU, ring, entries});
     }
@@ -652,6 +659,7 @@ void FakeXhci::ChangeEndpointState(uint32_t type, uint32_t slot, uint32_t dci, u
         }
         endpoint.state = State::Stopped;
         endpoint.hung = false;
+        endpoint.toggle = false;
     }
     else if (type == X::TrbType::StopEndpoint)
     {
@@ -687,6 +695,22 @@ void FakeXhci::ChangeEndpointState(uint32_t type, uint32_t slot, uint32_t dci, u
 const std::vector<FakeXhci::ConfiguredEndpoint>& FakeXhci::Configured() const
 {
     return configured_;
+}
+
+const std::vector<FakeXhci::Reconfigure>& FakeXhci::Reconfigured() const
+{
+    return reconfigured_;
+}
+
+const std::vector<FakeXhci::DmaWrite>& FakeXhci::DmaWrites() const
+{
+    return dma_writes_;
+}
+
+bool FakeXhci::HostToggle(uint32_t slot, uint32_t dci) const
+{
+    const auto found = endpoints_.find(slot << 5 | dci);
+    return found != endpoints_.end() && found->second.toggle;
 }
 
 const std::vector<FakeXhci::SlotUpdate>& FakeXhci::SlotUpdates() const
@@ -951,6 +975,7 @@ bool FakeXhci::CopyToBuffer(uint64_t physical, const std::vector<uint8_t>& bytes
         ++faults_;
         return false;
     }
+    dma_writes_.push_back({physical, count});
     for (size_t index = 0; index < count; ++index)
     {
         target[index] = bytes[index];
@@ -1097,6 +1122,14 @@ void FakeXhci::ProcessDeviceTransfers(Endpoint& endpoint, Binding& binding, uint
             }
             continue;
         }
+        if (type == X::TrbType::Normal && endpoint.bulk)
+        {
+            if (!ProcessBulkTd(endpoint, binding, slot, dci))
+            {
+                return;
+            }
+            continue;
+        }
         if (type == X::TrbType::Normal)
         {
             const Outcome outcome = present ? device.EndpointOutcome(endpoint.address)
@@ -1138,6 +1171,203 @@ void FakeXhci::ProcessDeviceTransfers(Endpoint& endpoint, Binding& binding, uint
         }
         endpoint.dequeue += X::TrbSize;
     }
+}
+
+bool FakeXhci::ProcessBulkTd(Endpoint& endpoint, Binding& binding, uint32_t slot, uint32_t dci)
+{
+    using Outcome = ScriptedDevice::Outcome;
+    ScriptedDevice& device = *binding.device;
+    std::vector<X::Trb> trbs;
+    std::vector<uint64_t> where;
+    uint64_t at = endpoint.dequeue;
+    for (;;)
+    {
+        X::Trb trb;
+        if (!ReadTrb(at, &trb) || ((trb.control & X::TrbControl::Cycle) != 0) != endpoint.cycle)
+        {
+            return false;
+        }
+        if (X::TrbTypeOf(trb) != X::TrbType::Normal || trbs.size() >= 8)
+        {
+            ++faults_;
+            return false;
+        }
+        trbs.push_back(trb);
+        where.push_back(at);
+        at += X::TrbSize;
+        if ((trb.control & X::TrbControl::Chain) == 0)
+        {
+            break;
+        }
+    }
+    const bool in = (endpoint.address & 0x80U) != 0;
+    const uint32_t packet = endpoint.max_packet != 0 ? endpoint.max_packet : 512;
+    std::vector<uint32_t> lengths;
+    uint32_t total = 0;
+    for (const X::Trb& trb : trbs)
+    {
+        lengths.push_back(trb.status & X::TrbLengthMask);
+        total += lengths.back();
+    }
+    uint32_t remaining = total;
+    for (size_t index = 0; index < trbs.size(); ++index)
+    {
+        const X::Trb& trb = trbs[index];
+        const bool last = index + 1 == trbs.size();
+        const uint64_t buffer = X::TrbParameter(trb);
+        remaining -= lengths[index];
+        const uint32_t expected = std::min<uint32_t>(31, (remaining + packet - 1) / packet);
+        const bool window = lengths[index] == 0 || (buffer & 0xFFFF) + lengths[index] <= 0x10000;
+        const bool ioc = (trb.control & X::TrbControl::InterruptOnCompletion) != 0;
+        const bool isp = (trb.control & X::TrbControl::InterruptOnShortPacket) != 0;
+        if (!window || ioc != last || (in && !isp) ||
+            ((trb.status & X::TdSizeMask) >> X::TdSizeShift) != expected)
+        {
+            ++faults_;
+        }
+    }
+    const bool present = DevicePresent(binding);
+    const auto halt = [&](uint32_t code)
+    {
+        PostTransferEvent(slot, dci, where[0], code, total);
+        endpoint.state = State::Halted;
+        return false;
+    };
+    const auto code_of = [](Outcome outcome)
+    {
+        return outcome == Outcome::Stall    ? X::CompletionCode::StallError
+               : outcome == Outcome::Babble ? X::CompletionCode::BabbleDetected
+                                            : X::CompletionCode::UsbTransactionError;
+    };
+    const auto complete = [&]()
+    {
+        endpoint.dequeue = at;
+        for (size_t index = 0; index < trbs.size(); ++index)
+        {
+            if ((trbs[index].control & X::TrbControl::InterruptOnCompletion) != 0)
+            {
+                PostTransferEvent(slot, dci, where[index], X::CompletionCode::Success, 0);
+            }
+        }
+        return true;
+    };
+    if (!in)
+    {
+        const Outcome outcome =
+            present ? device.EndpointOutcome(endpoint.address) : Outcome::TransactionError;
+        if (outcome == Outcome::Hang)
+        {
+            return false;
+        }
+        if (outcome == Outcome::Stall || outcome == Outcome::Babble || !present)
+        {
+            return halt(code_of(present ? outcome : Outcome::TransactionError));
+        }
+        std::vector<uint8_t> data;
+        for (size_t index = 0; index < trbs.size(); ++index)
+        {
+            const volatile uint8_t* bytes =
+                lengths[index] == 0 ? nullptr : memory_.Translate(X::TrbParameter(trbs[index]), lengths[index]);
+            for (uint32_t byte = 0; bytes != nullptr && byte < lengths[index]; ++byte)
+            {
+                data.push_back(static_cast<uint8_t>(bytes[byte]));
+            }
+        }
+        std::vector<uint8_t> accepted;
+        bool delivered = false;
+        uint32_t offset = 0;
+        do
+        {
+            const uint32_t chunk = std::min<uint32_t>(packet, total - offset);
+            if (device.Toggle(endpoint.address) == endpoint.toggle)
+            {
+                accepted.insert(accepted.end(), data.begin() + offset, data.begin() + offset + chunk);
+                device.FlipToggle(endpoint.address);
+                delivered = true;
+            }
+            endpoint.toggle = !endpoint.toggle;
+            offset += chunk;
+        } while (offset < total);
+        if (delivered)
+        {
+            device.ReceiveBulk(endpoint.address, accepted);
+        }
+        if (outcome == Outcome::TransactionError)
+        {
+            return halt(X::CompletionCode::UsbTransactionError);
+        }
+        return complete();
+    }
+    std::vector<uint8_t> produced;
+    const Outcome outcome = present ? device.ProduceBulk(endpoint.address, total, &produced)
+                                    : Outcome::TransactionError;
+    if (outcome == Outcome::Hang)
+    {
+        return false;
+    }
+    if (outcome != Outcome::Ok)
+    {
+        return halt(code_of(outcome));
+    }
+    std::vector<uint8_t> accepted;
+    uint32_t offset = 0;
+    do
+    {
+        const auto chunk = static_cast<uint32_t>(std::min<size_t>(packet, produced.size() - offset));
+        if (device.Toggle(endpoint.address) == endpoint.toggle)
+        {
+            accepted.insert(accepted.end(), produced.begin() + offset, produced.begin() + offset + chunk);
+            endpoint.toggle = !endpoint.toggle;
+        }
+        device.FlipToggle(endpoint.address);
+        offset += chunk;
+    } while (offset < produced.size());
+    if (accepted.empty() && !produced.empty())
+    {
+        return false;
+    }
+    const auto got = static_cast<uint32_t>(accepted.size());
+    uint32_t before = 0;
+    for (size_t index = 0; index < trbs.size() && before < got; ++index)
+    {
+        const uint32_t count = std::min(lengths[index], got - before);
+        volatile uint8_t* target = count == 0 ? nullptr : memory_.Translate(X::TrbParameter(trbs[index]), count);
+        if (count != 0 && target == nullptr)
+        {
+            ++faults_;
+            break;
+        }
+        for (uint32_t byte = 0; byte < count; ++byte)
+        {
+            target[byte] = accepted[before + byte];
+        }
+        if (count != 0)
+        {
+            dma_writes_.push_back({X::TrbParameter(trbs[index]), count});
+        }
+        before += lengths[index];
+    }
+    if (got == total)
+    {
+        return complete();
+    }
+    endpoint.dequeue = at;
+    before = 0;
+    for (size_t index = 0; index < trbs.size(); ++index)
+    {
+        const uint32_t end = before + lengths[index];
+        if (got <= end)
+        {
+            PostTransferEvent(slot, dci, where[index], X::CompletionCode::ShortPacket, end - got);
+            if (index + 1 != trbs.size())
+            {
+                PostTransferEvent(slot, dci, where.back(), X::CompletionCode::Success, 0);
+            }
+            break;
+        }
+        before = end;
+    }
+    return true;
 }
 
 void FakeXhci::DeliverReport(const std::shared_ptr<ScriptedDevice>& device, uint8_t endpoint,

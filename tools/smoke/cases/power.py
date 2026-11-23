@@ -4,8 +4,16 @@ from pathlib import Path
 from create_test_disk import EXT2_END, EXT2_START, FAT16_START, ROOT_START
 
 from smoke.boot import PANIC_MARKER, SHELL_BANNER
-from smoke.cases import storage
 from smoke.cases.base import SHELL_TIMEOUT_SECONDS, Case
+from smoke.disk_checks import (
+    Debugfs,
+    E2fsck,
+    FindE2fsprogs,
+    IsMarkedClean,
+    NeedsRecovery,
+    PartitionBytes,
+    ReplayOnCopy,
+)
 from smoke.script import Lines
 
 POWER_MESSAGES = {
@@ -76,31 +84,29 @@ class Power(Case):
         the files and e2fsck -fn finds nothing. A rebooted root was mounted
         read-write again, which sets needs_recovery until the next unmount, so
         its copy is replayed first."""
-        debugfs = storage.FindE2fsprogs("debugfs")
+        debugfs = FindE2fsprogs("debugfs")
         if debugfs is None:
             return "debugfs not found; install e2fsprogs"
         text = f"before {self.kind}\n".encode()
         for name, first, end in POWER_VOLUMES:
             with tempfile.TemporaryDirectory() as work:
                 volume = Path(work) / f"{name}.img"
-                volume.write_bytes(
-                    storage.PartitionBytes(self.args.disk, first, end)
-                )
-                if name == "ext2" and not storage.IsMarkedClean(volume):
+                volume.write_bytes(PartitionBytes(self.args.disk, first, end))
+                if name == "ext2" and not IsMarkedClean(volume):
                     return "the ext2 partition was not marked clean"
                 if name == "root" and self.shuts_down:
-                    if storage.NeedsRecovery(volume):
+                    if NeedsRecovery(volume):
                         return "the root's journal was not closed"
-                    if not storage.IsMarkedClean(volume):
+                    if not IsMarkedClean(volume):
                         return "the root was not marked clean by the shutdown"
                 elif name == "root":
-                    replayed = storage.ReplayOnCopy(volume)
+                    replayed = ReplayOnCopy(volume)
                     if replayed is not None:
                         return f"root: {replayed}"
-                checked = storage.E2fsck(str(volume))
+                checked = E2fsck(str(volume))
                 if checked is not None:
                     return f"{name}: {checked}"
-                found = storage.Debugfs(debugfs, str(volume), "cat /power.txt")
+                found = Debugfs(debugfs, str(volume), "cat /power.txt")
                 if found != text:
                     return f"{name}: debugfs read a different /power.txt"
         return None

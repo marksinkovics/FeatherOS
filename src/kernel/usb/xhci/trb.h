@@ -88,6 +88,9 @@ constexpr uint32_t SplitTransactionError = 36;
 
 constexpr uint32_t CompletionShift = 24;
 constexpr uint32_t ResidueMask = 0xFFFFFFU;
+constexpr uint32_t TrbLengthMask = 0x1FFFFU;
+constexpr uint32_t TdSizeShift = 17;
+constexpr uint32_t TdSizeMask = 0x1FU << TdSizeShift;
 
 constexpr uint32_t TrbTypeOf(const Trb& trb)
 {

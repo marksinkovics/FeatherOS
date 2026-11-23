@@ -52,10 +52,28 @@ bool CopyFile(const char* program, const char* source, const char* target)
         {
             break;
         }
-        if (count < 0 || write(output, buffer, static_cast<size_t>(count)) != count)
+        if (count < 0)
         {
-            printf("%s: %s: %s\n", program, count < 0 ? source : target, strerror(errno));
+            printf("%s: %s: %s\n", program, source, strerror(errno));
             copied = false;
+            break;
+        }
+        // A short write still counts the bytes that landed; the next call says why it stopped.
+        for (ssize_t done = 0; done < count && copied;)
+        {
+            const ssize_t written = write(output, buffer + done, static_cast<size_t>(count - done));
+            if (written <= 0)
+            {
+                printf("%s: %s: %s\n", program, target, strerror(written < 0 ? errno : ENOSPC));
+                copied = false;
+            }
+            else
+            {
+                done += written;
+            }
+        }
+        if (!copied)
+        {
             break;
         }
     }

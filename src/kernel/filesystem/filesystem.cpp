@@ -123,6 +123,11 @@ bool Driver::SyncsInBackground() const
     return false;
 }
 
+bool Driver::Dead() const
+{
+    return false;
+}
+
 uint64_t Driver::LastError()
 {
     return User::SyscallErrorFailed;
@@ -156,6 +161,11 @@ void Driver::RefreshMode()
     {
         mounted_read_only.store(true, std::memory_order_relaxed);
     }
+}
+
+void Driver::ForceReadOnly()
+{
+    mounted_read_only.store(true, std::memory_order_relaxed);
 }
 
 bool Driver::Remount(MountMode mode)

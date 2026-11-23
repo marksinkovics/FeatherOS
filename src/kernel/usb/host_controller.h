@@ -12,6 +12,7 @@ namespace FeatherOS::Usb
 
 constexpr uint32_t MaxRootPorts = 255;
 constexpr uint32_t MaxDeviceSlots = 64;
+constexpr uint32_t MaxBulkTransferBytes = 65536;
 
 enum class Speed : uint8_t
 {
@@ -127,13 +128,14 @@ enum class CreateStatus : uint8_t
 };
 
 // Called from the manager task after an endpoint was recovered from an error, with how many
-// recoveries that endpoint had in the last second.
+// recoveries that endpoint had in the last second and the error that was recovered.
 using RecoveryHandler = void (*)(void* context, uint32_t slot, uint8_t endpoint,
-                                 uint32_t recent_recoveries);
+                                 uint32_t recent_recoveries, Status status);
 
 // The USB core's view of one controller. Control, ConfigureEndpoints, ResetEndpoint,
-// StopEndpoints, DestroyDevice, Wait and ServiceEndpoints block and belong to the manager task;
-// Submit may be called from any task, including a transfer's own completion callback.
+// CancelEndpoint, ClearHalt, StopEndpoints, DestroyDevice, Wait and ServiceEndpoints block and
+// belong to the manager task; Submit may be called from any task, including a transfer's own
+// completion callback.
 class HostController
 {
 public:
@@ -156,6 +158,12 @@ public:
     virtual bool Submit(uint32_t slot, Transfer& transfer) = 0;
     virtual bool Wait(Transfer& transfer, uint64_t deadline_milliseconds) = 0;
     virtual bool ResetEndpoint(uint32_t slot, uint8_t endpoint) = 0;
+    // Every transfer pending on the endpoint finishes Cancelled before this returns, and the
+    // endpoint takes new transfers afterwards.
+    virtual bool CancelEndpoint(uint32_t slot, uint8_t endpoint) = 0;
+    // Resets the data toggle on the controller and on the device, so it also cancels what is
+    // pending on the endpoint.
+    virtual bool ClearHalt(uint32_t slot, uint8_t endpoint) = 0;
     virtual void StopEndpoints(uint32_t slot) = 0;
 
     virtual bool AllocateBuffer(uint64_t bytes, Memory::Dma::Buffer* buffer) = 0;

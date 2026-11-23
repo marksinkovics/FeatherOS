@@ -9,7 +9,10 @@
 #include "kernel/sync/spinlock.h"
 #include "kernel/usb/device.h"
 #include "kernel/usb/hid/driver.h"
+#include "kernel/storage/worker.h"
 #include "kernel/usb/manager.h"
+#include "kernel/usb/storage/driver.h"
+#include "kernel/usb/storage/kernel_environment.h"
 #include "kernel/usb/xhci/controller.h"
 #include "user/thread_safety.h"
 
@@ -197,6 +200,11 @@ bool Initialize(const void* platform_data)
         {
             logger.Info(line);
         }
+    }
+    Storage::SetEnvironment(&Storage::KernelEnvironment());
+    if (!FeatherOS::Storage::Worker::Start())
+    {
+        logger.Error("USB: could not start the storage worker");
     }
     for (uint32_t index = 0; index < controller_count; ++index)
     {

@@ -242,6 +242,34 @@ TEST_CASE("hub T26: an unplugged device is detached, a replaced one is debounced
     REQUIRE(state.phase == P::Phase::Failed);
 }
 
+TEST_CASE("hub T26: a requested reset detaches the child and resets the port again",
+          "[hub][usb]")
+{
+    P::State state = InReset();
+    P::Step(state, Status3(Connected | Enabled, P::ChangeBit::Reset));
+    P::Step(state, {P::EventKind::Enumerated});
+    REQUIRE(state.phase == P::Phase::Active);
+
+    P::Action action = P::Step(state, {P::EventKind::RequestReset});
+    REQUIRE(action.detach);
+    REQUIRE(action.next == P::Next::Reset);
+    REQUIRE(state.phase == P::Phase::Reset);
+
+    action = P::Step(state, Status3(Connected | Enabled, P::ChangeBit::Reset));
+    REQUIRE(action.next == P::Next::Enumerate);
+    REQUIRE(state.phase == P::Phase::Enumerating);
+
+    // A port that holds no device has nothing to reset.
+    for (P::State other : {Fresh(), InReset(), state})
+    {
+        const P::Phase before = other.phase;
+        action = P::Step(other, {P::EventKind::RequestReset});
+        REQUIRE_FALSE(action.detach);
+        REQUIRE(action.next == P::Next::None);
+        REQUIRE(other.phase == before);
+    }
+}
+
 TEST_CASE("hub T26: over-current powers the port off and detaches what it held", "[hub][usb]")
 {
     P::State state = Fresh();

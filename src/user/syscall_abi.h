@@ -85,6 +85,7 @@ enum class SyscallNumber : uint64_t
     Sync = 71,             // () -> 0 once every mounted filesystem has written its changes
     ResourceLimit = 72,    // (resource, new_limits, old_limits) -> 0; either pointer may be null
     DeviceControl = 73,    // (descriptor, request, argument) -> the request's result
+    Eject = 74,            // (disk name) -> 0 once its mounts are gone, it is flushed and stopped
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec, and joins its
@@ -483,6 +484,9 @@ static_assert(sizeof(FileTime) == 16 && sizeof(FileStatus) == 96 &&
                   offsetof(FileStatus, change_time) == 72 && offsetof(FileStatus, type) == 88 &&
                   offsetof(FileStatus, read_only) == 92,
               "the kernel and the C library share FileStatus's layout");
+
+// The longest disk name Eject takes, a "/dev/" prefix and the terminator included.
+constexpr size_t MaximumDiskNameLength = 32;
 
 // Results at or above SyscallErrorBase report failures instead of values. As on Linux, the top
 // 4095 values are reserved, which no size, address, or process ID ever reaches.

@@ -191,6 +191,10 @@ void WriteEndpoint(const ContextLayout& layout, volatile uint8_t* input,
     {
         average = 8;
     }
+    else if (endpoint.type == EndpointType::Bulk)
+    {
+        average = 3072;
+    }
     else if (periodic)
     {
         average = Clamp(esit, 0, 0xFFFF);
@@ -206,6 +210,15 @@ void WriteEndpoint(const ContextLayout& layout, volatile uint8_t* input,
     context[3] = static_cast<uint32_t>(ring >> 32);
     context[4] = average | ((esit & 0xFFFFU) << 16);
     SetAddFlag(layout, input, dci);
+}
+
+void SetInputFlags(const ContextLayout& layout, volatile uint8_t* input, uint32_t drop,
+                   uint32_t add)
+{
+    volatile uint32_t* drops = Words(input, layout.ControlOffset() + ControlDropFlags);
+    *drops = *drops | drop;
+    volatile uint32_t* adds = Words(input, layout.ControlOffset() + ControlAddFlags);
+    *adds = *adds | add;
 }
 
 uint8_t IntervalExponent(Speed speed, EndpointType type, uint8_t interval)

@@ -106,13 +106,43 @@ void Manager::Log(const char* path, const char* message, bool warning) const
     }
 }
 
-void Manager::OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_t recent)
+void Manager::OnRecovery(void* context, uint32_t slot, uint8_t endpoint, uint32_t recent,
+                         Status status)
 {
     auto* manager = static_cast<Manager*>(context);
-    if (endpoint != 0 && recent >= UnbindRecoveries && slot <= MaxDeviceSlots)
+    if (endpoint == 0 || recent < UnbindRecoveries || slot > MaxDeviceSlots)
     {
-        manager->unbind_[slot].store(true);
+        return;
     }
+    if (status == Status::Stall && manager->StallsAreProtocol(slot, endpoint))
+    {
+        return;
+    }
+    manager->unbind_[slot].store(true);
+}
+
+bool Manager::StallsAreProtocol(uint32_t slot, uint8_t endpoint) const
+{
+    const Device* device = bus_.Find(slot);
+    if (device == nullptr)
+    {
+        return false;
+    }
+    const ConfigurationView& configuration = device->configuration;
+    for (uint32_t index = 0; index < configuration.interface_count && index < MaxInterfaces;
+         ++index)
+    {
+        const InterfaceView& interface = configuration.interfaces[index];
+        for (uint32_t entry = 0; entry < interface.endpoint_count; ++entry)
+        {
+            if (interface.endpoints[entry].address == endpoint)
+            {
+                const Driver* driver = DriverOf(*device, index);
+                return driver != nullptr && driver->stalls_are_protocol;
+            }
+        }
+    }
+    return false;
 }
 
 bool Manager::HasWork() const
@@ -175,7 +205,7 @@ void Manager::Run()
         }
         else if (bus_.TakeWork(&work))
         {
-            HandleHub(work);
+            HandleDeviceWork(work);
         }
         else
         {
@@ -218,6 +248,12 @@ void Manager::HandlePort(uint32_t port)
     {
         return;
     }
+    EnumerateRootPort(port);
+}
+
+void Manager::EnumerateRootPort(uint32_t port)
+{
+    RootPortStatus status;
     host_.Delay(DebounceMs);
     host_.ReadRootPort(port, &status, false);
     if (!status.connected)
@@ -441,7 +477,7 @@ void Manager::ServiceHubStatus(Hub& hub)
     }
 }
 
-void Manager::HandleHub(const DeviceWork& work)
+void Manager::HandleDeviceWork(const DeviceWork& work)
 {
     Device* device = bus_.FindNumber(work.number);
     if (device == nullptr || device->detaching.load() ||
@@ -450,25 +486,114 @@ void Manager::HandleHub(const DeviceWork& work)
         return;
     }
     Hub* hub = HubOf(*device);
-    if (hub == nullptr)
+    if (hub != nullptr)
+    {
+        HandleHub(*device, *hub);
+        return;
+    }
+    ServiceDrivers(*device);
+}
+
+void Manager::ServiceDrivers(Device& device)
+{
+    for (uint32_t index = 0; index < MaxInterfaces; ++index)
+    {
+        const Driver* driver = DriverOf(device, index);
+        if (driver == nullptr || driver->service == nullptr || device.detaching.load())
+        {
+            continue;
+        }
+        if (driver->service(device, device.driver_state[index]))
+        {
+            Reenumerate(device);
+            return;
+        }
+    }
+}
+
+bool Manager::AllowPortReset(uint32_t parent_slot, uint8_t port)
+{
+    const uint64_t now = host_.NowMilliseconds();
+    RecentReset* victim = &recent_[0];
+    for (RecentReset& entry : recent_)
+    {
+        if (entry.used && entry.parent_slot == parent_slot && entry.port == port)
+        {
+            if (now - entry.at_ms < PortResetWindowMs)
+            {
+                return false;
+            }
+            entry.at_ms = now;
+            return true;
+        }
+        if (!entry.used || (victim->used && entry.at_ms < victim->at_ms))
+        {
+            victim = &entry;
+        }
+    }
+    *victim = {parent_slot, port, true, now};
+    return true;
+}
+
+void Manager::Reenumerate(Device& device)
+{
+    Device* const parent = device.parent;
+    const uint8_t port = parent == nullptr ? device.location.root_port : device.parent_port;
+    char path[MaxPathName];
+    for (uint32_t index = 0; index < MaxPathName; ++index)
+    {
+        path[index] = device.path[index];
+    }
+    bus_.Detach(device);
+    if (parent == nullptr)
+    {
+        port_slot_[port] = 0;
+    }
+    Hub* hub = parent == nullptr ? nullptr : HubOf(*parent);
+    if (parent != nullptr && hub == nullptr)
     {
         return;
     }
-    const uint32_t bits = hub->TakePending();
+    if (!AllowPortReset(parent == nullptr ? 0 : parent->slot, port))
+    {
+        Log(path, "needs another port reset within 60 s, left disabled", true);
+        if (parent == nullptr)
+        {
+            port_failed_[port] = true;
+        }
+        else
+        {
+            hub->port[port].phase = HubPort::Phase::Failed;
+        }
+        return;
+    }
+    if (parent == nullptr)
+    {
+        EnumerateRootPort(port);
+    }
+    else
+    {
+        RunHubPort(*parent, *hub, port, {HubPort::EventKind::RequestReset});
+    }
+}
+
+void Manager::HandleHub(Device& device, Hub& hub)
+{
+    const uint32_t bits = hub.TakePending();
     if ((bits & 1U) != 0)
     {
-        ServiceHubStatus(*hub);
+        ServiceHubStatus(hub);
     }
-    for (uint32_t port = 1; port <= hub->ports; ++port)
+    for (uint32_t port = 1; port <= hub.ports; ++port)
     {
-        if ((bits & (1U << port)) != 0 && !device->detaching.load())
+        if ((bits & (1U << port)) != 0 && !device.detaching.load())
         {
-            ServiceHubPort(*device, *hub, port);
+            ServiceHubPort(device, hub, port);
         }
     }
-    if (!device->detaching.load())
+    if (!device.detaching.load())
     {
-        hub->Listen();
+        hub.Listen();
     }
 }
 
@@ -486,6 +611,14 @@ void Manager::ServiceHubPort(Device& hub_device, Hub& hub, uint32_t port)
     {
         return;
     }
+    RunHubPort(hub_device, hub, port, event);
+}
+
+void Manager::RunHubPort(Device& hub_device, Hub& hub, uint32_t port, HubPort::Event event)
+{
+    HubPort::State& state = hub.port[port];
+    char path[MaxPathName];
+    MakePath(path, sizeof(path), bus_.Number(), &hub_device, port);
     uint64_t reset_deadline = 0;
     for (uint32_t round = 0; round < MaxPortRounds; ++round)
     {

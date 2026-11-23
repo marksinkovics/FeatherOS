@@ -85,3 +85,15 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | e686dd9 | M14 P5 s10a i8042 after handoff, ACPI FindTable, FADT flag, OVMF usb case | M14.md (opus) | sonnet | 0 | I32 bits by [i8042]; I32 order not caught (laptop only); I31 by INPUT with usb=off | |
 | 4623da9 | M14 P5 s10b boot without a disk: tmpfs root with /home, nodisk case | M14.md (opus) | sonnet | 0 (agent ran out of turns; coordinator finished verification) | I33 by NODISK case (2 mutations) | |
 | c931dda | M14 P5 s10c log ring, /proc/kmsg, dmesg, LIMINE_TIMEOUT, USB stick image, docs/hardware.md | M14.md (opus) | sonnet | 0 | 2/2 (wrap by [logring], lock by TSan) | |
+| 7a08c5a | M19 P2 s1a xHCI bulk TDs, residue, CancelEndpoint, ClearHalt | M19-P2.md (opus) | sonnet | 0 | 3/3 (I1 by T1, I4 by T6, I5 by T7) | |
+| aaf571c | M19 P2 s1b driver service hook, stalls_are_protocol, device work dispatch | M19-P2.md (opus) | sonnet | 0 | 3/4 (stall count by T23, hub branch by [hub], generation by [service]; detaching check not testable single-threaded) | |
+| a54e4cc | M19 P2 s2a SCSI encoders/parsers, sense table, BOT Execute over a model pipe | M19-P2.md (opus) | sonnet | 0 | 2/2 (I7 by T10/T11, I8 by T11) | |
+| 1307480 | M19 P2 s2b mass-storage drive, driver, TaskPipe, worker, probe, USB_STORAGE_TEST | M19-P2.md (opus) | sonnet | 0 (resumed once after a session restart) | 3/3 (I5 by I5 pipe test, I14 by I14 test/T12/T22, I15 by I15 replug test) | fake device sent the CSW as data on a failed IN command (test fake only; fixed in s2c) |
+| a2ab688 | M19 P2 s2c port reset and re-enumeration, drive retries, media change | M19-P2.md (opus) | sonnet | 0 | 3/3 (I8 by T12, retries by T14, I18 by T24/T12/T15) | |
+| 70f5dea | M19 P2 s3a Storage::Disk, disk registry, virtio as vda, USB drive as sda | M19-P2.md (opus) | sonnet (high) | 0 | 4/4 (I16 x2 by T16, I19 by T16, chunking by T17) | |
+| e777096 | M19 P2 s3b volumes per disk, dead volumes, core Discard, /proc/partitions | M19-P2.md (opus) | sonnet (high) | 0 | 4/4 (I20, I21 by T18; I22 by filesystem_tests boot numbering; Discard by T19) | |
+| 2d597d1 | M19 P2 s4a USB writes, host checks, write protect, FAT16 dirty bits, flush rules | M19-P2.md (opus) | sonnet (high) | 1 (tolerated poweroff panic in the case; DATA PROTECT on flush) | 4/4 (I24 by T20, I27 by T33, I13 by USB I13, I23 by T17) | |
+| 25d50a2 | M19 P2 s4b hot-unplug in QEMU, EIO on dead volumes, cp short writes, sync EIO | M19-P2.md (opus) | sonnet (high) | 0 | 2/2 (I21 by T28 round 4, I19 by T28 round 5) | |
+| 4e0bf26 | M19 P2 s4c eject: syscall 74, libc, /sbin/eject, all-or-nothing unmount | M19-P2.md (opus) | sonnet (high) | 0 | 2/2 (I25 by T21, I24 by T21) | |
+| 603df33 | M19 P2 s4d drives above 2 TiB, 4096-byte sectors, behind a hub | M19-P2.md (opus) | sonnet (high) | 0 | 2/2 (I12 by T8/T30, sector size by partition host test and T30) | |
+| 9af0e78 | M19 P2 s5a stick log partition, boot-from-stick harness, USB_STICK_TEST | M19-P2.md (opus) | sonnet (medium) | 0 | 1/1 (I26 by T32) | |

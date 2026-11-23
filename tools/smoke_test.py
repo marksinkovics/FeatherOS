@@ -8,6 +8,7 @@ import sys
 from smoke import qemu, session
 from smoke.boot import MAX_CPU_PROTECTIONS
 from smoke.cases import AddArguments, Select
+from smoke.cases.base import SkipCase
 
 
 def main():
@@ -61,6 +62,9 @@ def main():
             args.session_output
             or os.path.join(args.build_dir, "smoke-output.txt"),
         )
+    except SkipCase as skip:
+        print(f"SKIP: {skip}")
+        return 0
     finally:
         case.Stop()
 

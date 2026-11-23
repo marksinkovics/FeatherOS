@@ -30,6 +30,7 @@ _usage() {
     printf 'KERNEL_TESTS=ON builds the kernel test hooks (test, smoke, test-all and any *_TEST kernel toggle turn it on).\n'
     printf 'KERNEL_ROOT=vdaN puts root=vdaN on the kernel command line, naming the root partition (FAT16, ext2, ext3 or ext4);\n'
     printf 'ROOT_TEST=ON boots with it (vda3 by default) and checks the root.\n'
+    printf 'USB_STICK_TEST=ON X86_UEFI=ON boots the make_usb_stick.sh image from a USB drive and saves dmesg to its log partition.\n'
     printf 'NODISK_TEST=ON boots with no virtio-blk device and checks the RAM root.\n'
     printf 'KERNEL_USB=off|poll puts usb=off or usb=poll on the kernel command line (no USB, or controller events by timer).\n'
     printf 'KERNEL_USBHID=report puts usbhid=report on it (boot keyboards and mice through their report descriptors);\n'
@@ -95,7 +96,7 @@ _kernel_test_mode() {
     local -a modes=()
     local toggle variable
     for toggle in PANIC EXCEPTION INTERRUPT MEMORY TIMER SCHEDULER USER_PREEMPTION SMP STORAGE \
-        NETWORK INPUT PCI; do
+        NETWORK INPUT PCI USB_STORAGE; do
         variable="${toggle}_TEST"
         if _is_on "${!variable:-OFF}"; then
             modes+=("$(printf '%s' "$toggle" | tr '[:upper:]_' '[:lower:]-')")
@@ -326,7 +327,7 @@ _image_inputs() {
         "$ARCH-elf-strip" --strip-all -o "$system_dir/${name%-"$ARCH".elf}" "$program"
         cp "$system_dir/${name%-"$ARCH".elf}" "$disk_programs_dir/bin/"
     done
-    for program in init mount umount sync net dhcp; do
+    for program in init mount umount eject sync net dhcp; do
         mv "$disk_programs_dir/bin/$program" "$disk_programs_dir/sbin/$program"
     done
     python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$system_dir/badelf"
@@ -595,6 +596,18 @@ smoke_test() {
     fi
     if _is_on "${USB_HUB_TEST:-OFF}"; then
         smoke_args+=(--expect-usb-hub)
+    fi
+    if _is_on "${USB_STORAGE_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb-storage)
+    fi
+    if _is_on "${USB_STORAGE_HOTPLUG_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb-storage-hotplug)
+    fi
+    if _is_on "${USB_STORAGE_LARGE_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb-storage-large)
+    fi
+    if _is_on "${USB_STICK_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb-stick)
     fi
     if _is_on "${NODISK_TEST:-OFF}"; then
         smoke_args+=(--expect-nodisk)

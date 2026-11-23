@@ -129,6 +129,11 @@ HostController& Device::Host() const
     return *host_;
 }
 
+const Driver* DriverOf(const Device& device, uint32_t interface)
+{
+    return interface < MaxInterfaces ? device.drivers[interface] : nullptr;
+}
+
 void Device::PostWork()
 {
     if (tree_ != nullptr)

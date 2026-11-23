@@ -24,6 +24,7 @@ constexpr uint32_t PendingCommands = 4;
 constexpr uint32_t PendingTransfers = 128;
 constexpr uint32_t ContextIndexes = 32;
 constexpr uint32_t MaxTransferBytes = 16384;
+constexpr uint32_t MaxTdTrbs = 3;
 constexpr uint32_t TransactionRetries = 3;
 constexpr uint32_t CompletionBatch = 16;
 constexpr uint32_t ControlTimeoutMs = 5000;
@@ -93,6 +94,8 @@ public:
     bool Submit(uint32_t slot, Transfer& transfer) override;
     bool Wait(Transfer& transfer, uint64_t deadline_milliseconds) override;
     bool ResetEndpoint(uint32_t slot, uint8_t endpoint) override;
+    bool CancelEndpoint(uint32_t slot, uint8_t endpoint) override;
+    bool ClearHalt(uint32_t slot, uint8_t endpoint) override;
     void StopEndpoints(uint32_t slot) override;
     bool AllocateBuffer(uint64_t bytes, Memory::Dma::Buffer* buffer) override;
     void FreeBuffer(const Memory::Dma::Buffer& buffer) override;
@@ -130,9 +133,11 @@ private:
         uint8_t slot = 0;
         uint8_t dci = 0;
         uint8_t attempts = 0;
+        uint8_t trbs = 0;
         Transfer* transfer = nullptr;
         uint64_t first = 0;
         uint64_t last = 0;
+        uint32_t first_chunk = 0;
         uint32_t actual = 0;
         uint32_t code = 0;
         SetupPacket setup{};
@@ -146,6 +151,7 @@ private:
         bool quiescing = false;
         bool recovery_needed = false;
         uint8_t address = 0;
+        EndpointDescriptor descriptor{};
         uint32_t recoveries = 0;
         uint64_t recovery_window = 0;
     };
@@ -224,7 +230,8 @@ private:
     void RecoverEndpoint(uint32_t slot, uint32_t dci);
     void Quiesce(uint32_t slot, uint32_t dci, Transfer* waited, Status waited_status, bool resume);
     bool DeviceGone(uint32_t slot);
-    bool ClearHalt(uint32_t slot, uint8_t address);
+    bool ClearEndpointFeature(uint32_t slot, uint8_t address);
+    bool ResetSequence(uint32_t slot, uint32_t dci);
     uint32_t RecordRecoveryLocked(uint32_t slot, uint32_t dci) REQUIRES(ring_lock_);
 
     Hardware& hardware_;

@@ -21,6 +21,10 @@ from smoke.cases.timer import Timer
 from smoke.cases.usb import Usb
 from smoke.cases.usb_hub import UsbHub
 from smoke.cases.usb_keys import UsbFallback, UsbKeys
+from smoke.cases.usb_stick import UsbStick
+from smoke.cases.usb_storage import UsbStorage
+from smoke.cases.usb_storage_hotplug import UsbStorageHotplug
+from smoke.cases.usb_storage_large import UsbStorageLarge
 from smoke.cases.user_preemption import UserPreemption
 
 # Each --expect-<name> switch: its case and help text.
@@ -74,6 +78,27 @@ SWITCHES = {
         UsbHub,
         "Type and move the mouse behind a USB hub, and hot-plug a keyboard "
         "into one of its ports",
+    ),
+    "usb-storage": (
+        UsbStorage,
+        "Read and write four USB mass-storage drives through the kernel's "
+        "test hook and the shell, then check their images on the host",
+    ),
+    "usb-storage-hotplug": (
+        UsbStorageHotplug,
+        "Plug USB drives in and pull them out through QMP, also while "
+        "mounted and mid-transfer, and expect dead mounts to fail with EIO "
+        "and unmount",
+    ),
+    "usb-storage-large": (
+        UsbStorageLarge,
+        "Mount a sparse 3 TiB USB drive, a 4096-byte-sector drive and a "
+        "drive behind a hub, write them and check their images on the host",
+    ),
+    "usb-stick": (
+        UsbStick,
+        "Boot from the make_usb_stick.sh image on a USB drive, save dmesg "
+        "to its FAT16 log partition and check the image on the host",
     ),
     "nodisk": (
         NoDisk,

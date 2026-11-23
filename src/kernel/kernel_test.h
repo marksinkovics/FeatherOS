@@ -13,6 +13,8 @@ void RunSmpTests();
 void RunStorageTests(uint64_t hhdm_offset);
 void RunNetworkTests();
 void RunPciTests(const void* platform_data);
+// Waits for the first probed USB drive, then writes and reads it through the drive interface.
+void StartUsbStorageTests();
 // Reports the shown console and each console's foreground program on serial when they change.
 void StartConsoleReports();
 

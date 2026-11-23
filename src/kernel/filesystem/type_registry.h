@@ -14,7 +14,7 @@ namespace FeatherOS::VFS
 class TypeRegistry
 {
 public:
-    static constexpr uint32_t Capacity = 32;
+    static constexpr uint32_t Capacity = 48;
 
     enum class Lookup : uint8_t
     {

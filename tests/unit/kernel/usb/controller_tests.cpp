@@ -1161,9 +1161,10 @@ TEST_CASE("xhci T16: recoveries are counted for the driver that unbinds after th
     REQUIRE(ConfigureFirstInterface(rig, slot));
     std::vector<uint32_t> seen;
     rig.controller->SetRecoveryHandler(
-        [](void* context, uint32_t, uint8_t endpoint, uint32_t recent)
+        [](void* context, uint32_t, uint8_t endpoint, uint32_t recent, Status status)
         {
             REQUIRE(endpoint == 0x81);
+            REQUIRE(status == Status::Stall);
             static_cast<std::vector<uint32_t>*>(context)->push_back(recent);
         },
         &seen);

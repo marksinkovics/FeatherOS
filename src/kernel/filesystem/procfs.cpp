@@ -17,6 +17,7 @@ enum class Kind : uint8_t
     Mounts,
     UsbDevices,
     KernelLog,
+    Partitions,
     ProcessDirectory,
     ProcessStatusFile,
 };
@@ -26,10 +27,11 @@ constexpr char SystemStatName[] = "stat";
 constexpr char MountsName[] = "mounts";
 constexpr char UsbName[] = "usb";
 constexpr char KernelLogName[] = "kmsg";
-constexpr const char* FixedNames[] = {MemoryInfoName, SystemStatName, MountsName, UsbName,
-                                      KernelLogName};
-constexpr Kind FixedKinds[] = {Kind::MemoryInfo, Kind::SystemStat, Kind::Mounts, Kind::UsbDevices,
-                               Kind::KernelLog};
+constexpr char PartitionsName[] = "partitions";
+constexpr const char* FixedNames[] = {MemoryInfoName, SystemStatName, MountsName,
+                                      UsbName,        KernelLogName,  PartitionsName};
+constexpr Kind FixedKinds[] = {Kind::MemoryInfo, Kind::SystemStat, Kind::Mounts,
+                               Kind::UsbDevices, Kind::KernelLog,  Kind::Partitions};
 constexpr uint32_t FixedCount = sizeof(FixedNames) / sizeof(FixedNames[0]);
 constexpr char StatusName[] = "status";
 
@@ -100,6 +102,10 @@ Kind Classify(const char* path, uint64_t* process_id)
     {
         return Kind::KernelLog;
     }
+    if (Equals(path, PartitionsName))
+    {
+        return Kind::Partitions;
+    }
     const char* rest;
     if (!ParseProcessId(path, process_id, &rest) || !ProcessExists(*process_id))
     {
@@ -157,6 +163,8 @@ uint64_t SerialNumber(Kind kind, uint64_t process_id)
         return RootSerialNumber + 4;
     case Kind::KernelLog:
         return RootSerialNumber + 5;
+    case Kind::Partitions:
+        return RootSerialNumber + 6;
     case Kind::ProcessDirectory:
         return FirstProcessSerialNumber + 2 * process_id;
     case Kind::ProcessStatusFile:
@@ -277,6 +285,14 @@ bool Generate(const char* path, char* buffer, size_t* length)
         }
         formatted = true;
         break;
+    case Kind::Partitions:
+        buffer[0] = '\0';
+        if (source.partitions != nullptr)
+        {
+            source.partitions(buffer, MaximumPartitionsFileSize);
+        }
+        formatted = true;
+        break;
     case Kind::ProcessStatusFile:
     {
         ProcessStatus status;
@@ -308,9 +324,19 @@ bool Generate(const char* path, char* buffer, size_t* length)
 size_t FileCapacity(const char* path)
 {
     uint64_t process_id = 0;
-    return path != nullptr && Classify(path, &process_id) == Kind::KernelLog
-               ? MaximumKernelLogFileSize
-               : MaximumFileSize;
+    if (path == nullptr)
+    {
+        return MaximumFileSize;
+    }
+    switch (Classify(path, &process_id))
+    {
+    case Kind::KernelLog:
+        return MaximumKernelLogFileSize;
+    case Kind::Partitions:
+        return MaximumPartitionsFileSize;
+    default:
+        return MaximumFileSize;
+    }
 }
 
 bool IsDirectory(const char* path)

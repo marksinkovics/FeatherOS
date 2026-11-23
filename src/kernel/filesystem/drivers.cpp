@@ -5,13 +5,23 @@
 #include "procfs.h"
 #include "tmpfs.h"
 
+#include "vfs.h"
+
 #include "fs/ext2.h"
 #include "fs/fat.h"
 #include "kernel/klogger.h"
 #include "kernel/memory/heap.h"
 #include "kernel/storage/core_block_device.h"
+#include "kernel/storage/disk.h"
 #include "kernel/storage/page_cache.h"
+#include "kernel/storage/worker.h"
+#include "kernel/string/format.h"
+#include "kernel/sync/mutex.h"
+#include "kernel/sync/spinlock.h"
+#include "user/thread_safety.h"
 
+#include <algorithm>
+#include <array>
 #include <stdint.h>
 
 namespace FeatherOS::Filesystem
@@ -459,19 +469,229 @@ constexpr CoreKind Kinds[] = {
     {FeatherDisk::Ext::Ext4Type, "ext4", {.periodic_sync = true, .close_on_detach = true}},
 };
 
-constinit CoreDriver volume_drivers[Drivers::MaximumVolumes];
+constexpr size_t SlotCount = Drivers::MaximumVolumes + Drivers::MaximumOtherVolumes;
+constexpr size_t NoSlot = SIZE_MAX;
+
+// Slots 0 to 15 are the boot disk's partitions 1 to 16; the rest serve other disks.
+constinit CoreDriver volume_drivers[SlotCount];
 constinit KLogger logger;
 
-bool OverlapsOpenVolume(const FeatherDisk::Partition::Range& range)
+struct OtherSlot
 {
-    for (size_t number = 1; number <= Drivers::MaximumVolumes; ++number)
+    bool in_use = false;
+    Storage::Disk* disk = nullptr;
+    // Written before the slot's volume is registered and after it is unregistered, and read
+    // through the registry, so it needs no lock of its own.
+    char source[Drivers::MaximumSourceLength] = {};
+};
+
+// Taken alone: never while calling the disk, the VFS or a volume's driver.
+constinit Sync::SpinLock volumes_lock;
+constinit OtherSlot other_slots[Drivers::MaximumOtherVolumes] GUARDED_BY(volumes_lock);
+
+// For the worker, which holds one volume lock at a time like any task.
+class Held
+{
+public:
+    explicit Held(Driver& driver) : hold(driver.VolumeLock()) {}
+
+private:
+    Sync::VolumeHoldBase hold;
+};
+
+size_t SlotOf(const Driver* driver)
+{
+    for (size_t index = 0; index < SlotCount; ++index)
     {
-        if (number != range.number && volume_drivers[number - 1].Overlaps(range))
+        if (&volume_drivers[index] == driver)
         {
-            return true;
+            return index;
         }
     }
-    return false;
+    return NoSlot;
+}
+
+bool OverlapsOpenVolume(const FeatherDisk::BlockDevice& disk,
+                        const FeatherDisk::Partition::Range& range, const CoreDriver* except)
+{
+    return std::any_of(std::begin(volume_drivers), std::end(volume_drivers),
+                       [&](const CoreDriver& volume)
+                       { return &volume != except && volume.Overlaps(disk, range); });
+}
+
+// The whole disk's volume (a filesystem with no partition table) is named like the disk.
+bool NameVolume(const char* disk, uint32_t number, char* out, size_t capacity)
+{
+    if (number != 0)
+    {
+        return Storage::PartitionName(disk, number, out, capacity) != 0;
+    }
+    const size_t length = std::char_traits<char>::length(disk);
+    if (length + 1 > capacity)
+    {
+        return false;
+    }
+    std::copy(disk, disk + length + 1, out);
+    return true;
+}
+
+size_t AllocateOtherSlot(Storage::Disk& disk, uint32_t number)
+{
+    Sync::SpinLockGuard guard(volumes_lock);
+    if (disk.Gone() || disk.Ejected())
+    {
+        return NoSlot;
+    }
+    for (size_t index = 0; index < Drivers::MaximumOtherVolumes; ++index)
+    {
+        OtherSlot& slot = other_slots[index];
+        if (slot.in_use)
+        {
+            continue;
+        }
+        if (!NameVolume(disk.Name(), number, slot.source, sizeof(slot.source)))
+        {
+            return NoSlot;
+        }
+        disk.Retain();
+        slot.in_use = true;
+        slot.disk = &disk;
+        return Drivers::MaximumVolumes + index;
+    }
+    return NoSlot;
+}
+
+// With the slot's volume lock held; the slot's driver must not be mounted.
+void ReleaseOtherSlot(size_t index)
+{
+    CoreDriver& driver = volume_drivers[index];
+    driver.Discard();
+    Storage::Disk* disk = nullptr;
+    {
+        Sync::SpinLockGuard guard(volumes_lock);
+        OtherSlot& slot = other_slots[index - Drivers::MaximumVolumes];
+        disk = slot.disk;
+        slot = {};
+        driver.ClearDead();
+        driver.SetEjecting(false);
+    }
+    if (disk != nullptr)
+    {
+        disk->Release();
+    }
+}
+
+void LogVolume(const char* source, const char* type, uint64_t kibibytes)
+{
+    char line[96];
+    if (type != nullptr
+            ? String::FormatTo(line, sizeof(line), "Storage: {}: {}, {} KiB", source, type,
+                               kibibytes)
+            : String::FormatTo(line, sizeof(line), "Storage: {}: no supported filesystem", source))
+    {
+        logger.Info(line);
+    }
+}
+
+// The first of the driver's kinds that accepts range; the slot is released when none does.
+bool OpenOtherVolume(Storage::Disk& disk, const FeatherDisk::Partition::Range& range,
+                     bool report_failure)
+{
+    const size_t index = AllocateOtherSlot(disk, range.number);
+    if (index == NoSlot)
+    {
+        logger.Warning("Storage: no volume slot left, the volume is not opened");
+        return false;
+    }
+    CoreDriver& driver = volume_drivers[index];
+    char source[Drivers::MaximumSourceLength];
+    {
+        Sync::SpinLockGuard guard(volumes_lock);
+        const char* const name = other_slots[index - Drivers::MaximumVolumes].source;
+        std::copy(name, name + sizeof(source), source);
+    }
+    FeatherDisk::PageCache* cache = BlockDevice::CacheReady() ? &BlockDevice::Cache() : nullptr;
+    if (cache != nullptr && OverlapsOpenVolume(disk, range, &driver))
+    {
+        logger.Warning("VFS: a partition overlaps an open volume, read without the page cache");
+        cache = nullptr;
+    }
+    bool opened;
+    {
+        const Held held(driver);
+        opened = driver.OpenPartition(Kinds, disk, range, cache);
+        if (!opened)
+        {
+            ReleaseOtherSlot(index);
+        }
+    }
+    if (opened || (report_failure && !disk.Gone()))
+    {
+        LogVolume(source, opened ? driver.TypeName() : nullptr,
+                  range.sector_count * disk.SectorSize() / 1024);
+    }
+    if (opened)
+    {
+        VFS::RegisterVolume(driver);
+    }
+    return opened;
+}
+
+void RemovedJob(void* context)
+{
+    auto* disk = static_cast<Storage::Disk*>(context);
+    Drivers::ForgetDiskVolumes(*disk);
+    disk->Release();
+}
+
+void OnDiskRemoved(Storage::Disk& disk)
+{
+    {
+        Sync::SpinLockGuard guard(volumes_lock);
+        for (size_t index = 0; index < Drivers::MaximumOtherVolumes; ++index)
+        {
+            if (other_slots[index].in_use && other_slots[index].disk == &disk)
+            {
+                volume_drivers[Drivers::MaximumVolumes + index].MarkDead();
+            }
+        }
+    }
+    disk.Retain();
+    if (!Storage::Worker::Post(RemovedJob, &disk))
+    {
+        disk.Release();
+        logger.Warning("Storage: the worker queue is full, a removed disk's volumes stay open");
+    }
+}
+
+size_t FormatVolumes(Storage::Disk& disk, char* out, size_t capacity)
+{
+    size_t length = 0;
+    for (const CoreDriver& volume : volume_drivers)
+    {
+        CoreDriver::Summary summary;
+        if (!volume.Summarize(disk, &summary))
+        {
+            continue;
+        }
+        char name[Drivers::MaximumSourceLength];
+        char line[96];
+        if (!NameVolume(disk.Name(), static_cast<uint32_t>(summary.number), name, sizeof(name)) ||
+            !String::FormatTo(line, sizeof(line), "{} {} {} {}\n", name,
+                              summary.sector_count * disk.SectorSize() / 1024, disk.SectorSize(),
+                              summary.type != nullptr ? summary.type : "-"))
+        {
+            continue;
+        }
+        const size_t size = std::char_traits<char>::length(line);
+        if (length + size > capacity)
+        {
+            break;
+        }
+        std::copy(line, line + size, out + length);
+        length += size;
+    }
+    return length;
 }
 constinit ArchiveDriver system_driver("system");
 constinit DeviceDriver device_driver;
@@ -499,14 +719,143 @@ CoreDriver* Volume(size_t number)
 
 CoreDriver* VolumeOf(const Driver* driver)
 {
-    for (CoreDriver& volume : volume_drivers)
+    const size_t slot = SlotOf(driver);
+    return slot == NoSlot ? nullptr : &volume_drivers[slot];
+}
+
+const char* SourceOf(const Driver* driver)
+{
+    const size_t slot = SlotOf(driver);
+    if (slot == NoSlot)
     {
-        if (&volume == driver)
+        return nullptr;
+    }
+    if (slot < MaximumVolumes)
+    {
+        return PartitionSource(volume_drivers[slot].PartitionNumber());
+    }
+    const char* const source = other_slots[slot - MaximumVolumes].source;
+    return source[0] != '\0' ? source : nullptr;
+}
+
+void AttachStorage()
+{
+    Storage::SetRemovalHandler(OnDiskRemoved);
+    Storage::SetScanHandler([](Storage::Disk& disk) { OpenDiskVolumes(disk); });
+    Storage::SetVolumeLister(FormatVolumes);
+}
+
+size_t OpenDiskVolumes(Storage::Disk& disk)
+{
+    if (&disk == Storage::BootDisk() || disk.Gone())
+    {
+        return 0;
+    }
+    const FeatherDisk::Partition::Range whole = {0, disk.SectorCount(), 0};
+    size_t opened = 0;
+    if (OpenOtherVolume(disk, whole, false))
+    {
+        return 1;
+    }
+    std::array<FeatherDisk::Partition::Range, MaximumVolumes> ranges{};
+    const size_t found = FeatherDisk::Partition::Find(disk, ranges);
+    if (found == 0 && !disk.Gone())
+    {
+        LogVolume(disk.Name(), nullptr, 0);
+    }
+    for (size_t index = 0; index < found; ++index)
+    {
+        if (OpenOtherVolume(disk, ranges[index], true))
         {
-            return &volume;
+            ++opened;
         }
     }
-    return nullptr;
+    return opened;
+}
+
+void ForgetDiskVolumes(Storage::Disk& disk)
+{
+    std::array<size_t, MaximumOtherVolumes> slots{};
+    size_t count = 0;
+    {
+        Sync::SpinLockGuard guard(volumes_lock);
+        for (size_t index = 0; index < MaximumOtherVolumes; ++index)
+        {
+            if (other_slots[index].in_use && other_slots[index].disk == &disk)
+            {
+                slots[count++] = MaximumVolumes + index;
+            }
+        }
+    }
+    for (size_t index = 0; index < count; ++index)
+    {
+        CoreDriver& driver = volume_drivers[slots[index]];
+        const Held held(driver);
+        if (VFS::UnregisterVolumeIfUnmounted(&driver))
+        {
+            ReleaseOtherSlot(slots[index]);
+        }
+    }
+}
+
+void SetDiskEjecting(Storage::Disk& disk, bool ejecting)
+{
+    for (CoreDriver& volume : volume_drivers)
+    {
+        CoreDriver::Summary summary;
+        if (volume.Summarize(disk, &summary))
+        {
+            volume.SetEjecting(ejecting);
+        }
+    }
+}
+
+bool SourceOnEjectedDisk(const char* source)
+{
+    char name[Storage::MaxDiskName];
+    size_t length = std::char_traits<char>::length(source);
+    if (length == 0 || length >= sizeof(name))
+    {
+        return false;
+    }
+    std::copy(source, source + length + 1, name);
+    const auto ejected = [&name](size_t size)
+    {
+        char candidate[Storage::MaxDiskName];
+        std::copy(name, name + size, candidate);
+        candidate[size] = '\0';
+        Storage::Disk* const disk = Storage::Acquire(candidate);
+        if (disk == nullptr)
+        {
+            return false;
+        }
+        const bool result = disk->Ejected();
+        disk->Release();
+        return result;
+    };
+    if (ejected(length))
+    {
+        return true;
+    }
+    while (length > 0 && name[length - 1] >= '0' && name[length - 1] <= '9')
+    {
+        --length;
+    }
+    return length > 0 && (ejected(length) || (name[length - 1] == 'p' && ejected(length - 1)));
+}
+
+void Unmounted(Driver* driver)
+{
+    const size_t slot = SlotOf(driver);
+    if (slot == NoSlot || slot < MaximumVolumes || !volume_drivers[slot].Dead())
+    {
+        return;
+    }
+    const Held held(*driver);
+    if (VFS::UnregisterVolumeIfUnmounted(driver))
+    {
+        ReleaseOtherSlot(slot);
+    }
 }
 
 size_t FindPartitions(std::span<FeatherDisk::Partition::Range> ranges)
@@ -521,13 +870,14 @@ bool OpenVolume(const FeatherDisk::Partition::Range& range)
     {
         return false;
     }
+    Storage::Disk& disk = *Storage::BootDisk();
     FeatherDisk::PageCache* cache = BlockDevice::CacheReady() ? &BlockDevice::Cache() : nullptr;
-    if (cache != nullptr && OverlapsOpenVolume(range))
+    if (cache != nullptr && OverlapsOpenVolume(disk, range, volume))
     {
         logger.Warning("VFS: a partition overlaps an open volume, read without the page cache");
         cache = nullptr;
     }
-    return volume->OpenPartition(Kinds, BlockDevice::CoreDevice(), range, cache);
+    return volume->OpenPartition(Kinds, disk, range, cache);
 }
 
 bool ForgetVolume(size_t number)
