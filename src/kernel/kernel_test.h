@@ -17,6 +17,7 @@ void RunPciTests(const void* platform_data);
 void StartUsbStorageTests();
 // Waits for the first NVMe namespace, then mounts its volumes and writes and reads it raw.
 void StartNvmeTests();
+void StartStoragePolicyTests();
 // Reports the shown console and each console's foreground program on serial when they change.
 void StartConsoleReports();
 

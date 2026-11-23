@@ -103,6 +103,16 @@ bool Controller::Dead() const
     return dead_.load(std::memory_order_acquire);
 }
 
+uint64_t Controller::write_commands() const
+{
+    return write_commands_.load(std::memory_order_relaxed);
+}
+
+uint64_t Controller::flush_commands() const
+{
+    return flush_commands_.load(std::memory_order_relaxed);
+}
+
 uint32_t Controller::StaleCount() const
 {
     return stale_completions_.load(std::memory_order_relaxed);
@@ -707,6 +717,7 @@ FeatherDisk::Status Controller::Io(const Namespace& ns, bool write, uint64_t sec
         if (write)
         {
             std::copy_n(out + offset, bytes, Bytes(bounce_));
+            write_commands_.fetch_add(1, std::memory_order_relaxed);
         }
         const std::optional<Sqe> sqe =
             ReadWrite(write, 0, ns.Id(), sector + done, blocks, bounce_.physical, Prp2For(bytes));
@@ -738,6 +749,7 @@ FeatherDisk::Status Controller::FlushNamespace(const Namespace& ns)
     {
         return std::unexpected(FeatherDisk::Error::Io);
     }
+    flush_commands_.fetch_add(1, std::memory_order_relaxed);
     return IoCommand(Flush(0, ns.Id()));
 }
 

@@ -28,6 +28,8 @@
 #include "kernel/storage/block_device.h"
 #include "kernel/storage/core_block_device.h"
 #include "kernel/storage/disk.h"
+#include "kernel/storage/nvme/controller.h"
+#include "kernel/storage/nvme/namespace.h"
 #include "kernel/storage/page_cache.h"
 #include "kernel/storage/page_cache.h"
 #include "kernel/string/format.h"
@@ -2792,6 +2794,96 @@ void StartNvmeTests()
     if (!Scheduler::CreateTask(NvmeTask, nullptr, &task))
     {
         Panic("Could not start the NVMe test task");
+    }
+}
+
+namespace
+{
+
+void PolicyFail(const char* what)
+{
+    Serial::Write("KERN/STORAGEPOLICY: FAILED ");
+    Serial::Write(what);
+    Serial::Write("\n");
+    Panic("Storage policy test failed");
+}
+
+bool CreateRefused(const char* type, const char* source)
+{
+    if (VFS::Mount(type, source, NvmeMountPoint, Filesystem::MountMode::ReadWrite) !=
+        VFS::MountResult::Done)
+    {
+        return false;
+    }
+    VFS::FileHandle file;
+    const bool created = VFS::Create("/nvme/policy.txt", &file);
+    if (created)
+    {
+        VFS::Close(&file);
+    }
+    return !created && VFS::Unmount(NvmeMountPoint) == VFS::MountResult::Done;
+}
+
+uint64_t StoragePolicyTask(void*)
+{
+    Storage::Disk* disk = nullptr;
+    for (uint32_t waited = 0; disk == nullptr && waited < NvmeWaitTicks; waited += NvmeSettleTicks)
+    {
+        disk = Storage::Acquire("nvme0n1");
+        if (disk == nullptr)
+        {
+            Scheduler::SleepUntil(Time::TickCount() + NvmeSettleTicks);
+        }
+    }
+    if (disk == nullptr)
+    {
+        PolicyFail("no NVMe namespace was probed");
+    }
+    WaitForNvmeVolumes();
+    const Storage::DiskInfo info = disk->Info();
+    if (!info.read_only || info.read_only_reason != Storage::ReadOnlyReason::Policy)
+    {
+        PolicyFail("nvme0n1 is not read-only by the policy");
+    }
+    Serial::Write("KERN/STORAGEPOLICY: nvme0n1 is read-only by the policy\n");
+
+    if (!CreateRefused("fat16", "nvme0n1p1") || !CreateRefused("ext2", "nvme0n1p2") ||
+        !CreateRefused("ext3", "nvme0n1p3") || !CreateRefused("ext4", "nvme0n1p4"))
+    {
+        PolicyFail("a read-write mount of nvme0n1 took a file");
+    }
+    Serial::Write("KERN/STORAGEPOLICY: no volume took a file\n");
+
+    auto* sector = new uint8_t[info.sector_size];
+    FillPattern(sector, info.sector_size, 3);
+    if (disk->Write(info.sector_count - 1, {sector, info.sector_size}) || !disk->Flush())
+    {
+        PolicyFail("a write through the disk was not refused or a flush failed");
+    }
+    delete[] sector;
+    Serial::Write("KERN/STORAGEPOLICY: a write through the disk refused\n");
+
+    const Storage::Nvme::Controller& controller =
+        static_cast<Storage::Nvme::Namespace&>(disk->Driver()).Owner();
+    if (controller.write_commands() != 0 || controller.flush_commands() != 0 ||
+        disk->Counters().written_sectors != 0)
+    {
+        PolicyFail("the controller was sent a write or a flush command");
+    }
+    Serial::Write("KERN/STORAGEPOLICY: no write or flush command was sent\n");
+    disk->Release();
+    Serial::Write("KERN/STORAGEPOLICY: tests passed\n");
+    return 0;
+}
+
+} // namespace
+
+void StartStoragePolicyTests()
+{
+    Scheduler::TaskId task;
+    if (!Scheduler::CreateTask(StoragePolicyTask, nullptr, &task))
+    {
+        Panic("Could not start the storage policy test task");
     }
 }
 

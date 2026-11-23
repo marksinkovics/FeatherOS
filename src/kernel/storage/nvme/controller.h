@@ -51,6 +51,8 @@ public:
     uint32_t StaleCount() const;
     uint32_t AbortCount() const;
     uint32_t ResetCount() const;
+    uint64_t write_commands() const;
+    uint64_t flush_commands() const;
     uint32_t NamespaceCount() const;
     Namespace& NamespaceAt(uint32_t index);
 
@@ -180,6 +182,8 @@ private:
     std::atomic<uint32_t> stale_completions_ = 0;
     std::atomic<uint32_t> aborts_ = 0;
     std::atomic<uint32_t> resets_ = 0;
+    std::atomic<uint64_t> write_commands_ = 0;
+    std::atomic<uint64_t> flush_commands_ = 0;
     std::atomic<bool> stale_logged_ = false;
 };
 

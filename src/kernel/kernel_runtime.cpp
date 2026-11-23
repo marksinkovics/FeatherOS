@@ -516,6 +516,10 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     {
         KernelTest::StartNvmeTests();
     }
+    if (KernelTest::Selected(KernelTest::Mode::StoragePolicy))
+    {
+        KernelTest::StartStoragePolicyTests();
+    }
 #endif
     if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))
     {

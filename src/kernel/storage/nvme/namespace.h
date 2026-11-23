@@ -24,6 +24,7 @@ public:
     // A reset found this namespace changed or gone: only its disk goes, the controller lives on.
     void MarkGone();
     bool Vanished() const;
+    const Controller& Owner() const;
 
     DiskInfo Info() override;
     bool Gone() override;

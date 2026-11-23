@@ -10,6 +10,7 @@ from smoke.cases.network import Network
 from smoke.cases.no_disk import NoDisk
 from smoke.cases.normal_boot import NormalBoot
 from smoke.cases.nvme import Nvme
+from smoke.cases.nvme_namespaces import NvmeNamespaces
 from smoke.cases.panic import Panic
 from smoke.cases.pci import Pci
 from smoke.cases.power import Power
@@ -18,6 +19,7 @@ from smoke.cases.scheduler import Scheduler
 from smoke.cases.shell import Shell
 from smoke.cases.smp import Smp
 from smoke.cases.storage import Storage
+from smoke.cases.storage_policy import StoragePolicy
 from smoke.cases.timer import Timer
 from smoke.cases.usb import Usb
 from smoke.cases.usb_hub import UsbHub
@@ -101,6 +103,16 @@ SWITCHES = {
         "Mount, write and check the four volumes of an NVMe namespace "
         "through the kernel's test hook and the shell, then check its image "
         "on the host",
+    ),
+    "nvme-namespaces": (
+        NvmeNamespaces,
+        "Probe a 4096-byte and a 512-byte NVMe namespace, refuse one with "
+        "metadata, write the first two and check their images on the host",
+    ),
+    "storage-policy": (
+        StoragePolicy,
+        "Boot with storage=ro and expect the NVMe disk read-only through the "
+        "VFS and the disk, with no write or flush command sent",
     ),
     "usb-stick": (
         UsbStick,

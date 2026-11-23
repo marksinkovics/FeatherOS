@@ -41,6 +41,11 @@ bool Namespace::Vanished() const
     return vanished_.load(std::memory_order_acquire);
 }
 
+const Controller& Namespace::Owner() const
+{
+    return *controller_;
+}
+
 DiskInfo Namespace::Info()
 {
     return info_;

@@ -42,6 +42,8 @@ TOGGLES = (
     "USB_STORAGE_LARGE_TEST",
     "USB_STICK_TEST",
     "NVME_TEST",
+    "NVME_NAMESPACES_TEST",
+    "STORAGE_POLICY_TEST",
     "NODISK_TEST",
     "X86_UEFI",
 )
@@ -137,7 +139,9 @@ CASES = [
     # The make_usb_stick.sh image booted from a USB drive; skipped like 63.
     Case("72_x86_64_usb_stick_uefi", "x86_64", USB_STICK_TEST=ON, X86_UEFI=ON),
     *Both(74, "nvme", NVME_TEST=ON),
+    *Both(76, "nvme_namespaces", NVME_NAMESPACES_TEST=ON),
     *Both(78, "nvme_without_usb", NVME_TEST=ON, KERNEL_USB="off"),
+    *Both(82, "storage_policy", STORAGE_POLICY_TEST=ON, KERNEL_STORAGE="ro"),
 ]
 
 
