@@ -75,6 +75,8 @@ set(SRC
     ${SRCROOT}/usb/hid/keyboard.cpp
     ${SRCROOT}/usb/hid/report.cpp
     ${SRCROOT}/usb/manager.cpp
+    ${SRCROOT}/usb/storage/bot.cpp
+    ${SRCROOT}/usb/storage/scsi.cpp
     ${SRCROOT}/usb/text.cpp
     ${SRCROOT}/usb/usb.cpp
     ${SRCROOT}/usb/xhci/context.cpp
