@@ -89,8 +89,8 @@ public:
 
     FeatherDisk::Status Flush() override
     {
-        ++flushes;
-        if (fail_flush)
+        const uint64_t number = ++flushes;
+        if (fail_flush || (fail_flush_after != 0 && number > fail_flush_after))
         {
             return std::unexpected(FeatherDisk::Error::Io);
         }
@@ -99,7 +99,12 @@ public:
 
     FeatherDisk::Status Stop() override
     {
-        return std::unexpected(FeatherDisk::Error::Unsupported);
+        ++stops;
+        if (fail_stop)
+        {
+            return std::unexpected(FeatherDisk::Error::Io);
+        }
+        return {};
     }
 
     void Release() override
@@ -119,6 +124,10 @@ public:
     std::atomic<bool> removable = true;
     std::atomic<bool> read_only = false;
     std::atomic<bool> fail_flush = false;
+    // Flushes past this count fail; 0 for none.
+    std::atomic<uint64_t> fail_flush_after = 0;
+    std::atomic<bool> fail_stop = false;
+    std::atomic<int> stops = 0;
     // Runs once, inside the first Read that follows.
     std::function<void()> on_read;
 
@@ -403,6 +412,21 @@ bool Created(const char* path)
     return wrote;
 }
 
+bool NoWorkingDirectory(const char* /*point*/)
+{
+    return false;
+}
+
+bool EveryWorkingDirectory(const char* /*point*/)
+{
+    return true;
+}
+
+bool Mounted(const char* point)
+{
+    return VFS::MountedAt(point) != nullptr;
+}
+
 constexpr auto Mount = [](const char* type, const char* source, const char* point)
 { return VFS::Mount(type, source, point); };
 
@@ -430,7 +454,7 @@ TEST_CASE("the volumes of a USB disk are opened, listed and mounted by name")
     REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
     REQUIRE(VFS::Unmount("/usb2") == VFS::MountResult::Done);
 
-    REQUIRE(Mount("fat16", "sdz1", "/usb1") == VFS::MountResult::NotFound);
+    REQUIRE(Absent(Mount("fat16", "sdz1", "/usb1")));
     REQUIRE(Mount("fat16", "vda9", "/usb1") == VFS::MountResult::NotFound);
 }
 
@@ -930,4 +954,179 @@ TEST_CASE("USB T20 detaching every mount at shutdown flushes each volume")
     REQUIRE(rig.driver.flushes == flushes + 3);
     REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
     REQUIRE(VFS::Unmount("/usb2") == VFS::MountResult::Done);
+}
+
+namespace
+{
+
+struct EjectRig
+{
+    EjectRig() : rig(PartitionedImage())
+    {
+        REQUIRE(Drivers::OpenDiskVolumes(*rig.disk) == 2);
+        REQUIRE(Mount("fat16", rig.Source(1).c_str(), "/usb1") == VFS::MountResult::Done);
+        REQUIRE(Mount("fat16", rig.Source(2).c_str(), "/usb2") == VFS::MountResult::Done);
+    }
+
+    ~EjectRig()
+    {
+        for (const char* point : {"/usb1", "/usb2"})
+        {
+            if (Mounted(point))
+            {
+                VFS::Unmount(point);
+            }
+        }
+    }
+
+    EjectRig(const EjectRig&) = delete;
+    EjectRig& operator=(const EjectRig&) = delete;
+
+    VFS::MountResult Eject(VFS::MountInUse in_use = nullptr)
+    {
+        return VFS::EjectDisk(rig.Source().c_str(), in_use);
+    }
+
+    Rig rig;
+};
+
+} // namespace
+
+TEST_CASE("USB T21 I25 one busy mount means no mount of the disk is unmounted")
+{
+    EjectRig fixture;
+    VFS::FileHandle open_file{};
+    REQUIRE(VFS::Open("/usb2/BLOCK.TXT", &open_file));
+    const uint64_t flushes = fixture.rig.driver.flushes;
+
+    REQUIRE(fixture.Eject() == VFS::MountResult::Busy);
+    REQUIRE(Mounted("/usb1"));
+    REQUIRE(Mounted("/usb2"));
+    REQUIRE(fixture.rig.driver.flushes == flushes);
+    REQUIRE(fixture.rig.driver.stops == 0);
+    REQUIRE_FALSE(fixture.rig.disk->Ejected());
+    REQUIRE(ReadFile("/usb1/BLOCK.TXT") == FileText);
+
+    VFS::Close(&open_file);
+    REQUIRE(fixture.Eject(EveryWorkingDirectory) == VFS::MountResult::Busy);
+    REQUIRE(Mounted("/usb1"));
+    REQUIRE(Mounted("/usb2"));
+    REQUIRE(fixture.rig.driver.stops == 0);
+
+    REQUIRE(Mount("fat16", fixture.rig.Source(1).c_str(), "/usb3") == VFS::MountResult::Busy);
+    REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
+    REQUIRE(Mount("fat16", fixture.rig.Source(1).c_str(), "/usb3") == VFS::MountResult::Done);
+    REQUIRE(VFS::Unmount("/usb3") == VFS::MountResult::Done);
+}
+
+TEST_CASE("USB T21 eject unmounts, flushes, stops and marks the disk ejected; a second call is 0")
+{
+    EjectRig fixture;
+    REQUIRE(Created("/usb1/NEW.TXT"));
+    const uint64_t flushes = fixture.rig.driver.flushes;
+    const size_t logged = LogLines("Storage: sda: ejected, safe to unplug");
+
+    REQUIRE(fixture.Eject(NoWorkingDirectory) == VFS::MountResult::Done);
+    REQUIRE_FALSE(Mounted("/usb1"));
+    REQUIRE_FALSE(Mounted("/usb2"));
+    REQUIRE(fixture.rig.driver.flushes >= flushes + 3);
+    REQUIRE(fixture.rig.driver.stops == 1);
+    REQUIRE(fixture.rig.disk->Ejected());
+    REQUIRE(LogLines("Storage: sda: ejected, safe to unplug") == logged + 1);
+    REQUIRE(Created("/usb1/NEW.TXT") == false);
+
+    const std::string partitions = Partitions();
+    INFO(partitions);
+    REQUIRE(partitions.find("ejected") != std::string::npos);
+    REQUIRE_FALSE(Listed(partitions, fixture.rig.Source(1).c_str()));
+
+    REQUIRE(Mount("fat16", fixture.rig.Source(1).c_str(), "/usb1") == VFS::MountResult::NoDevice);
+    REQUIRE(Mount("fat16", fixture.rig.Source().c_str(), "/usb1") == VFS::MountResult::NoDevice);
+    REQUIRE(Absent(Mount("fat16", "sdz1", "/usb1")));
+
+    const uint64_t calls = fixture.rig.driver.Calls();
+    REQUIRE(fixture.Eject() == VFS::MountResult::Done);
+    REQUIRE(fixture.rig.driver.stops == 1);
+    REQUIRE(fixture.rig.driver.Calls() == calls);
+    REQUIRE(VFS::EjectDisk(("/dev/" + fixture.rig.Source()).c_str()) == VFS::MountResult::Done);
+}
+
+TEST_CASE("USB T21 a disk that is not removable or unknown cannot be ejected")
+{
+    EjectRig fixture;
+    REQUIRE(VFS::EjectDisk("sdz") == VFS::MountResult::NotFound);
+    REQUIRE(VFS::EjectDisk("sda1") == VFS::MountResult::NotFound);
+    REQUIRE(VFS::EjectDisk("") == VFS::MountResult::NotFound);
+    fixture.rig.driver.removable = false;
+    REQUIRE(fixture.Eject() == VFS::MountResult::NotSupported);
+    REQUIRE(Mounted("/usb1"));
+    REQUIRE(fixture.rig.driver.stops == 0);
+    REQUIRE_FALSE(fixture.rig.disk->Ejected());
+    fixture.rig.driver.removable = true;
+    fixture.rig.Unplug();
+    REQUIRE(fixture.Eject() == VFS::MountResult::NotFound);
+}
+
+TEST_CASE("USB T21 eject answers the system call's errors")
+{
+    EjectRig fixture;
+    const std::string name = fixture.rig.Source();
+    REQUIRE(FeatherOS::Files::Eject(name.c_str(), EveryWorkingDirectory) == User::SyscallErrorBusy);
+    REQUIRE(Mounted("/usb1"));
+    REQUIRE(FeatherOS::Files::Eject("sdz", NoWorkingDirectory) == User::SyscallErrorNotFound);
+    fixture.rig.driver.removable = false;
+    REQUIRE(FeatherOS::Files::Eject(name.c_str(), NoWorkingDirectory) ==
+            User::SyscallErrorOperationNotSupported);
+    fixture.rig.driver.removable = true;
+    fixture.rig.driver.fail_flush = true;
+    REQUIRE(FeatherOS::Files::Eject(name.c_str(), NoWorkingDirectory) ==
+            User::SyscallErrorInputOutput);
+    fixture.rig.driver.fail_flush = false;
+    REQUIRE(FeatherOS::Files::Eject(name.c_str(), NoWorkingDirectory) == 0);
+    REQUIRE(FeatherOS::Files::Eject(name.c_str(), NoWorkingDirectory) == 0);
+    REQUIRE(FeatherOS::Files::Eject(nullptr, NoWorkingDirectory) == User::SyscallErrorInvalidArgument);
+}
+
+TEST_CASE("USB T21 I24 a flush that fails does not stop or mark the drive, and the mounts done stay unmounted")
+{
+    SECTION("the first sync fails: every mount stays")
+    {
+        EjectRig fixture;
+        fixture.rig.driver.fail_flush = true;
+        REQUIRE(fixture.Eject() == VFS::MountResult::Failed);
+        REQUIRE(Mounted("/usb1"));
+        REQUIRE(Mounted("/usb2"));
+        REQUIRE(fixture.rig.driver.stops == 0);
+        REQUIRE_FALSE(fixture.rig.disk->Ejected());
+        fixture.rig.driver.fail_flush = false;
+        REQUIRE(ReadFile("/usb1/BLOCK.TXT") == FileText);
+        REQUIRE(fixture.Eject() == VFS::MountResult::Done);
+        REQUIRE(fixture.rig.driver.stops == 1);
+    }
+    SECTION("the final flush fails: the mounts stay unmounted")
+    {
+        EjectRig fixture;
+        fixture.rig.driver.fail_flush_after = fixture.rig.driver.flushes + 2;
+        REQUIRE(fixture.Eject() == VFS::MountResult::Failed);
+        REQUIRE_FALSE(Mounted("/usb1"));
+        REQUIRE_FALSE(Mounted("/usb2"));
+        REQUIRE(fixture.rig.driver.stops == 0);
+        REQUIRE_FALSE(fixture.rig.disk->Ejected());
+        fixture.rig.driver.fail_flush_after = 0;
+        REQUIRE(fixture.Eject() == VFS::MountResult::Done);
+        REQUIRE(fixture.rig.driver.stops == 1);
+        REQUIRE(fixture.rig.disk->Ejected());
+    }
+}
+
+TEST_CASE("USB T21 a drive that refuses to stop is logged and the disk is ejected anyway")
+{
+    EjectRig fixture;
+    fixture.rig.driver.fail_stop = true;
+    const size_t refused = LogLines("Storage: sda: the drive refused to stop");
+    REQUIRE(fixture.Eject() == VFS::MountResult::Done);
+    REQUIRE(fixture.rig.driver.stops == 1);
+    REQUIRE(fixture.rig.disk->Ejected());
+    REQUIRE(LogLines("Storage: sda: the drive refused to stop") == refused + 1);
+    REQUIRE(Mount("fat16", fixture.rig.Source(1).c_str(), "/usb1") == VFS::MountResult::NoDevice);
 }

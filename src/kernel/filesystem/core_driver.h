@@ -76,6 +76,9 @@ public:
     bool Dead() const override;
     // For a slot about to serve another volume.
     void ClearDead();
+    // An eject is unmounting the volume's disk: mounts of it fail with NoDevice. Any task, no lock.
+    void SetEjecting(bool ejecting);
+    bool Ejecting() const;
     // Frees the core's filesystem with no device I/O and leaves the driver without a volume.
     void Discard();
     // Drops the volume's cached pages, for tests that change the disk below the cache.
@@ -160,6 +163,7 @@ private:
     // Written and read under the volume lock.
     uint64_t last_error = User::SyscallErrorFailed;
     std::atomic<bool> dead = false;
+    std::atomic<bool> ejecting = false;
     // What Overlaps and Summarize read without the volume lock.
     struct Identity
     {

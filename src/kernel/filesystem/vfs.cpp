@@ -7,7 +7,10 @@
 #include "tmpfs.h"
 #include "type_registry.h"
 
+#include "kernel/klogger.h"
 #include "kernel/scheduler.h"
+#include "kernel/storage/disk.h"
+#include "kernel/string/format.h"
 #include "kernel/sync/mutex.h"
 #include "kernel/sync/spinlock.h"
 
@@ -241,7 +244,7 @@ MountResult FindMountableLocked(const char* type, const char* source, const char
         break;
     }
     const Filesystem::CoreDriver* const volume = Filesystem::Drivers::VolumeOf(*driver);
-    if (volume != nullptr && volume->Dead())
+    if (volume != nullptr && (volume->Dead() || volume->Ejecting()))
     {
         return MountResult::NoDevice;
     }
@@ -535,13 +538,16 @@ MountResult Mount(const char* type, const char* source, const char* point,
     }
     source = StripDevicePrefix(source);
     Driver* driver = nullptr;
+    MountResult first;
     {
         Sync::SpinLockGuard guard(mount_lock);
-        const MountResult found = FindMountableLocked(type, source, point, &driver);
-        if (found != MountResult::Done)
-        {
-            return found;
-        }
+        first = FindMountableLocked(type, source, point, &driver);
+    }
+    if (first != MountResult::Done)
+    {
+        const bool unknown = first == MountResult::NotFound || first == MountResult::UnknownType;
+        return unknown && Filesystem::Drivers::SourceOnEjectedDisk(source) ? MountResult::NoDevice
+                                                                           : first;
     }
     // Reopening a disk filesystem waits for the disk, so it runs outside the table's lock, under
     // the volume's; the table is checked again after.
@@ -590,6 +596,200 @@ MountResult Unmount(const char* point)
     }
     Filesystem::Drivers::Unmounted(driver);
     return MountResult::Done;
+}
+
+namespace
+{
+
+constinit KLogger logger;
+
+struct DiskMounts
+{
+    Driver* drivers[MountTable::Capacity];
+    size_t count;
+};
+
+bool PointOfLocked(const Driver* driver, char (&point)[Path::MaximumLength]) REQUIRES(mount_lock)
+{
+    for (uint32_t index = 0; index < MountTable::Capacity; ++index)
+    {
+        const char* name = nullptr;
+        Driver* candidate = nullptr;
+        if (!mounts.At(index, &name, &candidate))
+        {
+            break;
+        }
+        if (candidate == driver)
+        {
+            std::copy(name, name + std::char_traits<char>::length(name) + 1, point);
+            return true;
+        }
+    }
+    return false;
+}
+
+void CollectDiskMounts(const Storage::Disk& disk, DiskMounts* found)
+{
+    found->count = 0;
+    Sync::SpinLockGuard guard(mount_lock);
+    for (uint32_t index = 0; index < MountTable::Capacity; ++index)
+    {
+        const char* point = nullptr;
+        Driver* driver = nullptr;
+        if (!mounts.At(index, &point, &driver))
+        {
+            break;
+        }
+        const Filesystem::CoreDriver* const volume = Filesystem::Drivers::VolumeOf(driver);
+        Filesystem::CoreDriver::Summary summary;
+        if (volume != nullptr && volume->Summarize(disk, &summary))
+        {
+            found->drivers[found->count++] = driver;
+        }
+    }
+}
+
+bool BeginAll(const DiskMounts& found, char (&point)[Path::MaximumLength])
+{
+    Sync::SpinLockGuard guard(mount_lock);
+    for (size_t index = 0; index < found.count; ++index)
+    {
+        Driver* driver = nullptr;
+        if (PointOfLocked(found.drivers[index], point) &&
+            mounts.BeginUnmount(point, &driver) == MountResult::Done)
+        {
+            continue;
+        }
+        for (size_t begun = 0; begun < index; ++begun)
+        {
+            if (PointOfLocked(found.drivers[begun], point))
+            {
+                mounts.CancelUnmount(point);
+            }
+        }
+        return false;
+    }
+    return true;
+}
+
+void CancelFrom(const DiskMounts& found, size_t first, char (&point)[Path::MaximumLength])
+{
+    Sync::SpinLockGuard guard(mount_lock);
+    for (size_t index = first; index < found.count; ++index)
+    {
+        if (PointOfLocked(found.drivers[index], point))
+        {
+            mounts.CancelUnmount(point);
+        }
+    }
+}
+
+bool InUse(const DiskMounts& found, MountInUse in_use, char (&point)[Path::MaximumLength])
+{
+    for (size_t index = 0; index < found.count && in_use != nullptr; ++index)
+    {
+        bool known;
+        {
+            Sync::SpinLockGuard guard(mount_lock);
+            known = PointOfLocked(found.drivers[index], point);
+        }
+        if (known && in_use(point))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+MountResult UnmountAll(const DiskMounts& found, char (&point)[Path::MaximumLength])
+{
+    for (size_t index = 0; index < found.count; ++index)
+    {
+        Driver* const driver = found.drivers[index];
+        bool detached;
+        {
+            const Held held(driver);
+            detached = driver->Detach();
+        }
+        {
+            Sync::SpinLockGuard guard(mount_lock);
+            if (detached && PointOfLocked(driver, point))
+            {
+                mounts.FinishUnmount(point);
+            }
+        }
+        if (!detached)
+        {
+            CancelFrom(found, index, point);
+            return MountResult::Failed;
+        }
+        Filesystem::Drivers::Unmounted(driver);
+    }
+    return MountResult::Done;
+}
+
+MountResult EjectLoadedDisk(Storage::Disk& disk, MountInUse in_use)
+{
+    DiskMounts found;
+    char point[Path::MaximumLength];
+    Filesystem::Drivers::SetDiskEjecting(disk, true);
+    CollectDiskMounts(disk, &found);
+    MountResult result = MountResult::Busy;
+    if (!InUse(found, in_use, point) && BeginAll(found, point))
+    {
+        result = UnmountAll(found, point);
+    }
+    if (result == MountResult::Done)
+    {
+        Filesystem::Drivers::ForgetDiskVolumes(disk);
+        result = disk.Flush() ? MountResult::Done : MountResult::Failed;
+    }
+    if (result != MountResult::Done)
+    {
+        Filesystem::Drivers::SetDiskEjecting(disk, false);
+        return result;
+    }
+    char line[96];
+    if (!disk.Eject())
+    {
+        disk.MarkEjected();
+        if (String::FormatTo(line, sizeof(line), "Storage: {}: the drive refused to stop",
+                             disk.Name()))
+        {
+            logger.Warning(line);
+        }
+    }
+    if (String::FormatTo(line, sizeof(line), "Storage: {}: ejected, safe to unplug", disk.Name()))
+    {
+        logger.Info(line);
+    }
+    return MountResult::Done;
+}
+
+} // namespace
+
+MountResult EjectDisk(const char* disk, MountInUse in_use)
+{
+    if (disk == nullptr)
+    {
+        return MountResult::Invalid;
+    }
+    Storage::Disk* const target = Storage::Acquire(StripDevicePrefix(disk));
+    if (target == nullptr || target->Gone())
+    {
+        if (target != nullptr)
+        {
+            target->Release();
+        }
+        return MountResult::NotFound;
+    }
+    MountResult result = MountResult::NotSupported;
+    if (target->Info().removable)
+    {
+        result = target->Ejected() ? MountResult::Done : EjectLoadedDisk(*target, in_use);
+    }
+    target->Release();
+    return result;
 }
 
 MountResult Remount(const char* point, Filesystem::MountMode mode, OpenFiles open)

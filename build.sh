@@ -326,7 +326,7 @@ _image_inputs() {
         "$ARCH-elf-strip" --strip-all -o "$system_dir/${name%-"$ARCH".elf}" "$program"
         cp "$system_dir/${name%-"$ARCH".elf}" "$disk_programs_dir/bin/"
     done
-    for program in init mount umount sync net dhcp; do
+    for program in init mount umount eject sync net dhcp; do
         mv "$disk_programs_dir/bin/$program" "$disk_programs_dir/sbin/$program"
     done
     python3 "$SCRIPT_DIR/tools/create_bad_elf.py" --arch "$ARCH" "$system_dir/badelf"

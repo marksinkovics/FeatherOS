@@ -538,7 +538,7 @@ bool NameVolume(const char* disk, uint32_t number, char* out, size_t capacity)
 size_t AllocateOtherSlot(Storage::Disk& disk, uint32_t number)
 {
     Sync::SpinLockGuard guard(volumes_lock);
-    if (disk.Gone())
+    if (disk.Gone() || disk.Ejected())
     {
         return NoSlot;
     }
@@ -573,6 +573,7 @@ void ReleaseOtherSlot(size_t index)
         disk = slot.disk;
         slot = {};
         driver.ClearDead();
+        driver.SetEjecting(false);
     }
     if (disk != nullptr)
     {
@@ -795,6 +796,52 @@ void ForgetDiskVolumes(Storage::Disk& disk)
             ReleaseOtherSlot(slots[index]);
         }
     }
+}
+
+void SetDiskEjecting(Storage::Disk& disk, bool ejecting)
+{
+    for (CoreDriver& volume : volume_drivers)
+    {
+        CoreDriver::Summary summary;
+        if (volume.Summarize(disk, &summary))
+        {
+            volume.SetEjecting(ejecting);
+        }
+    }
+}
+
+bool SourceOnEjectedDisk(const char* source)
+{
+    char name[Storage::MaxDiskName];
+    size_t length = std::char_traits<char>::length(source);
+    if (length == 0 || length >= sizeof(name))
+    {
+        return false;
+    }
+    std::copy(source, source + length + 1, name);
+    const auto ejected = [&name](size_t size)
+    {
+        char candidate[Storage::MaxDiskName];
+        std::copy(name, name + size, candidate);
+        candidate[size] = '\0';
+        Storage::Disk* const disk = Storage::Acquire(candidate);
+        if (disk == nullptr)
+        {
+            return false;
+        }
+        const bool result = disk->Ejected();
+        disk->Release();
+        return result;
+    };
+    if (ejected(length))
+    {
+        return true;
+    }
+    while (length > 0 && name[length - 1] >= '0' && name[length - 1] <= '9')
+    {
+        --length;
+    }
+    return length > 0 && (ejected(length) || (name[length - 1] == 'p' && ejected(length - 1)));
 }
 
 void Unmounted(Driver* driver)

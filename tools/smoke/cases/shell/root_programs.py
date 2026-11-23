@@ -8,7 +8,15 @@ from smoke.script import Lines
 # /system in that order. A program copied over /bin/echo or /sbin/mount runs
 # ahead of /system's, deleting it falls back to /system, and copying it back
 # restores the root.
-ADMINISTRATIVE_PROGRAMS = ("dhcp", "init", "mount", "net", "sync", "umount")
+ADMINISTRATIVE_PROGRAMS = (
+    "dhcp",
+    "eject",
+    "init",
+    "mount",
+    "net",
+    "sync",
+    "umount",
+)
 ROOT_PROGRAMS_INPUT = (
     b"ls /sbin\nls /bin\n"
     b"cp /system/date /bin/echo\necho\n"

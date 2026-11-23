@@ -3020,6 +3020,14 @@ uint64_t UnmountSyscall(void* context, uint64_t target)
     return copied != 0 ? copied : Files::Unmount(target_text->resolved, AnyWorkingDirectoryWithin);
 }
 
+uint64_t EjectSyscall(void* context, uint64_t disk)
+{
+    const auto* process = static_cast<const ProcessRecord*>(context);
+    char name[User::MaximumDiskNameLength];
+    const uint64_t copied = CopyStringFromUser(*process, disk, name, sizeof(name));
+    return copied != 0 ? copied : Files::Eject(name, AnyWorkingDirectoryWithin);
+}
+
 uint64_t ShutdownSyscall(void* context, uint64_t action)
 {
     const auto* process = static_cast<const ProcessRecord*>(context);
@@ -3457,6 +3465,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     .sync = SyncSyscall,
     .resource_limit = ResourceLimitSyscall,
     .device_control = DeviceControlSyscall,
+    .eject = EjectSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.

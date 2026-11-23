@@ -81,9 +81,12 @@ INNER = b"inner file of dir\n"
 EXT2_TEXT = b"ext2 on the stick\n"
 FLOPPY_NOTE = b"written on the superfloppy\n"
 LAST = b"written just before shutdown\n"
+BEFORE_EJECT = b"written before eject\n"
 # The shell session after the test hook finished. Each volume is mounted in
-# /tmp; the 1 MiB copy makes the FAT16 core issue hundreds of WRITE commands,
-# and the last write is followed by shutdown with the volume still mounted.
+# /tmp; the 1 MiB copy makes the FAT16 core issue hundreds of WRITE commands.
+# eject sda is refused while a background sleep holds a file of sda1 open and
+# while the shell stands in sda2, then ejects both volumes; the last write goes
+# to the superfloppy, which shutdown finds still mounted.
 SHELL_INPUT = b"""sleep 1
 cat /proc/partitions
 mkdir /tmp/usb
@@ -136,8 +139,27 @@ write /tmp/dirty/f.txt refused
 mount -o remount,rw /tmp/dirty
 write /tmp/dirty/f.txt refused again
 umount /tmp/dirty
+mkdir /tmp/usb2
 mount -t fat16 sda1 /tmp/usb
-write /tmp/usb/last.txt written just before shutdown
+mount -t ext2 sda2 /tmp/usb2
+write /tmp/usb/before-eject.txt written before eject
+sleep 2 < /tmp/usb/small.txt &
+eject sda
+grep sda /proc/mounts
+wait
+cd /tmp/usb2
+eject sda
+cd /home
+eject vda
+eject sdz
+eject sda
+mount -t fat16 sda1 /tmp/usb
+cat /proc/partitions
+eject sda
+echo second eject done
+grep sda /proc/mounts
+mount -t fat16 sdb /tmp/floppy
+write /tmp/floppy/LAST.TXT written just before shutdown
 shutdown
 """
 SHELL_OUTPUT = (
@@ -157,8 +179,18 @@ SHELL_OUTPUT = (
     "left dirty",
     "write: cannot open /tmp/dirty/f.txt: Read-only file system",
     "mount: /tmp/dirty: Read-only file system",
+    "sda1 /tmp/usb fat16 rw 0 0",
+    "sda2 /tmp/usb2 ext2 rw 0 0",
+    "eject: vda: Operation not supported",
+    "eject: sdz: no such disk",
+    "mount: sda1 on /tmp/usb: No such device or address",
+    re.compile(
+        rf"sda +{IMAGE_KIBIBYTES} {SECTOR_SIZE} usb removable rw ejected"
+    ),
+    "second eject done",
 )
 KERNEL_MESSAGES = (
+    "KERN/I: Storage: sda: ejected, safe to unplug",
     "KERN/W: VFS: sdd1 is write-protected, mounted read-only",
     "KERN/W: VFS: sdc was not cleanly unmounted (FAT16 dirty bits); mounted "
     "read-only, run fsck.fat",
@@ -388,6 +420,27 @@ class UsbStorage(Case):
         for message in KERNEL_MESSAGES:
             if message not in output:
                 return f"the log lacks '{message}'{result.limit_note}"
+        return self.CheckEject(output, result)
+
+    def CheckEject(self, output, result):
+        busy = output.count("eject: sda: Device or resource busy")
+        if busy != 2:
+            return (
+                f"eject sda was refused as busy {busy} times, not twice "
+                f"(an open file, a working directory){result.limit_note}"
+            )
+        for mount in ("sda1 /tmp/usb fat16 rw", "sda2 /tmp/usb2 ext2 rw"):
+            if output.count(mount) != 1:
+                return f"'{mount}' was not mounted exactly until the eject"
+        if output.count("ejected, safe to unplug") != 1:
+            return "the log did not report the eject exactly once"
+        silent = re.compile(
+            r"/home> eject sda\r?\n(?:KERN/I: Storage: sda: ejected[^\n]*\n)?"
+            r"/home> (?:mount -t fat16 sda1|echo second)",
+            re.MULTILINE,
+        )
+        if len(silent.findall(output)) != 2:
+            return "a successful eject printed something or failed"
         if not result.exited_by_itself:
             return "QEMU kept running after shutdown"
         return None
@@ -428,7 +481,7 @@ class UsbStorage(Case):
                 "small.txt": SMALL,
                 "A long VFAT name.txt": LONG_NAME,
                 "dir/moved.txt": INNER,
-                "last.txt": LAST,
+                "before-eject.txt": BEFORE_EJECT,
             },
             ("GONE",),
         )
@@ -480,6 +533,7 @@ class UsbStorage(Case):
             {
                 usb_disks.FLOPPY_FILE: usb_disks.FLOPPY_CONTENTS,
                 "NOTE.TXT": FLOPPY_NOTE,
+                "LAST.TXT": LAST,
             },
             (),
         )

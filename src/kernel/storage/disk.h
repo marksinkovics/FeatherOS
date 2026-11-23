@@ -43,6 +43,8 @@ public:
     void Retain();
     void Release();
     FeatherDisk::Status Eject();
+    // For a drive that refused to stop: its volumes are unmounted and it is flushed.
+    void MarkEjected();
 
     uint32_t SectorSize() const override;
     uint64_t SectorCount() const override;

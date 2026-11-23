@@ -176,6 +176,11 @@ using WorkingDirectoryCheck = bool (*)(const char* point);
 // point, SyscallErrorBusy while a file on it is open, a working directory is inside it or another
 // mount point lies inside it, and SyscallErrorInputOutput if its data could not be synced.
 uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use);
+// Unmounts every mount of the removable disk called disk, flushes the drive and stops it.
+// SyscallErrorNotFound for an unknown disk, SyscallErrorOperationNotSupported for one that is not
+// removable (vda), SyscallErrorBusy while any of its mounts is in use, with nothing unmounted, and
+// SyscallErrorInputOutput if a sync or the flush failed. 0 for a disk already ejected.
+uint64_t Eject(const char* disk, WorkingDirectoryCheck in_use);
 // Changes the mode of the mount at point; it follows links, and the mount's own mode only changes,
 // not the mounts inside it. SyscallErrorInvalidArgument if point is not a mount point or is /dev,
 // SyscallErrorNotFound if it does not exist, SyscallErrorBusy while a file on it is open for

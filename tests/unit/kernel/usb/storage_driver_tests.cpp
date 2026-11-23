@@ -929,6 +929,32 @@ TEST_CASE("usb-storage T20: ILLEGAL REQUEST once means success now and no comman
     disk->Release();
 }
 
+TEST_CASE("usb-storage T21: stopping a drive sends START STOP UNIT with LoEj only when it is removable",
+          "[usb][usbstorage]")
+{
+    for (const bool removable : {true, false})
+    {
+        World world;
+        Model model;
+        model.removable = removable;
+        const Disk disk = MakeDefaultDisk(model);
+        world.Attach(disk);
+        const Held drive(TestDrive());
+        REQUIRE(drive.drive != nullptr);
+        REQUIRE(drive->Stop());
+        const auto& commands = disk->Commands();
+        const auto stop = std::find_if(commands.begin(), commands.end(),
+                                       [](const auto& command) { return command.opcode == 0x1B; });
+        REQUIRE(stop != commands.end());
+        REQUIRE(stop->flags == (removable ? 0x02 : 0x00));
+        std::vector<uint8_t> data(512);
+        const auto read = drive->Read(0, 1, data.data());
+        REQUIRE_FALSE(read);
+        REQUIRE(read.error() == Error::Io);
+        REQUIRE_FALSE(drive->Stop());
+    }
+}
+
 TEST_CASE("usb-storage T20: a flush that times out runs recovery and fails with an I/O error",
           "[usb][usbstorage]")
 {

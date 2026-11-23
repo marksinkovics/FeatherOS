@@ -147,6 +147,16 @@ void CoreDriver::ClearDead()
     dead.store(false, std::memory_order_release);
 }
 
+void CoreDriver::SetEjecting(bool value)
+{
+    ejecting.store(value, std::memory_order_release);
+}
+
+bool CoreDriver::Ejecting() const
+{
+    return ejecting.load(std::memory_order_acquire);
+}
+
 void CoreDriver::SetIdentity(const FeatherDisk::BlockDevice* disk,
                              const FeatherDisk::Partition::Range& partition, const char* type_name)
 {

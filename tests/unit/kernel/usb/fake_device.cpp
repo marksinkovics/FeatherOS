@@ -1012,7 +1012,8 @@ ScriptedMassStorage::Answer ScriptedMassStorage::Check(const Cbw& cbw)
         lba = BigEndian(&cbw.cdb[2], 8);
         blocks = static_cast<uint32_t>(BigEndian(&cbw.cdb[10], 4));
     }
-    commands_.push_back({opcode, lba, blocks, cbw.tag});
+    commands_.push_back({opcode, lba, blocks, cbw.tag,
+                         opcode == OpStartStop ? cbw.cdb[4] : static_cast<uint8_t>(0)});
     answer.lba = lba;
     answer.blocks = blocks;
     answer.residue = 0;

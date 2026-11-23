@@ -270,6 +270,11 @@ inline uint64_t Unmount(const char* target)
     return Syscall(SyscallNumber::Unmount, reinterpret_cast<uint64_t>(target));
 }
 
+inline uint64_t Eject(const char* disk)
+{
+    return Syscall(SyscallNumber::Eject, reinterpret_cast<uint64_t>(disk));
+}
+
 inline uint64_t ProcessId()
 {
     return Syscall(SyscallNumber::ProcessId);

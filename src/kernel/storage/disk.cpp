@@ -202,6 +202,11 @@ FeatherDisk::Status Disk::Eject()
     return status;
 }
 
+void Disk::MarkEjected()
+{
+    ejected_.store(true, std::memory_order_release);
+}
+
 bool DiskRegistry::Initialize()
 {
     Sync::SpinLockGuard guard(lock_);

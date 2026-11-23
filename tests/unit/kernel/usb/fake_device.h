@@ -157,6 +157,8 @@ public:
         uint64_t lba;
         uint32_t blocks;
         uint32_t tag;
+        // START STOP UNIT's byte 4.
+        uint8_t flags = 0;
     };
 
     ScriptedMassStorage(Speed speed, Model model);

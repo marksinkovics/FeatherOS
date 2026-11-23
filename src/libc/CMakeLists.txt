@@ -44,6 +44,7 @@ add_library(featheros_c STATIC
     socket.cpp
     math.cpp
     mount.cpp
+    disk.cpp
     spawn.cpp
     stat.cpp
     stdio.cpp

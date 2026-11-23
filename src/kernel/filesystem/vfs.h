@@ -126,6 +126,15 @@ MountResult Mount(const char* type, const char* source, const char* point,
 // lies inside it; otherwise detaches the driver (a journalled volume is closed, so the medium is
 // clean) and removes the mount, which Failed leaves in place.
 MountResult Unmount(const char* point);
+// True if something, such as a process's working directory, keeps the mount at point in use.
+using MountInUse = bool (*)(const char* point);
+// Unmounts every mount of the removable disk called disk ("sda", or "/dev/sda") or none, then
+// flushes the drive, stops it and marks it ejected; Done at once for an ejected disk. NotFound: no
+// such disk, or it is gone. NotSupported: not removable. Busy: a mount of the disk is in use
+// (in_use, which runs with no lock held), has a mount inside it or is being unmounted; nothing is
+// unmounted. Failed: a sync or the flush failed; the mounts already unmounted stay so and the
+// rest stay mounted. Callers hold the namespace lock and no volume lock.
+MountResult EjectDisk(const char* disk, MountInUse in_use = nullptr);
 // Which files are open on one mount, as Files counts them.
 struct OpenFiles
 {

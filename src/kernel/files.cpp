@@ -638,6 +638,8 @@ uint64_t MountError(VFS::MountResult result)
         return User::SyscallErrorReadOnly;
     case VFS::MountResult::NoDevice:
         return User::SyscallErrorNoDevice;
+    case VFS::MountResult::NotSupported:
+        return User::SyscallErrorOperationNotSupported;
     case VFS::MountResult::Invalid:
         break;
     }
@@ -1818,6 +1820,16 @@ uint64_t Unmount(const char* point, WorkingDirectoryCheck in_use)
     const VFS::MountResult result = VFS::Unmount(point);
     return result == VFS::MountResult::NotFound ? User::SyscallErrorInvalidArgument
                                                 : MountError(result);
+}
+
+uint64_t Eject(const char* disk, WorkingDirectoryCheck in_use)
+{
+    if (disk == nullptr || in_use == nullptr)
+    {
+        return User::SyscallErrorInvalidArgument;
+    }
+    Sync::MutexGuard guard(namespace_lock);
+    return MountError(VFS::EjectDisk(disk, in_use));
 }
 
 uint64_t Remount(const char* point, Filesystem::MountMode mode)

@@ -40,6 +40,11 @@ size_t OpenDiskVolumes(Storage::Disk& disk);
 // Closes every volume of disk that is not mounted and frees its slot; a mounted one of a gone disk
 // stays dead until Unmounted. Any task holding no volume lock.
 void ForgetDiskVolumes(Storage::Disk& disk);
+// Marks every volume of disk as being ejected (mounts of it fail), or clears the mark. Any task
+// holding no volume lock.
+void SetDiskEjecting(Storage::Disk& disk, bool ejecting);
+// Whether source ("sda", "sda1") names a disk that was ejected and is still registered.
+bool SourceOnEjectedDisk(const char* source);
 // What mount calls the driver's volume, "vda1" or "sda2"; null for a driver with none.
 const char* SourceOf(const Driver* driver);
 // After the VFS removed driver's mount: a dead volume's slot is freed.
