@@ -92,3 +92,4 @@ One row per committed step. Compare the Opus-implemented steps (before 2026-11-1
 | a2ab688 | M19 P2 s2c port reset and re-enumeration, drive retries, media change | M19-P2.md (opus) | sonnet | 0 | 3/3 (I8 by T12, retries by T14, I18 by T24/T12/T15) | |
 | 70f5dea | M19 P2 s3a Storage::Disk, disk registry, virtio as vda, USB drive as sda | M19-P2.md (opus) | sonnet (high) | 0 | 4/4 (I16 x2 by T16, I19 by T16, chunking by T17) | |
 | e777096 | M19 P2 s3b volumes per disk, dead volumes, core Discard, /proc/partitions | M19-P2.md (opus) | sonnet (high) | 0 | 4/4 (I20, I21 by T18; I22 by filesystem_tests boot numbering; Discard by T19) | |
+| 2d597d1 | M19 P2 s4a USB writes, host checks, write protect, FAT16 dirty bits, flush rules | M19-P2.md (opus) | sonnet (high) | 1 (tolerated poweroff panic in the case; DATA PROTECT on flush) | 4/4 (I24 by T20, I27 by T33, I13 by USB I13, I23 by T17) | |
