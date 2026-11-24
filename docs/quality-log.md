@@ -1,6 +1,6 @@
 # Autopilot quality log
 
-One row per committed step. Compare the Opus-implemented steps (before 2026-11-17) with the Sonnet-implemented ones: fix rounds, uncaught invariants, and above all later bugs.
+One row per committed step (used by the global `autopilot` skill since 2026-11-23). Compare the Opus-implemented steps (before 2026-11-17) with the Sonnet-implemented ones: fix rounds, uncaught invariants, and above all later bugs.
 
 - **Design / Impl:** the models (`-` when there was no design pass).
 - **Rounds:** review fix rounds before the commit.

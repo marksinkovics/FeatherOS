@@ -81,7 +81,20 @@ Get the code lint-clean **before** running any QEMU smoke test or `test-all`. Al
 - Early logging and panic must not allocate. Physical addresses use explicit 64-bit types, and code must not hard-code physical memory addresses (obtain them from the Limine memory map).
 - Every feature should land with tests on **both** architectures: a QEMU case in `tools/matrix.py` and, where logic is host-testable, a unit test.
 - To add a user program, create `src/user/<name>.cpp` with a `main` and add `<name>:<name>` to `FEATHEROS_PROGRAMS` in `src/user/CMakeLists.txt` (a Swift one: `src/user/<name>.swift` with top-level code, in `FEATHEROS_SWIFT_PROGRAMS`, or `FEATHEROS_SWIFT_FULL_PROGRAMS` for full Swift). Use libc, not raw syscalls, unless the program tests the kernel ABI itself. Code shared between programs goes in a header with declarations and a `.cpp` listed in `featheros_user_support` (and in `tests/unit/CMakeLists.txt` when host-tested). A missing POSIX call belongs in `src/libc/`, documented in `docs/posix.md`.
-- At the end of a step or milestone, update the docs with the `finish-step` skill (`.claude/skills/finish-step/`). Adding a program is the `add-program` skill. Working through steps with one subagent each, reviewed and committed on the feature branch, is the `autopilot` skill.
+- At the end of a step or milestone, update the docs with the `finish-step` skill (`.claude/skills/finish-step/`). Adding a program is the `add-program` skill. Working through a plan with one subagent per step is the global `autopilot` skill, with the settings below.
+
+## Autopilot
+
+Settings for the global `autopilot` skill. The plan of the milestone in progress is in `docs/plans/` (now `docs/plans/m16.md`), its quality log is `docs/quality-log.md`.
+
+- **Git:** commit on `feat/*` (now `feat/storage-drivers`). Never push or merge; merging a milestone into `main` is the user's job.
+- **Full verification:** `tools/check.sh --arch both --matrix`, run through `test-runner`. It prints one line per stage and, for each failed case, its FAIL lines with `build/matrix/<case>/`; one case re-runs with `python3 tools/matrix.py --no-build -k <name>`. After a fully green run, `rm -rf build/matrix` (about 13 GB); keep it while a failure is diagnosed.
+- **Filtered tests:** `build/unit-tests-ninja/featheros_unit_tests "<tag or name>"` (built by `./build.sh unit-test`, which runs once in full at the end), `./build.sh unit-test-tsan` for `[concurrency]`, and `tools/check.sh --arch x86_64 --modes "<MODES>"` while iterating, `--arch both` once at the end, after the lint steps in "Change workflow" pass.
+- **Verification cadence:** tiered, with one override: the matrix runs only after a plan part that changes shared code (kernel, libc, the build, the disk image or the test harness) and at the end of the milestone, without asking. Otherwise a task's unit tests, `quality.sh check` and affected smoke modes on both architectures are its verification, also when an invocation stops.
+- **Worker docs:** at the end of a task the worker updates the roadmap, CLAUDE.md Status and `docs/development.md`/`docs/posix.md` per the `finish-step` skill.
+- **Protected paths:** `build/`, `deps/`, `.claude/settings.local.json`.
+- **Risky tasks, also:** device register and DMA protocols (bring-up, reset, recovery), the boot order, the syscall ABI, filesystem writes.
+- **Failure logs:** `build/check/<stage>.log`, `build/<arch>/smoke-output.txt`, `build/matrix/<case>/`. "(stopped at the N s limit)" is a timeout; kernel failures show `PANIC`, `KERN/E`, fault lines and register dumps.
 
 ## Deeper docs
 
