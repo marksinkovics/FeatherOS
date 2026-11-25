@@ -3453,6 +3453,73 @@ void CheckNonBlockingSockets()
     close(refused);
 }
 
+struct BlockedCall
+{
+    int descriptor;
+    ssize_t result;
+    int error;
+    bool started;
+};
+
+void* ReadBlocked(void* argument)
+{
+    auto* call = static_cast<BlockedCall*>(argument);
+    char byte;
+    __atomic_store_n(&call->started, true, __ATOMIC_RELEASE);
+    call->result = read(call->descriptor, &byte, 1);
+    call->error = errno;
+    return nullptr;
+}
+
+void* ReceiveBlocked(void* argument)
+{
+    auto* call = static_cast<BlockedCall*>(argument);
+    char byte;
+    __atomic_store_n(&call->started, true, __ATOMIC_RELEASE);
+    call->result = recvfrom(call->descriptor, &byte, 1, 0, nullptr, nullptr);
+    call->error = errno;
+    return nullptr;
+}
+
+// Closing the only descriptor wakes a thread blocked on it; the call fails with EBADF.
+bool CloseEndsBlockedCall(int descriptor, void* (*blocked)(void*))
+{
+    BlockedCall call = {descriptor, 0, 0, false};
+    pthread_t thread;
+    if (pthread_create(&thread, nullptr, blocked, &call) != 0)
+    {
+        return false;
+    }
+    while (!__atomic_load_n(&call.started, __ATOMIC_ACQUIRE))
+    {
+        sched_yield();
+    }
+    const timespec pause_time = {0, 50000000};
+    nanosleep(&pause_time, nullptr);
+    const bool closed = close(descriptor) == 0;
+    pthread_join(thread, nullptr);
+    return closed && call.result == -1 && call.error == EBADF;
+}
+
+void CheckCloseWakesBlockedCalls()
+{
+    int ends[2] = {-1, -1};
+    const bool made_pipe = pipe(ends) == 0;
+    const bool pipe_woken = made_pipe && CloseEndsBlockedCall(ends[0], ReadBlocked);
+    if (made_pipe)
+    {
+        close(ends[1]);
+    }
+    Check(pipe_woken, "closing a pipe's read end fails a blocked read with EBADF");
+
+    const int udp = socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in address = LoopbackAddress(0);
+    const bool bound =
+        udp >= 0 && bind(udp, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+    Check(bound && CloseEndsBlockedCall(udp, ReceiveBlocked),
+          "closing a UDP socket fails a blocked recvfrom with EBADF");
+}
+
 void CheckScanning()
 {
     int count = 0;
@@ -3761,6 +3828,7 @@ int main(int argc, char** argv)
     CheckPipes();
     CheckNonBlockingPipes();
     CheckNonBlockingSockets();
+    CheckCloseWakesBlockedCalls();
     CheckSystemCalls();
     CheckTerminalSettings();
     CheckPseudoTerminals();

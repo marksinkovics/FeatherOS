@@ -41,6 +41,10 @@ using InterruptCheck = bool (*)();
 uint64_t Create(uint64_t family, uint64_t type, uint64_t protocol, Socket** socket);
 // A TCP connection with unread data is reset; otherwise it sends what is buffered and then FIN.
 void Close(Socket* socket);
+// For a socket whose last descriptor closed while a call still holds it: a call that would wait
+// on it fails with SyscallErrorBadDescriptor instead. Closes nothing; Close runs once the call
+// returns.
+void Revoke(Socket* socket);
 bool IsStream(const Socket* socket);
 // Port 0 picks a free one; the address must be unspecified or local. A UDP socket bound to an
 // address receives only what is sent to it. TCP binds as if with SO_REUSEADDR: only a socket

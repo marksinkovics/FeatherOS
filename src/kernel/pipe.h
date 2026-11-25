@@ -21,16 +21,21 @@ using InterruptCheck = bool (*)();
 Pipe* Create();
 // The pipe is freed once both ends are closed.
 void CloseEnd(Pipe* pipe, bool write_end);
+// Makes a call that would wait on that end fail with SyscallErrorBadDescriptor, and wakes the ones
+// that do. Closes nothing: the other end sees nothing until CloseEnd.
+void Revoke(Pipe* pipe, bool write_end);
 // One more writer, whose write end CloseEnd closes; readers wait for data again.
 void AddWriter(Pipe* pipe);
 // Waits until there is data, then returns what is there, up to length. Returns 0 once the
-// buffer is empty and no writer is left, and SyscallErrorInterrupted when interrupted says so.
-// Non-blocking, it fails with SyscallErrorWouldBlock instead of waiting.
+// buffer is empty and no writer is left, SyscallErrorInterrupted when interrupted says so and
+// SyscallErrorBadDescriptor once the read end is revoked. Non-blocking, it fails with
+// SyscallErrorWouldBlock instead of waiting.
 uint64_t Read(Pipe* pipe, void* buffer, uint64_t length, InterruptCheck interrupted,
               bool nonblocking = false);
 // Waits until all of buffer fits, writing at most AtomicSize bytes in one piece. Fails with
 // SyscallErrorBrokenPipe when no reader is left. Non-blocking, it writes the pieces that fit and
-// fails with SyscallErrorWouldBlock when not even the first does.
+// fails with SyscallErrorWouldBlock when not even the first does. A revoked write end ends a wait
+// with the bytes written so far, or SyscallErrorBadDescriptor.
 uint64_t Write(Pipe* pipe, const void* buffer, uint64_t length, InterruptCheck interrupted,
                bool nonblocking = false);
 uint64_t Buffered(Pipe* pipe);

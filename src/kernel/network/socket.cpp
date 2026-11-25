@@ -72,6 +72,8 @@ struct Socket
     bool read_shut GUARDED_BY(socket_lock);
     // Its descriptor is closed; a TCP connection still finishes before the socket is freed.
     bool orphaned GUARDED_BY(socket_lock);
+    // Its last descriptor closed while a call still holds the socket: calls that would wait fail.
+    bool revoked GUARDED_BY(socket_lock);
 };
 
 namespace
@@ -449,6 +451,10 @@ uint64_t SendStream(Socket* socket, const uint8_t* message, uint64_t length,
         {
             return total != 0 ? total : User::SyscallErrorInterrupted;
         }
+        if (socket->revoked)
+        {
+            return total != 0 ? total : User::SyscallErrorBadDescriptor;
+        }
         Scheduler::WaitOn(socket->waiters, socket_lock);
     }
 }
@@ -497,6 +503,10 @@ uint64_t ReceiveStream(Socket* socket, uint8_t* buffer, uint64_t capacity, Endpo
         if (Interrupted(interrupted))
         {
             return User::SyscallErrorInterrupted;
+        }
+        if (socket->revoked)
+        {
+            return User::SyscallErrorBadDescriptor;
         }
         Scheduler::WaitOn(socket->waiters, socket_lock, deadline);
     }
@@ -620,6 +630,14 @@ void Close(Socket* socket)
     Free(socket);
 }
 
+void Revoke(Socket* socket)
+{
+    Sync::SpinLockGuard guard(socket_lock);
+    socket->revoked = true;
+    Scheduler::WakeAll(socket->waiters);
+    Poll::Notify();
+}
+
 bool IsStream(const Socket* socket)
 {
     return socket->kind == Kind::Tcp;
@@ -733,6 +751,12 @@ uint64_t Connect(Socket* socket, const Endpoint& remote, InterruptCheck interrup
                     PostTcpWorkLocked();
                     return User::SyscallErrorInterrupted;
                 }
+                if (socket->revoked)
+                {
+                    connection->Abort();
+                    PostTcpWorkLocked();
+                    return User::SyscallErrorBadDescriptor;
+                }
                 Scheduler::WaitOn(socket->waiters, socket_lock);
             }
             if (connection->State() != TcpState::Closed)
@@ -800,6 +824,10 @@ uint64_t Accept(Socket* socket, Socket** connection, Endpoint* peer, InterruptCh
         if (Interrupted(interrupted))
         {
             return User::SyscallErrorInterrupted;
+        }
+        if (socket->revoked)
+        {
+            return User::SyscallErrorBadDescriptor;
         }
         Scheduler::WaitOn(socket->waiters, socket_lock, deadline);
     }
@@ -912,6 +940,10 @@ uint64_t ReceiveFrom(Socket* socket, uint8_t* buffer, uint64_t capacity, Endpoin
         if (Interrupted(interrupted))
         {
             return User::SyscallErrorInterrupted;
+        }
+        if (socket->revoked)
+        {
+            return User::SyscallErrorBadDescriptor;
         }
         Scheduler::WaitOn(socket->waiters, socket_lock, deadline);
     }

@@ -20,6 +20,10 @@ struct Pipe
     uint64_t length GUARDED_BY(lock);
     uint32_t readers GUARDED_BY(lock);
     uint32_t writers GUARDED_BY(lock);
+    // Set when the last descriptor of an end closes while a call still holds it: a call that would
+    // wait on that end fails instead. The end itself closes when the call returns.
+    bool read_revoked GUARDED_BY(lock);
+    bool write_revoked GUARDED_BY(lock);
 };
 
 namespace
@@ -70,6 +74,16 @@ void CloseEnd(Pipe* pipe, bool write_end)
     }
 }
 
+void Revoke(Pipe* pipe, bool write_end)
+{
+    {
+        Sync::SpinLockGuard guard(pipe->lock);
+        (write_end ? pipe->write_revoked : pipe->read_revoked) = true;
+    }
+    Scheduler::WakeAll(write_end ? pipe->writable : pipe->readable);
+    Poll::Notify();
+}
+
 void AddWriter(Pipe* pipe)
 {
     Sync::SpinLockGuard guard(pipe->lock);
@@ -90,6 +104,11 @@ uint64_t Read(Pipe* pipe, void* buffer, uint64_t length, InterruptCheck interrup
         {
             pipe->lock.UnlockIrqRestore(flags);
             return nonblocking ? User::SyscallErrorWouldBlock : User::SyscallErrorInterrupted;
+        }
+        if (pipe->read_revoked)
+        {
+            pipe->lock.UnlockIrqRestore(flags);
+            return User::SyscallErrorBadDescriptor;
         }
         Scheduler::WaitOn(pipe->readable, pipe->lock);
     }
@@ -129,6 +148,11 @@ uint64_t Write(Pipe* pipe, const void* buffer, uint64_t length, InterruptCheck i
                     return total;
                 }
                 return nonblocking ? User::SyscallErrorWouldBlock : User::SyscallErrorInterrupted;
+            }
+            if (pipe->write_revoked)
+            {
+                pipe->lock.UnlockIrqRestore(flags);
+                return total > 0 ? total : User::SyscallErrorBadDescriptor;
             }
             Scheduler::WaitOn(pipe->writable, pipe->lock);
         }

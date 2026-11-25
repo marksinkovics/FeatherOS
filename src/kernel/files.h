@@ -77,6 +77,32 @@ struct Table
     uint32_t hard_limit = User::MaximumDescriptorLimit;
 };
 
+// The lock that guards every descriptor table, for a caller that counts a table while it holds a
+// spinlock of its own: it is taken before such a lock, never after.
+extern Sync::Mutex table_lock;
+
+// Keeps an open file, and the pipe, socket or pair behind it, from being closed or freed for the
+// length of one call, though another thread closes its descriptor meanwhile. Once the last
+// descriptor is closed, calls that would wait on it fail with SyscallErrorBadDescriptor; the file
+// closes when the last hold ends. Lives on the stack of one call: not copyable or movable.
+class FileHold
+{
+public:
+    FileHold() = default;
+    ~FileHold();
+    FileHold(const FileHold&) = delete;
+    FileHold& operator=(const FileHold&) = delete;
+
+    // Ends the hold early; the last reference closes the file here.
+    void Release() EXCLUDES(table_lock);
+    // Null unless FindSocket filled the hold.
+    Network::Sockets::Socket* Socket() const;
+
+private:
+    friend struct HoldAccess;
+    OpenFile* file = nullptr;
+};
+
 // Puts the console, whose terminal is console, at descriptors 0, 1, and 2, and gives the table the
 // default limits. False if the table could not be allocated.
 bool OpenConsole(Table* table, Terminals::Terminal* console);
@@ -129,11 +155,11 @@ uint64_t CreateSocket(Table* table, uint64_t family, uint64_t type, uint64_t pro
 uint64_t AddSocket(Table* table, Network::Sockets::Socket* socket, uint64_t flags);
 // User::Poll* events for a descriptor other than a terminal, or PollInvalid if it is not open.
 int16_t PollEvents(Table* table, uint64_t descriptor);
-// The socket stays open while the caller uses it, since the caller's descriptor holds it.
-// SyscallErrorNotSocket for another kind of descriptor. nonblocking, if not null, receives whether
-// the open file is User::OpenNonBlocking.
-uint64_t FindSocket(Table* table, uint64_t descriptor, Network::Sockets::Socket** socket,
-                    bool* nonblocking = nullptr);
+// Fills hold, which must be empty: the socket stays allocated and open while the hold lasts, though
+// another thread closes the descriptor meanwhile. SyscallErrorBadDescriptor, or
+// SyscallErrorNotSocket for another kind of descriptor, leave it empty. nonblocking, if not null,
+// receives whether the open file is User::OpenNonBlocking.
+uint64_t FindSocket(Table* table, uint64_t descriptor, FileHold* hold, bool* nonblocking = nullptr);
 // offset is signed, added to the origin whence names; returns the new offset.
 uint64_t Seek(Table* table, uint64_t descriptor, uint64_t offset, uint64_t whence);
 uint64_t Close(Table* table, uint64_t descriptor);
@@ -149,9 +175,6 @@ uint64_t DescriptorFlags(Table* table, uint64_t descriptor, bool set, uint64_t v
 // the last two from value if set is true; value's access flags are ignored.
 uint64_t StatusFlags(Table* table, uint64_t descriptor, bool set, uint64_t value);
 uint64_t CountOpen(const Table* table);
-// The lock that guards every descriptor table, for a caller that counts a table while it holds a
-// spinlock of its own: it is taken before such a lock, never after.
-extern Sync::Mutex table_lock;
 uint64_t CountOpenLocked(const Table* table) REQUIRES(table_lock);
 // A file or a symbolic link, not followed.
 uint64_t Remove(const char* path);

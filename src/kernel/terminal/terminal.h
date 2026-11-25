@@ -104,8 +104,12 @@ public:
     // Input as a stream, such as a pty master's writes: queues the bytes that fit, each Ctrl+C or
     // Ctrl+Z treated as Receive treats a lone one. Returns how many it took.
     size_t ReceiveAvailable(const char* bytes, size_t length);
-    // Returns once the input queue has room, or the task was woken, such as by a signal.
-    void WaitForRoom();
+    // Returns once the input queue has room, or the task was woken, such as by a signal. False,
+    // without waiting, once RevokeRoomWaits was called.
+    bool WaitForRoom();
+    // Ends the waits of a master's writer whose descriptor is closed but still in a call; for good,
+    // until Reset.
+    void RevokeRoomWaits();
     bool HasRoom();
     // Prints text and newlines. Escape sequences, \r and \b pass through, and so do the bytes
     // above 0x7F, which the display decodes as UTF-8. Tab prints as a space, DEL as '?', and
@@ -203,6 +207,7 @@ private:
     uint64_t foreground_group GUARDED_BY(lock) = 0;
     uint64_t session GUARDED_BY(lock) = 0;
     bool hung_up GUARDED_BY(lock) = false;
+    bool room_revoked GUARDED_BY(lock) = false;
     // Readers waiting with TerminalWakeOnOutput.
     uint32_t output_watchers GUARDED_BY(lock) = 0;
     // The rest of a canonical line that a read did not take, with its '\n'.

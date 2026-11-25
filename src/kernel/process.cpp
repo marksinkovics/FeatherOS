@@ -1690,13 +1690,12 @@ uint64_t ReadSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint64
     }
     if (kind == Files::Kind::Socket)
     {
-        Network::Sockets::Socket* socket;
+        Files::FileHold hold;
         bool nonblocking = false;
-        const uint64_t found =
-            Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
+        const uint64_t found = Files::FindSocket(&process->files, descriptor, &hold, &nonblocking);
         return User::IsSyscallError(found)
                    ? found
-                   : ReceiveSocketData(process, socket, buffer, length, 0, nonblocking);
+                   : ReceiveSocketData(process, hold.Socket(), buffer, length, 0, nonblocking);
     }
     // One chunk at most, since a pipe read returns as soon as any data is there.
     if (kind == Files::Kind::Pipe || kind == Files::Kind::PseudoTerminalMaster ||
@@ -1761,13 +1760,12 @@ uint64_t WriteSyscall(void* context, uint64_t descriptor, uint64_t buffer, uint6
     }
     if (kind == Files::Kind::Socket)
     {
-        Network::Sockets::Socket* socket;
+        Files::FileHold hold;
         bool nonblocking = false;
-        const uint64_t found =
-            Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
-        return User::IsSyscallError(found)
-                   ? found
-                   : SendSocketData(process, socket, buffer, length, nullptr, true, nonblocking);
+        const uint64_t found = Files::FindSocket(&process->files, descriptor, &hold, &nonblocking);
+        return User::IsSyscallError(found) ? found
+                                           : SendSocketData(process, hold.Socket(), buffer, length,
+                                                            nullptr, true, nonblocking);
     }
     Terminals::Terminal* terminal = nullptr;
     if (kind == Files::Kind::Terminal)
@@ -2510,22 +2508,22 @@ uint64_t CopySocketAddressFromUser(const ProcessRecord& process, uint64_t addres
 uint64_t BindSyscall(void* context, uint64_t descriptor, uint64_t address)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    Network::Sockets::Socket* socket;
-    uint64_t result = Files::FindSocket(&process->files, descriptor, &socket);
+    Files::FileHold hold;
+    uint64_t result = Files::FindSocket(&process->files, descriptor, &hold);
     Network::Sockets::Endpoint local;
     if (!User::IsSyscallError(result))
     {
         result = CopySocketAddressFromUser(*process, address, &local);
     }
-    return User::IsSyscallError(result) ? result : Network::Sockets::Bind(socket, local);
+    return User::IsSyscallError(result) ? result : Network::Sockets::Bind(hold.Socket(), local);
 }
 
 uint64_t SendToSyscall(void* context, uint64_t descriptor, uint64_t message, uint64_t flags)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    Network::Sockets::Socket* socket;
+    Files::FileHold hold;
     bool nonblocking = false;
-    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &hold, &nonblocking);
     if (User::IsSyscallError(found))
     {
         return found;
@@ -2548,7 +2546,7 @@ uint64_t SendToSyscall(void* context, uint64_t descriptor, uint64_t message, uin
             return copied;
         }
     }
-    return SendSocketData(process, socket, request.buffer, request.length,
+    return SendSocketData(process, hold.Socket(), request.buffer, request.length,
                           request.address != 0 ? &destination : nullptr,
                           (flags & User::SocketMessageNoSignal) == 0,
                           nonblocking || (flags & User::SocketMessageDontWait) != 0);
@@ -2557,9 +2555,9 @@ uint64_t SendToSyscall(void* context, uint64_t descriptor, uint64_t message, uin
 uint64_t ReceiveFromSyscall(void* context, uint64_t descriptor, uint64_t message, uint64_t flags)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    Network::Sockets::Socket* socket;
+    Files::FileHold hold;
     bool nonblocking = false;
-    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &hold, &nonblocking);
     if (User::IsSyscallError(found))
     {
         return found;
@@ -2573,16 +2571,17 @@ uint64_t ReceiveFromSyscall(void* context, uint64_t descriptor, uint64_t message
     {
         return User::SyscallErrorInvalidArgument;
     }
-    return ReceiveSocketData(process, socket, request.buffer, request.length, request.address,
+    return ReceiveSocketData(process, hold.Socket(), request.buffer, request.length,
+                             request.address,
                              nonblocking || (flags & User::SocketMessageDontWait) != 0);
 }
 
 uint64_t ConnectSyscall(void* context, uint64_t descriptor, uint64_t address)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    Network::Sockets::Socket* socket;
+    Files::FileHold hold;
     bool nonblocking = false;
-    uint64_t result = Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
+    uint64_t result = Files::FindSocket(&process->files, descriptor, &hold, &nonblocking);
     Network::Sockets::Endpoint remote;
     if (!User::IsSyscallError(result))
     {
@@ -2590,23 +2589,23 @@ uint64_t ConnectSyscall(void* context, uint64_t descriptor, uint64_t address)
     }
     return User::IsSyscallError(result)
                ? result
-               : Network::Sockets::Connect(socket, remote, CallerInterrupted, nonblocking);
+               : Network::Sockets::Connect(hold.Socket(), remote, CallerInterrupted, nonblocking);
 }
 
 uint64_t ListenSyscall(void* context, uint64_t descriptor, uint64_t backlog)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    Network::Sockets::Socket* socket;
-    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket);
-    return User::IsSyscallError(found) ? found : Network::Sockets::Listen(socket, backlog);
+    Files::FileHold hold;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &hold);
+    return User::IsSyscallError(found) ? found : Network::Sockets::Listen(hold.Socket(), backlog);
 }
 
 uint64_t AcceptSyscall(void* context, uint64_t descriptor, uint64_t address, uint64_t flags)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    Network::Sockets::Socket* socket;
+    Files::FileHold hold;
     bool nonblocking = false;
-    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket, &nonblocking);
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &hold, &nonblocking);
     if (User::IsSyscallError(found))
     {
         return found;
@@ -2622,7 +2621,7 @@ uint64_t AcceptSyscall(void* context, uint64_t descriptor, uint64_t address, uin
     Network::Sockets::Socket* connection;
     Network::Sockets::Endpoint peer;
     const uint64_t accepted =
-        Network::Sockets::Accept(socket, &connection, &peer, CallerInterrupted, nonblocking);
+        Network::Sockets::Accept(hold.Socket(), &connection, &peer, CallerInterrupted, nonblocking);
     if (User::IsSyscallError(accepted))
     {
         return accepted;
@@ -2644,16 +2643,16 @@ uint64_t AcceptSyscall(void* context, uint64_t descriptor, uint64_t address, uin
 uint64_t ShutdownSocketSyscall(void* context, uint64_t descriptor, uint64_t how)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    Network::Sockets::Socket* socket;
-    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket);
-    return User::IsSyscallError(found) ? found : Network::Sockets::Shutdown(socket, how);
+    Files::FileHold hold;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &hold);
+    return User::IsSyscallError(found) ? found : Network::Sockets::Shutdown(hold.Socket(), how);
 }
 
 uint64_t SocketNameSyscall(void* context, uint64_t descriptor, uint64_t address, uint64_t peer)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    Network::Sockets::Socket* socket;
-    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket);
+    Files::FileHold hold;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &hold);
     if (User::IsSyscallError(found))
     {
         return found;
@@ -2663,7 +2662,7 @@ uint64_t SocketNameSyscall(void* context, uint64_t descriptor, uint64_t address,
         return User::SyscallErrorInvalidArgument;
     }
     Network::Sockets::Endpoint endpoint;
-    const uint64_t named = Network::Sockets::Name(socket, peer == 1, &endpoint);
+    const uint64_t named = Network::Sockets::Name(hold.Socket(), peer == 1, &endpoint);
     if (User::IsSyscallError(named))
     {
         return named;
@@ -2798,8 +2797,8 @@ uint64_t PollSyscall(void* context, uint64_t descriptors, uint64_t count, uint64
 uint64_t SetSocketOptionSyscall(void* context, uint64_t descriptor, uint64_t option, uint64_t value)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    Network::Sockets::Socket* socket;
-    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket);
+    Files::FileHold hold;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &hold);
     if (User::IsSyscallError(found))
     {
         return found;
@@ -2808,14 +2807,14 @@ uint64_t SetSocketOptionSyscall(void* context, uint64_t descriptor, uint64_t opt
     {
         return User::SyscallErrorOptionNotSupported;
     }
-    return Network::Sockets::SetReceiveTimeout(socket, value);
+    return Network::Sockets::SetReceiveTimeout(hold.Socket(), value);
 }
 
 uint64_t GetSocketOptionSyscall(void* context, uint64_t descriptor, uint64_t option, uint64_t value)
 {
     auto* process = static_cast<ProcessRecord*>(context);
-    Network::Sockets::Socket* socket;
-    const uint64_t found = Files::FindSocket(&process->files, descriptor, &socket);
+    Files::FileHold hold;
+    const uint64_t found = Files::FindSocket(&process->files, descriptor, &hold);
     if (User::IsSyscallError(found))
     {
         return found;
@@ -2830,8 +2829,8 @@ uint64_t GetSocketOptionSyscall(void* context, uint64_t descriptor, uint64_t opt
         return User::SyscallErrorBadAddress;
     }
     const uint64_t result = option == User::SocketOptionError
-                                ? Network::Sockets::TakeError(socket)
-                                : Network::Sockets::ReceiveTimeout(socket);
+                                ? Network::Sockets::TakeError(hold.Socket())
+                                : Network::Sockets::ReceiveTimeout(hold.Socket());
     return CopyToUser(*process, value, &result, sizeof(result)) ? 0 : User::SyscallErrorBadAddress;
 }
 

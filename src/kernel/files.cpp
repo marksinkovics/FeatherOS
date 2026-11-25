@@ -46,8 +46,12 @@ struct OpenFile
 {
     VFS::FileHandle handle GUARDED_BY(held_volume);
     Pipes::Pipe* pipe;
-    // Descriptors naming this file, in every process, and tasks using it without table_lock.
+    // Descriptors naming this file, in every process, plus the holds and pins of tasks using it
+    // without table_lock. The file closes when this reaches 0.
     uint32_t references GUARDED_BY(table_lock);
+    // The slots naming this file, in every table; references minus the holds and pins. At 0 the
+    // file is revoked: no new hold can start, and calls waiting on it fail.
+    uint32_t descriptors GUARDED_BY(table_lock);
     Kind kind;
     bool readable;
     bool writable;
@@ -95,8 +99,8 @@ uint32_t disk_file_capacity GUARDED_BY(table_lock) = 0;
 uint32_t disk_file_count GUARDED_BY(table_lock) = 0;
 FramebufferRelease framebuffer_release GUARDED_BY(table_lock) = nullptr;
 // Every process's console descriptors share this one, which is never freed.
-OpenFile console = {{},    nullptr, 1,       Kind::Terminal, true,    true,
-                    false, false,   nullptr, nullptr,        nullptr, {}};
+OpenFile console = {{},    nullptr, 1,       1,       Kind::Terminal, true, true,
+                    false, false,   nullptr, nullptr, nullptr,        {}};
 
 DiskFileUse* FindUse(const VFS::FileKey& key) REQUIRES(table_lock)
 {
@@ -213,6 +217,26 @@ Filesystem::Driver* DriverOf(const OpenFile* file) NO_THREAD_SAFETY_ANALYSIS
     return file->handle.driver;
 }
 
+// The object's own waits fail from here on, though nothing closes yet: the other end sees nothing
+// until the last hold ends and DropReferenceLocked closes the file.
+void RevokeLocked(OpenFile* file) REQUIRES(table_lock)
+{
+    switch (file->kind)
+    {
+    case Kind::Pipe:
+        Pipes::Revoke(file->pipe, file->writable);
+        break;
+    case Kind::Socket:
+        Network::Sockets::Revoke(file->socket);
+        break;
+    case Kind::PseudoTerminalMaster:
+        PseudoTerminals::RevokeMaster(file->pair);
+        break;
+    default:
+        break;
+    }
+}
+
 // Drops one reference. Files other than disk files close here; the last reference to a disk file
 // hands it back, for FinishClose to close outside table_lock under its volume lock.
 OpenFile* DropReferenceLocked(OpenFile* file) REQUIRES(table_lock)
@@ -268,6 +292,11 @@ OpenFile* DetachSlotLocked(Slot* slot) REQUIRES(table_lock)
     OpenFile* const file = slot->file;
     slot->file = nullptr;
     slot->close_on_exec = false;
+    // The console is shared by every table without being counted.
+    if (file != &console && --file->descriptors == 0 && file->references > 1)
+    {
+        RevokeLocked(file);
+    }
     return DropReferenceLocked(file);
 }
 
@@ -343,6 +372,44 @@ void Unpin(OpenFile* file) EXCLUDES(held_volume, table_lock)
     }
     FinishClose(last);
 }
+
+} // namespace
+
+struct HoldAccess
+{
+    static void Take(FileHold* hold, OpenFile* file) REQUIRES(table_lock)
+    {
+        ++file->references;
+        hold->file = file;
+    }
+    static OpenFile* File(const FileHold& hold)
+    {
+        return hold.file;
+    }
+};
+
+FileHold::~FileHold()
+{
+    Release();
+}
+
+void FileHold::Release()
+{
+    if (file != nullptr)
+    {
+        Unpin(file);
+        file = nullptr;
+    }
+}
+
+// Set before the file is published and never changed.
+Network::Sockets::Socket* FileHold::Socket() const NO_THREAD_SAFETY_ANALYSIS
+{
+    return file != nullptr ? file->socket : nullptr;
+}
+
+namespace
+{
 
 bool Inheritable(const Slot& slot)
 {
@@ -681,6 +748,7 @@ OpenFile* NewFile(Kind kind, bool readable, bool writable) NO_THREAD_SAFETY_ANAL
             .handle = {},
             .pipe = nullptr,
             .references = 1,
+            .descriptors = 1,
             .kind = kind,
             .readable = readable,
             .writable = writable,
@@ -923,6 +991,7 @@ bool Inherit(Table* child, const Table* parent)
         if (Inheritable(slot))
         {
             ++slot.file->references;
+            ++slot.file->descriptors;
             slots[descriptor] = {slot.file, false};
         }
     }
@@ -1086,31 +1155,34 @@ uint64_t Open(Table* table, const char* path, uint64_t flags,
     return descriptor;
 }
 
-// The pipe stays allocated while the caller waits on it: the caller's own descriptor holds a
-// reference, and only the caller can close that.
-Pipes::Pipe* FindPipe(Table* table, uint64_t descriptor, bool write_end, bool* nonblocking)
+// The pipe stays allocated while the hold lasts, though another thread closes the descriptor.
+uint64_t HoldPipe(Table* table, uint64_t descriptor, bool write_end, FileHold* hold,
+                  bool* nonblocking)
 {
     Sync::MutexGuard guard(table_lock);
     Slot* slot = FindSlot(table, descriptor);
     if (slot == nullptr || slot->file->kind != Kind::Pipe || slot->file->writable != write_end)
     {
-        return nullptr;
+        return User::SyscallErrorBadDescriptor;
     }
     *nonblocking = slot->file->nonblocking;
-    return slot->file->pipe;
+    HoldAccess::Take(hold, slot->file);
+    return 0;
 }
 
-PseudoTerminals::Pair* FindMaster(Table* table, uint64_t descriptor, bool write, bool* nonblocking)
+uint64_t HoldMaster(Table* table, uint64_t descriptor, bool write, FileHold* hold,
+                    bool* nonblocking)
 {
     Sync::MutexGuard guard(table_lock);
     Slot* slot = FindSlot(table, descriptor);
     if (slot == nullptr || slot->file->kind != Kind::PseudoTerminalMaster ||
         !(write ? slot->file->writable : slot->file->readable))
     {
-        return nullptr;
+        return User::SyscallErrorBadDescriptor;
     }
     *nonblocking = slot->file->nonblocking;
-    return slot->file->pair;
+    HoldAccess::Take(hold, slot->file);
+    return 0;
 }
 
 // The file stays pinned while the reader waits for events.
@@ -1147,10 +1219,13 @@ uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
     if (kind == Kind::PseudoTerminalMaster)
     {
         bool nonblocking = false;
-        PseudoTerminals::Pair* pair = FindMaster(table, descriptor, false, &nonblocking);
-        return pair == nullptr
-                   ? User::SyscallErrorBadDescriptor
-                   : PseudoTerminals::ReadMaster(pair, buffer, length, interrupted, nonblocking);
+        FileHold hold;
+        if (HoldMaster(table, descriptor, false, &hold, &nonblocking) != 0)
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        return PseudoTerminals::ReadMaster(HoldAccess::File(hold)->pair, buffer, length,
+                                           interrupted, nonblocking);
     }
     if (kind == Kind::PointerEvents)
     {
@@ -1159,9 +1234,12 @@ uint64_t Read(Table* table, uint64_t descriptor, void* buffer, uint64_t length,
     if (kind == Kind::Pipe)
     {
         bool nonblocking = false;
-        Pipes::Pipe* pipe = FindPipe(table, descriptor, false, &nonblocking);
-        return pipe == nullptr ? User::SyscallErrorBadDescriptor
-                               : Pipes::Read(pipe, buffer, length, interrupted, nonblocking);
+        FileHold hold;
+        if (HoldPipe(table, descriptor, false, &hold, &nonblocking) != 0)
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        return Pipes::Read(HoldAccess::File(hold)->pipe, buffer, length, interrupted, nonblocking);
     }
     OpenFile* file = nullptr;
     {
@@ -1198,10 +1276,13 @@ uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t l
     if (kind == Kind::PseudoTerminalMaster)
     {
         bool nonblocking = false;
-        PseudoTerminals::Pair* pair = FindMaster(table, descriptor, true, &nonblocking);
-        return pair == nullptr
-                   ? User::SyscallErrorBadDescriptor
-                   : PseudoTerminals::WriteMaster(pair, buffer, length, interrupted, nonblocking);
+        FileHold hold;
+        if (HoldMaster(table, descriptor, true, &hold, &nonblocking) != 0)
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        return PseudoTerminals::WriteMaster(HoldAccess::File(hold)->pair, buffer, length,
+                                            interrupted, nonblocking);
     }
     if (kind == Kind::PointerEvents)
     {
@@ -1214,9 +1295,12 @@ uint64_t Write(Table* table, uint64_t descriptor, const void* buffer, uint64_t l
     if (kind == Kind::Pipe)
     {
         bool nonblocking = false;
-        Pipes::Pipe* pipe = FindPipe(table, descriptor, true, &nonblocking);
-        return pipe == nullptr ? User::SyscallErrorBadDescriptor
-                               : Pipes::Write(pipe, buffer, length, interrupted, nonblocking);
+        FileHold hold;
+        if (HoldPipe(table, descriptor, true, &hold, &nonblocking) != 0)
+        {
+            return User::SyscallErrorBadDescriptor;
+        }
+        return Pipes::Write(HoldAccess::File(hold)->pipe, buffer, length, interrupted, nonblocking);
     }
     OpenFile* file = nullptr;
     bool append = false;
@@ -1410,8 +1494,7 @@ uint64_t FindPseudoTerminal(Table* table, uint64_t descriptor, PseudoTerminals::
     return 0;
 }
 
-uint64_t FindSocket(Table* table, uint64_t descriptor, Network::Sockets::Socket** socket,
-                    bool* nonblocking)
+uint64_t FindSocket(Table* table, uint64_t descriptor, FileHold* hold, bool* nonblocking)
 {
     Sync::MutexGuard guard(table_lock);
     const Slot* slot = FindSlot(table, descriptor);
@@ -1423,11 +1506,11 @@ uint64_t FindSocket(Table* table, uint64_t descriptor, Network::Sockets::Socket*
     {
         return User::SyscallErrorNotSocket;
     }
-    *socket = slot->file->socket;
     if (nonblocking != nullptr)
     {
         *nonblocking = slot->file->nonblocking;
     }
+    HoldAccess::Take(hold, slot->file);
     return 0;
 }
 
@@ -1547,6 +1630,7 @@ uint64_t DuplicateLocked(Table* table, uint64_t descriptor, uint64_t target, uin
         }
     }
     ++file->references;
+    ++file->descriptors;
     table->slots[result] = {file, (flags & User::DuplicateCloseOnExec) != 0};
     return result;
 }

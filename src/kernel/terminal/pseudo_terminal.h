@@ -23,6 +23,9 @@ struct Pair;
 // pair is in use, or SyscallErrorNoMemory.
 uint64_t Create(Pair** pair);
 void CloseMaster(Pair* pair);
+// For a master whose last descriptor closed while a call still holds it: that call's waits fail
+// with SyscallErrorBadDescriptor. The pair stays open until CloseMaster.
+void RevokeMaster(Pair* pair);
 // For /dev/pts/N: SyscallErrorNotFound for a pair not in use, SyscallErrorInputOutput while it is
 // locked or its master is closed.
 uint64_t OpenSlave(uint32_t number, Pair** pair);

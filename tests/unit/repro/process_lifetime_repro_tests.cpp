@@ -11,7 +11,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <functional>
+#include <memory>
 #include <string>
+#include <vector>
 
 // Reproductions for the process-lifetime findings of docs/reviews/2026-11-review.md. Each test
 // asserts the correct behaviour, so it fails on the current code when the bug is real.
@@ -163,116 +166,163 @@ struct DatagramSocket
             Files::CreateSocket(&descriptors.table, User::SocketFamilyIpv4, User::SocketDatagram, 0);
         REQUIRE_FALSE(User::IsSyscallError(created));
         descriptor = created;
-        REQUIRE(Files::FindSocket(&descriptors.table, descriptor, &socket, nullptr) == 0);
+        REQUIRE(Files::FindSocket(&descriptors.table, descriptor, &hold, nullptr) == 0);
     }
 
     DescriptorTable descriptors;
     uint64_t descriptor = 0;
-    Sockets::Socket* socket = nullptr;
+    Files::FileHold hold;
 };
+
+struct PipePair
+{
+    PipePair()
+    {
+        REQUIRE(Files::CreatePipe(&descriptors.table, 0, &reader, &writer) == 0);
+    }
+
+    DescriptorTable descriptors;
+    uint64_t reader = 0;
+    uint64_t writer = 0;
+};
+
+struct HookReset
+{
+    ~HookReset()
+    {
+        FeatherOS::Terminals::SetProcessHooks({nullptr, nullptr, nullptr, nullptr});
+    }
+};
+
+constexpr uint64_t ReadWrite = User::OpenRead | User::OpenWrite;
+
+struct PseudoTerminal
+{
+    PseudoTerminal()
+    {
+        FeatherOS::Terminals::SetProcessHooks({nullptr, InterruptNow, nullptr, nullptr});
+        Open();
+    }
+
+    PseudoTerminal(const PseudoTerminal&) = delete;
+    PseudoTerminal& operator=(const PseudoTerminal&) = delete;
+
+    void Open()
+    {
+        master = Files::Open(&descriptors.table, "/dev/ptmx", ReadWrite);
+        REQUIRE_FALSE(User::IsSyscallError(master));
+        REQUIRE(Files::FindPseudoTerminal(&descriptors.table, master, &pair) == 0);
+        PseudoTerminals::SetLocked(pair, false);
+        number = PseudoTerminals::Number(pair);
+    }
+
+    void OpenSlave()
+    {
+        const std::string path = "/dev/pts/" + std::to_string(number);
+        slave = Files::Open(&descriptors.table, path.c_str(), ReadWrite);
+        REQUIRE_FALSE(User::IsSyscallError(slave));
+    }
+
+    HookReset hook_reset;
+    DescriptorTable descriptors;
+    PseudoTerminals::Pair* pair = nullptr;
+    uint32_t number = 0;
+    uint64_t master = 0;
+    uint64_t slave = 0;
+};
+
+// Runs the first hook call, then the second one, and so on, as the wait is entered again.
+template <typename... Steps> void OnWaits(Steps... steps)
+{
+    auto remaining = std::make_shared<std::vector<std::function<void()>>>();
+    (remaining->push_back(steps), ...);
+    TestScheduler::on_wait = [remaining] {
+        REQUIRE_FALSE(remaining->empty());
+        const std::function<void()> step = remaining->front();
+        remaining->erase(remaining->begin());
+        step();
+    };
+}
 
 } // namespace
 
 TEST_CASE("R2-03 a pipe stays allocated while a read blocked on it has its descriptors closed",
-          "[.repro][R2-03]")
+          "[R2-03]")
 {
 #ifndef REPRO_HAS_ASAN
     SKIP("needs AddressSanitizer to see the heap shrink");
 #else
     const OtherThread other_thread;
-    DescriptorTable descriptors;
-    uint64_t reader = 0;
-    uint64_t writer = 0;
-    REQUIRE(Files::CreatePipe(&descriptors.table, 0, &reader, &writer) == 0);
+    PipePair pipe;
 
     TestScheduler::on_wait = [&] {
         const bool freed = ReleasesAtLeast(Pipes::Capacity, [&] {
-            Files::Close(&descriptors.table, reader);
-            Files::Close(&descriptors.table, writer);
+            Files::Close(&pipe.descriptors.table, pipe.reader);
+            Files::Close(&pipe.descriptors.table, pipe.writer);
         });
         interrupt_now = true;
         // Throwing keeps the stub from re-taking the freed pipe's lock when the bug is present.
         REQUIRE_FALSE(freed);
     };
     char buffer[16];
-    const uint64_t result = Files::Read(&descriptors.table, reader, buffer, sizeof(buffer),
-                                        InterruptNow);
-    REQUIRE((result == 0 || result == User::SyscallErrorInterrupted));
+    // The writer's last reference is gone, so the read ends as at end of file.
+    REQUIRE(Files::Read(&pipe.descriptors.table, pipe.reader, buffer, sizeof(buffer),
+                        InterruptNow) == 0);
 #endif
 }
 
 TEST_CASE("R2-03 a pipe stays allocated while a write blocked on it has its descriptors closed",
-          "[.repro][R2-03]")
+          "[R2-03]")
 {
 #ifndef REPRO_HAS_ASAN
     SKIP("needs AddressSanitizer to see the heap shrink");
 #else
     const OtherThread other_thread;
-    DescriptorTable descriptors;
-    uint64_t reader = 0;
-    uint64_t writer = 0;
-    REQUIRE(Files::CreatePipe(&descriptors.table, 0, &reader, &writer) == 0);
+    PipePair pipe;
     const char fill[Pipes::Capacity] = {};
-    REQUIRE(Files::Write(&descriptors.table, writer, fill, sizeof(fill)) == sizeof(fill));
+    REQUIRE(Files::Write(&pipe.descriptors.table, pipe.writer, fill, sizeof(fill)) ==
+            sizeof(fill));
 
     TestScheduler::on_wait = [&] {
         const bool freed = ReleasesAtLeast(Pipes::Capacity, [&] {
-            Files::Close(&descriptors.table, writer);
-            Files::Close(&descriptors.table, reader);
+            Files::Close(&pipe.descriptors.table, pipe.writer);
+            Files::Close(&pipe.descriptors.table, pipe.reader);
         });
         interrupt_now = true;
         REQUIRE_FALSE(freed);
     };
-    const uint64_t result =
-        Files::Write(&descriptors.table, writer, fill, 1, InterruptNow);
-    REQUIRE((result == User::SyscallErrorBrokenPipe || result == User::SyscallErrorInterrupted));
+    REQUIRE(Files::Write(&pipe.descriptors.table, pipe.writer, fill, 1, InterruptNow) ==
+            User::SyscallErrorBrokenPipe);
 #endif
 }
 
 TEST_CASE("R2-03 a pty master's pipe stays allocated while a read blocked on it has the pair "
           "closed",
-          "[.repro][R2-03]")
+          "[R2-03]")
 {
 #ifndef REPRO_HAS_ASAN
     SKIP("needs AddressSanitizer to see the heap shrink");
 #else
     const OtherThread other_thread;
-    struct HookReset
-    {
-        ~HookReset()
-        {
-            FeatherOS::Terminals::SetProcessHooks({nullptr, nullptr, nullptr, nullptr});
-        }
-    } const hook_reset;
-    FeatherOS::Terminals::SetProcessHooks({nullptr, InterruptNow, nullptr, nullptr});
-    DescriptorTable descriptors;
-    constexpr uint64_t ReadWrite = User::OpenRead | User::OpenWrite;
-    const uint64_t master = Files::Open(&descriptors.table, "/dev/ptmx", ReadWrite);
-    REQUIRE_FALSE(User::IsSyscallError(master));
-    PseudoTerminals::Pair* pair = nullptr;
-    REQUIRE(Files::FindPseudoTerminal(&descriptors.table, master, &pair) == 0);
-    PseudoTerminals::SetLocked(pair, false);
-    const std::string slave_path = "/dev/pts/" + std::to_string(PseudoTerminals::Number(pair));
-    const uint64_t slave = Files::Open(&descriptors.table, slave_path.c_str(), ReadWrite);
-    REQUIRE_FALSE(User::IsSyscallError(slave));
+    PseudoTerminal pty;
+    pty.OpenSlave();
 
     TestScheduler::on_wait = [&] {
         const bool freed = ReleasesAtLeast(Pipes::Capacity, [&] {
-            Files::Close(&descriptors.table, master);
-            Files::Close(&descriptors.table, slave);
+            Files::Close(&pty.descriptors.table, pty.master);
+            Files::Close(&pty.descriptors.table, pty.slave);
         });
         interrupt_now = true;
         REQUIRE_FALSE(freed);
     };
     char buffer[16];
-    const uint64_t result =
-        Files::Read(&descriptors.table, master, buffer, sizeof(buffer), InterruptNow);
-    REQUIRE((result == 0 || result == User::SyscallErrorInterrupted));
+    REQUIRE(Files::Read(&pty.descriptors.table, pty.master, buffer, sizeof(buffer),
+                        InterruptNow) == 0);
 #endif
 }
 
 TEST_CASE("R5-01 a socket stays allocated while a receive blocked on it has its descriptor closed",
-          "[.repro][R5-01]")
+          "[R5-01]")
 {
 #ifndef REPRO_HAS_ASAN
     SKIP("needs AddressSanitizer to see the heap shrink");
@@ -289,15 +339,15 @@ TEST_CASE("R5-01 a socket stays allocated while a receive blocked on it has its 
         REQUIRE_FALSE(freed);
     };
     uint8_t buffer[64];
-    const uint64_t result =
-        Sockets::ReceiveFrom(fixture.socket, buffer, sizeof(buffer), nullptr, InterruptNow);
-    REQUIRE(result == User::SyscallErrorInterrupted);
+    // An interrupt wins over the revoked descriptor.
+    REQUIRE(Sockets::ReceiveFrom(fixture.hold.Socket(), buffer, sizeof(buffer), nullptr,
+                                 InterruptNow) == User::SyscallErrorInterrupted);
 #endif
 }
 
 TEST_CASE("R2-02 the socket a syscall looked up stays allocated when its descriptor is closed "
           "meanwhile",
-          "[.repro][R2-02]")
+          "[R2-02]")
 {
 #ifndef REPRO_HAS_ASAN
     SKIP("needs AddressSanitizer to see the heap shrink");
@@ -306,10 +356,219 @@ TEST_CASE("R2-02 the socket a syscall looked up stays allocated when its descrip
     DatagramSocket fixture;
 
     // FindSocket is what every socket syscall in process.cpp does first; the call then uses the
-    // pointer, so a close in another thread at this point must not free it.
+    // socket, so a close in another thread at this point must not free it.
     const bool freed = ReleasesAtLeast(SocketQueueBytes, [&] {
         Files::Close(&fixture.descriptors.table, fixture.descriptor);
     });
     REQUIRE_FALSE(freed);
+    REQUIRE(ReleasesAtLeast(SocketQueueBytes, [&] { fixture.hold.Release(); }));
 #endif
+}
+
+TEST_CASE("R2-02 a closed descriptor can no longer be held", "[R2-02]")
+{
+    const OtherThread other_thread;
+    DatagramSocket fixture;
+    REQUIRE(Files::Close(&fixture.descriptors.table, fixture.descriptor) == 0);
+
+    REQUIRE(Files::PollEvents(&fixture.descriptors.table, fixture.descriptor) ==
+            User::PollInvalid);
+    Files::FileHold second;
+    REQUIRE(Files::FindSocket(&fixture.descriptors.table, fixture.descriptor, &second) ==
+            User::SyscallErrorBadDescriptor);
+    REQUIRE(second.Socket() == nullptr);
+}
+
+TEST_CASE("R2-03 closing the read descriptor under a blocked read fails it and keeps the writer "
+          "open until the read returns",
+          "[R2-03]")
+{
+    const OtherThread other_thread;
+    PipePair pipe;
+
+    TestScheduler::on_wait = [&] {
+        Files::Close(&pipe.descriptors.table, pipe.reader);
+        // The read end is still held, so the writer sees no broken pipe yet.
+        REQUIRE((Files::PollEvents(&pipe.descriptors.table, pipe.writer) & User::PollError) == 0);
+    };
+    char buffer[16];
+    REQUIRE(Files::Read(&pipe.descriptors.table, pipe.reader, buffer, sizeof(buffer)) ==
+            User::SyscallErrorBadDescriptor);
+    REQUIRE(Files::Write(&pipe.descriptors.table, pipe.writer, "x", 1) ==
+            User::SyscallErrorBrokenPipe);
+}
+
+TEST_CASE("R2-03 closing the write descriptor under a blocked write fails it, and the reader then "
+          "sees the end",
+          "[R2-03]")
+{
+    const OtherThread other_thread;
+    PipePair pipe;
+    const char fill[Pipes::Capacity] = {};
+    REQUIRE(Files::Write(&pipe.descriptors.table, pipe.writer, fill, sizeof(fill)) ==
+            sizeof(fill));
+
+    TestScheduler::on_wait = [&] { Files::Close(&pipe.descriptors.table, pipe.writer); };
+    REQUIRE(Files::Write(&pipe.descriptors.table, pipe.writer, fill, 1) ==
+            User::SyscallErrorBadDescriptor);
+
+    char drained[Pipes::Capacity];
+    REQUIRE(Files::Read(&pipe.descriptors.table, pipe.reader, drained, sizeof(drained)) ==
+            Pipes::Capacity);
+    REQUIRE(Files::Read(&pipe.descriptors.table, pipe.reader, drained, sizeof(drained)) == 0);
+}
+
+TEST_CASE("R2-03 a write that made progress returns its count when its descriptor is closed",
+          "[R2-03]")
+{
+    const OtherThread other_thread;
+    PipePair pipe;
+    const std::string big(Pipes::Capacity + Pipes::AtomicSize, 'x');
+
+    TestScheduler::on_wait = [&] { Files::Close(&pipe.descriptors.table, pipe.writer); };
+    REQUIRE(Files::Write(&pipe.descriptors.table, pipe.writer, big.data(), big.size()) ==
+            Pipes::Capacity);
+}
+
+TEST_CASE("R2-03 closing one of two descriptors does not revoke a blocked read", "[R2-03]")
+{
+    const OtherThread other_thread;
+    PipePair pipe;
+    const uint64_t copy = Files::Duplicate(&pipe.descriptors.table, pipe.reader, 0, 0);
+    REQUIRE_FALSE(User::IsSyscallError(copy));
+
+    // The first wait closes the original; a revoke would end the read there, but it must wait on.
+    OnWaits([&] { Files::Close(&pipe.descriptors.table, pipe.reader); },
+            [&] { REQUIRE(Files::Write(&pipe.descriptors.table, pipe.writer, "x", 1) == 1); });
+    char buffer[16];
+    REQUIRE(Files::Read(&pipe.descriptors.table, pipe.reader, buffer, sizeof(buffer)) == 1);
+    REQUIRE(Files::Close(&pipe.descriptors.table, copy) == 0);
+}
+
+TEST_CASE("R2-03 a descriptor inherited by another table keeps a blocked read waiting", "[R2-03]")
+{
+    const OtherThread other_thread;
+    PipePair pipe;
+    Files::Table child{};
+    REQUIRE(Files::Inherit(&child, &pipe.descriptors.table));
+
+    OnWaits([&] { Files::Close(&pipe.descriptors.table, pipe.reader); },
+            [&] { REQUIRE(Files::Write(&pipe.descriptors.table, pipe.writer, "x", 1) == 1); });
+    char buffer[16];
+    REQUIRE(Files::Read(&pipe.descriptors.table, pipe.reader, buffer, sizeof(buffer)) == 1);
+    Files::CloseAll(&child);
+}
+
+TEST_CASE("R2-03 closing every duplicate of a read descriptor fails a blocked read", "[R2-03]")
+{
+    const OtherThread other_thread;
+    PipePair pipe;
+    const uint64_t copy = Files::Duplicate(&pipe.descriptors.table, pipe.reader, 0, 0);
+    REQUIRE_FALSE(User::IsSyscallError(copy));
+
+    TestScheduler::on_wait = [&] {
+        Files::Close(&pipe.descriptors.table, pipe.reader);
+        Files::Close(&pipe.descriptors.table, copy);
+    };
+    char buffer[16];
+    REQUIRE(Files::Read(&pipe.descriptors.table, pipe.reader, buffer, sizeof(buffer)) ==
+            User::SyscallErrorBadDescriptor);
+}
+
+TEST_CASE("R5-01 closing the descriptor under a blocked datagram receive fails it", "[R5-01]")
+{
+    const OtherThread other_thread;
+    DatagramSocket fixture;
+
+    TestScheduler::on_wait = [&] {
+        Files::Close(&fixture.descriptors.table, fixture.descriptor);
+    };
+    uint8_t buffer[64];
+    REQUIRE(Sockets::ReceiveFrom(fixture.hold.Socket(), buffer, sizeof(buffer), nullptr,
+                                 nullptr) == User::SyscallErrorBadDescriptor);
+#ifdef REPRO_HAS_ASAN
+    REQUIRE(ReleasesAtLeast(SocketQueueBytes, [&] { fixture.hold.Release(); }));
+#endif
+}
+
+TEST_CASE("R5-01 closing the descriptor under a blocked accept fails it", "[R5-01]")
+{
+    const OtherThread other_thread;
+    TestNetwork::Reset();
+    DescriptorTable descriptors;
+    const uint64_t descriptor =
+        Files::CreateSocket(&descriptors.table, User::SocketFamilyIpv4, User::SocketStream, 0);
+    REQUIRE_FALSE(User::IsSyscallError(descriptor));
+    Files::FileHold hold;
+    REQUIRE(Files::FindSocket(&descriptors.table, descriptor, &hold) == 0);
+    REQUIRE(Sockets::Bind(hold.Socket(),
+                          {.address = FeatherOS::Network::MakeIpAddress(0), .port = 8081}) == 0);
+    REQUIRE(Sockets::Listen(hold.Socket(), 4) == 0);
+
+    TestScheduler::on_wait = [&] { Files::Close(&descriptors.table, descriptor); };
+    Sockets::Socket* connection = nullptr;
+    Sockets::Endpoint peer{};
+    REQUIRE(Sockets::Accept(hold.Socket(), &connection, &peer, nullptr) ==
+            User::SyscallErrorBadDescriptor);
+    hold.Release();
+}
+
+TEST_CASE("R2-03 closing a pty master under a blocked read fails it and hangs up only afterwards",
+          "[R2-03]")
+{
+    const OtherThread other_thread;
+    PseudoTerminal pty;
+    pty.OpenSlave();
+
+    TestScheduler::on_wait = [&] {
+        Files::Close(&pty.descriptors.table, pty.master);
+        REQUIRE(PseudoTerminals::InUse(pty.number));
+        REQUIRE_FALSE(PseudoTerminals::TerminalOf(pty.pair)->HungUp());
+    };
+    // The slave is still open, so the master's pipe has a writer and the read would wait.
+    char buffer[16];
+    REQUIRE(Files::Read(&pty.descriptors.table, pty.master, buffer, sizeof(buffer)) ==
+            User::SyscallErrorBadDescriptor);
+    REQUIRE(PseudoTerminals::TerminalOf(pty.pair)->HungUp());
+    REQUIRE(Files::Close(&pty.descriptors.table, pty.slave) == 0);
+    REQUIRE_FALSE(PseudoTerminals::InUse(pty.number));
+}
+
+TEST_CASE("R2-03 a pty pair reclaimed after a revoked master works again", "[R2-03]")
+{
+    const OtherThread other_thread;
+    PseudoTerminal pty;
+    pty.OpenSlave();
+    TestScheduler::on_wait = [&] { Files::Close(&pty.descriptors.table, pty.master); };
+    char buffer[16];
+    REQUIRE(Files::Read(&pty.descriptors.table, pty.master, buffer, sizeof(buffer)) ==
+            User::SyscallErrorBadDescriptor);
+    REQUIRE(Files::Close(&pty.descriptors.table, pty.slave) == 0);
+    TestScheduler::on_wait = nullptr;
+
+    const uint32_t first = pty.number;
+    pty.Open();
+    REQUIRE(pty.number == first);
+    const std::string fill(1024, 'x');
+    // The first write fills the slave's input queue; the second then waits for room, not fails.
+    REQUIRE(Files::Write(&pty.descriptors.table, pty.master, "x", 1) == 1);
+    PseudoTerminals::WriteMaster(pty.pair, fill.data(), fill.size(), nullptr, true);
+    interrupt_now = true;
+    REQUIRE(Files::Write(&pty.descriptors.table, pty.master, fill.data(), fill.size(),
+                         InterruptNow) == User::SyscallErrorInterrupted);
+}
+
+TEST_CASE("R2-03 closing a pty master under a blocked write fails it", "[R2-03]")
+{
+    const OtherThread other_thread;
+    PseudoTerminal pty;
+    const std::string fill(1024, 'x');
+    const uint64_t taken = PseudoTerminals::WriteMaster(pty.pair, fill.data(), fill.size(),
+                                                        nullptr, true);
+    REQUIRE(taken > 0);
+    REQUIRE(taken < fill.size());
+
+    TestScheduler::on_wait = [&] { Files::Close(&pty.descriptors.table, pty.master); };
+    REQUIRE(Files::Write(&pty.descriptors.table, pty.master, fill.data(), fill.size()) ==
+            User::SyscallErrorBadDescriptor);
 }

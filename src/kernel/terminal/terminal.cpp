@@ -192,9 +192,14 @@ size_t Terminal::ReceiveAvailable(const char* bytes, size_t length)
     return taken;
 }
 
-void Terminal::WaitForRoom()
+bool Terminal::WaitForRoom()
 {
     const uint64_t flags = lock.LockIrqSave();
+    if (room_revoked)
+    {
+        lock.UnlockIrqRestore(flags);
+        return false;
+    }
     if (queue_size == QueueCapacity && !hung_up)
     {
         ++room_waiters;
@@ -202,6 +207,16 @@ void Terminal::WaitForRoom()
         --room_waiters;
     }
     lock.UnlockIrqRestore(flags);
+    return true;
+}
+
+void Terminal::RevokeRoomWaits()
+{
+    {
+        Sync::SpinLockGuard guard(lock);
+        room_revoked = true;
+    }
+    Scheduler::WakeAll(room);
 }
 
 bool Terminal::HasRoom()
@@ -459,6 +474,7 @@ void Terminal::Reset(const Device* new_device)
     foreground_group = 0;
     session = 0;
     hung_up = false;
+    room_revoked = false;
     line_length = 0;
     line_offset = 0;
 }

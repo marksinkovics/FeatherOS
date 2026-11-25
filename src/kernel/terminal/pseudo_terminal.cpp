@@ -221,6 +221,17 @@ void CloseMaster(Pair* pair)
     }
 }
 
+void RevokeMaster(Pair* pair)
+{
+    Pipes::Pipe* output;
+    {
+        Sync::SpinLockGuard guard(pairs_lock);
+        output = pair->output;
+    }
+    Pipes::Revoke(output, false);
+    pair->terminal.RevokeRoomWaits();
+}
+
 uint64_t OpenSlave(uint32_t number, Pair** opened)
 {
     if (number >= User::MaximumPseudoTerminals)
@@ -332,7 +343,10 @@ uint64_t WriteMaster(Pair* pair, const void* buffer, uint64_t length,
             }
             return nonblocking ? User::SyscallErrorWouldBlock : User::SyscallErrorInterrupted;
         }
-        pair->terminal.WaitForRoom();
+        if (!pair->terminal.WaitForRoom())
+        {
+            return total > 0 ? total : User::SyscallErrorBadDescriptor;
+        }
     }
     return total;
 }

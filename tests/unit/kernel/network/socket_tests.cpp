@@ -488,12 +488,14 @@ TEST_CASE("a socket is a descriptor")
     REQUIRE(FeatherOS::Files::DescriptorFlags(&table, descriptor, false, 0) ==
             User::DescriptorCloseOnExec);
 
-    Sockets::Socket* socket = nullptr;
-    REQUIRE(FeatherOS::Files::FindSocket(&table, descriptor, &socket) == 0);
-    REQUIRE(socket != nullptr);
-    REQUIRE(FeatherOS::Files::FindSocket(&table, 0, &socket) == User::SyscallErrorNotSocket);
-    REQUIRE(FeatherOS::Files::FindSocket(&table, 9, &socket) ==
-            User::SyscallErrorBadDescriptor);
+    FeatherOS::Files::FileHold hold;
+    REQUIRE(FeatherOS::Files::FindSocket(&table, descriptor, &hold) == 0);
+    REQUIRE(hold.Socket() != nullptr);
+    hold.Release();
+    REQUIRE(hold.Socket() == nullptr);
+    REQUIRE(FeatherOS::Files::FindSocket(&table, 0, &hold) == User::SyscallErrorNotSocket);
+    REQUIRE(FeatherOS::Files::FindSocket(&table, 9, &hold) == User::SyscallErrorBadDescriptor);
+    REQUIRE(hold.Socket() == nullptr);
 
     User::FileStatus status{};
     REQUIRE(FeatherOS::Files::StatDescriptor(&table, descriptor, &status) == 0);
@@ -541,13 +543,15 @@ TEST_CASE("a socket descriptor can be non-blocking")
     REQUIRE(FeatherOS::Files::DescriptorFlags(&table, descriptor, false, 0) == 0);
     REQUIRE(FeatherOS::Files::StatusFlags(&table, descriptor, false, 0) ==
             (User::OpenRead | User::OpenWrite | User::OpenNonBlocking));
-    Sockets::Socket* socket = nullptr;
+    FeatherOS::Files::FileHold hold;
     bool nonblocking = false;
-    REQUIRE(FeatherOS::Files::FindSocket(&table, descriptor, &socket, &nonblocking) == 0);
+    REQUIRE(FeatherOS::Files::FindSocket(&table, descriptor, &hold, &nonblocking) == 0);
     REQUIRE(nonblocking);
+    hold.Release();
     REQUIRE(FeatherOS::Files::StatusFlags(&table, descriptor, true, 0) ==
             (User::OpenRead | User::OpenWrite));
-    REQUIRE(FeatherOS::Files::FindSocket(&table, descriptor, &socket, &nonblocking) == 0);
+    REQUIRE(FeatherOS::Files::FindSocket(&table, descriptor, &hold, &nonblocking) == 0);
     REQUIRE_FALSE(nonblocking);
+    hold.Release();
     FeatherOS::Files::CloseAll(&table);
 }
