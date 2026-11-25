@@ -27,7 +27,21 @@ Branch `feat/review`, cut from `main` at `8b9ba14`. The findings are in `docs/re
 - [ ] E4. ext truncate: R1-04, the tail of the new last block is zeroed in place before the truncation is committed (`write.cpp:1229`).
 - [ ] E5. ext rename: R1-05, renaming a directory onto an empty directory in a parent at the link limit gives `Corrupt` and the error state instead of a clean link-limit error (`namespace.cpp:950`).
 
-The full matrix runs after the last task (shared code: the core is built into the kernel).
+The full matrix runs after E5 (shared code: the core is built into the kernel).
+
+## Part K: minor findings of areas 2-5 (planned, not started)
+
+The user's choice (2026-11-25): run E1-E5 now; plan every minor finding of areas 2-5 as later tasks, and leave the seven important ones (R2-01, R2-02, R2-03, R3-01, R3-02, R3-03, R5-01) open in the review file for a later decision. Autopilot stops after E5 and does not start Part K until the user says so. The same rules apply (test first, or a QEMU case where no host test can reach the code; `false positive` when not reproducible). Models: `sonnet`, effort high; K2 and K3 are risky (concurrency, interrupt entry) and get an Opus design first.
+
+- [ ] K1. Processes and files: R2-04 (`WaitSyscall` keeps a `ProcessRecord` pointer after dropping `process_lock`), R2-05 (a join after the main thread's `pthread_exit`), R2-06 (buffer checks reject untouched demand-grown stack pages), R2-07 (pipe read/write misses a signal between the check and blocking).
+- [ ] K2. Scheduler and futex wake-ups: R3-04 (`WakeTask` drops the wake-up of a task between its signal check and blocking), R3-05 (`CurrentTask()` reads the per-CPU index and slot non-atomically), R3-06 (`Futex::Wait` loses a signal's wake-up). Shares a fix with R2-07.
+- [ ] K3. Entry and stacks: R3-08 (AArch64 `aarch64_enter_user` loads SPSR/ELR with IRQs unmasked), R3-09 (the x86-64 signal frame copies uninitialised kernel stack bytes to user space), R3-07 (a kernel stack slot is lost when `AllocateKernelStack` fails part-way).
+- [ ] K4. VFS and `/proc`: R2-08 (a mount point listed twice), R2-09 (renaming a directory that holds a mount point), R2-10 (`/proc/mounts` past 1024 bytes).
+- [ ] K5. USB: R4-01 (USB 3 root port never reset on re-enumeration), R4-02 (recovery mask bit cleared again), R4-03 (`CRCR` written as two dwords in `AbortCommand`), R4-04 (HID reports longer than one packet).
+- [ ] K6. Block devices: R4-05 (x86-64 virtio-blk legacy queue above 256 entries), R4-06 (a read-only virtio-blk device registered as writable), R4-07 (a dangling NVMe `Disk` pointer after revalidation).
+- [ ] K7. Network: R5-02 (a closed receive window drops ACKs), R5-03 (zero-window probing never times out), R5-04 (the SYN adjustment fires again after sequence wrap), R5-05 (IPv4 accepts loopback or own-address sources from the wire), R5-06 (`getaddrinfo`'s UDP wait restarts on unrelated datagrams).
+
+Part K changes the kernel, libc and drivers, so the full matrix runs after its last task.
 
 ## Run log
 
