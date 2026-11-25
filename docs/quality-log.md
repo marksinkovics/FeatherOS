@@ -115,4 +115,4 @@ One row per committed step (used by the global `autopilot` skill since 2026-11-2
 | 0c7b0b7 | M16 D3 DISK_BUS, 4K root image, ROOT_DISK_TEST cases T36-T42, T29 | M16.md (opus) | sonnet (high) | 0 | - | | 1.5M wtok: agents sonnet 1.3M; coord opus 196.5k |
 | d6994c3 | M16 E1 docs, roadmap summary, Complete-when check | - | sonnet | 0 | - | | 408.9k wtok: agents sonnet 341.1k; coord opus 67.8k |
 | b25283e | Review F1 FAT16 rename keeps source and target (R1-06, R1-07) | review-F1.md (opus) | sonnet (high) | 0 | 3/3 (I1 by T2, I3 by T5, I4 by T4) | | 3.4M wtok: agents opus 293.4k, sonnet 2.8M; coord opus 286.6k |
-| (F2) | Review F2 FAT16 end marker and linear scans (R1-08, R1-09) | - | sonnet (high) | 0 | - | | 1.1M wtok: agents sonnet 611.9k; coord opus 484.7k |
+| 922d2eb | Review F2 FAT16 end marker and linear scans (R1-08, R1-09) | - | sonnet (high) | 0 | - | | 1.1M wtok: agents sonnet 611.9k; coord opus 484.7k |
