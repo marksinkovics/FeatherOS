@@ -15,6 +15,7 @@
 #include "kernel/framebuffer/graphics_mode.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
+#include "kernel/memory/user_copy.h"
 #include "kernel/network/settings.h"
 #include "kernel/panic.h"
 #include "kernel/poll.h"
@@ -849,12 +850,14 @@ void SetProcessName(ProcessRecord* process, const char* program)
 }
 
 // User pointers are resolved through the process page tables and accessed through the direct
-// map, so invalid or kernel addresses fail cleanly instead of faulting in the kernel.
-volatile uint8_t* UserByte(const ProcessRecord& process, uint64_t address, bool write)
+// map one page at a time, with the memory lock held, so a concurrent unmap cannot free a frame
+// that a copy still uses and invalid or kernel addresses fail cleanly.
+volatile uint8_t* ResolveUserPage(void* context, uint64_t page_address, bool write)
 {
+    const auto* program = static_cast<const UserProgram*>(context);
     uint64_t physical_address;
     bool writable;
-    if (!Memory::TranslateUserPage(process.program.address_space, address, &physical_address,
+    if (!Memory::TranslateUserPage(program->address_space, page_address, &physical_address,
                                    &writable) ||
         (write && !writable))
     {
@@ -863,137 +866,37 @@ volatile uint8_t* UserByte(const ProcessRecord& process, uint64_t address, bool 
     return PhysicalBytes(physical_address);
 }
 
+Memory::UserCopy::Target CopyTarget(const ProcessRecord& process)
+{
+    return {&process.program.memory_lock, const_cast<UserProgram*>(&process.program),
+            ResolveUserPage};
+}
+
 bool UserRangeWritable(const ProcessRecord& process, uint64_t address, uint64_t size)
 {
-    if (size != 0 && address > UINT64_MAX - (size - 1))
-    {
-        return false;
-    }
-    for (uint64_t index = 0; index < size; ++index)
-    {
-        if (UserByte(process, address + index, true) == nullptr)
-        {
-            return false;
-        }
-    }
-    return true;
+    return Memory::UserCopy::RangeMapped(CopyTarget(process), address, size, true);
 }
 
 bool UserRangeReadable(const ProcessRecord& process, uint64_t address, uint64_t size)
 {
-    if (size != 0 && address > UINT64_MAX - (size - 1))
-    {
-        return false;
-    }
-    for (uint64_t index = 0; index < size; ++index)
-    {
-        if (UserByte(process, address + index, false) == nullptr)
-        {
-            return false;
-        }
-    }
-    return true;
+    return Memory::UserCopy::RangeMapped(CopyTarget(process), address, size, false);
 }
 
 bool CopyFromUser(const ProcessRecord& process, uint64_t address, void* destination, size_t size)
 {
-    if (!UserRangeReadable(process, address, size))
-    {
-        return false;
-    }
-    auto* bytes = static_cast<uint8_t*>(destination);
-    for (size_t index = 0; index < size; ++index)
-    {
-        bytes[index] = *UserByte(process, address + index, false);
-    }
-    return true;
+    return Memory::UserCopy::CopyIn(CopyTarget(process), address, destination, size);
 }
 
 bool CopyToUser(const ProcessRecord& process, uint64_t address, const void* source, size_t size)
 {
-    if (!UserRangeWritable(process, address, size))
-    {
-        return false;
-    }
-    const auto* bytes = static_cast<const uint8_t*>(source);
-    for (size_t index = 0; index < size; ++index)
-    {
-        *UserByte(process, address + index, true) = bytes[index];
-    }
-    return true;
-}
-
-// Every page of the range is mapped for the user to read; one lookup per page.
-bool UserPagesReadable(const ProcessRecord& process, uint64_t address, uint64_t size)
-{
-    if (size == 0)
-    {
-        return true;
-    }
-    if (address > UINT64_MAX - (size - 1))
-    {
-        return false;
-    }
-    const uint64_t last_page = (address + (size - 1)) & ~(Memory::PageSize - 1);
-    uint64_t page = address & ~(Memory::PageSize - 1);
-    for (;;)
-    {
-        if (UserByte(process, page > address ? page : address, false) == nullptr)
-        {
-            return false;
-        }
-        if (page == last_page)
-        {
-            return true;
-        }
-        page += Memory::PageSize;
-    }
-}
-
-// Like CopyFromUser, but translates once per page, for large copies.
-bool CopyFromUserPaged(const ProcessRecord& process, uint64_t address, void* destination,
-                       size_t size)
-{
-    auto* bytes = static_cast<uint8_t*>(destination);
-    while (size > 0)
-    {
-        const uint64_t room = Memory::PageSize - (address & (Memory::PageSize - 1));
-        const size_t chunk = size < room ? size : static_cast<size_t>(room);
-        volatile uint8_t* source = UserByte(process, address, false);
-        if (source == nullptr)
-        {
-            return false;
-        }
-        memcpy(bytes, const_cast<const uint8_t*>(source), chunk);
-        bytes += chunk;
-        address += chunk;
-        size -= chunk;
-    }
-    return true;
+    return Memory::UserCopy::CopyOut(CopyTarget(process), address, source, size);
 }
 
 // 0, SyscallErrorBadAddress, or SyscallErrorInvalidArgument when no terminator fits.
 uint64_t CopyStringFromUser(const ProcessRecord& process, uint64_t address, char* buffer,
                             size_t capacity)
 {
-    for (size_t index = 0; index < capacity; ++index)
-    {
-        if (address > UINT64_MAX - index)
-        {
-            return User::SyscallErrorBadAddress;
-        }
-        volatile uint8_t* byte = UserByte(process, address + index, false);
-        if (byte == nullptr)
-        {
-            return User::SyscallErrorBadAddress;
-        }
-        buffer[index] = static_cast<char>(*byte);
-        if (buffer[index] == '\0')
-        {
-            return 0;
-        }
-    }
-    return User::SyscallErrorInvalidArgument;
+    return Memory::UserCopy::CopyStringIn(CopyTarget(process), address, buffer, capacity);
 }
 
 // A path argument as the program passed it and once joined to the working directory; syscalls
@@ -1030,26 +933,19 @@ uint64_t CopyPathFromUser(const ProcessRecord& process, uint64_t address,
 uint64_t CopyEnvironmentFromUser(const ProcessRecord& process, uint64_t address,
                                  char (&block)[User::MaximumEnvironmentSize])
 {
+    const size_t copied =
+        Memory::UserCopy::CopyInPrefix(CopyTarget(process), address, block, sizeof(block));
     bool after_terminator = true;
-    for (size_t index = 0; index < sizeof(block); ++index)
+    for (size_t index = 0; index < copied; ++index)
     {
-        if (address > UINT64_MAX - index)
-        {
-            return User::SyscallErrorBadAddress;
-        }
-        volatile uint8_t* byte = UserByte(process, address + index, false);
-        if (byte == nullptr)
-        {
-            return User::SyscallErrorBadAddress;
-        }
-        block[index] = static_cast<char>(*byte);
         if (block[index] == '\0' && after_terminator)
         {
             return 0;
         }
         after_terminator = block[index] == '\0';
     }
-    return User::SyscallErrorInvalidArgument;
+    return copied < sizeof(block) ? User::SyscallErrorBadAddress
+                                  : User::SyscallErrorInvalidArgument;
 }
 
 bool WriteCharacterSyscall(void*, char character)
@@ -3291,7 +3187,7 @@ uint64_t PresentFramebuffer(const ProcessRecord& process, const void* owner, uin
     for (uint32_t row = 0; row < clipped.height; ++row)
     {
         const uint64_t address = row_address(row);
-        if (address == 0 || !UserPagesReadable(process, address, row_bytes))
+        if (address == 0 || !UserRangeReadable(process, address, row_bytes))
         {
             return User::SyscallErrorBadAddress;
         }
@@ -3304,7 +3200,7 @@ uint64_t PresentFramebuffer(const ProcessRecord& process, const void* owner, uin
     uint64_t result = 0;
     for (uint32_t row = 0; row < clipped.height && result == 0; ++row)
     {
-        if (!CopyFromUserPaged(process, row_address(row), bounce, row_bytes))
+        if (!CopyFromUser(process, row_address(row), bounce, row_bytes))
         {
             result = User::SyscallErrorBadAddress;
         }

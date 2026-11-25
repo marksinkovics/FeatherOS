@@ -2,12 +2,14 @@
 #include "process.h"
 #include "syscall.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 // These checks call the kernel directly, since they test the exact errors it returns.
@@ -32,6 +34,13 @@ void Check(bool passed, const char* name)
         exit(1);
     }
     ++passed_checks;
+}
+
+bool ChildExitedCleanly(const char* command_line)
+{
+    const uint64_t child = Spawn(command_line);
+    uint64_t status = 1;
+    return !IsSyscallError(child) && !IsSyscallError(Wait(child, &status)) && status == 0;
 }
 
 bool ChildTerminated(const char* command_line)
@@ -179,6 +188,149 @@ void* ReadSharedPage(void*)
     }
 }
 
+// Syscall copies racing another thread that unmaps the pages they touch: each copy either
+// completes or fails with EFAULT, and the kernel never faults. The reader never touches the
+// pages itself; only the kernel does.
+constexpr size_t CopySize = 512;
+uintptr_t copy_target = 0;
+int copy_stop = 0;
+unsigned long copy_progress = 0;
+unsigned long copy_bad = 0;
+int copy_zero = -1;
+int copy_null = -1;
+
+bool CopyOutcomeAllowed(ssize_t result)
+{
+    return result == static_cast<ssize_t>(CopySize) || (result == -1 && errno == EFAULT);
+}
+
+void* HeapCopyReader(void*)
+{
+    while (__atomic_load_n(&copy_stop, __ATOMIC_ACQUIRE) == 0)
+    {
+        const uintptr_t base = __atomic_load_n(&copy_target, __ATOMIC_ACQUIRE);
+        if (base == 0)
+        {
+            continue;
+        }
+        // The second pair starts in the page below, which stays mapped, and ends in the one that
+        // comes and goes.
+        const uintptr_t addresses[] = {base + 1024, base - 256};
+        for (const uintptr_t address : addresses)
+        {
+            auto* buffer = reinterpret_cast<void*>(address);
+            if (!CopyOutcomeAllowed(read(copy_zero, buffer, CopySize)) ||
+                !CopyOutcomeAllowed(write(copy_null, buffer, CopySize)))
+            {
+                __atomic_fetch_add(&copy_bad, 1, __ATOMIC_RELAXED);
+            }
+        }
+        __atomic_fetch_add(&copy_progress, 1, __ATOMIC_RELAXED);
+    }
+    return nullptr;
+}
+
+void* StackCopyReader(void*)
+{
+    while (__atomic_load_n(&copy_stop, __ATOMIC_ACQUIRE) == 0)
+    {
+        auto* buffer =
+            reinterpret_cast<const void*>(__atomic_load_n(&copy_target, __ATOMIC_ACQUIRE));
+        if (!CopyOutcomeAllowed(write(copy_null, buffer, CopySize)))
+        {
+            __atomic_fetch_add(&copy_bad, 1, __ATOMIC_RELAXED);
+        }
+        __atomic_fetch_add(&copy_progress, 1, __ATOMIC_RELAXED);
+    }
+    return nullptr;
+}
+
+uint64_t MonotonicMilliseconds()
+{
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<uint64_t>(now.tv_sec) * 1000 + static_cast<uint64_t>(now.tv_nsec) / 1000000;
+}
+
+bool StartCopyReader(void* (*reader)(void*), pthread_t* thread)
+{
+    copy_zero = open("/dev/zero", O_RDONLY);
+    copy_null = open("/dev/null", O_WRONLY);
+    return copy_zero >= 0 && copy_null >= 0 &&
+           pthread_create(thread, nullptr, reader, nullptr) == 0;
+}
+
+bool FinishCopyReader(pthread_t thread)
+{
+    __atomic_store_n(&copy_stop, 1, __ATOMIC_RELEASE);
+    pthread_join(thread, nullptr);
+    return __atomic_load_n(&copy_bad, __ATOMIC_RELAXED) == 0 &&
+           __atomic_load_n(&copy_progress, __ATOMIC_RELAXED) > 0;
+}
+
+bool CopiesRacingHeapShrink()
+{
+    pthread_t reader;
+    // Thread creation, and anything else that may allocate, comes before the break is moved.
+    if (!StartCopyReader(HeapCopyReader, &reader) || sbrk(4096) == reinterpret_cast<void*>(-1))
+    {
+        return false;
+    }
+    const uintptr_t top = reinterpret_cast<uintptr_t>(sbrk(0));
+    const uintptr_t padding = (0 - top) & 4095;
+    if (padding != 0 && sbrk(static_cast<intptr_t>(padding)) == reinterpret_cast<void*>(-1))
+    {
+        return false;
+    }
+    __atomic_store_n(&copy_target, reinterpret_cast<uintptr_t>(sbrk(0)), __ATOMIC_RELEASE);
+    bool moved = true;
+    const uint64_t start = MonotonicMilliseconds();
+    for (int round = 0; round < 2000 && moved; ++round)
+    {
+        moved =
+            sbrk(4096) != reinterpret_cast<void*>(-1) && sbrk(-4096) != reinterpret_cast<void*>(-1);
+        if (round % 16 == 0 && MonotonicMilliseconds() - start > 3000)
+        {
+            break;
+        }
+    }
+    return FinishCopyReader(reader) && moved;
+}
+
+void* PublishStackBuffer(void*)
+{
+    volatile char local[CopySize];
+    for (volatile char& byte : local)
+    {
+        byte = 1;
+    }
+    __atomic_store_n(&copy_target, reinterpret_cast<uintptr_t>(&local[0]), __ATOMIC_RELEASE);
+    // Gives the reader time to be in the middle of a copy when the thread ends.
+    const unsigned long seen = __atomic_load_n(&copy_progress, __ATOMIC_RELAXED);
+    for (int spin = 0; spin < 200000 && __atomic_load_n(&copy_progress, __ATOMIC_RELAXED) == seen;
+         ++spin)
+    {
+    }
+    return nullptr;
+}
+
+bool CopiesRacingStackRelease()
+{
+    pthread_t reader;
+    if (!StartCopyReader(StackCopyReader, &reader))
+    {
+        return false;
+    }
+    bool joined = true;
+    for (int round = 0; round < 200 && joined; ++round)
+    {
+        pthread_t thread;
+        joined = pthread_create(&thread, nullptr, PublishStackBuffer, nullptr) == 0 &&
+                 pthread_join(thread, nullptr) == 0;
+    }
+    return FinishCopyReader(reader) && joined;
+}
+
 // write-code writes to this function's own code. GCC 14 at -O2 inlines it into main and drops the
 // copy whose address that takes, so the link fails unless it stays out of line.
 [[noreturn, gnu::noinline]] void RunViolation(const char* name)
@@ -214,6 +366,14 @@ void* ReadSharedPage(void*)
         sbrk(-2 * 4096);
         // Without a shootdown the reader would go on through its stale translation.
         Sleep(500);
+    }
+    else if (strcmp(name, "copy-race-heap") == 0)
+    {
+        exit(CopiesRacingHeapShrink() ? 0 : 1);
+    }
+    else if (strcmp(name, "copy-race-stack") == 0)
+    {
+        exit(CopiesRacingStackRelease() ? 0 : 1);
     }
     else if (strcmp(name, "write-code") == 0)
     {
@@ -270,7 +430,7 @@ void CheckZeroLengthRanges()
 
 constexpr char Help[] =
     "usage: hardening\n"
-    "Runs 67 checks that the kernel rejects bad syscalls, pointers, program files,\n"
+    "Runs 71 checks that the kernel rejects bad syscalls, pointers, program files,\n"
     "and memory violations from user programs.";
 
 int main(int argc, char** argv)
@@ -313,6 +473,10 @@ int main(int argc, char** argv)
     Check(ChildTerminated("hardening freed-heap"), "using a page the heap returned");
     Check(ChildTerminated("hardening freed-heap-threads"),
           "a thread on another CPU using a page the heap returned");
+    Check(ChildExitedCleanly("hardening copy-race-heap"),
+          "system calls copying through pages another thread's sbrk returns");
+    Check(ChildExitedCleanly("hardening copy-race-stack"),
+          "system calls copying through the stack of a thread being joined");
     Check(ChildTerminated("hardening write-code"), "writing code");
     Check(ChildTerminated("hardening kernel-read"), "reading kernel memory");
     Check(ChildTerminated("hardening bad-syscall"), "invalid syscall number");

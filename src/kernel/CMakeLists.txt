@@ -62,6 +62,7 @@ set(SRC
     ${SRCROOT}/memory/device_memory.cpp
     ${SRCROOT}/memory/dma.cpp
     ${SRCROOT}/memory/page_allocator.cpp
+    ${SRCROOT}/memory/user_copy.cpp
     ${SRCROOT}/memory/virtual_memory.cpp
     ${SRCROOT}/panic.cpp
     ${SRCROOT}/pci/msi.cpp

@@ -123,6 +123,7 @@ add_executable(featheros_unit_tests
     kernel/klogger/log_ring_tests.cpp
     kernel/memory/dma_tests.cpp
     kernel/memory/memory_map_tests.cpp
+    kernel/memory/user_copy_tests.cpp
     kernel/process/calculator_tests.cpp
     kernel/process/command_line_tests.cpp
     kernel/process/dhcp_lease_tests.cpp
@@ -313,6 +314,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/memory/dma.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/memory_map.cpp"
     "${FEATHEROS_ROOT}/src/kernel/memory/page_allocator.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/memory/user_copy.cpp"
     "${FEATHEROS_ROOT}/src/kernel/pci/msi.cpp"
     "${FEATHEROS_ROOT}/src/kernel/pci/pci.cpp"
     "${FEATHEROS_ROOT}/src/kernel/usb/descriptors.cpp"

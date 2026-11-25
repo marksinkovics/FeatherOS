@@ -486,9 +486,14 @@ bool UnmapUserPage(AddressSpace& address_space, uint64_t virtual_address,
     return true;
 }
 
-// Nothing to send: UnmapUserPage's tlbi vaae1is is broadcast to every CPU in the inner-shareable
-// domain, and its dsb ish waits until they have all dropped the translation.
-void ShootDownUserMappings(const AddressSpace&) {}
+// No IPI: UnmapUserPage's tlbi vaae1is is broadcast to every CPU in the inner-shareable domain.
+// Completing it, which this dsb ish does again in case the invalidates are ever batched, means
+// every CPU has dropped the translation and finished the accesses that used it. Kernel
+// direct-map accesses to the frame are covered by the memory lock (UserCopy), not by the TLB.
+void ShootDownUserMappings(const AddressSpace&)
+{
+    asm volatile("dsb ish" ::: "memory");
+}
 
 bool ActivateAddressSpace(const AddressSpace& address_space)
 {

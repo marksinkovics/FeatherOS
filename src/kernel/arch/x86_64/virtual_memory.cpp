@@ -461,8 +461,7 @@ bool UnmapUserPage(AddressSpace& address_space, uint64_t virtual_address,
         return false;
     }
     level[pt_index] = 0;
-    // Only this CPU's TLB is flushed. That is enough while a process runs on one CPU at a time,
-    // because switching to an address space reloads CR3, which drops its non-global entries.
+    // Only this CPU's TLB is flushed here; ShootDownUserMappings reaches the others.
     InvalidatePage(virtual_address);
     *physical_address = entry & PageAddressMask;
     return true;

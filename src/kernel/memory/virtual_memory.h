@@ -39,6 +39,9 @@ bool TranslateUserPage(const AddressSpace& address_space, uint64_t virtual_addre
                        uint64_t* physical_address, bool* writable);
 // Removes a present user page and returns its frame, which the caller frees only after
 // ShootDownUserMappings: until then, another CPU running the address space may still reach it.
+// The kernel reads and writes user pages only through Memory::UserCopy, which resolves and uses
+// each page under the process's memory lock; so once the unmapper has cleared the entry under that
+// lock, dropped it and shot down, no kernel pointer to the frame is left and it may be freed.
 bool UnmapUserPage(AddressSpace& address_space, uint64_t virtual_address,
                    uint64_t* physical_address);
 // Returns once no CPU can still use a translation for a page unmapped from address_space. Call
