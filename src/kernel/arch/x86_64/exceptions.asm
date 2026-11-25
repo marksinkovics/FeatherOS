@@ -45,6 +45,9 @@ x86_64_load_gdt:
     ret
 
 x86_64_enter_user:
+    ; Interrupts stay off until the iretq: the rsp0 store must reach this CPU's TSS, and an
+    ; interrupt after swapgs would enter with the user GS base.
+    cli
     push rbx
     push rbp
     push r12
@@ -65,7 +68,7 @@ x86_64_enter_user:
     mov rdi, [rsp + 8]
     push qword 0x1b
     push rcx
-    pushfq
+    push qword 0x202
     push qword 0x23
     push rax
     swapgs
@@ -181,6 +184,9 @@ x86_64_exception_common:
     mov r12, rsp
     and rsp, -16
     call FeatherOS_x86_64_ExceptionDispatch
+    ; A handler may return with interrupts on; GetUserReturnStack writes rsp0, which must happen
+    ; on this CPU and before the iretq.
+    cli
     call FeatherOS_x86_64_GetUserReturnStack
     test rax, rax
     jnz x86_64_user_test_return

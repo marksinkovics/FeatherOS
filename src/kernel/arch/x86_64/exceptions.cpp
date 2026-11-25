@@ -12,6 +12,7 @@
 #include "kernel/process.h"
 #include "kernel/scheduler.h"
 #include "kernel/cpu.h"
+#include "kernel/string/memory_functions.h"
 #include "kernel/syscall.h"
 #include "kernel/user_context.h"
 
@@ -319,6 +320,9 @@ extern "C" uint64_t FeatherOS_x86_64_GetUserReturnStack()
         static_cast<FeatherOS::UserExecutionContext*>(FeatherOS::Scheduler::CurrentUserContext());
     if (user_context == nullptr || !user_context->active || !user_context->exit_requested)
     {
+        // The assembly calls this with interrupts off just before iretq, so this is the one write
+        // of rsp0 on that path; a blocking handler may have left it at another task's stack.
+        RestoreCurrentUserKernelStack();
         return 0;
     }
     CurrentTss().rsp0 = user_context->previous_kernel_stack_pointer;
@@ -329,7 +333,6 @@ extern "C" uint64_t FeatherOS_x86_64_GetUserReturnStack()
 namespace
 {
 
-constexpr uint64_t UserAddressLimit = 0x0000800000000000;
 // The flags a program may change: CF, PF, AF, ZF, SF, DF and OF. IF and IOPL stay as the kernel
 // set them.
 constexpr uint64_t UserFlags = 0x0CD5;
@@ -357,6 +360,13 @@ struct SignalFrame
     FeatherOS::Arch::FloatingPoint::State floating_point;
 };
 
+// hardening.cpp doctors this layout.
+static_assert(offsetof(SignalFrame, instruction_pointer) == 144);
+static_assert(offsetof(SignalFrame, flags) == 152);
+static_assert(offsetof(SignalFrame, stack_pointer) == 160);
+static_assert(offsetof(SignalFrame, floating_point) == 176);
+static_assert(sizeof(SignalFrame) == 688);
+
 constexpr uint64_t ExceptionContext::* SavedRegisters[] = {
     &ExceptionContext::r15, &ExceptionContext::r14, &ExceptionContext::r13, &ExceptionContext::r12,
     &ExceptionContext::r11, &ExceptionContext::r10, &ExceptionContext::r9,  &ExceptionContext::r8,
@@ -375,7 +385,13 @@ void TerminateForSignal(FeatherOS::UserExecutionContext* user_context, int signa
 bool EnterHandler(ExceptionContext* context, FeatherOS::UserExecutionContext* user_context,
                   const FeatherOS::Signals::Decision& decision)
 {
+    if (decision.action.handler >= FeatherOS::Process::UserAddressLimit)
+    {
+        return false;
+    }
+    // The frame has padding and FXSAVE bytes nothing writes; all of it goes to the user stack.
     SignalFrame frame;
+    memset(&frame, 0, sizeof(frame));
     frame.return_address = decision.action.restorer;
     frame.signal = static_cast<uint64_t>(decision.signal);
     frame.saved_mask = decision.saved_mask;
@@ -424,10 +440,7 @@ void DeliverSignals(ExceptionContext* context, const uint64_t* interrupted_sysca
     FeatherOS::Signals::Decision decision;
     for (;;)
     {
-        if (FeatherOS::Process::HoldWhileStopped(user_context))
-        {
-            RestoreCurrentUserKernelStack();
-        }
+        FeatherOS::Process::HoldWhileStopped(user_context);
         decision = FeatherOS::Process::TakeSignal(user_context);
         if (decision.kind != FeatherOS::Signals::DecisionKind::Stop)
         {
@@ -462,7 +475,8 @@ bool ReturnFromSignal(ExceptionContext* context, FeatherOS::UserExecutionContext
     // The handler's ret popped the return address.
     const uint64_t address = context->user_stack_pointer - 8;
     if (!FeatherOS::Process::CopyFromCurrentUser(user_context, address, &frame, sizeof(frame)) ||
-        frame.instruction_pointer >= UserAddressLimit || frame.stack_pointer >= UserAddressLimit)
+        frame.instruction_pointer >= FeatherOS::Process::UserAddressLimit ||
+        frame.stack_pointer >= FeatherOS::Process::UserAddressLimit)
     {
         return false;
     }
@@ -494,7 +508,6 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
     if (context->vector >= 32 && context->vector < 48)
     {
         FeatherOS_x86_64_HandleHardwareInterrupt(context->vector);
-        RestoreCurrentUserKernelStack();
         DeliverSignals(context);
         return;
     }
@@ -502,7 +515,6 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
         context->vector < LocalApic::FirstMsiVector + LocalApic::MsiVectorCount)
     {
         Msi::HandleInterrupt(context->vector);
-        RestoreCurrentUserKernelStack();
         DeliverSignals(context);
         return;
     }
@@ -510,7 +522,6 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
         context->vector == LocalApic::SpuriousVector)
     {
         LocalApic::HandleInterrupt(context->vector);
-        RestoreCurrentUserKernelStack();
         DeliverSignals(context);
         return;
     }
@@ -528,8 +539,6 @@ extern "C" void FeatherOS_x86_64_ExceptionDispatch(ExceptionContext* context)
         const FeatherOS::Syscall::Result result =
             FeatherOS::Syscall::Dispatch({number, {context->rdi, context->rsi, context->rdx}},
                                          handlers, user_context->syscall_context);
-        // A blocking syscall may have run other tasks, which repoint the TSS at their stacks.
-        RestoreCurrentUserKernelStack();
         if (result.action == FeatherOS::Syscall::Action::Return)
         {
             context->rax = result.value;

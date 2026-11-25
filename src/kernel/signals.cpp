@@ -128,7 +128,9 @@ uint64_t SetAction(State* state, int signal, const User::SignalAction* new_actio
     constexpr uint64_t KnownFlags = User::SignalResetHandler | User::SignalNoDefer;
     if (new_action != nullptr &&
         ((Unblockable & Bit(signal)) != 0 || (new_action->flags & ~KnownFlags) != 0 ||
-         (new_action->handler > User::SignalIgnore && new_action->restorer == 0)))
+         (new_action->handler > User::SignalIgnore &&
+          (new_action->restorer == 0 || new_action->handler >= HandlerAddressLimit ||
+           new_action->restorer >= HandlerAddressLimit))))
     {
         return User::SyscallErrorInvalidArgument;
     }

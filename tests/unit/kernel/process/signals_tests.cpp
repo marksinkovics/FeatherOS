@@ -214,3 +214,41 @@ TEST_CASE("a stop signal drops a pending SIGCONT, and SIGCONT drops pending stop
     FeatherOS::Signals::Send(&ignoring, FeatherOS::User::SignalContinue);
     REQUIRE(ignoring.pending == 0);
 }
+
+TEST_CASE("sigaction refuses a handler or restorer outside user space")
+{
+    using FeatherOS::Signals::HandlerAddressLimit;
+    constexpr int Signal = FeatherOS::User::SignalUser1;
+    for (const uint64_t handler :
+         {HandlerAddressLimit, uint64_t{0xFFFF800000000000}, UINT64_MAX})
+    {
+        FeatherOS::Signals::State state = Fresh();
+        const SignalAction action = {handler, 0, 0, Restorer};
+        REQUIRE(FeatherOS::Signals::SetAction(&state, Signal, &action, nullptr) ==
+                FeatherOS::User::SyscallErrorInvalidArgument);
+        SignalAction now = {};
+        REQUIRE(FeatherOS::Signals::SetAction(&state, Signal, nullptr, &now) == 0);
+        REQUIRE(now.handler == FeatherOS::User::SignalDefault);
+    }
+    FeatherOS::Signals::State state = Fresh();
+    const SignalAction kernel_restorer = {Handler, 0, 0, 0xFFFF800000000000};
+    REQUIRE(FeatherOS::Signals::SetAction(&state, Signal, &kernel_restorer, nullptr) ==
+            FeatherOS::User::SyscallErrorInvalidArgument);
+    SignalAction now = {};
+    REQUIRE(FeatherOS::Signals::SetAction(&state, Signal, nullptr, &now) == 0);
+    REQUIRE(now.handler == FeatherOS::User::SignalDefault);
+}
+
+TEST_CASE("sigaction accepts the last handler below the limit and any restorer for SIG_IGN")
+{
+    using FeatherOS::Signals::HandlerAddressLimit;
+    constexpr int Signal = FeatherOS::User::SignalUser1;
+    FeatherOS::Signals::State state = Fresh();
+    const SignalAction last = {HandlerAddressLimit - 4, 0, 0, Restorer};
+    REQUIRE(FeatherOS::Signals::SetAction(&state, Signal, &last, nullptr) == 0);
+    const SignalAction ignore = {FeatherOS::User::SignalIgnore, 0, 0, 0};
+    REQUIRE(FeatherOS::Signals::SetAction(&state, Signal, &ignore, nullptr) == 0);
+    const SignalAction ignore_with_restorer = {FeatherOS::User::SignalIgnore, 0, 0,
+                                               0xFFFF800000000000};
+    REQUIRE(FeatherOS::Signals::SetAction(&state, Signal, &ignore_with_restorer, nullptr) == 0);
+}

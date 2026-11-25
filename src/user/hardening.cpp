@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,153 @@
 
 // These checks call the kernel directly, since they test the exact errors it returns.
 using namespace FeatherOS::User;
+
+// What the signal violations do to a handler's frame, and the code a doctored frame resumes at.
+// The offsets are asserted next to each SignalFrame in the kernel's exceptions.cpp.
+namespace
+{
+
+enum class FrameDoctor : int
+{
+    None,
+    KernelProgramCounter,
+    PrivilegedFlags,
+    ZeroCheck,
+};
+
+FrameDoctor frame_doctor = FrameDoctor::None;
+alignas(16) uint8_t landing_stack[4096];
+
+#if defined(__x86_64__)
+constexpr size_t ProgramCounterOffset = 144;
+constexpr size_t FlagsOffset = 152;
+constexpr size_t StackPointerOffset = 160;
+// Bytes of the frame the kernel never fills from registers: padding before the FXSAVE area, and
+// the FXSAVE bytes software may use.
+constexpr size_t GapOffsets[] = {168, 640};
+constexpr size_t GapSizes[] = {8, 48};
+int doctored_frames = 0;
+#elif defined(__aarch64__)
+constexpr size_t StackPointerOffset = 264;
+constexpr size_t ProgramCounterOffset = 272;
+constexpr size_t FlagsOffset = 280;
+#endif
+
+void StoreFrame(uint8_t* frame, size_t offset, uint64_t value)
+{
+    memcpy(frame + offset, &value, sizeof(value));
+}
+
+} // namespace
+
+extern "C"
+{
+    void hardening_doctor_restorer();
+    void hardening_landing();
+    [[gnu::used]] void hardening_doctor_frame(uint8_t* frame);
+    [[gnu::used, noreturn]] void hardening_check_landing(uint64_t state);
+}
+
+#if defined(__x86_64__)
+// The handler's ret popped the frame's return address, so the frame starts 8 bytes below rsp.
+asm(".text\n"
+    ".global hardening_doctor_restorer\n"
+    ".type hardening_doctor_restorer, @function\n"
+    "hardening_doctor_restorer:\n\t"
+    "lea -8(%rsp), %rdi\n\t"
+    "call hardening_doctor_frame\n\t"
+    "mov $34, %eax\n\t"
+    "int $0x80\n\t"
+    "ud2\n"
+    ".size hardening_doctor_restorer, . - hardening_doctor_restorer\n"
+    ".global hardening_landing\n"
+    ".type hardening_landing, @function\n"
+    "hardening_landing:\n\t"
+    "pushfq\n\t"
+    "pop %rdi\n\t"
+    "and $-16, %rsp\n\t"
+    "call hardening_check_landing\n\t"
+    "ud2\n"
+    ".size hardening_landing, . - hardening_landing\n");
+#elif defined(__aarch64__)
+asm(".text\n"
+    ".global hardening_doctor_restorer\n"
+    ".type hardening_doctor_restorer, %function\n"
+    "hardening_doctor_restorer:\n\t"
+    "mov x0, sp\n\t"
+    "bl hardening_doctor_frame\n\t"
+    "mov x8, #34\n\t"
+    "svc #0\n\t"
+    "brk #0\n"
+    ".size hardening_doctor_restorer, . - hardening_doctor_restorer\n"
+    ".global hardening_landing\n"
+    ".type hardening_landing, %function\n"
+    "hardening_landing:\n\t"
+    "mrs x0, nzcv\n\t"
+    "bl hardening_check_landing\n\t"
+    "brk #0\n"
+    ".size hardening_landing, . - hardening_landing\n");
+#endif
+
+extern "C" void hardening_doctor_frame(uint8_t* frame)
+{
+    switch (frame_doctor)
+    {
+    case FrameDoctor::KernelProgramCounter:
+        StoreFrame(frame, ProgramCounterOffset, 0x0000800000000000);
+        break;
+    case FrameDoctor::PrivilegedFlags:
+        StoreFrame(frame, ProgramCounterOffset, reinterpret_cast<uint64_t>(&hardening_landing));
+        StoreFrame(frame, StackPointerOffset,
+                   reinterpret_cast<uint64_t>(landing_stack + sizeof(landing_stack)));
+#if defined(__x86_64__)
+        // IOPL 3, NT, TF and AC set, IF clear, CF set.
+        StoreFrame(frame, FlagsOffset, 0x3000 | (1U << 14) | (1U << 8) | (1U << 18) | 1);
+#elif defined(__aarch64__)
+        // NZCV, DAIF and M = EL1h.
+        StoreFrame(frame, FlagsOffset, 0xF00003C5);
+#endif
+        break;
+    case FrameDoctor::ZeroCheck:
+#if defined(__x86_64__)
+        if (doctored_frames++ == 0)
+        {
+            for (size_t gap = 0; gap < 2; ++gap)
+            {
+                memset(frame + GapOffsets[gap], 0xA5, GapSizes[gap]);
+            }
+            break;
+        }
+        for (size_t gap = 0; gap < 2; ++gap)
+        {
+            for (size_t index = 0; index < GapSizes[gap]; ++index)
+            {
+                if (frame[GapOffsets[gap] + index] != 0)
+                {
+                    exit(1);
+                }
+            }
+        }
+        exit(0);
+#endif
+        break;
+    case FrameDoctor::None:
+        break;
+    }
+}
+
+// Reached through a sigreturn the kernel had to sanitise: IF, IOPL, NT, TF and AC must be as
+// the kernel set them (x86-64: IF on, the rest off, CF as the frame had it), or NZCV as the frame
+// had it.
+extern "C" void hardening_check_landing(uint64_t state)
+{
+#if defined(__x86_64__)
+    constexpr uint64_t Forbidden = 0x3000 | (1U << 14) | (1U << 8) | (1U << 18);
+    exit((state & Forbidden) == 0 && (state & (1U << 9)) != 0 && (state & 1) != 0 ? 0 : 1);
+#elif defined(__aarch64__)
+    exit((state & 0xF0000000) == 0xF0000000 ? 0 : 1);
+#endif
+}
 
 namespace
 {
@@ -41,6 +189,13 @@ bool ChildExitedCleanly(const char* command_line)
     const uint64_t child = Spawn(command_line);
     uint64_t status = 1;
     return !IsSyscallError(child) && !IsSyscallError(Wait(child, &status)) && status == 0;
+}
+
+bool ChildEndedWith(const char* command_line, uint64_t expected)
+{
+    const uint64_t child = Spawn(command_line);
+    uint64_t status = 0;
+    return !IsSyscallError(child) && !IsSyscallError(Wait(child, &status)) && status == expected;
 }
 
 bool ChildTerminated(const char* command_line)
@@ -331,6 +486,75 @@ bool CopiesRacingStackRelease()
     return FinishCopyReader(reader) && joined;
 }
 
+void DoctoredHandler(int) {}
+
+// Handler for the doctored-frame modes; the restorer is the one that edits the frame.
+void RaiseWithDoctoredRestorer(FrameDoctor doctor, uint64_t mask = 0)
+{
+    frame_doctor = doctor;
+    const SignalAction action = {reinterpret_cast<uint64_t>(&DoctoredHandler), mask, 0,
+                                 reinterpret_cast<uint64_t>(&hardening_doctor_restorer)};
+    if (Syscall(SyscallNumber::SignalAction, SignalUser1, reinterpret_cast<uint64_t>(&action)) != 0)
+    {
+        exit(2);
+    }
+    kill(getpid(), SIGUSR1);
+}
+
+#if defined(__x86_64__)
+// Raises a second signal that stays blocked until the first handler's frame is restored.
+void RaisingHandler(int)
+{
+    kill(getpid(), SIGUSR2);
+}
+#endif
+
+void RunSignalViolation(const char* name)
+{
+    if (strcmp(name, "signal-unmapped-handler") == 0)
+    {
+        struct sigaction action = {};
+        action.sa_handler = reinterpret_cast<sighandler_t>(0x00007FFFFFFFF000);
+        sigaction(SIGUSR1, &action, nullptr);
+        kill(getpid(), SIGUSR1);
+    }
+    else if (strcmp(name, "signal-return-kernel-pc") == 0)
+    {
+        RaiseWithDoctoredRestorer(FrameDoctor::KernelProgramCounter);
+    }
+    else if (strcmp(name, "signal-return-flags") == 0)
+    {
+        RaiseWithDoctoredRestorer(FrameDoctor::PrivilegedFlags);
+    }
+#if defined(__x86_64__)
+    else if (strcmp(name, "signal-frame-zeroed") == 0)
+    {
+        frame_doctor = FrameDoctor::ZeroCheck;
+        const uint64_t restorer = reinterpret_cast<uint64_t>(&hardening_doctor_restorer);
+        const SignalAction first = {reinterpret_cast<uint64_t>(&RaisingHandler),
+                                    1ULL << SignalUser2, 0, restorer};
+        const SignalAction second = {reinterpret_cast<uint64_t>(&DoctoredHandler), 0, 0, restorer};
+        if (Syscall(SyscallNumber::SignalAction, SignalUser1, reinterpret_cast<uint64_t>(&first)) !=
+                0 ||
+            Syscall(SyscallNumber::SignalAction, SignalUser2,
+                    reinterpret_cast<uint64_t>(&second)) != 0)
+        {
+            exit(2);
+        }
+        kill(getpid(), SIGUSR1);
+    }
+#elif defined(__aarch64__)
+    else if (strcmp(name, "signal-misaligned-handler") == 0)
+    {
+        struct sigaction action = {};
+        action.sa_handler =
+            reinterpret_cast<sighandler_t>(reinterpret_cast<uintptr_t>(&DoctoredHandler) + 2);
+        sigaction(SIGUSR1, &action, nullptr);
+        kill(getpid(), SIGUSR1);
+    }
+#endif
+}
+
 // write-code writes to this function's own code. GCC 14 at -O2 inlines it into main and drops the
 // copy whose address that takes, so the link fails unless it stays out of line.
 [[noreturn, gnu::noinline]] void RunViolation(const char* name)
@@ -387,7 +611,38 @@ bool CopiesRacingStackRelease()
     {
         Syscall(static_cast<SyscallNumber>(99));
     }
+    else
+    {
+        RunSignalViolation(name);
+    }
     exit(0);
+}
+
+// sigaction refuses handlers and restorers outside user space, leaving the old action in place.
+void CheckSignalActions()
+{
+    const uint64_t libc_restorer = reinterpret_cast<uint64_t>(&hardening_doctor_restorer);
+    const uint64_t valid_handler = reinterpret_cast<uint64_t>(&DoctoredHandler);
+    const SignalAction handlers[] = {
+        {0x0000800000000000, 0, 0, libc_restorer},
+        {KernelAddress, 0, 0, libc_restorer},
+        {valid_handler, 0, 0, KernelAddress},
+    };
+    bool refused = true;
+    for (const SignalAction& action : handlers)
+    {
+        refused =
+            refused && Syscall(SyscallNumber::SignalAction, SignalUser1,
+                               reinterpret_cast<uint64_t>(&action)) == SyscallErrorInvalidArgument;
+    }
+    Check(refused, "a signal handler or restorer outside user space");
+    struct sigaction bad = {};
+    bad.sa_handler = reinterpret_cast<sighandler_t>(0x0000800000000000);
+    Check(sigaction(SIGUSR1, &bad, nullptr) == -1 && errno == EINVAL,
+          "libc sigaction with a non-canonical handler");
+    struct sigaction now = {};
+    Check(sigaction(SIGUSR1, nullptr, &now) == 0 && now.sa_handler == SIG_DFL,
+          "the signal action after refusals");
 }
 
 // Zero-length ranges are valid wherever they are, even at address 0.
@@ -430,7 +685,7 @@ void CheckZeroLengthRanges()
 
 constexpr char Help[] =
     "usage: hardening\n"
-    "Runs 71 checks that the kernel rejects bad syscalls, pointers, program files,\n"
+    "Runs 78 checks that the kernel rejects bad syscalls, pointers, program files,\n"
     "and memory violations from user programs.";
 
 int main(int argc, char** argv)
@@ -480,6 +735,21 @@ int main(int argc, char** argv)
     Check(ChildTerminated("hardening write-code"), "writing code");
     Check(ChildTerminated("hardening kernel-read"), "reading kernel memory");
     Check(ChildTerminated("hardening bad-syscall"), "invalid syscall number");
+    CheckSignalActions();
+    Check(ChildTerminated("hardening signal-unmapped-handler"),
+          "a signal handler at an unmapped address");
+    Check(ChildEndedWith("hardening signal-return-kernel-pc",
+                         ExitStatusSignalBase + SignalSegmentationFault),
+          "a sigreturn frame with a kernel program counter");
+    Check(ChildExitedCleanly("hardening signal-return-flags"),
+          "a sigreturn frame with privileged flags");
+#if defined(__x86_64__)
+    Check(ChildExitedCleanly("hardening signal-frame-zeroed"),
+          "a signal frame with no stale kernel bytes");
+#elif defined(__aarch64__)
+    Check(ChildTerminated("hardening signal-misaligned-handler"),
+          "a signal handler at a misaligned address");
+#endif
 
     constexpr uint64_t ChildLimit = 16;
     uint64_t children[ChildLimit];

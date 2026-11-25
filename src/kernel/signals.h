@@ -11,6 +11,10 @@
 namespace FeatherOS::Signals
 {
 
+// Handlers and restorers must lie below the kernel half of the address space on both
+// architectures.
+constexpr uint64_t HandlerAddressLimit = 0x0000800000000000;
+
 struct State
 {
     // Bit n stands for signal n.
@@ -59,7 +63,9 @@ uint64_t Deliverable(const State& state);
 // Takes the lowest deliverable signal, dropping ignored ones on the way. For a handler, blocks
 // the signal (unless SignalNoDefer) and the action's mask until the handler returns.
 Decision TakeNext(State* state);
-// Returns 0 or a syscall error. old_action may be null; so may new_action, to only read.
+// Returns 0 or a syscall error, SyscallErrorInvalidArgument also for a handler, or a handler's
+// restorer, at or above HandlerAddressLimit. old_action may be null; so may new_action, to only
+// read.
 uint64_t SetAction(State* state, int signal, const User::SignalAction* new_action,
                    User::SignalAction* old_action);
 // how is a User::SignalMask* value; returns the previous mask.

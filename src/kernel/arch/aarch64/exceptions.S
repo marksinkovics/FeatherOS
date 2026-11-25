@@ -40,6 +40,8 @@ aarch64_exception_vectors:
     .space 124
 
 aarch64_enter_user:
+    // An IRQ before the eret would overwrite SPSR_EL1 and ELR_EL1.
+    msr daifset, #2
     stp x19, x20, [sp, #-16]!
     stp x21, x22, [sp, #-16]!
     stp x23, x24, [sp, #-16]!
@@ -48,9 +50,8 @@ aarch64_enter_user:
     stp x29, x30, [sp, #-16]!
     mov x10, sp
     str x10, [x3, #8]
-    msr SPSel, #0
-    mov sp, x1
-    msr SPSel, #1
+    // SPSel is 1 here; writing SP_EL0 directly never leaves SP on the user stack at EL1.
+    msr SP_EL0, x1
     mov x9, #0x3c0
     ldrb w10, [x3, #34]
     cbz w10, .Luser_irqs_masked
@@ -101,6 +102,7 @@ aarch64_exception_common:
     str x0, [sp, #272]
     mov x0, sp
     bl FeatherOS_AArch64_ExceptionDispatch
+    msr daifset, #2
     ldr x0, [sp, #264]
     msr ELR_EL1, x0
     ldr x0, [sp, #272]
@@ -151,6 +153,7 @@ aarch64_irq_common:
     bl FeatherOS_AArch64_IrqDispatch
     mov x0, sp
     bl FeatherOS_AArch64_InterruptReturn
+    msr daifset, #2
     ldr x0, [sp, #248]
     msr ELR_EL1, x0
     ldr x0, [sp, #256]

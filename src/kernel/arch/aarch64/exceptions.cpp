@@ -6,6 +6,7 @@
 #include "kernel/process.h"
 #include "kernel/panic.h"
 #include "kernel/scheduler.h"
+#include "kernel/string/memory_functions.h"
 #include "kernel/syscall.h"
 #include "kernel/user_context.h"
 
@@ -113,7 +114,6 @@ void ReturnToKernel(FeatherOS::UserExecutionContext* user_context, uint64_t* x0,
     *spsr = (*spsr & ~0xFULL) | 0x5;
 }
 
-constexpr uint64_t UserAddressLimit = 1ULL << 48;
 // The condition flags, NZCV, are all a program may change in PSTATE.
 constexpr uint64_t UserPstate = 0xF0000000;
 // Offsets of FPCR and FPSR in the saved floating-point state, and their defined bits; writing
@@ -138,6 +138,13 @@ struct SignalFrame
     uint64_t pstate;
     FeatherOS::Arch::FloatingPoint::State floating_point;
 };
+
+// hardening.cpp doctors this layout.
+static_assert(offsetof(SignalFrame, stack_pointer) == 264);
+static_assert(offsetof(SignalFrame, program_counter) == 272);
+static_assert(offsetof(SignalFrame, pstate) == 280);
+static_assert(offsetof(SignalFrame, floating_point) == 288);
+static_assert(sizeof(SignalFrame) == 816);
 
 uint64_t UserStackPointer()
 {
@@ -182,7 +189,12 @@ void TerminateForSignal(FeatherOS::UserExecutionContext* user_context, int signa
 bool EnterHandler(FeatherOS::UserExecutionContext* user_context, uint64_t* registers, uint64_t* elr,
                   uint64_t* spsr, const FeatherOS::Signals::Decision& decision)
 {
+    if (decision.action.handler >= FeatherOS::Process::UserAddressLimit)
+    {
+        return false;
+    }
     SignalFrame frame;
+    memset(&frame, 0, sizeof(frame));
     frame.signal = static_cast<uint64_t>(decision.signal);
     frame.saved_mask = decision.saved_mask;
     for (size_t index = 0; index < 31; ++index)
@@ -262,7 +274,8 @@ bool ReturnFromSignal(FeatherOS::UserExecutionContext* user_context, uint64_t* r
     // The handler returned to the restorer, so the stack pointer is where the frame was built.
     const uint64_t address = UserStackPointer();
     if (!FeatherOS::Process::CopyFromCurrentUser(user_context, address, &frame, sizeof(frame)) ||
-        frame.program_counter >= UserAddressLimit || frame.stack_pointer >= UserAddressLimit)
+        frame.program_counter >= FeatherOS::Process::UserAddressLimit ||
+        frame.stack_pointer >= FeatherOS::Process::UserAddressLimit)
     {
         return false;
     }

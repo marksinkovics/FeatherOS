@@ -30,6 +30,7 @@ constexpr uint64_t DefaultImageBase = 0x0000400000000000;
 #else
 #error "Unsupported architecture for user processes"
 #endif
+static_assert(Signals::HandlerAddressLimit == UserAddressLimit);
 constexpr uint64_t UserStackTop = UserStackAddress + 4096;
 // The stack grows down on demand through this region; its lowest page always stays unmapped.
 constexpr uint64_t UserStackRegionPages = 64;
