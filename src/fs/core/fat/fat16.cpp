@@ -181,6 +181,27 @@ struct Found
     std::uint8_t attributes;
     // The first of the entry's long-name entries, or the entry itself without a long name.
     std::uint32_t first_slot;
+    // The name a scan shows: the long name, or else the short one.
+    Name name;
+};
+
+// Where and as what a new name will be written, decided before any write.
+struct EntryPlan
+{
+    ShortName short_name;
+    std::uint8_t case_flags;
+    std::uint32_t long_entries;
+    Slot first;
+};
+
+// How an entry takes another spelling of its own name: in place, keeping its short name, or in a
+// fresh run of slots.
+struct Respelling
+{
+    bool in_place;
+    std::uint32_t long_entries;
+    std::uint8_t case_flags;
+    EntryPlan moved;
 };
 
 NodeId FileNode(Slot slot)
@@ -274,9 +295,18 @@ private:
                       std::uint32_t first_cluster, std::uint8_t case_flags,
                       const std::uint8_t* model = nullptr);
     Result<bool> ShortNameTaken(std::uint32_t directory, const ShortName& short_name);
+    Status PlanEntry(std::uint32_t directory, std::string_view name, EntryPlan& plan);
+    Status WriteLongEntries(std::uint32_t directory, std::uint32_t first_index,
+                            std::string_view name, std::uint32_t count, std::uint8_t checksum);
+    Status WriteEntryRun(const EntryPlan& plan, std::uint32_t directory, std::string_view name,
+                         std::uint8_t attributes, std::uint32_t first_cluster, Slot& entry_slot,
+                         const std::uint8_t* model);
     Status CreateEntry(std::uint32_t directory, std::string_view name, std::uint8_t attributes,
                        std::uint32_t first_cluster, Slot& entry_slot,
                        const std::uint8_t* model = nullptr);
+    Status PlanRespelling(const Found& entry, std::string_view name, Respelling& plan);
+    Status Respell(const Found& entry, std::string_view name, const Respelling& plan,
+                   const std::uint8_t* short_bytes);
     Status MarkDeleted(std::uint32_t directory, std::uint32_t first_slot, std::uint32_t last_slot);
     Status RemoveEntry(const Found& found);
     Result<bool> IsEmptyDirectory(std::uint32_t cluster);
@@ -727,6 +757,13 @@ Result<bool> Fat16Filesystem::FindEntry(std::uint32_t directory, std::string_vie
             file.slot = slot;
             found.attributes = entry[11];
             found.first_slot = first_slot;
+            found.name.length = 0;
+            while (found.name.length < name.size() &&
+                   found.name.length < found.name.characters.size())
+            {
+                found.name.characters[found.name.length] = name[found.name.length];
+                ++found.name.length;
+            }
             // A ".." entry that points at the root records cluster 0.
             valid = (entry[11] & DirectoryAttribute) != 0
                         ? file.first_cluster == RootDirectory || IsDataCluster(file.first_cluster)
@@ -904,11 +941,10 @@ Result<bool> Fat16Filesystem::ShortNameTaken(std::uint32_t directory, const Shor
                          });
 }
 
-// Writes name into directory: as a short entry when it fits 8.3 with one case per part, or as
-// long-name entries followed by a generated, unique "BASIS~N" short entry.
-Status Fat16Filesystem::CreateEntry(std::uint32_t directory, std::string_view name,
-                                    std::uint8_t attributes, std::uint32_t first_cluster,
-                                    Slot& entry_slot, const std::uint8_t* model)
+// Chooses the short name, as a short entry when name fits 8.3 with one case per part, or as
+// "BASIS~N" with long-name entries, and a free run of slots, growing a subdirectory when it has
+// none. The growth is its only write.
+Status Fat16Filesystem::PlanEntry(std::uint32_t directory, std::string_view name, EntryPlan& plan)
 {
     if (name.size() > MaximumNameLength)
     {
@@ -918,20 +954,32 @@ Status Fat16Filesystem::CreateEntry(std::uint32_t directory, std::string_view na
     {
         return std::unexpected(Error::InvalidArgument);
     }
-    ShortName short_name{};
-    std::uint8_t case_flags = 0;
-    std::uint32_t long_entries = 0;
-    if (!ToShortName(name, short_name, case_flags))
+    plan.short_name = {};
+    plan.case_flags = 0;
+    plan.long_entries = 0;
+    if (ToShortName(name, plan.short_name, plan.case_flags))
     {
-        long_entries = LongEntryCount(name);
+        const Result<bool> found = ShortNameTaken(directory, plan.short_name);
+        if (!found)
+        {
+            return Failure(found);
+        }
+        if (*found)
+        {
+            return std::unexpected(Error::Exists);
+        }
+    }
+    else
+    {
+        plan.long_entries = LongEntryCount(name);
         ShortName basis{};
         MakeBasis(name, basis);
         bool taken = true;
         for (std::uint32_t number = 1; taken && number < MaximumTail; ++number)
         {
-            short_name = basis;
-            ApplyTail(short_name, number);
-            const Result<bool> found = ShortNameTaken(directory, short_name);
+            plan.short_name = basis;
+            ApplyTail(plan.short_name, number);
+            const Result<bool> found = ShortNameTaken(directory, plan.short_name);
             if (!found)
             {
                 return Failure(found);
@@ -943,27 +991,156 @@ Status Fat16Filesystem::CreateEntry(std::uint32_t directory, std::string_view na
             return std::unexpected(Error::Exists);
         }
     }
+    return FindFreeRun(directory, plan.long_entries + 1, plan.first);
+}
 
-    Slot first{};
-    if (const Status found = FindFreeRun(directory, long_entries + 1, first); !found)
-    {
-        return found;
-    }
-    // A crash between these writes leaves long-name entries with no short entry after them, which
-    // readers skip.
-    const std::uint8_t checksum = Checksum(short_name.data());
+Status Fat16Filesystem::WriteLongEntries(std::uint32_t directory, std::uint32_t first_index,
+                                         std::string_view name, std::uint32_t count,
+                                         std::uint8_t checksum)
+{
     std::array<std::uint8_t, EntrySize> entry{};
-    for (std::uint32_t index = 0; index < long_entries; ++index)
+    for (std::uint32_t index = 0; index < count; ++index)
     {
-        EncodeLongEntry(name, long_entries - index, long_entries, checksum, entry.data());
-        if (const Status written = WriteRawEntry({directory, first.index + index}, entry.data());
+        EncodeLongEntry(name, count - index, count, checksum, entry.data());
+        if (const Status written = WriteRawEntry({directory, first_index + index}, entry.data());
             !written)
         {
             return written;
         }
     }
-    entry_slot = {directory, first.index + long_entries};
-    return WriteEntry(entry_slot, short_name, attributes, first_cluster, case_flags, model);
+    return {};
+}
+
+// A crash between the writes leaves long-name entries with no short entry after them, which
+// readers skip.
+Status Fat16Filesystem::WriteEntryRun(const EntryPlan& plan, std::uint32_t directory,
+                                      std::string_view name, std::uint8_t attributes,
+                                      std::uint32_t first_cluster, Slot& entry_slot,
+                                      const std::uint8_t* model)
+{
+    if (const Status written = WriteLongEntries(
+            directory, plan.first.index, name, plan.long_entries, Checksum(plan.short_name.data()));
+        !written)
+    {
+        return written;
+    }
+    entry_slot = {directory, plan.first.index + plan.long_entries};
+    return WriteEntry(entry_slot, plan.short_name, attributes, first_cluster, plan.case_flags,
+                      model);
+}
+
+Status Fat16Filesystem::CreateEntry(std::uint32_t directory, std::string_view name,
+                                    std::uint8_t attributes, std::uint32_t first_cluster,
+                                    Slot& entry_slot, const std::uint8_t* model)
+{
+    EntryPlan plan{};
+    if (const Status planned = PlanEntry(directory, name, plan); !planned)
+    {
+        return planned;
+    }
+    return WriteEntryRun(plan, directory, name, attributes, first_cluster, entry_slot, model);
+}
+
+// The entry keeps its short name when it can be respelled where it sits: its own long-name slots
+// and the deleted ones just before them must hold the new name's long-name entries. Otherwise the
+// name gets a fresh run and a fresh alias; nothing is written either way.
+Status Fat16Filesystem::PlanRespelling(const Found& entry, std::string_view name, Respelling& plan)
+{
+    if (name.size() > MaximumNameLength)
+    {
+        return std::unexpected(Error::NameTooLong);
+    }
+    if (!IsValidName(name))
+    {
+        return std::unexpected(Error::InvalidArgument);
+    }
+    Sector sector;
+    std::uint8_t* short_entry = nullptr;
+    if (const Result<std::uint64_t> read = ReadSlot(entry.file.slot, sector, short_entry); !read)
+    {
+        return Failure(read);
+    }
+    ShortName wanted{};
+    std::uint8_t flags = 0;
+    plan = {};
+    const std::uint32_t short_slot = entry.file.slot.index;
+    if (ToShortName(name, wanted, flags))
+    {
+        bool same = true;
+        for (std::uint32_t index = 0; index < wanted.size(); ++index)
+        {
+            same = same && wanted[index] == short_entry[index];
+        }
+        if (same)
+        {
+            plan.in_place = true;
+            plan.case_flags = flags;
+            return {};
+        }
+    }
+    plan.long_entries = LongEntryCount(name);
+    plan.in_place = plan.long_entries <= short_slot;
+    for (std::uint32_t index = short_slot - plan.long_entries;
+         plan.in_place && index < entry.first_slot; ++index)
+    {
+        Sector other;
+        std::uint8_t* neighbour = nullptr;
+        if (const Result<std::uint64_t> read =
+                ReadSlot({entry.file.slot.directory, index}, other, neighbour);
+            !read)
+        {
+            return Failure(read);
+        }
+        plan.in_place = neighbour[0] == DeletedEntry;
+    }
+    if (plan.in_place)
+    {
+        return {};
+    }
+    plan.long_entries = 0;
+    return PlanEntry(entry.file.slot.directory, name, plan.moved);
+}
+
+// In place, the old long-name entries go first: the new ones carry the same checksum, so
+// overwriting parts one by one could join old and new parts into a valid but garbled name. The
+// entry's cluster reference never moves. Moved, the new entry comes first, as in a rename.
+Status Fat16Filesystem::Respell(const Found& entry, std::string_view name, const Respelling& plan,
+                                const std::uint8_t* short_bytes)
+{
+    const std::uint32_t directory = entry.file.slot.directory;
+    const std::uint32_t short_slot = entry.file.slot.index;
+    if (!plan.in_place)
+    {
+        Slot moved{};
+        if (const Status written = WriteEntryRun(plan.moved, directory, name, short_bytes[11],
+                                                 Load16(short_bytes + 26), moved, short_bytes);
+            !written)
+        {
+            return written;
+        }
+        return MarkDeleted(directory, entry.first_slot, short_slot);
+    }
+    if (short_slot > entry.first_slot)
+    {
+        if (const Status deleted = MarkDeleted(directory, entry.first_slot, short_slot - 1);
+            !deleted)
+        {
+            return deleted;
+        }
+    }
+    if (const Status written = WriteLongEntries(directory, short_slot - plan.long_entries, name,
+                                                plan.long_entries, Checksum(short_bytes));
+        !written)
+    {
+        return written;
+    }
+    std::array<std::uint8_t, EntrySize> bytes{};
+    for (std::uint32_t index = 0; index < EntrySize; ++index)
+    {
+        bytes[index] = short_bytes[index];
+    }
+    bytes[12] = plan.case_flags;
+    return WriteRawEntry(entry.file.slot, bytes.data());
 }
 
 Status Fat16Filesystem::MarkDeleted(std::uint32_t directory, std::uint32_t first_slot,
@@ -1715,6 +1892,10 @@ Status Fat16Filesystem::Rename(NodeId from_directory, std::string_view from_name
             return std::unexpected(Error::InvalidArgument);
         }
     }
+    if (same_entry && existing.name.View() == to_name)
+    {
+        return {};
+    }
     if (*target && !same_entry)
     {
         const bool target_directory = (existing.attributes & DirectoryAttribute) != 0;
@@ -1734,13 +1915,6 @@ Status Fat16Filesystem::Rename(NodeId from_directory, std::string_view from_name
                 return std::unexpected(Error::NotEmpty);
             }
         }
-        // The one non-atomic window of a replacing rename: a crash from here to CreateEntry
-        // leaves the source's name, with its data, and no target. Creating the new entry first
-        // would leave two entries over one cluster chain, which fsck.fat cannot tell apart.
-        if (const Status removed = RemoveEntry(existing); !removed)
-        {
-            return removed;
-        }
     }
 
     Sector sector;
@@ -1754,22 +1928,83 @@ Status Fat16Filesystem::Rename(NodeId from_directory, std::string_view from_name
     {
         model[index] = entry[index];
     }
-    Slot slot{};
-    // A new case for the same name needs the old entry gone first, so a crash can leak the
-    // file's clusters. Otherwise the new entry comes first, and a crash leaves both names.
+
+    // Everything that can fail without an I/O error is settled before the first write. The
+    // source's entry stays until its data is reachable under the new name, so a crash or an
+    // error never loses the source, and an error never touches the target.
     if (same_entry)
     {
+        Respelling respelling{};
+        if (const Status planned = PlanRespelling(source, to_name, respelling); !planned)
+        {
+            return planned;
+        }
+        return Respell(source, to_name, respelling, model.data());
+    }
+    if (*target)
+    {
+        // The target's short entry takes the source's data in one sector write. A crash after
+        // it leaves the old target chain unreferenced but allocated, and two names over the
+        // source's chain; freeing the old chain comes last.
+        std::array<std::uint8_t, EntrySize> swapped{};
+        Sector target_sector;
+        std::uint8_t* target_entry = nullptr;
+        if (const Result<std::uint64_t> read =
+                ReadSlot(existing.file.slot, target_sector, target_entry);
+            !read)
+        {
+            return Failure(read);
+        }
+        for (std::uint32_t index = 0; index < EntrySize; ++index)
+        {
+            const bool from_source = index == 11 || index >= 13;
+            swapped[index] = from_source ? model[index] : target_entry[index];
+        }
+        const bool respell = existing.name.View() != to_name;
+        Respelling respelling{};
+        if (respell)
+        {
+            if (const Status planned = PlanRespelling(existing, to_name, respelling); !planned)
+            {
+                return planned;
+            }
+        }
+        if (const Status swapped_in = WriteRawEntry(existing.file.slot, swapped.data());
+            !swapped_in)
+        {
+            return swapped_in;
+        }
+        if (directory && *to_cluster != *from_cluster)
+        {
+            if (const Status moved = SetParent(source.file.first_cluster, *to_cluster); !moved)
+            {
+                return moved;
+            }
+        }
         if (const Status deleted =
                 MarkDeleted(*from_cluster, source.first_slot, source.file.slot.index);
             !deleted)
         {
             return deleted;
         }
-        return CreateEntry(*to_cluster, to_name, source.attributes, source.file.first_cluster, slot,
-                           model.data());
+        if (existing.file.first_cluster != 0)
+        {
+            if (const Status freed = FreeChain(existing.file.first_cluster); !freed)
+            {
+                return freed;
+            }
+        }
+        return respell ? Respell(existing, to_name, respelling, swapped.data()) : Status{};
     }
-    if (const Status created = CreateEntry(*to_cluster, to_name, source.attributes,
-                                           source.file.first_cluster, slot, model.data());
+
+    EntryPlan plan{};
+    if (const Status planned = PlanEntry(*to_cluster, to_name, plan); !planned)
+    {
+        return planned;
+    }
+    Slot slot{};
+    if (const Status created = WriteEntryRun(plan, *to_cluster, to_name, source.attributes,
+                                             source.file.first_cluster, slot, model.data());
         !created)
     {
         return created;

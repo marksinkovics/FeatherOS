@@ -19,7 +19,7 @@ Branch `feat/review`, cut from `main` at `8b9ba14`. The findings are in `docs/re
 
 ## Tasks
 
-- [ ] F1. FAT16 rename: R1-06 (rename to another spelling of the same entry deletes the source first) and R1-07 (a replacing rename frees the target before the new entry is known to fit). Both are in `Fat16::Rename` (`src/fs/core/fat/fat16.cpp:1700-1800`). The source must survive a crash or an error at every point; a failed rename must leave the target as it was.
+- [x] F1. FAT16 rename: R1-06 (rename to another spelling of the same entry deletes the source first) and R1-07 (a replacing rename frees the target before the new entry is known to fit). Both are in `Fat16::Rename` (`src/fs/core/fat/fat16.cpp:1700-1800`). The source must survive a crash or an error at every point; a failed rename must leave the target as it was.
 - [ ] F2. FAT16 directory scans: R1-08 (`FindFreeRun` writes past the 0x00 end marker) and R1-09 (`SlotSector` walks the cluster chain from the start for every entry, which is quadratic).
 - [ ] E1. ext journal: R1-01, a metadata block freed and allocated again within one step is dropped at `EndStep`. Fix the pending-forget handling in `src/fs/core/ext/transaction.cpp` (and the allocator guard if the design chooses it) so I12 holds for blocks born in the running transaction.
 - [ ] E2. ext journal: R1-02, `EndStep` fails with `OutOfMemory` when running and step counts add up past the layer maximum although the distinct blocks fit (`transaction.cpp:684`).
@@ -30,3 +30,5 @@ Branch `feat/review`, cut from `main` at `8b9ba14`. The findings are in `docs/re
 The full matrix runs after the last task (shared code: the core is built into the kernel).
 
 ## Run log
+
+- F1: Opus design (`docs/design/review-F1.md`), sonnet (high), 0 fix rounds, one Sonnet review (no defects). Unit tests 1869/1869, STORAGE and SHELL on both arches (affected only; matrix after the last task). Mutations 3/3 (I1 by T2/T3, I3 by T5, I4 by T4). Departures: `PlanEntry` also refuses a taken plain 8.3 name with `Exists`; a crash during directory growth can leak one cluster (existing behaviour, tolerated in the growth test); `filesystem_tests.cpp` no longer allows a missing target after a FAT16 replacing rename; CLAUDE.md and `docs/posix.md` now say a FAT16 rename can leak or briefly share clusters until `fsck.fat`, and a failed rename leaves the target as it was. Not run: `fsck.fat` (not installed). Accepted limit: `SetParent` returning `Corrupt` after the swap write is untested.

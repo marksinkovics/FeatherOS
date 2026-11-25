@@ -3077,7 +3077,7 @@ TEST_CASE("a replacing rename on ext4 is one core call: the target is old or new
     REQUIRE(seen == std::set<std::string>{"old", "new"});
 }
 
-TEST_CASE("FAT16's replacing rename may lose the target in a crash but never the source")
+TEST_CASE("FAT16's replacing rename leaves the target old or new after every write")
 {
     MakeFat16Disk("contents");
     REQUIRE(FeatherOS::VFS::MountBlockDevice());
@@ -3094,9 +3094,7 @@ TEST_CASE("FAT16's replacing rename may lose the target in a crash but never the
 
     const std::set<std::string> seen = TargetsAfterPrefixes(
         FeatherDisk::Fat::Fat16Type(), base, writes, "src.txt", "dst.txt");
-    REQUIRE(seen.contains("old"));
-    REQUIRE(seen.contains("new"));
-    REQUIRE(seen.contains("<missing>"));
+    REQUIRE(seen == std::set<std::string>{"old", "new"});
 }
 
 TEST_CASE("rename onto an existing name follows one set of rules on ext2, ext3, ext4, FAT16 and tmpfs")

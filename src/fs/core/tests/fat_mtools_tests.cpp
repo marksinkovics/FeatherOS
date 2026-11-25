@@ -76,6 +76,18 @@ std::string Mtools(const char* program, const std::string& image, const std::str
     return ReadHostFile(output);
 }
 
+#ifdef FEATHERDISK_FSCK_FAT
+void ExpectFsckClean(const std::string& image)
+{
+    const std::string output = image + ".fsck-output.txt";
+    const std::string command = std::string("\"") + FEATHERDISK_FSCK_FAT + "\" -n \"" + image +
+                                "\" > \"" + output + "\" 2>&1";
+    const int status = std::system(command.c_str());
+    INFO(ReadHostFile(output));
+    REQUIRE(status == 0);
+}
+#endif
+
 std::string BigFile()
 {
     std::string contents;
@@ -194,5 +206,40 @@ TEST_CASE("mtools reads a FAT16 volume written before and after MakeReadOnly and
     SaveImage(*device, image);
     REQUIRE(Mtools(FEATHERDISK_MTYPE, image, "\"::before.txt\"") == "before\n");
     REQUIRE(Mtools(FEATHERDISK_MTYPE, image, "\"::after.txt\"") == "after\n");
+#endif
+}
+
+TEST_CASE("mtools reads back what FAT16 renamed, onto other spellings and other names")
+{
+#ifndef FEATHERDISK_MTOOLS_IMAGE
+    SKIP("mtools is not installed");
+#else
+    std::unique_ptr<MemoryDevice> device = LoadImage();
+    {
+        MountedFilesystem fat(Fat16Type(), *device);
+        const NodeId root = fat->Root();
+        const NodeId docs = Value(Walk(*fat, "docs"));
+        Succeeds(fat->Rename(root, "big.txt", root, "Big.TXT"));
+        Succeeds(fat->Rename(docs, "notes.txt", root, "read me first.TXT"));
+        Succeeds(fat->Rename(docs, "archive", root, "Archive"));
+    }
+    const std::string image = std::string(FEATHERDISK_TEST_OUTPUT) + "/fat16-renamed.img";
+    SaveImage(*device, image);
+
+    const std::string listing = Mtools(FEATHERDISK_MDIR, image, "-b ::");
+    REQUIRE(listing.find("Big.TXT") != std::string::npos);
+    REQUIRE(listing.find("big.txt") == std::string::npos);
+    REQUIRE(listing.find("read me first.TXT") != std::string::npos);
+    REQUIRE(listing.find("Read Me First.txt") == std::string::npos);
+    REQUIRE(listing.find("Archive") != std::string::npos);
+    REQUIRE(Mtools(FEATHERDISK_MTYPE, image, "\"::Big.TXT\"") == BigFile());
+    REQUIRE(Mtools(FEATHERDISK_MTYPE, image, "\"::read me first.TXT\"") == "notes\n");
+    REQUIRE(Mtools(FEATHERDISK_MTYPE, image, "\"::Archive/Old Plans.txt\"") == "old plans\n");
+    const std::string docs = Mtools(FEATHERDISK_MDIR, image, "-b ::docs");
+    REQUIRE(docs.find("notes.txt") == std::string::npos);
+    REQUIRE(docs.find("archive") == std::string::npos);
+#ifdef FEATHERDISK_FSCK_FAT
+    ExpectFsckClean(image);
+#endif
 #endif
 }

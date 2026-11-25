@@ -83,6 +83,8 @@ find_program(FEATHERDISK_MMD mmd)
 find_program(FEATHERDISK_MCOPY mcopy)
 find_program(FEATHERDISK_MTYPE mtype)
 find_program(FEATHERDISK_MDIR mdir)
+# dosfstools' checker, when installed, also vets the volumes the rename tests write.
+find_program(FEATHERDISK_FSCK_FAT fsck.fat)
 set(featherdisk_fat16_image)
 set(featherdisk_mbr_image)
 if (FEATHERDISK_SH AND FEATHERDISK_MFORMAT AND FEATHERDISK_MMD AND FEATHERDISK_MCOPY
@@ -204,6 +206,7 @@ add_executable(featherdisk_core_tests
     tests/ext_transaction_tests.cpp
     tests/fat_mtools_tests.cpp
     tests/fat_names_tests.cpp
+    tests/fat_rename_crash_tests.cpp
     tests/fat_tests.cpp
     tests/page_cache_crash_tests.cpp
     tests/page_cache_metadata_tests.cpp
@@ -247,6 +250,10 @@ foreach (featherdisk_target featherdisk_core_tests featherdisk_core_tests_page_c
             FEATHERDISK_MDIR="${FEATHERDISK_MDIR}"
             FEATHERDISK_TEST_OUTPUT="${CMAKE_CURRENT_BINARY_DIR}"
         )
+        if (FEATHERDISK_FSCK_FAT)
+            target_compile_definitions(${featherdisk_target} PRIVATE
+                FEATHERDISK_FSCK_FAT="${FEATHERDISK_FSCK_FAT}")
+        endif ()
     endif ()
     if (featherdisk_ext_images)
         # Two test programs may run at once, and each names its scratch files by test.
