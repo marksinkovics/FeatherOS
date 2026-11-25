@@ -83,7 +83,7 @@ Fragmented MakeFragmentedFile(Filesystem& ext, std::uint32_t block_size, std::si
 // before its first extent is handed out again for a split of the new leaf in the same step. The
 // pending forget then drops the new copy at EndStep.
 TEST_CASE("R1-01 a metadata block freed and allocated again within one step keeps its contents",
-          "[.repro][R1-01]")
+          "[R1-01]")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");

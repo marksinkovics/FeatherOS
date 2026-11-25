@@ -24,6 +24,21 @@ Scenario CycleScenario(std::size_t count);
 // Random changes of every kind from a seed; big now and then writes 200000 bytes.
 Scenario RandomScenario(std::uint32_t seed, std::size_t count, bool big);
 
+// R1-01. A file of one leaf of the extent tree less one extent (the leaf is born in the
+// transaction): single blocks from logical block 2, six of them kept apart by blocks of decoy.bin
+// so that they stay extents, then every other block. One write over the whole file fills the holes
+// before the first extent and between the others, so the leaf is replaced, freed and taken again
+// in the same step.
+std::size_t LeafCapacity(std::uint32_t block_size);
+Change ReuseBuild(std::string path, std::uint32_t block_size);
+Change ReuseSpan(std::string path, std::uint32_t block_size);
+// What the file holds after ReuseSpan, and its last mapped logical block.
+std::string ReuseContents(std::uint32_t block_size);
+std::uint64_t ReuseLastBlock(std::uint32_t block_size);
+// Build and span in one change, a write past the last block, the removal of the file and a new
+// file.
+Scenario ReuseScenario(std::uint32_t block_size);
+
 struct SplitVolume
 {
     std::string_view image;

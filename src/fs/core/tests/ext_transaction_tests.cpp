@@ -10,6 +10,7 @@
 #include "ext/superblock.h"
 #include "ext/transaction.h"
 #include "fs/ext2.h"
+#include "tests/crash_scenarios.h"
 #include "tests/ext2_image.h"
 #include "tests/filesystem_helpers.h"
 #include "tests/memory_device.h"
@@ -993,6 +994,405 @@ TEST_CASE("a block freed in a transaction is not allocated again before it commi
         REQUIRE(ReadAll(*ext, y) == text);
         Succeeds(ext.Unmount());
         CheckClean(*device, "transaction-retry");
+    }
+}
+
+namespace
+{
+
+// The blocks each transaction of the log tags and revokes, by sequence number.
+struct LoggedTransaction
+{
+    std::set<std::uint64_t> tagged;
+    std::set<std::uint64_t> revoked;
+};
+
+std::map<unsigned long long, LoggedTransaction> TransactionsOf(const std::string& dump)
+{
+    std::map<unsigned long long, LoggedTransaction> transactions;
+    std::size_t at = 0;
+    unsigned long long sequence = 0;
+    while (at < dump.size())
+    {
+        std::size_t end = dump.find('\n', at);
+        end = end == std::string::npos ? dump.size() : end;
+        const std::string line = dump.substr(at, end - at);
+        at = end + 1;
+        unsigned long long found = 0;
+        unsigned long long block = 0;
+        unsigned long long journal_block = 0;
+        unsigned flags = 0;
+        if (std::sscanf(line.c_str(), "Found expected sequence %llu, type", &found) == 1)
+        {
+            sequence = found;
+        }
+        else if (std::sscanf(line.c_str(),
+                             " FS block %llu logged at journal block %llu (flags 0x%x)", &block,
+                             &journal_block, &flags) == 3)
+        {
+            transactions[sequence].tagged.insert(block);
+        }
+        else if (std::sscanf(line.c_str(), " Revoke FS block %llu", &block) == 1)
+        {
+            transactions[sequence].revoked.insert(block);
+        }
+    }
+    return transactions;
+}
+
+// E-I3: no transaction both revokes a block and logs a copy of it.
+void RequireNoRevokeAndCopyTogether(MemoryDevice& device)
+{
+    const std::string dump = Logdump(device);
+    INFO(dump);
+    for (const auto& [sequence, transaction] : TransactionsOf(dump))
+    {
+        for (const std::uint64_t block : transaction.revoked)
+        {
+            INFO("transaction " << sequence << " block " << block);
+            REQUIRE(transaction.tagged.count(block) == 0);
+        }
+    }
+}
+
+// The leaf that the file's tree holds logical in, after the journal replays.
+std::uint64_t LeafOf(MemoryDevice& device, NodeId file, std::uint32_t logical)
+{
+    std::vector<std::uint8_t> bytes = ReplayedBytes(device);
+    const RawVolume raw{bytes};
+    const std::vector<std::uint64_t> path =
+        raw.ExtentPath(static_cast<std::uint32_t>(file), logical);
+    REQUIRE(path.size() == 1);
+    return path[0];
+}
+
+// A file whose leaf is X, built and synced on a fresh volume: where X lies.
+std::uint64_t LeafOfTwin(std::string_view image, std::uint32_t block_size)
+{
+    const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
+    Mounted ext(*device);
+    Succeeds(Crash::ReuseBuild("reuse.bin", block_size)(*ext));
+    Succeeds(ext->Sync());
+    return LeafOf(*device, Value(Walk(*ext, "reuse.bin")), 1);
+}
+
+constexpr std::string_view ReuseImages[] = {"ext4", "ext4-4k"};
+
+} // namespace
+
+TEST_CASE("a leaf freed and allocated again in one step keeps its new contents", "[R1-01]")
+{
+    for (const std::string_view image : ReuseImages)
+    {
+        INFO(image);
+        const std::uint32_t block_size = BlockSizeOf(LoadExtImage(image));
+        const std::uint64_t leaf = LeafOfTwin(image, block_size);
+        const std::string expected = Crash::ReuseContents(block_size);
+        const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
+        {
+            Mounted ext(*device);
+            const std::uint32_t transactions = ActivityOf(*ext).transactions;
+            Succeeds(Crash::ReuseBuild("reuse.bin", block_size)(*ext));
+            Succeeds(Crash::ReuseSpan("reuse.bin", block_size)(*ext));
+            REQUIRE(ActivityOf(*ext).transactions == transactions);
+            const NodeId file = Value(Walk(*ext, "reuse.bin"));
+            REQUIRE(ReadAll(*ext, file) == expected);
+            Succeeds(ext->Sync());
+            REQUIRE(LeafOf(*device, file, 0) == leaf);
+            const std::unique_ptr<MemoryDevice> logged = CopyOf(*device);
+            RequireNoRevokeAndCopyTogether(*logged);
+            REQUIRE(ReadAll(*ext, file) == expected);
+            Succeeds(ext.Unmount());
+        }
+        CheckClean(*device, "transaction-reuse");
+        MountedFilesystem again(Ext2Type(), *device, true);
+        REQUIRE(ReadAll(*again, Value(Walk(*again, "reuse.bin"))) == expected);
+    }
+}
+
+TEST_CASE("no transaction revokes a block and logs a copy of it, as a leaf is freed and "
+          "allocated again",
+          "[R1-01]")
+{
+    for (const std::string_view image : ReuseImages)
+    {
+        INFO(image);
+        const std::unique_ptr<MemoryDevice> base = DeviceFrom(LoadExtImage(image));
+        const std::uint32_t block_size = BlockSizeOf(LoadExtImage(image));
+        const Crash::Scenario scenario = Crash::ReuseScenario(block_size);
+        const std::unique_ptr<MemoryDevice> device = CopyOf(*base);
+        Mounted ext(*device);
+        std::size_t revoking = 0;
+        const std::size_t synced = Crash::Run(
+            *ext, scenario,
+            [&](Filesystem&, std::size_t)
+            {
+                const std::unique_ptr<MemoryDevice> copy = CopyOf(*device);
+                RequireNoRevokeAndCopyTogether(*copy);
+                for (const auto& [sequence, transaction] : TransactionsOf(Logdump(*copy)))
+                {
+                    revoking += transaction.revoked.empty() ? 0 : 1;
+                }
+            });
+        REQUIRE(synced == scenario.size());
+        // The removal revokes the leaf the first change logged.
+        REQUIRE(revoking > 0);
+        Succeeds(ext.Unmount());
+        CheckClean(*device, "transaction-reuse-revoke");
+    }
+}
+
+TEST_CASE("a leaf freed in one step and allocated again in a later step of the transaction keeps "
+          "its new contents",
+          "[R1-01]")
+{
+    for (const std::string_view image : ReuseImages)
+    {
+        INFO(image);
+        const std::uint32_t block_size = BlockSizeOf(LoadExtImage(image));
+        const std::string expected = Crash::ReuseContents(block_size);
+        const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
+        {
+            Mounted ext(*device);
+            Succeeds(Crash::ReuseBuild("reuse.bin", block_size)(*ext));
+            const NodeId file = Value(Walk(*ext, "reuse.bin"));
+            // The holes one change at a time, in the same transaction.
+            const std::uint64_t last = Crash::ReuseLastBlock(block_size);
+            Succeeds(
+                Crash::Put("/reuse.bin", 0, expected.substr(0, 2 * std::size_t{block_size}))(*ext));
+            Succeeds(Crash::Put("/reuse.bin", 2 * std::uint64_t{block_size},
+                                expected.substr(2 * std::size_t{block_size},
+                                                (last - 1) * std::size_t{block_size}))(*ext));
+            REQUIRE(ReadAll(*ext, file) == expected);
+            Succeeds(ext->Sync());
+            Succeeds(ext.Unmount());
+        }
+        CheckClean(*device, "transaction-reuse-steps");
+        MountedFilesystem again(Ext2Type(), *device, true);
+        REQUIRE(ReadAll(*again, Value(Walk(*again, "reuse.bin"))) == expected);
+    }
+}
+
+// The volume full but for exactly free_blocks blocks, which are the tail of a filler file.
+std::unique_ptr<MemoryDevice> NearlyFull(std::string_view image, std::uint32_t free_blocks)
+{
+    const std::uint32_t block_size = BlockSizeOf(LoadExtImage(image));
+    std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
+    Mounted ext(*device);
+    const NodeId filler = Value(ext->Create(ext->Root(), "filler.bin", 0644));
+    const std::uint64_t size = FillVolume(*ext, filler);
+    std::uint64_t keep = (size + block_size - 1) / block_size - free_blocks;
+    Succeeds(ext->Truncate(filler, keep * block_size));
+    for (int attempt = 0; attempt < 8 && FreeBlocks(*ext) != free_blocks; ++attempt)
+    {
+        const std::uint32_t free = FreeBlocks(*ext);
+        if (free < free_blocks)
+        {
+            keep -= free_blocks - free;
+            Succeeds(ext->Truncate(filler, keep * block_size));
+        }
+        else
+        {
+            const std::uint32_t more = free - free_blocks;
+            REQUIRE(WriteAt(*ext, filler, keep * block_size,
+                            std::string(more * std::size_t{block_size}, 'x')) ==
+                    more * std::size_t{block_size});
+            keep += more;
+        }
+    }
+    REQUIRE(FreeBlocks(*ext) == free_blocks);
+    Succeeds(ext->Sync());
+    Succeeds(ext.Unmount());
+    return device;
+}
+
+// Each block of the file reads as it did before the failed write or as the write would leave it.
+void RequireEachBlockOneOf(const std::string& actual, const std::string& before,
+                           const std::string& after, std::uint32_t block_size)
+{
+    REQUIRE(actual.size() == before.size());
+    for (std::size_t at = 0; at < actual.size(); at += block_size)
+    {
+        const std::string block = actual.substr(at, block_size);
+        INFO("block " << at / block_size);
+        REQUIRE((block == before.substr(at, block_size) || block == after.substr(at, block_size)));
+    }
+}
+
+TEST_CASE("a write that fails after it freed and allocated a leaf again leaves the file readable",
+          "[R1-01]")
+{
+    for (const std::string_view image : ReuseImages)
+    {
+        INFO(image);
+        const std::uint32_t block_size = BlockSizeOf(LoadExtImage(image));
+        const std::string expected = Crash::ReuseContents(block_size);
+        // What the build takes, and what the write takes on top of it.
+        std::uint32_t cost = 0;
+        std::uint32_t net = 0;
+        {
+            const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
+            Mounted ext(*device);
+            const std::uint32_t before = FreeBlocks(*ext);
+            Succeeds(Crash::ReuseBuild("reuse.bin", block_size)(*ext));
+            const std::uint32_t built = FreeBlocks(*ext);
+            Succeeds(Crash::ReuseSpan("reuse.bin", block_size)(*ext));
+            cost = before - built;
+            net = built - FreeBlocks(*ext);
+        }
+        std::size_t failed = 0;
+        for (std::uint32_t spare = net - 2; spare <= net + 2; ++spare)
+        {
+            INFO("blocks to spare " << spare);
+            const std::unique_ptr<MemoryDevice> device = NearlyFull(image, cost + spare);
+            bool spanned = false;
+            std::string built;
+            {
+                Mounted ext(*device);
+                Succeeds(Crash::ReuseBuild("reuse.bin", block_size)(*ext));
+                const NodeId file = Value(Walk(*ext, "reuse.bin"));
+                built = ReadAll(*ext, file);
+                const Status span = Crash::ReuseSpan("reuse.bin", block_size)(*ext);
+                spanned = span.has_value();
+                REQUIRE((spanned || span.error() == Error::NoSpace));
+                failed += spanned ? 0 : 1;
+                RequireEachBlockOneOf(ReadAll(*ext, file), built, expected, block_size);
+                Succeeds(ext->Sync());
+                Succeeds(ext.Unmount());
+            }
+            CheckClean(*device, "transaction-reuse-abort");
+            MountedFilesystem again(Ext2Type(), *device, true);
+            RequireEachBlockOneOf(ReadAll(*again, Value(Walk(*again, "reuse.bin"))), built,
+                                  expected, block_size);
+        }
+        REQUIRE(failed > 0);
+    }
+}
+
+namespace
+{
+
+// The same kind of file as ReuseBuild, but the extent at logical block 2 is written first and
+// the others from the last down, so that block 2 lies lowest on the volume and a write from block
+// 0 on asks for its holes' data from there.
+Status BuildLowFirst(Filesystem& fs, std::uint32_t block_size)
+{
+    const Result<NodeId> file = fs.Create(fs.Root(), "low.bin", 0644);
+    if (!file)
+    {
+        return std::unexpected(file.error());
+    }
+    const std::size_t extents = Crash::LeafCapacity(block_size) - 1;
+    for (std::size_t order = 0; order < extents; ++order)
+    {
+        const std::size_t index = order == 0 ? 0 : extents - order;
+        const std::uint64_t offset = (2 + 2 * index) * std::uint64_t{block_size};
+        if (const Status done =
+                Crash::Put("/low.bin", offset, Crash::PatternAt(offset, block_size))(fs);
+            !done)
+        {
+            return done;
+        }
+    }
+    return {};
+}
+
+Status SpanLow(Filesystem& fs, std::uint32_t block_size)
+{
+    return Crash::Put("/low.bin", 0, Crash::PatternAt(0, 6 * std::size_t{block_size}))(fs);
+}
+
+std::string LowContents(std::uint32_t block_size)
+{
+    const std::size_t extents = Crash::LeafCapacity(block_size) - 1;
+    std::string contents((2 * extents + 1) * block_size, '\0');
+    for (std::size_t block = 0; block < 6 || block < 2 * extents + 1; ++block)
+    {
+        if (block < 6 || (block % 2 == 0 && block >= 2))
+        {
+            contents.replace(block * block_size, block_size,
+                             Crash::PatternAt(block * std::uint64_t{block_size}, block_size));
+        }
+    }
+    return contents;
+}
+
+} // namespace
+
+// E-I5: the leaf is freed by the first hole's insert, and the next hole's data lands on it.
+TEST_CASE("a leaf freed in a step and taken as file data in it leaves the data intact", "[R1-01]")
+{
+    for (const std::string_view image : ReuseImages)
+    {
+        INFO(image);
+        const std::uint32_t block_size = BlockSizeOf(LoadExtImage(image));
+        const std::string expected = LowContents(block_size);
+        std::uint32_t cost = 0;
+        {
+            const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
+            Mounted ext(*device);
+            const std::uint32_t before = FreeBlocks(*ext);
+            Succeeds(BuildLowFirst(*ext, block_size));
+            cost = before - FreeBlocks(*ext);
+        }
+        std::size_t taken_in_steps = 0;
+        std::size_t failed = 0;
+        // With few blocks to spare the write fails for lack of space after the leaf was taken as
+        // data, and its step is rolled back.
+        for (std::uint32_t spare = 3; spare <= 7; ++spare)
+        {
+            INFO("blocks to spare " << spare);
+            const std::unique_ptr<MemoryDevice> full = NearlyFull(image, cost + spare);
+            std::uint64_t leaf = 0;
+            {
+                const std::unique_ptr<MemoryDevice> twin = CopyOf(*full);
+                Mounted ext(*twin);
+                Succeeds(BuildLowFirst(*ext, block_size));
+                Succeeds(ext->Sync());
+                leaf = LeafOf(*twin, Value(Walk(*ext, "low.bin")), 3);
+            }
+            const std::unique_ptr<MemoryDevice> device = CopyOf(*full);
+            std::string built;
+            bool spanned = false;
+            {
+                Mounted ext(*device);
+                Succeeds(BuildLowFirst(*ext, block_size));
+                const NodeId file = Value(Walk(*ext, "low.bin"));
+                built = ReadAll(*ext, file);
+                const Status span = SpanLow(*ext, block_size);
+                spanned = span.has_value();
+                REQUIRE((spanned || span.error() == Error::NoSpace));
+                failed += spanned ? 0 : 1;
+                RequireEachBlockOneOf(ReadAll(*ext, file), built, expected, block_size);
+                Succeeds(ext->Sync());
+                if (spanned)
+                {
+                    REQUIRE(ReadAll(*ext, file) == expected);
+                    std::vector<std::uint8_t> bytes = ReplayedBytes(*device);
+                    const RawVolume raw{bytes};
+                    for (std::uint32_t logical = 0; logical < 6; ++logical)
+                    {
+                        taken_in_steps +=
+                            raw.FileBlock(static_cast<std::uint32_t>(file), logical) == leaf ? 1
+                                                                                             : 0;
+                    }
+                }
+                Succeeds(ext.Unmount());
+            }
+            CheckClean(*device, "transaction-reuse-data");
+            MountedFilesystem again(Ext2Type(), *device, true);
+            const std::string back = ReadAll(*again, Value(Walk(*again, "low.bin")));
+            if (spanned)
+            {
+                REQUIRE(back == expected);
+            }
+            else
+            {
+                RequireEachBlockOneOf(back, built, expected, block_size);
+            }
+        }
+        REQUIRE(taken_in_steps > 0);
+        REQUIRE(failed > 0);
     }
 }
 

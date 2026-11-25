@@ -12,8 +12,9 @@
 // copies to their places and then empties the log. The order of every write is the one the
 // design (docs/design/M22-P6-s4.md, section 5) names C0 to C9 and K1 to K4. A block freed while a
 // transaction is running leaves the layers (and, when the log holds a copy of it, gets a revoke
-// record), and is not handed out again before the freeing transaction has committed, so a replay
-// can never put an old copy of it over what its next owner wrote.
+// record), unless the same step wrote it again as metadata, and a block that the log holds is not
+// handed out again before the freeing transaction has committed, so a replay can never put an old
+// copy of it over what its next owner wrote.
 #include "common/bytes.h"
 #include "common/host_buffer.h"
 #include "ext/ext2_filesystem.h"
@@ -685,9 +686,23 @@ Status Ext2Filesystem::EndStep()
     {
         return std::unexpected(Error::OutOfMemory);
     }
+    // A block freed and written again in this step keeps the step's copy. The allocator hands out
+    // only blocks clear in the committed bitmap, so such a block has no committed copy to revoke.
     for (std::size_t index = 0; index < state.pending_forgets.Count(); ++index)
     {
         const std::uint64_t block = state.pending_forgets.At(index);
+        if (state.step.Find(block) != nullptr && state.committed.Find(block) != nullptr)
+        {
+            return std::unexpected(Error::Corrupt);
+        }
+    }
+    for (std::size_t index = 0; index < state.pending_forgets.Count(); ++index)
+    {
+        const std::uint64_t block = state.pending_forgets.At(index);
+        if (state.step.Find(block) != nullptr)
+        {
+            continue;
+        }
         state.step.Drop(block);
         state.running.Drop(block);
         if (state.committed.Find(block) != nullptr)

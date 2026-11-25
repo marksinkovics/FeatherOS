@@ -101,3 +101,9 @@ The scenario is one transaction T: build the file (its leaf X is born in T), the
 | E-I4 | the existing test at `ext_transaction_tests.cpp:939`, T4 |
 | E-I5 | T6, the existing I22 tests (T9, T25 of the M22 design) |
 | E-I6 | T5 |
+
+## As built
+
+- T1, T2, T3: the build is the one of the R1-01 reproduction (`ReuseBuild`: six extents kept apart by `decoy.bin`, then every other block). With single blocks at the odd logical blocks the hole fills merge with their neighbours' extents and the leaf is never split. T2 cuts at `CutsAroundFlushes(..., 40)`, not at every write (every write took 14 minutes).
+- T5: lowering `hard` does not make the spanning write overflow alone (the retry after a commit fits, and a limit below the build fails the build). It runs on a volume with exactly `cost + net + d` free blocks (`d` from -2 to 2), so `NoSpace` comes from the allocator after the leaf was re-used; each block must read as before or after.
+- T6: `BuildLowFirst` writes the extent at logical block 2 first and the others from the last down, so the hole data after the first insert is asked for from near the lowest block and takes the freed leaf. Free blocks are the exact tail of a filler file (`NearlyFull`). With 3 or 4 spare blocks the write fails with `NoSpace` after the leaf became data (abort), with 5 or more it succeeds with the leaf as data.

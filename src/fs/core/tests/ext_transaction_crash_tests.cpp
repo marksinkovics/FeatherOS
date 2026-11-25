@@ -384,3 +384,32 @@ TEST_CASE("random changes on ext3 and ext4 stopped at a random write recover to 
     REQUIRE(splits > 0);
 #endif
 }
+
+TEST_CASE(
+    "a leaf freed and allocated again in one step recovers to a committed state at every write",
+    "[R1-01]")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    for (const std::string_view variant : {"ext4", "ext4-4k"})
+    {
+        INFO(variant);
+        const std::unique_ptr<MemoryDevice> base = Prepared(variant);
+        const std::size_t block_size = BlockSizeOf(*base);
+        const Scenario scenario = ReuseScenario(static_cast<std::uint32_t>(block_size));
+        const Reference reference = RunReference(*base, scenario, std::nullopt);
+        // Every write near a commit or checkpoint, and a sample of the data writes between.
+        for (const std::uint64_t cut :
+             CutsAroundFlushes(reference, reference.mounted, reference.total, 40))
+        {
+            INFO("stopped after write " << cut << " of " << reference.total);
+            const Crashed crashed = RunCrashed(*base, scenario, cut, std::nullopt);
+            const Replayed replayed = ReplayBothWays(*crashed.device, "crash-reuse");
+            RequireCommittedState(replayed.tree, reference.trees, crashed.synced, block_size);
+            RequireNoStaleFill(replayed.tree);
+            RequireLossyRecovery(crashed, cut, reference.trees, block_size);
+        }
+    }
+#endif
+}

@@ -88,6 +88,78 @@ Scenario MixedScenario()
     return scenario;
 }
 
+std::size_t LeafCapacity(std::uint32_t block_size)
+{
+    return (block_size - 12) / 12;
+}
+
+std::uint64_t ReuseLastBlock(std::uint32_t block_size)
+{
+    return 2 * (LeafCapacity(block_size) - 1) - 6;
+}
+
+Change ReuseBuild(std::string path, std::uint32_t block_size)
+{
+    return [path, block_size](Filesystem& fs) -> Status
+    {
+        const Result<NodeId> file = fs.Create(fs.Root(), path, 0644);
+        const Result<NodeId> decoy = fs.Create(fs.Root(), "decoy.bin", 0644);
+        if (!file || !decoy)
+        {
+            return std::unexpected(!file ? file.error() : decoy.error());
+        }
+        const std::size_t extents = LeafCapacity(block_size) - 1;
+        std::uint64_t logical = 2;
+        for (std::size_t index = 0; index < extents; ++index)
+        {
+            const std::uint64_t offset = logical * block_size;
+            if (const Status done = Put("/" + path, offset, PatternAt(offset, block_size))(fs);
+                !done)
+            {
+                return done;
+            }
+            if (index < 6)
+            {
+                if (const Status done = Put("/decoy.bin", index * std::uint64_t{block_size},
+                                            std::string(block_size, 'D'))(fs);
+                    !done)
+                {
+                    return done;
+                }
+                ++logical;
+            }
+            else
+            {
+                logical += 2;
+            }
+        }
+        return {};
+    };
+}
+
+Change ReuseSpan(std::string path, std::uint32_t block_size)
+{
+    return Put("/" + path, 0, ReuseContents(block_size));
+}
+
+std::string ReuseContents(std::uint32_t block_size)
+{
+    return PatternAt(0, (ReuseLastBlock(block_size) + 1) * block_size);
+}
+
+Scenario ReuseScenario(std::uint32_t block_size)
+{
+    Scenario scenario;
+    scenario.push_back(
+        Together({ReuseBuild("reuse.bin", block_size), ReuseSpan("reuse.bin", block_size)}));
+    scenario.push_back(Put("/reuse.bin",
+                           (ReuseLastBlock(block_size) + 2) * std::uint64_t{block_size},
+                           PatternAt(0, block_size, 7)));
+    scenario.push_back(Rm("/reuse.bin"));
+    scenario.push_back(Make("/after.bin", PatternAt(0, 120 * std::size_t{block_size})));
+    return scenario;
+}
+
 // The first change of every group of thirty creates or appends to a file, the next truncates,
 // then changes modes, then removes, as the wrap test of the transactions does.
 Scenario CycleScenario(std::size_t count)
