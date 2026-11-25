@@ -168,6 +168,14 @@ struct Slot
     std::uint32_t index;
 };
 
+// Where a sequential walk of a directory has got to, so that the next slot costs no re-walk of the
+// cluster chain. A cluster of 0 means no position yet.
+struct ChainPosition
+{
+    std::uint32_t cluster;
+    std::uint32_t number;
+};
+
 struct File
 {
     std::uint32_t first_cluster;
@@ -192,6 +200,8 @@ struct EntryPlan
     std::uint8_t case_flags;
     std::uint32_t long_entries;
     Slot first;
+    // The run reaches the end marker, so the slot after it must become the new one.
+    bool ends_directory;
 };
 
 // How an entry takes another spelling of its own name: in place, keeping its short name, or in a
@@ -280,7 +290,7 @@ private:
     Status FreeChain(std::uint32_t first_cluster);
     Result<std::uint32_t> CountFreeClusters();
 
-    Result<std::uint64_t> SlotSector(Slot slot);
+    Result<std::uint64_t> SlotSector(Slot slot, ChainPosition* position = nullptr);
     template <typename Visit>
     Result<bool> ScanDirectory(std::uint32_t directory, std::uint32_t start, Visit visit);
     template <typename Visit>
@@ -289,7 +299,8 @@ private:
     Result<std::uint64_t> ReadSlot(Slot slot, Sector& sector, std::uint8_t*& entry);
     Status UpdateEntry(const File& file);
     Status GrowDirectory(std::uint32_t directory);
-    Status FindFreeRun(std::uint32_t directory, std::uint32_t count, Slot& first);
+    Status FindFreeRun(std::uint32_t directory, std::uint32_t count, Slot& first,
+                       bool& ends_directory);
     Status WriteRawEntry(Slot slot, const std::uint8_t* bytes);
     Status WriteEntry(Slot slot, const ShortName& name, std::uint8_t attributes,
                       std::uint32_t first_cluster, std::uint8_t case_flags,
@@ -631,7 +642,7 @@ Result<std::uint32_t> Fat16Filesystem::CountFreeClusters()
 }
 
 // PastTheEnd past the end of the directory, including where its cluster chain stops.
-Result<std::uint64_t> Fat16Filesystem::SlotSector(Slot slot)
+Result<std::uint64_t> Fat16Filesystem::SlotSector(Slot slot, ChainPosition* position)
 {
     if (slot.directory == RootDirectory)
     {
@@ -645,8 +656,15 @@ Result<std::uint64_t> Fat16Filesystem::SlotSector(Slot slot)
     {
         return PastTheEnd;
     }
+    const std::uint32_t wanted = slot.index / EntriesPerCluster();
     std::uint32_t cluster = slot.directory;
-    for (std::uint32_t step = 0; step < slot.index / EntriesPerCluster(); ++step)
+    std::uint32_t step = 0;
+    if (position != nullptr && position->cluster != 0 && position->number <= wanted)
+    {
+        cluster = position->cluster;
+        step = position->number;
+    }
+    for (; step < wanted; ++step)
     {
         const Result<std::uint32_t> next = NextCluster(cluster);
         if (!next)
@@ -659,6 +677,10 @@ Result<std::uint64_t> Fat16Filesystem::SlotSector(Slot slot)
         }
         cluster = *next;
     }
+    if (position != nullptr)
+    {
+        *position = {cluster, wanted};
+    }
     return ClusterSector(cluster) + (slot.index % EntriesPerCluster()) / EntriesPerSector;
 }
 
@@ -670,9 +692,10 @@ Result<bool> Fat16Filesystem::ScanDirectory(std::uint32_t directory, std::uint32
 {
     Sector sector;
     std::uint64_t loaded_sector = PastTheEnd;
+    ChainPosition position{};
     for (std::uint32_t index = start;; ++index)
     {
-        const Result<std::uint64_t> sector_number = SlotSector({directory, index});
+        const Result<std::uint64_t> sector_number = SlotSector({directory, index}, &position);
         if (!sector_number)
         {
             return Failure(sector_number);
@@ -840,16 +863,21 @@ Status Fat16Filesystem::GrowDirectory(std::uint32_t directory)
     return NextOrNewCluster(cluster);
 }
 
-// Finds count consecutive free slots, growing a subdirectory when it runs out.
-Status Fat16Filesystem::FindFreeRun(std::uint32_t directory, std::uint32_t count, Slot& first)
+// Finds count consecutive free slots, growing a subdirectory when it runs out. The first 0x00 slot
+// ends the directory and every slot after it is free whatever it holds (another implementation may
+// leave old entries there), so a run that reaches it goes on past it without reading those slots.
+Status Fat16Filesystem::FindFreeRun(std::uint32_t directory, std::uint32_t count, Slot& first,
+                                    bool& ends_directory)
 {
     Sector sector;
     std::uint64_t loaded_sector = PastTheEnd;
+    ChainPosition position{};
     std::uint32_t run_start = 0;
     std::uint32_t run_length = 0;
+    ends_directory = false;
     for (std::uint32_t index = 0; index < MaximumDirectoryEntries;)
     {
-        const Result<std::uint64_t> sector_number = SlotSector({directory, index});
+        const Result<std::uint64_t> sector_number = SlotSector({directory, index}, &position);
         if (!sector_number)
         {
             return Failure(sector_number);
@@ -871,7 +899,34 @@ Status Fat16Filesystem::FindFreeRun(std::uint32_t directory, std::uint32_t count
             loaded_sector = *sector_number;
         }
         const std::uint8_t marker = sector[std::size_t{index % EntriesPerSector} * EntrySize];
-        if (marker == EndOfDirectory || marker == DeletedEntry)
+        if (marker == EndOfDirectory)
+        {
+            const std::uint32_t start = run_length == 0 ? index : run_start;
+            if (start + count > MaximumDirectoryEntries)
+            {
+                return std::unexpected(Error::NoSpace);
+            }
+            for (;;)
+            {
+                const Result<std::uint64_t> last = SlotSector({directory, start + count - 1});
+                if (!last)
+                {
+                    return Failure(last);
+                }
+                if (*last != PastTheEnd)
+                {
+                    break;
+                }
+                if (const Status grown = GrowDirectory(directory); !grown)
+                {
+                    return grown;
+                }
+            }
+            first = {directory, start};
+            ends_directory = true;
+            return {};
+        }
+        if (marker == DeletedEntry)
         {
             run_start = run_length == 0 ? index : run_start;
             if (++run_length == count)
@@ -991,7 +1046,7 @@ Status Fat16Filesystem::PlanEntry(std::uint32_t directory, std::string_view name
             return std::unexpected(Error::Exists);
         }
     }
-    return FindFreeRun(directory, plan.long_entries + 1, plan.first);
+    return FindFreeRun(directory, plan.long_entries + 1, plan.first, plan.ends_directory);
 }
 
 Status Fat16Filesystem::WriteLongEntries(std::uint32_t directory, std::uint32_t first_index,
@@ -1012,12 +1067,32 @@ Status Fat16Filesystem::WriteLongEntries(std::uint32_t directory, std::uint32_t 
 }
 
 // A crash between the writes leaves long-name entries with no short entry after them, which
-// readers skip.
+// readers skip. A run that took the end marker first makes the slot after it the new marker, so
+// stale entries there stay unreachable; a crash after that write changes nothing readers see.
 Status Fat16Filesystem::WriteEntryRun(const EntryPlan& plan, std::uint32_t directory,
                                       std::string_view name, std::uint8_t attributes,
                                       std::uint32_t first_cluster, Slot& entry_slot,
                                       const std::uint8_t* model)
 {
+    if (plan.ends_directory)
+    {
+        Sector sector;
+        std::uint8_t* after = nullptr;
+        const Result<std::uint64_t> sector_number =
+            ReadSlot({directory, plan.first.index + plan.long_entries + 1}, sector, after);
+        if (!sector_number && sector_number.error() != Error::NotFound)
+        {
+            return Failure(sector_number);
+        }
+        if (sector_number && after[0] != EndOfDirectory)
+        {
+            after[0] = EndOfDirectory;
+            if (const Status written = WriteSector(*sector_number, sector); !written)
+            {
+                return written;
+            }
+        }
+    }
     if (const Status written = WriteLongEntries(
             directory, plan.first.index, name, plan.long_entries, Checksum(plan.short_name.data()));
         !written)
