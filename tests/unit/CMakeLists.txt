@@ -46,6 +46,13 @@ add_executable(featheros_unit_tests
     kernel/framebuffer/framebuffer_tests.cpp
     kernel/framebuffer/graphics_mode_tests.cpp
     kernel/input/input_tests.cpp
+    repro/process_lifetime_repro_tests.cpp
+    repro/wakeups_repro_tests.cpp
+    repro/arch_entry_repro_tests.cpp
+    repro/vfs_proc_repro_tests.cpp
+    repro/usb_repro_tests.cpp
+    repro/block_repro_tests.cpp
+    repro/network_repro_tests.cpp
     kernel/network/address_tests.cpp
     kernel/network/arp_tests.cpp
     kernel/network/checksum_tests.cpp

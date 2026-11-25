@@ -205,6 +205,7 @@ add_executable(featherdisk_core_tests
     tests/ext_transaction_crash_tests.cpp
     tests/ext_transaction_tests.cpp
     tests/fat_directory_tests.cpp
+    tests/ext_repro_tests.cpp
     tests/fat_mtools_tests.cpp
     tests/fat_names_tests.cpp
     tests/fat_rename_crash_tests.cpp
