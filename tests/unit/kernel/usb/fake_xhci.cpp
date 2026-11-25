@@ -18,7 +18,6 @@ namespace X = Xhci;
 
 constexpr uint32_t TrbMask = ~static_cast<uint32_t>(X::TrbSize - 1);
 constexpr uint32_t LoopLimit = 100000;
-constexpr uint64_t PageSize = 4096;
 
 uint32_t Fetch(volatile const uint32_t* address)
 {
@@ -26,42 +25,6 @@ uint32_t Fetch(volatile const uint32_t* address)
 }
 
 } // namespace
-
-PhysicalMemory::~PhysicalMemory()
-{
-    for (const Region& region : regions_)
-    {
-        std::free(region.host);
-    }
-}
-
-PhysicalMemory::PhysicalMemory(uint64_t base) : next_physical_(base)
-{
-}
-
-Memory::Dma::Buffer PhysicalMemory::Allocate(uint64_t bytes)
-{
-    const uint64_t size = (bytes + PageSize - 1) / PageSize * PageSize;
-    auto* host = static_cast<uint8_t*>(std::aligned_alloc(PageSize, size));
-    std::memset(host, 0, size);
-    regions_.push_back({next_physical_, host, size});
-    Memory::Dma::Buffer buffer{next_physical_, host, bytes};
-    next_physical_ += size + PageSize;
-    return buffer;
-}
-
-volatile uint8_t* PhysicalMemory::Translate(uint64_t physical, uint64_t length) const
-{
-    for (const Region& region : regions_)
-    {
-        if (physical >= region.physical && length <= region.size &&
-            physical - region.physical <= region.size - length)
-        {
-            return region.host + (physical - region.physical);
-        }
-    }
-    return nullptr;
-}
 
 FakeXhci::FakeXhci(PhysicalMemory& memory, uint32_t ports, bool context64)
     : memory_(memory), ports_(ports), context64_(context64), portsc_(ports, Xhci::PortSc::Power),

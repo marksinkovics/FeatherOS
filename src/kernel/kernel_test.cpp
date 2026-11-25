@@ -28,6 +28,9 @@
 #include "kernel/storage/block_device.h"
 #include "kernel/storage/core_block_device.h"
 #include "kernel/storage/disk.h"
+#include "kernel/storage/ahci/port.h"
+#include "kernel/storage/nvme/controller.h"
+#include "kernel/storage/nvme/namespace.h"
 #include "kernel/storage/page_cache.h"
 #include "kernel/storage/page_cache.h"
 #include "kernel/string/format.h"
@@ -2591,6 +2594,361 @@ void StartUsbStorageTests()
     if (!Scheduler::CreateTask(UsbStorageTask, nullptr, &task))
     {
         Panic("Could not start the USB storage test task");
+    }
+}
+
+namespace
+{
+
+constexpr uint32_t ControllerWaitTicks = 1500;
+constexpr uint32_t ControllerSettleTicks = 5;
+constexpr uint32_t ControllerSpanSectors = 1024;
+constexpr const char ControllerMountPoint[] = "/nvme";
+
+// The NVMe and AHCI tests run the same checks on a disk made from the same image; only the names
+// and the way to reach the driver's command counters differ.
+struct ControllerTest
+{
+    const char* tag;
+    const char* disk;
+    const char* volumes[4];
+    const char* mounted;
+    const char* absent;
+    uint64_t (*write_and_flush_commands)(Storage::Disk& disk);
+};
+
+uint64_t NvmeCommands(Storage::Disk& disk)
+{
+    const Storage::Nvme::Controller& controller =
+        static_cast<Storage::Nvme::Namespace&>(disk.Driver()).Owner();
+    return controller.write_commands() + controller.flush_commands();
+}
+
+uint64_t AhciCommands(Storage::Disk& disk)
+{
+    const auto& port = static_cast<Storage::Ahci::Port&>(disk.Driver());
+    return port.write_commands() + port.flush_commands();
+}
+
+constexpr ControllerTest NvmeTest = {
+    "NVME",
+    "nvme0n1",
+    {"nvme0n1p1", "nvme0n1p2", "nvme0n1p3", "nvme0n1p4"},
+    "nvme0n1p1 to p4 mounted, read and unmounted",
+    "no NVMe namespace was probed",
+    NvmeCommands,
+};
+
+constexpr ControllerTest AhciTest = {
+    "AHCI",
+    "sda",
+    {"sda1", "sda2", "sda3", "sda4"},
+    "sda1 to sda4 mounted, read and unmounted",
+    "no AHCI disk was probed",
+    AhciCommands,
+};
+
+void Report(const ControllerTest& test, const char* prefix, const char* text)
+{
+    Serial::Write("KERN/");
+    Serial::Write(test.tag);
+    Serial::Write(": ");
+    Serial::Write(prefix);
+    Serial::Write(text);
+    Serial::Write("\n");
+}
+
+void ControllerFail(const ControllerTest& test, const char* what)
+{
+    Report(test, "FAILED ", what);
+    Panic("Controller test failed");
+}
+
+bool MountsAndReads(const char* type, const char* source, const char* path, const char* expected,
+                    Filesystem::MountMode mode)
+{
+    return VFS::Mount(type, source, ControllerMountPoint, mode) == VFS::MountResult::Done &&
+           ReadsAs(path, expected) && VFS::Unmount(ControllerMountPoint) == VFS::MountResult::Done;
+}
+
+Storage::Disk* WaitForControllerDisk(const ControllerTest& test)
+{
+    Storage::Disk* disk = nullptr;
+    for (uint32_t waited = 0; disk == nullptr && waited < ControllerWaitTicks;
+         waited += ControllerSettleTicks)
+    {
+        disk = Storage::Acquire(test.disk);
+        if (disk == nullptr)
+        {
+            Scheduler::SleepUntil(Time::TickCount() + ControllerSettleTicks);
+        }
+    }
+    if (disk == nullptr)
+    {
+        ControllerFail(test, test.absent);
+    }
+    return disk;
+}
+
+void WaitForControllerVolumes(const ControllerTest& test)
+{
+    for (uint32_t waited = 0; waited < ControllerWaitTicks; waited += ControllerSettleTicks)
+    {
+        const VFS::MountResult result = VFS::Mount("ext4", test.volumes[3], ControllerMountPoint,
+                                                   Filesystem::MountMode::ReadOnly);
+        if (result == VFS::MountResult::Done)
+        {
+            if (VFS::Unmount(ControllerMountPoint) != VFS::MountResult::Done)
+            {
+                ControllerFail(test, "unmounting the last volume before the test");
+            }
+            return;
+        }
+        if (result != VFS::MountResult::NotFound && result != VFS::MountResult::UnknownType)
+        {
+            ControllerFail(test, "the last volume could not be mounted");
+        }
+        Scheduler::SleepUntil(Time::TickCount() + ControllerSettleTicks);
+    }
+    ControllerFail(test, "the disk's volumes were not opened");
+}
+
+void CheckControllerVolumes(const ControllerTest& test)
+{
+    WaitForControllerVolumes(test);
+    char text[Procfs::MaximumPartitionsFileSize] = {};
+    VFS::FileHandle file;
+    uint64_t length = 0;
+    if (!VFS::Open("/proc/partitions", &file) || !VFS::Read(&file, text, sizeof(text) - 1, &length))
+    {
+        ControllerFail(test, "reading /proc/partitions");
+    }
+    VFS::Close(&file);
+    text[length] = '\0';
+    for (const char* line = text; *line != '\0';)
+    {
+        char buffer[96];
+        size_t used = 0;
+        while (*line != '\0' && *line != '\n' && used + 1 < sizeof(buffer))
+        {
+            buffer[used++] = *line++;
+        }
+        buffer[used] = '\0';
+        line += *line == '\n' ? 1 : 0;
+        Report(test, "partitions: ", buffer);
+    }
+    constexpr Filesystem::MountMode ReadOnly = Filesystem::MountMode::ReadOnly;
+    if (!MountsAndReads("fat16", test.volumes[0], "/nvme/NVME.TXT", "fat16 on nvme\n", ReadOnly))
+    {
+        ControllerFail(test, "the FAT16 volume did not mount and read");
+    }
+    if (!MountsAndReads("ext2", test.volumes[1], "/nvme/hello.txt",
+                        "Hello from the ext2 partition.\n", ReadOnly))
+    {
+        ControllerFail(test, "the ext2 volume did not mount and read");
+    }
+    if (!MountsAndReads("ext3", test.volumes[2], "/nvme/hello.txt",
+                        "Hello from the ext3 partition.\n", ReadOnly))
+    {
+        ControllerFail(test, "the ext3 volume did not mount and read");
+    }
+    if (!MountsAndReads("ext4", test.volumes[3], "/nvme/hello.txt",
+                        "Hello from the second ext4 partition.\n", ReadOnly))
+    {
+        ControllerFail(test, "the ext4 volume did not mount and read");
+    }
+    Report(test, "", test.mounted);
+}
+
+uint64_t ControllerTask(void* context)
+{
+    const ControllerTest& test = *static_cast<const ControllerTest*>(context);
+    Storage::Disk* disk = WaitForControllerDisk(test);
+    CheckControllerVolumes(test);
+    const Storage::DiskInfo info = disk->Info();
+    const Storage::DiskCounters before = disk->Counters();
+    char line[96];
+    if (!String::FormatTo(line, sizeof(line), "{} {} sectors of {} bytes", disk->Name(),
+                          info.sector_count, info.sector_size))
+    {
+        ControllerFail(test, "formatting");
+    }
+    Report(test, "", line);
+    if (info.sector_count < ControllerSpanSectors + 2 || info.sector_size > 4096 || info.read_only)
+    {
+        ControllerFail(test, "the disk is too small or read-only");
+    }
+    const uint64_t last = info.sector_count - 1;
+    const uint32_t size = info.sector_size;
+    const uint64_t span_bytes = static_cast<uint64_t>(ControllerSpanSectors) * size;
+    auto* pattern = new uint8_t[span_bytes];
+    auto* readback = new uint8_t[span_bytes];
+
+    FillPattern(pattern, size, 1);
+    if (!disk->Write(last, {pattern, size}) || !disk->Flush())
+    {
+        ControllerFail(test, "writing the last sector");
+    }
+    if (!disk->Read(last, {readback, size}))
+    {
+        ControllerFail(test, "reading the last sector");
+    }
+    for (uint32_t index = 0; index < size; ++index)
+    {
+        if (readback[index] != pattern[index])
+        {
+            ControllerFail(test, "the last sector differs");
+        }
+    }
+    Report(test, "", "last sector written and read back");
+
+    const auto past_end = disk->Read(info.sector_count, {readback, size});
+    const auto straddle = disk->Write(last, {pattern, 2 * static_cast<uint64_t>(size)});
+    if (past_end || past_end.error() != FeatherDisk::Error::InvalidArgument || straddle ||
+        straddle.error() != FeatherDisk::Error::InvalidArgument)
+    {
+        ControllerFail(test, "a transfer past the end was not refused");
+    }
+    Report(test, "", "transfer past the end refused");
+
+    // The image's free tail, below the last sector: the shell session owns the volumes.
+    const uint64_t span_start = last - ControllerSpanSectors;
+    FillPattern(pattern, span_bytes, 2);
+    if (!disk->Write(span_start, {pattern, span_bytes}) ||
+        !disk->Read(span_start, {readback, span_bytes}))
+    {
+        ControllerFail(test, "the multi-command transfer");
+    }
+    for (uint64_t index = 0; index < span_bytes; ++index)
+    {
+        if (readback[index] != pattern[index])
+        {
+            ControllerFail(test, "the multi-command transfer differs");
+        }
+    }
+    Report(test, "", "multi-command transfer matched");
+
+    const Storage::DiskCounters counters = disk->Counters();
+    const uint64_t expected = 1 + ControllerSpanSectors;
+    if (counters.read_sectors - before.read_sectors != expected ||
+        counters.written_sectors - before.written_sectors != expected ||
+        counters.flushes - before.flushes != 1)
+    {
+        ControllerFail(test, "the disk's counters are wrong");
+    }
+    Report(test, "", "counters matched");
+    delete[] pattern;
+    delete[] readback;
+    disk->Release();
+    Report(test, "", "tests passed");
+    return 0;
+}
+
+void StartControllerTest(const ControllerTest& test)
+{
+    Scheduler::TaskId task;
+    if (!Scheduler::CreateTask(ControllerTask, const_cast<ControllerTest*>(&test), &task))
+    {
+        Panic("Could not start the controller test task");
+    }
+}
+
+} // namespace
+
+void StartNvmeTests()
+{
+    StartControllerTest(NvmeTest);
+}
+
+void StartAhciTests()
+{
+    StartControllerTest(AhciTest);
+}
+
+namespace
+{
+
+void PolicyFail(const char* what)
+{
+    Serial::Write("KERN/STORAGEPOLICY: FAILED ");
+    Serial::Write(what);
+    Serial::Write("\n");
+    Panic("Storage policy test failed");
+}
+
+bool CreateRefused(const char* type, const char* source)
+{
+    if (VFS::Mount(type, source, ControllerMountPoint, Filesystem::MountMode::ReadWrite) !=
+        VFS::MountResult::Done)
+    {
+        return false;
+    }
+    VFS::FileHandle file;
+    const bool created = VFS::Create("/nvme/policy.txt", &file);
+    if (created)
+    {
+        VFS::Close(&file);
+    }
+    return !created && VFS::Unmount(ControllerMountPoint) == VFS::MountResult::Done;
+}
+
+void CheckPolicy(const ControllerTest& test)
+{
+    Storage::Disk* disk = WaitForControllerDisk(test);
+    WaitForControllerVolumes(test);
+    const Storage::DiskInfo info = disk->Info();
+    if (!info.read_only || info.read_only_reason != Storage::ReadOnlyReason::Policy)
+    {
+        PolicyFail("a disk is not read-only by the policy");
+    }
+    char line[64];
+    if (!String::FormatTo(line, sizeof(line), "KERN/STORAGEPOLICY: {} is read-only by the policy\n",
+                          test.disk))
+    {
+        PolicyFail("formatting");
+    }
+    Serial::Write(line);
+
+    if (!CreateRefused("fat16", test.volumes[0]) || !CreateRefused("ext2", test.volumes[1]) ||
+        !CreateRefused("ext3", test.volumes[2]) || !CreateRefused("ext4", test.volumes[3]))
+    {
+        PolicyFail("a read-write mount took a file");
+    }
+    Serial::Write("KERN/STORAGEPOLICY: no volume took a file\n");
+
+    auto* sector = new uint8_t[info.sector_size];
+    FillPattern(sector, info.sector_size, 3);
+    if (disk->Write(info.sector_count - 1, {sector, info.sector_size}) || !disk->Flush())
+    {
+        PolicyFail("a write through the disk was not refused or a flush failed");
+    }
+    delete[] sector;
+    Serial::Write("KERN/STORAGEPOLICY: a write through the disk refused\n");
+
+    if (test.write_and_flush_commands(*disk) != 0 || disk->Counters().written_sectors != 0)
+    {
+        PolicyFail("the controller was sent a write or a flush command");
+    }
+    Serial::Write("KERN/STORAGEPOLICY: no write or flush command was sent\n");
+    disk->Release();
+}
+
+uint64_t StoragePolicyTask(void*)
+{
+    CheckPolicy(NvmeTest);
+    CheckPolicy(AhciTest);
+    Serial::Write("KERN/STORAGEPOLICY: tests passed\n");
+    return 0;
+}
+
+} // namespace
+
+void StartStoragePolicyTests()
+{
+    Scheduler::TaskId task;
+    if (!Scheduler::CreateTask(StoragePolicyTask, nullptr, &task))
+    {
+        Panic("Could not start the storage policy test task");
     }
 }
 

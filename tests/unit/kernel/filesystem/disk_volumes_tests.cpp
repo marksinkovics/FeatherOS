@@ -59,6 +59,7 @@ public:
         info.max_transfer_bytes = 64 * 1024;
         info.removable = removable;
         info.read_only = read_only;
+        info.read_only_reason = reason;
         return info;
     }
 
@@ -123,6 +124,7 @@ public:
     std::atomic<int> releases = 0;
     std::atomic<bool> removable = true;
     std::atomic<bool> read_only = false;
+    Storage::ReadOnlyReason reason = Storage::ReadOnlyReason::None;
     std::atomic<bool> fail_flush = false;
     // Flushes past this count fail; 0 for none.
     std::atomic<uint64_t> fail_flush_after = 0;
@@ -898,6 +900,29 @@ TEST_CASE("USB I13 a write-protected disk's volumes mount read-only and receive 
     REQUIRE(VFS::Remount("/usb1", FeatherOS::Filesystem::MountMode::ReadWrite) ==
             VFS::MountResult::ReadOnly);
     REQUIRE(IsReadOnly("/usb1"));
+    REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
+    REQUIRE(rig.driver.Writes().empty());
+}
+
+TEST_CASE("M16 I22 a policy read-only disk's volume logs the policy, not write protection")
+{
+    Rig rig(PartitionedImage());
+    rig.driver.read_only = true;
+    rig.driver.reason = Storage::ReadOnlyReason::Policy;
+    REQUIRE(Drivers::OpenDiskVolumes(*rig.disk) == 2);
+    const std::string policy = "VFS: " + rig.Source(1) +
+                               " is read-only by the storage policy (storage=rw to write), "
+                               "mounted read-only";
+    const std::string protection = "VFS: " + rig.Source(1) + " is write-protected";
+    const size_t logged = LogLines(policy);
+    const size_t protected_lines = LogLines(protection);
+
+    REQUIRE(Mount("fat16", rig.Source(1).c_str(), "/usb1") == VFS::MountResult::Done);
+    REQUIRE(LogLines(policy) == logged + 1);
+    REQUIRE(LogLines(protection) == protected_lines);
+    REQUIRE(IsReadOnly("/usb1"));
+    REQUIRE(VFS::Remount("/usb1", FeatherOS::Filesystem::MountMode::ReadWrite) ==
+            VFS::MountResult::ReadOnly);
     REQUIRE(VFS::Unmount("/usb1") == VFS::MountResult::Done);
     REQUIRE(rig.driver.Writes().empty());
 }

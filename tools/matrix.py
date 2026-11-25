@@ -29,6 +29,7 @@ TOGGLES = (
     "SHELL_TEST",
     "INPUT_TEST",
     "ROOT_TEST",
+    "ROOT_DISK_TEST",
     "GRAPHICS_TEST",
     "DUNGEON_TEST",
     "FONTS_TEST",
@@ -41,6 +42,10 @@ TOGGLES = (
     "USB_STORAGE_HOTPLUG_TEST",
     "USB_STORAGE_LARGE_TEST",
     "USB_STICK_TEST",
+    "NVME_TEST",
+    "NVME_NAMESPACES_TEST",
+    "AHCI_TEST",
+    "STORAGE_POLICY_TEST",
     "NODISK_TEST",
     "X86_UEFI",
 )
@@ -135,6 +140,47 @@ CASES = [
     *Both(70, "usb_storage_large", USB_STORAGE_LARGE_TEST=ON),
     # The make_usb_stick.sh image booted from a USB drive; skipped like 63.
     Case("72_x86_64_usb_stick_uefi", "x86_64", USB_STICK_TEST=ON, X86_UEFI=ON),
+    *Both(74, "nvme", NVME_TEST=ON),
+    *Both(76, "nvme_namespaces", NVME_NAMESPACES_TEST=ON),
+    *Both(78, "nvme_without_usb", NVME_TEST=ON, KERNEL_USB="off"),
+    *Both(80, "ahci", AHCI_TEST=ON),
+    *Both(82, "storage_policy", STORAGE_POLICY_TEST=ON, KERNEL_STORAGE="ro"),
+    *Both(84, "nvme_release", NVME_TEST=ON, build_type="Release"),
+    # The root on NVMe and AHCI.
+    *Both(
+        86,
+        "nvme_root",
+        ROOT_DISK_TEST=ON,
+        DISK_BUS="nvme",
+        KERNEL_ROOT="nvme0n1p3",
+    ),
+    *Both(
+        88, "ahci_root", ROOT_DISK_TEST=ON, DISK_BUS="ahci", KERNEL_ROOT="sda1"
+    ),
+    *Both(
+        90,
+        "nvme_4k_root",
+        ROOT_DISK_TEST=ON,
+        DISK_BUS="nvme4k",
+        KERNEL_ROOT="nvme0n1p1",
+    ),
+    *Both(
+        92,
+        "nvme_root_readonly",
+        ROOT_DISK_TEST=ON,
+        DISK_BUS="nvme",
+        KERNEL_ROOT="nvme0n1p1",
+        KERNEL_STORAGE="ro",
+    ),
+    *Both(94, "nvme_no_default_root", ROOT_DISK_TEST=ON, DISK_BUS="nvme"),
+    *Both(96, "missing_root_disk", ROOT_DISK_TEST=ON, KERNEL_ROOT="nvme0n1p3"),
+    *Both(
+        98,
+        "nvme_unusable_root",
+        ROOT_DISK_TEST=ON,
+        DISK_BUS="nvme",
+        KERNEL_ROOT="nvme0n1p9",
+    ),
 ]
 
 
@@ -148,9 +194,11 @@ def Environment(arch, build_type, settings=None, out_dir=None):
         "DISK_LAYOUT",
         "OUT_DIR",
         "KERNEL_ROOT",
+        "DISK_BUS",
         "KERNEL_USB",
         "KERNEL_USBHID",
         "KERNEL_PS2",
+        "KERNEL_STORAGE",
     ):
         environment.pop(key, None)
     environment.update(settings or {})

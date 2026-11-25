@@ -16,14 +16,20 @@ enum class RootRequest : uint8_t
 {
     Absent,
     Partition,
-    // A root= that is not vda followed by a partition number from 1.
+    // A root= that is not a disk name and a partition number from 1: vd<letter>, sd<letter> or
+    // nvme<controller>n<namespace>p, then the number.
     Malformed,
 };
+
+constexpr size_t MaxRootDisk = 16;
 
 struct Root
 {
     RootRequest request;
-    // The partition's number in vdaN, from 1; 0 unless request is Partition.
+    // The disk's name, "vda" or "nvme0n1", for the name of its partitions without the "p"
+    // between them; empty unless request is Partition.
+    char disk[MaxRootDisk];
+    // The partition's number on that disk, from 1; 0 unless request is Partition.
     size_t partition;
 };
 
@@ -69,6 +75,19 @@ enum class Ps2Mode : uint8_t
 Ps2Mode ParsePs2(const char* command_line);
 void SelectPs2(Ps2Mode mode);
 Ps2Mode SelectedPs2();
+
+enum class StorageMode : uint8_t
+{
+    Auto,
+    ReadOnly,
+    ReadWrite,
+};
+
+// storage=ro makes every NVMe and AHCI disk read-only, storage=rw writable; without either only
+// QEMU's controllers are writable. The last storage= wins and any other value counts as absent.
+StorageMode ParseStorage(const char* command_line);
+void SelectStorage(StorageMode mode);
+StorageMode SelectedStorage();
 
 } // namespace FeatherOS::BootOptions
 

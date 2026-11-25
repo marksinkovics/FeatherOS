@@ -12,6 +12,15 @@ enum class DiskKind : uint8_t
 {
     Virtio,
     Usb,
+    Nvme,
+    Ahci,
+};
+
+enum class ReadOnlyReason : uint8_t
+{
+    None,
+    Medium,
+    Policy,
 };
 
 constexpr uint32_t MaxDiskModel = 48;
@@ -25,6 +34,10 @@ struct DiskInfo
     uint32_t max_transfer_bytes;
     bool removable;
     bool read_only;
+    ReadOnlyReason read_only_reason;
+    // Nvme only: they make the name nvme<controller_index>n<namespace_id>.
+    uint16_t controller_index;
+    uint32_t namespace_id;
     char model[MaxDiskModel];
     char location[MaxDiskLocation];
 };

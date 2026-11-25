@@ -3,6 +3,7 @@
 
 #include "kernel/filesystem/filesystem.h"
 #include "kernel/filesystem/mount_table.h"
+#include "kernel/storage/disk_driver.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -168,8 +169,10 @@ bool SyncPeriodic();
 // (Files::Quiesce), beside any it holds.
 bool DetachAll(bool keep_locked = false);
 // The type and source of the filesystem at "/", as /proc/mounts names them, and whether it is
-// mounted read-only; false with nothing there.
-bool DescribeRoot(const char** type, const char** source, bool* read_only);
+// mounted read-only; false with nothing there. A read-only root also gets, in *reason when it is
+// not null, the boot disk's reason for refusing writes (None when the disk itself writes).
+bool DescribeRoot(const char** type, const char** source, bool* read_only,
+                  Storage::ReadOnlyReason* reason = nullptr);
 // The index-th mount, in mount order, for /proc/mounts; false past the last one.
 bool DescribeMount(uint32_t index, Procfs::MountStatus* status);
 

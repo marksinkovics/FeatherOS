@@ -4,7 +4,8 @@
 namespace FeatherOS::BlockDevice
 {
 
-// Registers the virtio-blk device found by Initialize as vda; false when the registry refuses it.
+// Registers the virtio-blk device found by Initialize as vda and asks for its scan, which stays
+// pending while scans are deferred; false when the registry refuses it.
 bool RegisterVirtioDisk();
 
 } // namespace FeatherOS::BlockDevice

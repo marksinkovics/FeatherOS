@@ -33,6 +33,7 @@ set(FEATHERDISK_CATCH2_TARGET Catch2::Catch2WithMain)
 add_subdirectory("${FEATHEROS_ROOT}/src/fs/core" "${CMAKE_CURRENT_BINARY_DIR}/fs_core")
 
 add_executable(featheros_unit_tests
+    kernel/filesystem/boot_disk_tests.cpp
     kernel/filesystem/concurrency_tests.cpp
     kernel/filesystem/disk_volumes_tests.cpp
     kernel/filesystem/filesystem_tests.cpp
@@ -64,8 +65,24 @@ add_executable(featheros_unit_tests
     kernel/pci/pci_device_tree_tests.cpp
     kernel/pci/pci_tests.cpp
     kernel/process/futex_tests.cpp
+    kernel/storage/ahci_fis_tests.cpp
+    kernel/storage/ahci_hba_tests.cpp
+    kernel/storage/ahci_port_tests.cpp
+    kernel/storage/ahci_recovery_tests.cpp
+    kernel/storage/ata_identify_tests.cpp
+    kernel/storage/controllers_tests.cpp
     kernel/storage/disk_tests.cpp
+    kernel/storage/model_disk.cpp
+    kernel/storage/fake_ahci.cpp
+    kernel/storage/fake_nvme.cpp
+    kernel/storage/model_disk_tests.cpp
+    kernel/storage/nvme_command_tests.cpp
+    kernel/storage/nvme_controller_tests.cpp
+    kernel/storage/nvme_identify_tests.cpp
+    kernel/storage/nvme_recovery_tests.cpp
     kernel/storage/page_cache_tests.cpp
+    kernel/storage/storage_rig_tests.cpp
+    kernel/storage/write_policy_tests.cpp
     kernel/usb/bot_tests.cpp
     kernel/usb/bulk_tests.cpp
     kernel/usb/context_tests.cpp
@@ -85,6 +102,7 @@ add_executable(featheros_unit_tests
     kernel/usb/service_tests.cpp
     kernel/usb/storage_driver_tests.cpp
     kernel/sync/volume_mutex_tests.cpp
+    kernel/support/physical_memory.cpp
     support/network_stubs.cpp
     support/page_cache_host.cpp
     support/scheduler_stubs.cpp
@@ -179,8 +197,20 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/storage/cache_sizing.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/core_block_device.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/disk.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/ahci/fis.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/ahci/hba.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/ahci/port.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/ahci/register_wait.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/ata/identify.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/nvme/command.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/nvme/controller.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/nvme/identify.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/nvme/namespace.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/nvme/queue.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/page_cache.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/probe_wait.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/worker.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/write_policy.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/devices.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/procfs.cpp"

@@ -295,9 +295,23 @@ public:
 
 FakeDriver fake_driver;
 
-// The kernel registers the virtio disk as vda before any volume opens.
-[[maybe_unused]] const bool boot_disk_registered =
-    FeatherOS::Storage::Initialize() && FeatherOS::Storage::Register(fake_driver) != nullptr;
+bool RegisterBootDisk()
+{
+    if (!FeatherOS::Storage::Initialize())
+    {
+        return false;
+    }
+    FeatherOS::Storage::Disk* const disk = FeatherOS::Storage::Register(fake_driver);
+    if (disk == nullptr)
+    {
+        return false;
+    }
+    FeatherOS::Filesystem::Drivers::SetBootDisk(*disk);
+    return true;
+}
+
+// The kernel registers the virtio disk as vda and makes it the boot disk before any volume opens.
+[[maybe_unused]] const bool boot_disk_registered = RegisterBootDisk();
 
 } // namespace
 

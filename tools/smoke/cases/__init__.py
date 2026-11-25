@@ -1,3 +1,4 @@
+from smoke.cases.ahci import Ahci
 from smoke.cases.calc import Calc
 from smoke.cases.dungeon import Dungeon
 from smoke.cases.exception import CpuException
@@ -9,14 +10,18 @@ from smoke.cases.memory import Memory
 from smoke.cases.network import Network
 from smoke.cases.no_disk import NoDisk
 from smoke.cases.normal_boot import NormalBoot
+from smoke.cases.nvme import Nvme
+from smoke.cases.nvme_namespaces import NvmeNamespaces
 from smoke.cases.panic import Panic
 from smoke.cases.pci import Pci
 from smoke.cases.power import Power
 from smoke.cases.root import RootOption
+from smoke.cases.root_disk import RootDisk
 from smoke.cases.scheduler import Scheduler
 from smoke.cases.shell import Shell
 from smoke.cases.smp import Smp
 from smoke.cases.storage import Storage
+from smoke.cases.storage_policy import StoragePolicy
 from smoke.cases.timer import Timer
 from smoke.cases.usb import Usb
 from smoke.cases.usb_hub import UsbHub
@@ -95,6 +100,34 @@ SWITCHES = {
         "Mount a sparse 3 TiB USB drive, a 4096-byte-sector drive and a "
         "drive behind a hub, write them and check their images on the host",
     ),
+    "nvme": (
+        Nvme,
+        "Mount, write and check the four volumes of an NVMe namespace "
+        "through the kernel's test hook and the shell, then check its image "
+        "on the host",
+    ),
+    "ahci": (
+        Ahci,
+        "Mount, write and check the four volumes of an AHCI disk through "
+        "the kernel's test hook and the shell, refuse an ATAPI drive, then "
+        "check the disk's image on the host",
+    ),
+    "nvme-namespaces": (
+        NvmeNamespaces,
+        "Probe a 4096-byte and a 512-byte NVMe namespace, refuse one with "
+        "metadata, write the first two and check their images on the host",
+    ),
+    "storage-policy": (
+        StoragePolicy,
+        "Boot with storage=ro and expect the NVMe and AHCI disks read-only "
+        "through the VFS and the disk, with no write or flush command sent",
+    ),
+    "root-disk": (
+        RootDisk,
+        "Boot with the root the kernel options and --disk-bus decide (any "
+        "disk, a warning and the default, or the RAM root), write to it or "
+        "see the write refused, and check the image on the host",
+    ),
     "usb-stick": (
         UsbStick,
         "Boot from the make_usb_stick.sh image on a USB drive, save dmesg "
@@ -126,6 +159,16 @@ def AddArguments(parser):
         help="The kernel was given root=vdaN: expect that ext2 or ext3 "
         "partition mounted and written, or a warning and the default root "
         "for any other name",
+    )
+    parser.add_argument(
+        "--kernel-root",
+        metavar="NAME",
+        help="With --expect-root-disk: the kernel was given root=NAME",
+    )
+    parser.add_argument(
+        "--kernel-storage",
+        choices=("ro", "rw"),
+        help="With --expect-root-disk: the kernel was given storage=ro or rw",
     )
     parser.add_argument(
         "--expect-storage-boot",

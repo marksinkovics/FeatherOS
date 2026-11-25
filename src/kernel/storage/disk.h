@@ -13,7 +13,7 @@
 namespace FeatherOS::Storage
 {
 
-constexpr uint32_t MaxDisks = 8;
+constexpr uint32_t MaxDisks = 16;
 constexpr uint32_t MaxDiskName = 16;
 constexpr uint32_t DiskLetters = 26;
 constexpr uint32_t DiskNamePools = 2;
@@ -27,6 +27,13 @@ struct DiskCounters
 };
 
 class DiskRegistry;
+
+struct NvmeName
+{
+    bool used;
+    uint16_t controller_index;
+    uint32_t namespace_id;
+};
 
 // A registered disk as the filesystem core sees it. Counted by the registry until Remove, by each
 // open volume and by each Acquire; the last Release frees it and drops the driver's reference.
@@ -67,6 +74,7 @@ private:
     std::atomic<uint32_t> references_ = 1;
     std::atomic<bool> gone_ = false;
     std::atomic<bool> ejected_ = false;
+    std::atomic<bool> scan_pending_ = false;
     std::atomic<bool> read_only_ = false;
     std::atomic<uint64_t> read_sectors_ = 0;
     std::atomic<uint64_t> written_sectors_ = 0;
@@ -74,6 +82,8 @@ private:
     char name_[MaxDiskName] = {};
     uint8_t pool_ = 0;
     uint8_t letter_ = 0;
+    bool lettered_ = false;
+    uint8_t nvme_slot_ = 0;
 };
 
 using RemovalHandler = void (*)(Disk&);
@@ -94,7 +104,14 @@ public:
     void Remove(Disk& disk);
     // Takes a reference on the disk called name; the caller releases it.
     Disk* Acquire(const char* name);
-    // The disk registered as vda, with no reference taken: virtio disks are never removed.
+    // The disk called requested if it is registered, else the one called vda; null when neither.
+    // Takes a reference that the caller releases.
+    Disk* ChooseBootDisk(const char* requested);
+    // The disk the root and the boot slots belong to. Retained, so a removed boot disk stays a
+    // valid object and keeps its name for the kernel's life; a second call (host tests only)
+    // replaces the first.
+    void SetBootDisk(Disk& disk);
+    // Null until SetBootDisk, with no reference taken.
     Disk* BootDisk();
     void SetRemovalHandler(RemovalHandler handler);
     void SetScanHandler(ScanHandler handler);
@@ -102,6 +119,10 @@ public:
     // What a disk's owner calls once it is registered and no command is in progress: the volumes
     // on it are opened. A gone disk is skipped.
     void Scan(Disk& disk);
+    // While deferred, Scan only marks the disk pending. Ending the deferral posts one worker scan
+    // job for each pending disk that is registered and is not the boot disk, whose volumes are
+    // the root's.
+    void DeferScans(bool deferred);
     // Flushes every registered disk that is neither gone nor ejected; false when one failed.
     bool FlushAll();
     size_t Count();
@@ -111,11 +132,15 @@ private:
     friend class Disk;
 
     void Free(Disk& disk);
+    static void ScanJob(void* context);
 
     Sync::SpinLock lock_;
     bool initialized_ GUARDED_BY(lock_) = false;
+    bool scans_deferred_ GUARDED_BY(lock_) = false;
+    Disk* boot_disk_ GUARDED_BY(lock_) = nullptr;
     Disk* disks_[MaxDisks] GUARDED_BY(lock_) = {};
     bool letters_[DiskNamePools][DiskLetters] GUARDED_BY(lock_) = {};
+    NvmeName nvme_names_[MaxDisks] GUARDED_BY(lock_) = {};
     std::atomic<RemovalHandler> handler_ = nullptr;
     std::atomic<ScanHandler> scan_handler_ = nullptr;
     std::atomic<VolumeLister> lister_ = nullptr;
@@ -127,11 +152,14 @@ bool Initialize();
 Disk* Register(DiskDriver& driver);
 void Remove(Disk& disk);
 Disk* Acquire(const char* name);
+Disk* ChooseBootDisk(const char* requested);
+void SetBootDisk(Disk& disk);
 Disk* BootDisk();
 void SetRemovalHandler(RemovalHandler handler);
 void SetScanHandler(ScanHandler handler);
 void SetVolumeLister(VolumeLister lister);
 void Scan(Disk& disk);
+void DeferScans(bool deferred);
 bool FlushAll();
 size_t DiskCount();
 size_t FormatPartitions(char* out, size_t capacity);

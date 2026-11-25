@@ -25,6 +25,13 @@ def main():
     )
     parser.add_argument("--disk", required=True, help="Raw virtio block image")
     parser.add_argument(
+        "--disk-bus",
+        choices=("virtio", "nvme", "nvme4k", "ahci"),
+        default="virtio",
+        help="How the disk is attached: virtio-blk, an NVMe namespace (512 "
+        "or 4096-byte blocks) or an AHCI disk",
+    )
+    parser.add_argument(
         "--build-dir", required=True, help="The build's folder, build/<arch>"
     )
     parser.add_argument(

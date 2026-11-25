@@ -6,6 +6,40 @@ from smoke.boot import QEMU_CPU_COUNT
 NETDEV = "featheros_net"
 
 
+def DiskArguments(args, case):
+    """How featheros_disk, the case's image or the test disk, is attached:
+    virtio-blk, or an NVMe namespace (512 or 4096-byte blocks) or an AHCI
+    disk when DISK_BUS asks, so the root can be read through those drivers."""
+    image = case.DiskImage() or args.disk
+    drive = ["-drive", f"if=none,id=featheros_disk,file={image},format=raw"]
+    bus = args.disk_bus
+    if bus == "nvme":
+        device = ["-device", "nvme,serial=feather-root,drive=featheros_disk"]
+    elif bus == "nvme4k":
+        device = [
+            "-device",
+            "nvme,id=nvme0,serial=feather-root",
+            "-device",
+            "nvme-ns,drive=featheros_disk,nsid=1,logical_block_size=4096,"
+            "physical_block_size=4096",
+        ]
+    elif bus == "ahci":
+        device = [
+            "-device",
+            "ich9-ahci,id=ahci",
+            "-device",
+            "ide-hd,drive=featheros_disk,bus=ahci.0",
+        ]
+    elif args.arch == "aarch64":
+        device = ["-device", "virtio-blk-device,drive=featheros_disk"]
+    else:
+        device = [
+            "-device",
+            "virtio-blk-pci,drive=featheros_disk,disable-legacy=off",
+        ]
+    return drive + device
+
+
 def Command(qemu, args, case):
     command = [qemu]
     if args.arch == "aarch64":
@@ -43,16 +77,7 @@ def Command(qemu, args, case):
                 ]
             )
     if case.has_disk:
-        command.extend(
-            [
-                "-drive",
-                f"if=none,id=featheros_disk,file={args.disk},format=raw",
-                "-device",
-                "virtio-blk-device,drive=featheros_disk"
-                if args.arch == "aarch64"
-                else "virtio-blk-pci,drive=featheros_disk,disable-legacy=off",
-            ]
-        )
+        command.extend(DiskArguments(args, case))
     command.extend(
         [
             # QEMU's user-mode network: the guest is 10.0.2.15 behind 10.0.2.2.

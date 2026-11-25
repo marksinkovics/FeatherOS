@@ -7,6 +7,7 @@
 #include "kernel/panic.h"
 #include "kernel/process.h"
 #include "kernel/smp.h"
+#include "kernel/storage/controllers.h"
 #include "kernel/storage/disk.h"
 
 namespace FeatherOS::Power
@@ -33,6 +34,7 @@ void Shutdown(Action action, uint64_t caller_process)
         Console::WriteLine(Storage::FlushAll() ? "KERN/I: Shutdown: disk flushed"
                                                : "KERN/W: Shutdown: disk flush failed");
     }
+    Storage::ShutdownControllers(action);
     Console::WriteLine(action == Action::PowerOff ? "KERN/I: Powering off" : "KERN/I: Restarting");
     // Nothing may print after this point: a stopped CPU could be holding the console's locks.
     const bool stopped = Smp::StopOtherCpus();

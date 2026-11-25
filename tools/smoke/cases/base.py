@@ -35,6 +35,11 @@ class Case:
     def Start(self):
         pass
 
+    def DiskImage(self):
+        """A disk image to attach as featheros_disk instead of the test
+        disk."""
+        return None
+
     def NetdevOptions(self):
         return ""
 

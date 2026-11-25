@@ -846,19 +846,28 @@ const Filesystem::Driver* MountedAt(const char* point)
     return mounts.Find(point);
 }
 
-bool DescribeRoot(const char** type, const char** source, bool* read_only)
+bool DescribeRoot(const char** type, const char** source, bool* read_only,
+                  Storage::ReadOnlyReason* reason)
 {
     if (type == nullptr || source == nullptr || read_only == nullptr)
     {
         return false;
     }
-    Sync::SpinLockGuard guard(mount_lock);
-    const Driver* driver = mounts.Find("/");
-    if (driver == nullptr || !types.Describe(driver, type, source))
     {
-        return false;
+        Sync::SpinLockGuard guard(mount_lock);
+        const Driver* driver = mounts.Find("/");
+        if (driver == nullptr || !types.Describe(driver, type, source))
+        {
+            return false;
+        }
+        *read_only = driver->IsMountedReadOnly();
     }
-    *read_only = driver->IsMountedReadOnly();
+    if (reason != nullptr)
+    {
+        const Storage::Disk* const boot = Storage::BootDisk();
+        *reason = *read_only && boot != nullptr ? boot->Info().read_only_reason
+                                                : Storage::ReadOnlyReason::None;
+    }
     return true;
 }
 

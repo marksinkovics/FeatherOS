@@ -11,7 +11,6 @@
 #include "fs/fat.h"
 #include "kernel/klogger.h"
 #include "kernel/memory/heap.h"
-#include "kernel/storage/core_block_device.h"
 #include "kernel/storage/disk.h"
 #include "kernel/storage/page_cache.h"
 #include "kernel/storage/worker.h"
@@ -457,11 +456,6 @@ private:
     Tmpfs::Root root;
 };
 
-constexpr const char* PartitionSources[] = {
-    "vda",  "vda1",  "vda2",  "vda3",  "vda4",  "vda5",  "vda6",  "vda7",  "vda8",
-    "vda9", "vda10", "vda11", "vda12", "vda13", "vda14", "vda15", "vda16",
-};
-
 constexpr CoreKind Kinds[] = {
     {FeatherDisk::Fat::Fat16Type, "fat16", {}},
     {FeatherDisk::Ext::Ext2Type, "ext2", {.periodic_sync = true}},
@@ -475,6 +469,9 @@ constexpr size_t NoSlot = SIZE_MAX;
 // Slots 0 to 15 are the boot disk's partitions 1 to 16; the rest serve other disks.
 constinit CoreDriver volume_drivers[SlotCount];
 constinit KLogger logger;
+// The boot disk's name, then its partitions' names, filled by SetBootDisk before any volume opens
+// and never changed while volumes exist, so reads need no lock.
+constinit char boot_sources[Drivers::MaximumVolumes + 1][Drivers::MaximumSourceLength] = {};
 
 struct OtherSlot
 {
@@ -646,6 +643,17 @@ void RemovedJob(void* context)
 
 void OnDiskRemoved(Storage::Disk& disk)
 {
+    if (&disk == Storage::BootDisk())
+    {
+        // The boot slots are never freed: the disk stays registered as an object, so their names
+        // stay taken.
+        Sync::SpinLockGuard guard(volumes_lock);
+        for (size_t index = 0; index < Drivers::MaximumVolumes; ++index)
+        {
+            volume_drivers[index].MarkDead();
+        }
+        return;
+    }
     {
         Sync::SpinLockGuard guard(volumes_lock);
         for (size_t index = 0; index < Drivers::MaximumOtherVolumes; ++index)
@@ -707,9 +715,19 @@ namespace Drivers
 
 const char* PartitionSource(size_t number)
 {
-    return number < sizeof(PartitionSources) / sizeof(PartitionSources[0])
-               ? PartitionSources[number]
-               : nullptr;
+    return number <= MaximumVolumes && boot_sources[number][0] != '\0' ? boot_sources[number]
+                                                                       : nullptr;
+}
+
+void SetBootDisk(Storage::Disk& disk)
+{
+    Storage::SetBootDisk(disk);
+    for (size_t number = 0; number <= MaximumVolumes; ++number)
+    {
+        boot_sources[number][0] = '\0';
+        NameVolume(disk.Name(), static_cast<uint32_t>(number), boot_sources[number],
+                   MaximumSourceLength);
+    }
 }
 
 CoreDriver* Volume(size_t number)
@@ -860,7 +878,7 @@ void Unmounted(Driver* driver)
 
 size_t FindPartitions(std::span<FeatherDisk::Partition::Range> ranges)
 {
-    return FeatherDisk::Partition::Find(BlockDevice::CoreDevice(), ranges);
+    return FeatherDisk::Partition::Find(*Storage::BootDisk(), ranges);
 }
 
 bool OpenVolume(const FeatherDisk::Partition::Range& range)

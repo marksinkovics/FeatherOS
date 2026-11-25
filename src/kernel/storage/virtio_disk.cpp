@@ -88,7 +88,13 @@ constinit VirtioDriver driver;
 
 bool RegisterVirtioDisk()
 {
-    return Storage::Register(driver) != nullptr;
+    Storage::Disk* const disk = Storage::Register(driver);
+    if (disk == nullptr)
+    {
+        return false;
+    }
+    Storage::Scan(*disk);
+    return true;
 }
 
 } // namespace FeatherOS::BlockDevice

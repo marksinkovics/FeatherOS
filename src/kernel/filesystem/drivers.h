@@ -14,10 +14,13 @@
 namespace FeatherOS::Filesystem::Drivers
 {
 
-// A disk's sources, as Linux names the first virtio disk and its partitions: "vda" for the whole
-// disk (number 0), "vda1" for the partition Partition::Find numbers 1, and so on; null past
-// the last partition CoreDriver mounts.
+// The boot disk's sources, as Linux names disks and their partitions: "vda" for the whole disk
+// (number 0), "vda1" for the partition Partition::Find numbers 1, "nvme0n1p1" on an NVMe disk;
+// null before SetBootDisk and past the last partition CoreDriver mounts.
 const char* PartitionSource(size_t number);
+// Makes disk the boot disk (Storage::SetBootDisk) and names the boot slots after it. Before the
+// root mount, and once in the kernel.
+void SetBootDisk(Storage::Disk& disk);
 // The boot disk's partitions are numbered 1 to MaximumVolumes, and each number has a driver of its
 // own for the kernel's whole life, so a driver never dangles or changes volume. Sixteen more
 // drivers, equally permanent, serve the volumes of every other disk as OpenDiskVolumes allocates
@@ -49,7 +52,7 @@ bool SourceOnEjectedDisk(const char* source);
 const char* SourceOf(const Driver* driver);
 // After the VFS removed driver's mount: a dead volume's slot is freed.
 void Unmounted(Driver* driver);
-// The block device's partitions that may hold a filesystem, in Partition::Find's order, at most
+// The boot disk's partitions that may hold a filesystem, in Partition::Find's order, at most
 // MaximumVolumes of them; returns how many.
 size_t FindPartitions(std::span<FeatherDisk::Partition::Range> ranges);
 // Opens range's filesystem read-only in the core in Volume(range.number), as the first of FAT16,

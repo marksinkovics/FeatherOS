@@ -32,6 +32,7 @@
 #include "kernel/smp.h"
 #include "kernel/string/format.h"
 #include "kernel/storage/block_device.h"
+#include "kernel/storage/controllers.h"
 #include "kernel/storage/disk.h"
 #include "kernel/storage/page_cache.h"
 #include "kernel/storage/virtio_disk.h"
@@ -40,6 +41,8 @@
 #include "kernel/memory/virtual_memory.h"
 #include "user/calendar.h"
 #include "user/syscall_abi.h"
+
+#include <string_view>
 
 extern "C"
 {
@@ -53,6 +56,7 @@ namespace
 
 constexpr char RootInit[] = "/sbin/init";
 constexpr char RescueInit[] = "init";
+constexpr uint64_t ControllerWaitMilliseconds = 60000;
 
 Framebuffer framebuffer;
 Term terms[Console::Count];
@@ -283,6 +287,13 @@ void MountRamRoot(KLogger& logger)
 
 void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
 {
+    // The controller probes below wait with deadlines, which only a tick ends.
+    if (!Time::InitializeTimer(100, boot_info.platform_data))
+    {
+        Panic("Periodic timer initialization failed");
+    }
+    Time::WaitForNextTick();
+    logger.Info("Timer started at 100 Hz");
     if (!BlockDevice::InitializeCache(boot_info.hhdm_offset))
     {
         Panic("Page cache initialization failed");
@@ -292,39 +303,82 @@ void MountAndVerifyDisk(KLogger& logger, const BootInfo& boot_info)
         Panic("Disk registry initialization failed");
     }
     Filesystem::Drivers::AttachStorage();
-    if (!BlockDevice::Initialize(boot_info.platform_data, boot_info.hhdm_offset) ||
-        BlockDevice::SectorCount() < 2 || !BlockDevice::RegisterVirtioDisk())
+    Storage::DeferScans(true);
+    if (BlockDevice::Initialize(boot_info.platform_data, boot_info.hhdm_offset) &&
+        BlockDevice::SectorCount() >= 2)
     {
+        BlockDevice::RegisterVirtioDisk();
+    }
+    Storage::StartControllers(boot_info.platform_data);
+    Storage::WaitForControllers(ControllerWaitMilliseconds);
+    const BootOptions::Root requested = BootOptions::SelectedRoot();
+    const bool names_disk = requested.request == BootOptions::RootRequest::Partition;
+    Storage::Disk* const boot = Storage::ChooseBootDisk(names_disk ? requested.disk : nullptr);
+    if (boot == nullptr)
+    {
+        Storage::DeferScans(false);
         MountRamRoot(logger);
         return;
     }
+    Filesystem::Drivers::SetBootDisk(*boot);
+    boot->Release();
+    char message[128];
+    const bool disk_found = names_disk && std::string_view(boot->Name()) == requested.disk;
+    // A name that is neither the boot disk's nor of a registered disk leaves the default root.
+    const size_t partition = disk_found ? requested.partition : 0;
     const char* root_type = nullptr;
     const char* root_source = nullptr;
     bool root_read_only = false;
-    const BootOptions::Root requested = BootOptions::SelectedRoot();
+    Storage::ReadOnlyReason read_only_reason = Storage::ReadOnlyReason::None;
     bool honored = true;
-    if (!VFS::MountBlockDevice(requested.partition, &honored) ||
-        !VFS::DescribeRoot(&root_type, &root_source, &root_read_only))
+    if (!VFS::MountBlockDevice(partition, &honored) ||
+        !VFS::DescribeRoot(&root_type, &root_source, &root_read_only, &read_only_reason))
     {
-        Panic("No FAT16, ext2, ext3 or ext4 root filesystem on the disk");
+        if (!String::FormatTo(message, sizeof(message),
+                              "No FAT16, ext2, ext3 or ext4 root filesystem on {}", boot->Name()))
+        {
+            Panic("No FAT16, ext2, ext3 or ext4 root filesystem on the disk");
+        }
+        Panic(message);
     }
-    char message[96];
+    Storage::DeferScans(false);
+    char wanted[Storage::MaxDiskName + 8];
+    if (names_disk &&
+        !Storage::PartitionName(requested.disk, static_cast<uint32_t>(requested.partition), wanted,
+                                sizeof(wanted)))
+    {
+        Panic("Root name formatting failed");
+    }
     if (requested.request == BootOptions::RootRequest::Malformed)
     {
-        logger.Warning("VFS: root= is not a partition such as vda1, using the default root");
+        logger.Warning(
+            "VFS: root= is not a partition such as vda1 or nvme0n1p2, using the default root");
+    }
+    else if (names_disk && !disk_found)
+    {
+        if (!String::FormatTo(message, sizeof(message),
+                              "VFS: root={}: no disk {}, using the default root", wanted,
+                              requested.disk))
+        {
+            Panic("Root warning formatting failed");
+        }
+        logger.Warning(message);
     }
     else if (!honored)
     {
         if (!String::FormatTo(message, sizeof(message),
-                              "VFS: root=vda{} is not a usable partition, using the default root",
-                              requested.partition))
+                              "VFS: root={} is not a usable partition, using the default root",
+                              wanted))
         {
             Panic("Root warning formatting failed");
         }
         logger.Warning(message);
     }
     if (!String::FormatTo(message, sizeof(message), "VFS: / is {} {}, {}", root_source, root_type,
-                          root_read_only ? "read-only: the volume refused writes" : "read-write"))
+                          !root_read_only ? "read-write"
+                          : read_only_reason == Storage::ReadOnlyReason::Policy
+                              ? "read-only: the storage policy (storage=rw to write)"
+                              : "read-only: the volume refused writes"))
     {
         Panic("Root filesystem message formatting failed");
     }
@@ -487,12 +541,6 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
 [[noreturn]] void RunConsole(KLogger& logger, const BootInfo& boot_info)
 {
     Input::SetTerminal(Console::Terminal());
-    if (!Time::InitializeTimer(100, boot_info.platform_data))
-    {
-        Panic("Periodic timer initialization failed");
-    }
-    Time::WaitForNextTick();
-    logger.Info("Timer started at 100 Hz");
     // Secondary CPUs start their timers at the boot CPU's rate.
     StartSecondaryCpus(logger, boot_info.smp);
     StartNetwork(logger, boot_info);
@@ -509,6 +557,18 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
     if (KernelTest::Selected(KernelTest::Mode::UsbStorage))
     {
         KernelTest::StartUsbStorageTests();
+    }
+    if (KernelTest::Selected(KernelTest::Mode::Nvme))
+    {
+        KernelTest::StartNvmeTests();
+    }
+    if (KernelTest::Selected(KernelTest::Mode::Ahci))
+    {
+        KernelTest::StartAhciTests();
+    }
+    if (KernelTest::Selected(KernelTest::Mode::StoragePolicy))
+    {
+        KernelTest::StartStoragePolicyTests();
     }
 #endif
     if (!Arch::Keyboard::Initialize(boot_info.platform_data, boot_info.hhdm_offset))

@@ -22,6 +22,7 @@ using FeatherOS::Storage::DiskDriver;
 using FeatherOS::Storage::DiskInfo;
 using FeatherOS::Storage::DiskKind;
 using FeatherOS::Storage::DiskRegistry;
+using FeatherOS::Storage::ReadOnlyReason;
 
 struct Call
 {
@@ -55,6 +56,9 @@ public:
         info.max_transfer_bytes = max_transfer_bytes;
         info.removable = kind == DiskKind::Usb;
         info.read_only = read_only.load();
+        info.read_only_reason = reason;
+        info.controller_index = controller_index;
+        info.namespace_id = namespace_id;
         return info;
     }
 
@@ -131,6 +135,9 @@ public:
     std::vector<uint8_t> image;
     std::atomic<bool> gone = false;
     std::atomic<bool> read_only = false;
+    ReadOnlyReason reason = ReadOnlyReason::None;
+    uint16_t controller_index = 0;
+    uint32_t namespace_id = 1;
     std::atomic<uint32_t> releases = 0;
     std::mutex lock;
     std::vector<Call> calls;
@@ -197,7 +204,7 @@ TEST_CASE("disk T16: names follow probe order, and a letter returns only after t
     REQUIRE(NameOf(sda) == "sda");
     REQUIRE(NameOf(sdb) == "sdb");
     REQUIRE(registry.Count() == 3);
-    REQUIRE(registry.BootDisk() == vda);
+    REQUIRE(registry.BootDisk() == nullptr);
 
     Disk* held = registry.Acquire("sda");
     REQUIRE(held == sda);
@@ -301,7 +308,7 @@ TEST_CASE("disk T16: the registry refuses a disk before Initialize and past MaxD
         disks.push_back(registry.Register(*drivers.back()));
         REQUIRE(disks.back() != nullptr);
     }
-    CHECK(NameOf(disks.back()) == "sdh");
+    CHECK(NameOf(disks.back()) == "sdp");
     FakeDriver extra;
     CHECK(registry.Register(extra) == nullptr);
     CHECK(extra.releases == 0);
@@ -360,6 +367,166 @@ TEST_CASE("disk T16: FlushAll flushes each live disk once and reports a failure"
     registry.Remove(*sda);
     registry.Remove(*sdb);
     registry.Remove(*sdd);
+}
+
+TEST_CASE("disk T1: NVMe names follow controller and namespace, partitions take a p", "[disk]")
+{
+    Registry fixture;
+    DiskRegistry& registry = fixture.registry;
+    FakeDriver first(DiskKind::Nvme);
+    FakeDriver second(DiskKind::Nvme);
+    second.namespace_id = 2;
+    FakeDriver other(DiskKind::Nvme);
+    other.controller_index = 1;
+    FakeDriver twin(DiskKind::Nvme);
+    Disk* n1 = registry.Register(first);
+    Disk* n2 = registry.Register(second);
+    Disk* n3 = registry.Register(other);
+    REQUIRE(NameOf(n1) == "nvme0n1");
+    REQUIRE(NameOf(n2) == "nvme0n2");
+    REQUIRE(NameOf(n3) == "nvme1n1");
+
+    char name[16];
+    REQUIRE(FeatherOS::Storage::PartitionName(n1->Name(), 1, name, sizeof(name)) == 9);
+    CHECK(std::string(name) == "nvme0n1p1");
+    REQUIRE(FeatherOS::Storage::PartitionName(n3->Name(), 12, name, sizeof(name)) == 10);
+    CHECK(std::string(name) == "nvme1n1p12");
+
+    CHECK(registry.Register(twin) == nullptr);
+    CHECK(twin.releases == 0);
+    CHECK(registry.Count() == 3);
+    CHECK(registry.Acquire("nvme0n2") == n2);
+    n2->Release();
+
+    n1->Retain();
+    registry.Remove(*n1);
+    CHECK(registry.Register(twin) == nullptr);
+    n1->Release();
+    Disk* again = registry.Register(twin);
+    REQUIRE(again != nullptr);
+    CHECK(NameOf(again) == "nvme0n1");
+
+    registry.Remove(*again);
+    registry.Remove(*n2);
+    registry.Remove(*n3);
+}
+
+TEST_CASE("disk T1: NVMe disks take no sd letter and AHCI shares them with USB", "[disk]")
+{
+    Registry fixture;
+    DiskRegistry& registry = fixture.registry;
+    FakeDriver nvme(DiskKind::Nvme);
+    FakeDriver ahci_a(DiskKind::Ahci);
+    FakeDriver ahci_b(DiskKind::Ahci);
+    FakeDriver usb_a(DiskKind::Usb);
+    FakeDriver usb_b(DiskKind::Usb);
+    FakeDriver virtio(DiskKind::Virtio);
+    Disk* n = registry.Register(nvme);
+    Disk* a = registry.Register(ahci_a);
+    Disk* b = registry.Register(ahci_b);
+    Disk* u = registry.Register(usb_a);
+    REQUIRE(NameOf(n) == "nvme0n1");
+    REQUIRE(NameOf(a) == "sda");
+    REQUIRE(NameOf(b) == "sdb");
+    REQUIRE(NameOf(u) == "sdc");
+
+    registry.Remove(*a);
+    Disk* hole = registry.Register(usb_b);
+    CHECK(NameOf(hole) == "sda");
+    Disk* v = registry.Register(virtio);
+    CHECK(NameOf(v) == "vda");
+    CHECK(registry.BootDisk() == nullptr);
+
+    for (Disk* disk : {n, b, u, hole, v})
+    {
+        registry.Remove(*disk);
+    }
+}
+
+TEST_CASE("disk T1: sixteen disks fit and the seventeenth is refused", "[disk]")
+{
+    Registry fixture;
+    DiskRegistry& registry = fixture.registry;
+    std::vector<std::unique_ptr<FakeDriver>> drivers;
+    std::vector<Disk*> disks;
+    for (uint32_t index = 0; index < 16; ++index)
+    {
+        drivers.push_back(std::make_unique<FakeDriver>(index % 2 == 0 ? DiskKind::Ahci
+                                                                     : DiskKind::Nvme));
+        drivers.back()->controller_index = static_cast<uint16_t>(index);
+        disks.push_back(registry.Register(*drivers.back()));
+        REQUIRE(disks.back() != nullptr);
+    }
+    CHECK(FeatherOS::Storage::MaxDisks == 16);
+    CHECK(NameOf(disks[14]) == "sdh");
+    CHECK(NameOf(disks[15]) == "nvme15n1");
+    FakeDriver extra;
+    CHECK(registry.Register(extra) == nullptr);
+    for (Disk* disk : disks)
+    {
+        registry.Remove(*disk);
+    }
+}
+
+TEST_CASE("disk T1: the partition listing names the NVMe and AHCI kinds", "[disk]")
+{
+    Registry fixture;
+    DiskRegistry& registry = fixture.registry;
+    FakeDriver nvme(DiskKind::Nvme, 2048);
+    FakeDriver ahci(DiskKind::Ahci, 4096);
+    ahci.read_only = true;
+    ahci.reason = ReadOnlyReason::Policy;
+    Disk* n = registry.Register(nvme);
+    Disk* a = registry.Register(ahci);
+    char text[256];
+    registry.FormatPartitions(text, sizeof(text));
+    CHECK(std::string(text) == "nvme0n1 1024 512 nvme\n"
+                               "sda    2048 512 ahci ro\n");
+    CHECK(a->Info().read_only_reason == ReadOnlyReason::Policy);
+    CHECK(n->Info().read_only_reason == ReadOnlyReason::None);
+    registry.Remove(*n);
+    registry.Remove(*a);
+}
+
+TEST_CASE("disk T2: a policy read-only disk refuses writes and skips the flush", "[disk]")
+{
+    Registry fixture;
+    FakeDriver policy(DiskKind::Nvme);
+    policy.read_only = true;
+    policy.reason = ReadOnlyReason::Policy;
+    Disk* disk = fixture.registry.Register(policy);
+    REQUIRE(disk != nullptr);
+    std::vector<uint8_t> buffer(512);
+    auto write = disk->Write(0, buffer);
+    REQUIRE_FALSE(write);
+    CHECK(write.error() == Error::ReadOnly);
+    CHECK(disk->Flush());
+    CHECK(policy.Calls().empty());
+    CHECK(policy.flushes == 0);
+    CHECK(disk->Counters().flushes == 0);
+    CHECK(disk->Info().read_only_reason == ReadOnlyReason::Policy);
+    CHECK(disk->Read(0, buffer));
+
+    FakeDriver medium;
+    medium.read_only = true;
+    medium.reason = ReadOnlyReason::Medium;
+    Disk* locked = fixture.registry.Register(medium);
+    REQUIRE(locked != nullptr);
+    CHECK(locked->Flush());
+    CHECK(medium.flushes == 0);
+    CHECK(locked->Info().read_only_reason == ReadOnlyReason::Medium);
+
+    FakeDriver open;
+    Disk* writable = fixture.registry.Register(open);
+    REQUIRE(writable != nullptr);
+    CHECK(writable->Write(0, buffer));
+    CHECK(writable->Flush());
+    CHECK(open.flushes == 1);
+    CHECK(writable->Info().read_only_reason == ReadOnlyReason::None);
+
+    fixture.registry.Remove(*disk);
+    fixture.registry.Remove(*locked);
+    fixture.registry.Remove(*writable);
 }
 
 TEST_CASE("disk T16: the partition listing shows one line per disk", "[disk]")

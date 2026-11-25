@@ -2,7 +2,7 @@
 
 The checklist for booting an x86-64 UEFI laptop from a USB stick and typing on it. It was written for M14 and moved to M19 Part 2 (2026-11-22), where USB mass storage lets the log be saved to the stick; it is manual. Design background: `docs/design/M14.md`.
 
-FeatherOS has no disk driver for real machines (only virtio-blk), so on a laptop it runs without a disk: a tmpfs root with `/home`, programs from the initramfs's `/system`, `/etc` as a RAM copy. Nothing is saved across a reboot.
+This checklist boots from the USB stick and uses no internal disk for the root, so it runs without one: a tmpfs root with `/home`, programs from the initramfs's `/system`, `/etc` as a RAM copy. Nothing is saved across a reboot. The NVMe and AHCI drivers (M16) were tested only in QEMU; on real hardware their disks show `ro` in `/proc/partitions` and mount read-only unless the kernel command line has `storage=rw`.
 
 ## 1. Firmware setup
 

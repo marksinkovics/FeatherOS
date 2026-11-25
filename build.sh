@@ -30,11 +30,15 @@ _usage() {
     printf 'KERNEL_TESTS=ON builds the kernel test hooks (test, smoke, test-all and any *_TEST kernel toggle turn it on).\n'
     printf 'KERNEL_ROOT=vdaN puts root=vdaN on the kernel command line, naming the root partition (FAT16, ext2, ext3 or ext4);\n'
     printf 'ROOT_TEST=ON boots with it (vda3 by default) and checks the root.\n'
+    printf 'KERNEL_ROOT also takes sdaN (AHCI) and nvme0n1pN (NVMe), a disk the run must attach with DISK_BUS=nvme|nvme4k|ahci\n'
+    printf '(smoke tests: the test disk on an NVMe namespace, one of 4096-byte blocks holding its own root, or an AHCI disk;\n'
+    printf 'virtio, the default, is virtio-blk); ROOT_DISK_TEST=ON boots with them and checks the root the kernel chose.\n'
     printf 'USB_STICK_TEST=ON X86_UEFI=ON boots the make_usb_stick.sh image from a USB drive and saves dmesg to its log partition.\n'
     printf 'NODISK_TEST=ON boots with no virtio-blk device and checks the RAM root.\n'
     printf 'KERNEL_USB=off|poll puts usb=off or usb=poll on the kernel command line (no USB, or controller events by timer).\n'
     printf 'KERNEL_USBHID=report puts usbhid=report on it (boot keyboards and mice through their report descriptors);\n'
     printf 'KERNEL_PS2=off puts ps2=off on it (no PS/2 or virtio keyboard).\n'
+    printf 'KERNEL_STORAGE=ro|rw puts storage=ro or storage=rw on it (NVMe and AHCI disks read-only, or writable on real hardware too).\n'
     printf 'LIMINE_TIMEOUT=N makes the ISO'"'"'s Limine wait N seconds at its menu (default 0, which hides it).\n'
     printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, unit-test-tsan,\n'
     printf '         benchmark, debug, all, clean, fullclean\n'
@@ -96,7 +100,7 @@ _kernel_test_mode() {
     local -a modes=()
     local toggle variable
     for toggle in PANIC EXCEPTION INTERRUPT MEMORY TIMER SCHEDULER USER_PREEMPTION SMP STORAGE \
-        NETWORK INPUT PCI USB_STORAGE; do
+        NETWORK INPUT PCI USB_STORAGE NVME AHCI STORAGE_POLICY; do
         variable="${toggle}_TEST"
         if _is_on "${!variable:-OFF}"; then
             modes+=("$(printf '%s' "$toggle" | tr '[:upper:]_' '[:lower:]-')")
@@ -133,6 +137,9 @@ _kernel_command_line() {
     fi
     if [ -n "${KERNEL_PS2:-}" ]; then
         words+=("ps2=$KERNEL_PS2")
+    fi
+    if [ -n "${KERNEL_STORAGE:-}" ]; then
+        words+=("storage=$KERNEL_STORAGE")
     fi
     if [ -n "$test_mode" ]; then
         words+=("test=$test_mode")
@@ -606,6 +613,18 @@ smoke_test() {
     if _is_on "${USB_STORAGE_LARGE_TEST:-OFF}"; then
         smoke_args+=(--expect-usb-storage-large)
     fi
+    if _is_on "${NVME_TEST:-OFF}"; then
+        smoke_args+=(--expect-nvme)
+    fi
+    if _is_on "${AHCI_TEST:-OFF}"; then
+        smoke_args+=(--expect-ahci)
+    fi
+    if _is_on "${NVME_NAMESPACES_TEST:-OFF}"; then
+        smoke_args+=(--expect-nvme-namespaces)
+    fi
+    if _is_on "${STORAGE_POLICY_TEST:-OFF}"; then
+        smoke_args+=(--expect-storage-policy)
+    fi
     if _is_on "${USB_STICK_TEST:-OFF}"; then
         smoke_args+=(--expect-usb-stick)
     fi
@@ -621,6 +640,24 @@ smoke_test() {
     if _is_on "${ROOT_TEST:-OFF}"; then
         smoke_args+=(--expect-root "${KERNEL_ROOT:-vda3}")
     fi
+    if _is_on "${ROOT_DISK_TEST:-OFF}"; then
+        smoke_args+=(--expect-root-disk)
+        if [ -n "${KERNEL_ROOT:-}" ]; then
+            smoke_args+=(--kernel-root "$KERNEL_ROOT")
+        fi
+        if [ -n "${KERNEL_STORAGE:-}" ]; then
+            smoke_args+=(--kernel-storage "$KERNEL_STORAGE")
+        fi
+    fi
+    case "${DISK_BUS:-virtio}" in
+        virtio | nvme | nvme4k | ahci)
+            smoke_args+=(--disk-bus "${DISK_BUS:-virtio}")
+            ;;
+        *)
+            _err "DISK_BUS must be virtio, nvme, nvme4k or ahci, not '$DISK_BUS'."
+            exit 1
+            ;;
+    esac
 
     iso_path=$(_kernel_iso)
     if [ ! -f "$iso_path" ]; then

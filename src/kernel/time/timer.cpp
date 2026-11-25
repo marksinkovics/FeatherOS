@@ -77,6 +77,11 @@ void StopTimer()
     initialized = false;
 }
 
+bool TimerRunning()
+{
+    return initialized;
+}
+
 bool PrepareSecondaryCpuTimers()
 {
     if (!initialized)

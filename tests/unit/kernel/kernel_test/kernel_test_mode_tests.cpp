@@ -22,6 +22,10 @@ TEST_CASE("Kernel test mode comes from the command line")
     REQUIRE(mode == Mode::Pci);
     REQUIRE(ParseCommandLine("test=usb-storage", &mode));
     REQUIRE(mode == Mode::UsbStorage);
+    REQUIRE(ParseCommandLine("test=nvme", &mode));
+    REQUIRE(mode == Mode::Nvme);
+    REQUIRE(ParseCommandLine("test=ahci", &mode));
+    REQUIRE(mode == Mode::Ahci);
     // Other options, and words that only start like one, are not modes.
     REQUIRE(ParseCommandLine("attest=smp testing=smp", &mode));
     REQUIRE(mode == Mode::None);

@@ -197,12 +197,17 @@ bool CoreDriver::MediaAllowsWrites()
         Storage::PartitionName(media->Name(), static_cast<uint32_t>(partition_number), source,
                                sizeof(source));
     }
+    const char* format = "VFS: {} was not cleanly unmounted (FAT16 dirty bits); mounted read-only, "
+                         "run fsck.fat";
+    if (protected_disk)
+    {
+        format = info.read_only_reason == Storage::ReadOnlyReason::Policy
+                     ? "VFS: {} is read-only by the storage policy (storage=rw to write), mounted "
+                       "read-only"
+                     : "VFS: {} is write-protected, mounted read-only";
+    }
     char line[128];
-    if (String::FormatTo(line, sizeof(line),
-                         protected_disk ? "VFS: {} is write-protected, mounted read-only"
-                                        : "VFS: {} was not cleanly unmounted (FAT16 dirty bits); "
-                                          "mounted read-only, run fsck.fat",
-                         source))
+    if (String::FormatTo(line, sizeof(line), format, source))
     {
         logger.Warning(line);
     }

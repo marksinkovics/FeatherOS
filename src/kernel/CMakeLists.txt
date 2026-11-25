@@ -78,7 +78,7 @@ set(SRC
     ${SRCROOT}/usb/storage/bot.cpp
     ${SRCROOT}/usb/storage/drive.cpp
     ${SRCROOT}/usb/storage/driver.cpp
-    ${SRCROOT}/usb/storage/kernel_environment.cpp
+    ${SRCROOT}/storage/kernel_environment.cpp
     ${SRCROOT}/usb/storage/scsi.cpp
     ${SRCROOT}/usb/text.cpp
     ${SRCROOT}/usb/usb.cpp
@@ -132,10 +132,26 @@ set(SRC
     ${SRCROOT}/filesystem/path.cpp
     ${SRCROOT}/filesystem/path_walk.cpp
     ${SRCROOT}/storage/cache_sizing.cpp
+    ${SRCROOT}/storage/controllers.cpp
     ${SRCROOT}/storage/core_block_device.cpp
     ${SRCROOT}/storage/disk.cpp
     ${SRCROOT}/storage/page_cache.cpp
+    ${SRCROOT}/storage/ahci/fis.cpp
+    ${SRCROOT}/storage/ahci/hba.cpp
+    ${SRCROOT}/storage/ahci/port.cpp
+    ${SRCROOT}/storage/ahci/probe.cpp
+    ${SRCROOT}/storage/ahci/register_wait.cpp
+    ${SRCROOT}/storage/ata/identify.cpp
+    ${SRCROOT}/storage/nvme/command.cpp
+    ${SRCROOT}/storage/nvme/controller.cpp
+    ${SRCROOT}/storage/nvme/identify.cpp
+    ${SRCROOT}/storage/nvme/namespace.cpp
+    ${SRCROOT}/storage/nvme/probe.cpp
+    ${SRCROOT}/storage/nvme/queue.cpp
+    ${SRCROOT}/storage/pci_hardware.cpp
+    ${SRCROOT}/storage/probe_wait.cpp
     ${SRCROOT}/storage/virtio_disk.cpp
+    ${SRCROOT}/storage/write_policy.cpp
     ${SRCROOT}/storage/worker.cpp
     ${SRCROOT}/network/address.cpp
     ${SRCROOT}/network/arp.cpp

@@ -236,7 +236,7 @@ class UsbStorage(Case):
 
     def __init__(self, args):
         super().__init__(args)
-        self.directory = Path(args.build_dir) / "usb-disks"
+        self.directory = Path(args.disk).parent / "usb-disks"
         self.images = {}
         self.digests = {}
         self.fsck_note = ""
