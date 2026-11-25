@@ -86,7 +86,7 @@ Get the code lint-clean **before** running any QEMU smoke test or `test-all`. Al
 
 ## Autopilot
 
-Settings for the global `autopilot` skill. The plan of the milestone in progress is in `docs/plans/` (none in progress; M16's was `docs/plans/m16.md`), its quality log is `docs/quality-log.md`.
+Settings for the global `autopilot` skill. The plan of the milestone in progress is in `docs/plans/` (now `docs/plans/review-fixes.md`, on `feat/review`), its quality log is `docs/quality-log.md`.
 
 - **Git:** commit on `feat/*` (the current milestone's branch). Never push or merge; merging a milestone into `main` is the user's job.
 - **Full verification:** `tools/check.sh --arch both --matrix`, run through `test-runner`. It prints one line per stage and, for each failed case, its FAIL lines with `build/matrix/<case>/`; one case re-runs with `python3 tools/matrix.py --no-build -k <name>`. After a fully green run, `rm -rf build/matrix` (about 13 GB); keep it while a failure is diagnosed.
