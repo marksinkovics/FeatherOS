@@ -19,7 +19,7 @@
 | Piece | Where | State |
 |---|---|---|
 | Framebuffer device | `/dev/fb0`, `framebuffer.h`, `graphics_mode.*`, `console.*` | One owner per virtual console. `FB_ACQUIRE` blanks the console, `FB_PRESENT` copies `0x00RRGGBB` rectangles, `FB_RELEASE` repaints the console. Never inherited by a child. |
-| Present path | `PresentFramebuffer` in `process.cpp`, `Framebuffer::presentRow` | Per row: a page-walk copy from user memory into a bounce row, a per-pixel pack into the kernel's back buffer, then a copy to the screen. Three passes over the pixels in the kernel. |
+| Present path | `PresentFramebuffer` in `process.cpp`, `Console::PresentRow` | Per row: a page-walk copy from user memory into a bounce row, a conversion into the kernel's back buffer (a plain copy when the screen is XRGB8888), then a copy of the **whole row** to the screen, however narrow the rectangle. |
 | Screen size | `config.h`, `framebuffer.h`, `term.h` | **Fixed at 1024x768 at compile time.** The back buffer is a static array, the console grid is a constant, `Framebuffer::init` refuses a larger mode, and both Limine configs ask for 1024x768. |
 | Key events | `fb_event` on the fb0 descriptor | Press, repeat, release with Shift, Control, Alt and Caps Lock bits; `Shown` and `Hidden` on console switches; `poll` works. Queue of 64 (62 keys). `Alt+F1` to `Alt+F4` switch consoles in the kernel. `Ctrl+C` also sends `SIGINT` to the console's foreground group. |
 | Pointer | `/dev/mouse`, `input/pointer.*`, `usb/hid/` | USB HID mice only. Relative motion, wheel and buttons as Linux `input_event` records, a 256-record ring, any number of readers, `poll` works. |
@@ -77,7 +77,7 @@ What the earlier spec had wrong, kept here as a record:
 
 - Section 13 says per-process accounting "must be checked": it exists (`/proc/<pid>/status`, `/proc/stat`).
 - Section 14 asks for a queue larger than 64 because pointer motion would overflow it: pointer events never enter that queue. They have their own 256-record ring behind `/dev/mouse`.
-- Section 13 calls `FB_PRESENT` "an extra full copy": it is two extra passes and a per-pixel conversion.
+- Section 13 calls `FB_PRESENT` "an extra full copy": it is three passes in the kernel, and the last one copies whole rows to the screen whatever the rectangle's width.
 - Section 10 calls 1024x768 "the current guest resolution": it is a compile-time constant.
 - Section 12's 60 Hz budget cannot be paced or measured with a 100 Hz tick.
 - Section 2's contrast measurements covered three themes. All eight themes and every accent colour are now measured and pass 4.5:1; the lowest is 4.82:1.
@@ -162,12 +162,12 @@ One full-screen 32-bit surface is **3.0 MiB at 1024x768** and **7.9 MiB at 1920x
   - Each frame walks the windows front to back and subtracts opaque areas, so hidden pixels are never drawn.
   - Only shadows, rounded corners and fades are blended; everything else is copied.
   - The cursor bypasses the scene: restore the saved pixels, draw, flush two small rectangles.
-- **Cost per full redraw today:** four passes over the pixels (compose, bounce, pack, screen): 12 MiB moved at 1024x768 and 32 MiB at 1920x1080. At 50 frames a second that is 0.6 and 1.6 GiB/s, too much under TCG. So full-screen effects are rare and short, and the present path is measured and shortened first (D9).
+- **Cost per full redraw today:** four passes over the pixels (compose, bounce, back buffer, screen): 12 MiB moved at 1024x768 and 32 MiB at 1920x1080. At 50 frames a second that is 0.6 and 1.6 GiB/s, too much under TCG. So full-screen effects are rare and short, and the present path is measured and shortened first (D9).
 - `GUI.md`'s millisecond targets are for real hardware. QEMU targets are set from the first measurements (M35 Part C, M39 Part D).
 
 ### D9. Output path and frame pacing
 
-- **Output options:** (a) keep `FB_PRESENT` as it is; (b) a fast path in `FB_PRESENT` when the screen is XRGB8888: copy rows straight through, no bounce row, no per-pixel pack; (c) the compositor maps the kernel's back buffer (`FB_MAP`) and asks for rectangles to be flushed (`FB_FLUSH`).
+- **Output options:** (a) keep `FB_PRESENT` as it is; (b) shorten `FB_PRESENT`: copy only the presented span to the screen instead of whole rows, and drop the bounce row if measurement shows it matters (`docs/design/M35.md`, D9); (c) the compositor maps the kernel's back buffer (`FB_MAP`) and asks for rectangles to be flushed (`FB_FLUSH`).
 - **Recommendation:** do (b) early, since it is small and helps every program. Decide (c) from the measurements at the end of M39; it removes two more passes but needs D5.
 - **Pacing options:** (a) frames every 20 ms on the existing tick (50 Hz); (b) timeouts finer than a tick for `poll`; (c) a 1000 Hz tick.
 - **Recommendation:** start with (a). The prototype's animations last 80 to 220 ms, which is 4 to 11 frames. Add (b) only if 50 Hz looks wrong on real hardware. (c) costs interrupts under TCG and changes scheduling for everything.
@@ -190,9 +190,10 @@ One full-screen 32-bit surface is **3.0 MiB at 1024x768** and **7.9 MiB at 1920x
   - (a) capture them from headless Chrome and ship those;
   - (b) generate them on the host with our own code, and check them against Chrome;
   - (c) rasterize the vector feather in the kernel at run time.
-- **Trade-offs:** (a) is exact by construction but cannot be regenerated byte for byte, since anti-aliasing changes between Chrome versions. (c) puts a path rasterizer in the kernel. (b) is deterministic and follows the fonts: generated files are committed with checksums.
+- **Trade-offs:** (a) is exact by construction but cannot be regenerated byte for byte, since anti-aliasing changes between Chrome versions. (c) puts the outline renderer in the kernel. (b) is deterministic and follows the fonts: generated files are committed with checksums.
 - **Recommendation: (b).**
-  - `tools/gui/boot.py` evaluates the three curves from `HANDOFF.md` (`bx`, `by`, `br`, each segment with its own cubic-bezier easing), the fade-in, the shadow and the wordmark fade. It samples every 20 ms, which is every second timer tick, and renders the feather at each sub-pixel position with a supersampling rasterizer of our own.
+  - `tools/gui/boot.py` evaluates the three curves from `HANDOFF.md` (`bx`, `by`, `br`, each segment with its own cubic-bezier easing), the fade-in, the shadow and the wordmark fade. It samples every 20 ms, which is every second timer tick, and writes one transform per sample.
+  - The frames are then drawn by `guirender`, the host tool built from FeatherOS's own outline renderer (M37), from the feather's outline at each sample's transform. So there is one renderer, and no rasterizer in Python.
   - The frames are stored as cropped, run-length-encoded coverage planes (vane with the barb notches cut out, and shaft), with the wordmark and the four stage lines pre-rendered from the committed fonts. Expected size is a few hundred KiB; measure it in the first step.
   - **Check 1, exact:** a developer script loads the prototype in headless Chrome with Playwright, sets the animation time for each sample, and reads the three computed transform matrices. They must match the generator's within 0.01 px and 0.01 degrees. This checks the motion itself, free of anti-aliasing.
   - **Check 2, visual:** the same script screenshots each sample and compares it with the generated frame within a small tolerance, and traces the quill tip and the feather's centre, as `HANDOFF.md` advises.
@@ -200,33 +201,22 @@ One full-screen 32-bit surface is **3.0 MiB at 1024x768** and **7.9 MiB at 1920x
 - **In the kernel:** the timer tick on CPU 0 draws each frame, without allocating. Log lines stay in the `dmesg` ring and on serial but off the screen. The progress bar follows real boot stages. `boot=verbose` skips the picture, Esc shows the log, and any failure returns to the console.
 - **Timing (assumption to confirm):** the animation always plays to its end, so the desktop appears no earlier than about 2.3 s after the timer starts, even when the boot is faster. Tests boot with `boot=verbose`, so the matrix does not slow down.
 
-### D12. Artwork: what the OS draws, and what is prepared beforehand
+### D12. Artwork is drawn live (decided)
 
 "Host" means the development machine (the Mac that builds FeatherOS). "Host tools" are scripts that run there, never inside FeatherOS.
 
-**The desktop is drawn live by FeatherOS.** No picture of a window, a control or a screen is ever shipped. The compositor and the toolkit draw every frame from code, with the pixel library from M37: rectangles, rounded corners, lines, text, graphs, the wallpaper, layout, themes, accent colours and animation. Changing the theme or resizing a window redraws from code.
+**Decided by the owner on 2026-11-26: FeatherOS draws its artwork itself.** Nothing on the desktop is shipped as a picture. That includes icons, app tiles, pointers and shadows, which the handoff had planned as pre-rendered bitmaps.
 
-**Only small, fixed artwork is prepared beforehand,** the way the fonts already are. Inter and JetBrains Mono are turned into `.ffnt` files once, by `tools/fonts/` on the host, and FeatherOS only blits glyphs. The same idea covers:
+- **Why the change:** the prototype draws its 46 glyph icons at about 20 sizes between 12 and 64 px, before any UI scaling. Bitmaps for every size would be about 0.5 MiB per scale, need a second renderer in Python, and need regenerating for every new size.
+- **What ships:** one small file of outlines (`/system/gui/outlines.fvo`): the glyphs, the feather, the pointers and the wallpaper as polylines of integer points.
+- **What draws:** one outline renderer in the C++ graphics library (fills and round strokes, with a cache). It draws at any size, so UI scaling later needs no new files. Shadows are computed at load as a blurred rounded rectangle.
+- **What the host does:** `tools/gui/outlines.py` flattens the SVG sources into that file, using only Python's standard library, and `tools/gui/tokens.py` generates the colour tables. Both outputs are committed with checks, as the fonts are. **Building FeatherOS needs no new tools.**
+- **The one exception:** the boot animation's frames are pre-rendered (D11), because the kernel draws them before any program runs.
+- **A free check for the pointers:** the PNGs in `docs/design/gui/cursors/png/` are the design tool's own renders. FeatherOS's renderer, run on the host, must match them within a small tolerance.
+- **Playwright and Chrome** are used only by a developer, for the two boot-animation checks in D11 and for review screenshots of the prototype.
+- **Cost:** a few milliseconds per app at start-up to draw its icons into the cache. Measured in M37 step D1, with a budget.
 
-| Artwork | Source (in the repo) | Prepared file | What FeatherOS does with it at run time |
-|---|---|---|---|
-| Glyph icons (about 50, and the feather) | SVG paths taken from the prototype | Coverage masks at each icon size | Tints them with the current text or accent colour and blits them |
-| App tiles | Tile colour, glyph, the fold rule | Small colour images at each dock and menu size | Blits them; draws the outline form for the high-contrast themes |
-| Pointers | `docs/design/gui/cursors/svg/` and `cursors.json` | Images at 24, 32 and 48 px with the hotspot, the accent parts as a separate mask, 8 frames for the spinner | Blits them at the pointer position, colouring the accent parts with the live accent |
-| Shadows | The prototype's shadow values | Blurred edge and corner strips (9-slice) | Stretches them around a window of any size and tints them |
-| Boot animation | The keyframes in `HANDOFF.md` | The feather's frames (D11) | The kernel blits one frame per step |
-| Wallpaper | The ridge and feather outlines | A table of outline points only | **Drawn live** at the screen's size in the theme's colours |
-
-**Why prepare these at all:** drawing them live would put an SVG parser, a stroke renderer and a blur into the OS for pictures that never change. `HANDOFF.md` plans the same for app icons ("pre-render them to a bitmap atlas at build time").
-
-**The decision here is only which host program turns the SVG sources into those files:**
-
-- **Options:** (a) an existing SVG renderer (`resvg`, `rsvg-convert`, Cairo); (b) headless Chrome; (c) a small renderer of our own in Python.
-- **Trade-offs:** (a) and (b) are less code to write, but each developer machine needs them installed, and their output changes slightly between versions, so the prepared files could not be checked byte for byte. (c) is a few hundred lines: read the small SVG subset the sources use (paths, circles, fill, stroke, opacity, rotation), flatten the curves, and compute each pixel's coverage by supersampling. It is slow but always gives the same bytes, and the same code serves icons, tiles, pointers, shadows and the boot frames.
-- **Recommendation: (c), following the fonts.** The scripts live in `tools/gui/`. Their outputs are committed with `SHA256SUMS`, and a CTest check proves that the files parse and that running the scripts again gives the same bytes. So **building FeatherOS needs no new tools,** and only someone who changes an icon runs the scripts.
-- **A free check for the pointers:** the PNGs in `docs/design/gui/cursors/png/` are the design tool's own renders. The script's output must match them within a small tolerance.
-- **Playwright and Chrome** are used only by a developer, for the two boot-animation checks in D11 and for review screenshots of the prototype. Neither the build nor the test matrix needs them.
-- **Risk:** prepared files multiply with icon sizes and UI scales. If that grows too large in M45, draw the glyph icons live with the path-fill code the library needs anyway for the wallpaper.
+The full design is `docs/design/M37.md`.
 
 ### D13. Design tokens and themes
 
@@ -258,8 +248,8 @@ The prototype's default menu bar shows battery and sound items, and its network 
 |---|---|---|---|---|
 | M35 | Screen and input foundations | kernel | – | The console at 1920x1080 |
 | M36 | Shared memory and local sockets | kernel, libc | – | – |
-| M37 | Pixels, design tokens and assets | user space, host | – | A test card with the icons, shadows and themes |
-| M38 | Boot splash | kernel | M35 A, M37 C1 | The falling feather at boot |
+| M37 | Pixels, design tokens and artwork | user space, host | – | A test card with the icons, shadows and themes |
+| M38 | Boot splash | kernel | M35 A, M37 B4 and C1 | The falling feather at boot |
 | M39 | Compositor and window protocol | user space | M35, M36, M37 | Wallpaper, a cursor, two test windows dragged |
 | M40 | Window management | user space | M39 | Decorated windows that snap, workspaces, switcher |
 | M41 | Toolkit and UI Elements | user space | M37 (M39 to show windows) | The UI Elements gallery in all themes |
@@ -273,13 +263,15 @@ Three tracks do not depend on each other and can be worked in any order or side 
 
 - **Kernel track:** M35, then M36.
 - **Pixel track:** M37, then the host-testable parts of M41 (A1 to A4), which need no compositor.
-- **Boot track:** M38, as soon as M35 Part A and M37 C1 are done.
+- **Boot track:** M38, as soon as M35 Part A and M37 steps B4 and C1 are done.
 
 They meet at M39. After M39, M40 and M41 are independent. M44's parts are independent of each other.
 
 Each milestone ends with the full matrix, and each part with its affected smoke modes on both architectures, as `CLAUDE.md` asks. "Both" in the tables means x86-64 and AArch64.
 
 ### M35. Screen And Input Foundations
+
+Design: `docs/design/M35.md`. Plan: `docs/plans/m35.md`.
 
 Goal: the screen size comes from the bootloader, the framebuffer device gives a compositor the input it needs, and the cost of putting pixels on the screen is known.
 
@@ -292,7 +284,7 @@ Goal: the screen size comes from the bootloader, the framebuffer device gives a 
 | B3 | Absolute pointers: the HID parser reads absolute X and Y, and `/dev/mouse` reports `EV_ABS` scaled to 0..32767. | – | Host: HID report tests with the tablet's descriptor. QEMU: the `USB` mode with `usb-tablet` and QMP absolute events, read by `mousetest`, both. | M |
 | C1 | A sub-millisecond `CLOCK_MONOTONIC` from the TSC or the AArch64 counter (code under `arch/`). Sleeps stay tick-based. | – | Host: conversion arithmetic. QEMU: `TIMER` checks that it never goes back and resolves under 1 ms, both. | S–M |
 | C2 | `fbbench`: times full-screen and small `FB_PRESENT` calls. The numbers for Debug and Release, both sizes, both architectures go in `docs/design/M35.md`. | A2, C1 | QEMU: a shell part runs it and checks that it reports, both. | S |
-| C3 | The XRGB8888 fast path in `FB_PRESENT` (D9). | C2 | Host: both paths give the same pixels for random rectangles. QEMU: `GRAPHICS`, `FONTS` and `DUNGEON` unchanged; `fbbench` shows the gain. | S |
+| C3 | The present copies only its span to the screen; the bounce row goes only if `fbbench` shows it matters. | C2 | Host: the span copy leaves the same pixels as the whole-row copy for random rectangles. QEMU: `GRAPHICS`, `FONTS` and `DUNGEON` unchanged; `fbbench` shows the gain. | S |
 
 **Complete when:** both targets boot and run the console at 1024x768 and 1920x1080, a full-screen program receives Super and a raw `Ctrl+C`, `usb-tablet` moves the pointer, and the present cost is written down.
 
@@ -314,24 +306,28 @@ Goal: two unrelated processes can share pixel memory and exchange messages and d
 
 **Complete when:** `shmtest` and `unixtest` pass on both targets in Debug and Release, no frames leak after crashes, and `docs/posix.md` lists the new calls and what they leave out.
 
-### M37. Pixels, Design Tokens And Assets
+### M37. Pixels, Design Tokens And Artwork
 
-Goal: everything needed to draw the prototype's look into memory, with its colours and artwork, and a first picture of it on a real screen. Needs no kernel work.
+Design: `docs/design/M37.md`. Plan: `docs/plans/m37.md`.
+
+Goal: everything needed to draw the prototype's look into memory, with its colours and artwork, and a first picture of it on a real screen. Needs no kernel work. Artwork is drawn live (D12).
 
 | Step | Delivers | Needs | Tests | Size |
 |---|---|---|---|---|
 | A1 | `tools/gui/tokens.json`, the generator, the committed C++ tokens (D13). | Step 0 | CTest `gui.tokens`: regeneration is identical, the prototype's CSS matches, contrast passes for all 8 themes and every accent. | S–M |
 | B1 | `Graphics::Region`: banded rectangles with union, subtract, intersect and translate. | – | Host: random operations against a bitmap model. | M |
-| B2 | Premultiplied ARGB surfaces and coverage masks; a `Canvas` with a clip stack and origin; fill, alpha fill, blit, alpha blit, tinted mask blit, constant-opacity blit. | – | Host: each operation against a naive reference on random input, with pinned checksums. | M |
-| B3 | Shapes: rounded rectangles (fill and 1 or 2 px stroke), circles and pills, straight lines, anti-aliased path fill and polyline stroke. | B2 | Host: against a supersampled reference within one level; symmetry checks. | M |
-| B4 | 9-slice drawing, clipped text with an ellipsis, and box downscaling for thumbnails. | B2 | Host: reference comparisons. | S–M |
-| C1 | The host rasterizer, the icon sources moved out of the prototype into `tools/gui/icons/`, the atlas format and its loader (D12). | – | CTest `gui.assets` (checksums, parse, identical regeneration). Host: loader refusals for damaged files, as for fonts. | M |
-| C2 | App tiles at every dock size and at the menu sizes, with the small-size rule and the high-contrast form; the trash, empty and full. | C1, A1 | As C1; host drawing tests. | S–M |
-| C3 | Shadows and corner masks. The 13 pointers from `docs/design/gui/cursors/` at 24, 32 and 48 px, with hotspots from `cursors.json`, the accent parts as a separate mask, and 8 spinner frames for Working and Busy. | C1 | As C1. CTest: each pointer matches the design's PNG within the tolerance. Host: hotspot and accent-tint tests. | M |
-| C4 | The wallpaper as path tables, drawn at screen size in each theme's colours. | B3, A1 | Host: pinned checksums at both sizes. | S |
-| D1 | `uicard`: a test card on `/dev/fb0` with the shapes, icons at every size, tiles, shadows, wallpaper and the 8 themes. A host tool renders the same card with the same code. | B, C | QEMU: `PIXELS_TEST`: the `screendump` equals the host render byte for byte at 1024x768 and 1920x1080, both. | M |
+| B2 | A surface format for premultiplied ARGB, coverage masks, a `Canvas` with a clip stack and origin, and the blend rules. | – | Host: each operation against a naive reference on random input, with pinned checksums. | M |
+| B3 | Rounded rectangles (fill and stroke), pills, circles and straight lines. | B2 | Host: against a brute-force reference within 2 levels; symmetry checks. | S–M |
+| B4 | The outlines file and its loader, the outline renderer (fills and round strokes on an 8x8 sample grid, integer arithmetic only) and its cache. | B2 | Host: loader refusals and damaged files; fills and strokes against a brute-force reference; the cache gives the same pixels. | M–L |
+| B5 | Shadows computed at load and drawn as 9-slices, area-average scaling for thumbnails, text through the canvas with an ellipsis. | B2 | Host: shadow symmetry and coverage; stretch tests; text equal to today's. | M |
+| C1 | The art sources (`tools/gui/art/`), `outlines.py`, the committed `outlines.fvo`, and `DrawGlyph`. | B4 | CTests `gui.files`, `gui.reproducible`, `gui.prototype`. Host: every glyph present and inside its box. | M |
+| C2 | App tiles composed live: rounded square, fold, glyph; the small and plain styles; the high-contrast form. | C1, B3, A1 | Host: fold, corners, glyph placement, the styles. | S–M |
+| C3 | The 13 pointers from `docs/design/gui/cursors/` at 24, 32 and 48 px, with hotspots, the accent as a paint slot and 8 spinner frames. | C1 | CTest `gui.pointers`: each pointer matches the design's PNG within the measured limits. Host: hotspots, accent, frames. | M |
+| C4 | The wallpaper drawn at the screen's size in the theme's colours, and the shadows by role. | C1, B5, A1 | Host: full coverage and pinned checksums at three sizes. | S |
+| D1 | `uicard`: a test card on `/dev/fb0` with the shapes, glyphs, tiles, pointers, shadows, wallpaper and themes. The host tool `guirender` draws the same card with the same code. | B, C | QEMU: `PIXELS_TEST`: the `screendump` equals the host render byte for byte at 1024x768 and (once M35 A2 exists) 1920x1080, both. Drawing times recorded against a budget. | M |
+| D2 | Docs. | D1 | — | S |
 
-**Complete when:** the card matches on both targets at both sizes, and the tokens and assets regenerate byte for byte.
+**Complete when:** the card matches on both targets at both sizes, the tokens and outlines regenerate byte for byte, and the drawing times are recorded.
 
 ### M38. Boot Splash
 
@@ -339,7 +335,7 @@ Goal: the approved falling feather at boot. Design per D11.
 
 | Step | Delivers | Needs | Tests | Size |
 |---|---|---|---|---|
-| A1 | `tools/gui/boot.py` and the committed frame file. | M37 C1 | CTest: identical regeneration. Host: the trace test (the end pose is the logo, the quill tip lands once and does not rise again, the keyframe values from `HANDOFF.md` are hit). | M |
+| A1 | `tools/gui/boot.py` (the transform per sample), a `guirender` subcommand that draws the frames with the M37 renderer, and the committed frame file. | M37 B4, C1 | CTest: identical regeneration. Host: the trace test (the end pose is the logo, the quill tip lands once and does not rise again, the keyframe values from `HANDOFF.md` are hit). | M |
 | A2 | The developer check against headless Chrome: transform matrices and frames (D11). The result table goes in `docs/design/M38.md`. | A1, Playwright on the developer's machine | Run by hand; not in the matrix. | S–M |
 | A3 | The kernel player: splash mode, the frame decoder and blender, drawing from the timer tick, the stage-driven progress bar, `boot=verbose`, Esc for the log, fallback to the console on failure. | A1, M35 A1 | Host: decoder, blender and timeline tests. QEMU: `SPLASH_TEST`, both: a test hook holds the splash at chosen frames and the `screendump` equals the generated frame; `boot=verbose` shows the console; a forced panic shows the console. One case at 1920x1080. | M |
 | A4 | The end of the splash: the last frame stays until a program takes the screen with keep-screen, or the console returns once the animation is over. | A3, M35 B2 | QEMU: the shell prompt appears after the animation; `fbdemo` started with keep-screen replaces the picture without a blank frame, both. | S |
@@ -373,7 +369,7 @@ Goal: the prototype's window behaviour. The policy is a pure library, `src/user/
 | A3 | Snapping: zones within 10 px of an edge, the preview, halves, quarters and maximize, restoring the size on drag-off, the work area. | A2 | Host: zone tests with the prototype's numbers at both screen sizes. QEMU: drag to each zone, both. | S–M |
 | A4 | The animation engine (timeline, fixed-point cubic-bezier easing, cancel and jump to the end, skip on a missed budget, reduce motion) with window open and close, the outline flight for minimize and restore, and the Working pointer for 0.5 s after an app opens (its spinner steps every 90 ms). | A1 | Host: easing values against the CSS curve; the cancel rules. QEMU: with animations held at chosen frames, pixel compare, both. | M |
 | A5 | Workspaces: 4 by default, 1 to 9, move a window, the switch animation. | A1 | Host: policy tests. QEMU: windows on two workspaces, switch and move, both. | S–M |
-| A6 | The global shortcut table from `HANDOFF.md` and the window switcher with live thumbnails (hold, step, release to switch). | A5, M37 B4 | Host: switcher order and state machine. QEMU: `Super+Tab` twice then release focuses the right window, both. | M |
+| A6 | The global shortcut table from `HANDOFF.md` and the window switcher with live thumbnails (hold, step, release to switch). | A5, M37 B5 | Host: switcher order and state machine. QEMU: `Super+Tab` twice then release focuses the right window, both. | M |
 | A7 | The workspace overview: strip with mini layouts and Add, thumbnail grid sized to fit (the prototype's overflow bug must not be copied), click, drag to a workspace, close. Modal dialogs dim their parent and trap focus. | A6 | Host: grid layout tests, including a tall window. QEMU: open the overview, drag a window to workspace 2, both. | M |
 
 **Complete when:** every row of the window behaviour in `GUI.md` section 6 and every shortcut in `HANDOFF.md` works on both targets, checked by scripted input.
@@ -472,7 +468,7 @@ virtio-gpu first, for a real flush, a hardware cursor and page flips; then blur,
 | **Super inside a QEMU window on macOS** | The host takes Command shortcuts. | The `Ctrl+Alt` setting from D10, from M39 on. |
 | **Matrix time** | Each new mode runs on two architectures, some at two sizes. | One mode per milestone where possible; 1080p cases only where size matters. |
 | **Real hardware** | An uncached framebuffer mapping could be very slow; laptop touchpads are usually I2C, which has no driver; panels above 1080p hit the memory limit. | Not a gate (D3). Collected in M45 step 8. A USB mouse is needed on a laptop. |
-| **Icon atlas growth** | Sizes times scales times icons. | Count it at M37 C2; D12 names the alternative. |
+| **Drawing artwork live under TCG** | Icons and the wallpaper are rasterized at start-up, in Debug builds under emulation. | A budget in M37 D1 (all glyphs under 2 s, the wallpaper at 1920x1080 under 2 s in Debug); a smaller sample grid for large drawings if it is missed. |
 
 ## 5. Decisions taken, and assumptions to confirm
 
@@ -481,7 +477,7 @@ virtio-gpu first, for a real flush, a hardware cursor and page flips; then blur,
 **Assumed here; say so if any is wrong:**
 
 1. **Splash timing:** the animation always plays to the end, so the desktop appears no earlier than about 2.3 s after the timer starts (D11).
-2. **Preparing the artwork (D12):** FeatherOS draws the whole desktop live. Only icons, app tiles, pointers, shadow strips and the boot frames are prepared beforehand, as the fonts are, by Python scripts of our own in `tools/gui/`, and their outputs are committed. Building FeatherOS needs no new tools; Playwright is for developer checks only.
+2. **Artwork is drawn live (D12), decided 2026-11-26.** No longer an assumption: FeatherOS ships outlines and draws icons, tiles, pointers and shadows itself; only the boot frames are pre-rendered.
 3. **New design work happens in the prototype first:** the error states and the first-run flow. (Pointers and scrollbars arrived with the handoff of 2026-11-25.)
 4. **The battery and sound items** leave the default menu bar, and the network item shows Ethernet only, until drivers exist (D16).
 5. **The user picker and the guest account are hidden** while there is one user (D4).

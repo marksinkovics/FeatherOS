@@ -1234,11 +1234,11 @@ Pre-rendered, anti-aliased fonts replace the 1-bit 8x16 ASCII font: a monospace 
 
 M35 to M46 build the desktop designed in [design/GUI.md](design/GUI.md), with the prototype in `docs/design/gui/`. The order, the decisions, and each step's tests and size are in [plans/gui-plan.md](plans/gui-plan.md); each milestone gets its design document `docs/design/M<n>.md` and its plan `docs/plans/m<n>.md` when it starts. Planned 2026-11-25 at the user's request. The user's choices (2026-11-25): the kernel work comes first and every app is a separate process from the start; the compositor, toolkit, shell and apps are C++; any screen resolution early, with tests at 1024x768 and 1920x1080 in QEMU; one user with one real login password. M35 to M36 (kernel), M37 (pixels and assets) and M38 (boot splash) do not depend on each other and meet at M39.
 
-The kernel's screen is a compile-time 1024x768, a full-screen program cannot see the Super key or keep `Ctrl+C` to itself, and the cost of putting pixels on the screen has never been measured. This milestone fixes the three.
+The kernel's screen is a compile-time 1024x768, a full-screen program cannot see the Super key or keep `Ctrl+C` to itself, and the cost of putting pixels on the screen has never been measured. This milestone fixes the three. Design `docs/design/M35.md`, plan `docs/plans/m35.md`.
 
 - **Part A: run-time screen size.** A1 the framebuffer and the console take their size from Limine (the back buffer sized at start-up without the heap, the console grid computed up to a static maximum, `Config::Width` and `Height` gone); A2 `SCREEN=WxH` in `build.sh` and matrix cases at 1920x1080.
 - **Part B: input for a compositor.** B1 a Super modifier bit and the Meta key codes in `fb_event` on the PS/2, USB and virtio keyboard paths; B2 two `FB_ACQUIRE` flags, raw keys (`Ctrl+C` is only queued, no `SIGINT`) and keep-screen (no blanking before the first present); B3 absolute pointers, `EV_ABS` on `/dev/mouse` for QEMU's `usb-tablet`.
-- **Part C: time and present cost.** C1 a `CLOCK_MONOTONIC` finer than 1 ms from the TSC or the AArch64 counter (sleeps stay tick-based); C2 `fbbench`, which times `FB_PRESENT` at both sizes in Debug and Release; C3 a fast path in `FB_PRESENT` when the screen is XRGB8888.
+- **Part C: time and present cost.** C1 a `CLOCK_MONOTONIC` finer than 1 ms from the TSC or the AArch64 counter (sleeps stay tick-based); C2 `fbbench`, which times `FB_PRESENT` at both sizes in Debug and Release; C3 a present that copies only its rectangle to the screen, where today it copies whole rows.
 
 **Complete when:** both targets boot and run the console at 1024x768 and 1920x1080, a full-screen program receives Super and a raw `Ctrl+C`, `usb-tablet` moves the pointer, and the present cost is written down.
 
@@ -1255,22 +1255,22 @@ Left out: `fork`, copy-on-write, file-backed mappings, `mremap`, socket files in
 
 **Complete when:** on both targets, in Debug and Release, two unrelated processes pass a memory object over a local socket, map it and agree on its contents; killing either one leaks no frames; and `docs/posix.md` lists the new calls and what they leave out.
 
-### 37. Pixels, Design Tokens And Assets (Planned, Not Started)
+### 37. Pixels, Design Tokens And Artwork (Planned, Not Started)
 
-Everything needed to draw the prototype's look into memory, with its colours and artwork, and a first picture of it on a real screen. User space and host tools only, so it can run beside M35 and M36. FeatherOS draws the desktop live; only small fixed artwork (icons, app tiles, pointers, shadow strips) is prepared beforehand by scripts in `tools/gui/` and committed with checksums, as the fonts are.
+Everything needed to draw the prototype's look into memory, with its colours and artwork, and a first picture of it on a real screen. User space and host tools only, so it can run beside M35 and M36. Design `docs/design/M37.md`, plan `docs/plans/m37.md`. The user's choice (2026-11-26): artwork is drawn live. FeatherOS ships one small file of outlines and draws icons, app tiles, pointers and shadows itself at any size; nothing is pre-rendered but the boot animation's frames (M38).
 
-- **Part A: tokens.** A1 `tools/gui/tokens.json` from the prototype (8 themes, the accent colours, radii, sizes, durations), a generated and committed C++ table, and a check that the prototype still matches and every theme passes the contrast pairs.
-- **Part B: the pixel library** (`src/user/graphics/`). B1 `Region`, banded rectangles with union, subtract and intersect; B2 premultiplied ARGB surfaces, coverage masks and a `Canvas` with a clip stack; B3 rounded rectangles, circles, lines, anti-aliased path fill and polyline stroke; B4 9-slice drawing, clipped text with an ellipsis, downscaling for thumbnails. Integer arithmetic only, so the host and both guests draw the same bytes.
-- **Part C: assets.** C1 our own host rasterizer, the icon sources and the atlas format with its loader; C2 the app tiles; C3 shadows, corner masks and the 13 pointers from `docs/design/gui/cursors/`; C4 the wallpaper as outline tables, drawn at the screen's size.
-- **Part D: first pixels.** D1 `uicard`, a test card on `/dev/fb0`, and a host tool that renders the same card with the same code.
+- **Part A: tokens.** A1 `tools/gui/tokens.json` from the prototype (8 themes, the accent colours, radii, sizes, durations, shadows), a generated and committed C++ table, and a check that the prototype still matches and every theme passes the contrast pairs.
+- **Part B: the pixel library** (`src/user/graphics/`). B1 `Region`, banded rectangles with union, subtract and intersect; B2 a premultiplied ARGB surface format, coverage masks and a `Canvas` with a clip stack; B3 rounded rectangles, pills, circles and lines; B4 the outlines file, its loader, the outline renderer (fills and round strokes) and its cache; B5 shadows computed at load and drawn as 9-slices, scaling for thumbnails, text through the canvas with an ellipsis. Integer arithmetic only, so the host and both guests draw the same bytes.
+- **Part C: artwork** (`src/user/ui/`, `tools/gui/`). C1 the art sources, `outlines.py` and the committed outlines file, and glyph drawing; C2 app tiles composed live; C3 the 13 pointers from `docs/design/gui/cursors/`, checked against the design's PNGs; C4 the wallpaper and the shadows by role.
+- **Part D: first pixels.** D1 `uicard`, a test card on `/dev/fb0`, and the host tool `guirender` that draws the same card with the same code; D2 docs.
 
-**Complete when:** on both targets, the card's `screendump` equals the host render byte for byte at 1024x768 and 1920x1080, and the tokens and assets regenerate byte for byte.
+**Complete when:** on both targets, the card's `screendump` equals the host render byte for byte at 1024x768 and 1920x1080, the tokens and outlines regenerate byte for byte, and the drawing times are recorded.
 
 ### 38. Boot Splash (Planned, Not Started)
 
-The approved boot animation from `docs/design/gui/HANDOFF.md`: a feather falls in one swing and lands on its quill tip. Its motion is final and is not to be changed. Needs M35 Part A and M37 C1.
+The approved boot animation from `docs/design/gui/HANDOFF.md`: a feather falls in one swing and lands on its quill tip. Its motion is final and is not to be changed. Needs M35 Part A and M37 steps B4 and C1.
 
-- **Part A.** A1 `tools/gui/boot.py` evaluates the three curves and writes the committed frame file; A2 a developer check against headless Chrome (the transform matrices and the frames of the prototype), run by hand and never by the build or the matrix; A3 the kernel player: frames drawn from the timer tick without allocating, a progress bar that follows real boot stages, `boot=verbose`, Esc for the log, and the console on any failure; A4 the last frame stays until a program takes the screen, or the console returns once the animation is over.
+- **Part A.** A1 `tools/gui/boot.py` evaluates the three curves, the host tool `guirender` draws each frame with FeatherOS's own outline renderer, and the frame file is committed; A2 a developer check against headless Chrome (the transform matrices and the frames of the prototype), run by hand and never by the build or the matrix; A3 the kernel player: frames drawn from the timer tick without allocating, a progress bar that follows real boot stages, `boot=verbose`, Esc for the log, and the console on any failure; A4 the last frame stays until a program takes the screen, or the console returns once the animation is over.
 
 **Complete when:** both targets show the animation at the right place and time at both screen sizes, each frame equal to the generated one, and a failed boot is never hidden behind it.
 

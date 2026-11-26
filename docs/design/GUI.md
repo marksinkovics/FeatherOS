@@ -91,7 +91,7 @@ Only the regular weight exists, so **hierarchy comes from size and color, never 
 - **Grid:** 4 px base. Common steps are 4, 8, 12, 16 and 24.
 - **Radii:** 4 px controls, 6 px windows and menus, 10 px dock and dialogs. Snapped and maximized windows have square corners.
 - **Control heights:** 26 px buttons and fields, 24 px menu rows, 28 px menu bar, 32 px title bar.
-- **Elevation:** pre-rendered shadows for unfocused windows, focused windows, menus, the dock, notifications and dialogs. Each is a 9-slice alpha mask tinted with the theme's shadow colour, so a window of any size costs only its edge strips.
+- **Elevation:** shadows for unfocused windows, focused windows, menus, the dock, notifications and dialogs. Each is computed once at load as a blurred rounded rectangle, kept as a 9-slice alpha mask and tinted with the theme's shadow colour, so a window of any size costs only its edge strips.
 
 ### Icons
 
@@ -111,7 +111,7 @@ Only the regular weight exists, so **hierarchy comes from size and color, never 
 
   - **Size ladder:** at 16 px only the glyph is shown (menus). Small tiles (Quill rows, the Feather menu, switcher labels) drop the fold and use thicker strokes. The dock and other large tiles get the full design.
   - **High contrast:** tiles become black-and-white outlines.
-- Icons ship pre-rendered at the sizes the interface uses. Vector rendering at run time is not needed.
+- Icons, app tiles and pointers are **drawn live** from outlines, at whatever size is asked for, and cached (decided 2026-11-26; the handoff had planned pre-rendered bitmaps). The prototype uses about 20 glyph sizes between 12 and 64 px.
 - All artwork is original. No third-party logos.
 - **Open:** the Settings panes still use generic tiles; they need icons of their own.
 
@@ -406,9 +406,9 @@ These are **targets for real hardware, to be measured there**. QEMU without acce
 | Worst case, full-screen fade | under 14 ms, else skip to the end |
 | Idle | no frames and about 0% CPU |
 
-Two facts in today's kernel limit this. The timer ticks at 100 Hz, and sleeps, `poll` timeouts and the monotonic clock all move in 10 ms steps, so frames can be paced at 50 Hz but not at 60, and frame times cannot yet be measured. `FB_PRESENT` makes three passes over the pixels in the kernel (a copy from the program, a per-pixel conversion into the kernel's back buffer, a copy to the screen).
+Two facts in today's kernel limit this. The timer ticks at 100 Hz, and sleeps, `poll` timeouts and the monotonic clock all move in 10 ms steps, so frames can be paced at 50 Hz but not at 60, and frame times cannot yet be measured. `FB_PRESENT` makes three passes over the pixels in the kernel (a copy from the program, a conversion into the kernel's back buffer, and a copy to the screen that takes whole rows however narrow the rectangle is).
 
-Rules: **no damage, no frame**. Copy opaque spans rather than blending. Pre-render shadows at load and the wallpaper at the screen size. The wallpaper is flat colour, so it needs no dithering. Live blur is GPU-tier only. On the CPU tier the bar, dock and menus are opaque.
+Rules: **no damage, no frame**. Copy opaque spans rather than blending. Compute shadows at load and draw the wallpaper once at the screen size. The wallpaper is flat colour, so it needs no dithering. Live blur is GPU-tier only. On the CPU tier the bar, dock and menus are opaque.
 
 ### Memory
 
@@ -424,7 +424,7 @@ Checked against the code on 2026-11-25. The full list is in the plan's section 1
 
 | Existing piece | State today | Use in the GUI | Gap |
 |---|---|---|---|
-| `/dev/fb0` (`FB_ACQUIRE`, `FB_PRESENT`) | One owner per console, copies `0x00RRGGBB` rectangles | Compositor output | Fixed 1024x768. Three passes per present. No vsync or page flip, so tearing is possible. Acquiring blanks the screen |
+| `/dev/fb0` (`FB_ACQUIRE`, `FB_PRESENT`) | One owner per console, copies `0x00RRGGBB` rectangles | Compositor output | Fixed 1024x768. Three passes per present, the last over whole rows. No vsync or page flip, so tearing is possible. Acquiring blanks the screen |
 | Key events on fb0 | Press, repeat, release with Shift, Control, Alt, Caps Lock; a queue of 64 | Compositor keys | **No Super modifier** (the PS/2 path drops the Super keys). `Ctrl+C` signals the owner's session |
 | `/dev/mouse` (M14) | Relative `EV_REL` and `EV_KEY` records from USB mice, in its own 256-record ring | Pointer | No `EV_ABS`, so QEMU's absolute tablet is not usable. No PS/2 mouse or I2C touchpad |
 | `Graphics::Surface` | Opaque fill, blit, color-keyed blit, text | Back buffer, client drawing | **No alpha channel**, blending, rounded shapes, 9-slice or clip stack |
@@ -488,7 +488,7 @@ The earlier phases G0 to G9 are replaced by milestones in [../plans/gui-plan.md]
 |---|---|---|
 | M35 | Screen and input foundations | G0 |
 | M36 | Shared memory and local sockets | G0 |
-| M37 | Pixels, design tokens and assets | G1 |
+| M37 | Pixels, design tokens and artwork | G1 |
 | M38 | Boot splash | G6 |
 | M39 | Compositor and window protocol | G2 |
 | M40 | Window management | G3 |

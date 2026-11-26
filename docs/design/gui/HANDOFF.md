@@ -80,7 +80,7 @@ There is an accent colour picker with eight options: theme default, blue, teal, 
   - Settings: `#555d68`
 - **Size ladder:** 16 px is glyph only (menus). Small tiles (Quill rows, Feather menu, switcher labels) drop the fold and use thicker strokes. The dock and other large tiles get the full design.
 - **High contrast:** tiles become black-and-white outlines.
-- **Planned pipeline (not built):** author SVGs on a 64 px grid, then pre-render them to a bitmap atlas (16 to 64 px, 1× and 2×) at build time.
+- **Planned pipeline (not built):** author SVGs on a 64 px grid, then pre-render them to a bitmap atlas (16 to 64 px, 1× and 2×) at build time. **Superseded on 2026-11-26:** FeatherOS draws icons, tiles and pointers live from outlines at any size (`docs/design/M37.md`).
 
 ### Pointers (cursors) and scrollbars (applied)
 Files for these are in `cursors/`:
