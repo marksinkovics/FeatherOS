@@ -1,0 +1,110 @@
+{
+  "grid": "24x24 viewBox; scale hotspots by size/24",
+  "accent_in_files": "#f0a840 (Dusk amber); the prototype recolours accent parts to the live accent",
+  "cursors": [
+    {
+      "name": "default",
+      "hotspot_at_24px": [
+        3,
+        2
+      ],
+      "css_fallback": "default"
+    },
+    {
+      "name": "pointer",
+      "hotspot_at_24px": [
+        3,
+        2
+      ],
+      "css_fallback": "pointer"
+    },
+    {
+      "name": "text",
+      "hotspot_at_24px": [
+        12,
+        12
+      ],
+      "css_fallback": "text"
+    },
+    {
+      "name": "progress",
+      "hotspot_at_24px": [
+        3,
+        2
+      ],
+      "css_fallback": "progress"
+    },
+    {
+      "name": "wait",
+      "hotspot_at_24px": [
+        12,
+        12
+      ],
+      "css_fallback": "wait"
+    },
+    {
+      "name": "grab",
+      "hotspot_at_24px": [
+        12,
+        12
+      ],
+      "css_fallback": "grab"
+    },
+    {
+      "name": "grabbing",
+      "hotspot_at_24px": [
+        12,
+        12
+      ],
+      "css_fallback": "grabbing"
+    },
+    {
+      "name": "ns",
+      "hotspot_at_24px": [
+        12,
+        12
+      ],
+      "css_fallback": "ns-resize"
+    },
+    {
+      "name": "ew",
+      "hotspot_at_24px": [
+        12,
+        12
+      ],
+      "css_fallback": "ew-resize"
+    },
+    {
+      "name": "nwse",
+      "hotspot_at_24px": [
+        12,
+        12
+      ],
+      "css_fallback": "nwse-resize"
+    },
+    {
+      "name": "nesw",
+      "hotspot_at_24px": [
+        12,
+        12
+      ],
+      "css_fallback": "nesw-resize"
+    },
+    {
+      "name": "no",
+      "hotspot_at_24px": [
+        12,
+        12
+      ],
+      "css_fallback": "not-allowed"
+    },
+    {
+      "name": "cross",
+      "hotspot_at_24px": [
+        12,
+        12
+      ],
+      "css_fallback": "crosshair"
+    }
+  ]
+}

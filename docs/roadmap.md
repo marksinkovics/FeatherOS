@@ -1230,6 +1230,114 @@ Pre-rendered, anti-aliased fonts replace the 1-bit 8x16 ASCII font: a monospace 
 
 **Check:** the full matrix (52 cases, both targets) passed on 2026-11-22, after the shell smoke test was changed to send Ctrl+C and Ctrl+Z only once every stage of its `sleep` pipeline has started. Runs under heavy host load can still fail by timeout or a `virtio-blk` device timeout: one such run failed 3 cases, which then passed.
 
+### 35. Screen And Input Foundations (Planned, Not Started)
+
+M35 to M46 build the desktop designed in [design/GUI.md](design/GUI.md), with the prototype in `docs/design/gui/`. The order, the decisions, and each step's tests and size are in [plans/gui-plan.md](plans/gui-plan.md); each milestone gets its design document `docs/design/M<n>.md` and its plan `docs/plans/m<n>.md` when it starts. Planned 2026-11-25 at the user's request. The user's choices (2026-11-25): the kernel work comes first and every app is a separate process from the start; the compositor, toolkit, shell and apps are C++; any screen resolution early, with tests at 1024x768 and 1920x1080 in QEMU; one user with one real login password. M35 to M36 (kernel), M37 (pixels and assets) and M38 (boot splash) do not depend on each other and meet at M39.
+
+The kernel's screen is a compile-time 1024x768, a full-screen program cannot see the Super key or keep `Ctrl+C` to itself, and the cost of putting pixels on the screen has never been measured. This milestone fixes the three.
+
+- **Part A: run-time screen size.** A1 the framebuffer and the console take their size from Limine (the back buffer sized at start-up without the heap, the console grid computed up to a static maximum, `Config::Width` and `Height` gone); A2 `SCREEN=WxH` in `build.sh` and matrix cases at 1920x1080.
+- **Part B: input for a compositor.** B1 a Super modifier bit and the Meta key codes in `fb_event` on the PS/2, USB and virtio keyboard paths; B2 two `FB_ACQUIRE` flags, raw keys (`Ctrl+C` is only queued, no `SIGINT`) and keep-screen (no blanking before the first present); B3 absolute pointers, `EV_ABS` on `/dev/mouse` for QEMU's `usb-tablet`.
+- **Part C: time and present cost.** C1 a `CLOCK_MONOTONIC` finer than 1 ms from the TSC or the AArch64 counter (sleeps stay tick-based); C2 `fbbench`, which times `FB_PRESENT` at both sizes in Debug and Release; C3 a fast path in `FB_PRESENT` when the screen is XRGB8888.
+
+**Complete when:** both targets boot and run the console at 1024x768 and 1920x1080, a full-screen program receives Super and a raw `Ctrl+C`, `usb-tablet` moves the pointer, and the present cost is written down.
+
+### 36. Shared Memory And Local Sockets (Planned, Not Started)
+
+Two unrelated processes can share pixel memory and exchange messages and descriptors, which is what a compositor and its clients need. It also removes the limit that only the top of the heap can be returned. Needs nothing from M35.
+
+- **Part A: mapped regions.** A1 a list of mapped regions per process (image, heap, stacks, arguments), used by faults and exit, and `/proc/<pid>/maps`; A2 anonymous `mmap` and `munmap`, zero-filled on demand, with `<sys/mman.h>`; A3 (optional) `malloc` takes large blocks from `mmap`.
+- **Part B: memory objects.** B1 `memfd_create`, `ftruncate` (once) and `fstat`, with frames owned by the object and counted by its descriptors and mappings; B2 `mmap(MAP_SHARED)` of one object in two processes, with safe unmap and exit on 4 CPUs.
+- **Part C: local sockets.** C1 `AF_UNIX` stream sockets: `socketpair`, and bind, listen, accept and connect on abstract names; C2 `sendmsg` and `recvmsg` with `SCM_RIGHTS`; C3 libc, `docs/posix.md` and the `IPC_TEST` mode.
+- **Part D (only if M39's measurements ask for it):** D1 `FB_MAP` and `FB_FLUSH`, so the compositor draws into the kernel's back buffer.
+
+Left out: `fork`, copy-on-write, file-backed mappings, `mremap`, socket files in the filesystems.
+
+**Complete when:** on both targets, in Debug and Release, two unrelated processes pass a memory object over a local socket, map it and agree on its contents; killing either one leaks no frames; and `docs/posix.md` lists the new calls and what they leave out.
+
+### 37. Pixels, Design Tokens And Assets (Planned, Not Started)
+
+Everything needed to draw the prototype's look into memory, with its colours and artwork, and a first picture of it on a real screen. User space and host tools only, so it can run beside M35 and M36. FeatherOS draws the desktop live; only small fixed artwork (icons, app tiles, pointers, shadow strips) is prepared beforehand by scripts in `tools/gui/` and committed with checksums, as the fonts are.
+
+- **Part A: tokens.** A1 `tools/gui/tokens.json` from the prototype (8 themes, the accent colours, radii, sizes, durations), a generated and committed C++ table, and a check that the prototype still matches and every theme passes the contrast pairs.
+- **Part B: the pixel library** (`src/user/graphics/`). B1 `Region`, banded rectangles with union, subtract and intersect; B2 premultiplied ARGB surfaces, coverage masks and a `Canvas` with a clip stack; B3 rounded rectangles, circles, lines, anti-aliased path fill and polyline stroke; B4 9-slice drawing, clipped text with an ellipsis, downscaling for thumbnails. Integer arithmetic only, so the host and both guests draw the same bytes.
+- **Part C: assets.** C1 our own host rasterizer, the icon sources and the atlas format with its loader; C2 the app tiles; C3 shadows, corner masks and the 13 pointers from `docs/design/gui/cursors/`; C4 the wallpaper as outline tables, drawn at the screen's size.
+- **Part D: first pixels.** D1 `uicard`, a test card on `/dev/fb0`, and a host tool that renders the same card with the same code.
+
+**Complete when:** on both targets, the card's `screendump` equals the host render byte for byte at 1024x768 and 1920x1080, and the tokens and assets regenerate byte for byte.
+
+### 38. Boot Splash (Planned, Not Started)
+
+The approved boot animation from `docs/design/gui/HANDOFF.md`: a feather falls in one swing and lands on its quill tip. Its motion is final and is not to be changed. Needs M35 Part A and M37 C1.
+
+- **Part A.** A1 `tools/gui/boot.py` evaluates the three curves and writes the committed frame file; A2 a developer check against headless Chrome (the transform matrices and the frames of the prototype), run by hand and never by the build or the matrix; A3 the kernel player: frames drawn from the timer tick without allocating, a progress bar that follows real boot stages, `boot=verbose`, Esc for the log, and the console on any failure; A4 the last frame stays until a program takes the screen, or the console returns once the animation is over.
+
+**Complete when:** both targets show the animation at the right place and time at both screen sizes, each frame equal to the generated one, and a failed boot is never hidden behind it.
+
+### 39. Compositor And Window Protocol (Planned, Not Started)
+
+The first proof point: a pointer and two overlapping windows from separate processes, dragged smoothly, with frame times measured. Needs M35, M36 and M37.
+
+- **Part A: protocol.** A1 the specification and the wire library `src/user/desktop/wire/`: a client creates surfaces, attaches shared buffers, reports damage and commits, and receives configure, close, pointer, key and frame events.
+- **Part B: the compositor.** B1 the scene as a pure library (layers, opaque regions, damage, front-to-back drawing), tested on the host by comparing incremental and full redraws; B2 the `compositor` program: wallpaper, a frame loop that draws nothing without damage, the software pointer, keys and pointer in one `poll`; B3 the server side of the protocol.
+- **Part C: clients.** C1 the client library and the test client `wintest`; C2 robustness: a client that exits, is killed, hangs, lies about its buffer size or floods the socket never stops or corrupts the compositor.
+- **Part D: measurement.** D1 frame times for a scripted drag at both sizes, in Debug and Release on both targets, and the decisions they lead to (M36 Part D, finer `poll` timeouts, optimized desktop binaries).
+
+**Complete when:** the scripted drag passes its `screendump` checks on both targets at both sizes, a misbehaving client cannot stop the compositor, and the frame times are recorded.
+
+### 40. Window Management (Planned, Not Started)
+
+The prototype's window behaviour. The policy is a pure library, `src/user/desktop/wm/`, transcribed from the prototype's own functions and tested on the host with its numbers. Needs M39.
+
+- **Part A.** A1 decorations drawn by the compositor (both button layouts, focused and unfocused styles, shadows, the window menu) and focus; A2 move and resize with the resize pointers; A3 snapping to halves, quarters and maximize, with the preview; A4 the animation engine and the outline flight for minimize and restore; A5 workspaces, 4 by default and up to 9; A6 the global shortcuts and the window switcher with live thumbnails; A7 the workspace overview, and modal dialogs.
+
+**Complete when:** every row of the window behaviour in `GUI.md` section 6 and every shortcut in `HANDOFF.md` works on both targets, checked by scripted input.
+
+### 41. Toolkit And UI Elements (Planned, Not Started)
+
+Every control the prototype's UI Elements app shows, in all 8 themes, usable from the keyboard: `src/user/ui/`, namespace `FeatherOS::UI`, C++. Needs M37; showing windows needs M39. Steps A1 to A4 render off screen and can start before the compositor exists.
+
+- **Part A.** A1 the core: widget tree, layout on the 4 px grid, painting with damage, events, focus traversal, live theme changes, an off-screen backend for tests; A2 text: the keymap and the text field; A3 buttons, checkbox, radio, switch, segmented control, slider, progress, badge; A4 tabs, list, table, icon grid, text area and the scroll view with its scrollbar; A5 the window backend and popups: menus, tooltips, dialogs; A6 the `elements` gallery app.
+
+**Complete when:** the gallery matches the prototype's in all 8 themes on both targets, and every control can be reached and operated without a pointer.
+
+### 42. Desktop Shell (Planned, Not Started)
+
+The prototype's default desktop, in a `shell` process that the compositor restarts if it dies. Needs M40 and M41.
+
+- **Part A.** A1 the shell's part of the protocol (layer surfaces, the window list, workspace state, exported app menus, shortcut registration, notifications) and the app registry in `/system/apps/`; A2 the menu bar with global menus and status items; A3 the dock; A4 the Feather menu; A5 Quill and the command registry shared with menus and shortcuts; A6 notifications; A7 desktop icons, the root menu and the trash; A8 customize mode and the settings file.
+
+**Complete when:** a boot into the desktop shows the prototype's default screen in the default theme on both targets, the shell survives being killed, and every shell shortcut works.
+
+### 43. Session: Login, Lock, Power (Planned, Not Started)
+
+Needs M42, and M38 for the handover. There are no users or permissions yet, so the password guards the keyboard, not the files.
+
+- **Part A.** A1 SHA-256 and PBKDF2, the `passwd` program and the hash file; A2 `login` on the virtual consoles once a password is set, so `Alt+F2` cannot bypass the lock; A3 the `greeter` with a session-lock role: the login and lock screens, `Super+L`, automatic login; A4 the `desktop` session program started by `init` on `tty1`, log out, restart and shut down with their screens; A5 the handover from the splash: no blank frame, then the 240 ms crossfade.
+
+**Complete when:** on both targets a cold boot plays the feather, shows login and reaches the desktop, and locking cannot be bypassed from the keyboard, including through the text consoles.
+
+### 44. Core Apps (Planned, Not Started)
+
+Each app is its own program with real data. The parts do not depend on each other. Needs M41 and M42.
+
+- **Part A: Terminal.** A1 the VT100 core shared between the kernel console and the app (extracted from `term.cpp`; M23 planned to move it out of the kernel, and sharing keeps the text consoles); A2 the app on a pty master.
+- **Part B: Files,** with the trash.
+- **Part C: System Settings.** C1 the frame and the Personal panes; C2 the other panes, each real or disabled with its reason (needs a key-repeat setting in the kernel and a control channel in `init`).
+- **Part D: Task Manager.** D1 disk and network counters in `/proc`; D2 the app.
+- **Part E: Notes and Calculator.**
+- **Part F: the games in windows,** through a windowed backend for `Graphics::Display`, so `featherfall`, `wickdeep` and `fontview` run unchanged.
+
+**Complete when:** each app does on both targets what its prototype counterpart shows, with real data.
+
+### 45. Polish, Scaling And Real Hardware (Planned, Not Started)
+
+To be planned in detail when M44 is done. In likely order: drag and drop between apps; a motion audit and reduce motion; the error states and the first-run flow, which need designs first; an accessibility pass; UI scale from 125% to 400%; more keyboard layouts and time zones; compact mode; and the first run on a laptop.
+
+### 46. GPU Tier (Planned, Not Started)
+
+virtio-gpu first, for a real flush, a hardware cursor and page flips; then blur, scaled transitions and dock magnification on the same scene. The CPU tier stays the fallback.
+
 ## Architecture Boundaries
 
 - Keep framebuffer terminal, logging API, panic/assert API, VFS, syscall definitions, and scheduler policy architecture-neutral when possible.
