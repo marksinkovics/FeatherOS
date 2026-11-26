@@ -206,7 +206,7 @@ There are no time zones: every time is UTC.
   - `mktime` and `timegm`, which normalize out-of-range fields.
   - `asctime` and `ctime`.
   - `strftime` with every C99 conversion, in the C locale.
-- **Sleeping:** `nanosleep`, in whole milliseconds; a signal cuts it short with `EINTR` and the time left in `remaining`.
+- **Sleeping:** `nanosleep`, in whole milliseconds (the kernel sleeps whole timer ticks, so the library finishes the remainder against `CLOCK_MONOTONIC`; `usleep`, `poll` timeouts and `pthread_cond_timedwait` do the same); a signal cuts it short with `EINTR` and the time left in `remaining`.
 
 Differences:
 - Dates before 1970 fail with `EOVERFLOW`.

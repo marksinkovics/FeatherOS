@@ -444,7 +444,7 @@ Supported so far:
   - `time`, `gmtime`/`localtime` and their `_r` forms (UTC only, from 1970 on)
   - `mktime`/`timegm`, which normalize out-of-range fields
   - `strftime` (the C locale, header-only in `src/libc/time_format.h`), `asctime`, `ctime`
-  - `clock_gettime` (`CLOCK_REALTIME` to the second, `CLOCK_MONOTONIC` to the millisecond), `nanosleep`
+  - `clock_gettime` (`CLOCK_REALTIME` to the second, `CLOCK_MONOTONIC` in nanoseconds, about 1 µs fine), `nanosleep`
 - `spawn.h` and `sys/wait.h`:
   - `posix_spawn`/`posix_spawnp` build the kernel's one-line command from `path` and `argv`, so an argument cannot hold a double quote; `argv[0]` becomes the path, or the bare name for a program in `/system` (so a program found in `/bin` gets `/bin/<name>`). `posix_spawnp` searches `PATH` (`/bin:/sbin:/system` when unset).
   - File actions and attributes can be initialized but hold nothing.
