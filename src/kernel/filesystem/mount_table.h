@@ -74,6 +74,10 @@ public:
     bool AcquireChild(const char* directory, uint32_t index, Filesystem::DirectoryEntry* entry,
                       Filesystem::Driver** driver);
     uint32_t ChildCount(const char* directory) const;
+    // Whether a mount point directly inside directory is called name.
+    bool HasChildNamed(const char* directory, const char* name) const;
+    // Whether any mount point lies inside path, not at it.
+    bool HasInside(const char* path) const;
     // The number each mount gets when it is added, unique until the table is destroyed, for
     // st_dev; 0 for a driver that is not mounted.
     uint64_t DeviceOf(const Filesystem::Driver* driver) const;

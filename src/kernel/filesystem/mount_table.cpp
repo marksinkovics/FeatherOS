@@ -324,6 +324,40 @@ uint32_t MountTable::ChildCount(const char* directory) const
     return children;
 }
 
+bool MountTable::HasChildNamed(const char* directory, const char* name) const
+{
+    if (directory == nullptr || name == nullptr || directory[0] != '/')
+    {
+        return false;
+    }
+    const uint32_t directory_length = DirectoryLength(directory);
+    for (uint32_t position = 0; position < count; ++position)
+    {
+        const char* child = ChildName(entries[position].point, directory, directory_length);
+        if (child != nullptr && SameText(child, name))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool MountTable::HasInside(const char* path) const
+{
+    if (path == nullptr || path[0] != '/')
+    {
+        return false;
+    }
+    for (uint32_t position = 0; position < count; ++position)
+    {
+        if (IsInside(entries[position].point, path))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 uint64_t MountTable::DeviceOf(const Filesystem::Driver* driver) const
 {
     for (uint32_t index = 0; index < count; ++index)

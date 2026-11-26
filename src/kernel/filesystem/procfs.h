@@ -17,6 +17,9 @@ constexpr size_t MaximumFileSize = 1024;
 constexpr size_t MaximumKernelLogFileSize = 64 * 1024 + 1;
 // "partitions" lists up to eight disks and 32 volumes.
 constexpr size_t MaximumPartitionsFileSize = 2048;
+// "mounts" holds up to 16 lines of at most 15 + 1023 + 16 + 12 bytes (source, point, type, the
+// rest); its size is reported as 0 like Linux's.
+constexpr size_t MaximumMountsFileSize = 20 * 1024;
 constexpr uint32_t MaximumCpus = 16;
 
 struct ProcessStatus

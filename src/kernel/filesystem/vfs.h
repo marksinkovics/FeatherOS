@@ -203,6 +203,9 @@ bool IsReadOnly(const char* path);
 bool IsDead(const char* path);
 // "/" and the mount points, which can never be removed.
 bool IsMountPoint(const char* path);
+// Whether a mount point lies inside the directory at path, which then cannot be renamed: the mount
+// table matches path text and has no way to move a mount along.
+bool HasMountInside(const char* path);
 // Disk, /tmp and /etc files are tracked while open, so they are not removed or written twice at
 // once.
 bool IsTracked(const FileHandle& file);

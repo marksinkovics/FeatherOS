@@ -191,7 +191,7 @@ void SetEntry(Filesystem::DirectoryEntry* entry, const char* name, Kind kind,
 }
 
 // One line per mount, as Linux's /proc/mounts: "<source> <point> <type> <ro|rw> 0 0".
-bool FormatMounts(char* buffer)
+bool FormatMounts(char* buffer, size_t capacity)
 {
     buffer[0] = '\0';
     size_t used = 0;
@@ -202,9 +202,8 @@ bool FormatMounts(char* buffer)
     }
     for (uint32_t index = 0; source.mount_at != nullptr && source.mount_at(index, &*mount); ++index)
     {
-        if (!String::FormatTo(buffer + used, MaximumFileSize - used, "{} {} {} {} 0 0\n",
-                              mount->source, mount->point, mount->type,
-                              mount->read_only ? "ro" : "rw"))
+        if (!String::FormatTo(buffer + used, capacity - used, "{} {} {} {} 0 0\n", mount->source,
+                              mount->point, mount->type, mount->read_only ? "ro" : "rw"))
         {
             return false;
         }
@@ -267,7 +266,7 @@ bool Generate(const char* path, char* buffer, size_t* length)
         break;
     }
     case Kind::Mounts:
-        formatted = FormatMounts(buffer);
+        formatted = FormatMounts(buffer, MaximumMountsFileSize);
         break;
     case Kind::UsbDevices:
         buffer[0] = '\0';
@@ -334,6 +333,8 @@ size_t FileCapacity(const char* path)
         return MaximumKernelLogFileSize;
     case Kind::Partitions:
         return MaximumPartitionsFileSize;
+    case Kind::Mounts:
+        return MaximumMountsFileSize;
     default:
         return MaximumFileSize;
     }

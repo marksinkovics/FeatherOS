@@ -140,6 +140,32 @@ TEST_CASE("the mount table lists the mount points directly inside a directory in
     REQUIRE(Children(table, "/") == std::vector<std::string>{"system", "dev"});
 }
 
+TEST_CASE("the mount table finds a named child and a mount inside a path")
+{
+    std::array<FakeDriver, 4> drivers;
+    MountTable table;
+    REQUIRE(table.Add("/", &drivers[0]));
+    REQUIRE(table.Add("/etc", &drivers[1]));
+    REQUIRE(table.Add("/mnt/usb", &drivers[2]));
+    REQUIRE(table.Add("/mnt/usb/part1", &drivers[3]));
+
+    REQUIRE(table.HasChildNamed("/", "etc"));
+    REQUIRE_FALSE(table.HasChildNamed("/", "et"));
+    REQUIRE_FALSE(table.HasChildNamed("/", "usb"));
+    REQUIRE(table.HasChildNamed("/mnt", "usb"));
+    REQUIRE(table.HasChildNamed("/mnt/usb/", "part1"));
+    REQUIRE_FALSE(table.HasChildNamed("/mnt/usb", "usb"));
+
+    REQUIRE(table.HasInside("/"));
+    REQUIRE(table.HasInside("/mnt"));
+    REQUIRE(table.HasInside("/mnt/usb"));
+    REQUIRE_FALSE(table.HasInside("/mnt/usb/part1"));
+    REQUIRE_FALSE(table.HasInside("/etc"));
+    REQUIRE_FALSE(table.HasInside("/mn"));
+    REQUIRE_FALSE(table.HasInside("/mnt/usb/part2"));
+    REQUIRE_FALSE(table.HasInside("mnt"));
+}
+
 TEST_CASE("the mount table lists every mount in mount order")
 {
     FakeDriver root;

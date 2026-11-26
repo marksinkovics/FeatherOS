@@ -1098,18 +1098,43 @@ bool ReadDirectory(const char* path, uint32_t index, Filesystem::DirectoryEntry*
     }
     Driver* child = nullptr;
     bool mount_point = false;
+    uint32_t mounted_children = 0;
     {
         Sync::SpinLockGuard guard(mount_lock);
         mount_point = mounts.AcquireChild(path, index, entry, &child);
         if (!mount_point)
         {
-            index -= mounts.ChildCount(path);
+            mounted_children = mounts.ChildCount(path);
+            index -= mounted_children;
         }
     }
     if (!mount_point)
     {
         const Use use(path);
-        return use.driver != nullptr && use.driver->ReadDirectory(use.inner, index, entry);
+        if (use.driver == nullptr)
+        {
+            return false;
+        }
+        if (mounted_children == 0)
+        {
+            return use.driver->ReadDirectory(use.inner, index, entry);
+        }
+        // A mount hides the parent's own entry of that name, so the parent's index counts the
+        // entries left after those are skipped.
+        for (uint32_t position = 0; use.driver->ReadDirectory(use.inner, position, entry);
+             ++position)
+        {
+            bool hidden = false;
+            {
+                Sync::SpinLockGuard guard(mount_lock);
+                hidden = mounts.HasChildNamed(path, entry->name);
+            }
+            if (!hidden && index-- == 0)
+            {
+                return true;
+            }
+        }
+        return false;
     }
     // A mount point's node is its filesystem's root, as stat reports it.
     if (child != nullptr)
@@ -1188,6 +1213,12 @@ bool IsMountPoint(const char* path)
     }
     const char* inner;
     return Locate(path, &inner) == nullptr ? IsRoot(path) : *inner == '\0';
+}
+
+bool HasMountInside(const char* path)
+{
+    Sync::SpinLockGuard guard(mount_lock);
+    return mounts.HasInside(path);
 }
 
 bool IsTracked(const FileHandle& file)
@@ -1279,6 +1310,10 @@ bool Rename(const char* from, const char* to)
     if (!MayChange(use.driver, use.inner))
     {
         return false;
+    }
+    if (HasMountInside(from))
+    {
+        return Refuse(User::SyscallErrorBusy);
     }
     if (Locate(to, &to_inner) != use.driver)
     {

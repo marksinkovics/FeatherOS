@@ -4,6 +4,8 @@
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/vfs.h"
 
+#include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -70,9 +72,9 @@ public:
     }
 };
 
-bool LongMountAt(uint32_t index, Procfs::MountStatus* status)
+bool LongMount(uint32_t index, uint32_t count, Procfs::MountStatus* status)
 {
-    if (index != 0)
+    if (index >= count)
     {
         return false;
     }
@@ -88,11 +90,22 @@ bool LongMountAt(uint32_t index, Procfs::MountStatus* status)
     return true;
 }
 
+bool LongMountAt(uint32_t index, Procfs::MountStatus* status)
+{
+    return LongMount(index, 1, status);
+}
+
+bool SixteenLongMountsAt(uint32_t index, Procfs::MountStatus* status)
+{
+    return LongMount(index, 16, status);
+}
+
 } // namespace
 
-TEST_CASE("R2-08 a mount point on an existing directory is listed once", "[.repro][R2-08]")
+TEST_CASE("R2-08 a mount point on an existing directory is listed once", "[R2-08]")
 {
     REQUIRE(Files::MakeDirectory("/etc/usb") == 0);
+    REQUIRE(Files::MakeDirectory("/etc/other") == 0);
     {
         const TmpMovedInto moved("/etc/usb");
         REQUIRE(Files::Mount("tmp", "/etc/usb", "tmpfs") == 0);
@@ -102,48 +115,35 @@ TEST_CASE("R2-08 a mount point on an existing directory is listed once", "[.repr
             listed += name == "usb" ? 1 : 0;
         }
         CHECK(listed == 1);
+        const std::vector<std::string> names = Names("/etc");
+        CHECK(std::set<std::string>(names.begin(), names.end()).size() == names.size());
+        CHECK(std::count(names.begin(), names.end(), "other") == 1);
     }
+    Files::RemoveDirectory("/etc/other");
     Files::RemoveDirectory("/etc/usb");
 }
 
-TEST_CASE("R2-09 renaming a directory with a mount point inside is refused or moves the mount",
-          "[.repro][R2-09]")
+TEST_CASE("R2-09 renaming a directory with a mount point inside is refused", "[R2-09]")
 {
+    namespace User = FeatherOS::User;
     REQUIRE(Files::MakeDirectory("/etc/outer") == 0);
     REQUIRE(Files::MakeDirectory("/etc/outer/vol") == 0);
-    bool renamed = false;
     {
         const TmpMovedInto moved("/etc/outer/vol");
         REQUIRE(Files::Mount("tmp", "/etc/outer/vol", "tmpfs") == 0);
-        renamed = Files::Rename("/etc/outer", "/etc/moved") == 0;
-        if (renamed)
-        {
-            // The mount must have followed its directory; the table matches path text.
-            CHECK(VFS::MountedAt("/etc/outer/vol") == nullptr);
-            CHECK(VFS::MountedAt("/etc/moved/vol") != nullptr);
-        }
-        if (VFS::MountedAt("/etc/moved/vol") != nullptr)
-        {
-            Files::Unmount("/etc/moved/vol", NoWorkingDirectory);
-        }
-        else if (VFS::MountedAt("/etc/outer/vol") != nullptr)
-        {
-            Files::Unmount("/etc/outer/vol", NoWorkingDirectory);
-        }
+        CHECK(Files::Rename("/etc/outer", "/etc/moved") == User::SyscallErrorBusy);
+        CHECK(VFS::MountedAt("/etc/outer/vol") != nullptr);
+        CHECK(VFS::MountedAt("/etc/moved/vol") == nullptr);
+        CHECK_FALSE(VFS::Rename("/etc/outer", "/etc/moved"));
+        CHECK(VFS::MountedAt("/etc/outer/vol") != nullptr);
+        Files::Unmount("/etc/outer/vol", NoWorkingDirectory);
     }
-    if (renamed)
-    {
-        Files::RemoveDirectory("/etc/moved/vol");
-        Files::RemoveDirectory("/etc/moved");
-    }
-    else
-    {
-        Files::RemoveDirectory("/etc/outer/vol");
-        Files::RemoveDirectory("/etc/outer");
-    }
+    CHECK(Files::Rename("/etc/outer", "/etc/moved") == 0);
+    CHECK(Files::RemoveDirectory("/etc/moved/vol") == 0);
+    CHECK(Files::RemoveDirectory("/etc/moved") == 0);
 }
 
-TEST_CASE("R2-10 /proc/mounts opens when a mount point is long", "[.repro][R2-10]")
+TEST_CASE("R2-10 /proc/mounts opens when a mount point is long", "[R2-10]")
 {
     const SourceRestored restore;
     Procfs::SetSource({nullptr, nullptr, nullptr, nullptr, LongMountAt});
@@ -161,4 +161,23 @@ TEST_CASE("R2-10 /proc/mounts opens when a mount point is long", "[.repro][R2-10
     }
     FeatherOS::Filesystem::FileInfo info{};
     CHECK(VFS::Stat("/proc/mounts", &info));
+}
+
+TEST_CASE("R2-10 /proc/mounts reads in full with sixteen long mount points", "[R2-10]")
+{
+    const SourceRestored restore;
+    Procfs::SetSource({nullptr, nullptr, nullptr, nullptr, SixteenLongMountsAt});
+
+    VFS::FileHandle file{};
+    REQUIRE(VFS::Open("/proc/mounts", &file));
+    std::string text;
+    char chunk[512];
+    uint64_t count = 0;
+    while (VFS::Read(&file, chunk, sizeof(chunk), &count) && count > 0)
+    {
+        text.append(chunk, count);
+    }
+    VFS::Close(&file);
+    CHECK(text.size() > 16 * 1000);
+    CHECK(text.back() == '\n');
 }

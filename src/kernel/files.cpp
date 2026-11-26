@@ -2051,7 +2051,7 @@ uint64_t Rename(const char* from, const char* to)
     {
         return User::SyscallErrorReadOnly;
     }
-    if (VFS::IsMountPoint(from) || VFS::IsMountPoint(to))
+    if (VFS::IsMountPoint(from) || VFS::IsMountPoint(to) || VFS::HasMountInside(from))
     {
         return User::SyscallErrorBusy;
     }
