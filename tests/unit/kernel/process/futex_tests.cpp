@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "kernel/futex.h"
+#include "kernel/scheduler.h"
 #include "support/scheduler_stubs.h"
 #include "user/syscall_abi.h"
 
@@ -115,4 +116,20 @@ TEST_CASE("a futex wait gives up at its deadline or for a signal")
     REQUIRE(Wait(&owner, 0x1000, 7, 0, ReadWord, Interrupted) ==
             FeatherOS::User::SyscallErrorInterrupted);
     REQUIRE(Wake(&owner, 0x1000, 1) == 0);
+}
+
+TEST_CASE("a wake-up posted before a futex wait blocks costs one early return", "[R3-06]")
+{
+    Reset();
+    int calls = 0;
+    TestScheduler::on_wait = [&]
+    {
+        ++calls;
+        REQUIRE(Wake(&owner, 0x1000, 10) == 1);
+    };
+    FeatherOS::Scheduler::WakeTask(TestScheduler::current_task);
+    REQUIRE(Wait(&owner, 0x1000, 7, 0, ReadWord, Interrupted) == 0);
+    REQUIRE(calls == 1);
+    REQUIRE(TestScheduler::early_wakes == 1);
+    REQUIRE(TestScheduler::woken_tasks == std::vector<uint32_t>{1, 1});
 }

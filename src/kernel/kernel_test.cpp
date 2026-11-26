@@ -386,6 +386,129 @@ bool RunAndReap(Scheduler::TaskEntry entry, uint64_t* exit_status)
            Scheduler::ReapTask(task);
 }
 
+constexpr uint64_t WakeTokenFarDeadline = 50;
+constexpr uint64_t WakeTokenNearDeadline = 3;
+
+// A wake-up posted to a running task is kept for its next block, then used up. The first block must
+// return at once, the second must last its full time.
+uint64_t TokenWaitOnTask(void*)
+{
+    Scheduler::WakeTask(Scheduler::CurrentTaskId());
+    const uint64_t flags = blocking_test_lock.LockIrqSave();
+    uint64_t start = Time::TickCount();
+    Scheduler::WaitOn(timeout_test_queue, blocking_test_lock, start + WakeTokenFarDeadline);
+    const uint64_t early = Time::TickCount() - start;
+    start = Time::TickCount();
+    Scheduler::WaitOn(timeout_test_queue, blocking_test_lock, start + WakeTokenNearDeadline);
+    const uint64_t full = Time::TickCount() - start;
+    blocking_test_lock.UnlockIrqRestore(flags);
+    return early < WakeTokenFarDeadline && full >= WakeTokenNearDeadline ? 0 : 1;
+}
+
+uint64_t TokenSleepTask(void*)
+{
+    Scheduler::WakeTask(Scheduler::CurrentTaskId());
+    uint64_t start = Time::TickCount();
+    Scheduler::SleepUntil(start + WakeTokenFarDeadline);
+    const uint64_t early = Time::TickCount() - start;
+    start = Time::TickCount();
+    Scheduler::SleepUntil(start + WakeTokenNearDeadline);
+    const uint64_t full = Time::TickCount() - start;
+    return early < WakeTokenFarDeadline && full >= WakeTokenNearDeadline ? 0 : 1;
+}
+
+uint64_t ReadyTokenTask(void*)
+{
+    const uint64_t flags = blocking_test_lock.LockIrqSave();
+    const uint64_t start = Time::TickCount();
+    Scheduler::WaitOn(timeout_test_queue, blocking_test_lock, start + WakeTokenFarDeadline);
+    const uint64_t early = Time::TickCount() - start;
+    blocking_test_lock.UnlockIrqRestore(flags);
+    return early < WakeTokenFarDeadline ? 0 : 1;
+}
+
+uint64_t ShortSleepTask(void*)
+{
+    Scheduler::SleepUntil(Time::TickCount() + 2);
+    return 0;
+}
+
+// Blocking in Scheduler::Wait uses up a wake-up posted before it.
+uint64_t TokenUsedByWaitTask(void*)
+{
+    Scheduler::WakeTask(Scheduler::CurrentTaskId());
+    Scheduler::TaskId child;
+    if (!Scheduler::CreateTask(ShortSleepTask, nullptr, &child) ||
+        !Scheduler::Wait(child, nullptr) || !Scheduler::ReapTask(child))
+    {
+        return 1;
+    }
+    const uint64_t flags = blocking_test_lock.LockIrqSave();
+    const uint64_t start = Time::TickCount();
+    Scheduler::WaitOn(timeout_test_queue, blocking_test_lock, start + WakeTokenNearDeadline);
+    const uint64_t full = Time::TickCount() - start;
+    blocking_test_lock.UnlockIrqRestore(flags);
+    return full >= WakeTokenNearDeadline ? 0 : 1;
+}
+
+uint64_t UntimedWaiterTask(void*)
+{
+    const uint64_t flags = blocking_test_lock.LockIrqSave();
+    Scheduler::WaitOn(timeout_test_queue, blocking_test_lock);
+    blocking_test_lock.UnlockIrqRestore(flags);
+    return 0;
+}
+
+void RunWakeTokenTests()
+{
+    uint64_t status = 1;
+    if (!RunAndReap(TokenWaitOnTask, &status) || status != 0)
+    {
+        Panic("R3-04: a wake-up posted before WaitOn was lost or outlived one wait");
+    }
+    if (!RunAndReap(TokenSleepTask, &status) || status != 0)
+    {
+        Panic("R3-04: a wake-up posted before SleepUntil was lost or outlived one sleep");
+    }
+
+    Scheduler::TaskId ready_task;
+    if (!Scheduler::CreateTask(ReadyTokenTask, nullptr, &ready_task) ||
+        Scheduler::GetState(ready_task) != Scheduler::TaskState::Ready)
+    {
+        Panic("Could not create the ready wake-up test task");
+    }
+    Scheduler::WakeTask(ready_task);
+    if (!Scheduler::Wait(ready_task, &status) || !Scheduler::ReapTask(ready_task) || status != 0)
+    {
+        Panic("R3-04: a wake-up posted to a ready task was lost");
+    }
+
+    if (!RunAndReap(TokenUsedByWaitTask, &status) || status != 0)
+    {
+        Panic("R3-04: a wake-up outlived the Scheduler::Wait that blocked");
+    }
+
+    Scheduler::TaskId blocked_task;
+    if (!Scheduler::CreateTask(UntimedWaiterTask, nullptr, &blocked_task))
+    {
+        Panic("Could not create the blocked wake-up test task");
+    }
+    for (uint32_t yields = 0; Scheduler::GetState(blocked_task) != Scheduler::TaskState::Blocked;
+         ++yields)
+    {
+        if (yields > 1000)
+        {
+            Panic("The blocked wake-up test task never blocked");
+        }
+        Scheduler::Yield();
+    }
+    Scheduler::WakeTask(blocked_task);
+    if (!Scheduler::Wait(blocked_task, &status) || !Scheduler::ReapTask(blocked_task))
+    {
+        Panic("WakeTask did not end a blocked wait");
+    }
+}
+
 void RunBlockingTests(const void* platform_data)
 {
     Scheduler::TaskId waiter_task;
@@ -416,6 +539,7 @@ void RunBlockingTests(const void* platform_data)
     uint64_t waited_ticks = 0;
     const bool sleep_finished = RunAndReap(SleepingTask, &slept_ticks);
     const bool timed_wait_finished = RunAndReap(TimedWaiterTask, &waited_ticks);
+    RunWakeTokenTests();
     Time::StopTimer();
     if (!sleep_finished || slept_ticks < 5 || slept_ticks > 50 || !timed_wait_finished ||
         waited_ticks < 3 || waited_ticks > 50)
@@ -574,7 +698,8 @@ void RunSchedulerTests(const void* platform_data)
     RunTaskScalingTests();
     RunPriorityTests();
     Serial::Write(
-        "KERN/SCHEDULER: preemption, wait, exit, reap, blocking, sleep, and priorities passed\n");
+        "KERN/SCHEDULER: preemption, wait, exit, reap, blocking, early wake-ups, sleep, and "
+        "priorities passed\n");
 }
 
 } // namespace
@@ -899,6 +1024,117 @@ uint64_t SmpTask(void*)
     return 0;
 }
 
+// W checks a condition and blocks; S, on another CPU, publishes the condition and calls WakeTask
+// between W's check and its block, as a signal sender does. Rounds are counted up, never reset.
+constexpr uint32_t SmpWakeRounds = 100;
+constexpr uint64_t SmpWakeTimeoutTicks = 100;
+// Ticks stop while a task holds the boot CPU with interrupts masked, so spins count iterations.
+constexpr uint64_t SmpWakeSpinLimit = 100'000'000;
+
+constinit Sync::SpinLock smp_wake_lock;
+constinit Scheduler::WaitQueue smp_wake_queue;
+std::atomic<uint32_t> smp_wake_started = 0;
+std::atomic<uint32_t> smp_wake_checked = 0;
+std::atomic<uint32_t> smp_wake_sent = 0;
+std::atomic<uint32_t> smp_wake_done = 0;
+std::atomic<uint32_t> smp_wake_target = 0;
+std::atomic<bool> smp_wake_condition = false;
+std::atomic<uint32_t> smp_wake_waiter_cpu = Cpu::MaximumCpus;
+std::atomic<uint32_t> smp_wake_sender_cpu = Cpu::MaximumCpus;
+
+void SmpWakeWaitFor(const std::atomic<uint32_t>& counter, uint32_t value)
+{
+    for (uint64_t spins = 0; counter.load(std::memory_order_acquire) < value; ++spins)
+    {
+        if (spins > SmpWakeSpinLimit)
+        {
+            Panic("SMP wake-up test: the partner task did not run");
+        }
+        Sync::CpuRelax();
+    }
+}
+
+void SmpWakeCheckAfter(uint32_t round, uint64_t deadline)
+{
+    if (Time::TickCount() >= deadline || !smp_wake_condition.load(std::memory_order_acquire))
+    {
+        Panic("R3-04: a wake-up posted before the block was lost");
+    }
+    smp_wake_condition.store(false, std::memory_order_release);
+    smp_wake_done.store(round, std::memory_order_release);
+}
+
+void SmpWakeBlockRound(uint32_t round)
+{
+    const uint64_t flags = smp_wake_lock.LockIrqSave();
+    smp_wake_checked.store(round, std::memory_order_release);
+    SmpWakeWaitFor(smp_wake_sent, round);
+    const uint64_t deadline = Time::TickCount() + SmpWakeTimeoutTicks;
+    Scheduler::WaitOn(smp_wake_queue, smp_wake_lock, deadline);
+    smp_wake_lock.UnlockIrqRestore(flags);
+    SmpWakeCheckAfter(round, deadline);
+}
+
+void SmpWakeSleepRound(uint32_t round)
+{
+    smp_wake_checked.store(round, std::memory_order_release);
+    SmpWakeWaitFor(smp_wake_sent, round);
+    const uint64_t deadline = Time::TickCount() + SmpWakeTimeoutTicks;
+    Scheduler::SleepUntil(deadline);
+    SmpWakeCheckAfter(round, deadline);
+}
+
+uint64_t SmpWakeWaiterTask(void*)
+{
+    smp_wake_waiter_cpu.store(Cpu::CurrentIndex(), std::memory_order_relaxed);
+    smp_wake_target.store(Scheduler::CurrentTaskId(), std::memory_order_release);
+    smp_wake_started.fetch_add(1U, std::memory_order_acq_rel);
+    SmpWakeWaitFor(smp_wake_started, 2);
+    for (uint32_t round = 1; round <= SmpWakeRounds; ++round)
+    {
+        SmpWakeBlockRound(round);
+    }
+    for (uint32_t round = SmpWakeRounds + 1; round <= 2 * SmpWakeRounds; ++round)
+    {
+        SmpWakeSleepRound(round);
+    }
+    return 0;
+}
+
+uint64_t SmpWakeSenderTask(void*)
+{
+    smp_wake_sender_cpu.store(Cpu::CurrentIndex(), std::memory_order_relaxed);
+    smp_wake_started.fetch_add(1U, std::memory_order_acq_rel);
+    SmpWakeWaitFor(smp_wake_started, 2);
+    for (uint32_t round = 1; round <= 2 * SmpWakeRounds; ++round)
+    {
+        SmpWakeWaitFor(smp_wake_checked, round);
+        smp_wake_condition.store(true, std::memory_order_release);
+        Scheduler::WakeTask(smp_wake_target.load(std::memory_order_acquire));
+        smp_wake_sent.store(round, std::memory_order_release);
+        SmpWakeWaitFor(smp_wake_done, round);
+    }
+    return 0;
+}
+
+void RunSmpWakeTests()
+{
+    Scheduler::TaskId waiter;
+    Scheduler::TaskId sender;
+    if (!Scheduler::CreateTask(SmpWakeWaiterTask, nullptr, &waiter) ||
+        !Scheduler::CreateTask(SmpWakeSenderTask, nullptr, &sender) ||
+        !Scheduler::Wait(waiter, nullptr) || !Scheduler::Wait(sender, nullptr) ||
+        !Scheduler::ReapTask(waiter) || !Scheduler::ReapTask(sender))
+    {
+        Panic("SMP wake-up test tasks did not finish");
+    }
+    if (smp_wake_waiter_cpu.load(std::memory_order_relaxed) ==
+        smp_wake_sender_cpu.load(std::memory_order_relaxed))
+    {
+        Panic("SMP wake-up test: both tasks ran on one CPU");
+    }
+}
+
 } // namespace
 
 void RunSmpTests()
@@ -947,8 +1183,9 @@ void RunSmpTests()
     {
         Panic("Busy CPUs were not counted");
     }
+    RunSmpWakeTests();
     Serial::Write("KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact; busy CPUs "
-                  "counted\n");
+                  "counted; wake-ups across CPUs kept\n");
 }
 
 namespace

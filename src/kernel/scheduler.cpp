@@ -40,6 +40,8 @@ struct Task
     // 0 = no deadline.
     uint64_t wake_tick GUARDED_BY(scheduler_lock);
     const WaitQueue* wait_queue GUARDED_BY(scheduler_lock);
+    // A WakeTask that found the task running or ready; its next block point consumes it.
+    bool wake_pending GUARDED_BY(scheduler_lock);
     void* user_context;
     // Null for the boot task and secondary idle tasks, which run on the bootloader's stacks.
     uint8_t* stack;
@@ -97,6 +99,7 @@ void ResetTask(Task& task) NO_THREAD_SAFETY_ANALYSIS
     task.last_cpu = 0;
     task.wake_tick = 0;
     task.wait_queue = nullptr;
+    task.wake_pending = false;
     task.user_context = nullptr;
     task.thread_pointer = 0;
     task.local = {};
@@ -149,6 +152,13 @@ void WakeIdleCpu() REQUIRES(scheduler_lock)
             return;
         }
     }
+}
+
+bool TakeWakePending(Task& task) REQUIRES(scheduler_lock)
+{
+    const bool pending = task.wake_pending;
+    task.wake_pending = false;
+    return pending;
 }
 
 void MakeReady(Task& task) REQUIRES(scheduler_lock)
@@ -471,6 +481,7 @@ bool Wait(TaskId task_id, uint64_t* exit_status, bool (*interrupted)(const void*
             scheduler_lock.UnlockIrqRestore(flags);
             return false;
         }
+        CurrentTask()->wake_pending = false;
         CurrentTask()->state = TaskState::Blocked;
         CurrentTask()->wait_queue = &task->exit_queue;
         CurrentTask()->wake_tick = 0;
@@ -570,7 +581,8 @@ void WaitOn(WaitQueue& queue, Sync::SpinLock& lock, uint64_t deadline_tick)
     }
 
     scheduler_lock.Lock();
-    if (deadline_tick != 0 && Time::TickCount() >= deadline_tick)
+    const bool woken = TakeWakePending(*CurrentTask());
+    if (woken || (deadline_tick != 0 && Time::TickCount() >= deadline_tick))
     {
         scheduler_lock.Unlock();
         return;
@@ -603,10 +615,17 @@ void WakeTask(TaskId task_id)
     }
     Sync::SpinLockGuard guard(scheduler_lock);
     Task* task = FindTask(task_id);
-    if (task != nullptr &&
-        (task->state == TaskState::Sleeping || task->state == TaskState::Blocked))
+    if (task == nullptr)
+    {
+        return;
+    }
+    if (task->state == TaskState::Sleeping || task->state == TaskState::Blocked)
     {
         MakeReady(*task);
+    }
+    else if (task->state == TaskState::Running || task->state == TaskState::Ready)
+    {
+        task->wake_pending = true;
     }
 }
 
@@ -618,7 +637,7 @@ bool SleepUntil(uint64_t tick)
     }
 
     const uint64_t flags = scheduler_lock.LockIrqSave();
-    if (Time::TickCount() < tick)
+    if (!TakeWakePending(*CurrentTask()) && Time::TickCount() < tick)
     {
         CurrentTask()->state = TaskState::Sleeping;
         CurrentTask()->wake_tick = tick;

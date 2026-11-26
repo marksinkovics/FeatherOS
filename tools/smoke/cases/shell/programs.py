@@ -45,7 +45,7 @@ EXPECTED_PROGRAMS_OUTPUT = (
     "usage: cxxtest",
 )
 # libctest checks the x87 long double functions only on x86-64.
-LIBCTEST_CHECKS = {"x86_64": 644, "aarch64": 632}
+LIBCTEST_CHECKS = {"x86_64": 647, "aarch64": 635}
 # `date` prints only the timestamp, unlike the boot log's "Wall clock:" line.
 DATE_OUTPUT = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\r?$", re.MULTILINE

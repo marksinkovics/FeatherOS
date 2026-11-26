@@ -61,7 +61,10 @@ public:
 
     void Sleep(uint32_t milliseconds) override
     {
-        Scheduler::SleepUntil(TickAt(NowMilliseconds() + milliseconds));
+        const uint64_t until = TickAt(NowMilliseconds() + milliseconds);
+        while (Time::TickCount() < until && Scheduler::SleepUntil(until))
+        {
+        }
     }
 };
 

@@ -3520,6 +3520,98 @@ void CheckCloseWakesBlockedCalls()
           "closing a UDP socket fails a blocked recvfrom with EBADF");
 }
 
+pthread_mutex_t signal_wakeup_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void* LockHeldMutex(void*)
+{
+    pthread_mutex_lock(&signal_wakeup_mutex);
+    return nullptr;
+}
+
+// The children CheckSignalWakeups starts. Each ends up blocked in the kernel, where nothing but a
+// signal or the process ending can wake it.
+int RunBlockedChild(const char* mode)
+{
+    if (strcmp(mode, "block-pipe") == 0)
+    {
+        int ends[2];
+        char byte = 0;
+        return pipe(ends) == 0 ? static_cast<int>(read(ends[0], &byte, 1)) : 1;
+    }
+    if (strcmp(mode, "block-sleep") == 0)
+    {
+        const timespec long_sleep = {10, 0};
+        return nanosleep(&long_sleep, nullptr);
+    }
+    // The thread blocks on a futex, then main exits and SIGKILLs it from another CPU.
+    pthread_t thread = 0;
+    pthread_mutex_lock(&signal_wakeup_mutex);
+    if (pthread_create(&thread, nullptr, LockHeldMutex, nullptr) != 0)
+    {
+        return 1;
+    }
+    for (int yields = 0; yields < 4; ++yields)
+    {
+        sched_yield();
+    }
+    return 0;
+}
+
+bool ReapsWithin2Seconds(pid_t child)
+{
+    const timespec millisecond = {0, 1000000};
+    for (int poll = 0; poll < 2000; ++poll)
+    {
+        int status = 0;
+        if (waitpid(child, &status, WNOHANG) == child)
+        {
+            return true;
+        }
+        nanosleep(&millisecond, nullptr);
+    }
+    kill(child, SIGKILL);
+    waitpid(child, nullptr, 0);
+    return false;
+}
+
+bool BlockedChildEnds(const char* mode, bool kill_it, int round)
+{
+    char* arguments[] = {const_cast<char*>("libctest"), const_cast<char*>(mode), nullptr};
+    pid_t child = 0;
+    if (posix_spawn(&child, "libctest", nullptr, nullptr, arguments, environ) != 0)
+    {
+        return false;
+    }
+    if (kill_it)
+    {
+        for (int yields = 0; yields < round % 8; ++yields)
+        {
+            sched_yield();
+        }
+        kill(child, SIGKILL);
+    }
+    return ReapsWithin2Seconds(child);
+}
+
+// SIGKILL at any moment of a blocking call must end the call, however it races the check before
+// the block.
+void CheckSignalWakeups()
+{
+    constexpr int Rounds = 16;
+    bool pipe_ended = true;
+    bool sleep_ended = true;
+    bool futex_ended = true;
+    for (int round = 0; round < Rounds; ++round)
+    {
+        pipe_ended = BlockedChildEnds("block-pipe", true, round) && pipe_ended;
+        sleep_ended = BlockedChildEnds("block-sleep", true, round) && sleep_ended;
+        futex_ended = BlockedChildEnds("block-futex", false, round) && futex_ended;
+    }
+    Check(pipe_ended, "a SIGKILL ended every child blocked in a pipe read");
+    Check(sleep_ended, "a SIGKILL ended every child blocked in a sleep");
+    Check(futex_ended, "a SIGKILL ended every child blocked in a futex wait");
+}
+
 void CheckScanning()
 {
     int count = 0;
@@ -3752,6 +3844,10 @@ int main(int argc, char** argv)
     {
         return RunBackgroundChild(argv[1]);
     }
+    if (argc == 2 && strncmp(argv[1], "block-", 6) == 0)
+    {
+        return RunBlockedChild(argv[1]);
+    }
     if (argc == 2 && strcmp(argv[1], "rlimit-child") == 0)
     {
         return RunLimitChild();
@@ -3829,6 +3925,7 @@ int main(int argc, char** argv)
     CheckNonBlockingPipes();
     CheckNonBlockingSockets();
     CheckCloseWakesBlockedCalls();
+    CheckSignalWakeups();
     CheckSystemCalls();
     CheckTerminalSettings();
     CheckPseudoTerminals();

@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "kernel/scheduler.h"
 #include "kernel/terminal/terminal.h"
 #include "support/scheduler_stubs.h"
 #include "support/terminal_device.h"
@@ -311,6 +312,35 @@ TEST_CASE("a signal ends a read that has no bytes yet")
     fixture.terminal.SetSettings({0, 1, 0, 0}, 3);
     REQUIRE(fixture.terminal.Read(Group, buffer, sizeof(buffer)) ==
             User::SyscallErrorInterrupted);
+    FeatherOS::Terminals::SetProcessHooks({nullptr, nullptr});
+}
+
+TEST_CASE("a signal posted after the interrupted check ends a read without sleeping", "[R3-04]")
+{
+    Fixture fixture;
+    static int checks;
+    static bool pending;
+    checks = 0;
+    pending = false;
+    FeatherOS::Terminals::SetProcessHooks({nullptr,
+                                           []
+                                           {
+                                               const bool result = pending;
+                                               if (++checks == 1)
+                                               {
+                                                   pending = true;
+                                                   FeatherOS::Scheduler::WakeTask(
+                                                       TestScheduler::current_task);
+                                               }
+                                               return result;
+                                           }});
+    int slept = 0;
+    TestScheduler::on_wait = [&slept] { ++slept; };
+    char buffer[8];
+    REQUIRE(fixture.terminal.Read(Group, buffer, sizeof(buffer)) ==
+            User::SyscallErrorInterrupted);
+    REQUIRE(slept == 0);
+    REQUIRE(TestScheduler::early_wakes == 1);
     FeatherOS::Terminals::SetProcessHooks({nullptr, nullptr});
 }
 

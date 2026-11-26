@@ -2,6 +2,8 @@
 
 #include "kernel/files.h"
 #include "kernel/pipe.h"
+#include "kernel/scheduler.h"
+#include "support/scheduler_stubs.h"
 
 #include <string>
 #include <vector>
@@ -222,4 +224,26 @@ TEST_CASE("the console's status flags cannot change")
             FeatherOS::User::SyscallErrorInvalidArgument);
     REQUIRE(FeatherOS::Files::StatusFlags(&pipe.table, FeatherOS::User::StandardOutput, true,
                                           console) == console);
+}
+
+TEST_CASE("a wake-up posted before a pipe read blocks costs one early return", "[R2-07]")
+{
+    TestScheduler::Reset();
+    FeatherOS::Pipes::Pipe* pipe = FeatherOS::Pipes::Create();
+    REQUIRE(pipe != nullptr);
+    int on_wait_runs = 0;
+    TestScheduler::on_wait = [&]
+    {
+        ++on_wait_runs;
+        const uint8_t byte = 'x';
+        REQUIRE(FeatherOS::Pipes::Write(pipe, &byte, 1, nullptr) == 1);
+    };
+    FeatherOS::Scheduler::WakeTask(TestScheduler::current_task);
+    char buffer[4];
+    REQUIRE(FeatherOS::Pipes::Read(pipe, buffer, sizeof buffer, nullptr) == 1);
+    REQUIRE(TestScheduler::wait_count == 2);
+    REQUIRE(TestScheduler::early_wakes == 1);
+    REQUIRE(on_wait_runs == 1);
+    FeatherOS::Pipes::CloseEnd(pipe, false);
+    FeatherOS::Pipes::CloseEnd(pipe, true);
 }

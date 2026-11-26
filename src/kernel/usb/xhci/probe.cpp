@@ -91,7 +91,10 @@ public:
 
     void Pause(uint32_t milliseconds) override
     {
-        Scheduler::SleepUntil(Time::TickCount() + TicksFor(milliseconds));
+        const uint64_t until = Time::TickCount() + TicksFor(milliseconds);
+        while (Time::TickCount() < until && Scheduler::SleepUntil(until))
+        {
+        }
     }
 
     bool WaitUntil(bool (*done)(const void* context), const void* context,

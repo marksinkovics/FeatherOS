@@ -61,10 +61,16 @@ TaskLocal& CurrentLocal();
 // Timer ticks the task has run for, on any CPU, and the CPU it last ran on.
 bool GetUsage(TaskId task_id, uint64_t* run_ticks, uint32_t* last_cpu);
 
+// Returns at the deadline, after a WakeAll of the queue, after a WakeTask of the caller (including
+// one posted since it last blocked), or spuriously; callers loop and recheck their condition.
 void WaitOn(WaitQueue& queue, Sync::SpinLock& lock, uint64_t deadline_tick = 0) REQUIRES(lock);
 void WakeAll(WaitQueue& queue);
 // Ends a sleep or wait early; waiters treat it as a spurious wakeup and recheck their condition.
+// A task that has not blocked yet keeps the wake-up for its next WaitOn, SleepUntil or Wait, so
+// callers publish their condition before calling.
 void WakeTask(TaskId task_id);
+// Sleeps until the tick or a WakeTask, including an earlier one; callers that need the full time
+// loop on the tick.
 bool SleepUntil(uint64_t tick);
 
 // Reactivates the running task's user address space, or the kernel's outside user tasks.
