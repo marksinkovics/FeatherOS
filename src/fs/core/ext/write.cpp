@@ -426,6 +426,72 @@ Status Ext2Filesystem::ZeroFrom(const Inode& inode, std::uint64_t position,
     return WriteData(*physical, scratch);
 }
 
+// The size change has to reach the disk before the tail is zeroed: a truncate that stops short of
+// its commit must leave the old bytes. With a journal that is a commit of its own, but only when
+// there is something to zero.
+Status Ext2Filesystem::ZeroTailAfterTruncate(NodeId file, std::uint64_t size)
+{
+    if (size % block_size == 0 || read_only || (journal != nullptr && journal->aborted))
+    {
+        return {};
+    }
+    Buffers buffers(block_size, 1);
+    if (buffers.Empty())
+    {
+        return std::unexpected(Error::OutOfMemory);
+    }
+    const std::span<std::uint8_t> scratch = buffers[0];
+    const Result<Node> node = LoadNode(file, scratch);
+    if (!node)
+    {
+        return Failure(node);
+    }
+    const Inode& inode = node->inode;
+    if (node->type != NodeType::File || (inode.flags & InodeInlineData) != 0 || inode.size != size)
+    {
+        return {};
+    }
+    const Result<std::uint64_t> physical = PhysicalBlock(inode, size / block_size, scratch);
+    if (!physical)
+    {
+        return Failure(physical);
+    }
+    if (*physical == 0)
+    {
+        return {};
+    }
+    if (const Status read = cache.ReadUncached(*physical, scratch); !read)
+    {
+        return read;
+    }
+    const auto within = static_cast<std::size_t>(size % block_size);
+    bool zero = true;
+    for (std::size_t index = within; index < block_size && zero; ++index)
+    {
+        zero = scratch[index] == 0;
+    }
+    if (zero)
+    {
+        return {};
+    }
+    if (journal != nullptr)
+    {
+        if (const Status committed = CommitTransaction(); !committed)
+        {
+            return committed;
+        }
+        if (journal->aborted)
+        {
+            return {};
+        }
+    }
+    else if (const Status flushed = volume.Flush(); !flushed)
+    {
+        return flushed;
+    }
+    return ZeroFrom(inode, size, scratch);
+}
+
 Result<std::uint32_t> Ext2Filesystem::AllocateFor(MapCursor& cursor, std::span<std::uint8_t> bitmap)
 {
     const Result<std::uint32_t> block = AllocateBlock(cursor.goal, bitmap);
@@ -646,13 +712,6 @@ Status Ext2Filesystem::ShrinkBlocks(NodeId node, Inode& inode, std::uint64_t siz
                                     Buffers& buffers)
 {
     const std::span<std::uint8_t> scratch = buffers[ScratchBuffer];
-    if (!size_stored)
-    {
-        if (const Status zeroed = ZeroFrom(inode, size, scratch); !zeroed)
-        {
-            return zeroed;
-        }
-    }
     const std::uint64_t keep = DivideRoundingUp(size, block_size);
     const std::uint64_t per_block = pointers_per_block;
     FreeCursor frees = {
@@ -1226,10 +1285,8 @@ Status Ext2Filesystem::TruncateFile(NodeId file, std::uint64_t size)
     }
     if (size < inode.size && extent_mapped)
     {
-        if (const Status zeroed = ZeroFrom(inode, size, scratch); !zeroed)
-        {
-            return zeroed;
-        }
+        // The tail of the new last block keeps its bytes until the size is durable
+        // (ZeroTailAfterTruncate).
         // The blocks go before the size, which a crash leaves larger than they reach: a file
         // ending in a hole.
         const Status shrunk =
@@ -1350,12 +1407,16 @@ Status Ext2Filesystem::Truncate(NodeId file, std::uint64_t size)
     {
         return Refused();
     }
-    const Status result = Journalled([&] { return TruncateFile(file, size); });
+    Status result = Journalled([&] { return TruncateFile(file, size); });
     if (!result && result.error() == Error::NoSpace && OverflowedAlone())
     {
-        return TruncateSplit(file, size);
+        result = TruncateSplit(file, size);
     }
-    return result;
+    if (!result)
+    {
+        return result;
+    }
+    return ZeroTailAfterTruncate(file, size);
 }
 
 Status Ext2Filesystem::Sync()

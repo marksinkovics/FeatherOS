@@ -392,42 +392,263 @@ TEST_CASE("a write that finds no room for a new tree node gives its data blocks 
 #endif
 }
 
-// R1-04. Truncate zeroes the tail of the new last block on the device before the new size is
-// committed, so a volume that stops before the commit has the old size and a zeroed tail.
-TEST_CASE("R1-04 a truncate that did not commit leaves the old size and the old bytes",
-          "[.repro][R1-04]")
+// R1-04. A truncate does not touch the tail of the new last block before its new size is durable,
+// so a volume that stops anywhere before that has the old size and the old bytes.
+TEST_CASE("R1-04 a truncate that did not commit leaves the old size and the old bytes", "[R1-04]")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view image : {"ext4", "ext3"})
+    for (const std::string_view image : {"ext4", "ext3", "ext4-blockmap", "ext4-nojournal", "1k"})
+    {
+        INFO(image);
+        const bool journalled = image != "ext4-nojournal" && image != "1k";
+        std::uint64_t writes = 0;
+        // The first pass counts the writes of the truncate, the next ones stop after each of them.
+        for (std::uint64_t cut = 0; cut <= writes; ++cut)
+        {
+            INFO("stopped after " << cut << " of " << writes << " writes");
+            const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
+            const std::uint32_t block_size = Crash::BlockSizeOf(*device);
+            const std::string original = Pattern(3 * block_size - 72);
+            const std::size_t shorter = block_size + block_size / 2;
+            std::unique_ptr<MemoryDevice> stopped;
+            {
+                MountedFilesystem ext(Ext2Type(), *device);
+                const NodeId file = WriteNewFile(*ext, "truncated.bin", original);
+                Succeeds(ext->Sync());
+                const std::uint64_t start = device->write_count;
+                if (cut > 0 || writes != 0)
+                {
+                    device->FailWritesAfter(start + cut);
+                }
+                static_cast<void>(ext->Truncate(file, shorter));
+                if (writes == 0)
+                {
+                    writes = device->write_count - start;
+                }
+                stopped = CopyOf(*device);
+                device->FailWritesAfter(UINT64_MAX);
+            }
+            if (journalled)
+            {
+                ReplayByMounting(*stopped);
+            }
+            MountedFilesystem after(Ext2Type(), *stopped, true);
+            const std::string contents = ReadAll(*after, Value(Walk(*after, "truncated.bin")));
+            if (journalled)
+            {
+                // Either the truncate did not happen or it did, never half of it.
+                const bool untouched = contents == original;
+                const bool done = contents == original.substr(0, shorter);
+                CHECK((untouched || done));
+            }
+            else
+            {
+                // Without a journal the blocks go before the size, so the file may be shorter or
+                // have holes; only the tail of its last block must still be the old one.
+                const std::size_t end = std::min<std::size_t>(contents.size(), 2 * block_size);
+                if (contents.size() == original.size())
+                {
+                    CHECK(contents.substr(shorter, end - shorter) ==
+                          original.substr(shorter, end - shorter));
+                }
+            }
+        }
+        CHECK(writes > 0);
+    }
+#endif
+}
+
+namespace
+{
+
+#ifdef FEATHERDISK_EXT_IMAGES
+
+std::string OfFile(MemoryDevice& device, std::string_view name)
+{
+    MountedFilesystem ext(Ext2Type(), device, true);
+    return ReadAll(*ext, Value(Walk(*ext, name)));
+}
+
+// The truncate fails after the tree walk has started and before anything is stored: the file keeps
+// its size and every byte, also after the volume is mounted again.
+void FailedTruncateKeepsTheBytes(std::string_view image, std::size_t extents, bool block_map)
+{
+    INFO(image << (block_map ? ", block map" : ", extent tree"));
+    std::unique_ptr<MemoryDevice> device;
+    std::uint64_t unreadable = 0;
+    std::uint32_t block_size = 0;
+    std::string original;
+    std::size_t shorter = 0;
+    NodeId file = 0;
+    if (block_map)
+    {
+        device = DeviceFrom(LoadExtImage(image));
+        block_size = Crash::BlockSizeOf(*device);
+        original = Pattern(20 * block_size - 72);
+        shorter = 5 * block_size + block_size / 2;
+        {
+            MountedFilesystem ext(Ext2Type(), *device);
+            file = WriteNewFile(*ext, "truncated.bin", original);
+            Succeeds(ext->Sync());
+        }
+        std::vector<std::uint8_t> bytes = BytesOf(*device);
+        RawVolume raw{bytes};
+        // The single indirect block: wholly past the new end, so it is read to be freed.
+        unreadable = raw.InodeBlock(static_cast<std::uint32_t>(file), 12);
+    }
+    else
+    {
+        FragmentedFile volume = MakeTreeFile(image, extents, 2);
+        device = std::move(volume.device);
+        block_size = volume.block_size;
+        file = volume.file;
+        // Logical block 2 is mapped and full; the leaf of the last extent is read first.
+        shorter = 2 * block_size + block_size / 2;
+        std::vector<std::uint8_t> bytes = BytesOf(*device);
+        RawVolume raw{bytes};
+        const std::uint64_t last = 8 + 2 * (extents - 7);
+        const std::vector<std::uint64_t> path =
+            raw.ExtentPath(static_cast<std::uint32_t>(file), static_cast<std::uint32_t>(last));
+        REQUIRE(path.size() == 2);
+        REQUIRE(path.back() != volume.nodes.back());
+        unreadable = path.back();
+        MountedFilesystem ext(Ext2Type(), *device, true);
+        original = ReadAll(*ext, file);
+    }
+    REQUIRE(original.size() > shorter);
+    {
+        MountedFilesystem ext(Ext2Type(), *device);
+        device->FailReadsAt(unreadable * block_size / ImageSectorSize);
+        CHECK(!ext->Truncate(file, shorter));
+        device->RestoreReads();
+    }
+    ReplayByMounting(*device);
+    CHECK(OfFile(*device, block_map ? "truncated.bin" : "r103.bin") == original);
+}
+
+#endif
+
+} // namespace
+
+// R1-04, the other way to a truncate that does not happen: it fails after the point where the tail
+// used to be zeroed.
+TEST_CASE("R1-04 a truncate that fails leaves the file at its old size with its old bytes",
+          "[R1-04]")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    FailedTruncateKeepsTheBytes("ext3", 0, true);
+    FailedTruncateKeepsTheBytes("ext4-blockmap", 0, true);
+    FailedTruncateKeepsTheBytes("ext4-extents", 340, false);
+    FailedTruncateKeepsTheBytes("ext4-nojournal", 340, false);
+#endif
+}
+
+// What a truncate leaves past the new end of its last block reads as zeros once the file grows over
+// it again, by a truncate or a write, in the same mount or after a mount of the volume.
+TEST_CASE("R1-04 the old tail of a truncated file reads as zeros when the file grows again",
+          "[R1-04]")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    for (const std::string_view image :
+         {"1k", "4k", "ext3", "ext4", "ext4-blockmap", "ext4-nojournal", "ext4-4k"})
+    {
+        for (const bool remount : {false, true})
+        {
+            for (const bool by_write : {false, true})
+            {
+                INFO(image << (remount ? ", remounted" : "") << (by_write ? ", by a write" : ""));
+                const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
+                const std::uint32_t block_size = Crash::BlockSizeOf(*device);
+                const std::string original = Pattern(3 * block_size - 72);
+                const std::size_t shorter = block_size + block_size / 2;
+                const std::size_t grown = 4 * block_size;
+                std::string expected = original.substr(0, shorter);
+                const auto grow = [&](Filesystem& ext, NodeId file)
+                {
+                    if (by_write)
+                    {
+                        const std::string tail = "end";
+                        expected.resize(grown - tail.size(), '\0');
+                        expected += tail;
+                        REQUIRE(WriteAt(ext, file, grown - tail.size(), tail) == tail.size());
+                    }
+                    else
+                    {
+                        expected.resize(grown, '\0');
+                        Succeeds(ext.Truncate(file, grown));
+                    }
+                    CHECK(ReadAll(ext, file) == expected);
+                };
+                {
+                    MountedFilesystem ext(Ext2Type(), *device);
+                    NodeId file = WriteNewFile(*ext, "truncated.bin", original);
+                    Succeeds(ext->Truncate(file, shorter));
+                    if (!remount)
+                    {
+                        grow(*ext, file);
+                    }
+                }
+                if (remount)
+                {
+                    MountedFilesystem ext(Ext2Type(), *device);
+                    grow(*ext, Value(Walk(*ext, "truncated.bin")));
+                }
+                CheckClean(*device, "r1-04-grow");
+                CHECK(OfFile(*device, "truncated.bin") == expected);
+            }
+        }
+    }
+#endif
+}
+
+// Linux grows a file over the block it reads from the disk and does not zero the old tail, so what
+// follows the new end of the last block must be zero on the device once the truncate is durable.
+TEST_CASE("R1-04 a truncate leaves the rest of its last block zero on the device", "[R1-04]")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    for (const std::string_view image :
+         {"1k", "4k", "ext3", "ext4", "ext4-blockmap", "ext4-nojournal", "ext4-4k"})
     {
         INFO(image);
         const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
         const std::uint32_t block_size = Crash::BlockSizeOf(*device);
         const std::string original = Pattern(3 * block_size - 72);
         const std::size_t shorter = block_size + block_size / 2;
-        std::unique_ptr<MemoryDevice> stopped;
+        NodeId file = 0;
         {
             MountedFilesystem ext(Ext2Type(), *device);
-            const NodeId file = WriteNewFile(*ext, "truncated.bin", original);
+            file = WriteNewFile(*ext, "truncated.bin", original);
             Succeeds(ext->Sync());
-            const std::uint32_t transactions = Crash::ActivityOf(*ext).transactions;
             Succeeds(ext->Truncate(file, shorter));
-            if (Crash::ActivityOf(*ext).transactions != transactions)
+            // Sync writes no file data, so the zeroing is Truncate's.
+            Succeeds(ext->Sync());
+            const std::unique_ptr<MemoryDevice> stopped = CopyOf(*device);
+            if (image != "1k" && image != "4k" && image != "ext4-nojournal")
             {
-                FAIL("setup: the truncate committed");
+                // The inode's home block is written at a checkpoint.
+                ReplayByMounting(*stopped);
             }
-            stopped = CopyOf(*device);
+            std::vector<std::uint8_t> bytes = BytesOf(*stopped);
+            RawVolume raw{bytes};
+            const std::uint64_t block = raw.FileBlock(static_cast<std::uint32_t>(file), 1);
+            REQUIRE(block != 0);
+            const std::uint64_t at = raw.BlockOffset(static_cast<std::uint32_t>(block));
+            CHECK(bytes[at + shorter - block_size - 1] ==
+                  static_cast<std::uint8_t>(original[shorter - 1]));
+            for (std::size_t index = shorter - block_size; index < block_size; ++index)
+            {
+                REQUIRE(bytes[at + index] == 0);
+            }
         }
-        ReplayByMounting(*stopped);
-        MountedFilesystem after(Ext2Type(), *stopped, true);
-        const NodeId file = Value(Walk(*after, "truncated.bin"));
-        const std::string contents = ReadAll(*after, file);
-        // Either the truncate did not happen or it did, never half of it.
-        const bool untouched = contents == original;
-        const bool done = contents == original.substr(0, shorter);
-        CHECK((untouched || done));
+        CheckClean(*device, "r1-04-raw-tail");
     }
 #endif
 }

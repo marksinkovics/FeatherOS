@@ -534,6 +534,9 @@ private:
                                std::uint64_t physical, std::span<std::uint8_t> block);
     Status ClearIndex(NodeId directory, Inode& inode, Buffers& buffers);
     Status ZeroFrom(const Inode& inode, std::uint64_t position, std::span<std::uint8_t> scratch);
+    // Once a truncate to size is durable, zeroes the rest of the new last block, as Linux expects
+    // of the disk. Growing the file zeroes it again whatever this left.
+    Status ZeroTailAfterTruncate(NodeId file, std::uint64_t size);
     Result<std::uint32_t> AllocateFor(MapCursor& cursor, std::span<std::uint8_t> bitmap);
     Status ReleaseLevels(MapCursor& cursor, std::uint32_t from);
     // The data block for logical, 0 for a hole, after allocating the missing indirect blocks.
@@ -546,7 +549,7 @@ private:
     Result<std::uint64_t> ShrinkIndirect(std::uint32_t block, std::uint32_t depth,
                                          std::uint64_t first, std::uint64_t keep,
                                          std::uint32_t level, Buffers& buffers, FreeCursor& frees);
-    // size_stored: the inode already holds the new size, and the last block is already zeroed.
+    // size_stored: the inode already holds the new size.
     Status ShrinkBlocks(NodeId node, Inode& inode, std::uint64_t size, bool size_stored,
                         Buffers& buffers);
     Status ReleaseAttributeBlock(std::uint32_t block, FreeCursor& frees,

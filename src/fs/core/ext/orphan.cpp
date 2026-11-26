@@ -689,10 +689,6 @@ Status Ext2Filesystem::TruncateSplit(NodeId file, std::uint64_t size)
             {
                 return std::unexpected(Error::NoSpace);
             }
-            if (const Status zeroed = ZeroFrom(inode, size, scratch); !zeroed)
-            {
-                return zeroed;
-            }
             const Timestamp now = Now();
             inode.size = size;
             inode.modify_time = now;
