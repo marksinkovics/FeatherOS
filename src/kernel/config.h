@@ -17,19 +17,6 @@ struct Color
     static const uint32_t FGColor = White;
     static const uint32_t BGColor = Black;
 };
-
-struct Config
-{
-    static const uint32_t Width = 1024;
-    static const uint32_t Height = 768;
-
-    // Get the bytes per line of the framebuffer
-    static const uint32_t Pitch = (Width * 4);
-
-    // Get the bits per pixel of the framebuffer
-    static const uint32_t Bpp = Pitch / Width;
-    static const uint32_t BackBufferLen = Height * Pitch;
-};
 }; // namespace FeatherOS
 
 #endif

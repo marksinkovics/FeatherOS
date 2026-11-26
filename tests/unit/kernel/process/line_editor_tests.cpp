@@ -4,6 +4,7 @@
 
 #include "kernel/framebuffer/framebuffer.h"
 #include "kernel/framebuffer/term.h"
+#include "support/framebuffer_support.h"
 #include "user/line_editor.h"
 #include "user/text/utf8.h"
 
@@ -261,7 +262,7 @@ TEST_CASE("line edits redraw correctly on a terminal where the line wraps")
     descriptor.green_mask_shift = 8;
     descriptor.blue_mask_size = 8;
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
     FeatherOS::Term terminal;
     terminal.Init(&framebuffer);
     const uint32_t columns = terminal.Columns();
@@ -569,7 +570,7 @@ TEST_CASE("line edits with multi-byte characters redraw correctly on a terminal 
     descriptor.green_mask_shift = 8;
     descriptor.blue_mask_size = 8;
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
     FeatherOS::Term terminal;
     terminal.Init(&framebuffer);
     const uint32_t columns = terminal.Columns();

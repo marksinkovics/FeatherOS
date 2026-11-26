@@ -4,6 +4,7 @@
 
 #include "kernel/framebuffer/framebuffer.h"
 #include "kernel/framebuffer/term.h"
+#include "support/framebuffer_support.h"
 #include "user/vi_editor.h"
 
 #include <cstdlib>
@@ -384,7 +385,7 @@ TEST_CASE("vi draws the file, the status line and the cursor on a terminal")
     descriptor.green_mask_shift = 8;
     descriptor.blue_mask_size = 8;
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
     FeatherOS::Term terminal;
     terminal.Init(&framebuffer);
     const uint32_t columns = terminal.Columns();

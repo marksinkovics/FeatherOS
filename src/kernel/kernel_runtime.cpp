@@ -63,26 +63,64 @@ Term terms[Console::Count];
 
 bool display_ready = false;
 
-void InitializeDisplay(KLogger& logger, limine_framebuffer* framebuffer_response)
+bool AllocateBackBuffer(size_t bytes, uint64_t hhdm_offset, uint8_t** back_buffer, size_t* capacity)
 {
-    if (framebuffer_response != nullptr && framebuffer.init(framebuffer_response))
+    const uint64_t pages = (bytes + Memory::PageSize - 1) / Memory::PageSize;
+    uint64_t physical;
+    if (!Memory::AllocateContiguousPageFrames(pages, &physical) ||
+        physical > UINTPTR_MAX - hhdm_offset)
     {
-        for (uint32_t console = 0; console < Console::Count; ++console)
-        {
-            terms[console].Init(&framebuffer);
-            terms[console].SetShown(console == 0);
-        }
-        logger.AttachTerminal(&terms[0]);
-        display_ready = true;
-        logger.Info("Framebuffer console initialized");
-        if (Term::FontStatus() != Text::FontStatus::Ok)
-        {
-            logger.Warning("Console font rejected, cells draw as missing boxes");
-        }
+        return false;
     }
-    else
+    *back_buffer = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(hhdm_offset + physical));
+    *capacity = static_cast<size_t>(pages * Memory::PageSize);
+    return true;
+}
+
+void InitializeDisplay(KLogger& logger, limine_framebuffer* framebuffer_response,
+                       uint64_t hhdm_offset)
+{
+    if (framebuffer_response == nullptr)
     {
         logger.Warning("No supported framebuffer; using serial console only");
+        return;
+    }
+    const size_t required = Framebuffer::RequiredBytes(framebuffer_response);
+    if (required == 0)
+    {
+        logger.Warning("Framebuffer mode not supported; using serial console only");
+        return;
+    }
+    uint8_t* back_buffer = nullptr;
+    size_t capacity = 0;
+    if (!AllocateBackBuffer(required, hhdm_offset, &back_buffer, &capacity))
+    {
+        logger.Warning("No memory for the framebuffer's back buffer; using serial console only");
+        return;
+    }
+    if (!framebuffer.init(framebuffer_response, back_buffer, capacity))
+    {
+        logger.Warning("Framebuffer mode not supported; using serial console only");
+        return;
+    }
+    for (uint32_t console = 0; console < Console::Count; ++console)
+    {
+        terms[console].Init(&framebuffer);
+        terms[console].SetShown(console == 0);
+    }
+    logger.AttachTerminal(&terms[0]);
+    display_ready = true;
+    logger.Info("Framebuffer console initialized");
+    char message[64];
+    if (String::FormatTo(message, sizeof(message), "Display: {}x{}, console {}x{}",
+                         framebuffer.GetWidth(), framebuffer.GetHeight(), terms[0].Columns(),
+                         terms[0].ContentRows() + 1))
+    {
+        logger.Info(message);
+    }
+    if (Term::FontStatus() != Text::FontStatus::Ok)
+    {
+        logger.Warning("Console font rejected, cells draw as missing boxes");
     }
 }
 
@@ -627,7 +665,7 @@ void StartNetwork(KLogger& logger, const BootInfo& boot_info)
 {
     Process::Initialize(boot_info.hhdm_offset);
     Arch::Power::Initialize(boot_info.acpi_rsdp_physical, boot_info.platform_data);
-    InitializeDisplay(logger, boot_info.framebuffer);
+    InitializeDisplay(logger, boot_info.framebuffer, boot_info.hhdm_offset);
     MountInitramfs(logger, boot_info);
     LoadTestExecutable(logger, boot_info);
     LogPciDevices(logger, boot_info);

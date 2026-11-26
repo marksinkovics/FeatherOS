@@ -2,6 +2,7 @@
 #include <stddef.h>
 
 #include "kernel/framebuffer/framebuffer.h"
+#include "user/syscall_abi.h"
 
 namespace
 {
@@ -79,21 +80,21 @@ void PackRow(const PixelFormat& format, const uint32_t* source, uint8_t* destina
     }
 }
 
-bool Framebuffer::init(limine_framebuffer* framebuffer)
+size_t Framebuffer::RequiredBytes(const limine_framebuffer* framebuffer)
 {
     if (framebuffer == nullptr || framebuffer->address == nullptr || framebuffer->width == 0 ||
-        framebuffer->height == 0 || framebuffer->width > FeatherOS::Config::Width ||
-        framebuffer->height > FeatherOS::Config::Height || framebuffer->pitch > UINT32_MAX ||
-        framebuffer->memory_model != LIMINE_FRAMEBUFFER_RGB ||
+        framebuffer->height == 0 ||
+        framebuffer->width > FeatherOS::User::MaximumFramebufferDimension ||
+        framebuffer->height > FeatherOS::User::MaximumFramebufferDimension ||
+        framebuffer->pitch > UINT32_MAX || framebuffer->memory_model != LIMINE_FRAMEBUFFER_RGB ||
         (framebuffer->bpp != 16 && framebuffer->bpp != 24 && framebuffer->bpp != 32))
     {
-        return false;
+        return 0;
     }
 
-    uint32_t bytes_per_pixel = (framebuffer->bpp + 7) / 8;
-    uint64_t row_bytes = framebuffer->width * bytes_per_pixel;
-    if (framebuffer->pitch < row_bytes ||
-        framebuffer->height > sizeof(m_backbuffer) / framebuffer->pitch ||
+    const uint64_t bytes_per_pixel = (framebuffer->bpp + 7U) / 8U;
+    const uint64_t bytes = framebuffer->pitch * framebuffer->height;
+    if (framebuffer->pitch < framebuffer->width * bytes_per_pixel || bytes > UINT32_MAX ||
         framebuffer->red_mask_size == 0 || framebuffer->red_mask_size > 8 ||
         framebuffer->green_mask_size == 0 || framebuffer->green_mask_size > 8 ||
         framebuffer->blue_mask_size == 0 || framebuffer->blue_mask_size > 8 ||
@@ -101,8 +102,19 @@ bool Framebuffer::init(limine_framebuffer* framebuffer)
         framebuffer->green_mask_shift + framebuffer->green_mask_size > framebuffer->bpp ||
         framebuffer->blue_mask_shift + framebuffer->blue_mask_size > framebuffer->bpp)
     {
+        return 0;
+    }
+    return static_cast<size_t>(bytes);
+}
+
+bool Framebuffer::init(limine_framebuffer* framebuffer, uint8_t* back_buffer, size_t capacity)
+{
+    const size_t required = RequiredBytes(framebuffer);
+    if (required == 0 || back_buffer == nullptr || required > capacity)
+    {
         return false;
     }
+    const uint32_t bytes_per_pixel = (framebuffer->bpp + 7) / 8;
 
     m_addr = (uint8_t*)framebuffer->address;
     m_width = (uint32_t)framebuffer->width;
@@ -115,6 +127,8 @@ bool Framebuffer::init(limine_framebuffer* framebuffer)
                 framebuffer->green_mask_shift,
                 framebuffer->blue_mask_size,
                 framebuffer->blue_mask_shift};
+    m_backbuffer = back_buffer;
+    m_backbuffer_capacity = capacity;
     m_backbuffer_len = m_height * m_pitch;
     for (uint32_t byte = 0; byte < m_backbuffer_len; ++byte)
     {

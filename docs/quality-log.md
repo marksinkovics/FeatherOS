@@ -114,3 +114,4 @@ One row per committed step (used by the global `autopilot` skill since 2026-11-2
 | c3a2c2e | M16 D2 timer first, controllers probed and waited for before the root | M16.md (opus) | sonnet (high) | 0 | 3/4 (I21 by T35, I19 by T32, I23 MayWait by T35; I23 call site not caught) | | 1.6M wtok: agents sonnet 1.4M; coord opus 144.2k |
 | 0c7b0b7 | M16 D3 DISK_BUS, 4K root image, ROOT_DISK_TEST cases T36-T42, T29 | M16.md (opus) | sonnet (high) | 0 | - | | 1.5M wtok: agents sonnet 1.3M; coord opus 196.5k |
 | d6994c3 | M16 E1 docs, roadmap summary, Complete-when check | - | sonnet | 0 | - | | 408.9k wtok: agents sonnet 341.1k; coord opus 67.8k |
+| A1 | M35 A1 back buffer and console grid sized from the bootloader | M35.md | sonnet (high) | 0 | 1/1 (I1 by T1) | | 1.8M wtok: agents sonnet 1.7M; coord opus 152.0k |

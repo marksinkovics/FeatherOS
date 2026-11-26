@@ -3297,7 +3297,7 @@ uint64_t PresentFramebuffer(const ProcessRecord& process, const void* owner, uin
             return User::SyscallErrorBadAddress;
         }
     }
-    auto* bounce = static_cast<uint32_t*>(Memory::Allocate(Config::Width * PixelSize));
+    auto* bounce = static_cast<uint32_t*>(Memory::Allocate(screen_width * PixelSize));
     if (bounce == nullptr)
     {
         return User::SyscallErrorNoMemory;

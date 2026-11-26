@@ -18,8 +18,10 @@ struct TermConfig
 {
     static const uint32_t CellWidth = ConsoleFontCellWidth;
     static const uint32_t CellHeight = ConsoleFontCellHeight;
-    static const uint32_t Row = Config::Height / CellHeight;
-    static const uint32_t Column = Config::Width / CellWidth;
+    // The grid's static maximum, 2560x1600 pixels; a larger screen shows the console in its
+    // top-left corner.
+    static const uint32_t Row = 100;
+    static const uint32_t Column = 320;
     static const uint32_t Padding = 1;
     static const uint32_t BufferLen = Row * Column;
 };

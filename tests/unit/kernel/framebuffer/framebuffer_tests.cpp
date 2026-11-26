@@ -5,6 +5,7 @@
 #include "kernel/framebuffer/console_font.h"
 #include "kernel/framebuffer/framebuffer.h"
 #include "kernel/framebuffer/term.h"
+#include "support/framebuffer_support.h"
 
 #include <algorithm>
 #include <array>
@@ -42,7 +43,7 @@ TEST_CASE("framebuffer initializes and draws masked RGB pixels")
     std::array<uint8_t, 16> pixels{};
     limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), 2, 2, 8, 32);
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
     framebuffer.drawPixel(1, 1, 0x123456);
     framebuffer.draw();
 
@@ -57,7 +58,7 @@ TEST_CASE("framebuffer ignores pixels outside its bounds")
     std::array<uint8_t, 16> pixels{};
     limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), 2, 2, 8, 32);
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
     framebuffer.drawPixel(2, 0, 0xFFFFFF);
     framebuffer.drawPixel(0, 2, 0xFFFFFF);
     framebuffer.draw();
@@ -68,11 +69,11 @@ TEST_CASE("framebuffer rejects invalid descriptors")
 {
     Framebuffer framebuffer;
     limine_framebuffer descriptor{};
-    REQUIRE_FALSE(framebuffer.init(&descriptor));
+    REQUIRE_FALSE(FramebufferSupport::Init(framebuffer, descriptor));
 
     std::array<uint8_t, 16> pixels{};
     descriptor = MakeFramebuffer(pixels.data(), 2, 2, 4, 32);
-    REQUIRE_FALSE(framebuffer.init(&descriptor));
+    REQUIRE_FALSE(FramebufferSupport::Init(framebuffer, descriptor));
 }
 
 TEST_CASE("terminal rendering keeps padding around the status bar and text")
@@ -83,7 +84,7 @@ TEST_CASE("terminal rendering keeps padding around the status bar and text")
     std::array<uint8_t, width * height * 4> pixels{};
     limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, pitch, 32);
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
 
     FeatherOS::Term terminal;
     terminal.Init(&framebuffer);
@@ -135,7 +136,7 @@ TEST_CASE("status text draws green and red dots in place of their marker bytes")
     std::array<uint8_t, width * height * 4> pixels{};
     limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, pitch, 32);
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
     FeatherOS::Term terminal;
     terminal.Init(&framebuffer);
 
@@ -169,7 +170,7 @@ TEST_CASE("terminals sharing a framebuffer draw only while shown")
     std::array<uint8_t, width * height * 4> pixels{};
     limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, width * 4, 32);
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
 
     FeatherOS::Term first;
     FeatherOS::Term second;
@@ -202,7 +203,7 @@ TEST_CASE("terminals sharing a framebuffer draw only while shown")
     limine_framebuffer reference_descriptor =
         MakeFramebuffer(reference_pixels.data(), width, height, width * 4, 32);
     Framebuffer reference_framebuffer;
-    REQUIRE(reference_framebuffer.init(&reference_descriptor));
+    REQUIRE(FramebufferSupport::Init(reference_framebuffer, reference_descriptor));
     reference.Init(&reference_framebuffer);
     reference.SetStatus("first", "");
     reference.Print("first console and more");
@@ -216,7 +217,7 @@ TEST_CASE("terminal places status text at the bar's edges and input inline")
     std::array<uint8_t, width * height * 4> pixels{};
     limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, width * 4, 32);
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
 
     // 40 columns and 5 rows, minus padding: a status row and two text rows of 38 columns.
     constexpr uint32_t columns = 38;
@@ -264,7 +265,7 @@ TEST_CASE("incremental terminal rendering matches a full redraw")
     std::array<uint8_t, width * height * 4> pixels{};
     limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, pitch, 32);
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
 
     FeatherOS::Term terminal;
     terminal.Init(&framebuffer);
@@ -304,7 +305,7 @@ TEST_CASE("terminal follows VT100 cursor, erase and reverse-video sequences")
     std::array<uint8_t, width * height * 4> pixels{};
     limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, width * 4, 32);
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
 
     FeatherOS::Term terminal;
     terminal.Init(&framebuffer);
@@ -385,7 +386,7 @@ TEST_CASE("the alternate screen keeps the main screen to come back to")
     std::array<uint8_t, width * height * 4> pixels{};
     limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, width * 4, 32);
     Framebuffer framebuffer;
-    REQUIRE(framebuffer.init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
     FeatherOS::Term terminal;
     terminal.Init(&framebuffer);
     terminal.SetStatus("shell", "");
@@ -507,7 +508,7 @@ TEST_CASE("a row, a pixel and a present convert alike in every format")
         std::vector<uint8_t> hardware(expected.size());
         limine_framebuffer descriptor = FormatFramebuffer(hardware.data(), count, 1, format);
         auto framebuffer = std::make_unique<Framebuffer>();
-        REQUIRE(framebuffer->init(&descriptor));
+        REQUIRE(FramebufferSupport::Init(*framebuffer, descriptor));
         for (uint32_t x = 0; x < count; ++x)
         {
             framebuffer->drawPixel(x, 0, colors[x]);
@@ -541,7 +542,7 @@ TEST_CASE("a present row never writes outside the screen")
     std::vector<uint8_t> hardware(width * height * 4);
     limine_framebuffer descriptor = FormatFramebuffer(hardware.data(), width, height, Xrgb8888);
     auto framebuffer = std::make_unique<Framebuffer>();
-    REQUIRE(framebuffer->init(&descriptor));
+    REQUIRE(FramebufferSupport::Init(*framebuffer, descriptor));
     std::vector<uint32_t> colors(32);
     for (uint32_t index = 0; index < colors.size(); ++index)
     {
@@ -610,7 +611,7 @@ struct TestScreen
     TestScreen()
     {
         descriptor = MakeFramebuffer(pixels.data(), Width, Height, Width * 4, 32);
-        REQUIRE(framebuffer.init(&descriptor));
+        REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
     }
 
     std::array<uint8_t, Width * Height * 4> pixels{};
@@ -821,8 +822,8 @@ TEST_CASE("the compiled-in console font parses and fits the console cell")
     {
         REQUIRE(view.Contains(code_point));
     }
-    REQUIRE(TermConfig::Row == 48);
-    REQUIRE(TermConfig::Column == 128);
+    REQUIRE(TermConfig::Row == 100);
+    REQUIRE(TermConfig::Column == 320);
 }
 
 TEST_CASE("a terminal draws every glyph of the console font as the reference does")
@@ -836,7 +837,7 @@ TEST_CASE("a terminal draws every glyph of the console font as the reference doe
         std::vector<uint8_t> hardware(width * height * format.bytes_per_pixel);
         limine_framebuffer descriptor = FormatFramebuffer(hardware.data(), width, height, format);
         auto framebuffer = std::make_unique<Framebuffer>();
-        REQUIRE(framebuffer->init(&descriptor));
+        REQUIRE(FramebufferSupport::Init(*framebuffer, descriptor));
         uint32_t palette[16];
         for (uint32_t coverage = 0; coverage < 16; ++coverage)
         {
@@ -1117,4 +1118,160 @@ TEST_CASE("incremental rendering of wide code points matches a full redraw")
     const auto incremental = screen.pixels;
     terminal.Redraw();
     REQUIRE(screen.pixels == incremental);
+}
+
+namespace
+{
+
+struct Mode
+{
+    uint64_t width;
+    uint64_t height;
+    uint32_t columns;
+    uint32_t content_rows;
+};
+
+// The console grid is the screen in 8x16 cells, less one padding cell on each side and capped at
+// 320x100 cells before the padding comes off.
+constexpr Mode Modes[] = {
+    {800, 600, 98, 34},
+    {1024, 768, 126, 45},
+    {1920, 1080, 238, 64},
+    {1366, 768, 168, 45},
+    {3840, 2160, 318, 97},
+};
+
+} // namespace
+
+TEST_CASE("framebuffer takes the caller's back buffer at any supported size")
+{
+    for (const Mode& mode : {Modes[0], Modes[1], Modes[2], Modes[3]})
+    {
+        CAPTURE(mode.width, mode.height);
+        const uint64_t pitch = mode.width * 4;
+        std::vector<uint8_t> pixels(pitch * mode.height);
+        limine_framebuffer descriptor =
+            MakeFramebuffer(pixels.data(), mode.width, mode.height, pitch, 32);
+        REQUIRE(Framebuffer::RequiredBytes(&descriptor) == pitch * mode.height);
+
+        std::vector<uint8_t> back(pitch * mode.height);
+        Framebuffer framebuffer;
+        REQUIRE(framebuffer.init(&descriptor, back.data(), back.size()));
+        REQUIRE(framebuffer.GetWidth() == mode.width);
+        REQUIRE(framebuffer.GetHeight() == mode.height);
+    }
+}
+
+TEST_CASE("framebuffer pitch wider than the row is counted in the required bytes")
+{
+    constexpr uint64_t width = 100;
+    constexpr uint64_t height = 20;
+    constexpr uint64_t pitch = width * 4 + 64;
+    std::vector<uint8_t> pixels(pitch * height);
+    limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, pitch, 32);
+    REQUIRE(Framebuffer::RequiredBytes(&descriptor) == pitch * height);
+
+    std::vector<uint8_t> back(pitch * height - 1);
+    Framebuffer framebuffer;
+    REQUIRE_FALSE(framebuffer.init(&descriptor, back.data(), back.size()));
+    back.resize(pitch * height);
+    REQUIRE(framebuffer.init(&descriptor, back.data(), back.size()));
+}
+
+TEST_CASE("framebuffer refuses a back buffer one byte short")
+{
+    constexpr uint64_t width = 64;
+    constexpr uint64_t height = 48;
+    constexpr uint64_t pitch = width * 4;
+    std::vector<uint8_t> pixels(pitch * height);
+    limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, pitch, 32);
+    Framebuffer framebuffer;
+
+    std::vector<uint8_t> back(pitch * height);
+    REQUIRE_FALSE(framebuffer.init(&descriptor, back.data(), back.size() - 1));
+    REQUIRE_FALSE(framebuffer.init(&descriptor, back.data(), 0));
+    REQUIRE_FALSE(framebuffer.init(&descriptor, nullptr, back.size()));
+    REQUIRE(framebuffer.init(&descriptor, back.data(), back.size()));
+    REQUIRE(framebuffer.init(&descriptor, back.data(), back.size() + 1));
+}
+
+TEST_CASE("RequiredBytes is zero for every mode init refuses")
+{
+    std::vector<uint8_t> pixels(4096);
+    const auto required = [](limine_framebuffer descriptor) -> size_t
+    { return Framebuffer::RequiredBytes(&descriptor); };
+
+    REQUIRE(required(MakeFramebuffer(pixels.data(), 16, 16, 64, 32)) == 1024);
+    REQUIRE(required(MakeFramebuffer(pixels.data(), 16, 16, 32, 16)) == 512);
+    REQUIRE(Framebuffer::RequiredBytes(nullptr) == 0);
+    REQUIRE(required(MakeFramebuffer(nullptr, 16, 16, 64, 32)) == 0);
+    REQUIRE(required(MakeFramebuffer(pixels.data(), 0, 16, 64, 32)) == 0);
+    REQUIRE(required(MakeFramebuffer(pixels.data(), 16, 0, 64, 32)) == 0);
+    REQUIRE(required(MakeFramebuffer(pixels.data(), 16, 16, 63, 32)) == 0);
+    REQUIRE(required(MakeFramebuffer(pixels.data(), 16, 16, 64, 8)) == 0);
+    REQUIRE(required(MakeFramebuffer(pixels.data(), 16385, 16, 70000, 32)) == 0);
+    REQUIRE(required(MakeFramebuffer(pixels.data(), 16, 16385, 64, 32)) == 0);
+    limine_framebuffer indexed = MakeFramebuffer(pixels.data(), 16, 16, 64, 32);
+    indexed.memory_model = 0;
+    REQUIRE(required(indexed) == 0);
+    limine_framebuffer wide_mask = MakeFramebuffer(pixels.data(), 16, 16, 64, 32);
+    wide_mask.red_mask_size = 9;
+    REQUIRE(required(wide_mask) == 0);
+}
+
+TEST_CASE("framebuffer writes nothing past its buffers at the last pixel")
+{
+    constexpr uint64_t width = 40;
+    constexpr uint64_t height = 30;
+    constexpr uint64_t pitch = width * 4 + 8;
+    constexpr size_t guard = 64;
+    constexpr size_t screen_bytes = pitch * height;
+    std::vector<uint8_t> pixels(screen_bytes + guard);
+    std::vector<uint8_t> back(screen_bytes + guard);
+    limine_framebuffer descriptor = MakeFramebuffer(pixels.data(), width, height, pitch, 32);
+    Framebuffer framebuffer;
+    REQUIRE(framebuffer.init(&descriptor, back.data(), screen_bytes));
+
+    framebuffer.drawPixel(width - 1, height - 1, 0xFFFFFF);
+    framebuffer.drawPixel(width, height - 1, 0xFFFFFF);
+    framebuffer.drawPixel(width - 1, height, 0xFFFFFF);
+    framebuffer.drawPixel(width, height, 0xFFFFFF);
+    framebuffer.drawRectangle(width - 1, height - 1, 50, 50, 0xFFFFFF);
+    framebuffer.draw();
+
+    const size_t last = pitch * (height - 1) + (width - 1) * 4;
+    for (size_t index = 0; index < pixels.size(); ++index)
+    {
+        const bool lit = index >= last && index < last + 3;
+        CAPTURE(index);
+        REQUIRE(pixels[index] == (lit ? 0xFF : 0));
+    }
+    for (size_t index = screen_bytes; index < back.size(); ++index)
+    {
+        REQUIRE(back[index] == 0);
+    }
+}
+
+TEST_CASE("console grid follows the screen size up to the static maximum")
+{
+    for (const Mode& mode : Modes)
+    {
+        CAPTURE(mode.width, mode.height);
+        const uint64_t pitch = mode.width * 4;
+        std::vector<uint8_t> pixels(pitch * mode.height);
+        limine_framebuffer descriptor =
+            MakeFramebuffer(pixels.data(), mode.width, mode.height, pitch, 32);
+        Framebuffer framebuffer;
+        REQUIRE(FramebufferSupport::Init(framebuffer, descriptor));
+
+        auto terminal = std::make_unique<FeatherOS::Term>();
+        terminal->Init(&framebuffer);
+        REQUIRE(terminal->Columns() == mode.columns);
+        REQUIRE(terminal->ContentRows() == mode.content_rows);
+
+        terminal->SetStatus("", "XY");
+        REQUIRE(terminal->CharacterAt(0, mode.columns - 2) == U'Y');
+        REQUIRE(terminal->CharacterAt(0, mode.columns - 3) == U'X');
+        REQUIRE(terminal->CharacterAt(0, mode.columns - 1) == U' ');
+    }
 }

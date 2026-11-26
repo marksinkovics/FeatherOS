@@ -1,6 +1,7 @@
 #ifndef FRAMEBUFFER_H
 #define FRAMEBUFFER_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 struct limine_framebuffer;
@@ -29,7 +30,11 @@ void PackRow(const PixelFormat& format, const uint32_t* source, uint8_t* destina
 class Framebuffer
 {
 public:
-    bool init(limine_framebuffer* framebuffer);
+    // back_buffer is the caller's, capacity bytes long, and must outlive the framebuffer. Fails for
+    // a mode RequiredBytes gives 0 for, or one whose pitch * height exceeds capacity.
+    bool init(limine_framebuffer* framebuffer, uint8_t* back_buffer, size_t capacity);
+    // pitch * height, or 0 for a mode init refuses whatever the capacity.
+    static size_t RequiredBytes(const limine_framebuffer* framebuffer);
     void clear(uint32_t color = FeatherOS::Color::Black);
     void drawPixel(uint32_t x, uint32_t y, uint32_t color);
     // Copies the whole back buffer, or only rows [y, y + height), to the visible framebuffer.
@@ -60,7 +65,8 @@ private:
     uint32_t m_height;
     uint32_t m_pitch;
     PixelFormat m_format;
-    alignas(8) uint8_t m_backbuffer[FeatherOS::Config::BackBufferLen];
+    uint8_t* m_backbuffer;
+    size_t m_backbuffer_capacity;
     uint32_t m_backbuffer_len;
 };
 
