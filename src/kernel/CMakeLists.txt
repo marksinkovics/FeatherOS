@@ -12,6 +12,7 @@ if (ARCH STREQUAL "x86_64")
         ${SRCROOT}/arch/x86_64/local_apic.cpp
         ${SRCROOT}/arch/x86_64/msi.cpp
         ${SRCROOT}/arch/x86_64/cpu_features.cpp
+        ${SRCROOT}/arch/x86_64/fine_counter.cpp
         ${SRCROOT}/arch/x86_64/floating_point.cpp
         ${SRCROOT}/arch/x86_64/thread_pointer.cpp
         ${SRCROOT}/arch/x86_64/acpi.cpp
@@ -34,6 +35,7 @@ elseif (ARCH STREQUAL "aarch64")
         ${SRCROOT}/arch/aarch64/exceptions.S
         ${SRCROOT}/arch/aarch64/interrupts.cpp
         ${SRCROOT}/arch/aarch64/cpu_features.cpp
+        ${SRCROOT}/arch/aarch64/fine_counter.cpp
         ${SRCROOT}/arch/aarch64/floating_point.cpp
         ${SRCROOT}/arch/aarch64/thread_pointer.cpp
         ${SRCROOT}/arch/aarch64/keyboard.cpp
@@ -115,6 +117,7 @@ set(SRC
     ${SRCROOT}/../user/calendar.cpp
     ${SRCROOT}/../user/text/font_data.cpp
     ${SRCROOT}/../user/text/utf8.cpp
+    ${SRCROOT}/time/monotonic.cpp
     ${SRCROOT}/time/timer.cpp
     ${SRCROOT}/time/wall_clock.cpp
     ${SERIAL_SRC}

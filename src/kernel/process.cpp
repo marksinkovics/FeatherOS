@@ -1455,6 +1455,11 @@ uint64_t ReadUptimeSyscall(void*)
     return Time::TicksPerSecond() == 0 ? User::SyscallErrorFailed : Time::UptimeMilliseconds();
 }
 
+uint64_t ReadMonotonicSyscall(void*)
+{
+    return Time::TicksPerSecond() == 0 ? User::SyscallErrorFailed : Time::MonotonicNanoseconds();
+}
+
 uint64_t CurrentCpuSyscall(void*)
 {
     return Cpu::CurrentIndex();
@@ -3466,6 +3471,7 @@ constexpr Syscall::Handlers ProcessSyscallHandlers = {
     .resource_limit = ResourceLimitSyscall,
     .device_control = DeviceControlSyscall,
     .eject = EjectSyscall,
+    .read_monotonic = ReadMonotonicSyscall,
 };
 
 // Children never outlive their parent: an exiting process stops and reaps any still running.

@@ -5,8 +5,9 @@
 #include <sys/cdefs.h>
 #include <sys/types.h>
 
-// The wall clock advances by timer ticks, 10 ms each; CLOCK_MONOTONIC counts milliseconds since the
-// kernel's timer started. Every time is UTC: there are no time zones.
+// The wall clock advances by timer ticks, 10 ms each; CLOCK_MONOTONIC counts nanoseconds since the
+// kernel's timer started, read from a fine counter between ticks (10 ms steps on an x86-64 CPU
+// whose TSC is not trusted). Every time is UTC: there are no time zones.
 #define CLOCK_REALTIME 0
 #define CLOCK_MONOTONIC 1
 

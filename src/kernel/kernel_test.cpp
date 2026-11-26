@@ -248,6 +248,40 @@ namespace FeatherOS::KernelTest
 namespace
 {
 
+void CheckFineClock()
+{
+    uint64_t previous = Time::MonotonicNanoseconds();
+    for (uint32_t reading = 0; reading < 1000; ++reading)
+    {
+        const uint64_t current = Time::MonotonicNanoseconds();
+        if (current < previous)
+        {
+            Panic("The fine clock went backward");
+        }
+        previous = current;
+    }
+    // About a millisecond of work, which only a clock finer than a tick can see.
+    const uint64_t first = Time::MonotonicNanoseconds();
+    volatile uint64_t work = 0;
+    for (uint64_t step = 0; step < 20000; ++step)
+    {
+        work = work + step;
+    }
+    const uint64_t second = Time::MonotonicNanoseconds();
+    if (second <= first || second - first >= 10000000)
+    {
+        Panic("The fine clock does not resolve a fraction of a tick");
+    }
+    const uint64_t uptime_before = Time::UptimeMilliseconds();
+    const uint64_t fine_milliseconds = Time::MonotonicNanoseconds() / 1000000;
+    const uint64_t uptime_after = Time::UptimeMilliseconds();
+    if (fine_milliseconds + 10 <= uptime_before || fine_milliseconds >= uptime_after + 10)
+    {
+        Panic("The fine clock disagrees with the uptime");
+    }
+    Serial::Write("KERN/TIMER: fine clock passed\n");
+}
+
 void RunTimerTests(const void* device_tree)
 {
     if (!Time::InitializeTimer(100, device_tree))
@@ -266,6 +300,7 @@ void RunTimerTests(const void* device_tree)
         }
         previous_tick = current_tick;
     }
+    CheckFineClock();
     Time::StopTimer();
     if (previous_tick - start_tick < 5)
     {

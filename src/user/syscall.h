@@ -83,6 +83,11 @@ inline uint64_t ReadUptime()
     return Syscall(SyscallNumber::ReadUptime);
 }
 
+inline uint64_t ReadMonotonic()
+{
+    return Syscall(SyscallNumber::ReadMonotonic);
+}
+
 inline uint64_t CurrentCpu()
 {
     return Syscall(SyscallNumber::CurrentCpu);

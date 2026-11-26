@@ -50,7 +50,7 @@ These come from the kernel and apply everywhere below.
 | Open files system-wide | 1024 distinct disk, `/tmp` and `/etc` files (`ENFILE` past that); any number of descriptors share one |
 | Running children per process | 16 |
 | Memory per process | 16384 pages (64 MiB), including the image and stack |
-| Clocks | the wall clock counts whole seconds; the monotonic clock counts milliseconds |
+| Clocks | the wall clock counts whole seconds; the monotonic clock counts nanoseconds, finer than a tick where the CPU has a trusted counter |
 
 ## The file system
 
@@ -200,7 +200,7 @@ Differences:
 
 There are no time zones: every time is UTC.
 
-- **Clocks:** `time`, `clock_gettime` with `CLOCK_REALTIME` (10 ms timer ticks, in nanoseconds) and `CLOCK_MONOTONIC` (milliseconds since boot), `clock_getres`, which gives 10 ms for both, and `clock_settime` for `CLOCK_REALTIME`, which any process may call.
+- **Clocks:** `time`, `clock_gettime` with `CLOCK_REALTIME` (10 ms timer ticks, in nanoseconds) and `CLOCK_MONOTONIC` (nanoseconds since boot: the timer tick plus the CPU's fine counter, so it resolves far below the 10 ms tick, and agrees with the tick-based uptime to within 10 ms; an x86-64 CPU without an invariant TSC outside a hypervisor has tick resolution), `clock_getres`, which gives 10 ms for `CLOCK_REALTIME` and 1 ns for `CLOCK_MONOTONIC` (the unit, not a guarantee on that CPU), and `clock_settime` for `CLOCK_REALTIME`, which any process may call.
 - **Conversions:**
   - `gmtime` and `gmtime_r`; `localtime` and `localtime_r` return the same as gmtime.
   - `mktime` and `timegm`, which normalize out-of-range fields.

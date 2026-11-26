@@ -619,7 +619,7 @@ template <class Duration> using sys_time = time_point<system_clock, Duration>;
 using sys_seconds = sys_time<seconds>;
 using sys_days = sys_time<days>;
 
-// CLOCK_MONOTONIC, which counts milliseconds since the kernel's timer started.
+// CLOCK_MONOTONIC, which counts nanoseconds since the kernel's timer started.
 struct steady_clock
 {
     using rep = int64_t;

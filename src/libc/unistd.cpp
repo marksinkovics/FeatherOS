@@ -464,7 +464,9 @@ unsigned int sleep(unsigned int seconds)
 
 int usleep(unsigned int microseconds)
 {
-    return Check<int>(FeatherOS::User::Sleep((static_cast<uint64_t>(microseconds) + 999) / 1000));
+    const struct timespec duration = {static_cast<time_t>(microseconds / 1000000),
+                                      static_cast<long>(microseconds % 1000000) * 1000};
+    return nanosleep(&duration, nullptr);
 }
 
 // The kernel takes a negative increment as its two's-complement value. Shrinking below the start

@@ -143,14 +143,14 @@ int clock_gettime(clockid_t clock, struct timespec* result)
     }
     if (clock == CLOCK_MONOTONIC)
     {
-        const uint64_t milliseconds = FeatherOS::User::ReadUptime();
-        if (FeatherOS::User::IsSyscallError(milliseconds))
+        const uint64_t nanoseconds = FeatherOS::User::ReadMonotonic();
+        if (FeatherOS::User::IsSyscallError(nanoseconds))
         {
             errno = EIO;
             return -1;
         }
-        *result = {static_cast<time_t>(milliseconds / 1000),
-                   static_cast<long>(milliseconds % 1000) * 1000000};
+        *result = {static_cast<time_t>(nanoseconds / NanosecondsPerSecond),
+                   static_cast<long>(nanoseconds % NanosecondsPerSecond)};
         return 0;
     }
     errno = EINVAL;
@@ -166,7 +166,7 @@ int clock_getres(clockid_t clock, struct timespec* resolution)
     }
     if (resolution != nullptr)
     {
-        *resolution = {0, ClockResolutionNanoseconds};
+        *resolution = {0, clock == CLOCK_MONOTONIC ? 1 : ClockResolutionNanoseconds};
     }
     return 0;
 }
@@ -197,28 +197,46 @@ int nanosleep(const struct timespec* duration, struct timespec* remaining)
         errno = EINVAL;
         return -1;
     }
-    // Rounded up to whole milliseconds, slept at most a day per syscall.
+    // The kernel sleeps in whole ticks from the next one, so a sleep can end up to a tick before
+    // the monotonic clock says the time is up: sleep again for what is left, rounded up to whole
+    // milliseconds, at most a day per syscall. A sleep of centuries is the same as forever.
     constexpr uint64_t MaximumStep = 86400 * 1000;
-    uint64_t milliseconds = static_cast<uint64_t>(duration->tv_sec) * 1000 +
-                            (static_cast<uint64_t>(duration->tv_nsec) + 999999) / 1000000;
-    while (milliseconds > 0)
+    constexpr uint64_t NanosecondsPerMillisecond = 1000000;
+    constexpr uint64_t MaximumSeconds = 10000000000;
+    const uint64_t seconds = static_cast<uint64_t>(duration->tv_sec) < MaximumSeconds
+                                 ? static_cast<uint64_t>(duration->tv_sec)
+                                 : MaximumSeconds;
+    const uint64_t requested =
+        seconds * NanosecondsPerSecond + static_cast<uint64_t>(duration->tv_nsec);
+    const uint64_t start = FeatherOS::User::ReadMonotonic();
+    uint64_t left = requested;
+    while (left > 0)
     {
-        const uint64_t step = milliseconds < MaximumStep ? milliseconds : MaximumStep;
-        const uint64_t start = FeatherOS::User::ReadUptime();
-        if (FeatherOS::User::Sleep(step) == FeatherOS::User::SyscallErrorInterrupted)
+        uint64_t step = (left + NanosecondsPerMillisecond - 1) / NanosecondsPerMillisecond;
+        step = step < MaximumStep ? step : MaximumStep;
+        const bool interrupted =
+            FeatherOS::User::Sleep(step) == FeatherOS::User::SyscallErrorInterrupted;
+        const uint64_t now = FeatherOS::User::ReadMonotonic();
+        if (FeatherOS::User::IsSyscallError(start) || FeatherOS::User::IsSyscallError(now))
         {
-            // A signal cut the sleep short: report what is left, to the millisecond.
-            const uint64_t slept = FeatherOS::User::ReadUptime() - start;
-            const uint64_t left = milliseconds - (slept < step ? slept : step);
+            const uint64_t step_nanoseconds = step * NanosecondsPerMillisecond;
+            left = left > step_nanoseconds ? left - step_nanoseconds : 0;
+        }
+        else
+        {
+            const uint64_t elapsed = now - start;
+            left = elapsed >= requested ? 0 : requested - elapsed;
+        }
+        if (interrupted)
+        {
             if (remaining != nullptr)
             {
-                *remaining = {static_cast<time_t>(left / 1000),
-                              static_cast<long>(left % 1000 * 1000000)};
+                *remaining = {static_cast<time_t>(left / NanosecondsPerSecond),
+                              static_cast<long>(left % NanosecondsPerSecond)};
             }
             errno = EINTR;
             return -1;
         }
-        milliseconds -= step;
     }
     if (remaining != nullptr)
     {

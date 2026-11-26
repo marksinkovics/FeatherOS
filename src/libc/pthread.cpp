@@ -68,6 +68,13 @@ uint64_t MillisecondsUntil(clockid_t clock, const struct timespec* deadline, boo
     return total <= 0 ? 0 : static_cast<uint64_t>((total + 999999) / 1000000);
 }
 
+bool DeadlinePassed(clockid_t clock, const struct timespec* deadline)
+{
+    bool passed = false;
+    MillisecondsUntil(clock, deadline, &passed);
+    return passed;
+}
+
 [[noreturn]] void EndThread(void* value)
 {
     FeatherOS::LibC::RunThreadExitHandlers();
@@ -318,10 +325,16 @@ int pthread_cond_timedwait(pthread_cond_t* condition, pthread_mutex_t* mutex,
     }
     else
     {
-        bool passed = false;
-        const uint64_t milliseconds = MillisecondsUntil(condition->clock, deadline, &passed);
-        result = passed ? FeatherOS::User::SyscallErrorTimedOut
-                        : FutexWait(sequence, seen, milliseconds);
+        // The kernel times a wait in whole ticks from the next one, so it can end up to a tick
+        // before a clock that resolves less than a tick says the deadline came.
+        do
+        {
+            bool passed = false;
+            const uint64_t milliseconds = MillisecondsUntil(condition->clock, deadline, &passed);
+            result = passed ? FeatherOS::User::SyscallErrorTimedOut
+                            : FutexWait(sequence, seen, milliseconds);
+        } while (result == FeatherOS::User::SyscallErrorTimedOut &&
+                 !DeadlinePassed(condition->clock, deadline));
     }
     // Another thread may be waiting by now, so the mutex is taken as contended.
     LockMutex(mutex, true);

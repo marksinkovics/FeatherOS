@@ -73,6 +73,11 @@ uint64_t ReadFixedUptime(void*)
     return 65000;
 }
 
+uint64_t ReadFixedMonotonic(void*)
+{
+    return 65000123456;
+}
+
 uint64_t ReadFixedCpu(void*)
 {
     return 3;
@@ -196,6 +201,7 @@ constexpr FeatherOS::Syscall::Handlers AllHandlers = {
     .resource_limit = RecordSeekFrom,
     .device_control = RecordSeekFrom,
     .eject = RecordDescriptor,
+    .read_monotonic = ReadFixedMonotonic,
 };
 
 FeatherOS::Syscall::Request MakeRequest(Number number, uint64_t first = 0, uint64_t second = 0,
@@ -264,6 +270,8 @@ TEST_CASE("syscall dispatcher rejects process syscalls without handlers")
                 .action == Action::Invalid);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadUptime), WriteOnly, &output)
                 .action == Action::Invalid);
+    REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadMonotonic), WriteOnly, &output)
+                .action == Action::Invalid);
     REQUIRE(FeatherOS::Syscall::Dispatch(MakeRequest(Number::CurrentCpu), WriteOnly, &output)
                 .action == Action::Invalid);
     for (const Number number : {Number::Open, Number::Read, Number::Write, Number::Close,
@@ -330,6 +338,11 @@ TEST_CASE("syscall dispatcher routes process syscalls and returns handler result
     result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadUptime), AllHandlers, &output);
     REQUIRE(result.action == Action::Return);
     REQUIRE(result.value == 65000);
+
+    result =
+        FeatherOS::Syscall::Dispatch(MakeRequest(Number::ReadMonotonic), AllHandlers, &output);
+    REQUIRE(result.action == Action::Return);
+    REQUIRE(result.value == 65000123456);
 
     result = FeatherOS::Syscall::Dispatch(MakeRequest(Number::CurrentCpu), AllHandlers, &output);
     REQUIRE(result.action == Action::Return);

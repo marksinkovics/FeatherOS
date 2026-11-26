@@ -373,6 +373,11 @@ Result Dispatch(const Request& request, const Handlers& handlers, void* context)
     {
         return {Action::Return, handlers.eject(context, arguments[0])};
     }
+    if (request.number == static_cast<uint64_t>(Number::ReadMonotonic) &&
+        handlers.read_monotonic != nullptr)
+    {
+        return {Action::Return, handlers.read_monotonic(context)};
+    }
     return {Action::Invalid, UINT64_MAX};
 }
 

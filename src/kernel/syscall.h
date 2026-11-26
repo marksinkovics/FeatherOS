@@ -139,6 +139,7 @@ struct Handlers
     uint64_t (*device_control)(void* context, uint64_t descriptor, uint64_t request,
                                uint64_t argument) = nullptr;
     uint64_t (*eject)(void* context, uint64_t disk) = nullptr;
+    uint64_t (*read_monotonic)(void* context) = nullptr;
 };
 
 Result Dispatch(const Request& request, const Handlers& handlers, void* context);

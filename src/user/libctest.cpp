@@ -1277,6 +1277,42 @@ void CheckVirtualFiles()
     Check(open("/proc/meminfo", O_WRONLY) == -1 && errno == EROFS, "/proc is read-only");
 }
 
+long long MonotonicNanoseconds()
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec * 1000000000LL + now.tv_nsec;
+}
+
+void CheckFineClock()
+{
+    long long previous = MonotonicNanoseconds();
+    bool never_back = true;
+    for (int reading = 0; reading < 1000; ++reading)
+    {
+        const long long current = MonotonicNanoseconds();
+        never_back = never_back && current >= previous;
+        previous = current;
+    }
+    Check(never_back, "CLOCK_MONOTONIC never decreases");
+
+    // About a millisecond of work: a fraction of a tick, so only a fine clock sees it.
+    const long long first = MonotonicNanoseconds();
+    volatile unsigned long work = 0;
+    for (unsigned long step = 0; step < 20000; ++step)
+    {
+        work = work + step;
+    }
+    const long long second = MonotonicNanoseconds();
+    Check(second > first && second - first < 10000000, "CLOCK_MONOTONIC is finer than a tick");
+
+    const long long uptime_before = static_cast<long long>(FeatherOS::User::ReadUptime());
+    const long long fine_ms = MonotonicNanoseconds() / 1000000;
+    const long long uptime_after = static_cast<long long>(FeatherOS::User::ReadUptime());
+    Check(fine_ms + 10 > uptime_before && fine_ms < uptime_after + 10,
+          "CLOCK_MONOTONIC agrees with the uptime");
+}
+
 void CheckTime()
 {
     const time_t now = time(nullptr);
@@ -1308,11 +1344,19 @@ void CheckTime()
     const long elapsed_ms =
         (after.tv_sec - before.tv_sec) * 1000 + (after.tv_nsec - before.tv_nsec) / 1000000;
     Check(elapsed_ms >= 30, "CLOCK_MONOTONIC measures the sleep");
+    const struct timespec brief = {0, 1000000};
+    Check(clock_gettime(CLOCK_MONOTONIC, &before) == 0 && nanosleep(&brief, nullptr) == 0 &&
+              clock_gettime(CLOCK_MONOTONIC, &after) == 0 &&
+              (after.tv_sec - before.tv_sec) * 1000000000L + (after.tv_nsec - before.tv_nsec) >=
+                  1000000,
+          "a 1 ms nanosleep lasts at least 1 ms");
+    CheckFineClock();
     errno = 0;
     const struct timespec invalid = {0, 1000000000};
     Check(nanosleep(&invalid, nullptr) == -1 && errno == EINVAL, "nanosleep rejects bad input");
     struct timespec resolution = {1, 0};
     Check(clock_getres(CLOCK_MONOTONIC, &resolution) == 0 && resolution.tv_sec == 0 &&
+              resolution.tv_nsec == 1 && clock_getres(CLOCK_REALTIME, &resolution) == 0 &&
               resolution.tv_nsec == 10000000 && clock_getres(CLOCK_REALTIME, nullptr) == 0,
           "clock_getres");
     errno = 0;

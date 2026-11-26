@@ -135,6 +135,7 @@ add_executable(featheros_unit_tests
     kernel/terminal/pseudo_terminal_tests.cpp
     kernel/terminal/terminal_tests.cpp
     kernel/time/calendar_tests.cpp
+    kernel/time/monotonic_tests.cpp
     kernel/time/wall_clock_tests.cpp
     kernel/string/format_tests.cpp
     support/font_builder.cpp
@@ -331,6 +332,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/process_arguments.cpp"
     "${FEATHEROS_ROOT}/src/kernel/sync/volume_mutex.cpp"
     "${FEATHEROS_ROOT}/src/kernel/syscall.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/time/monotonic.cpp"
     "${FEATHEROS_ROOT}/src/kernel/time/wall_clock.cpp"
     "${FEATHEROS_ROOT}/src/kernel/thread_local_storage.cpp"
     "${FEATHEROS_ROOT}/src/kernel/thread_stacks.cpp"

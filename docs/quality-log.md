@@ -119,3 +119,4 @@ One row per committed step (used by the global `autopilot` skill since 2026-11-2
 | B1 | M35 B1 Super modifier, Meta key codes, PS/2 E0 5B/5C | - | sonnet (high) | 0 | - | | 1.2M wtok: agents <synthetic> 0, sonnet 843.0k; coord <synthetic> 0, opus 336.4k |
 | b359bc9 | M35 B2 FB_ACQUIRE raw-keys and keep-screen flags | - | sonnet (high) | 0 | 2/2 (I4 by T16, I7 by T17) | | counted in B1's row (same worker) |
 | B3 | M35 B3 absolute pointers, EV_ABS, USB_TABLET_TEST | - | sonnet (high) | 0 | 1/1 (I8 by T7) | | 1.4M wtok: agents sonnet 1.2M; coord opus 189.1k |
+| C1 | M35 C1 fine monotonic clock, syscall 75, libc sleeps to their deadline | M35.md | sonnet (high) | 1 | 2/2 (I10 by T9, I11 by T10) | | 2.5M wtok: agents sonnet 2.3M; coord opus 211.2k |

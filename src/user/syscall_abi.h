@@ -86,6 +86,7 @@ enum class SyscallNumber : uint64_t
     ResourceLimit = 72,    // (resource, new_limits, old_limits) -> 0; either pointer may be null
     DeviceControl = 73,    // (descriptor, request, argument) -> the request's result
     Eject = 74,            // (disk name) -> 0 once its mounts are gone, it is flushed and stopped
+    ReadMonotonic = 75,    // () -> nanoseconds since the kernel's timer started, finer than a tick
 };
 
 // Spawn flags. A child inherits every descriptor that is not close-on-exec, and joins its
