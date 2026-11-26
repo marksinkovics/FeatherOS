@@ -223,7 +223,14 @@ bool Initialize(const void*, uint64_t hhdm_offset)
     flush_supported = (host_features & FeatureFlush) != 0;
     PortIo::Write32(device_io_base + VirtioGuestFeatures, host_features & FeatureFlush);
     PortIo::Write16(device_io_base + VirtioQueueSelect, QueueIndex);
-    if (PortIo::Read16(device_io_base + VirtioQueueSize) < QueueSize || !AllocateQueue(hhdm_offset))
+    // A legacy device fixes its queue size and lays the rings out from it, so any other size
+    // would put them where this driver's three pages do not.
+    const uint16_t device_queue_size = PortIo::Read16(device_io_base + VirtioQueueSize);
+    if (device_queue_size != QueueSize)
+    {
+        logger.Error("virtio-blk: the device queue is not 256 entries; the disk is not used");
+    }
+    if (device_queue_size != QueueSize || !AllocateQueue(hhdm_offset))
     {
         PortIo::Write8(device_io_base + VirtioDeviceStatus, StatusAcknowledge | StatusDriver | 128);
         return false;
@@ -269,6 +276,11 @@ bool Initialize(const void*, uint64_t hhdm_offset)
 uint64_t SectorCount()
 {
     return initialized ? capacity_sectors : 0;
+}
+
+bool IsReadOnly()
+{
+    return initialized && read_only;
 }
 
 bool ReadSector(uint64_t sector, void* buffer)

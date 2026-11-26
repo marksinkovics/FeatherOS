@@ -89,6 +89,7 @@ add_executable(featheros_unit_tests
     kernel/storage/nvme_recovery_tests.cpp
     kernel/storage/page_cache_tests.cpp
     kernel/storage/storage_rig_tests.cpp
+    kernel/storage/virtio_disk_tests.cpp
     kernel/storage/write_policy_tests.cpp
     kernel/usb/bot_tests.cpp
     kernel/usb/bulk_tests.cpp
@@ -218,6 +219,7 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/kernel/storage/nvme/queue.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/page_cache.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/probe_wait.cpp"
+    "${FEATHEROS_ROOT}/src/kernel/storage/virtio_disk.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/worker.cpp"
     "${FEATHEROS_ROOT}/src/kernel/storage/write_policy.cpp"
     "${FEATHEROS_ROOT}/src/kernel/filesystem/initramfs.cpp"

@@ -138,6 +138,11 @@ Namespace& Controller::NamespaceAt(uint32_t index)
     return namespaces_[index];
 }
 
+Disk* Controller::DiskAt(uint32_t index) const
+{
+    return index < MaxNamespaces ? disks_[index].load(std::memory_order_acquire) : nullptr;
+}
+
 void Controller::OnInterrupt(void* context)
 {
     auto* controller = static_cast<Controller*>(context);
@@ -907,7 +912,7 @@ bool Controller::Revalidate()
         ns.MarkGone();
         Say(Level::Warning, index_, "namespace {} changed during the reset; its disk is gone",
             ns.Id());
-        if (Disk* disk = disks_[i].load(std::memory_order_acquire))
+        if (Disk* disk = disks_[i].exchange(nullptr, std::memory_order_acq_rel))
         {
             Remove(*disk);
         }
@@ -929,7 +934,7 @@ void Controller::MakeDead(bool disable)
     Say(Level::Warning, index_, "controller failed; its disks are gone");
     for (std::atomic<Disk*>& entry : disks_)
     {
-        if (Disk* disk = entry.load(std::memory_order_acquire))
+        if (Disk* disk = entry.exchange(nullptr, std::memory_order_acq_rel))
         {
             Remove(*disk);
         }

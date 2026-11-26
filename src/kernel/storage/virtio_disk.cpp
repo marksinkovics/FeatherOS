@@ -33,6 +33,7 @@ Storage::DiskInfo VirtioDriver::Info()
     info.kind = Storage::DiskKind::Virtio;
     info.sector_size = SectorSize;
     info.sector_count = SectorCount();
+    info.read_only = IsReadOnly();
     info.max_transfer_bytes = MaxTransferBytes;
     return info;
 }

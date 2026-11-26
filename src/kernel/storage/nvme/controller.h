@@ -55,6 +55,8 @@ public:
     uint64_t flush_commands() const;
     uint32_t NamespaceCount() const;
     Namespace& NamespaceAt(uint32_t index);
+    // The registered disk of namespace index; null once it was removed or never registered.
+    Disk* DiskAt(uint32_t index) const;
 
 private:
     enum class Which : uint8_t

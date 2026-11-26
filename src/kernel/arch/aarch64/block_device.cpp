@@ -302,6 +302,11 @@ uint64_t SectorCount()
     return initialized ? capacity_sectors : 0;
 }
 
+bool IsReadOnly()
+{
+    return initialized && read_only;
+}
+
 bool ReadSector(uint64_t sector, void* buffer)
 {
     return Transfer(sector, nullptr, static_cast<uint8_t*>(buffer));
