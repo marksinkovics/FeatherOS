@@ -36,7 +36,8 @@ constexpr uint32_t KeyEventLimit = User::FramebufferEventCapacity - 2;
 static_assert(Input::Modifier::Shift == User::FramebufferModifierShift &&
                   Input::Modifier::Control == User::FramebufferModifierControl &&
                   Input::Modifier::Alt == User::FramebufferModifierAlt &&
-                  Input::Modifier::CapsLock == User::FramebufferModifierCapsLock,
+                  Input::Modifier::CapsLock == User::FramebufferModifierCapsLock &&
+                  Input::Modifier::Super == User::FramebufferModifierSuper,
               "the kernel and the C library share the modifier bits");
 
 // A fixed ring that never overwrites: a push that does not fit is dropped and counted.

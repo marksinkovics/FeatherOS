@@ -282,7 +282,8 @@ TEST_CASE("Modifiers merge the left and right keys and follow Caps Lock's toggle
     for (const auto& [left, right, bit] :
          {std::tuple{KeyCode::LeftShift, KeyCode::RightShift, Modifier::Shift},
           std::tuple{KeyCode::LeftControl, KeyCode::RightControl, Modifier::Control},
-          std::tuple{KeyCode::LeftAlt, KeyCode::RightAlt, Modifier::Alt}})
+          std::tuple{KeyCode::LeftAlt, KeyCode::RightAlt, Modifier::Alt},
+          std::tuple{KeyCode::LeftMeta, KeyCode::RightMeta, Modifier::Super}})
     {
         keyboard.Press(left, true, bytes);
         REQUIRE(keyboard.Modifiers() == bit);
@@ -338,6 +339,27 @@ TEST_CASE("a virtio-input sequence and a PS/2 one give the same transitions")
     REQUIRE(run(ps2) == expected);
 }
 
+TEST_CASE("Super sends no bytes and leaves a letter's byte alone")
+{
+    namespace Modifier = FeatherOS::Input::Modifier;
+    Keyboard keyboard;
+    char bytes[Keyboard::MaximumKeyBytes];
+    for (const uint16_t meta : {KeyCode::LeftMeta, KeyCode::RightMeta})
+    {
+        REQUIRE(keyboard.Press(meta, true, bytes) == 0);
+        REQUIRE(keyboard.Modifiers() == Modifier::Super);
+        REQUIRE(keyboard.Press(meta, true, bytes) == 0);
+        REQUIRE(Press(keyboard, KEY_A) == "a");
+        REQUIRE(Press(keyboard, KEY_ENTER) == "\r");
+        REQUIRE(keyboard.Press(meta, false, bytes) == 0);
+        REQUIRE(keyboard.Modifiers() == 0);
+    }
+    Hold(keyboard, KeyCode::LeftMeta, true);
+    Hold(keyboard, KeyCode::LeftShift, true);
+    REQUIRE(keyboard.Modifiers() == (Modifier::Super | Modifier::Shift));
+    REQUIRE(Press(keyboard, KEY_A) == "A");
+}
+
 TEST_CASE("the KEY_ names are Linux's numbers and what the keyboard sends for them")
 {
     struct Letter
@@ -388,6 +410,8 @@ TEST_CASE("the KEY_ names are Linux's numbers and what the keyboard sends for th
     REQUIRE(KEY_PAGEDOWN == KeyCode::PageDown);
     REQUIRE(KEY_INSERT == KeyCode::Insert);
     REQUIRE(KEY_DELETE == KeyCode::Delete);
+    REQUIRE(KEY_LEFTMETA == KeyCode::LeftMeta);
+    REQUIRE(KEY_RIGHTMETA == KeyCode::RightMeta);
 
     const uint16_t function_keys[] = {KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5,
                                       KEY_F6, KEY_F7, KEY_F8, KEY_F9, KEY_F10};
@@ -426,5 +450,7 @@ TEST_CASE("the libc framebuffer event and constants match the kernel's")
     REQUIRE(FB_MOD_CONTROL == FeatherOS::Input::Modifier::Control);
     REQUIRE(FB_MOD_ALT == FeatherOS::Input::Modifier::Alt);
     REQUIRE(FB_MOD_CAPS_LOCK == FeatherOS::Input::Modifier::CapsLock);
+    REQUIRE(FB_MOD_SUPER == FeatherOS::Input::Modifier::Super);
+    REQUIRE(FB_MOD_SUPER == User::FramebufferModifierSuper);
     REQUIRE(FB_EVENT_CAPACITY == User::FramebufferEventCapacity);
 }

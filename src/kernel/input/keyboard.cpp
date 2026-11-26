@@ -175,6 +175,10 @@ uint8_t Keyboard::Modifiers() const
     {
         modifiers |= Modifier::Alt;
     }
+    if (m_left_meta || m_right_meta)
+    {
+        modifiers |= Modifier::Super;
+    }
     if (Input::CapsLock())
     {
         modifiers |= Modifier::CapsLock;
@@ -203,6 +207,12 @@ size_t Keyboard::Press(uint16_t code, bool pressed, char (&bytes)[MaximumKeyByte
         return 0;
     case KeyCode::RightAlt:
         m_right_alt = pressed;
+        return 0;
+    case KeyCode::LeftMeta:
+        m_left_meta = pressed;
+        return 0;
+    case KeyCode::RightMeta:
+        m_right_meta = pressed;
         return 0;
     case KeyCode::CapsLock:
         if (pressed && !m_caps_lock_held)

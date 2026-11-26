@@ -36,6 +36,7 @@ static_assert(FB_EVENT_RELEASE == FeatherOS::User::FramebufferEventRelease &&
               FB_MOD_CONTROL == FeatherOS::User::FramebufferModifierControl &&
               FB_MOD_ALT == FeatherOS::User::FramebufferModifierAlt &&
               FB_MOD_CAPS_LOCK == FeatherOS::User::FramebufferModifierCapsLock &&
+              FB_MOD_SUPER == FeatherOS::User::FramebufferModifierSuper &&
               FB_EVENT_CAPACITY == FeatherOS::User::FramebufferEventCapacity);
 static_assert(FB_GET_INFO == FeatherOS::User::FramebufferGetInfo &&
               FB_ACQUIRE == FeatherOS::User::FramebufferAcquire &&

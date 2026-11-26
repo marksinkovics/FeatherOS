@@ -55,6 +55,7 @@
 #define FB_MOD_CONTROL 2
 #define FB_MOD_ALT 4
 #define FB_MOD_CAPS_LOCK 8
+#define FB_MOD_SUPER 16
 #define FB_EVENT_CAPACITY 64
 
 // Linux's key codes, for every key the keyboards report.
@@ -156,6 +157,8 @@
 #define KEY_PAGEDOWN 109
 #define KEY_INSERT 110
 #define KEY_DELETE 111
+#define KEY_LEFTMETA 125
+#define KEY_RIGHTMETA 126
 
 __BEGIN_DECLS
 

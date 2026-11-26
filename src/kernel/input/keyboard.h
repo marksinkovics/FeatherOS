@@ -51,6 +51,7 @@ constexpr uint8_t Shift = 1;
 constexpr uint8_t Control = 2;
 constexpr uint8_t Alt = 4;
 constexpr uint8_t CapsLock = 8;
+constexpr uint8_t Super = 16;
 } // namespace Modifier
 
 enum class KeyTransition : uint8_t
@@ -92,6 +93,8 @@ private:
     bool m_right_control = false;
     bool m_left_alt = false;
     bool m_right_alt = false;
+    bool m_left_meta = false;
+    bool m_right_meta = false;
     // Held keys repeat their presses, and a lock key toggles only on the first.
     bool m_caps_lock_held = false;
     bool m_num_lock_held = false;

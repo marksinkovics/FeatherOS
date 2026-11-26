@@ -69,6 +69,10 @@ uint16_t ExtendedKeyCode(uint8_t scan_code)
         return Input::KeyCode::Insert;
     case 0x53:
         return Input::KeyCode::Delete;
+    case 0x5B:
+        return Input::KeyCode::LeftMeta;
+    case 0x5C:
+        return Input::KeyCode::RightMeta;
     default:
         return 0;
     }

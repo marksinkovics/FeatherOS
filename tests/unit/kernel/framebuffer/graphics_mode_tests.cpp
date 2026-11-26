@@ -606,3 +606,35 @@ TEST_CASE("random sequences keep every key's stream well formed and the queue bo
         }
     }
 }
+
+TEST_CASE("the Meta keys queue as any key does, and the Super bit rides on the keys after them")
+{
+    constexpr uint8_t Super = FeatherOS::Input::Modifier::Super;
+    constexpr uint16_t LeftMeta = FeatherOS::Input::KeyCode::LeftMeta;
+    Owners owners;
+    int owner;
+    REQUIRE(owners.Acquire(0, &owner, true, 0) == 0);
+    Drain(owners, &owner);
+    REQUIRE(owners.DeliverKey(0, Key(LeftMeta, KeyTransition::Press, Super), 1));
+    REQUIRE(owners.DeliverKey(0, Key(LeftMeta, KeyTransition::Repeat, Super), 2));
+    REQUIRE(owners.DeliverKey(0, Key(30, KeyTransition::Press, Super), 3));
+    REQUIRE(owners.DeliverKey(0, Key(30, KeyTransition::Release, Super), 4));
+    REQUIRE(owners.DeliverKey(0, Key(LeftMeta, KeyTransition::Release, 0), 5));
+    const std::vector<FramebufferEvent> events = Drain(owners, &owner);
+    REQUIRE(Shapes(events) == std::vector<Shape>{{LeftMeta, FramebufferEventPress},
+                                                 {LeftMeta, FramebufferEventRepeat},
+                                                 {30, FramebufferEventPress},
+                                                 {30, FramebufferEventRelease},
+                                                 {LeftMeta, FramebufferEventRelease}});
+    const uint8_t modifiers[] = {Super, Super, Super, Super, 0};
+    for (size_t index = 0; index < events.size(); ++index)
+    {
+        REQUIRE(events[index].modifiers == modifiers[index]);
+    }
+
+    REQUIRE(owners.DeliverKey(0, Key(LeftMeta, KeyTransition::Press, Super), 6));
+    Drain(owners, &owner);
+    owners.Hide(0, Super, 7);
+    REQUIRE(Shapes(Drain(owners, &owner)) == std::vector<Shape>{{LeftMeta, FramebufferEventRelease},
+                                                                {0, FramebufferEventHidden}});
+}

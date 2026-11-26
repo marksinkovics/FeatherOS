@@ -527,6 +527,16 @@ class Graphics(ScreenCase, Case):
             "release 29 0",
         )
 
+        self.Chord(("meta_l", True), ("a", True), ("a", False))
+        self.Chord(("meta_l", False))
+        events.Expect(
+            "super",
+            "press 125 16",
+            "press 30 16",
+            "release 30 16",
+            "release 125 0",
+        )
+
         self.Chord(("x", True), ("alt", True))
         events.Expect("held key", "press 45 0", "press 56 4")
         self.Chord(("f2", True))
