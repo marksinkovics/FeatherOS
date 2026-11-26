@@ -46,9 +46,9 @@ void RecordingHost::ReadRootPort(uint32_t port, RootPortStatus* status, bool ack
     inner_.ReadRootPort(port, status, acknowledge);
 }
 
-bool RecordingHost::ResetRootPort(uint32_t port, Speed* speed)
+bool RecordingHost::ResetRootPort(uint32_t port, Speed* speed, bool force)
 {
-    return inner_.ResetRootPort(port, speed);
+    return inner_.ResetRootPort(port, speed, force);
 }
 
 CreateStatus RecordingHost::CreateDevice(const Location& location, uint32_t* slot)

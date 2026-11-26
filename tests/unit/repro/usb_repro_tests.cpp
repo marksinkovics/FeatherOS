@@ -79,7 +79,7 @@ const T::Driver* const ResetDrivers[] = {&ResetDriver};
 // port reset, the way the storage driver does after a failed BOMS reset. The reset must reach
 // the port: ResetPort returns true without writing PR or WPR while the port is enabled in U0.
 TEST_CASE("R4-01: re-enumeration of a USB 3 root-port device really resets the port",
-          "[.repro][R4-01]")
+          "[R4-01]")
 {
     resets = {};
     Rig rig;
@@ -145,7 +145,7 @@ void OnRecovered(void* context, uint32_t, uint8_t, uint32_t, Status)
 }
 
 TEST_CASE("R4-02: a failure flagged while an endpoint is being recovered is recovered too",
-          "[.repro][R4-02]")
+          "[R4-02]")
 {
     Rig rig;
     REQUIRE(rig.Create());
@@ -277,7 +277,7 @@ private:
 };
 
 TEST_CASE("R4-03: the command ring still works after a command was aborted",
-          "[.repro][R4-03]")
+          "[R4-03]")
 {
     Rig rig;
     LowFirstHardware hardware(rig.hardware);
@@ -357,7 +357,7 @@ std::vector<PointerEvent> ReadPointer(Input::Pointer::Reader& reader)
 }
 
 TEST_CASE("R4-04: an input report longer than the endpoint packet is parsed as one report",
-          "[.repro][R4-04]")
+          "[R4-04]")
 {
     FeatherOS::BootOptions::SelectUsbHid(FeatherOS::BootOptions::UsbHidMode::Default);
     Rig rig;

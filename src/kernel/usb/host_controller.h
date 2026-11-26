@@ -142,7 +142,9 @@ public:
     virtual uint32_t RootPorts() const = 0;
     // With acknowledge, the change bits that were read are cleared in the port.
     virtual void ReadRootPort(uint32_t port, RootPortStatus* status, bool acknowledge) = 0;
-    virtual bool ResetRootPort(uint32_t port, Speed* speed) = 0;
+    // A USB 3 port that is already enabled needs no reset for a first enumeration; force asks for
+    // one anyway, so a device that is enumerated again does lose its address and configuration.
+    virtual bool ResetRootPort(uint32_t port, Speed* speed, bool force) = 0;
 
     virtual CreateStatus CreateDevice(const Location& location, uint32_t* slot) = 0;
     virtual bool SetControlMaxPacket(uint32_t slot, uint32_t max_packet) = 0;

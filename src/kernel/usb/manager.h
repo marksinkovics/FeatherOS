@@ -42,7 +42,7 @@ private:
     void ServiceDrivers(Device& device);
     void Reenumerate(Device& device);
     bool AllowPortReset(uint32_t parent_slot, uint8_t port);
-    void EnumerateRootPort(uint32_t port);
+    void EnumerateRootPort(uint32_t port, bool force_reset);
     void ServiceHubPort(Device& hub_device, Hub& hub, uint32_t port);
     void RunHubPort(Device& hub_device, Hub& hub, uint32_t port, HubPort::Event event);
     void ServiceHubStatus(Hub& hub);

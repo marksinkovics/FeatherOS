@@ -784,7 +784,15 @@ CommandResult Controller::Command(const Trb& trb)
 
 void Controller::AbortCommand(uint32_t index, uint64_t trb_physical)
 {
-    hardware_.Write64(operational_ + Op::CommandRing, CommandRingControl::CommandAbort);
+    // xHCI 5.4.5: the pointer is writable once CRR is 0, so a second dword write after the
+    // abort has stopped the ring would replace the pointer. CA is in the low dword: write only it,
+    // and only while the ring runs (with CRR 0 the low write would replace the pointer too).
+    const uint32_t control = operational_ + Op::CommandRing;
+    if ((hardware_.Read32(control) &
+         static_cast<uint32_t>(CommandRingControl::CommandRingRunning)) != 0)
+    {
+        hardware_.Write32(control, static_cast<uint32_t>(CommandRingControl::CommandAbort));
+    }
     if (!WaitFor(operational_ + Op::CommandRing,
                  static_cast<uint32_t>(CommandRingControl::CommandRingRunning), 0, AbortTimeoutMs))
     {
@@ -907,7 +915,7 @@ bool Controller::AddressDevice(uint32_t slot)
     return result.status == CommandStatus::Success;
 }
 
-bool Controller::ResetPort(uint32_t port)
+bool Controller::ResetPort(uint32_t port, bool force)
 {
     uint32_t status = ReadPort(port);
     const uint32_t offset = operational_ + PortRegister(port, Op::PortSc);
@@ -916,12 +924,26 @@ bool Controller::ResetPort(uint32_t port)
         const uint32_t link = (status & PortSc::LinkStateMask) >> PortSc::LinkStateShift;
         if ((status & PortSc::Enabled) != 0 && link == U0)
         {
-            return true;
+            if (!force)
+            {
+                return true;
+            }
+            // xHCI 4.19.5.1: a hot reset (PR) is the reset for a USB 3 port that is in U0; a warm
+            // reset is for a port that is disconnected, inactive or in compliance mode.
+            WritePort(port, PortscWriteValue(status, 0) | PortSc::Reset);
+            if (!WaitFor(offset, PortSc::ResetChange, PortSc::ResetChange, PortResetTimeoutMs))
+            {
+                return false;
+            }
         }
-        WritePort(port, PortscWriteValue(status, 0) | PortSc::WarmReset);
-        if (!WaitFor(offset, PortSc::WarmResetChange, PortSc::WarmResetChange, PortResetTimeoutMs))
+        else
         {
-            return false;
+            WritePort(port, PortscWriteValue(status, 0) | PortSc::WarmReset);
+            if (!WaitFor(offset, PortSc::WarmResetChange, PortSc::WarmResetChange,
+                         PortResetTimeoutMs))
+            {
+                return false;
+            }
         }
     }
     else
@@ -957,9 +979,9 @@ void Controller::ReadRootPort(uint32_t port, RootPortStatus* status, bool acknow
     }
 }
 
-bool Controller::ResetRootPort(uint32_t port, Speed* speed)
+bool Controller::ResetRootPort(uint32_t port, Speed* speed, bool force)
 {
-    if (port == 0 || port > max_ports_ || !ResetPort(port))
+    if (port == 0 || port > max_ports_ || !ResetPort(port, force))
     {
         return false;
     }

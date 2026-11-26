@@ -126,5 +126,6 @@ One row per committed step (used by the global `autopilot` skill since 2026-11-2
 | 1032d63 | Review C1 scheduler keeps a wake-up posted before the block (R2-07, R3-04, R3-06) | review-C1.md (opus) | sonnet (high) | 0 | 3/3 | | 2.8M wtok: agents opus 880.6k, sonnet 1.5M; coord opus 409.0k |
 | 2635631 | Review C2 per-CPU current task in one read, kernel stack slots returned (R3-05, R3-07) | - | sonnet (high) | 0 | 2/2 | | 1.7M wtok: agents sonnet 1.5M; coord opus 239.5k |
 | 3e0c32b | Review C3 process pins, joinable threads after pthread_exit, stack growth for buffers (R2-04, R2-05, R2-06) | - | sonnet (high) | 1 | 4/5 | | 6.3M wtok: agents sonnet 5.0M; coord opus 1.2M |
-| D1 | Review D1 mount listed once, rename over mounts, /proc/mounts size (R2-08, R2-09, R2-10) | - | sonnet (high) | 0 | 3/3 | | 5.1M wtok: agents sonnet 4.7M; coord opus 383.6k (D1 and D3 share one worker) |
-| D3 | Review D3 virtio queue size, virtio read-only, NVMe disk pointer (R4-05, R4-06, R4-07) | - | sonnet (high) | 0 | 2/3 | | 1.8M wtok: agents sonnet 1.5M; coord opus 339.7k |
+| 9e1f217 | Review D1 mount listed once, rename over mounts, /proc/mounts size (R2-08, R2-09, R2-10) | - | sonnet (high) | 0 | 3/3 | | 5.1M wtok: agents sonnet 4.7M; coord opus 383.6k (D1 and D3 share one worker) |
+| f8fa183 | Review D3 virtio queue size, virtio read-only, NVMe disk pointer (R4-05, R4-06, R4-07) | - | sonnet (high) | 0 | 2/3 | | 1.8M wtok: agents sonnet 1.5M; coord opus 339.7k |
+| D2 | Review D2 USB 3 hot reset, recovery mask, CRCR abort, HID transfer length (R4-01..R4-04) | - | sonnet (high) | 0 | 4/4 | | 2.8M wtok: agents sonnet 2.2M; coord opus 581.7k |

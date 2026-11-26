@@ -453,6 +453,13 @@ Usb::Status Attach(Device& device, const InterfaceView& interface, void** state)
     port->transfer_length = packet < MaxReportBytes ? packet : MaxReportBytes;
     bool ready =
         Configure(*port, interface) && port->host->AllocateBuffer(MaxReportBytes, &port->control);
+    // A report longer than one packet must complete as a single transfer. A longer length than
+    // the report would not end on a full-size packet, so it is the report's size, not the maximum.
+    for (size_t index = 0; ready && index < port->map.report_count; ++index)
+    {
+        const uint32_t bytes = port->map.reports[index].input_bytes;
+        port->transfer_length = bytes > port->transfer_length ? bytes : port->transfer_length;
+    }
     for (Slot& slot : port->slots)
     {
         ready = ready && port->host->AllocateBuffer(MaxReportBytes, &slot.buffer);

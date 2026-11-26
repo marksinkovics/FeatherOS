@@ -23,7 +23,7 @@ public:
 
     uint32_t RootPorts() const override;
     void ReadRootPort(uint32_t port, RootPortStatus* status, bool acknowledge) override;
-    bool ResetRootPort(uint32_t port, Speed* speed) override;
+    bool ResetRootPort(uint32_t port, Speed* speed, bool force) override;
     CreateStatus CreateDevice(const Location& location, uint32_t* slot) override;
     bool SetControlMaxPacket(uint32_t slot, uint32_t max_packet) override;
     bool ConfigureEndpoints(uint32_t slot, std::span<const EndpointDescriptor> endpoints,

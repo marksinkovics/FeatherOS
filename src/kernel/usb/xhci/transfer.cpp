@@ -775,8 +775,9 @@ void Controller::ServiceEndpoints()
              pending = recovery_mask_[slot].load())
         {
             const auto dci = static_cast<uint32_t>(__builtin_ctz(pending));
+            // RecoverEndpoint clears the bit under ring_lock_; a second clear here would lose a
+            // failure flagged while the endpoint is being recovered.
             RecoverEndpoint(slot, dci);
-            recovery_mask_[slot].fetch_and(~(1U << dci));
         }
     }
 }

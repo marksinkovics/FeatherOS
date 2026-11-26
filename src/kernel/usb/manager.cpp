@@ -248,10 +248,10 @@ void Manager::HandlePort(uint32_t port)
     {
         return;
     }
-    EnumerateRootPort(port);
+    EnumerateRootPort(port, false);
 }
 
-void Manager::EnumerateRootPort(uint32_t port)
+void Manager::EnumerateRootPort(uint32_t port, bool force_reset)
 {
     RootPortStatus status;
     host_.Delay(DebounceMs);
@@ -263,7 +263,7 @@ void Manager::EnumerateRootPort(uint32_t port)
     Speed speed;
     char path[MaxPathName];
     MakePath(path, sizeof(path), bus_.Number(), nullptr, port);
-    if (!host_.ResetRootPort(port, &speed))
+    if (!host_.ResetRootPort(port, &speed, force_reset))
     {
         Log(path, "port did not reset", true);
         port_failed_[port] = true;
@@ -569,7 +569,7 @@ void Manager::Reenumerate(Device& device)
     }
     if (parent == nullptr)
     {
-        EnumerateRootPort(port);
+        EnumerateRootPort(port, true);
     }
     else
     {
