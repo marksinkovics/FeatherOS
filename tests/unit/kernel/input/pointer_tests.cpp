@@ -110,6 +110,28 @@ TEST_CASE("pointer T25: readers get whole reports in order, stamped with the upt
     }
 }
 
+TEST_CASE("pointer T25: absolute positions travel in a report with the records around them",
+          "[pointer]")
+{
+    TestScheduler::Reset();
+    Pointer::Reader reader = Pointer::Open();
+    const Event report[] = {Make(User::InputEventAbsolute, User::InputAbsoluteX, 32767),
+                            Make(User::InputEventAbsolute, User::InputAbsoluteY, 0),
+                            Make(User::InputEventKey, User::InputButtonLeft, 1), Sync()};
+    Pointer::Submit(report, 4);
+
+    const std::vector<Event> events = ReadAll(reader);
+    REQUIRE(events.size() == 4);
+    REQUIRE(events[0].type == 3);
+    REQUIRE(events[0].code == 0);
+    REQUIRE(events[0].value == 32767);
+    REQUIRE(events[1].type == 3);
+    REQUIRE(events[1].code == 1);
+    REQUIRE(events[1].value == 0);
+    REQUIRE(events[2].type == User::InputEventKey);
+    REQUIRE(events[3].type == User::InputEventSync);
+}
+
 TEST_CASE("pointer T25: every reader has its own cursor and a new one starts at the end",
           "[pointer]")
 {

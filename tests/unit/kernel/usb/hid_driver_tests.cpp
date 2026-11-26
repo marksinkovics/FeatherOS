@@ -30,6 +30,7 @@ using FeatherOS::Usb::Speed;
 using FeatherOS::Usb::Status;
 using FeatherOS::Usb::Testing::MakeKeyboard;
 using FeatherOS::Usb::Testing::MakeMouse;
+using FeatherOS::Usb::Testing::MakeTablet;
 using FeatherOS::Usb::Testing::MakeWheelMouse;
 using FeatherOS::Usb::Testing::Rig;
 using FeatherOS::Usb::Testing::ScriptedDevice;
@@ -116,6 +117,11 @@ constexpr PointerEvent PointerSync = {User::InputEventSync, User::InputSyncRepor
 PointerEvent Rel(uint16_t code, int32_t value)
 {
     return {User::InputEventRelative, code, value};
+}
+
+PointerEvent Abs(uint16_t code, int32_t value)
+{
+    return {User::InputEventAbsolute, code, value};
 }
 
 PointerEvent Button(uint16_t code, int32_t value)
@@ -655,6 +661,58 @@ TEST_CASE("hid T33: a report-protocol mouse gives wheel and pan events", "[usb][
     world.Send(mouse, {0x00, 0, 0, 2, 0});
     REQUIRE(ReadPointer(reader) ==
             PointerEvents{Button(0x112, 0), Rel(User::InputRelativeWheel, 2), PointerSync});
+}
+
+TEST_CASE("hid T8: a tablet sends the axes that changed, both on its first report", "[usb][hid]")
+{
+    HidRig world;
+    const Scripted tablet = MakeTablet(Speed::High, 1000);
+    REQUIRE(world.Plug(1, tablet) != 0);
+    REQUIRE(Listing().find("hid\n") != std::string::npos);
+    Input::Pointer::Reader reader = Input::Pointer::Open();
+
+    world.Send(tablet, {0x00, 0xF4, 0x01, 0xF4, 0x01, 0});
+    REQUIRE(ReadPointer(reader) ==
+            PointerEvents{Abs(User::InputAbsoluteX, 16383), Abs(User::InputAbsoluteY, 16383),
+                          PointerSync});
+    // Only X changed, so only ABS_X is sent; a value past the device's range clamps to 32767.
+    world.Send(tablet, {0x00, 0xFF, 0xFF, 0xF4, 0x01, 0});
+    REQUIRE(ReadPointer(reader) ==
+            PointerEvents{Abs(User::InputAbsoluteX, 32767), PointerSync});
+    // The maximum itself scales to the same value: nothing changed.
+    world.Send(tablet, {0x00, 0xE8, 0x03, 0xF4, 0x01, 0});
+    REQUIRE(ReadPointer(reader).empty());
+    // A button press and a wheel step at the same place: the position stays quiet.
+    world.Send(tablet, {0x01, 0xE8, 0x03, 0xF4, 0x01, 1});
+    REQUIRE(ReadPointer(reader) ==
+            PointerEvents{Button(0x110, 1), Rel(User::InputRelativeWheel, 1), PointerSync});
+    // Only Y changed, together with a button release.
+    world.Send(tablet, {0x00, 0xE8, 0x03, 0x00, 0x00, 0});
+    REQUIRE(ReadPointer(reader) ==
+            PointerEvents{Abs(User::InputAbsoluteY, 0), Button(0x110, 0), PointerSync});
+}
+
+TEST_CASE("hid T8: detach releases a tablet's buttons and the next tablet starts afresh",
+          "[usb][hid]")
+{
+    HidRig world;
+    const Scripted first = MakeTablet(Speed::High);
+    REQUIRE(world.Plug(1, first) != 0);
+    Input::Pointer::Reader reader = Input::Pointer::Open();
+    world.Send(first, {0x02, 0x10, 0x00, 0x20, 0x00, 0});
+    REQUIRE(ReadPointer(reader) ==
+            PointerEvents{Abs(User::InputAbsoluteX, 16), Abs(User::InputAbsoluteY, 32),
+                          Button(0x111, 1), PointerSync});
+    world.rig.fake.Disconnect(1);
+    world.rig.Settle();
+    REQUIRE(ReadPointer(reader) == PointerEvents{Button(0x111, 0), PointerSync});
+
+    const Scripted second = MakeTablet(Speed::High);
+    REQUIRE(world.Plug(1, second) != 0);
+    world.Send(second, {0x00, 0x10, 0x00, 0x20, 0x00, 0});
+    REQUIRE(ReadPointer(reader) ==
+            PointerEvents{Abs(User::InputAbsoluteX, 16), Abs(User::InputAbsoluteY, 32),
+                          PointerSync});
 }
 
 TEST_CASE("hid T33: detach releases the held buttons, and mice keep their own state",

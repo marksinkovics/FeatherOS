@@ -16,6 +16,7 @@ constexpr size_t MaxFieldBits = 32;
 constexpr size_t MaxPushDepth = 4;
 constexpr size_t MaxKeys = 32;
 constexpr size_t MaxLedUsages = 5;
+constexpr int32_t AbsoluteMaximum = 32767;
 
 enum class Status : uint8_t
 {
@@ -44,6 +45,8 @@ struct Field
 {
     FieldKind kind;
     bool is_signed;
+    // Axes only: false for an absolute axis such as a tablet's.
+    bool relative;
     uint8_t report_id;
     uint8_t bit_size;
     uint16_t bit_offset;
@@ -88,6 +91,10 @@ struct MouseReport
     int32_t dy = 0;
     int32_t wheel = 0;
     int32_t pan = 0;
+    // Absolute X and Y scaled to 0..AbsoluteMaximum; only when the report has both.
+    bool has_position = false;
+    int32_t x = 0;
+    int32_t y = 0;
 };
 
 Status ParseReportDescriptor(std::span<const uint8_t> descriptor, ReportMap* map);
@@ -95,6 +102,8 @@ Status ParseReportDescriptor(std::span<const uint8_t> descriptor, ReportMap* map
 // False if the report is not one of the map's keyboard reports: an unknown ID, shorter than the
 // map says, or without keyboard fields. Fields never read past the report.
 bool ExtractKeyboard(const ReportMap& map, std::span<const uint8_t> report, KeySet* keys);
+// An absolute axis whose logical maximum is not above its minimum is skipped: has_position stays
+// false and the buttons and wheel still come through.
 bool ExtractMouse(const ReportMap& map, std::span<const uint8_t> report, MouseReport* mouse);
 
 // The Output report holding the LED fields, for the lock state in the bit layout of

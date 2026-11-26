@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace
@@ -90,6 +91,41 @@ const Bytes PushPopDescriptor = {
     0x05, 0x01, 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x02, 0xA4, 0x75, 0x01, 0x95, 0x04,
     0x15, 0x00, 0x25, 0x01, 0x05, 0x09, 0x19, 0x04, 0x29, 0x07, 0x81, 0x02, 0xB4, 0x09, 0x30,
     0x09, 0x31, 0x81, 0x06, 0xC0, 0xC0};
+
+// Buttons, then absolute X and Y of 16 bits with the logical range minimum..maximum, then a
+// relative wheel: QEMU's usb-tablet with 0 and 0x7FFF. A relative pair of 8 bits follows when
+// asked.
+Bytes TabletDescriptor(int16_t minimum, int16_t maximum, bool with_relative_pair = false)
+{
+    Bytes bytes = {0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09,
+                   0x19, 0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01,
+                   0x81, 0x02, 0x95, 0x01, 0x75, 0x05, 0x81, 0x01, 0x05, 0x01, 0x09, 0x30,
+                   0x09, 0x31, 0x16, static_cast<uint8_t>(minimum & 0xFF),
+                   static_cast<uint8_t>((minimum >> 8) & 0xFF), 0x26,
+                   static_cast<uint8_t>(maximum & 0xFF), static_cast<uint8_t>((maximum >> 8) & 0xFF),
+                   0x35, 0x00, 0x75, 0x10, 0x95, 0x02, 0x81, 0x02};
+    if (with_relative_pair)
+    {
+        const Bytes relative = {0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7F,
+                                0x75, 0x08, 0x95, 0x02, 0x81, 0x06};
+        bytes.insert(bytes.end(), relative.begin(), relative.end());
+    }
+    const Bytes wheel = {0x09, 0x38, 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08,
+                         0x95, 0x01, 0x81, 0x06, 0xC0, 0xC0};
+    bytes.insert(bytes.end(), wheel.begin(), wheel.end());
+    return bytes;
+}
+
+// Buttons, X and Y low byte first, wheel.
+Bytes TabletReport(uint8_t buttons, uint16_t x, uint16_t y, int8_t wheel = 0)
+{
+    return {buttons,
+            static_cast<uint8_t>(x & 0xFF),
+            static_cast<uint8_t>(x >> 8),
+            static_cast<uint8_t>(y & 0xFF),
+            static_cast<uint8_t>(y >> 8),
+            static_cast<uint8_t>(wheel)};
+}
 
 } // namespace
 
@@ -473,4 +509,120 @@ TEST_CASE("hid: the LED report follows the lock state", "[usb][hid][report]")
     REQUIRE(length == 2);
     REQUIRE(report[0] == 7);
     REQUIRE(report[1] == 2);
+}
+
+TEST_CASE("hid T7: QEMU's tablet descriptor has absolute X and Y", "[usb][hid][report]")
+{
+    ReportMap map;
+    REQUIRE(Parse(TabletDescriptor(0, 0x7FFF), &map) == Status::Ok);
+    REQUIRE(map.has_mouse);
+    REQUIRE(map.reports[0].input_bytes == 6);
+    const Field* x = Find(map, FieldKind::X);
+    const Field* y = Find(map, FieldKind::Y);
+    REQUIRE(x != nullptr);
+    REQUIRE(y != nullptr);
+    REQUIRE_FALSE(x->relative);
+    REQUIRE_FALSE(y->relative);
+    REQUIRE(x->bit_size == 16);
+    REQUIRE(x->bit_offset == 8);
+    REQUIRE(y->bit_offset == 24);
+    REQUIRE(x->logical_minimum == 0);
+    REQUIRE(x->logical_maximum == 0x7FFF);
+    REQUIRE(Find(map, FieldKind::Wheel)->bit_offset == 40);
+
+    ReportMap boot;
+    REQUIRE(Parse(BootMouseDescriptor, &boot) == Status::Ok);
+    REQUIRE(Find(boot, FieldKind::X)->relative);
+    REQUIRE(Find(boot, FieldKind::Y)->relative);
+}
+
+TEST_CASE("hid T7: an absolute position is scaled to 0..32767 and clamped", "[usb][hid][report]")
+{
+    ReportMap map;
+    MouseReport mouse;
+
+    REQUIRE(Parse(TabletDescriptor(0, 0x7FFF), &map) == Status::Ok);
+    const Bytes corner = TabletReport(0x01, 0x7FFF, 0, -1);
+    REQUIRE(ExtractMouse(map, View(corner), &mouse));
+    REQUIRE(mouse.has_position);
+    REQUIRE(mouse.x == 32767);
+    REQUIRE(mouse.y == 0);
+    REQUIRE(mouse.buttons == 1);
+    REQUIRE(mouse.wheel == -1);
+    REQUIRE(mouse.dx == 0);
+    REQUIRE(mouse.dy == 0);
+
+    REQUIRE(Parse(TabletDescriptor(100, 1100), &map) == Status::Ok);
+    struct Row
+    {
+        uint16_t value;
+        int32_t scaled;
+    };
+    // The minimum, the maximum, the middle, one step, and values outside the device's range.
+    for (const Row& row : {Row{100, 0}, Row{1100, 32767}, Row{600, 16383}, Row{101, 32},
+                           Row{50, 0}, Row{0, 0}, Row{1101, 32767}, Row{2000, 32767},
+                           Row{0xFFFF, 32767}})
+    {
+        const Bytes report = TabletReport(0, row.value, row.value);
+        REQUIRE(ExtractMouse(map, View(report), &mouse));
+        REQUIRE(mouse.x == row.scaled);
+        REQUIRE(mouse.y == row.scaled);
+    }
+
+    // A signed range keeps a negative minimum: -100..100 puts 0 in the middle.
+    REQUIRE(Parse(TabletDescriptor(-100, 100), &map) == Status::Ok);
+    const Bytes middle = TabletReport(0, 0, 0xFF9C);
+    REQUIRE(ExtractMouse(map, View(middle), &mouse));
+    REQUIRE(mouse.x == 16383);
+    REQUIRE(mouse.y == 0);
+}
+
+TEST_CASE("hid T7: an absolute axis whose maximum is not above its minimum is ignored",
+          "[usb][hid][report]")
+{
+    for (const auto& range : {std::pair<int16_t, int16_t>{5, 5}, {1000, 0}})
+    {
+        ReportMap map;
+        REQUIRE(Parse(TabletDescriptor(range.first, range.second), &map) == Status::Ok);
+        REQUIRE(map.has_mouse);
+        MouseReport mouse;
+        const Bytes report = TabletReport(0x02, 500, 500, 3);
+        REQUIRE(ExtractMouse(map, View(report), &mouse));
+        REQUIRE_FALSE(mouse.has_position);
+        REQUIRE(mouse.x == 0);
+        REQUIRE(mouse.y == 0);
+        REQUIRE(mouse.buttons == 2);
+        REQUIRE(mouse.wheel == 3);
+    }
+}
+
+TEST_CASE("hid T7: a device with relative and absolute axes reports both", "[usb][hid][report]")
+{
+    ReportMap map;
+    REQUIRE(Parse(TabletDescriptor(0, 0x7FFF, true), &map) == Status::Ok);
+    REQUIRE(Find(map, FieldKind::X, 0, 0)->relative == false);
+    REQUIRE(Find(map, FieldKind::X, 0, 1)->relative);
+    Bytes report = TabletReport(0, 1000, 2000);
+    report.insert(report.begin() + 5, {0xFE, 0x03});
+    MouseReport mouse;
+    REQUIRE(ExtractMouse(map, View(report), &mouse));
+    REQUIRE(mouse.has_position);
+    REQUIRE(mouse.x == 1000);
+    REQUIRE(mouse.y == 2000);
+    REQUIRE(mouse.dx == -2);
+    REQUIRE(mouse.dy == 3);
+}
+
+TEST_CASE("hid T7: a relative mouse has no position", "[usb][hid][report]")
+{
+    ReportMap map;
+    REQUIRE(Parse(BootMouseDescriptor, &map) == Status::Ok);
+    const Bytes report = {0x01, 0x05, 0xFB};
+    MouseReport mouse;
+    REQUIRE(ExtractMouse(map, View(report), &mouse));
+    REQUIRE_FALSE(mouse.has_position);
+    REQUIRE(mouse.dx == 5);
+    REQUIRE(mouse.dy == -5);
+    REQUIRE(mouse.x == 0);
+    REQUIRE(mouse.y == 0);
 }

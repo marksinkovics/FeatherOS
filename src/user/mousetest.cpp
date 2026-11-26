@@ -10,9 +10,12 @@
 constexpr char Help[] =
     "usage: mousetest [count]\n"
     "Reads count events (default 16) from /dev/mouse and prints each one: \"mouse: rel x 10\",\n"
-    "\"mouse: rel y -3\", \"mouse: rel wheel 1\", \"mouse: rel hwheel 1\", \"mouse: key 272 1\"\n"
-    "(a button code and 1 for down, 0 for up), \"mouse: syn\" at the end of each report and\n"
-    "\"mouse: dropped\" if events were lost.";
+    "\"mouse: rel y -3\", \"mouse: rel wheel 1\", \"mouse: rel hwheel 1\", \"mouse: abs x 16383\"\n"
+    "(a tablet's position, 0 to 32767), \"mouse: abs y 0\", \"mouse: key 272 1\" (a button code "
+    "and\n"
+    "1 for down, 0 for up), \"mouse: syn\" at the end of each report and \"mouse: dropped\" if "
+    "events\n"
+    "were lost.";
 
 constexpr unsigned long long DefaultCount = 16;
 
@@ -36,6 +39,19 @@ const char* RelativeName(unsigned code)
     }
 }
 
+const char* AbsoluteName(unsigned code)
+{
+    switch (code)
+    {
+    case ABS_X:
+        return "x";
+    case ABS_Y:
+        return "y";
+    default:
+        return nullptr;
+    }
+}
+
 void Print(const input_event& event)
 {
     if (event.type == EV_SYN)
@@ -49,6 +65,10 @@ void Print(const input_event& event)
     else if (event.type == EV_REL && RelativeName(event.code) != nullptr)
     {
         printf("mouse: rel %s %d\n", RelativeName(event.code), event.value);
+    }
+    else if (event.type == EV_ABS && AbsoluteName(event.code) != nullptr)
+    {
+        printf("mouse: abs %s %d\n", AbsoluteName(event.code), event.value);
     }
     else
     {

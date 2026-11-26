@@ -18,6 +18,7 @@ struct input_event
 #define EV_SYN 0x00
 #define EV_KEY 0x01
 #define EV_REL 0x02
+#define EV_ABS 0x03
 
 #define SYN_REPORT 0
 #define SYN_DROPPED 3
@@ -26,6 +27,11 @@ struct input_event
 #define REL_Y 0x01
 #define REL_HWHEEL 0x06
 #define REL_WHEEL 0x08
+
+// An EV_ABS value is always 0 to 32767 whatever the device's own range; there is no ioctl to ask
+// for it, unlike on Linux.
+#define ABS_X 0x00
+#define ABS_Y 0x01
 
 #define BTN_MOUSE 0x110
 #define BTN_LEFT 0x110

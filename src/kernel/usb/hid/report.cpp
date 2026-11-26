@@ -1,5 +1,6 @@
 #include "report.h"
 
+#include <algorithm>
 #include <limits.h>
 
 namespace FeatherOS::Usb::Hid
@@ -507,12 +508,12 @@ Status Parser::AddRun(bool output, uint32_t flags, uint16_t page, uint16_t usage
         field.bit_offset = static_cast<uint16_t>(offset + i * m_global.report_size);
         field.count = 1;
         field.usage_base = element;
-        const bool relative = (flags & FlagRelative) != 0;
-        if (page == PageGenericDesktop && element == UsageX && relative)
+        field.relative = (flags & FlagRelative) != 0;
+        if (page == PageGenericDesktop && element == UsageX)
         {
             field.kind = FieldKind::X;
         }
-        else if (page == PageGenericDesktop && element == UsageY && relative)
+        else if (page == PageGenericDesktop && element == UsageY)
         {
             field.kind = FieldKind::Y;
         }
@@ -733,6 +734,18 @@ bool ExtractKeyboard(const ReportMap& map, std::span<const uint8_t> report, KeyS
     return true;
 }
 
+namespace
+{
+
+int32_t ScaleAbsolute(const Field& field, int64_t value)
+{
+    const int64_t span = int64_t{field.logical_maximum} - field.logical_minimum;
+    const int64_t scaled = (value - field.logical_minimum) * AbsoluteMaximum / span;
+    return static_cast<int32_t>(std::clamp<int64_t>(scaled, 0, AbsoluteMaximum));
+}
+
+} // namespace
+
 bool ExtractMouse(const ReportMap& map, std::span<const uint8_t> report, MouseReport* mouse)
 {
     size_t base;
@@ -743,6 +756,8 @@ bool ExtractMouse(const ReportMap& map, std::span<const uint8_t> report, MouseRe
     }
     MouseReport result;
     bool found = false;
+    bool has_x = false;
+    bool has_y = false;
     for (size_t f = 0; f < map.field_count; ++f)
     {
         const Field& field = map.fields[f];
@@ -778,11 +793,20 @@ bool ExtractMouse(const ReportMap& map, std::span<const uint8_t> report, MouseRe
                 break;
             }
             case FieldKind::X:
-                result.dx = number;
-                break;
             case FieldKind::Y:
-                result.dy = number;
+            {
+                const bool x = field.kind == FieldKind::X;
+                if (field.relative)
+                {
+                    (x ? result.dx : result.dy) = number;
+                }
+                else if (field.logical_maximum > field.logical_minimum)
+                {
+                    (x ? result.x : result.y) = ScaleAbsolute(field, value);
+                    (x ? has_x : has_y) = true;
+                }
                 break;
+            }
             case FieldKind::Wheel:
                 result.wheel = number;
                 break;
@@ -796,6 +820,7 @@ bool ExtractMouse(const ReportMap& map, std::span<const uint8_t> report, MouseRe
     {
         return false;
     }
+    result.has_position = has_x && has_y;
     *mouse = result;
     return true;
 }

@@ -132,6 +132,9 @@ class UsbKeys(NormalBoot):
     controller = "qemu-xhci,id=xhci"
     keyboard = "usb-kbd,bus=xhci.0,id=kbd1"
     mouse = "usb-mouse,bus=xhci.0,id=mouse1"
+    mouse_name = "QEMU USB Mouse"
+    mouse_driver = "hid-mouse"
+    mouse_marker = b"hid-mouse"
     interrupts = "MSI-X"
     speed = "high"
     passed = (
@@ -147,11 +150,14 @@ class UsbKeys(NormalBoot):
         self.connection = None
         self.channel = None
         self.command_id = 2
-        self.steps = [*KEY_STEPS, *MouseSteps(), FINAL_STEP]
+        self.steps = self.Steps()
         self.step = 0
         self.position = None
         self.redrawn = False
         self.error = None
+
+    def Steps(self):
+        return [*KEY_STEPS, *MouseSteps(), FINAL_STEP]
 
     def QmpSocket(self):
         return self.socket_path
@@ -203,7 +209,7 @@ class UsbKeys(NormalBoot):
             if (
                 lease < 0
                 or b"hid-keyboard" not in clean_output
-                or b"hid-mouse" not in clean_output
+                or self.mouse_marker not in clean_output
             ):
                 return
             if self.channel is None:
@@ -257,11 +263,15 @@ class UsbKeys(NormalBoot):
         if device is None:
             return f"no {self.speed}-speed USB keyboard bound to hid-keyboard"
         if not re.search(
-            rf"KERN/I: USB 1-\d+(?:\.\d+)*: {self.speed}-speed 0627:0001 "
-            r"\"QEMU USB Mouse\" hid-mouse",
+            rf"KERN/I: USB 1-\d+(?:\.\d+)*: {self.speed}-speed "
+            rf"[0-9a-f]{{4}}:[0-9a-f]{{4}} \"{self.mouse_name}\" "
+            rf"{self.mouse_driver}(?![-\w])",
             output,
         ):
-            return f"no {self.speed}-speed USB mouse bound to hid-mouse"
+            return (
+                f"no {self.speed}-speed {self.mouse_name} bound to "
+                f"{self.mouse_driver}"
+            )
         for warning in FAILURES:
             if warning in output:
                 return f"the log reports a USB failure: {warning}"

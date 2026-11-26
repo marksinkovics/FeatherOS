@@ -39,6 +39,7 @@ TOGGLES = (
     "USB_KEYS_TEST",
     "USB_FALLBACK_TEST",
     "USB_HUB_TEST",
+    "USB_TABLET_TEST",
     "USB_STORAGE_TEST",
     "USB_STORAGE_HOTPLUG_TEST",
     "USB_STORAGE_LARGE_TEST",
@@ -197,6 +198,8 @@ CASES = [
         SCREEN_SIZE_TEST=ON,
         SCREEN="800x600",
     ),
+    Case("102_x86_64_usb_tablet", "x86_64", USB_TABLET_TEST=ON),
+    Case("103_aarch64_usb_tablet", "aarch64", USB_TABLET_TEST=ON),
 ]
 
 

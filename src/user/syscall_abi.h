@@ -341,12 +341,15 @@ static_assert(sizeof(InputEvent) == 24 && offsetof(InputEvent, microseconds) == 
 constexpr uint16_t InputEventSync = 0;
 constexpr uint16_t InputEventKey = 1;
 constexpr uint16_t InputEventRelative = 2;
+constexpr uint16_t InputEventAbsolute = 3;
 constexpr uint16_t InputSyncReport = 0;
 constexpr uint16_t InputSyncDropped = 3;
 constexpr uint16_t InputRelativeX = 0;
 constexpr uint16_t InputRelativeY = 1;
 constexpr uint16_t InputRelativeHorizontalWheel = 6;
 constexpr uint16_t InputRelativeWheel = 8;
+constexpr uint16_t InputAbsoluteX = 0;
+constexpr uint16_t InputAbsoluteY = 1;
 constexpr uint16_t InputButtonLeft = 0x110;
 
 constexpr int16_t PollReadable = 0x1;

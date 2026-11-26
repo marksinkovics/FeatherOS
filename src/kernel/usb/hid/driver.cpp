@@ -39,7 +39,7 @@ constexpr uint16_t ProtocolReport = 1;
 constexpr uint32_t EndpointPacketMask = 0x7FF;
 constexpr uint8_t NoLedState = 0xFF;
 constexpr uint32_t MouseButtons = 8;
-constexpr size_t MaxMouseEvents = MouseButtons + 5;
+constexpr size_t MaxMouseEvents = MouseButtons + 7;
 
 struct Port;
 
@@ -89,6 +89,9 @@ struct Port
     // Held while a report is submitted, so two tasks never put one mouse's reports out of order.
     Sync::SpinLock mouse_lock;
     uint32_t buttons GUARDED_BY(mouse_lock) = 0;
+    bool has_position GUARDED_BY(mouse_lock) = false;
+    int32_t x GUARDED_BY(mouse_lock) = 0;
+    int32_t y GUARDED_BY(mouse_lock) = 0;
 };
 
 Port* ports[MaxPorts] GUARDED_BY(registry_lock) = {};
@@ -165,6 +168,22 @@ void SubmitMouse(Port& port, const MouseReport& report) REQUIRES(port.mouse_lock
 {
     User::InputEvent events[MaxMouseEvents] = {};
     size_t count = 0;
+    if (report.has_position)
+    {
+        if (!port.has_position || report.x != port.x)
+        {
+            count =
+                AddEvent(events, count, User::InputEventAbsolute, User::InputAbsoluteX, report.x);
+        }
+        if (!port.has_position || report.y != port.y)
+        {
+            count =
+                AddEvent(events, count, User::InputEventAbsolute, User::InputAbsoluteY, report.y);
+        }
+        port.has_position = true;
+        port.x = report.x;
+        port.y = report.y;
+    }
     const uint32_t changed = (report.buttons ^ port.buttons) & ((1U << MouseButtons) - 1);
     for (uint32_t button = 0; button < MouseButtons; ++button)
     {

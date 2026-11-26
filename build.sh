@@ -638,6 +638,9 @@ smoke_test() {
     if _is_on "${USB_HUB_TEST:-OFF}"; then
         smoke_args+=(--expect-usb-hub)
     fi
+    if _is_on "${USB_TABLET_TEST:-OFF}"; then
+        smoke_args+=(--expect-usb-tablet)
+    fi
     if _is_on "${USB_STORAGE_TEST:-OFF}"; then
         smoke_args+=(--expect-usb-storage)
     fi

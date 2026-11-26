@@ -32,6 +32,7 @@ from smoke.cases.usb_stick import UsbStick
 from smoke.cases.usb_storage import UsbStorage
 from smoke.cases.usb_storage_hotplug import UsbStorageHotplug
 from smoke.cases.usb_storage_large import UsbStorageLarge
+from smoke.cases.usb_tablet import UsbTablet
 from smoke.cases.user_preemption import UserPreemption
 
 # Each --expect-<name> switch: its case and help text.
@@ -85,6 +86,11 @@ SWITCHES = {
         UsbFallback,
         "Type on a full-speed USB keyboard through the report parser, "
         "without MSI",
+    ),
+    "usb-tablet": (
+        UsbTablet,
+        "Move a USB tablet to the corners and the centre and expect "
+        "absolute positions on /dev/mouse",
     ),
     "usb-hub": (
         UsbHub,

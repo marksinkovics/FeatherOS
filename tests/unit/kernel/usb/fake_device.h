@@ -368,6 +368,9 @@ std::shared_ptr<ScriptedDevice> MakeKeyboard(Speed speed, uint8_t max_packet0 = 
 std::shared_ptr<ScriptedDevice> MakeMouse(Speed speed, uint8_t max_packet0 = 0);
 // A report-protocol mouse: buttons, X, Y, wheel and AC Pan, one byte each after the buttons.
 std::shared_ptr<ScriptedDevice> MakeWheelMouse(Speed speed, bool boot_interface = false);
+// QEMU's usb-tablet: a non-boot interface, reports of buttons, absolute X and Y (16 bits each, 0
+// to maximum) and a relative wheel.
+std::shared_ptr<ScriptedDevice> MakeTablet(Speed speed, uint16_t maximum = 0x7FFF);
 
 } // namespace FeatherOS::Usb::Testing
 
