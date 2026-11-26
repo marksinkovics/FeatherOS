@@ -18,19 +18,16 @@ using FeatherOS::Graphics::EventKind;
 using FeatherOS::Graphics::Status;
 using FeatherOS::Graphics::Surface;
 
-constexpr uint32_t ScreenWidth = 1024;
-constexpr uint32_t ScreenHeight = 768;
-constexpr uint32_t BarHeight = ScreenHeight / 2;
-constexpr uint32_t BarWidth = ScreenWidth / 8;
-constexpr uint32_t Bars[8] = {0xFF0000, 0x00FF00, 0x0000FF, 0xFFFFFF,
-                              0xFFFF00, 0x00FFFF, 0xFF00FF, 0x808080};
+constexpr uint32_t BarCount = 8;
+constexpr uint32_t Bars[BarCount] = {0xFF0000, 0x00FF00, 0x0000FF, 0xFFFFFF,
+                                     0xFFFF00, 0x00FFFF, 0xFF00FF, 0x808080};
 constexpr uint32_t CornerColor = 0x654321;
 constexpr uint32_t CornerSize = 20;
 constexpr int32_t CornerOrigin = -10;
 constexpr uint32_t PatchColor = 0x123456;
 constexpr uint32_t PatchSize = 100;
-constexpr int32_t PatchX = 1000;
-constexpr int32_t PatchY = 700;
+constexpr int32_t PatchRightMargin = 24;
+constexpr int32_t PatchBottomMargin = 68;
 constexpr unsigned long long DefaultSeconds = 5;
 constexpr unsigned long long MaximumSeconds = 3600;
 constexpr int DrainMilliseconds = 200;
@@ -54,19 +51,27 @@ void OnInterrupt(int)
     Interrupted = 1;
 }
 
+// The gradient's channels wrap at 256, so a screen wider than 1024 or taller than 768 stays valid.
 void FillPattern(Surface* screen)
 {
+    const uint32_t width = static_cast<uint32_t>(screen->Width());
+    const uint32_t height = static_cast<uint32_t>(screen->Height());
+    const uint32_t bar_height = height / 2;
+    const uint32_t bar_width = width / BarCount;
     uint32_t* pixels = screen->Pixels();
-    for (uint32_t y = 0; y < ScreenHeight; ++y)
+    for (uint32_t y = 0; y < height; ++y)
     {
-        for (uint32_t x = 0; x < ScreenWidth; ++x)
+        for (uint32_t x = 0; x < width; ++x)
         {
-            pixels[y * ScreenWidth + x] =
-                y < BarHeight ? Bars[x / BarWidth] : ((x / 4) << 16) | (((y - BarHeight) / 2) << 8);
+            const uint32_t bar = x / bar_width < BarCount ? x / bar_width : BarCount - 1;
+            pixels[y * width + x] =
+                y < bar_height ? Bars[bar]
+                               : (((x / 4) & 0xFF) << 16) | ((((y - bar_height) / 2) & 0xFF) << 8);
         }
     }
     screen->FillRectangle(CornerOrigin, CornerOrigin, CornerSize, CornerSize, CornerColor);
-    screen->FillRectangle(PatchX, PatchY, PatchSize, PatchSize, PatchColor);
+    screen->FillRectangle(screen->Width() - PatchRightMargin, screen->Height() - PatchBottomMargin,
+                          PatchSize, PatchSize, PatchColor);
 }
 
 bool PresentAll(Display* display)
@@ -198,7 +203,7 @@ int main(int argc, char** argv)
         puts("fbdemo: out of memory");
         return 1;
     }
-    if (opened != Status::Ok || display.Width() != ScreenWidth || display.Height() != ScreenHeight)
+    if (opened != Status::Ok || display.Width() < static_cast<int32_t>(BarCount))
     {
         puts("fbdemo: unsupported screen");
         return 1;

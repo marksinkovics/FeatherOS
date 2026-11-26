@@ -21,7 +21,7 @@ from smoke.boot import (
     USER_MODE_OUTPUTS,
     VFS_MESSAGE,
 )
-from smoke.cases.base import QEMU_TIMEOUT_SECONDS, BootToShell
+from smoke.cases.base import BootToShell
 
 
 class NormalBoot(BootToShell):
@@ -43,7 +43,7 @@ class NormalBoot(BootToShell):
                 if "error:" in line.lower() or "error " in line.lower()
             ]
             return "\n".join(
-                [f"kernel did not report ready within {QEMU_TIMEOUT_SECONDS}s"]
+                [f"kernel did not report ready within {self.timeout}s"]
                 + [line[:240] for line in diagnostics[-8:]]
             )
         if TIMER_STARTED_MESSAGE not in output:

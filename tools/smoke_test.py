@@ -9,6 +9,7 @@ from smoke import qemu, session
 from smoke.boot import MAX_CPU_PROTECTIONS
 from smoke.cases import AddArguments, Select
 from smoke.cases.base import SkipCase
+from smoke.cases.screen import DEFAULT_SCREEN, SCREEN_PATTERN
 
 
 def main():
@@ -42,9 +43,17 @@ def main():
     parser.add_argument(
         "--cpu", help="QEMU CPU model; 'max' also requires its CPU protections"
     )
+    parser.add_argument(
+        "--screen",
+        default=DEFAULT_SCREEN,
+        metavar="WxH",
+        help="The screen size the ISO was built with (SCREEN in build.sh)",
+    )
     AddArguments(parser)
     parser.add_argument("iso", help="Path to the bootable FeatherOS ISO")
     args = parser.parse_args()
+    if SCREEN_PATTERN.fullmatch(args.screen) is None:
+        parser.error(f"--screen {args.screen!r} is not WIDTHxHEIGHT")
     case = Select(parser, args)
 
     qemu_name = (

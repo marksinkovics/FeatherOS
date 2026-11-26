@@ -18,6 +18,8 @@ from smoke.cases.power import Power
 from smoke.cases.root import RootOption
 from smoke.cases.root_disk import RootDisk
 from smoke.cases.scheduler import Scheduler
+from smoke.cases.screen import DEFAULT_SCREEN, ScreenCase
+from smoke.cases.screen_size import ScreenSize
 from smoke.cases.shell import Shell
 from smoke.cases.smp import Smp
 from smoke.cases.storage import Storage
@@ -64,6 +66,11 @@ SWITCHES = {
     "fonts": (
         Fonts,
         "Print UTF-8 text and compare the screen with the font's glyphs",
+    ),
+    "screen-size": (
+        ScreenSize,
+        "Boot at the SCREEN size and check the console, fbdemo's pattern and "
+        "the status bar against QEMU's screendump",
     ),
     "pci": (Pci, "Expect edu to deliver an MSI and a DMA round trip"),
     "usb": (
@@ -192,4 +199,15 @@ def Select(parser, args):
         chosen.append(Storage)
     if len(chosen) > 1:
         parser.error("select at most one expected result")
-    return (chosen[0] if chosen else NormalBoot)(args)
+    case = chosen[0] if chosen else NormalBoot
+    if (
+        isinstance(case, type)
+        and issubclass(case, ScreenCase)
+        and not case.any_screen
+        and args.screen != DEFAULT_SCREEN
+    ):
+        parser.error(
+            f"{case.__name__} checks a {DEFAULT_SCREEN} screen, not "
+            f"{args.screen}"
+        )
+    return case(args)

@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import time
 
@@ -11,6 +12,8 @@ from smoke.qemu import (
 
 WIDTH = 1024
 HEIGHT = 768
+DEFAULT_SCREEN = f"{WIDTH}x{HEIGHT}"
+SCREEN_PATTERN = re.compile(r"(\d+)x(\d+)")
 WHITE = 0xFFFFFF
 BLACK = 0x000000
 RETRY_SECONDS = 2.0
@@ -21,20 +24,27 @@ class StepFailed(Exception):
     pass
 
 
-def ReadPpm(path):
+def ParseScreen(text):
+    found = SCREEN_PATTERN.fullmatch(text)
+    if found is None:
+        raise ValueError(f"the screen size {text!r} is not WIDTHxHEIGHT")
+    return int(found.group(1)), int(found.group(2))
+
+
+def ReadPpm(path, size=(WIDTH, HEIGHT)):
     with open(path, "rb") as file:
         data = file.read()
     header = data.split(b"\n", 3)
     if header[0] != b"P6" or header[2] != b"255":
         raise RuntimeError("the screendump is not a binary PPM")
     width, height = (int(value) for value in header[1].split())
-    if (width, height) != (WIDTH, HEIGHT):
+    if (width, height) != size:
         raise RuntimeError(f"the screendump is {width}x{height}")
     return header[3]
 
 
-def PixelAt(pixels, x, y):
-    offset = 3 * (y * WIDTH + x)
+def PixelAt(pixels, x, y, width=WIDTH):
+    offset = 3 * (y * width + x)
     return (
         (pixels[offset] << 16) | (pixels[offset + 1] << 8) | pixels[offset + 2]
     )
@@ -44,7 +54,7 @@ def Hex(color):
     return f"{color:06X}"
 
 
-def Difference(pixels, expected):
+def Difference(pixels, expected, width=WIDTH):
     if pixels == expected:
         return None
     offset = next(
@@ -52,10 +62,10 @@ def Difference(pixels, expected):
         for index in range(len(pixels))
         if pixels[index] != expected[index]
     )
-    x, y = divmod(offset // 3, WIDTH)[::-1]
+    x, y = divmod(offset // 3, width)[::-1]
     return (
-        f"({x},{y}) is {Hex(PixelAt(pixels, x, y))}, expected "
-        f"{Hex(PixelAt(expected, x, y))}"
+        f"({x},{y}) is {Hex(PixelAt(pixels, x, y, width))}, expected "
+        f"{Hex(PixelAt(expected, x, y, width))}"
     )
 
 
@@ -77,9 +87,14 @@ def ExpectColor(pixels, what, point, wanted):
 class ScreenCase:
     """What a case needs to look at the screen and press keys through QMP:
     mix it in before Case, call InitScreen in the constructor, OpenScreen
-    once the guest is up and CloseScreen from Stop."""
+    once the guest is up and CloseScreen from Stop. The screen is the case's
+    --screen size, 1024x768 by default; a case that checks any other size
+    sets any_screen."""
+
+    any_screen = False
 
     def InitScreen(self):
+        self.width, self.height = ParseScreen(self.args.screen)
         self.directory = tempfile.TemporaryDirectory(prefix="fq-")
         self.socket_path = os.path.join(self.directory.name, "qmp.sock")
         self.dump_path = os.path.join(self.directory.name, "screen.ppm")
@@ -101,6 +116,9 @@ class ScreenCase:
             self.connection.close()
         self.directory.cleanup()
 
+    def ReadDump(self):
+        return ReadPpm(self.dump_path, (self.width, self.height))
+
     def Dump(self, check, seconds=RETRY_SECONDS):
         deadline = time.monotonic() + seconds
         while True:
@@ -111,7 +129,7 @@ class ScreenCase:
                 "screendump",
                 {"filename": self.dump_path},
             )
-            failure = check(ReadPpm(self.dump_path))
+            failure = check(self.ReadDump())
             if failure is None or time.monotonic() >= deadline:
                 return failure
             time.sleep(RETRY_PAUSE_SECONDS)
@@ -124,7 +142,7 @@ class ScreenCase:
             "screendump",
             {"filename": self.dump_path},
         )
-        return check(ReadPpm(self.dump_path)) is None
+        return check(self.ReadDump()) is None
 
     def Step(self, name, check, seconds=RETRY_SECONDS):
         failure = self.Dump(check, seconds)

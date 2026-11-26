@@ -172,7 +172,7 @@ def IsC1(code_point):
 class Reference:
     """The sample's rows as cells rendered by ffnt.py from the committed
     mono-16 file: each cell is the glyph clipped to 8x16, blended over black
-    as the console does."""
+    as the console does, or over white for a reversed cell."""
 
     def __init__(self):
         self.ffnt = LoadFfnt()
@@ -190,12 +190,14 @@ class Reference:
         ]
         self.replacements = sum(line.count(REPLACEMENT) for line in self.lines)
 
-    def Cell(self, code_point):
-        if code_point in self.cells:
-            return self.cells[code_point]
+    def Cell(self, code_point, reverse=False):
+        key = (code_point, reverse)
+        if key in self.cells:
+            return self.cells[key]
         font = self.font
         glyph = self.glyphs.get(code_point, self.glyphs[0])
-        pixels = [[BLACK] * CELL_WIDTH for _ in range(CELL_HEIGHT)]
+        background, foreground = (WHITE, BLACK) if reverse else (BLACK, WHITE)
+        pixels = [[background] * CELL_WIDTH for _ in range(CELL_HEIGHT)]
         if code_point > 0x20:
             for y, row in enumerate(glyph.rows):
                 py = font.ascent - glyph.top + y
@@ -207,13 +209,13 @@ class Reference:
                         and 0 <= py < CELL_HEIGHT
                     ):
                         pixels[py][px] = self.ffnt.blend(
-                            BLACK, WHITE, coverage
+                            background, foreground, coverage
                         )
         rows = [
             b"".join(bytes((c >> 16, (c >> 8) & 255, c & 255)) for c in row)
             for row in pixels
         ]
-        self.cells[code_point] = rows
+        self.cells[key] = rows
         return rows
 
     def Render(self, text):

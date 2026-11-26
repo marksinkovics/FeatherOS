@@ -33,6 +33,7 @@ TOGGLES = (
     "GRAPHICS_TEST",
     "DUNGEON_TEST",
     "FONTS_TEST",
+    "SCREEN_SIZE_TEST",
     "PCI_TEST",
     "USB_TEST",
     "USB_KEYS_TEST",
@@ -57,6 +58,7 @@ WEIGHTS = {
     "POWER_TEST": 1,
     "DUNGEON_TEST": 2,
     "FONTS_TEST": 1,
+    "SCREEN_SIZE_TEST": 1,
 }
 
 
@@ -181,6 +183,20 @@ CASES = [
         DISK_BUS="nvme",
         KERNEL_ROOT="nvme0n1p9",
     ),
+    # A large screen; AArch64's ramfb firmware lists nothing above 1024x768,
+    # so its case takes the 800x600 mode, below the default.
+    Case(
+        "100_x86_64_screen_size",
+        "x86_64",
+        SCREEN_SIZE_TEST=ON,
+        SCREEN="1920x1080",
+    ),
+    Case(
+        "101_aarch64_screen_size",
+        "aarch64",
+        SCREEN_SIZE_TEST=ON,
+        SCREEN="800x600",
+    ),
 ]
 
 
@@ -199,6 +215,7 @@ def Environment(arch, build_type, settings=None, out_dir=None):
         "KERNEL_USBHID",
         "KERNEL_PS2",
         "KERNEL_STORAGE",
+        "SCREEN",
     ):
         environment.pop(key, None)
     environment.update(settings or {})
@@ -306,6 +323,9 @@ def main():
     parser.add_argument(
         "--no-build", action="store_true", help="use the builds already made"
     )
+    parser.add_argument(
+        "--list", action="store_true", help="print the case names and stop"
+    )
     args = parser.parse_args()
     cases = [
         case
@@ -314,6 +334,9 @@ def main():
     ]
     if not cases:
         parser.error("no case matches")
+    if args.list:
+        print("\n".join(case.name for case in cases))
+        return 0
     os.makedirs(MATRIX_DIR, exist_ok=True)
     started = time.monotonic()
     if not args.no_build:

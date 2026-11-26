@@ -2,6 +2,9 @@ from smoke.boot import NETWORK_DHCP_MESSAGE, PANIC_MARKER, SHELL_BANNER
 from smoke.script import WaitFor
 
 QEMU_TIMEOUT_SECONDS = 10
+# For cases that end at a marker: the limit only matters on a loaded host,
+# where Limine alone can take over 10 s to load the initramfs.
+MARKER_TIMEOUT_SECONDS = 30
 # The scripted shell session runs many programs and types each character 20 ms
 # apart; the whole session takes about 3 minutes on either architecture.
 SHELL_TIMEOUT_SECONDS = 300
@@ -83,6 +86,8 @@ class BootToShell(Case):
     """Ends once the shell is up and init's DHCP client, which leases beside
     the shell, has logged its address, which can come after the banner."""
 
+    timeout = MARKER_TIMEOUT_SECONDS
+
     def Script(self, session):
         return [WaitFor(NETWORK_DHCP_MESSAGE)]
 
@@ -90,6 +95,7 @@ class BootToShell(Case):
 class KernelTest(Case):
     """A kernel built with a test hook that reports one line over serial."""
 
+    timeout = MARKER_TIMEOUT_SECONDS
     # A text, or one per architecture.
     expected = ""
     failure = ""

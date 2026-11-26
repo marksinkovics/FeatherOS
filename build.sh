@@ -39,6 +39,8 @@ _usage() {
     printf 'KERNEL_USBHID=report puts usbhid=report on it (boot keyboards and mice through their report descriptors);\n'
     printf 'KERNEL_PS2=off puts ps2=off on it (no PS/2 or virtio keyboard).\n'
     printf 'KERNEL_STORAGE=ro|rw puts storage=ro or storage=rw on it (NVMe and AHCI disks read-only, or writable on real hardware too).\n'
+    printf 'SCREEN=WxH sets the ISO'"'"'s Limine resolution (default 1024x768; each side 320 to 16384); the console and /dev/fb0 take the size the firmware grants.\n'
+    printf 'SCREEN_SIZE_TEST=ON boots at 1920x1080 (AArch64: 800x600, the largest mode its ramfb firmware lists beyond the default) unless SCREEN is set.\n'
     printf 'LIMINE_TIMEOUT=N makes the ISO'"'"'s Limine wait N seconds at its menu (default 0, which hides it).\n'
     printf 'Actions: build, iso, run, test, smoke (iso and test without building), test-all, unit-test, unit-test-tsan,\n'
     printf '         benchmark, debug, all, clean, fullclean\n'
@@ -113,6 +115,32 @@ _kernel_test_mode() {
     if ((${#modes[@]} == 1)); then
         printf '%s\n' "${modes[0]}"
     fi
+}
+
+# SCREEN=WxH, each number 320 to 16384, as Limine's resolution. The default is 1024x768, or with
+# SCREEN_SIZE_TEST a large size the architecture's firmware offers: AArch64's ramfb lists only
+# 640x480, 800x600 and 1024x768.
+_screen_size() {
+    local default=1024x768
+    if _is_on "${SCREEN_SIZE_TEST:-OFF}"; then
+        default=1920x1080
+        if [ "${ARCH:-}" = aarch64 ]; then
+            default=800x600
+        fi
+    fi
+    local screen="${SCREEN:-$default}"
+    local width height
+    if [[ ! "$screen" =~ ^([0-9]+)x([0-9]+)$ ]]; then
+        _err "SCREEN must be WIDTHxHEIGHT, not '$screen'."
+        return 1
+    fi
+    width=$((10#${BASH_REMATCH[1]}))
+    height=$((10#${BASH_REMATCH[2]}))
+    if ((width < 320 || width > 16384 || height < 320 || height > 16384)); then
+        _err "SCREEN $screen is out of range: each side must be 320 to 16384."
+        return 1
+    fi
+    printf '%dx%d\n' "$width" "$height"
 }
 
 _kernel_command_line() {
@@ -433,8 +461,11 @@ iso() {
             exit 1
             ;;
     esac
-    sed "s/^timeout: .*/timeout: $limine_timeout/" "$SCRIPT_DIR/configs/$ARCH/limine.conf" \
-        >"$iso_root/limine.conf"
+    local screen
+    screen=$(_screen_size) || exit 1
+    sed -e "s/^timeout: .*/timeout: $limine_timeout/" \
+        -e "s/^\([[:space:]]*\(interface_\)\{0,1\}resolution:\) .*/\1 $screen/" \
+        "$SCRIPT_DIR/configs/$ARCH/limine.conf" >"$iso_root/limine.conf"
     local command_line
     command_line=$(_kernel_command_line "$test_mode")
     if [ -n "$command_line" ]; then
@@ -586,6 +617,9 @@ smoke_test() {
     if _is_on "${DUNGEON_TEST:-OFF}"; then
         smoke_args+=(--expect-dungeon)
     fi
+    if _is_on "${SCREEN_SIZE_TEST:-OFF}"; then
+        smoke_args+=(--expect-screen-size)
+    fi
     if _is_on "${FONTS_TEST:-OFF}"; then
         smoke_args+=(--expect-fonts)
     fi
@@ -631,6 +665,7 @@ smoke_test() {
     if _is_on "${NODISK_TEST:-OFF}"; then
         smoke_args+=(--expect-nodisk)
     fi
+    smoke_args+=(--screen "$(_screen_size)")
     if [[ -n "${QEMU_CPU:-}" ]]; then
         smoke_args+=(--cpu "$QEMU_CPU")
     fi
@@ -813,6 +848,8 @@ if ((${#ACTIONS[@]} == 0)); then
     _usage >&2
     exit 1
 fi
+
+_screen_size >/dev/null || exit 1
 
 for action in "${ACTIONS[@]}"; do
     case "$action" in

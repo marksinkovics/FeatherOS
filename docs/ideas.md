@@ -87,6 +87,7 @@ Moved out of M11 to keep it focused; each can come back as a milestone of its ow
 
 - **Image viewer:** BMP first, then PNG with our own DEFLATE decompressor.
 - **Games:** snake and a raycaster (a falling-block puzzle is M32), and a port of doomgeneric once M32's framebuffer API exists.
+- **A virtio-gpu driver for AArch64 screens above 1024x768.** QEMU's AArch64 firmware (edk2 `QemuRamfbDxe`) lists only 640x480, 800x600 and 1024x768 for `ramfb`, and its `VirtioGpuDxe` gives Limine a copy-only output with no linear framebuffer, so M35's AArch64 `screen_size` case runs at 800x600. A 2D virtio-gpu driver on the shared virtqueue code (a resource at the EDID or `SCREEN` size, the back buffer attached as its backing, scanout set, then transfer and flush per presented rectangle) would give any size, and its flush rectangles suit the compositor. Deferred by the user on 2026-11-26.
 - **Sound:** Intel HDA or virtio-sound, a WAV player, and a `beep` command.
 
 ## Security
