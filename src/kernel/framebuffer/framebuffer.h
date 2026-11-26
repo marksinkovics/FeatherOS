@@ -27,6 +27,9 @@ uint32_t PackColor(const PixelFormat& format, uint32_t color);
 void PackRow(const PixelFormat& format, const uint32_t* source, uint8_t* destination,
              uint32_t count);
 
+// Copies length bytes in the widest units both addresses allow; the ranges must not overlap.
+void CopyPixelBytes(uint8_t* destination, const uint8_t* source, size_t length);
+
 class Framebuffer
 {
 public:
@@ -40,6 +43,8 @@ public:
     // Copies the whole back buffer, or only rows [y, y + height), to the visible framebuffer.
     void draw();
     void draw(uint32_t y, uint32_t height);
+    // Copies only columns [x, x + width) of rows [y, y + height), clipped to the screen.
+    void draw(uint32_t x, uint32_t y, uint32_t width, uint32_t height);
     void drawRectangle(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
     // Draws a glyph into the cell whose top-left pixel is (x, y), clipped to the cell and the
     // screen. palette holds the 16 packed pixels for coverage 0 to 15; a coverage of 0 leaves the
@@ -51,6 +56,10 @@ public:
     // Converts count colors into back-buffer row y from column x, which may be negative; only the
     // part inside the screen is written. It does not draw.
     void presentRow(int64_t x, uint32_t y, const uint32_t* pixels, uint32_t count);
+    // The back-buffer bytes of count pixels at (x, y), for a caller that writes exact XRGB8888
+    // there as presentRow would. Null for any other format or a span not wholly on the screen.
+    uint8_t* directRow(uint32_t x, uint32_t y, uint32_t count);
+    bool acceptsDirectRows() const;
 
     uint32_t GetHeight() const;
     uint32_t GetWidth() const;

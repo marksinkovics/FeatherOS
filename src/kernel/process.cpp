@@ -12,6 +12,7 @@
 #include "kernel/filesystem/procfs.h"
 #include "kernel/filesystem/tmpfs.h"
 #include "kernel/filesystem/vfs.h"
+#include "kernel/framebuffer/framebuffer.h"
 #include "kernel/framebuffer/graphics_mode.h"
 #include "kernel/memory/heap.h"
 #include "kernel/memory/page_allocator.h"
@@ -964,7 +965,7 @@ bool CopyFromUserPaged(const ProcessRecord& process, uint64_t address, void* des
         {
             return false;
         }
-        memcpy(bytes, const_cast<const uint8_t*>(source), chunk);
+        CopyPixelBytes(bytes, const_cast<const uint8_t*>(source), chunk);
         bytes += chunk;
         address += chunk;
         size -= chunk;
@@ -3261,6 +3262,19 @@ uint64_t AcquireFramebuffer(const ProcessRecord& process, const void* owner, uin
     return Console::AcquireDisplay(console, owner, argument);
 }
 
+struct RowSource
+{
+    const ProcessRecord* process;
+    uint64_t address;
+    size_t bytes;
+};
+
+bool CopyRowFromUser(void* context, uint8_t* destination)
+{
+    const auto* source = static_cast<const RowSource*>(context);
+    return CopyFromUserPaged(*source->process, source->address, destination, source->bytes);
+}
+
 // Every visible row's pages are checked before the first one is drawn.
 uint64_t PresentFramebuffer(const ProcessRecord& process, const void* owner, uint64_t argument)
 {
@@ -3301,6 +3315,24 @@ uint64_t PresentFramebuffer(const ProcessRecord& process, const void* owner, uin
         {
             return User::SyscallErrorBadAddress;
         }
+    }
+    if (Console::DirectPresentSupported())
+    {
+        for (uint32_t row = 0; row < clipped.height; ++row)
+        {
+            RowSource source = {&process, row_address(row), static_cast<size_t>(row_bytes)};
+            switch (Console::PresentRowDirect(owner, clipped.screen_x, clipped.screen_y + row,
+                                              clipped.width, CopyRowFromUser, &source))
+            {
+            case Console::DirectPresent::Presented:
+                break;
+            case Console::DirectPresent::FillFailed:
+                return User::SyscallErrorBadAddress;
+            default:
+                return User::SyscallErrorInvalidArgument;
+            }
+        }
+        return 0;
     }
     auto* bounce = static_cast<uint32_t*>(Memory::Allocate(screen_width * PixelSize));
     if (bounce == nullptr)

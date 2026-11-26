@@ -1296,3 +1296,190 @@ TEST_CASE("console grid follows the screen size up to the static maximum")
         REQUIRE(terminal->CharacterAt(0, mode.columns - 1) == U' ');
     }
 }
+
+namespace
+{
+
+constexpr PixelFormat SpanFormats[] = {Xrgb8888, Bgrx8888, Rgb888, Rgb565};
+
+uint32_t NextRandom(uint32_t& seed)
+{
+    seed = seed * 1664525 + 1013904223;
+    return seed >> 8;
+}
+
+void FillRandom(Framebuffer& framebuffer, uint32_t& seed)
+{
+    for (uint32_t y = 0; y < framebuffer.GetHeight(); ++y)
+    {
+        for (uint32_t x = 0; x < framebuffer.GetWidth(); ++x)
+        {
+            framebuffer.drawPixel(x, y, NextRandom(seed) & 0x00FFFFFF);
+        }
+    }
+}
+
+} // namespace
+
+TEST_CASE("a span draw copies exactly that span and clips at the right and bottom edges")
+{
+    constexpr uint32_t width = 37;
+    constexpr uint32_t height = 9;
+    struct Rect
+    {
+        uint32_t x, y, w, h;
+    };
+    const Rect rects[] = {
+        {0, 0, width, height}, {0, 0, 1, 1},          {1, 2, 5, 3},
+        {3, 0, 8, 1},          {width - 1, 4, 1, 1},  {30, 5, 20, 20},
+        {width, 0, 4, 4},      {0, height, 4, 4},     {5, 5, 0, 3},
+        {5, 5, 3, 0},          {UINT32_MAX, 0, 1, 1}, {2, 1, UINT32_MAX, UINT32_MAX},
+    };
+    for (const PixelFormat& format : SpanFormats)
+    {
+        const size_t bpp = format.bytes_per_pixel;
+        for (const Rect& rect : rects)
+        {
+            INFO("bytes per pixel " << bpp << " rect " << rect.x << "," << rect.y << " " << rect.w
+                                    << "x" << rect.h);
+            std::vector<uint8_t> hardware(width * height * bpp, 0xA5);
+            limine_framebuffer descriptor =
+                FormatFramebuffer(hardware.data(), width, height, format);
+            auto framebuffer = std::make_unique<Framebuffer>();
+            REQUIRE(FramebufferSupport::Init(*framebuffer, descriptor));
+            uint32_t seed = 99;
+            std::vector<uint8_t> expected(hardware.size(), 0xA5);
+            for (uint32_t y = 0; y < height; ++y)
+            {
+                for (uint32_t x = 0; x < width; ++x)
+                {
+                    const uint32_t color = NextRandom(seed) & 0x00FFFFFF;
+                    framebuffer->drawPixel(x, y, color);
+                    const bool inside = x >= rect.x && y >= rect.y &&
+                                        static_cast<uint64_t>(x) < uint64_t{rect.x} + rect.w &&
+                                        static_cast<uint64_t>(y) < uint64_t{rect.y} + rect.h;
+                    if (inside)
+                    {
+                        const uint32_t pixel = PackColor(format, color);
+                        for (size_t byte = 0; byte < bpp; ++byte)
+                        {
+                            expected[(y * width + x) * bpp + byte] =
+                                static_cast<uint8_t>(pixel >> (8 * byte));
+                        }
+                    }
+                }
+            }
+            framebuffer->draw(rect.x, rect.y, rect.w, rect.h);
+            REQUIRE(hardware == expected);
+        }
+    }
+}
+
+TEST_CASE("a present followed by a span draw leaves the screen as a whole-row draw does")
+{
+    constexpr uint32_t width = 53;
+    constexpr uint32_t height = 11;
+    for (const PixelFormat& format : SpanFormats)
+    {
+        const size_t bpp = format.bytes_per_pixel;
+        std::vector<uint8_t> span_screen(width * height * bpp);
+        std::vector<uint8_t> row_screen(span_screen.size());
+        limine_framebuffer span_descriptor =
+            FormatFramebuffer(span_screen.data(), width, height, format);
+        limine_framebuffer row_descriptor =
+            FormatFramebuffer(row_screen.data(), width, height, format);
+        auto span = std::make_unique<Framebuffer>();
+        auto row = std::make_unique<Framebuffer>();
+        REQUIRE(FramebufferSupport::Init(*span, span_descriptor));
+        REQUIRE(FramebufferSupport::Init(*row, row_descriptor));
+
+        uint32_t seed = 4242;
+        for (int round = 0; round < 200; ++round)
+        {
+            if (round % 50 == 0)
+            {
+                uint32_t background = seed;
+                FillRandom(*span, background);
+                background = seed;
+                FillRandom(*row, background);
+                span->draw();
+                row->draw();
+                seed = background;
+            }
+            const int64_t x = static_cast<int64_t>(NextRandom(seed) % (width + 20)) - 10;
+            const uint32_t y = NextRandom(seed) % height;
+            const uint32_t count = NextRandom(seed) % 40;
+            std::vector<uint32_t> colors(count);
+            for (uint32_t& color : colors)
+            {
+                color = NextRandom(seed) & 0x00FFFFFF;
+            }
+            const uint32_t screen_x = x < 0 ? 0 : static_cast<uint32_t>(x);
+            const uint32_t clipped_count =
+                x < 0 ? (count > static_cast<uint32_t>(-x) ? count - static_cast<uint32_t>(-x) : 0)
+                      : count;
+            span->presentRow(x, y, colors.data(), count);
+            span->draw(screen_x, y, clipped_count, 1);
+            row->presentRow(x, y, colors.data(), count);
+            row->draw(y, 1);
+            REQUIRE(span_screen == row_screen);
+        }
+    }
+}
+
+TEST_CASE("CopyPixelBytes copies exactly the bytes asked for at every alignment")
+{
+    std::vector<uint8_t> source(96);
+    for (size_t index = 0; index < source.size(); ++index)
+    {
+        source[index] = static_cast<uint8_t>(index * 7 + 1);
+    }
+    for (size_t from = 0; from < 12; ++from)
+    {
+        for (size_t to = 0; to < 12; ++to)
+        {
+            for (size_t length = 0; length < 40; ++length)
+            {
+                std::vector<uint8_t> destination(96, 0xEE);
+                CopyPixelBytes(destination.data() + to, source.data() + from, length);
+                for (size_t index = 0; index < destination.size(); ++index)
+                {
+                    const bool inside = index >= to && index < to + length;
+                    REQUIRE(destination[index] == (inside ? source[from + index - to] : 0xEE));
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("direct rows write exact XRGB8888 into the back buffer and refuse anything else")
+{
+    constexpr uint32_t width = 16;
+    constexpr uint32_t height = 4;
+    for (const PixelFormat& format : SpanFormats)
+    {
+        std::vector<uint8_t> hardware(width * height * format.bytes_per_pixel);
+        limine_framebuffer descriptor = FormatFramebuffer(hardware.data(), width, height, format);
+        auto framebuffer = std::make_unique<Framebuffer>();
+        REQUIRE(FramebufferSupport::Init(*framebuffer, descriptor));
+        const bool exact = format.bytes_per_pixel == 4 && format.red_shift == 16;
+        REQUIRE(framebuffer->acceptsDirectRows() == exact);
+        REQUIRE((framebuffer->directRow(0, 0, width) != nullptr) == exact);
+        REQUIRE(framebuffer->directRow(1, 0, width) == nullptr);
+        REQUIRE(framebuffer->directRow(width + 1, 0, 0) == nullptr);
+        REQUIRE(framebuffer->directRow(0, height, 1) == nullptr);
+    }
+
+    std::vector<uint8_t> hardware(width * height * 4);
+    limine_framebuffer descriptor = FormatFramebuffer(hardware.data(), width, height, Xrgb8888);
+    auto framebuffer = std::make_unique<Framebuffer>();
+    REQUIRE(FramebufferSupport::Init(*framebuffer, descriptor));
+    const std::vector<uint32_t> colors = {0xFF010203, 0x00040506, 0xAB070809};
+    uint8_t* row = framebuffer->directRow(5, 2, 3);
+    REQUIRE(row != nullptr);
+    CopyPixelBytes(row, reinterpret_cast<const uint8_t*>(colors.data()), 12);
+    framebuffer->draw(5, 2, 3, 1);
+    std::vector<uint8_t> expected(hardware.size());
+    std::copy(row, row + 12, expected.begin() + (2 * width + 5) * 4);
+    REQUIRE(hardware == expected);
+}

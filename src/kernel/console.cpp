@@ -511,9 +511,40 @@ bool PresentRow(const void* owner, uint32_t screen_x, uint32_t y, const uint32_t
     if (screens[console].term->Shown())
     {
         display_framebuffer->presentRow(screen_x, y, pixels, count);
-        display_framebuffer->draw(y, 1);
+        display_framebuffer->draw(screen_x, y, count, 1);
     }
     return true;
+}
+
+bool DirectPresentSupported()
+{
+    return display_framebuffer != nullptr && display_framebuffer->acceptsDirectRows();
+}
+
+DirectPresent PresentRowDirect(const void* owner, uint32_t screen_x, uint32_t y, uint32_t count,
+                               RowFill fill, void* context)
+{
+    Sync::SpinLockGuard guard(display_lock);
+    const uint32_t console = owners.ConsoleOf(owner);
+    if (console == Count)
+    {
+        return DirectPresent::NotOwner;
+    }
+    if (!screens[console].term->Shown())
+    {
+        return DirectPresent::Presented;
+    }
+    uint8_t* destination = display_framebuffer->directRow(screen_x, y, count);
+    if (destination == nullptr)
+    {
+        return DirectPresent::Unsupported;
+    }
+    if (!fill(context, destination))
+    {
+        return DirectPresent::FillFailed;
+    }
+    display_framebuffer->draw(screen_x, y, count, 1);
+    return DirectPresent::Presented;
 }
 
 void NotifyStatusChanged()

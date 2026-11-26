@@ -62,6 +62,21 @@ uint32_t DroppedEvents(const void* owner);
 // shown. False if owner holds no console, so nothing was written.
 bool PresentRow(const void* owner, uint32_t screen_x, uint32_t y, const uint32_t* pixels,
                 uint32_t count);
+// Whether PresentRowDirect can be used: the screen is exact XRGB8888.
+bool DirectPresentSupported();
+enum class DirectPresent
+{
+    Presented,
+    NotOwner,
+    Unsupported,
+    FillFailed,
+};
+// PresentRow for exact XRGB8888 without a bounce row: fill writes count pixels' bytes into the back
+// buffer and is called under the display lock only when owner's console is shown. A failed fill
+// can leave the row partly written.
+using RowFill = bool (*)(void* context, uint8_t* destination);
+DirectPresent PresentRowDirect(const void* owner, uint32_t screen_x, uint32_t y, uint32_t count,
+                               RowFill fill, void* context);
 // Kernel output, on the first console.
 void WriteCharacter(char character);
 void WriteLine(const char* text);

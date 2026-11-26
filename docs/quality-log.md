@@ -121,3 +121,4 @@ One row per committed step (used by the global `autopilot` skill since 2026-11-2
 | B3 | M35 B3 absolute pointers, EV_ABS, USB_TABLET_TEST | - | sonnet (high) | 0 | 1/1 (I8 by T7) | | 1.4M wtok: agents sonnet 1.2M; coord opus 189.1k |
 | C1 | M35 C1 fine monotonic clock, syscall 75, libc sleeps to their deadline | M35.md | sonnet (high) | 1 | 2/2 (I10 by T9, I11 by T10) | | 2.5M wtok: agents sonnet 2.3M; coord opus 211.2k |
 | C2 | M35 C2 fbbench, present cost before C3 | - | sonnet | 0 | - | | 552.8k wtok: agents sonnet 432.5k; coord opus 120.3k |
+| C3 | M35 C3/C3b span-only present, direct XRGB8888 copy | - | sonnet (high) | 0 | 1/1 (I12 by T11) | | 2.0M wtok: agents sonnet 1.6M; coord opus 406.5k |

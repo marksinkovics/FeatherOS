@@ -11,26 +11,6 @@ namespace
 typedef uint32_t __attribute__((may_alias)) AliasedUint32;
 typedef uint64_t __attribute__((may_alias)) AliasedUint64;
 
-void CopyBytes(uint8_t* destination, const uint8_t* source, size_t length)
-{
-    size_t index = 0;
-    if (((reinterpret_cast<uintptr_t>(destination) | reinterpret_cast<uintptr_t>(source)) & 7) == 0)
-    {
-        auto* destination_words = reinterpret_cast<AliasedUint64*>(destination);
-        const auto* source_words = reinterpret_cast<const AliasedUint64*>(source);
-        const size_t words = length / 8;
-        for (; index < words; ++index)
-        {
-            destination_words[index] = source_words[index];
-        }
-        index *= 8;
-    }
-    for (; index < length; ++index)
-    {
-        destination[index] = source[index];
-    }
-}
-
 void WritePixel(uint8_t* destination, uint32_t bytes_per_pixel, uint32_t pixel)
 {
     if (bytes_per_pixel == 4)
@@ -53,6 +33,49 @@ bool IsXrgb8888(const PixelFormat& format)
 
 } // namespace
 
+void CopyPixelBytes(uint8_t* destination, const uint8_t* source, size_t length)
+{
+    size_t index = 0;
+    const uintptr_t both =
+        reinterpret_cast<uintptr_t>(destination) | reinterpret_cast<uintptr_t>(source);
+    if ((both & 3) == 0)
+    {
+        // Both addresses sit 4 bytes off the same 8-byte boundary: one word aligns them.
+        const bool offset_alike =
+            ((reinterpret_cast<uintptr_t>(destination) ^ reinterpret_cast<uintptr_t>(source)) &
+             7) == 0;
+        if (offset_alike && (both & 7) != 0 && length >= 4)
+        {
+            *reinterpret_cast<AliasedUint32*>(destination) =
+                *reinterpret_cast<const AliasedUint32*>(source);
+            index = 4;
+        }
+        if (offset_alike)
+        {
+            auto* destination_words = reinterpret_cast<AliasedUint64*>(destination + index);
+            const auto* source_words = reinterpret_cast<const AliasedUint64*>(source + index);
+            const size_t words = (length - index) / 8;
+            for (size_t word = 0; word < words; ++word)
+            {
+                destination_words[word] = source_words[word];
+            }
+            index += words * 8;
+        }
+        auto* destination_halves = reinterpret_cast<AliasedUint32*>(destination + index);
+        const auto* source_halves = reinterpret_cast<const AliasedUint32*>(source + index);
+        const size_t halves = (length - index) / 4;
+        for (size_t half = 0; half < halves; ++half)
+        {
+            destination_halves[half] = source_halves[half];
+        }
+        index += halves * 4;
+    }
+    for (; index < length; ++index)
+    {
+        destination[index] = source[index];
+    }
+}
+
 uint32_t PackColor(const PixelFormat& format, uint32_t color)
 {
     uint32_t red = (color >> 16) & 0xffU;
@@ -69,8 +92,8 @@ void PackRow(const PixelFormat& format, const uint32_t* source, uint8_t* destina
 {
     if (IsXrgb8888(format))
     {
-        CopyBytes(destination, reinterpret_cast<const uint8_t*>(source),
-                  static_cast<size_t>(count) * 4);
+        CopyPixelBytes(destination, reinterpret_cast<const uint8_t*>(source),
+                       static_cast<size_t>(count) * 4);
         return;
     }
     for (uint32_t index = 0; index < count; ++index)
@@ -176,7 +199,30 @@ void Framebuffer::draw(uint32_t y, uint32_t height)
     }
     // Rows are contiguous, so the requested band is one copy.
     const size_t offset = static_cast<size_t>(m_pitch) * y;
-    CopyBytes(m_addr + offset, m_backbuffer + offset, static_cast<size_t>(m_pitch) * height);
+    CopyPixelBytes(m_addr + offset, m_backbuffer + offset, static_cast<size_t>(m_pitch) * height);
+}
+
+void Framebuffer::draw(uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+{
+    if (x >= m_width || y >= m_height)
+    {
+        return;
+    }
+    if (width > m_width - x)
+    {
+        width = m_width - x;
+    }
+    if (height > m_height - y)
+    {
+        height = m_height - y;
+    }
+    const size_t bytes = static_cast<size_t>(m_format.bytes_per_pixel) * width;
+    size_t offset =
+        static_cast<size_t>(m_pitch) * y + static_cast<size_t>(m_format.bytes_per_pixel) * x;
+    for (uint32_t row = 0; row < height; ++row, offset += m_pitch)
+    {
+        CopyPixelBytes(m_addr + offset, m_backbuffer + offset, bytes);
+    }
 }
 
 uint32_t Framebuffer::packColor(uint32_t color) const
@@ -291,8 +337,8 @@ void Framebuffer::scrollUp(uint32_t y, uint32_t height, uint32_t distance, uint3
     // Copying forward is safe because each destination row lies above its source row.
     for (uint32_t row = y; row + distance < y + height; ++row)
     {
-        CopyBytes(m_backbuffer + static_cast<size_t>(m_pitch) * row,
-                  m_backbuffer + static_cast<size_t>(m_pitch) * (row + distance), m_pitch);
+        CopyPixelBytes(m_backbuffer + static_cast<size_t>(m_pitch) * row,
+                       m_backbuffer + static_cast<size_t>(m_pitch) * (row + distance), m_pitch);
     }
     const uint32_t pixel = packColor(color);
     for (uint32_t row = y + height - distance; row < y + height; ++row)
@@ -320,6 +366,20 @@ void Framebuffer::presentRow(int64_t x, uint32_t y, const uint32_t* pixels, uint
             m_backbuffer + static_cast<size_t>(m_pitch) * y +
                 static_cast<size_t>(m_format.bytes_per_pixel) * static_cast<size_t>(screen_x),
             static_cast<uint32_t>(last - screen_x));
+}
+
+bool Framebuffer::acceptsDirectRows() const
+{
+    return IsXrgb8888(m_format);
+}
+
+uint8_t* Framebuffer::directRow(uint32_t x, uint32_t y, uint32_t count)
+{
+    if (!IsXrgb8888(m_format) || y >= m_height || x > m_width || count > m_width - x)
+    {
+        return nullptr;
+    }
+    return m_backbuffer + static_cast<size_t>(m_pitch) * y + static_cast<size_t>(4) * x;
 }
 
 uint32_t Framebuffer::GetHeight() const
