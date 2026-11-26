@@ -547,6 +547,7 @@ struct Kernel
     int opened = 0;
     int closed = 0;
     int acquired = 0;
+    uintptr_t acquire_flags = 0;
     int released = 0;
     std::vector<PresentCall> presents;
 };
@@ -592,6 +593,7 @@ int FakeControl(int descriptor, unsigned long request, void* argument)
             return -1;
         }
         ++Fake.acquired;
+        Fake.acquire_flags = reinterpret_cast<uintptr_t>(argument);
         return 0;
     case FB_PRESENT:
     {
@@ -691,6 +693,27 @@ TEST_CASE("a display opens and acquires the framebuffer", "[graphics]")
         CHECK(Fake.acquired == 1);
         CHECK(display.Open() == Status::Ok);
         CHECK(Fake.opened == 1);
+    }
+    SECTION("Open(flags) passes the flags to FB_ACQUIRE, and Open() passes none")
+    {
+        Fake.acquire_flags = 99;
+        REQUIRE(display.Open() == Status::Ok);
+        CHECK(Fake.acquire_flags == 0);
+        display.Close();
+        for (const uint32_t flags : {FB_ACQUIRE_RAW_KEYS, FB_ACQUIRE_KEEP_SCREEN,
+                                     FB_ACQUIRE_RAW_KEYS | FB_ACQUIRE_KEEP_SCREEN})
+        {
+            REQUIRE(display.Open(flags) == Status::Ok);
+            CHECK(Fake.acquire_flags == flags);
+            CHECK(display.Open(0) == Status::Ok);
+            CHECK(Fake.acquire_flags == flags);
+            display.Close();
+        }
+        Fake.acquire_fails = true;
+        Fake.acquire_error = EINVAL;
+        CHECK(display.Open(FB_ACQUIRE_RAW_KEYS) == Status::AcquireFailed);
+        CHECK(display.Error() == EINVAL);
+        CHECK_FALSE(display.IsOpen());
     }
     SECTION("an open that fails")
     {

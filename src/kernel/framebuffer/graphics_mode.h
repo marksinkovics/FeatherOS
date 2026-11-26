@@ -67,7 +67,10 @@ public:
     // 0, also if owner already holds console; SyscallErrorBusy if console has another owner or
     // owner holds another console, SyscallErrorInvalidArgument for a console that does not exist.
     // A new owner's first event is Shown if shown, else Hidden.
-    uint64_t Acquire(uint32_t console, const void* owner, bool shown, uint32_t time_ms);
+    uint64_t Acquire(uint32_t console, const void* owner, bool shown, uint32_t time_ms,
+                     uint64_t flags = 0);
+    // A repeated Acquire by the owner keeps the flags of the first.
+    bool RawKeys(uint32_t console) const;
     // The console owner held, or Console::Count if it held none. Discards its events.
     uint32_t Release(const void* owner);
     bool Owns(uint32_t console, const void* owner) const;
@@ -92,6 +95,7 @@ private:
     {
         const void* owner = nullptr;
         bool shown = false;
+        bool raw_keys = false;
         EventQueue queue;
         // Keys whose Press the owner has been given and whose Release it has not.
         uint64_t seen[Input::Keyboard::TrackedKeys / 64] = {};

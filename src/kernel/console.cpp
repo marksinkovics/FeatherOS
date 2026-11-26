@@ -289,6 +289,7 @@ uint32_t EventTime()
 bool TakeKey(const Input::KeyEvent& event)
 {
     uint32_t console;
+    bool raw_keys;
     {
         Sync::SpinLockGuard guard(display_lock);
         console = shown_console;
@@ -296,8 +297,9 @@ bool TakeKey(const Input::KeyEvent& event)
         {
             return false;
         }
+        raw_keys = owners.RawKeys(console);
     }
-    const bool interrupt = Input::IsInterruptKey(event);
+    const bool interrupt = !raw_keys && Input::IsInterruptKey(event);
     if (interrupt)
     {
         console_terminals[console].SignalForeground(User::SignalInterrupt);
@@ -426,17 +428,18 @@ void DisplaySize(uint32_t* width, uint32_t* height)
     *height = display_framebuffer == nullptr ? 0 : display_framebuffer->GetHeight();
 }
 
-uint64_t AcquireDisplay(uint32_t console, const void* owner)
+uint64_t AcquireDisplay(uint32_t console, const void* owner, uint64_t flags)
 {
     Sync::SpinLockGuard guard(display_lock);
     if (console >= Count || screens[console].term == nullptr)
     {
         return User::SyscallErrorInvalidArgument;
     }
-    const uint64_t acquired = owners.Acquire(console, owner, console == shown_console, EventTime());
+    const uint64_t acquired =
+        owners.Acquire(console, owner, console == shown_console, EventTime(), flags);
     if (acquired == 0)
     {
-        screens[console].term->SetGraphics(true);
+        screens[console].term->SetGraphics(true, (flags & User::FramebufferAcquireKeepScreen) != 0);
     }
     return acquired;
 }

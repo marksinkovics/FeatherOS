@@ -73,9 +73,10 @@ public:
     void SetShown(bool shown);
     bool Shown() const;
     // In graphics mode a program owns the screen: the terminal still takes text into its cells
-    // but draws nothing, neither text nor status bar, and the screen is blank until a present.
-    // Leaving it repaints the whole console once it is shown.
-    void SetGraphics(bool graphics);
+    // but draws nothing, neither text nor status bar, and the screen is blank until a present,
+    // or keeps what it showed with keep_screen. Leaving it repaints the whole console once it is
+    // shown.
+    void SetGraphics(bool graphics, bool keep_screen = false);
     bool Graphics() const;
 
 private:

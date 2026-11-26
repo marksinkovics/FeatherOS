@@ -237,6 +237,8 @@ constexpr uint8_t FramebufferModifierAlt = 4;
 constexpr uint8_t FramebufferModifierCapsLock = 8;
 constexpr uint8_t FramebufferModifierSuper = 16;
 constexpr uint32_t FramebufferEventCapacity = 64;
+constexpr uint64_t FramebufferAcquireRawKeys = 1;
+constexpr uint64_t FramebufferAcquireKeepScreen = 2;
 static_assert(sizeof(FramebufferEvent) == 8 && offsetof(FramebufferEvent, code) == 0 &&
                   offsetof(FramebufferEvent, kind) == 2 &&
                   offsetof(FramebufferEvent, modifiers) == 3 &&

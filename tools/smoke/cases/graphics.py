@@ -56,6 +56,11 @@ SAMPLE_POINTS = BAR_CENTERS + (
     STATUS_POINT,
     PADDING_POINT,
 )
+# The padding row and the status bar, whose clock ticks.
+STATUS_ROWS_PIXELS = 32
+KEEP_X = 200
+KEEP_Y = 300
+KEEP_SIZE = 64
 PRESENTED = b"fbdemo: presented"
 DONE = b"fbdemo: done"
 KEYS_COMMAND = "fbdemo --keys 120\n"
@@ -452,7 +457,9 @@ class Graphics(ScreenCase, Case):
     """Runs fbdemo on the first console and checks what QEMU's screendump
     shows while it owns the screen, on another console, after switching back,
     after drawing again and once it has released the screen; then runs
-    fbdemo --keys and checks the key events QMP key presses produce; last it
+    fbdemo --keys and checks the key events QMP key presses produce; then
+    fbtest --raw (Ctrl+C is only an event, and signals again once it exits)
+    and fbtest --keep (no pixel changes at the acquire); last it
     plays featherfall with QMP keys and checks the well, a locked piece, the
     pause box, the redraw after a console switch, the game-over screen, the
     initials entry, the high score table and the saved file; last it unmounts
@@ -466,6 +473,8 @@ class Graphics(ScreenCase, Case):
         "other console showed text, the blanked console stayed blank until "
         "it drew again, releasing brought the text console back, key "
         "events, switching, overflow and Ctrl+C behaved as specified, "
+        "a raw-keys owner got Ctrl+C as events with no signal, a keep-screen "
+        "owner left every pixel alone until its first present, "
         "featherfall's self-test and demo runs gave the expected results, "
         "and featherfall drew its well, paused, redrew after a console "
         "switch, took initials for a high score, saved them and drew with the "
@@ -595,7 +604,98 @@ class Graphics(ScreenCase, Case):
             raise StepFailed("the shell line after Ctrl+C was not 'echo ok'")
         if "time went backwards" in events.Text():
             raise StepFailed("event times went backwards")
+        self.RunRaw(session, events)
+        self.RunKeep(session, events)
         self.RunGame(session, events)
+
+    def Type(self, session, text):
+        session.process.stdin.write(text.encode())
+        session.process.stdin.flush()
+
+    def ExpectLines(self, events, step, *lines, seconds=EVENT_WAIT_SECONDS):
+        for line in lines:
+            found = events.WaitText(
+                re.compile(re.escape(line) + r"\r?\n"), seconds
+            )
+            if found is None:
+                raise StepFailed(f"{step}: {line!r} did not appear")
+            events.origin = found.end()
+
+    def RunRaw(self, session, events):
+        events.origin = len(events.Text())
+        self.Type(session, "fbtest --raw\n")
+        self.ExpectLines(events, "raw acquire", "fbtest: raw ready")
+
+        self.Chord(("ctrl", True), ("c", True), ("c", False))
+        self.Chord(("ctrl", False))
+        self.ExpectLines(
+            events,
+            "raw ctrl+c",
+            "fbtest: event press 29 2",
+            "fbtest: event press 46 2",
+            "fbtest: event release 46 2",
+            "fbtest: event release 29 0",
+        )
+        self.Tap("q")
+        self.ExpectLines(
+            events,
+            "raw exit",
+            "fbtest: event press 16 0",
+            "fbtest: no signal",
+            "fbtest: raw done",
+        )
+        if events.WaitText(SHELL_PROMPT_TEXT) is None:
+            raise StepFailed("the prompt did not return after fbtest --raw")
+
+        events.origin = len(events.Text())
+        self.Type(session, "sleep 30\n")
+        time.sleep(1.0)
+        self.Chord(("ctrl", True), ("c", True), ("c", False))
+        self.Chord(("ctrl", False))
+        if events.WaitText(SHELL_PROMPT_TEXT, 8.0) is None:
+            raise StepFailed("Ctrl+C did not interrupt sleep after raw mode")
+
+    def RunKeep(self, session, events):
+        events.origin = len(events.Text())
+        self.Type(session, "fbtest --keep\n")
+        self.ExpectLines(events, "keep start", "fbtest: keep ready")
+        time.sleep(0.5)
+        shots = []
+        self.Dump(lambda pixels: shots.append(pixels))
+        below = 3 * WIDTH * STATUS_ROWS_PIXELS
+        before = shots[-1]
+        if not any(before[below:]):
+            raise StepFailed(
+                "keep: the console showed nothing before the acquire"
+            )
+
+        self.Type(session, "\n")
+        self.ExpectLines(events, "keep acquire", "fbtest: acquired")
+        time.sleep(0.5)
+        self.Dump(lambda pixels: shots.append(pixels))
+        failure = Difference(shots[-1][below:], before[below:])
+        if failure is not None:
+            raise StepFailed(
+                f"keep: the acquire changed the screen: {failure}"
+            )
+
+        self.Type(session, "\n")
+        self.ExpectLines(events, "keep present", "fbtest: presented")
+        expected = bytearray(before)
+        for y in range(KEEP_Y, KEEP_Y + KEEP_SIZE):
+            start = 3 * (y * WIDTH + KEEP_X)
+            expected[start : start + 3 * KEEP_SIZE] = (
+                bytes((0xFF, 0x00, 0x00)) * KEEP_SIZE
+            )
+        self.Dump(lambda pixels: shots.append(pixels))
+        failure = Difference(shots[-1][below:], bytes(expected)[below:])
+        if failure is not None:
+            raise StepFailed(f"keep: after the present: {failure}")
+
+        self.Type(session, "\n")
+        self.ExpectLines(events, "keep release", "fbtest: keep done")
+        if events.WaitText(SHELL_PROMPT_TEXT) is None:
+            raise StepFailed("the prompt did not return after fbtest --keep")
 
     def RunGame(self, session, events):
         events.origin = len(events.Text())

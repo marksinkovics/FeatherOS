@@ -107,7 +107,8 @@ User::FramebufferEvent StateEvent(uint8_t kind, uint32_t time_ms)
 
 } // namespace
 
-uint64_t Owners::Acquire(uint32_t console, const void* owner, bool shown, uint32_t time_ms)
+uint64_t Owners::Acquire(uint32_t console, const void* owner, bool shown, uint32_t time_ms,
+                         uint64_t flags)
 {
     if (console >= Console::Count || owner == nullptr)
     {
@@ -125,6 +126,7 @@ uint64_t Owners::Acquire(uint32_t console, const void* owner, bool shown, uint32
     slot = {};
     slot.owner = owner;
     slot.shown = shown;
+    slot.raw_keys = (flags & User::FramebufferAcquireRawKeys) != 0;
     slot.queue.Push(
         StateEvent(shown ? User::FramebufferEventShown : User::FramebufferEventHidden, time_ms),
         User::FramebufferEventCapacity);
@@ -149,6 +151,12 @@ bool Owners::Owns(uint32_t console, const void* owner) const
 bool Owners::Acquired(uint32_t console) const
 {
     return console < Console::Count && m_slots[console].owner != nullptr;
+}
+
+bool Owners::RawKeys(uint32_t console) const
+{
+    return console < Console::Count && m_slots[console].owner != nullptr &&
+           m_slots[console].raw_keys;
 }
 
 uint32_t Owners::ConsoleOf(const void* owner) const

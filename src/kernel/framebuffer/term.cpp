@@ -621,7 +621,7 @@ void Term::SetShown(bool shown)
     Redraw();
 }
 
-void Term::SetGraphics(bool graphics)
+void Term::SetGraphics(bool graphics, bool keep_screen)
 {
     if (m_graphics == graphics)
     {
@@ -630,7 +630,7 @@ void Term::SetGraphics(bool graphics)
     m_graphics = graphics;
     if (graphics)
     {
-        if (m_shown)
+        if (m_shown && !keep_screen)
         {
             Blank();
         }

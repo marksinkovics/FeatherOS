@@ -668,6 +668,27 @@ TEST_CASE("a terminal in graphics mode takes text and draws nothing")
     REQUIRE(screen->pixels == reference_screen->pixels);
 }
 
+TEST_CASE("graphics mode with keep_screen leaves every pixel as it was")
+{
+    auto screen = std::make_unique<TestScreen>();
+    FeatherOS::Term terminal;
+    terminal.Init(&screen->framebuffer);
+    terminal.SetStatus("shell", "1/4");
+    terminal.Print("before\n> ");
+    const auto before = screen->pixels;
+    REQUIRE_FALSE(AllBlack(*screen));
+
+    terminal.SetGraphics(true, true);
+    REQUIRE(terminal.Graphics());
+    REQUIRE(screen->pixels == before);
+    FeedConsole(terminal);
+    REQUIRE(screen->pixels == before);
+
+    terminal.SetGraphics(false);
+    REQUIRE_FALSE(terminal.Graphics());
+    REQUIRE(screen->pixels != before);
+}
+
 TEST_CASE("a hidden terminal in graphics mode blanks the screen when shown")
 {
     auto screen = std::make_unique<TestScreen>();

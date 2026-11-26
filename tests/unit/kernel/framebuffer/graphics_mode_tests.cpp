@@ -638,3 +638,40 @@ TEST_CASE("the Meta keys queue as any key does, and the Super bit rides on the k
     REQUIRE(Shapes(Drain(owners, &owner)) == std::vector<Shape>{{LeftMeta, FramebufferEventRelease},
                                                                 {0, FramebufferEventHidden}});
 }
+
+TEST_CASE("RawKeys is true for a raw owner only, keeps the first flags and ends with the owner")
+{
+    constexpr uint64_t Raw = FeatherOS::User::FramebufferAcquireRawKeys;
+    constexpr uint64_t Keep = FeatherOS::User::FramebufferAcquireKeepScreen;
+    struct Row
+    {
+        uint64_t flags;
+        bool raw;
+    };
+    for (const Row& row : {Row{0, false}, Row{Raw, true}, Row{Keep, false}, Row{Raw | Keep, true}})
+    {
+        INFO("flags " << row.flags);
+        Owners owners;
+        int owner;
+        REQUIRE_FALSE(owners.RawKeys(0));
+        REQUIRE(owners.Acquire(0, &owner, true, 0, row.flags) == 0);
+        REQUIRE(owners.RawKeys(0) == row.raw);
+        REQUIRE_FALSE(owners.RawKeys(1));
+        REQUIRE(owners.Acquire(0, &owner, true, 0, row.raw ? 0 : Raw) == 0);
+        REQUIRE(owners.RawKeys(0) == row.raw);
+        REQUIRE(owners.Release(&owner) == 0);
+        REQUIRE_FALSE(owners.RawKeys(0));
+        REQUIRE_FALSE(owners.RawKeys(Count));
+    }
+
+    Owners owners;
+    int first;
+    int second;
+    REQUIRE(owners.Acquire(0, &first, true, 0, Raw) == 0);
+    REQUIRE(owners.Release(&first) == 0);
+    REQUIRE(owners.Acquire(0, &second, true, 0) == 0);
+    REQUIRE_FALSE(owners.RawKeys(0));
+    REQUIRE(owners.Acquire(1, &first, true, 0, Raw) == 0);
+    REQUIRE(owners.RawKeys(1));
+    REQUIRE_FALSE(owners.RawKeys(0));
+}

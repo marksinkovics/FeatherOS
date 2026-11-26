@@ -45,7 +45,7 @@ void DisplaySize(uint32_t* width, uint32_t* height);
 // taken, except that the owner of the console may acquire it again; SyscallErrorInvalidArgument
 // without a framebuffer. ReleaseDisplay fails with SyscallErrorInvalidArgument if owner holds
 // none, and redraws the console whole.
-uint64_t AcquireDisplay(uint32_t console, const void* owner);
+uint64_t AcquireDisplay(uint32_t console, const void* owner, uint64_t flags);
 uint64_t ReleaseDisplay(const void* owner);
 bool OwnsDisplay(const void* owner);
 // The owner's key events and Shown/Hidden, oldest first, while it owns a console; they are queued

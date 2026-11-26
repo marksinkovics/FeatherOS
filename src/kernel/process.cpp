@@ -3238,7 +3238,7 @@ uint64_t ReportFramebufferInfo(const ProcessRecord& process, const void* owner, 
 
 uint64_t AcquireFramebuffer(const ProcessRecord& process, const void* owner, uint64_t argument)
 {
-    if (argument != 0)
+    if ((argument & ~(User::FramebufferAcquireRawKeys | User::FramebufferAcquireKeepScreen)) != 0)
     {
         return User::SyscallErrorInvalidArgument;
     }
@@ -3253,7 +3253,7 @@ uint64_t AcquireFramebuffer(const ProcessRecord& process, const void* owner, uin
     {
         return access;
     }
-    return Console::AcquireDisplay(console, owner);
+    return Console::AcquireDisplay(console, owner, argument);
 }
 
 // Every visible row's pages are checked before the first one is drawn.

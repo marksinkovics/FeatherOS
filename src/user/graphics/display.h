@@ -74,6 +74,8 @@ public:
     ~Display();
 
     Status Open();
+    // acquire_flags are the FB_ACQUIRE_* flags of a first open; an open display keeps its own.
+    Status Open(uint32_t acquire_flags);
     void Close();
     bool IsOpen() const;
 

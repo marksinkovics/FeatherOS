@@ -105,6 +105,11 @@ Status Display::Fail(Status status)
 
 Status Display::Open()
 {
+    return Open(0);
+}
+
+Status Display::Open(uint32_t acquire_flags)
+{
     if (IsOpen())
     {
         return Status::Ok;
@@ -128,7 +133,8 @@ Status Display::Open()
         m_error = ENOMEM;
         return Status::OutOfMemory;
     }
-    if (m_system->Control(descriptor, FB_ACQUIRE, nullptr) != 0)
+    if (m_system->Control(descriptor, FB_ACQUIRE,
+                          reinterpret_cast<void*>(static_cast<uintptr_t>(acquire_flags))) != 0)
     {
         const Status status = Fail(Status::AcquireFailed);
         m_system->Close(descriptor);

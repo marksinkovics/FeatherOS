@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 namespace
@@ -27,10 +28,19 @@ constexpr uintptr_t KernelAddress = 0xFFFF000000000000;
 constexpr int ReportDescriptor = 3;
 constexpr uint32_t ScreenWidth = 1024;
 constexpr uint32_t ScreenHeight = 768;
-constexpr char Help[] = "usage: fbtest\n"
-                        "Checks /dev/fb0 on the console it runs on: acquiring and releasing, the\n"
-                        "errors, reading events, and release on close, exit, kill and in the\n"
-                        "background. The screen is blank while it runs.";
+constexpr uint32_t KeepSquare = 64;
+constexpr int32_t KeepX = 200;
+constexpr int32_t KeepY = 300;
+constexpr uint32_t KeepColor = 0xFF0000;
+constexpr char Help[] =
+    "usage: fbtest [--raw | --keep]\n"
+    "Checks /dev/fb0 on the console it runs on: acquiring and releasing, the\n"
+    "errors, reading events, and release on close, exit, kill and in the\n"
+    "background. The screen is blank while it runs.\n"
+    "--raw   acquires with FB_ACQUIRE_RAW_KEYS and prints each key event until Q,\n"
+    "        then says whether SIGINT arrived.\n"
+    "--keep  acquires with FB_ACQUIRE_KEEP_SCREEN and presents a square, one step\n"
+    "        for each line read from the input.";
 
 [[noreturn]] void Fail(const char* name)
 {
@@ -86,7 +96,7 @@ int RunChild(const char* mode)
     if (strcmp(mode, "pty") == 0)
     {
         const int descriptor = OpenFramebuffer();
-        const int result = descriptor < 0 ? 0 : ioctl(descriptor, FB_ACQUIRE);
+        const int result = descriptor < 0 ? 0 : ioctl(descriptor, FB_ACQUIRE, 0UL);
         if (result != -1 || errno != ENOTTY)
         {
             printf("fbtest pty: failed (errno %d)\n", errno);
@@ -111,7 +121,7 @@ int RunChild(const char* mode)
         Report('x');
         return 1;
     }
-    const int result = ioctl(descriptor, FB_ACQUIRE);
+    const int result = ioctl(descriptor, FB_ACQUIRE, 0UL);
     if (strcmp(mode, "enotty") == 0)
     {
         Report(result == -1 && errno == ENOTTY ? 'n' : 'x');
@@ -222,18 +232,22 @@ void CheckBeforeAcquire(int descriptor)
     static uint32_t pixel = 0;
     CheckFails(Present(descriptor, &pixel, 1, 0, 0, 1, 1), EINVAL, "a present before acquiring");
     CheckFails(ioctl(descriptor, FB_RELEASE), EINVAL, "a release before acquiring");
+    CheckFails(ioctl(descriptor, FB_ACQUIRE, 4UL), EINVAL, "FB_ACQUIRE with an unknown flag");
+    CheckFails(ioctl(descriptor, FB_ACQUIRE, FB_ACQUIRE_KEEP_SCREEN | 8UL), EINVAL,
+               "FB_ACQUIRE with a known and an unknown flag");
+    CheckFails(ioctl(descriptor, FB_RELEASE), EINVAL, "a release after a refused acquire");
     char byte;
     CheckFails(read(descriptor, &byte, 1) < 0 ? -1 : 0, EINVAL, "a read");
     pollfd entry = {descriptor, POLLIN, 0};
     Check(poll(&entry, 1, 0) == 1 && (entry.revents & POLLERR) != 0, "poll before acquiring");
     CheckFails(write(descriptor, &byte, 1) < 0 ? -1 : 0, EINVAL, "a write");
     CheckFails(lseek(descriptor, 0, SEEK_SET) < 0 ? -1 : 0, ESPIPE, "a seek");
-    CheckFails(ioctl(STDIN_FILENO, FB_ACQUIRE), ENOTTY, "FB_ACQUIRE on the console");
+    CheckFails(ioctl(STDIN_FILENO, FB_ACQUIRE, 0UL), ENOTTY, "FB_ACQUIRE on the console");
     CheckFails(ioctl(STDIN_FILENO, FB_GET_INFO, nullptr), ENOTTY, "FB_GET_INFO on the console");
     const int file = open("/dev/null", O_RDWR);
-    CheckFails(ioctl(file, FB_ACQUIRE), ENOTTY, "FB_ACQUIRE on /dev/null");
+    CheckFails(ioctl(file, FB_ACQUIRE, 0UL), ENOTTY, "FB_ACQUIRE on /dev/null");
     close(file);
-    CheckFails(ioctl(99, FB_ACQUIRE), EBADF, "FB_ACQUIRE on a closed descriptor");
+    CheckFails(ioctl(99, FB_ACQUIRE, 0UL), EBADF, "FB_ACQUIRE on a closed descriptor");
 }
 
 void CheckNoTerminal()
@@ -246,11 +260,11 @@ void CheckNoTerminal()
 
 void CheckAcquireAndBusy(int descriptor)
 {
-    Check(ioctl(descriptor, FB_ACQUIRE) == 0, "FB_ACQUIRE");
-    Check(ioctl(descriptor, FB_ACQUIRE) == 0, "FB_ACQUIRE again");
+    Check(ioctl(descriptor, FB_ACQUIRE, 0UL) == 0, "FB_ACQUIRE");
+    Check(ioctl(descriptor, FB_ACQUIRE, 0UL) == 0, "FB_ACQUIRE again");
     const int second = OpenFramebuffer();
     Check(second >= 0, "a second open");
-    CheckFails(ioctl(second, FB_ACQUIRE), EBUSY, "FB_ACQUIRE from a second open file");
+    CheckFails(ioctl(second, FB_ACQUIRE, 0UL), EBUSY, "FB_ACQUIRE from a second open file");
     close(second);
     Child child;
     Check(Start("busy", POSIX_SPAWN_BACKGROUND, &child), "starting a second owner");
@@ -325,9 +339,9 @@ void CheckReleaseOnClose(int descriptor)
     close(descriptor);
     Check(Present(duplicate, pixels, 8, 0, 0, 8, 8) == 0, "a present on the duplicate");
     const int second = OpenFramebuffer();
-    CheckFails(ioctl(second, FB_ACQUIRE), EBUSY, "FB_ACQUIRE while a duplicate lives");
+    CheckFails(ioctl(second, FB_ACQUIRE, 0UL), EBUSY, "FB_ACQUIRE while a duplicate lives");
     close(duplicate);
-    Check(ioctl(second, FB_ACQUIRE) == 0, "FB_ACQUIRE after the last close");
+    Check(ioctl(second, FB_ACQUIRE, 0UL) == 0, "FB_ACQUIRE after the last close");
     Check(ioctl(second, FB_RELEASE) == 0, "FB_RELEASE");
     CheckFails(ioctl(second, FB_RELEASE), EINVAL, "a second FB_RELEASE");
     CheckFails(Present(second, pixels, 8, 0, 0, 8, 8), EINVAL, "a present after releasing");
@@ -345,7 +359,7 @@ void* BlockedReader(void* argument)
 void CheckReleaseWakesReader()
 {
     int descriptor = OpenFramebuffer();
-    Check(ioctl(descriptor, FB_ACQUIRE) == 0, "FB_ACQUIRE for a blocked reader");
+    Check(ioctl(descriptor, FB_ACQUIRE, 0UL) == 0, "FB_ACQUIRE for a blocked reader");
     fb_event event;
     Check(read(descriptor, &event, sizeof(event)) == 8, "draining the state event");
     pthread_t thread;
@@ -384,11 +398,11 @@ void CheckReleaseAfterChild(const char* mode, short flags, char reported, const 
     Check(ReadReport(child) == reported, name);
     if (kill_it)
     {
-        CheckFails(ioctl(descriptor, FB_ACQUIRE), EBUSY, name);
+        CheckFails(ioctl(descriptor, FB_ACQUIRE, 0UL), EBUSY, name);
         Check(kill(child.pid, SIGKILL) == 0, name);
     }
     Check(Reap(&child), name);
-    Check(ioctl(descriptor, FB_ACQUIRE) == 0, name);
+    Check(ioctl(descriptor, FB_ACQUIRE, 0UL) == 0, name);
     Check(ioctl(descriptor, FB_RELEASE) == 0, name);
     close(descriptor);
 }
@@ -405,16 +419,145 @@ void CheckBackground()
           "SIGTTOU stopping a background FB_ACQUIRE");
     Check(kill(child.pid, SIGKILL) == 0, "killing the stopped child");
     Check(Reap(&child), "reaping the stopped child");
-    Check(ioctl(descriptor, FB_ACQUIRE) == 0, "FB_ACQUIRE after the stopped child");
+    Check(ioctl(descriptor, FB_ACQUIRE, 0UL) == 0, "FB_ACQUIRE after the stopped child");
     Check(ioctl(descriptor, FB_RELEASE) == 0, "FB_RELEASE after the stopped child");
 
     Check(Start("ignore", POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_BACKGROUND, &child),
           "starting a background child that ignores SIGTTOU");
     Check(ReadReport(child) == 'a', "FB_ACQUIRE with SIGTTOU ignored");
     Check(Reap(&child), "reaping the child that ignored SIGTTOU");
-    Check(ioctl(descriptor, FB_ACQUIRE) == 0, "FB_ACQUIRE after the child that ignored SIGTTOU");
+    Check(ioctl(descriptor, FB_ACQUIRE, 0UL) == 0,
+          "FB_ACQUIRE after the child that ignored SIGTTOU");
     Check(ioctl(descriptor, FB_RELEASE) == 0, "FB_RELEASE at the end");
     close(descriptor);
+}
+
+volatile sig_atomic_t interrupted = 0;
+
+void OnInterrupt(int)
+{
+    interrupted = 1;
+}
+
+const char* KindName(uint8_t kind)
+{
+    switch (kind)
+    {
+    case FB_EVENT_RELEASE:
+        return "release";
+    case FB_EVENT_PRESS:
+        return "press";
+    case FB_EVENT_REPEAT:
+        return "repeat";
+    case FB_EVENT_SHOWN:
+        return "shown";
+    default:
+        return "hidden";
+    }
+}
+
+int RunRaw()
+{
+    struct sigaction action = {};
+    action.sa_handler = OnInterrupt;
+    sigaction(SIGINT, &action, nullptr);
+    const int descriptor = OpenFramebuffer();
+    if (descriptor < 0 || ioctl(descriptor, FB_ACQUIRE, FB_ACQUIRE_RAW_KEYS) != 0)
+    {
+        printf("fbtest: raw acquire failed (errno %d)\n", errno);
+        return 1;
+    }
+    puts("fbtest: raw ready");
+    for (bool done = false; !done;)
+    {
+        fb_event event;
+        if (read(descriptor, &event, sizeof(event)) != static_cast<ssize_t>(sizeof(event)))
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            printf("fbtest: raw read failed (errno %d)\n", errno);
+            return 1;
+        }
+        printf("fbtest: event %s %u %u\n", KindName(event.kind), event.code, event.modifiers);
+        done = event.kind == FB_EVENT_PRESS && event.code == KEY_Q;
+    }
+    puts(interrupted != 0 ? "fbtest: signal ran" : "fbtest: no signal");
+    ioctl(descriptor, FB_RELEASE);
+    close(descriptor);
+    puts("fbtest: raw done");
+    return 0;
+}
+
+void WaitForLine()
+{
+    char line[16];
+    fgets(line, sizeof(line), stdin);
+}
+
+// Without the echo, the newline that triggers each step does not move the text the screen keeps.
+struct EchoOff
+{
+    termios saved = {};
+    bool changed = false;
+
+    EchoOff()
+    {
+        if (tcgetattr(STDIN_FILENO, &saved) == 0)
+        {
+            termios quiet = saved;
+            quiet.c_lflag &= ~static_cast<tcflag_t>(ECHO);
+            changed = tcsetattr(STDIN_FILENO, TCSANOW, &quiet) == 0;
+        }
+    }
+
+    ~EchoOff()
+    {
+        if (changed)
+        {
+            tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+        }
+    }
+};
+
+int RunKeep()
+{
+    const int descriptor = OpenFramebuffer();
+    if (descriptor < 0)
+    {
+        printf("fbtest: open failed (errno %d)\n", errno);
+        return 1;
+    }
+    const EchoOff echo_off;
+    // The terminal redraws its cursor when the input line it reads ends.
+    fputs("\x1b[?25l", stdout);
+    puts("fbtest: keep ready");
+    WaitForLine();
+    if (ioctl(descriptor, FB_ACQUIRE, FB_ACQUIRE_KEEP_SCREEN) != 0)
+    {
+        printf("fbtest: keep acquire failed (errno %d)\n", errno);
+        return 1;
+    }
+    puts("fbtest: acquired");
+    WaitForLine();
+    static uint32_t square[KeepSquare * KeepSquare];
+    for (uint32_t& pixel : square)
+    {
+        pixel = KeepColor;
+    }
+    if (Present(descriptor, square, KeepSquare, KeepX, KeepY, KeepSquare, KeepSquare) != 0)
+    {
+        printf("fbtest: present failed (errno %d)\n", errno);
+        return 1;
+    }
+    puts("fbtest: presented");
+    WaitForLine();
+    ioctl(descriptor, FB_RELEASE);
+    close(descriptor);
+    fputs("\x1b[?25h", stdout);
+    puts("fbtest: keep done");
+    return 0;
 }
 
 } // namespace
@@ -426,13 +569,21 @@ int main(int argc, char** argv)
         puts(Help);
         return 0;
     }
+    if (argc == 2 && strcmp(argv[1], "--raw") == 0)
+    {
+        return RunRaw();
+    }
+    if (argc == 2 && strcmp(argv[1], "--keep") == 0)
+    {
+        return RunKeep();
+    }
     if (argc == 2)
     {
         return RunChild(argv[1]);
     }
     if (argc != 1)
     {
-        puts("usage: fbtest");
+        puts("usage: fbtest [--raw | --keep]");
         return 1;
     }
     const int descriptor = OpenFramebuffer();

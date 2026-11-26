@@ -8,10 +8,15 @@
 // file is close-on-exec, and only one at a time may own a console's screen.
 //   FB_GET_INFO  (struct fb_info*) works at any time: the screen size and the caller's console
 //                number from 1 (0 on a pseudo-terminal or without one).
-//   FB_ACQUIRE   (no argument) takes the screen: the console draws neither text nor status bar,
-//                and is blank, until the file is released. EBUSY if it or this file is taken,
-//                ENOTTY without a virtual console as the controlling terminal; a background
-//                process gets SIGTTOU first.
+//   FB_ACQUIRE   (unsigned long flags, 0 or any of FB_ACQUIRE_RAW_KEYS and
+//                FB_ACQUIRE_KEEP_SCREEN) takes the screen: the console draws neither text nor
+//                status bar, and is blank, until the file is released. With
+//                FB_ACQUIRE_RAW_KEYS, Ctrl+C is only queued as key events and sends no SIGINT;
+//                with FB_ACQUIRE_KEEP_SCREEN the screen is not blanked and keeps its pixels until
+//                the first FB_PRESENT. EINVAL for another bit, EBUSY if it or this file is taken
+//                (a repeated acquire by the owner returns 0 and keeps the first flags), ENOTTY
+//                without a virtual console as the controlling terminal; a background process gets
+//                SIGTTOU first. Alt+F1 to Alt+F4 switch consoles whatever the flags.
 //   FB_PRESENT   (const struct fb_present*) copies a rectangle of 0x00RRGGBB pixels, row after
 //                row at stride pixels, to the screen at x, y, clipped to it; EINVAL for flags
 //                other than 0, a stride below the width, a dimension above 16384, or when this
@@ -57,6 +62,8 @@
 #define FB_MOD_CAPS_LOCK 8
 #define FB_MOD_SUPER 16
 #define FB_EVENT_CAPACITY 64
+#define FB_ACQUIRE_RAW_KEYS 1UL
+#define FB_ACQUIRE_KEEP_SCREEN 2UL
 
 // Linux's key codes, for every key the keyboards report.
 #define KEY_ESC 1

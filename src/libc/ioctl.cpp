@@ -37,7 +37,9 @@ static_assert(FB_EVENT_RELEASE == FeatherOS::User::FramebufferEventRelease &&
               FB_MOD_ALT == FeatherOS::User::FramebufferModifierAlt &&
               FB_MOD_CAPS_LOCK == FeatherOS::User::FramebufferModifierCapsLock &&
               FB_MOD_SUPER == FeatherOS::User::FramebufferModifierSuper &&
-              FB_EVENT_CAPACITY == FeatherOS::User::FramebufferEventCapacity);
+              FB_EVENT_CAPACITY == FeatherOS::User::FramebufferEventCapacity &&
+              FB_ACQUIRE_RAW_KEYS == FeatherOS::User::FramebufferAcquireRawKeys &&
+              FB_ACQUIRE_KEEP_SCREEN == FeatherOS::User::FramebufferAcquireKeepScreen);
 static_assert(FB_GET_INFO == FeatherOS::User::FramebufferGetInfo &&
               FB_ACQUIRE == FeatherOS::User::FramebufferAcquire &&
               FB_PRESENT == FeatherOS::User::FramebufferPresent &&
@@ -55,7 +57,7 @@ bool IsFramebufferRequest(unsigned long request)
 
 bool TakesArgument(unsigned long request)
 {
-    return request == FB_GET_INFO || request == FB_PRESENT;
+    return request == FB_GET_INFO || request == FB_PRESENT || request == FB_ACQUIRE;
 }
 
 } // namespace
