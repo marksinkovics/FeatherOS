@@ -114,9 +114,9 @@ The kernel takes the screen size from Limine at run time in the first milestone.
   - (c) named shared memory in a filesystem (`shm_open`).
 - **Trade-offs:** (b) is the least code but helps nothing else. (c) needs names, cleanup after crashes and file-backed mapping rules. (a) is a little more work, removes the "only the top of the heap can be returned" limit, and ties a surface's life to descriptors, so the kernel cleans up after a crashed client.
 - **Recommendation: (a), written architecture-neutral.**
-  - **Regions:** each process gets a list of mapped regions (image, heap, stacks, anonymous, object) under its `memory_lock`. Faults and exit use it. New code goes in `src/kernel/memory/` (`regions.*`, `memory_object.*`), not in the 3700-line `process.cpp`.
+  - **Regions:** each process gets a list of its mapped regions (anonymous and object) under its `memory_lock`, in an address window of their own. The image, heap and stacks keep their existing code. New code goes in `src/kernel/memory/` (`regions.*`, `memory_object.*`), not in the 3700-line `process.cpp`.
   - **Objects:** a memory object owns its frames. It is sized once by `ftruncate` before the first mapping and never shrinks, so there is no fault-on-truncate case. Frames are allocated and zeroed then, so "out of memory" has one clean failure point. Descriptors and mappings each hold a reference; the frames are freed when the last one goes.
-  - **Mapping:** object mappings install their pages at `mmap` time. Anonymous mappings are zero-filled on first touch through the existing stack-fault path. Mappings are never executable.
+  - **Mapping:** every mapping installs its pages at `mmap` time, anonymous ones too, because the kernel's user-copy code does not fault pages in. Mappings are never executable.
   - **Teardown:** unmapping an object region removes the pages, waits for the TLB shootdown, then drops the reference without freeing frames. At exit, object regions are removed this way before `DestroyAddressSpace` frees what is left.
   - **Architecture code:** none expected beyond what exists. To check in the design: AArch64 needs break-before-make when a live entry changes, and both backends must map these pages non-executable.
   - **Accounting:** an object's pages count against the process that created it, never against a process that only maps it, so the compositor can map every client's buffers. A system-wide cap guards RAM. Both show in `/proc`.
@@ -290,12 +290,14 @@ Goal: the screen size comes from the bootloader, the framebuffer device gives a 
 
 ### M36. Shared Memory And Local Sockets
 
-Goal: two unrelated processes can share pixel memory and exchange messages and descriptors. Design per D5 and D6.
+Design: `docs/design/M36.md`. Plan: `docs/plans/m36.md`.
+
+Goal: two unrelated processes can share pixel memory and exchange messages and descriptors. The design also closes a small existing race: a frame could be freed while another thread's syscall was still copying through it.
 
 | Step | Delivers | Needs | Tests | Size |
 |---|---|---|---|---|
-| A1 | The region list: image, heap, stacks and arguments are registered; faults and exit use it; `/proc/<pid>/maps`. No behaviour change. | – | Host: region tests (insert, find, split, overlap) with random operations against a model. QEMU: `SHELL`, `MEMORY` and the `hardening` tests unchanged, both. | M |
-| A2 | Anonymous `mmap` and `munmap` (private, zero-filled on demand, in an ASLR window, counted in the page limit) and `<sys/mman.h>`. | A1 | Host: region tests. QEMU: a `MEMORY` part: map, touch, unmap, reuse; the limit gives `ENOMEM`; access after unmap gives `SIGSEGV`; threads on 4 CPUs unmap while others touch, both. | M |
+| A1 | The region list for a mapping window of its own, and `/proc/<pid>/maps`. No behaviour change. | – | Host: region tests (insert, find, split, overlap) with random operations against a model. QEMU: `SHELL`, `MEMORY` and the `hardening` tests unchanged, both. | M |
+| A2 | The user-copy drain, and anonymous `mmap` and `munmap` (private, zeroed and populated at once, in an ASLR window, counted in the page limit) with `<sys/mman.h>`. | A1 | Host: region tests. QEMU: a `MEMORY` part: map, touch, unmap, reuse; the limit gives `ENOMEM`; access after unmap gives `SIGSEGV`; threads on 4 CPUs unmap while others touch, both. | M |
 | A3 | Optional: `malloc` takes large blocks from `mmap`, which removes the "only the top of the heap" limit. | A2 | Host: allocator tests. QEMU: `libctest` and `memtest`, both. | S |
 | B1 | Memory objects: `memfd_create`, `ftruncate` (once), `fstat`; frames owned and reference-counted; accounting and caps. | A1 | Host: object lifetime and limit tests, and a `[concurrency]` test under ThreadSanitizer. | M |
 | B2 | `mmap(MAP_SHARED)` of an object in two processes (the descriptor inherited through `Spawn` for now), with unmap and exit ordering. | B1, A2 | QEMU: `shmtest`: parent and child share a counter and an 8 MiB checksummed buffer; a child is killed mid-write; 100 create, map and unmap cycles leave `MemFree` unchanged, both. | M–L |

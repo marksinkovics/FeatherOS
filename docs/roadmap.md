@@ -1244,9 +1244,9 @@ The kernel's screen is a compile-time 1024x768, a full-screen program cannot see
 
 ### 36. Shared Memory And Local Sockets (Planned, Not Started)
 
-Two unrelated processes can share pixel memory and exchange messages and descriptors, which is what a compositor and its clients need. It also removes the limit that only the top of the heap can be returned. Needs nothing from M35.
+Two unrelated processes can share pixel memory and exchange messages and descriptors, which is what a compositor and its clients need. It also removes the limit that only the top of the heap can be returned. Needs nothing from M35 but its reserved syscall numbers. Design `docs/design/M36.md`, plan `docs/plans/m36.md`.
 
-- **Part A: mapped regions.** A1 a list of mapped regions per process (image, heap, stacks, arguments), used by faults and exit, and `/proc/<pid>/maps`; A2 anonymous `mmap` and `munmap`, zero-filled on demand, with `<sys/mman.h>`; A3 (optional) `malloc` takes large blocks from `mmap`.
+- **Part A: mapped regions.** A1 a list of mapped regions per process, in an address window of their own, and `/proc/<pid>/maps`; A2 anonymous `mmap` and `munmap`, zeroed and populated at once, with `<sys/mman.h>`, and a wait that keeps a frame from being freed while a syscall still copies through it (a small race that exists today in heap shrinking); A3 (optional) `malloc` takes large blocks from `mmap`.
 - **Part B: memory objects.** B1 `memfd_create`, `ftruncate` (once) and `fstat`, with frames owned by the object and counted by its descriptors and mappings; B2 `mmap(MAP_SHARED)` of one object in two processes, with safe unmap and exit on 4 CPUs.
 - **Part C: local sockets.** C1 `AF_UNIX` stream sockets: `socketpair`, and bind, listen, accept and connect on abstract names; C2 `sendmsg` and `recvmsg` with `SCM_RIGHTS`; C3 libc, `docs/posix.md` and the `IPC_TEST` mode.
 - **Part D (only if M39's measurements ask for it):** D1 `FB_MAP` and `FB_FLUSH`, so the compositor draws into the kernel's back buffer.
