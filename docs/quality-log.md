@@ -121,4 +121,5 @@ One row per committed step (used by the global `autopilot` skill since 2026-11-2
 | 6305e0f | Review A3 signal handler checks, masked user entry, zeroed frames (R3-02, R3-03, R3-08, R3-09) | review-A3.md (opus) | sonnet (high) | 0 | 4/4 (I1 by T1/T2/T5, I6 by T7, I2 by T6) | | 4.6M wtok: agents opus 679.2k, sonnet 3.1M; coord opus 841.7k |
 | cf09e59 | Review B1 ext journal keeps a block re-written after its free (R1-01) | review-E1.md (existing) | sonnet (high) | 0 | 3/3 | | 2.8M wtok: agents sonnet 2.6M; coord opus 176.2k |
 | 590ea91 | Review B2 ext extent commit keeps mapped blocks after a later failure (R1-03) | - | sonnet (high) | 0 | 2/2 | | 1.5M wtok: agents sonnet 1.3M; coord opus 218.1k |
-| B3 | Review B3 ext truncate zeroes the tail only once durable (R1-04) | - | sonnet (high) | 1 | 3/3 | | 2.0M wtok: agents sonnet 1.5M; coord opus 521.4k |
+| 07d9572 | Review B3 ext truncate zeroes the tail only once durable (R1-04) | - | sonnet (high) | 1 | 3/3 | | 2.0M wtok: agents sonnet 1.5M; coord opus 521.4k |
+| B4B5 | Review B4+B5 ext rename link count, EndStep reserves distinct blocks (R1-05, R1-02) | - | sonnet (high) | 0 | 2/2 | | 1.4M wtok: agents sonnet 1.2M; coord opus 179.3k (B4 and B5 share one worker) |

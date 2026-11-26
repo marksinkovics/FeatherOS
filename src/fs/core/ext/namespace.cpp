@@ -338,7 +338,7 @@ Status Ext2Filesystem::CheckOutside(NodeId directory, NodeId moving, Buffers& bu
 // it is written so before its blocks and itself go back to the bitmaps. A directory's ".." stops
 // linking its parent at that point too, and only then leaves the parent's count.
 Status Ext2Filesystem::DropLink(NodeId node, const Node& loaded, NodeId parent, Buffers& buffers,
-                                std::optional<OrphanedInode>* orphaned)
+                                std::optional<OrphanedInode>* orphaned, bool parent_loses_link)
 {
     Inode inode = loaded.inode;
     const Timestamp now = Now();
@@ -373,7 +373,7 @@ Status Ext2Filesystem::DropLink(NodeId node, const Node& loaded, NodeId parent, 
     {
         return stored;
     }
-    if (directory)
+    if (directory && parent_loses_link)
     {
         if (const Status counted = UpdateDirectory(parent, -1, true, buffers[ScratchBuffer]);
             !counted)
@@ -944,8 +944,9 @@ Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_n
             return cleared;
         }
     }
-    // 1: the moving directory's ".." will count for its new parent.
-    if (reparented)
+    // 1: the moving directory's ".." will count for its new parent, unless the replaced
+    // directory's ".." there is the one it takes over, so the count never rises past the limit.
+    if (reparented && !replaced)
     {
         if (const Status counted = UpdateDirectory(to_directory, 1, false, scratch); !counted)
         {
@@ -1053,7 +1054,7 @@ Status Ext2Filesystem::RenameNode(NodeId from_directory, std::string_view from_n
     {
         return Failure(existing);
     }
-    return DropLink(replaced_inode, *existing, to_directory, buffers, orphaned);
+    return DropLink(replaced_inode, *existing, to_directory, buffers, orphaned, !reparented);
 }
 
 Result<NodeId> Ext2Filesystem::Create(NodeId directory, std::string_view name, std::uint32_t mode)

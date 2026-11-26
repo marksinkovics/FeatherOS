@@ -31,6 +31,8 @@ public:
 
     std::size_t Count() const;
     std::size_t Maximum() const;
+    // Only lowers the maximum, for tests; copies held already stay.
+    void LimitMaximum(std::size_t blocks);
     std::uint8_t* Find(std::uint64_t home) const;
     // The existing copy or a new one; null at the maximum or without memory.
     std::uint8_t* Hold(std::uint64_t home);

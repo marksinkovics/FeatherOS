@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Reproductions of the findings R1-01 to R1-05 of docs/reviews/2026-11-review.md. Each test asserts
-// the correct behaviour; one tagged .repro is hidden and fails while the finding is open.
+// Reproductions of the findings R1-01, R1-03, R1-04 and R1-05 of docs/reviews/2026-11-review.md.
+// Each test asserts the correct behaviour; one tagged .repro is hidden and fails while the finding
+// is open.
 #include <catch2/catch_test_macros.hpp>
 
 #include "ext/checksum.h"
 #include "ext/superblock.h"
-#include "ext/transaction.h"
 #include "fs/ext2.h"
 #include "tests/crash_helpers.h"
 #include "tests/ext2_image.h"
@@ -25,7 +25,6 @@ namespace
 
 using namespace FeatherDisk;
 using namespace FeatherDisk::Tests;
-using Ext::BlockLayer;
 using Ext::Ext2Type;
 
 #ifdef FEATHERDISK_EXT_IMAGES
@@ -150,35 +149,6 @@ TEST_CASE("R1-01 a metadata block freed and allocated again within one step keep
         }
     }
 #endif
-}
-
-// R1-02. EndStep reserves running.Count() + step.Count() in the running layer, which counts the
-// blocks of both layers twice. A volume with a 1024-copy layer and a step that touches 100 blocks
-// the running transaction already holds fails with OutOfMemory although the distinct blocks fit.
-// The step that touches hundreds of metadata blocks cannot be made on the test images (the
-// layers hold 4 MiB: 4096 copies of 1 KiB, and the 4 KiB image's journal is the smaller limit
-// only for the distinct count), so this checks the arithmetic EndStep performs on the real layer.
-TEST_CASE("R1-02 EndStep's reservation does not count a block of both layers twice",
-          "[.repro][R1-02]")
-{
-    constexpr std::uint32_t Size = 4096;
-    BlockLayer running(Size);
-    BlockLayer step(Size);
-    for (std::uint64_t block = 0; block < 400; ++block)
-    {
-        REQUIRE(running.Hold(block) != nullptr);
-    }
-    for (std::uint64_t block = 300; block < 930; ++block)
-    {
-        REQUIRE(step.Hold(block) != nullptr);
-    }
-    // 930 distinct blocks, below the 1024 a layer may hold.
-    REQUIRE(running.Maximum() == 1024);
-    // What EndStep asks of the running layer before it absorbs the step.
-    CHECK(running.Reserve(running.Count() + step.Count()));
-    // What the absorption itself needs, and gets.
-    Succeeds(running.Absorb(step));
-    CHECK(running.Count() == 930);
 }
 
 #ifdef FEATHERDISK_EXT_IMAGES
@@ -653,45 +623,95 @@ TEST_CASE("R1-04 a truncate leaves the rest of its last block zero on the device
 #endif
 }
 
+#ifdef FEATHERDISK_EXT_IMAGES
+namespace
+{
+
+// A directory's link count set in the bytes of a volume, its inode checksum made to match.
+void SetLinkCount(std::vector<std::uint8_t>& bytes, NodeId node, std::uint16_t count)
+{
+    RawVolume raw{bytes};
+    const auto inode = static_cast<std::uint32_t>(node);
+    raw.Store16(raw.InodeOffset(inode) + 26, count);
+    const Ext::Superblock superblock = SuperblockOfBytes(bytes);
+    if (Ext::HasMetadataChecksums(superblock))
+    {
+        constexpr std::uint32_t GenerationOffset = 100;
+        Ext::StoreInodeChecksum(
+            std::span(bytes).subspan(raw.InodeOffset(inode), raw.InodeSize()),
+            Ext::InodeChecksumSeed(Ext::VolumeChecksumSeed(superblock), inode,
+                                   raw.Load32(raw.InodeOffset(inode) + GenerationOffset)));
+    }
+}
+
+} // namespace
+#endif
+
 // R1-05. Renaming a directory onto an empty directory of a parent whose link count is at the
 // limit is legal: the replaced directory's ".." link is replaced by the new one.
-TEST_CASE("R1-05 a directory renamed onto an empty one in a parent at the link limit",
-          "[.repro][R1-05]")
+TEST_CASE("R1-05 a directory renamed onto an empty one in a parent at the link limit", "[R1-05]")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
 #else
-    for (const std::string_view image : {"1k", "ext3"})
+    struct Case
     {
-        INFO(image);
-        const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
+        std::string_view image;
+        std::uint16_t limit;
+        bool same_parent;
+    };
+    // ext2 and ext3 stop at 32000; ext4's dir_nlink counts up to 65000 and then 1.
+    for (const Case& which :
+         {Case{"1k", 32000, false}, Case{"1k", 32000, true}, Case{"ext3", 32000, false},
+          Case{"ext4", 65000, false}, Case{"ext4", 65000, true}})
+    {
+        INFO(which.image << (which.same_parent ? " same parent" : " other parent"));
+        const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(which.image));
         NodeId parent = 0;
         {
             MountedFilesystem ext(Ext2Type(), *device);
             parent = Value(ext->MakeDirectory(ext->Root(), "full-parent", 0755));
             static_cast<void>(Value(ext->MakeDirectory(parent, "target", 0755)));
-            static_cast<void>(Value(ext->MakeDirectory(ext->Root(), "source", 0755)));
+            static_cast<void>(Value(
+                ext->MakeDirectory(which.same_parent ? parent : ext->Root(), "source", 0755)));
+            static_cast<void>(Value(ext->MakeDirectory(ext->Root(), "mover", 0755)));
             Succeeds(ext->Sync());
         }
         std::vector<std::uint8_t> bytes = BytesOf(*device);
-        RawVolume raw{bytes};
-        raw.Store16(raw.InodeOffset(static_cast<std::uint32_t>(parent)) + 26, 32000);
+        SetLinkCount(bytes, parent, which.limit);
         const std::unique_ptr<MemoryDevice> limited = DeviceFrom(bytes);
         MountedFilesystem ext(Ext2Type(), *limited);
-        const NodeId source = Value(Walk(*ext, "source"));
-        const Status renamed = ext->Rename(ext->Root(), "source", parent, "target");
+        const NodeId from = which.same_parent ? parent : ext->Root();
+        const NodeId source =
+            Value(Walk(*ext, which.same_parent ? "full-parent/source" : "source"));
+        const std::uint32_t from_links = Value(ext->GetAttributes(from)).link_count;
+        const Status renamed = ext->Rename(from, "source", parent, "target");
         if (!renamed)
         {
             UNSCOPED_INFO("error " << static_cast<int>(renamed.error()));
         }
-        CHECK(renamed.has_value());
-        // The volume must still be writable and the parent's count unchanged.
-        CHECK(ext->Create(ext->Root(), "after-the-rename", 0644).has_value());
-        CHECK(Value(ext->GetAttributes(parent)).link_count == 32000);
-        if (renamed)
+        REQUIRE(renamed.has_value());
+        // The replaced directory's link left as the moved one's arrived, so the parent that was
+        // the target's own loses one only when the source stayed in it.
+        CHECK(Value(ext->GetAttributes(parent)).link_count ==
+              (which.same_parent ? which.limit - 1 : which.limit));
+        if (!which.same_parent)
         {
-            CHECK(Value(Walk(*ext, "full-parent/target")) == source);
+            CHECK(Value(ext->GetAttributes(from)).link_count == from_links - 1);
         }
+        CHECK(Value(Walk(*ext, "full-parent/target")) == source);
+        CHECK(Value(ext->Lookup(source, "..")) == parent);
+        // The volume is still writable, in no error state.
+        CHECK(ext->Create(ext->Root(), "after-the-rename", 0644).has_value());
+        if (!which.same_parent && which.limit == 32000)
+        {
+            // A name that is not a replacement does take a link, and finds none to take.
+            const Status refused = ext->Rename(ext->Root(), "mover", parent, "one-more");
+            REQUIRE_FALSE(refused.has_value());
+            CHECK(refused.error() == Error::TooManyLinks);
+            CHECK(ext->Create(ext->Root(), "after-the-refusal", 0644).has_value());
+        }
+        Succeeds(ext->Sync());
     }
 #endif
 }

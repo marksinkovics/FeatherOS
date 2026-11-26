@@ -279,6 +279,9 @@ public:
     std::optional<JournalActivity> Activity() const;
     // Only lowers the limits, for tests.
     void LimitJournal(const JournalLimits& limits);
+    // Only lowers the most blocks the step and running layers hold, and the hard limit with it,
+    // for tests.
+    void LimitJournalMemory(std::uint32_t blocks);
     // Blocks the metadata cache holds copies of at most, 0 when the device caches them itself;
     // for tests.
     std::size_t MetadataCacheSlots() const;
@@ -639,11 +642,12 @@ private:
     Result<bool> IsEmptyDirectory(const Inode& directory, NodeId parent, Buffers& buffers);
     Status CheckOutside(NodeId directory, NodeId moving, Buffers& buffers);
     // One link fewer for a node whose entry is gone; the last frees it, and a directory's last
-    // also takes its ".." out of parent's count.
+    // also takes its ".." out of parent's count, unless the caller says it kept that link.
     // With orphaned, the last link of a file or link takes it to the orphan list instead of
     // releasing it in this step.
     Status DropLink(NodeId node, const Node& loaded, NodeId parent, Buffers& buffers,
-                    std::optional<OrphanedInode>* orphaned = nullptr);
+                    std::optional<OrphanedInode>* orphaned = nullptr,
+                    bool parent_loses_link = true);
     Result<NodeId> CreateNode(NodeId directory, std::string_view name, std::uint16_t mode,
                               std::string_view target);
     Status RemoveNode(NodeId directory, std::string_view name, bool directory_wanted,

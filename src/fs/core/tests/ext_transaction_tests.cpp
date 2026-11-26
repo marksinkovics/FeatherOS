@@ -1683,6 +1683,38 @@ TEST_CASE("a change that overflows the transaction commits what runs and retries
     }
 }
 
+TEST_CASE("a step that touches blocks the running transaction holds needs room for the distinct "
+          "blocks only",
+          "[R1-02]")
+{
+    // Each Create touches the same five or six blocks (bitmaps, group descriptors, an inode table
+    // block, the directory), so two of them hold more copies than the layers may, counted twice,
+    // and fewer than that counted once. The real layers hold 4 MiB, more than any step of the test
+    // images touches.
+    constexpr std::uint32_t Memory = 8;
+    for (const std::string_view image : {"ext3", "ext4-4k"})
+    {
+        INFO(image);
+        const std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
+        Mounted ext(*device);
+        Core(*ext).LimitJournalMemory(Memory);
+        for (const char* name : {"q1", "q2", "q3"})
+        {
+            INFO(name);
+            Value(ext->Create(ext->Root(), name, 0644));
+        }
+        REQUIRE(ActivityOf(*ext).retries == 0);
+        REQUIRE(ActivityOf(*ext).transactions == 0);
+        for (const char* name : {"q1", "q2", "q3"})
+        {
+            Value(Walk(*ext, name));
+        }
+        Succeeds(ext->Sync());
+        Succeeds(ext.Unmount());
+        CheckClean(*device, "transaction-distinct");
+    }
+}
+
 TEST_CASE("a step that fails leaves nothing behind, for want of space or of a read")
 {
     // A full directory on a full volume: the new inode is taken before the directory needs a

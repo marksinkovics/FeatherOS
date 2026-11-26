@@ -155,6 +155,11 @@ std::size_t BlockLayer::Maximum() const
     return maximum;
 }
 
+void BlockLayer::LimitMaximum(std::size_t blocks)
+{
+    maximum = blocks < maximum ? blocks : maximum;
+}
+
 std::size_t BlockLayer::Slot(std::uint64_t home) const
 {
     const std::size_t mask = table_size - 1;
@@ -239,7 +244,7 @@ std::uint8_t* BlockLayer::Hold(std::uint64_t home)
     {
         return existing;
     }
-    if ((count == capacity && !Reserve(count + 1)) || bytes == nullptr)
+    if (count >= maximum || (count == capacity && !Reserve(count + 1)) || bytes == nullptr)
     {
         return nullptr;
     }
@@ -452,6 +457,17 @@ std::optional<JournalActivity> Ext2Filesystem::Activity() const
     activity.head = journal->head;
     activity.aborted = journal->aborted;
     return activity;
+}
+
+void Ext2Filesystem::LimitJournalMemory(std::uint32_t blocks)
+{
+    if (journal == nullptr)
+    {
+        return;
+    }
+    journal->step.LimitMaximum(blocks);
+    journal->running.LimitMaximum(blocks);
+    journal->limits.hard = blocks < journal->limits.hard ? blocks : journal->limits.hard;
 }
 
 void Ext2Filesystem::LimitJournal(const JournalLimits& limits)
@@ -682,7 +698,7 @@ Status Ext2Filesystem::EndStep()
     }
     if (!state.revokes.Reserve(state.revokes.Count() + state.pending_forgets.Count()) ||
         !state.freed_groups.Reserve(state.freed_groups.Count() + state.step_freed_groups.Count()) ||
-        !state.running.Reserve(state.running.Count() + state.step.Count()))
+        !state.running.Reserve(state.running.Count() + state.step_new))
     {
         return std::unexpected(Error::OutOfMemory);
     }
