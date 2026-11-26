@@ -32,4 +32,11 @@ bool Find(uint64_t stack_top, uint64_t region_pages, uint32_t slot_count, uint64
     return true;
 }
 
+bool FindInUse(uint64_t stack_top, uint64_t region_pages, uint32_t slot_count,
+               uint32_t slots_in_use, uint64_t address, uint32_t* slot)
+{
+    return Find(stack_top, region_pages, slot_count, address, slot) &&
+           (slots_in_use & (1U << *slot)) != 0;
+}
+
 } // namespace FeatherOS::ThreadStacks

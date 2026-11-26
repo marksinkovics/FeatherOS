@@ -129,6 +129,10 @@ struct ProcessRecord
     int stop_signal GUARDED_BY(process_lock);
     volatile Report report;
     Scheduler::WaitQueue resumed;
+    // Waiters that use the record after dropping process_lock. Once it is unlinked, the last of
+    // them to leave frees it.
+    uint32_t pins GUARDED_BY(process_lock);
+    bool unlinked GUARDED_BY(process_lock);
 };
 
 uint64_t hhdm_offset = 0;
@@ -349,6 +353,15 @@ bool MapStackPageLocked(UserProgram* program, uint64_t page_address) REQUIRES(pr
     return true;
 }
 
+// Maps the page at address if it lies in the stack of a thread in use, as a user-mode fault would.
+bool GrowStackLocked(UserProgram* program, uint64_t address) REQUIRES(program->memory_lock)
+{
+    uint32_t slot;
+    return ThreadStacks::FindInUse(program->layout.stack_top, UserStackRegionPages,
+                                   User::MaximumThreads, program->stack_slots, address, &slot) &&
+           MapStackPageLocked(program, address & ~(Memory::PageSize - 1));
+}
+
 // Builds a thread's TLS area at the top of its stack slot: the program's template, zeros up to
 // the block's size, and the control block, cleared first since a reused slot holds the last
 // thread's data. The program's address space must be active. The thread's stack starts below
@@ -510,6 +523,7 @@ void ReleaseUserProgram(UserProgram* program)
 
 void RemoveProcess(ProcessRecord* process)
 {
+    bool release;
     {
         Sync::SpinLockGuard guard(process_lock);
         for (ProcessRecord* parent = process_list; parent != nullptr; parent = parent->next)
@@ -527,8 +541,27 @@ void RemoveProcess(ProcessRecord* process)
                 break;
             }
         }
+        process->unlinked = true;
+        release = process->pins == 0;
     }
-    Memory::Deallocate(process);
+    if (release)
+    {
+        Memory::Deallocate(process);
+    }
+}
+
+void UnpinProcess(ProcessRecord* process)
+{
+    bool release;
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        --process->pins;
+        release = process->unlinked && process->pins == 0;
+    }
+    if (release)
+    {
+        Memory::Deallocate(process);
+    }
 }
 
 ProcessRecord* FindProcessLocked(ProcessId process_id) REQUIRES(process_lock)
@@ -543,11 +576,39 @@ ProcessRecord* FindProcessLocked(ProcessId process_id) REQUIRES(process_lock)
     return nullptr;
 }
 
-ProcessRecord* FindProcess(ProcessId process_id)
+// Keeps a record readable while its holder waits for the process, which another thread of the
+// parent may reap meanwhile.
+class ProcessPin
 {
-    Sync::SpinLockGuard guard(process_lock);
-    return FindProcessLocked(process_id);
-}
+public:
+    ProcessPin() = default;
+    ProcessPin(const ProcessPin&) = delete;
+    ProcessPin& operator=(const ProcessPin&) = delete;
+    ~ProcessPin()
+    {
+        if (record_ != nullptr)
+        {
+            UnpinProcess(record_);
+        }
+    }
+
+    // The record of process_id, or null when there is none or parent is not 0 and not its parent.
+    ProcessRecord* Acquire(ProcessId process_id, ProcessId parent = 0)
+    {
+        Sync::SpinLockGuard guard(process_lock);
+        ProcessRecord* process = FindProcessLocked(process_id);
+        if (process == nullptr || (parent != 0 && process->parent != parent))
+        {
+            return nullptr;
+        }
+        ++process->pins;
+        record_ = process;
+        return process;
+    }
+
+private:
+    ProcessRecord* record_ = nullptr;
+};
 
 bool DescendsFromLocked(const ProcessRecord* process, ProcessId ancestor) REQUIRES(process_lock)
 {
@@ -851,19 +912,24 @@ void SetProcessName(ProcessRecord* process, const char* program)
 
 // User pointers are resolved through the process page tables and accessed through the direct
 // map one page at a time, with the memory lock held, so a concurrent unmap cannot free a frame
-// that a copy still uses and invalid or kernel addresses fail cleanly.
-volatile uint8_t* ResolveUserPage(void* context, uint64_t page_address, bool write)
+// that a copy still uses and invalid or kernel addresses fail cleanly. An untouched page of a
+// stack in use is mapped on the way, since the program's own access would have mapped it. UserCopy
+// calls this with the lock held, which the analysis cannot follow through the pointer.
+volatile uint8_t* ResolveUserPage(void* context, uint64_t page_address,
+                                  bool write) NO_THREAD_SAFETY_ANALYSIS
 {
-    const auto* program = static_cast<const UserProgram*>(context);
+    auto* program = static_cast<UserProgram*>(context);
     uint64_t physical_address;
     bool writable;
     if (!Memory::TranslateUserPage(program->address_space, page_address, &physical_address,
-                                   &writable) ||
-        (write && !writable))
+                                   &writable) &&
+        !(GrowStackLocked(program, page_address) &&
+          Memory::TranslateUserPage(program->address_space, page_address, &physical_address,
+                                    &writable)))
     {
         return nullptr;
     }
-    return PhysicalBytes(physical_address);
+    return write && !writable ? nullptr : PhysicalBytes(physical_address);
 }
 
 Memory::UserCopy::Target CopyTarget(const ProcessRecord& process)
@@ -1112,14 +1178,11 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
     {
         return User::SyscallErrorInvalidArgument;
     }
-    ProcessRecord* child;
+    ProcessPin pin;
+    ProcessRecord* child = pin.Acquire(process_id, process->id);
+    if (child == nullptr)
     {
-        Sync::SpinLockGuard guard(process_lock);
-        child = FindProcessLocked(process_id);
-        if (child == nullptr || child->parent != process->id)
-        {
-            return User::SyscallErrorNotChild;
-        }
+        return User::SyscallErrorNotChild;
     }
     if (!UserRangeWritable(*process, status_pointer, sizeof(uint64_t)))
     {
@@ -1136,14 +1199,23 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
                        ? report
                        : User::SyscallErrorBadAddress;
         }
-        if ((flags & User::WaitNoHang) != 0 &&
-            Scheduler::GetState(child->task) != Scheduler::TaskState::Complete)
+        // Another thread of the caller may have reaped the child already.
+        const Scheduler::TaskState state = Scheduler::GetState(child->task);
+        if (state == Scheduler::TaskState::Empty)
+        {
+            return User::SyscallErrorNotChild;
+        }
+        if ((flags & User::WaitNoHang) != 0 && state != Scheduler::TaskState::Complete)
         {
             return User::SyscallErrorWouldBlock;
         }
         if (Scheduler::Wait(child->task, nullptr, ReportReadyOrInterrupted, &watch))
         {
             break;
+        }
+        if (Scheduler::GetState(child->task) == Scheduler::TaskState::Empty)
+        {
+            return User::SyscallErrorNotChild;
         }
         // A signal ends the wait early; the child stays to be waited for again.
         if (!ReportReady(watch))
@@ -1152,9 +1224,10 @@ uint64_t WaitSyscall(void* context, uint64_t process_id, uint64_t status_pointer
         }
     }
     uint64_t exit_status;
+    // Only one waiter reaps the child; the others find it gone.
     if (!Wait(process_id, &exit_status))
     {
-        return User::SyscallErrorFailed;
+        return User::SyscallErrorNotChild;
     }
     if (!CopyToUser(*process, status_pointer, &exit_status, sizeof(exit_status)))
     {
@@ -1231,6 +1304,7 @@ void ReleaseStackSlot(UserProgram& program, uint32_t slot)
     size_t count = 0;
     {
         Sync::SpinLockGuard guard(program.memory_lock);
+        program.stack_slots &= ~(1U << slot);
         for (uint64_t page = bottom; page < top; page += Memory::PageSize)
         {
             if (Memory::UnmapUserPage(program.address_space, page, &frames[count]))
@@ -2162,34 +2236,84 @@ uint64_t FutexWakeSyscall(void* context, uint64_t address, uint64_t count)
     return Futex::Wake(context, address, count);
 }
 
+// The scheduler calls this with its lock held, so it takes none; the process is dying once a
+// signal has set the flag, and SendSignalLocked wakes the waiting task after that.
+bool ProcessExiting(const void* process) NO_THREAD_SAFETY_ANALYSIS
+{
+    return static_cast<const ProcessRecord*>(process)->exiting;
+}
+
 // Every thread but the main one, which the process's own task runs, has ended once this returns.
+// While the process is not exiting, the main thread has only called pthread_exit: a thread that
+// ended stays joinable for as long as another thread runs to join it, and the rest are reaped
+// once none does, since nobody is left to join them.
 void WaitForThreads(ProcessRecord* process)
 {
     for (;;)
     {
         ThreadRecord* thread = nullptr;
+        Scheduler::TaskId running = 0;
         bool remaining = false;
+        bool alive = false;
+        bool exiting = false;
         {
             Sync::SpinLockGuard guard(process_lock);
-            for (ThreadRecord& candidate : process->threads)
+            exiting = process->exiting;
+            for (const ThreadRecord& candidate : process->threads)
             {
                 remaining = remaining || candidate.id != 0;
-                if (thread == nullptr && candidate.id != 0 && candidate.task != 0 &&
-                    !candidate.joining)
+                if (candidate.id == 0)
+                {
+                    continue;
+                }
+                // A thread with no task yet is being created. One whose task is Empty was reaped
+                // by a joiner, which clears the record next.
+                const bool started = candidate.task != 0;
+                const Scheduler::TaskState state =
+                    started ? Scheduler::GetState(candidate.task) : Scheduler::TaskState::Empty;
+                const bool done = state == Scheduler::TaskState::Complete ||
+                                  (started && state == Scheduler::TaskState::Empty);
+                if (!done)
+                {
+                    alive = true;
+                    if (started && running == 0)
+                    {
+                        running = candidate.task;
+                    }
+                }
+            }
+            for (ThreadRecord& candidate : process->threads)
+            {
+                if (candidate.id == 0 || candidate.task == 0 || candidate.joining)
+                {
+                    continue;
+                }
+                const bool ended =
+                    Scheduler::GetState(candidate.task) == Scheduler::TaskState::Complete;
+                if (exiting || (ended && !alive))
                 {
                     thread = &candidate;
                     thread->joining = true;
+                    break;
                 }
             }
         }
         if (thread == nullptr)
         {
-            // A thread still being created or joined by another ends soon: SIGKILL reached it.
             if (!remaining)
             {
                 return;
             }
-            Scheduler::Yield();
+            if (running != 0 && !exiting)
+            {
+                // Woken when that thread ends, or when SIGKILL reaches this task.
+                Scheduler::Wait(running, nullptr, ProcessExiting, process);
+            }
+            else
+            {
+                // A thread still being created, or joined by another, ends soon.
+                Scheduler::Yield();
+            }
             continue;
         }
         Scheduler::Wait(thread->task, nullptr);
@@ -3645,14 +3769,7 @@ bool HandleUserPageFault(UserExecutionContext* context, uint64_t fault_address)
     }
     auto* program = static_cast<UserProgram*>(context->program);
     Sync::SpinLockGuard guard(program->memory_lock);
-    uint32_t slot = 0;
-    if (!ThreadStacks::Find(program->layout.stack_top, UserStackRegionPages, User::MaximumThreads,
-                            fault_address, &slot) ||
-        (program->stack_slots & (1U << slot)) == 0)
-    {
-        return false;
-    }
-    return MapStackPageLocked(program, fault_address & ~(Memory::PageSize - 1));
+    return GrowStackLocked(program, fault_address);
 }
 
 bool CopyToCurrentUser(UserExecutionContext* context, uint64_t address, const void* source,
@@ -3910,7 +4027,8 @@ SpawnStatus Spawn(const char* command_line, const char* environment, ProcessId p
 
 bool Wait(ProcessId process_id, uint64_t* exit_status)
 {
-    ProcessRecord* process = FindProcess(process_id);
+    ProcessPin pin;
+    ProcessRecord* process = pin.Acquire(process_id);
     if (process == nullptr || !Scheduler::Wait(process->task, nullptr) ||
         !Scheduler::ReapTask(process->task))
     {

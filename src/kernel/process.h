@@ -62,8 +62,9 @@ struct UserProgram
     mutable Sync::SpinLock memory_lock;
     uint32_t mapped_page_count GUARDED_BY(memory_lock);
     uint32_t page_limit;
-    // Bit n is set once thread stack slot n has been used; slot 0 is the main thread's.
-    uint32_t stack_slots;
+    // Bit n is set while thread stack slot n holds a thread's stack, from its creation until it
+    // is joined; slot 0 is the main thread's.
+    uint32_t stack_slots GUARDED_BY(memory_lock);
     // The PT_TLS template in the program's memory; each thread's TLS block starts as a copy.
     uint64_t tls_template;
     uint64_t tls_file_size;

@@ -17,6 +17,10 @@ uint64_t Bottom(uint64_t stack_top, uint64_t region_pages, uint32_t slot_count);
 // True when address lies in one of slot_count regions above its guard page; *slot says which.
 bool Find(uint64_t stack_top, uint64_t region_pages, uint32_t slot_count, uint64_t address,
           uint32_t* slot);
+// Find, and bit *slot of slots_in_use is set: the stack of a thread that was started and not yet
+// joined, or the main one.
+bool FindInUse(uint64_t stack_top, uint64_t region_pages, uint32_t slot_count,
+               uint32_t slots_in_use, uint64_t address, uint32_t* slot);
 
 } // namespace FeatherOS::ThreadStacks
 

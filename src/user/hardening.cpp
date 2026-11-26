@@ -486,6 +486,128 @@ bool CopiesRacingStackRelease()
     return FinishCopyReader(reader) && joined;
 }
 
+// Large stack buffers the program has not touched yet, passed to calls that check them before
+// copying: the stack grows for them as it does for the program's own accesses.
+constexpr size_t StackBufferSize = 16384;
+
+[[gnu::noinline]] bool UntouchedStackBuffers()
+{
+    char in[StackBufferSize];
+    char out[StackBufferSize];
+    const int zero = open("/dev/zero", O_RDONLY);
+    const int null = open("/dev/null", O_WRONLY);
+    const bool copied = zero >= 0 && null >= 0 &&
+                        read(zero, in, sizeof(in)) == static_cast<ssize_t>(sizeof(in)) &&
+                        write(null, out, sizeof(out)) == static_cast<ssize_t>(sizeof(out)) &&
+                        in[0] == 0 && in[sizeof(in) - 1] == 0;
+    close(zero);
+    close(null);
+    return copied;
+}
+
+// Walks down the stack a page at a time with one-byte reads: each page of the stack maps, and the
+// walk ends in EFAULT at the stack's guard page, within the 63 pages the stack may have.
+bool StackLimitHolds()
+{
+    const int zero = open("/dev/zero", O_RDONLY);
+    volatile char marker = 0;
+    auto page = reinterpret_cast<uintptr_t>(&marker) & ~static_cast<uintptr_t>(4095);
+    int pages = 0;
+    bool stopped = false;
+    while (zero >= 0 && !stopped && pages <= 64)
+    {
+        stopped = read(zero, reinterpret_cast<void*>(page), 1) != 1;
+        pages += stopped ? 0 : 1;
+        page -= 4096;
+    }
+    const bool refused = stopped && errno == EFAULT;
+    close(zero);
+    return refused && pages >= 32 && pages <= 63;
+}
+
+void* UntouchedStackBuffersInThread(void*)
+{
+    return UntouchedStackBuffers() ? reinterpret_cast<void*>(1) : nullptr;
+}
+
+bool StackBuffersGrowTheStack()
+{
+    void* thread_result = nullptr;
+    pthread_t thread;
+    return UntouchedStackBuffers() &&
+           pthread_create(&thread, nullptr, UntouchedStackBuffersInThread, nullptr) == 0 &&
+           pthread_join(thread, &thread_result) == 0 && thread_result != nullptr &&
+           StackLimitHolds();
+}
+
+// Two threads of one process wait for the same child: one reaps it, the other must get ECHILD,
+// not a stale answer from a record the first freed.
+uint64_t waiter_child = 0;
+
+void* WaitForChild(void*)
+{
+    uint64_t status = 0;
+    return reinterpret_cast<void*>(Wait(waiter_child, &status));
+}
+
+bool TwoWaitersOneChild()
+{
+    waiter_child = Spawn("sleep 0.3");
+    pthread_t waiters[2];
+    void* results[2] = {};
+    if (IsSyscallError(waiter_child) ||
+        pthread_create(&waiters[0], nullptr, WaitForChild, nullptr) != 0 ||
+        pthread_create(&waiters[1], nullptr, WaitForChild, nullptr) != 0 ||
+        pthread_join(waiters[0], &results[0]) != 0 || pthread_join(waiters[1], &results[1]) != 0)
+    {
+        return false;
+    }
+    const auto first = reinterpret_cast<uint64_t>(results[0]);
+    const auto second = reinterpret_cast<uint64_t>(results[1]);
+    return (!IsSyscallError(first) && second == SyscallErrorNotChild) ||
+           (!IsSyscallError(second) && first == SyscallErrorNotChild);
+}
+
+// The main thread ends with pthread_exit while two threads run; the process goes on, and one
+// thread joins the other for its value, whether that one still runs when the join starts or
+// ended long before it.
+pthread_t exit_worker;
+uint64_t worker_sleep_ms = 0;
+uint64_t joiner_sleep_ms = 0;
+
+void* ReturnAfterSleep(void*)
+{
+    if (worker_sleep_ms != 0)
+    {
+        Sleep(worker_sleep_ms);
+    }
+    return reinterpret_cast<void*>(42);
+}
+
+void* JoinWorker(void*)
+{
+    if (joiner_sleep_ms != 0)
+    {
+        Sleep(joiner_sleep_ms);
+    }
+    void* value = nullptr;
+    const int joined = pthread_join(exit_worker, &value);
+    exit(joined == 0 && value == reinterpret_cast<void*>(42) ? 0 : 3);
+}
+
+[[noreturn]] void MainThreadExitsFirst(uint64_t worker_ms, uint64_t joiner_ms)
+{
+    worker_sleep_ms = worker_ms;
+    joiner_sleep_ms = joiner_ms;
+    pthread_t joiner;
+    if (pthread_create(&exit_worker, nullptr, ReturnAfterSleep, nullptr) != 0 ||
+        pthread_create(&joiner, nullptr, JoinWorker, nullptr) != 0)
+    {
+        exit(2);
+    }
+    pthread_exit(nullptr);
+}
+
 void DoctoredHandler(int) {}
 
 // Handler for the doctored-frame modes; the restorer is the one that edits the frame.
@@ -599,6 +721,22 @@ void RunSignalViolation(const char* name)
     {
         exit(CopiesRacingStackRelease() ? 0 : 1);
     }
+    else if (strcmp(name, "stack-buffers") == 0)
+    {
+        exit(StackBuffersGrowTheStack() ? 0 : 1);
+    }
+    else if (strcmp(name, "two-waiters") == 0)
+    {
+        exit(TwoWaitersOneChild() ? 0 : 1);
+    }
+    else if (strcmp(name, "main-thread-exits-running") == 0)
+    {
+        MainThreadExitsFirst(300, 0);
+    }
+    else if (strcmp(name, "main-thread-exits-ended") == 0)
+    {
+        MainThreadExitsFirst(0, 300);
+    }
     else if (strcmp(name, "write-code") == 0)
     {
         *reinterpret_cast<volatile uint8_t*>(&RunViolation) = 0;
@@ -685,7 +823,7 @@ void CheckZeroLengthRanges()
 
 constexpr char Help[] =
     "usage: hardening\n"
-    "Runs 78 checks that the kernel rejects bad syscalls, pointers, program files,\n"
+    "Runs 82 checks that the kernel rejects bad syscalls, pointers, program files,\n"
     "and memory violations from user programs.";
 
 int main(int argc, char** argv)
@@ -732,6 +870,14 @@ int main(int argc, char** argv)
           "system calls copying through pages another thread's sbrk returns");
     Check(ChildExitedCleanly("hardening copy-race-stack"),
           "system calls copying through the stack of a thread being joined");
+    Check(ChildExitedCleanly("hardening stack-buffers"),
+          "system calls on stack buffers the program has not touched, to the stack's limit");
+    Check(ChildExitedCleanly("hardening two-waiters"),
+          "two threads waiting for one child: one reaps it, the other gets ECHILD");
+    Check(ChildExitedCleanly("hardening main-thread-exits-running"),
+          "joining a running thread from another after the main thread called pthread_exit");
+    Check(ChildExitedCleanly("hardening main-thread-exits-ended"),
+          "joining an ended thread from another after the main thread called pthread_exit");
     Check(ChildTerminated("hardening write-code"), "writing code");
     Check(ChildTerminated("hardening kernel-read"), "reading kernel memory");
     Check(ChildTerminated("hardening bad-syscall"), "invalid syscall number");

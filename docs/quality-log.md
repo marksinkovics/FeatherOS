@@ -124,4 +124,5 @@ One row per committed step (used by the global `autopilot` skill since 2026-11-2
 | 07d9572 | Review B3 ext truncate zeroes the tail only once durable (R1-04) | - | sonnet (high) | 1 | 3/3 | | 2.0M wtok: agents sonnet 1.5M; coord opus 521.4k |
 | 60d89f0 | Review B4+B5 ext rename link count, EndStep reserves distinct blocks (R1-05, R1-02) | - | sonnet (high) | 0 | 2/2 | | 1.4M wtok: agents sonnet 1.2M; coord opus 179.3k (B4 and B5 share one worker) |
 | 1032d63 | Review C1 scheduler keeps a wake-up posted before the block (R2-07, R3-04, R3-06) | review-C1.md (opus) | sonnet (high) | 0 | 3/3 | | 2.8M wtok: agents opus 880.6k, sonnet 1.5M; coord opus 409.0k |
-| C2 | Review C2 per-CPU current task in one read, kernel stack slots returned (R3-05, R3-07) | - | sonnet (high) | 0 | 2/2 | | 1.7M wtok: agents sonnet 1.5M; coord opus 239.5k |
+| 2635631 | Review C2 per-CPU current task in one read, kernel stack slots returned (R3-05, R3-07) | - | sonnet (high) | 0 | 2/2 | | 1.7M wtok: agents sonnet 1.5M; coord opus 239.5k |
+| C3 | Review C3 process pins, joinable threads after pthread_exit, stack growth for buffers (R2-04, R2-05, R2-06) | - | sonnet (high) | 1 | 4/5 | | 6.3M wtok: agents sonnet 5.0M; coord opus 1.2M |

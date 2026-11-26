@@ -43,3 +43,20 @@ TEST_CASE("an address maps to its slot unless it is a guard page or outside ever
     // With fewer slots in use, the regions below them are not stack.
     REQUIRE_FALSE(Find(StackTop, RegionPages, 1, StackTop - Region - 1, &slot));
 }
+
+TEST_CASE("an address in a stack grows on demand only while its slot is in use")
+{
+    using FeatherOS::ThreadStacks::FindInUse;
+    uint32_t slot = 99;
+    // Slot 0 and slot 2 in use: slot 1 was never started or has been joined.
+    constexpr uint32_t InUse = 0b101;
+    REQUIRE(FindInUse(StackTop, RegionPages, 16, InUse, StackTop - 1, &slot));
+    REQUIRE(slot == 0);
+    REQUIRE_FALSE(FindInUse(StackTop, RegionPages, 16, InUse, StackTop - Region - 1, &slot));
+    REQUIRE(FindInUse(StackTop, RegionPages, 16, InUse, StackTop - 2 * Region - 1, &slot));
+    REQUIRE(slot == 2);
+    // Guard pages and addresses past the last slot are never stack.
+    REQUIRE_FALSE(FindInUse(StackTop, RegionPages, 16, InUse, StackTop - Region, &slot));
+    REQUIRE_FALSE(FindInUse(StackTop, RegionPages, 16, ~0U, StackTop - 16 * Region - 1, &slot));
+    REQUIRE_FALSE(FindInUse(StackTop, RegionPages, 16, ~0U, StackTop, &slot));
+}

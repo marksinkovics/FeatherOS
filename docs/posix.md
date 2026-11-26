@@ -326,7 +326,7 @@ A `pid` of -1 waits for any child `posix_spawn` started, 0 for one in the caller
   - A thread that ends through `pthread_exit` or by returning calls each key's destructor on its non-null values. It does so for up to `PTHREAD_DESTRUCTOR_ITERATIONS` (4) rounds while destructors set values again. `exit` calls none, as POSIX says.
   - A deleted key's values read as null, even once the key is created again.
   - The values take 2 KiB of each thread's thread-local storage, but only in programs that create a key.
-- **Ending:** `exit`, a fault or a terminating signal in any thread ends the whole process. `pthread_exit` ends one thread; in the last thread running it exits as `exit(0)` does.
+- **Ending:** `exit`, a fault or a terminating signal in any thread ends the whole process. `pthread_exit` ends one thread; in the last thread running it exits as `exit(0)` does. After the main thread calls it, the others still join and detach each other.
 - **Signals:** actions are shared; masks are per thread, but there is no `pthread_sigmask` yet (`sigprocmask` sets the calling thread's). Signals sent to the process go to the main thread, or to the first live one after it has ended.
 - **Thread-local storage:** `__thread` and `thread_local` work for variables with constant initializers, at most 16 KiB per thread; each thread's copy starts from the program's initial values. `thread_local` objects with constructors and destructors work too.
 - **Missing:** read-write locks, barriers, spinlocks, `pthread_cancel`, `pthread_kill` and `pthread_sigmask`.

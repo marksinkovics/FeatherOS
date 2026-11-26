@@ -23,7 +23,7 @@ EXPECTED_LIMITS_OUTPUT = (
     # memtest overflow ends at the stack guard page with ExitStatusFault.
     "shell: program terminated by a CPU exception",
     "sleep: slept 1.1 s",
-    "hardening: 78 checks passed",
+    "hardening: 82 checks passed",
     "FROM THE DISK",
     "Name: kitty",
     "\ntwo  words a b",
