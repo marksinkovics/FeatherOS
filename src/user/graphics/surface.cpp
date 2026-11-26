@@ -60,7 +60,8 @@ bool ValidSize(int32_t width, int32_t height)
 
 } // namespace
 
-Surface::Surface(int32_t width, int32_t height) : m_pixels(nullptr), m_width(0), m_height(0)
+Surface::Surface(int32_t width, int32_t height, PixelFormat format)
+    : m_pixels(nullptr), m_width(0), m_height(0), m_format(format)
 {
     if (!ValidSize(width, height))
     {
@@ -74,7 +75,8 @@ Surface::Surface(int32_t width, int32_t height) : m_pixels(nullptr), m_width(0),
     }
 }
 
-Surface::Surface(const Surface& other) : m_pixels(nullptr), m_width(0), m_height(0)
+Surface::Surface(const Surface& other)
+    : m_pixels(nullptr), m_width(0), m_height(0), m_format(other.m_format)
 {
     if (!other.Valid())
     {
@@ -91,7 +93,8 @@ Surface::Surface(const Surface& other) : m_pixels(nullptr), m_width(0), m_height
 }
 
 Surface::Surface(Surface&& other) noexcept
-    : m_pixels(other.m_pixels), m_width(other.m_width), m_height(other.m_height)
+    : m_pixels(other.m_pixels), m_width(other.m_width), m_height(other.m_height),
+      m_format(other.m_format)
 {
     other.m_pixels = nullptr;
     other.m_width = 0;
@@ -115,6 +118,7 @@ Surface& Surface::operator=(Surface&& other) noexcept
         m_pixels = other.m_pixels;
         m_width = other.m_width;
         m_height = other.m_height;
+        m_format = other.m_format;
         other.m_pixels = nullptr;
         other.m_width = 0;
         other.m_height = 0;
@@ -142,6 +146,11 @@ int32_t Surface::Height() const
     return m_height;
 }
 
+PixelFormat Surface::Format() const
+{
+    return m_format;
+}
+
 uint32_t* Surface::Pixels()
 {
     return m_pixels;
@@ -166,9 +175,10 @@ uint32_t Surface::Checksum() const
     // FNV-1a over the four bytes of each pixel, least significant first.
     uint32_t hash = 2166136261U;
     const size_t count = static_cast<size_t>(m_width) * static_cast<size_t>(m_height);
+    const uint32_t mask = m_format == PixelFormat::Xrgb ? ColorMask : 0xFFFFFFFFU;
     for (size_t index = 0; index < count; ++index)
     {
-        const uint32_t pixel = m_pixels[index] & ColorMask;
+        const uint32_t pixel = m_pixels[index] & mask;
         for (int shift = 0; shift < 32; shift += 8)
         {
             hash = (hash ^ ((pixel >> shift) & 0xFFU)) * 16777619U;
@@ -189,7 +199,7 @@ void Surface::FillRectangle(int32_t x, int32_t y, int32_t width, int32_t height,
     {
         return;
     }
-    const uint32_t pixel = color & ColorMask;
+    const uint32_t pixel = m_format == PixelFormat::Xrgb ? color & ColorMask : color;
     for (int32_t row = area.top; row < area.bottom; ++row)
     {
         uint32_t* destination = m_pixels + static_cast<size_t>(row) * static_cast<size_t>(m_width);

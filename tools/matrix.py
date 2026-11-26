@@ -33,6 +33,7 @@ TOGGLES = (
     "GRAPHICS_TEST",
     "DUNGEON_TEST",
     "FONTS_TEST",
+    "PIXELS_TEST",
     "PCI_TEST",
     "USB_TEST",
     "USB_KEYS_TEST",
@@ -57,6 +58,7 @@ WEIGHTS = {
     "POWER_TEST": 1,
     "DUNGEON_TEST": 2,
     "FONTS_TEST": 1,
+    "PIXELS_TEST": 2,
 }
 
 
@@ -181,6 +183,9 @@ CASES = [
         DISK_BUS="nvme",
         KERNEL_ROOT="nvme0n1p9",
     ),
+    # The desktop's test card at 1024x768; the 1920x1080 pair waits for
+    # M35's mode switch.
+    *Both(100, "pixels", PIXELS_TEST=ON),
 ]
 
 

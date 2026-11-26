@@ -1,7 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "kernel/framebuffer/console_font.h"
+#include "support/font_builder.h"
 #include "user/gfx_check.h"
+#include "user/graphics/canvas.h"
 #include "user/graphics/font.h"
 #include "user/graphics/surface.h"
 #include "user/text/font_data.h"
@@ -14,6 +16,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -21,6 +25,7 @@
 namespace Graphics = FeatherOS::Graphics;
 namespace Text = FeatherOS::Text;
 using Graphics::Font;
+using Graphics::PixelFormat;
 using Graphics::Surface;
 using Text::FontStatus;
 
@@ -619,4 +624,363 @@ TEST_CASE("gfxcheck's plain-loop reference equals the library's picture", "[grap
     CHECK(picture.Checksum() == 1648750494U);
     CHECK(picture.Checksum() == Check::ExpectedFontChecksum(FontPath("sans-16").c_str()));
     CHECK(Check::ExpectedFontChecksum("/nonexistent") == 0);
+}
+
+namespace
+{
+
+using Graphics::Canvas;
+using Graphics::Rectangle;
+
+constexpr uint32_t Opaque = 0xFF000000U | Foreground;
+
+Surface Prepared(PixelFormat format, int32_t width, int32_t height, uint32_t background)
+{
+    Surface surface(width, height, format);
+    Canvas(surface).FillRectangle({0, 0, width, height}, 0xFF000000U | background);
+    return surface;
+}
+
+const char* const Texts[] = {"Hello, world", "Ag jyQ", "h\xC3\xA9llo \xE2\x82\xAC\xE2\x80\xA6",
+                             "tab\there\x7F", "bad \xC3(\xFF end", ""};
+
+uint32_t Round255(uint32_t n)
+{
+    return (2 * n + 255) / 510;
+}
+
+uint32_t ReferenceText(uint32_t destination, Graphics::Color color, uint32_t coverage,
+                       bool premultiplied)
+{
+    const uint32_t alpha = Round255((color >> 24) * coverage * 17);
+    if (alpha == 0)
+    {
+        return destination;
+    }
+    uint32_t result = 0;
+    for (int shift = premultiplied ? 24 : 16; shift >= 0; shift -= 8)
+    {
+        const uint32_t d = destination >> shift & 0xFF;
+        const uint32_t s = color >> shift & 0xFF;
+        uint32_t value = 0;
+        if (premultiplied)
+        {
+            const uint32_t source = shift == 24 ? alpha : Round255(s * alpha);
+            value = source + Round255(d * (255 - alpha));
+            value = value > 255 ? 255 : value;
+        }
+        else
+        {
+            value = Round255(s * alpha + d * (255 - alpha));
+        }
+        result |= value << shift;
+    }
+    return result;
+}
+
+} // namespace
+
+TEST_CASE("text through the canvas equals Surface::DrawText on an opaque surface",
+          "[graphics][font]")
+{
+    for (const char* name : {"sans-16", "sans-24", "mono-16", "sans-32"})
+    {
+        const Font font = LoadFont(name);
+        for (const char* text : Texts)
+        {
+            for (const Rectangle at : {Rectangle{5, 3, 0, 0}, {-7, -4, 0, 0}, {60, 20, 0, 0},
+                                       {-1000, 5, 0, 0}, {10, 70, 0, 0}})
+            {
+                Surface plain = Prepared(PixelFormat::Xrgb, 96, 48, Background);
+                Surface canvas = Prepared(PixelFormat::Xrgb, 96, 48, Background);
+                const int32_t end = plain.DrawText(&font, at.x, at.y, text, Foreground);
+                REQUIRE(Canvas(canvas).DrawText(font, at.x, at.y, text, Opaque) == end);
+                REQUIRE(Pixels(canvas) == Pixels(plain));
+            }
+        }
+    }
+}
+
+TEST_CASE("text through the canvas follows the origin and the clip", "[graphics][font]")
+{
+    const Font font = LoadFont("sans-16");
+    Surface plain = Prepared(PixelFormat::Xrgb, 80, 40, Background);
+    Surface canvas = Prepared(PixelFormat::Xrgb, 80, 40, Background);
+    plain.DrawText(&font, 13, 9, "Clipped text", Foreground);
+    Canvas drawing(canvas);
+    drawing.Translate(10, 5);
+    drawing.ClipTo({5, 2, 30, 14});
+    CHECK(drawing.DrawText(font, 3, 4, "Clipped text", Opaque) ==
+          3 + font.MeasureText("Clipped text"));
+    for (int32_t y = 0; y < 40; ++y)
+    {
+        for (int32_t x = 0; x < 80; ++x)
+        {
+            const bool inside = x >= 15 && x < 45 && y >= 7 && y < 21;
+            REQUIRE(canvas.PixelAt(x, y) ==
+                    (inside ? plain.PixelAt(x, y) : Background));
+        }
+    }
+}
+
+TEST_CASE("text blends a translucent colour by the rules, on both surface formats",
+          "[graphics][font]")
+{
+    const Font font = LoadFont("sans-24");
+    const char* text = "Blend Ag";
+    // White on black through Surface::DrawText leaves the coverage times 17 in every channel.
+    Surface coverage = Prepared(PixelFormat::Xrgb, 100, 40, 0x000000);
+    coverage.DrawText(&font, 4, 3, text, 0xFFFFFF);
+    for (const uint32_t alpha : {255U, 128U, 77U, 1U, 0U})
+    {
+        const Graphics::Color color = alpha << 24 | 0x30C080U;
+        for (const PixelFormat format : {PixelFormat::Xrgb, PixelFormat::PremultipliedArgb})
+        {
+            Surface surface = Prepared(format, 100, 40, 0x405060);
+            const std::vector<uint32_t> before = Pixels(surface);
+            Canvas(surface).DrawText(font, 4, 3, text, color);
+            bool changed = false;
+            for (size_t i = 0; i < before.size(); ++i)
+            {
+                const uint32_t level = (coverage.Pixels()[i] & 0xFF) / 17;
+                const uint32_t expected =
+                    ReferenceText(before[i], color, level, format == PixelFormat::PremultipliedArgb);
+                REQUIRE(surface.Pixels()[i] == expected);
+                changed = changed || expected != before[i];
+            }
+            if (alpha == 0 || alpha >= 77)
+            {
+                CHECK(changed == (alpha != 0));
+            }
+        }
+    }
+}
+
+TEST_CASE("text through the canvas ignores an invalid font, a null string and a bad surface",
+          "[graphics][font]")
+{
+    const Font font = LoadFont("sans-16");
+    const Font empty;
+    Surface surface = Prepared(PixelFormat::Xrgb, 40, 20, Background);
+    const std::vector<uint32_t> before = Pixels(surface);
+    Canvas canvas(surface);
+    CHECK(canvas.DrawText(empty, 3, 3, "text", Opaque) == 3);
+    CHECK(canvas.DrawText(font, 3, 3, nullptr, Opaque) == 3);
+    CHECK(canvas.DrawText(font, 3, 3, "text", 0x00FFFFFF) == 3 + font.MeasureText("text"));
+    canvas.DrawTextEllipsis(empty, {0, 0, 40, 20}, "text", Opaque);
+    canvas.DrawTextEllipsis(font, {0, 0, 40, 20}, nullptr, Opaque);
+    canvas.DrawTextEllipsis(font, {0, 0, 0, 20}, "text", Opaque);
+    canvas.DrawTextEllipsis(font, {0, 0, 40, -2}, "text", Opaque);
+    CHECK(Pixels(surface) == before);
+
+    Surface none(0, 0);
+    CHECK(Canvas(none).DrawText(font, 1, 1, "text", Opaque) == 1 + font.MeasureText("text"));
+}
+
+TEST_CASE("text through the canvas never writes outside the clip", "[graphics][font]")
+{
+    std::mt19937 random(71);
+    const Font font = LoadFont("sans-16");
+    for (const PixelFormat format : {PixelFormat::Xrgb, PixelFormat::PremultipliedArgb})
+    {
+        for (int round = 0; round < 300; ++round)
+        {
+            Surface surface = Prepared(format, 50, 30, 0x446688);
+            const std::vector<uint32_t> before = Pixels(surface);
+            Canvas canvas(surface);
+            auto pick = [&](int32_t extent) {
+                const uint32_t kind = random() % 8;
+                if (kind == 0)
+                {
+                    return std::numeric_limits<int32_t>::min() + static_cast<int32_t>(random() % 5);
+                }
+                if (kind == 1)
+                {
+                    return std::numeric_limits<int32_t>::max() - static_cast<int32_t>(random() % 5);
+                }
+                return static_cast<int32_t>(random() % (2 * extent + 20)) - extent - 10;
+            };
+            canvas.Translate(static_cast<int32_t>(random() % 30) - 15,
+                             static_cast<int32_t>(random() % 30) - 15);
+            canvas.ClipTo({pick(50), pick(30), static_cast<int32_t>(random() % 60),
+                           static_cast<int32_t>(random() % 40)});
+            const Rectangle visible = canvas.Clip();
+            const Graphics::Color color = 0x60000000U | static_cast<uint32_t>(random() % 0xFFFFFF);
+            if (random() % 2 == 0)
+            {
+                canvas.DrawText(font, pick(50), pick(30), "Wide Text gjy", color);
+            }
+            else
+            {
+                canvas.DrawTextEllipsis(font,
+                                        {pick(50), pick(30), static_cast<int32_t>(random() % 80),
+                                         static_cast<int32_t>(random() % 40)},
+                                        "Wide Text gjy", color);
+            }
+            for (int32_t y = 0; y < 30; ++y)
+            {
+                for (int32_t x = 0; x < 50; ++x)
+                {
+                    const bool inside = x >= visible.x && x < visible.x + visible.width &&
+                                        y >= visible.y && y < visible.y + visible.height;
+                    if (!inside)
+                    {
+                        REQUIRE(surface.PixelAt(x, y) == before[static_cast<size_t>(y) * 50 + x]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+namespace
+{
+
+// The expected result of an ellipsised text: `prefix` and `dots` drawn by Surface::DrawText, cut
+// to the rectangle.
+Surface Expected(const Font& font, const Rectangle& rectangle, const std::string& prefix,
+                 const std::string& dots)
+{
+    Surface surface = Prepared(PixelFormat::Xrgb, 120, 40, Background);
+    const int32_t end = surface.DrawText(&font, rectangle.x, rectangle.y, prefix.c_str(), Foreground);
+    surface.DrawText(&font, end, rectangle.y, dots.c_str(), Foreground);
+    Surface cut = Prepared(PixelFormat::Xrgb, 120, 40, Background);
+    cut.BlitPart(&surface, rectangle.x, rectangle.y, rectangle.width, rectangle.height, rectangle.x,
+                 rectangle.y, false, 0);
+    return cut;
+}
+
+Surface Drawn(const Font& font, const Rectangle& rectangle, const char* text)
+{
+    Surface surface = Prepared(PixelFormat::Xrgb, 120, 40, Background);
+    Canvas(surface).DrawTextEllipsis(font, rectangle, text, Opaque);
+    return surface;
+}
+
+} // namespace
+
+TEST_CASE("a text that fits exactly is drawn without an ellipsis", "[graphics][font]")
+{
+    const Font font = LoadFont("sans-16");
+    const std::string text = "Fits exactly";
+    const int32_t width = font.MeasureText(text.c_str());
+    Surface plain = Prepared(PixelFormat::Xrgb, 120, 40, Background);
+    plain.DrawText(&font, 6, 5, text.c_str(), Foreground);
+    // The rectangle is as wide as the text; glyph bitmaps cut to it match where they stay inside.
+    Surface wide = Drawn(font, {6, 5, width + 30, 20}, text.c_str());
+    CHECK(Pixels(wide) == Pixels(plain));
+    const Surface exact = Drawn(font, {6, 5, width, 20}, text.c_str());
+    for (int32_t y = 0; y < 40; ++y)
+    {
+        for (int32_t x = 0; x < 120; ++x)
+        {
+            const bool inside = x >= 6 && x < 6 + width && y >= 5 && y < 25;
+            REQUIRE(exact.PixelAt(x, y) == (inside ? plain.PixelAt(x, y) : Background));
+        }
+    }
+}
+
+TEST_CASE("a text that does not fit ends with the ellipsis after the longest prefix",
+          "[graphics][font]")
+{
+    for (const char* name : {"sans-16", "mono-16", "sans-24"})
+    {
+        const Font font = LoadFont(name);
+        REQUIRE(font.HasGlyph(0x2026));
+        const std::string dots = "\xE2\x80\xA6";
+        const std::string text = "The quick brown fox";
+        const int32_t dots_width = font.MeasureText(dots.c_str());
+        const int32_t full = font.MeasureText(text.c_str());
+        for (int32_t width = dots_width; width < full; width += 3)
+        {
+            size_t keep = 0;
+            for (size_t n = 0; n <= text.size(); ++n)
+            {
+                if (font.MeasureText(text.substr(0, n).c_str()) + dots_width <= width)
+                {
+                    keep = n;
+                }
+            }
+            const Rectangle rectangle{6, 5, width, 24};
+            REQUIRE(Pixels(Drawn(font, rectangle, text.c_str())) ==
+                    Pixels(Expected(font, rectangle, text.substr(0, keep), dots)));
+        }
+        // One pixel short of the whole text still needs the ellipsis.
+        const Rectangle tight{6, 5, full - 1, 24};
+        size_t keep = 0;
+        for (size_t n = 0; n <= text.size(); ++n)
+        {
+            if (font.MeasureText(text.substr(0, n).c_str()) + dots_width <= tight.width)
+            {
+                keep = n;
+            }
+        }
+        CHECK(keep < text.size());
+        CHECK(Pixels(Drawn(font, tight, text.c_str())) ==
+              Pixels(Expected(font, tight, text.substr(0, keep), dots)));
+    }
+}
+
+TEST_CASE("an ellipsis falls on a code point boundary", "[graphics][font]")
+{
+    const Font font = LoadFont("sans-16");
+    const std::string dots = "\xE2\x80\xA6";
+    const std::string text = "\xC3\xA9\xC3\xA9\xE2\x82\xAC\xE2\x82\xAC end";
+    for (int32_t width = font.MeasureText(dots.c_str()); width < font.MeasureText(text.c_str());
+         ++width)
+    {
+        const Surface drawn = Drawn(font, {6, 5, width, 24}, text.c_str());
+        bool matched = false;
+        for (const size_t keep : {0, 2, 4, 7, 10, 11, 12, 13, 14})
+        {
+            const Rectangle rectangle{6, 5, width, 24};
+            if (font.MeasureText(text.substr(0, keep).c_str()) + font.MeasureText(dots.c_str()) <=
+                    width &&
+                Pixels(drawn) == Pixels(Expected(font, rectangle, text.substr(0, keep), dots)))
+            {
+                matched = true;
+            }
+        }
+        REQUIRE(matched);
+    }
+}
+
+TEST_CASE("a rectangle too narrow for the first glyph gets the ellipsis alone, or nothing",
+          "[graphics][font]")
+{
+    const Font font = LoadFont("sans-24");
+    const std::string dots = "\xE2\x80\xA6";
+    const int32_t dots_width = font.MeasureText(dots.c_str());
+    const Rectangle alone{6, 5, dots_width, 30};
+    REQUIRE(font.MeasureText("W") + dots_width > dots_width);
+    CHECK(Pixels(Drawn(font, alone, "WWWW")) == Pixels(Expected(font, alone, "", dots)));
+    const Surface nothing = Drawn(font, {6, 5, dots_width - 1, 30}, "WWWW");
+    CHECK(Pixels(nothing) == Pixels(Prepared(PixelFormat::Xrgb, 120, 40, Background)));
+}
+
+TEST_CASE("a font without U+2026 ends with three full stops", "[graphics][font]")
+{
+    const std::vector<uint8_t> bytes =
+        FeatherOS::TestSupport::BuildFont(FeatherOS::TestSupport::SampleFont());
+    Font font;
+    REQUIRE(font.LoadMemory(bytes.data(), bytes.size()) == FontStatus::Ok);
+    REQUIRE_FALSE(font.HasGlyph(0x2026));
+    REQUIRE(font.HasGlyph('.'));
+    const std::string text = "Truncated text";
+    const int32_t dots_width = font.MeasureText("...");
+    REQUIRE(dots_width > 0);
+    for (int32_t width = dots_width; width < font.MeasureText(text.c_str()); ++width)
+    {
+        size_t keep = 0;
+        for (size_t n = 0; n <= text.size(); ++n)
+        {
+            if (font.MeasureText(text.substr(0, n).c_str()) + dots_width <= width)
+            {
+                keep = n;
+            }
+        }
+        const Rectangle rectangle{6, 5, width, 20};
+        REQUIRE(Pixels(Drawn(font, rectangle, text.c_str())) ==
+                Pixels(Expected(font, rectangle, text.substr(0, keep), "...")));
+    }
 }

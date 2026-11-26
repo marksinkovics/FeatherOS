@@ -12,7 +12,7 @@ set(FEATHEROS_PROGRAMS
     grep:grep sort:sort ping:ping dhcp:dhcp net:net host:host nc:nc fetch:fetch httpd:httpd
     ntp:ntp echod:echod script:script stty:stty cppbench:cppbench cxxtest:cxxtest mount:mount
     umount:umount ln:ln readlink:readlink sync:sync fbtest:fbtest fbdemo:fbdemo fontview:fontview
-    lsusb:lsusb mousetest:mousetest dmesg:dmesg eject:eject
+    uicard:uicard lsusb:lsusb mousetest:mousetest dmesg:dmesg eject:eject
 )
 # Programs that define _start themselves instead of linking the C library's, which calls main.
 # The kernel's own tests run test_program and read the raw arguments block.
@@ -66,10 +66,18 @@ add_library(featheros_user_support STATIC
     dhcp_lease.cpp
     dhcp_message.cpp
     file_copy.cpp
+    graphics/canvas.cpp
+    graphics/corner_mask.cpp
     graphics/dirty_region.cpp
     graphics/display.cpp
     graphics/font.cpp
     graphics/font_console.cpp
+    graphics/mask.cpp
+    graphics/nine_slice.cpp
+    graphics/outline_cache.cpp
+    graphics/outline_renderer.cpp
+    graphics/outlines.cpp
+    graphics/region.cpp
     graphics/surface.cpp
     graphics/tile_sheet.cpp
     http_message.cpp
@@ -84,6 +92,9 @@ add_library(featheros_user_support STATIC
     text/font_data.cpp
     text/utf8.cpp
     text_tools.cpp
+    ui/art.cpp
+    ui/card.cpp
+    ui/tokens.cpp
     vi_editor.cpp
     window_size.cpp
     ${SRCROOT}/kernel/framebuffer/console_font.c

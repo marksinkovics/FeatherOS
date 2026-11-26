@@ -12,10 +12,18 @@ class Font;
 constexpr uint32_t ColorMask = 0x00FFFFFF;
 constexpr int32_t MaximumDimension = 16384;
 
+// Xrgb keeps the top byte 0. PremultipliedArgb keeps every colour channel at or below the alpha;
+// draw into it through a Canvas, since the Surface text and blit helpers assume Xrgb.
+enum class PixelFormat : uint8_t
+{
+    Xrgb,
+    PremultipliedArgb,
+};
+
 class Surface
 {
 public:
-    Surface(int32_t width, int32_t height);
+    Surface(int32_t width, int32_t height, PixelFormat format = PixelFormat::Xrgb);
     Surface(const Surface& other);
     Surface(Surface&& other) noexcept;
     Surface& operator=(const Surface& other);
@@ -25,6 +33,7 @@ public:
     bool Valid() const;
     int32_t Width() const;
     int32_t Height() const;
+    PixelFormat Format() const;
     uint32_t* Pixels();
     const uint32_t* Pixels() const;
     uint32_t PixelAt(int32_t x, int32_t y) const;
@@ -45,6 +54,7 @@ private:
     uint32_t* m_pixels;
     int32_t m_width;
     int32_t m_height;
+    PixelFormat m_format;
 };
 
 } // namespace FeatherOS::Graphics

@@ -114,3 +114,15 @@ One row per committed step (used by the global `autopilot` skill since 2026-11-2
 | c3a2c2e | M16 D2 timer first, controllers probed and waited for before the root | M16.md (opus) | sonnet (high) | 0 | 3/4 (I21 by T35, I19 by T32, I23 MayWait by T35; I23 call site not caught) | | 1.6M wtok: agents sonnet 1.4M; coord opus 144.2k |
 | 0c7b0b7 | M16 D3 DISK_BUS, 4K root image, ROOT_DISK_TEST cases T36-T42, T29 | M16.md (opus) | sonnet (high) | 0 | - | | 1.5M wtok: agents sonnet 1.3M; coord opus 196.5k |
 | d6994c3 | M16 E1 docs, roadmap summary, Complete-when check | - | sonnet | 0 | - | | 408.9k wtok: agents sonnet 341.1k; coord opus 67.8k |
+| A1 | M37 A1 tokens.json, tokens.py, check.py, generated UI tokens, CTest gui.tokens | - | sonnet (high) | 0 | - | | 1.1M wtok: agents sonnet 1.1M; coord opus 11.3k |
+| B1 | M37 B1 Graphics::Region, banded canonical form | - | sonnet (high) | 0 | 1/1 (I7 by T3) | GCC Release -Werror false positive in region.cpp (fixed in D1) | 362.3k wtok: agents sonnet 333.0k; coord opus 29.3k |
+| B2 | M37 B2 pixel formats, blend rules, Mask, Canvas with clip stack | - | sonnet (high) | 0 | 2/2 (I2 by T4, I4 by T5) | | 1.1M wtok: agents sonnet 1.0M; coord opus 48.0k |
+| B3 | M37 B3 rounded rectangles, strokes, pills, lines, corner masks | - | sonnet (high) | 0 | 1/1 (mirror by T7) | | 916.3k wtok: agents sonnet 901.0k; coord opus 15.3k |
+| B4 | M37 B4 outlines file, loader, integer renderer, LRU cache | M37.md 1.5 | sonnet (high) | 1 | 4/4 (I8 by T8, winding and stroke width by T9, I9 by T10) | | 3.0M wtok: agents sonnet 2.9M; coord opus 131.8k |
+| B5 | M37 B5 shadows, 9-slice, scaled surfaces, canvas text with ellipsis | - | sonnet (high) | 0 | 1/1 (I2 by T13) | | 1.3M wtok: agents sonnet 1.3M; coord opus 36.2k |
+| C1 | M37 C1 art sources, outlines.py, fvol.py, outlines.fvo, DrawGlyph | - | sonnet (high) | 0 | 1/1 (I11/I12 by T14) | | 1.8M wtok: agents sonnet 1.7M; coord opus 89.2k |
+| C2 | M37 C2 app tiles: full, small, plain, high contrast | - | sonnet (high) | 0 | 1/1 (fold by T16) | | 887.8k wtok: agents sonnet 817.2k; coord opus 70.5k |
+| C3 | M37 C3 pointers, SVG subset, DrawPointer, guirender pointer, gui.pointers | - | sonnet (high) | 0 | 1/1 (hotspot by T17) | | 1.3M wtok: agents sonnet 1.2M; coord opus 23.8k |
+| C4 | M37 C4 wallpaper and shadows by role | - | sonnet (high) | 0 | 1/1 (cover by T19) | | 899.2k wtok: agents sonnet 876.3k; coord opus 22.9k |
+| D1 | M37 D1 DrawCard, uicard, guirender card, PIXELS_TEST | - | sonnet (high) | 0 | 1/1 (accent by T20) | | 3.2M wtok: agents sonnet 3.1M; coord opus 155.5k |
+| D2 | M37 D2 docs, roadmap summary, final matrix | - | sonnet | 0 | - | | 863.6k wtok: agents <synthetic> 0, haiku 102.1k, sonnet 197.0k; coord <synthetic> 0, opus 564.6k |

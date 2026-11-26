@@ -138,10 +138,21 @@ add_executable(featheros_unit_tests
     kernel/time/wall_clock_tests.cpp
     kernel/string/format_tests.cpp
     support/font_builder.cpp
+    support/outline_builder.cpp
     user/font_data_tests.cpp
     user/font_tests.cpp
+    user/art_tests.cpp
+    user/card_tests.cpp
+    user/blend_tests.cpp
+    user/canvas_tests.cpp
+    user/shape_tests.cpp
+    user/nine_slice_tests.cpp
+    user/outlines_tests.cpp
+    user/outline_renderer_tests.cpp
     user/graphics_tests.cpp
+    user/region_tests.cpp
     user/tile_sheet_tests.cpp
+    user/tokens_tests.cpp
     user/utf8_tests.cpp
     user/wickdeep_art_tests.cpp
     libc/address_text_tests.cpp
@@ -282,10 +293,18 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/user/dhcp_lease.cpp"
     "${FEATHEROS_ROOT}/src/user/dhcp_message.cpp"
     "${FEATHEROS_ROOT}/src/user/gfx_check.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/canvas.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/corner_mask.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/dirty_region.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/display.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/font.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/font_console.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/mask.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/nine_slice.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/outline_cache.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/outline_renderer.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/outlines.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/region.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/surface.cpp"
     "${FEATHEROS_ROOT}/src/user/graphics/tile_sheet.cpp"
     "${FEATHEROS_ROOT}/src/user/http_message.cpp"
@@ -297,6 +316,9 @@ add_executable(featheros_unit_tests
     "${FEATHEROS_ROOT}/src/user/text/font_data.cpp"
     "${FEATHEROS_ROOT}/src/user/text/utf8.cpp"
     "${FEATHEROS_ROOT}/src/user/text_tools.cpp"
+    "${FEATHEROS_ROOT}/src/user/ui/art.cpp"
+    "${FEATHEROS_ROOT}/src/user/ui/card.cpp"
+    "${FEATHEROS_ROOT}/src/user/ui/tokens.cpp"
     "${FEATHEROS_ROOT}/src/user/vi_editor.cpp"
     "${FEATHEROS_ROOT}/src/user/wickdeep/art.cpp"
     "${FEATHEROS_ROOT}/src/kernel/arch/aarch64/pci_device_tree.cpp"
@@ -349,6 +371,7 @@ target_compile_features(featheros_unit_tests PRIVATE cxx_std_23)
 target_compile_definitions(featheros_unit_tests PRIVATE FEATHEROS_HOST_TEST
     FEATHEROS_STD_NAMESPACE=featheros_std
     FEATHEROS_FONT_DIRECTORY="${FEATHEROS_ROOT}/initramfs/fonts"
+    FEATHEROS_OUTLINES_FILE="${FEATHEROS_ROOT}/initramfs/gui/outlines.fvo"
     FEATHEROS_FONT_REFERENCE="${CMAKE_CURRENT_SOURCE_DIR}/user/data/font_reference.txt")
 set_source_files_properties(libcxx/algorithm_tests.cpp libcxx/array_span_tests.cpp
     libcxx/atomic_tests.cpp libcxx/charconv_tests.cpp libcxx/chrono_tests.cpp libcxx/deque_tests.cpp
@@ -392,12 +415,50 @@ endif ()
 
 catch_discover_tests(featheros_unit_tests)
 
+# The host renderer of the desktop's artwork, which the gui.* checks compare with the design. It
+# draws with the code the programs run.
+add_executable(guirender
+    tools/guirender.cpp
+    "${FEATHEROS_ROOT}/src/kernel/framebuffer/console_font.c"
+    "${FEATHEROS_ROOT}/src/user/graphics/canvas.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/corner_mask.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/dirty_region.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/font.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/font_console.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/mask.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/nine_slice.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/outline_cache.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/outline_renderer.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/outlines.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/region.cpp"
+    "${FEATHEROS_ROOT}/src/user/graphics/surface.cpp"
+    "${FEATHEROS_ROOT}/src/user/text/font_data.cpp"
+    "${FEATHEROS_ROOT}/src/user/text/utf8.cpp"
+    "${FEATHEROS_ROOT}/src/user/ui/art.cpp"
+    "${FEATHEROS_ROOT}/src/user/ui/card.cpp"
+    "${FEATHEROS_ROOT}/src/user/ui/tokens.cpp")
+target_compile_features(guirender PRIVATE cxx_std_23)
+target_compile_definitions(guirender PRIVATE FEATHEROS_HOST_TEST)
+target_include_directories(guirender PRIVATE "${FEATHEROS_ROOT}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
+
 # The committed fonts: their checksums and files, and byte-identical regeneration, which needs
 # freetype-py (tools/fonts/requirements.txt) and is skipped without it.
 add_test(NAME fonts.files COMMAND python3 "${FEATHEROS_ROOT}/tools/fonts/check.py")
 add_test(NAME fonts.reproducible
     COMMAND python3 "${FEATHEROS_ROOT}/tools/fonts/generate.py" --check)
 set_tests_properties(fonts.reproducible PROPERTIES SKIP_RETURN_CODE 77)
+# The design tokens: the generated C++ is current, the prototype equals tools/gui/tokens.json, and
+# every theme and accent passes the contrast pairs.
+add_test(NAME gui.tokens COMMAND python3 "${FEATHEROS_ROOT}/tools/gui/check.py")
+# The artwork: initramfs/gui's checksums and outlines file, the byte-identical regeneration from
+# tools/gui/art/, and icons.json and feather.json against the prototype's P table and featherSvg.
+add_test(NAME gui.files COMMAND python3 "${FEATHEROS_ROOT}/tools/gui/check_art.py" files)
+add_test(NAME gui.reproducible COMMAND python3 "${FEATHEROS_ROOT}/tools/gui/outlines.py" --check)
+add_test(NAME gui.prototype COMMAND python3 "${FEATHEROS_ROOT}/tools/gui/check_art.py" prototype)
+# Each pointer at 24, 32 and 48 px from guirender against the design's PNG renders.
+add_test(NAME gui.pointers
+    COMMAND python3 "${FEATHEROS_ROOT}/tools/gui/pointers_check.py"
+        --guirender "$<TARGET_FILE:guirender>" --system "${FEATHEROS_ROOT}/initramfs")
 # The Swift programs' host-testable parts, as one host executable per program built with the
 # toolchain's own standard library rather than Embedded Swift. Skipped without a Swift toolchain.
 set(FEATHEROS_SWIFTC "" CACHE FILEPATH "swiftc from a swift.org toolchain, for the Swift tests")

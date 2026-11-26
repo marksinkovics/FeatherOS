@@ -1,0 +1,24 @@
+{
+  "name": "feather",
+  "view_box": 64,
+  "slots": ["shaft"],
+  "items": [
+    {
+      "kind": "fill",
+      "paint": "current",
+      "path": "M55 7C41 5 25 11 18 24 14 32 13 40 15 47 22 48 29 47 35 44L30 41 40 39C45 35 49 30 51 25L44 24 54 18C56 14 56 10 55 7Z"
+    },
+    {
+      "kind": "stroke",
+      "paint": "slot0",
+      "width": 3,
+      "path": "M15 49C24 39 34 29 47 15"
+    },
+    {
+      "kind": "stroke",
+      "paint": "current",
+      "width": 4,
+      "path": "M7 58L16 48"
+    }
+  ]
+}

@@ -14,6 +14,7 @@ from smoke.cases.nvme import Nvme
 from smoke.cases.nvme_namespaces import NvmeNamespaces
 from smoke.cases.panic import Panic
 from smoke.cases.pci import Pci
+from smoke.cases.pixels import Pixels
 from smoke.cases.power import Power
 from smoke.cases.root import RootOption
 from smoke.cases.root_disk import RootDisk
@@ -64,6 +65,11 @@ SWITCHES = {
     "fonts": (
         Fonts,
         "Print UTF-8 text and compare the screen with the font's glyphs",
+    ),
+    "pixels": (
+        Pixels,
+        "Run uicard's test card pages and compare the screen with the host "
+        "render",
     ),
     "pci": (Pci, "Expect edu to deliver an MSI and a DMA round trip"),
     "usb": (
