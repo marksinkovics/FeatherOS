@@ -199,7 +199,9 @@ struct ExtentEdit
     std::uint32_t goal;
     std::array<std::uint64_t, 2 * (MaximumExtentDepth + 1)> fresh;
     std::size_t fresh_count;
-    bool committing;
+    // Set when a commit write starts and left set when it succeeds: the blocks the edit linked
+    // may then be mapped on the disk, so a later failure must not free them.
+    bool commit_tried;
 };
 
 // The tail of an orphan file block: ob_magic, then ob_checksum, both little-endian.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Reproductions of the findings R1-01 to R1-05 of docs/reviews/2026-11-review.md. Hidden: each test
-// asserts the correct behaviour and fails while the finding is open.
+// Reproductions of the findings R1-01 to R1-05 of docs/reviews/2026-11-review.md. Each test asserts
+// the correct behaviour; one tagged .repro is hidden and fails while the finding is open.
 #include <catch2/catch_test_macros.hpp>
 
 #include "ext/checksum.h"
@@ -240,11 +240,18 @@ bool BlockMarkedInUse(std::vector<std::uint8_t>& bytes, std::uint64_t block)
             (1U << (bit % 8))) != 0;
 }
 
-void FreeOfTheOldNodeFailsAfterTheCommit(std::string_view image, std::size_t extents,
-                                         std::uint64_t write_from, std::size_t write_blocks)
+// A file of one block at every other logical block from 2 on, and the blocks of the tree nodes
+// below the inode on the way to its first extent, the leaf last.
+struct FragmentedFile
 {
-    INFO(image << ", " << extents << " extents, write of " << write_blocks << " blocks from "
-               << write_from);
+    std::unique_ptr<MemoryDevice> device;
+    NodeId file;
+    std::uint32_t block_size;
+    std::vector<std::uint64_t> nodes;
+};
+
+FragmentedFile MakeTreeFile(std::string_view image, std::size_t extents, std::size_t depth)
+{
     std::unique_ptr<MemoryDevice> device = DeviceFrom(LoadExtImage(image));
     const std::uint32_t block_size = Crash::BlockSizeOf(*device);
     NodeId file = 0;
@@ -259,24 +266,21 @@ void FreeOfTheOldNodeFailsAfterTheCommit(std::string_view image, std::size_t ext
         Succeeds(ext->Sync());
     }
     std::vector<std::uint8_t> bytes = BytesOf(*device);
-    {
-        RawVolume raw{bytes};
-        const std::vector<std::uint64_t> path = raw.ExtentPath(static_cast<std::uint32_t>(file), 2);
-        if (path.size() != 1)
-        {
-            FAIL("setup: the tree is not one leaf below the inode");
-        }
-        MarkBlockFreeInGroupThatLooksFull(bytes, path[0]);
-    }
-    device = DeviceFrom(bytes);
-    {
-        MountedFilesystem ext(Ext2Type(), *device);
-        static_cast<void>(ext->Write(file, write_from * block_size,
-                                     BytesOfText(std::string(write_blocks * block_size, 'N'))));
-    }
-    bytes = BytesOf(*device);
     RawVolume raw{bytes};
-    for (std::uint64_t logical = 0; logical < 2 + 2 * extents + write_blocks; ++logical)
+    std::vector<std::uint64_t> path = raw.ExtentPath(static_cast<std::uint32_t>(file), 2);
+    if (path.size() != depth)
+    {
+        FAIL("setup: the tree is not " << depth << " levels below the inode");
+    }
+    return {std::move(device), file, block_size, std::move(path)};
+}
+
+// Every block the file maps in [0, end) is marked in use.
+void EveryMappedBlockIsInUse(MemoryDevice& device, NodeId file, std::uint64_t end)
+{
+    std::vector<std::uint8_t> bytes = BytesOf(device);
+    RawVolume raw{bytes};
+    for (std::uint64_t logical = 0; logical < end; ++logical)
     {
         const std::uint64_t physical = raw.FileBlock(static_cast<std::uint32_t>(file), logical);
         if (physical != 0)
@@ -287,14 +291,33 @@ void FreeOfTheOldNodeFailsAfterTheCommit(std::string_view image, std::size_t ext
     }
 }
 
+// The free of tree node number node (0 is the one below the inode) fails after the commit.
+void FreeOfTheOldNodeFailsAfterTheCommit(std::string_view image, std::size_t extents,
+                                         std::uint64_t write_from, std::size_t write_blocks,
+                                         std::size_t depth = 1, std::size_t node = 0)
+{
+    INFO(image << ", " << extents << " extents, write of " << write_blocks << " blocks from "
+               << write_from << ", node " << node << " of " << depth);
+    FragmentedFile volume = MakeTreeFile(image, extents, depth);
+    std::vector<std::uint8_t> bytes = BytesOf(*volume.device);
+    MarkBlockFreeInGroupThatLooksFull(bytes, volume.nodes[node]);
+    volume.device = DeviceFrom(bytes);
+    {
+        MountedFilesystem ext(Ext2Type(), *volume.device);
+        static_cast<void>(
+            ext->Write(volume.file, write_from * volume.block_size,
+                       BytesOfText(std::string(write_blocks * volume.block_size, 'N'))));
+    }
+    EveryMappedBlockIsInUse(*volume.device, volume.file, 2 + 2 * extents + write_blocks);
+}
+
 } // namespace
 #endif
 
 // R1-03. The post-commit free of a replaced tree node fails (here: its bit is already clear in a
 // group whose free count is 0 so that nothing else takes the block). WriteExtentFile takes the
 // failure for one before the link and frees the data run the committed tree maps.
-TEST_CASE("R1-03 a failure after the extent tree committed leaves no mapped block free",
-          "[.repro][R1-03]")
+TEST_CASE("R1-03 a failure after the extent tree committed leaves no mapped block free", "[R1-03]")
 {
 #ifndef FEATHERDISK_EXT_IMAGES
     SKIP("e2fsprogs is not installed");
@@ -304,6 +327,68 @@ TEST_CASE("R1-03 a failure after the extent tree committed leaves no mapped bloc
     // A full leaf: a first hole fills in place, the second one splits it (written > 0).
     FreeOfTheOldNodeFailsAfterTheCommit("ext4-nojournal", 83, 2, 5);
     FreeOfTheOldNodeFailsAfterTheCommit("ext4-extents", 83, 2, 5);
+#endif
+}
+
+// A tree two levels deep: the commit is at the inode's root, with an index node and a leaf
+// replaced, and either free fails (the index node's is the first, the leaf's would be next).
+TEST_CASE("a failed free of a node of a deeper extent tree after its commit leaves no mapped block "
+          "free",
+          "[R1-03]")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    for (const std::string_view image : {"ext4-nojournal", "ext4-extents"})
+    {
+        for (const std::size_t node : {std::size_t{0}, std::size_t{1}})
+        {
+            FreeOfTheOldNodeFailsAfterTheCommit(image, 340, 0, 2, 2, node);
+        }
+    }
+#endif
+}
+
+// The volume has room for the data of a write but not for the tree node that replaces the leaf: the
+// failure is before the commit, so the data run goes back and the volume is whole.
+TEST_CASE("a write that finds no room for a new tree node gives its data blocks back", "[R1-03]")
+{
+#ifndef FEATHERDISK_EXT_IMAGES
+    SKIP("e2fsprogs is not installed");
+#else
+    for (const std::string_view image : {"ext4-nojournal", "ext4-extents"})
+    {
+        INFO(image);
+        FragmentedFile volume = MakeTreeFile(image, 5, 1);
+        {
+            MountedFilesystem ext(Ext2Type(), *volume.device);
+            const NodeId filler = Value(ext->Create(ext->Root(), "filler.bin", 0644));
+            const std::string block(volume.block_size, 'f');
+            std::uint64_t offset = 0;
+            while (FreeBlocks(*ext) > 0 && WriteAt(*ext, filler, offset, block) == block.size())
+            {
+                offset += block.size();
+            }
+            Succeeds(ext->Sync());
+            // Two blocks for the data of the write, none for the leaf that replaces the old one.
+            while (FreeBlocks(*ext) < 2)
+            {
+                offset -= block.size();
+                Succeeds(ext->Truncate(filler, offset));
+            }
+            REQUIRE(FreeBlocks(*ext) == 2);
+            Succeeds(ext->Sync());
+            const Result<std::size_t> written =
+                ext->Write(volume.file, 0, BytesOfText(std::string(2 * volume.block_size, 'N')));
+            CHECK(!written);
+            CHECK(FreeBlocks(*ext) == 2);
+        }
+        std::vector<std::uint8_t> bytes = BytesOf(*volume.device);
+        const RawVolume raw{bytes};
+        CHECK(raw.FileBlock(static_cast<std::uint32_t>(volume.file), 0) == 0);
+        CHECK(raw.FileBlock(static_cast<std::uint32_t>(volume.file), 1) == 0);
+        CheckClean(*volume.device, "r1-03-no-room-for-a-node");
+    }
 #endif
 }
 

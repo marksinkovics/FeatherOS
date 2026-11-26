@@ -91,7 +91,7 @@ ExtentEdit Ext2Filesystem::BeginExtentEdit(NodeId node, Inode& inode, Buffers& t
         .goal = static_cast<std::uint32_t>(GroupFirstBlock(GroupOfInode(node))),
         .fresh = {},
         .fresh_count = 0,
-        .committing = false,
+        .commit_tried = false,
     };
 }
 
@@ -199,10 +199,10 @@ Result<std::uint64_t> Ext2Filesystem::AllocateTreeBlock(ExtentEdit& edit)
 }
 
 // After a failed change: its new tree blocks go back unless the commit was tried, which may have
-// reached the disk.
+// reached the disk or, once it succeeded, maps them.
 void Ext2Filesystem::ForgetFresh(ExtentEdit& edit)
 {
-    if (!edit.committing)
+    if (!edit.commit_tried)
     {
         for (std::size_t index = 0; index < edit.fresh_count; ++index)
         {
@@ -273,12 +273,11 @@ Status Ext2Filesystem::ReplaceExtentNode(ExtentEdit& edit, const ExtentPath& pat
             StoreExtentIndex(root, 0, {.logical = EntryLogical(list, 0), .child = *block});
         }
         edit.inode->blocks = root;
-        edit.committing = true;
+        edit.commit_tried = true;
         const Status stored = StoreInode(edit.node, *edit.inode, false, edit.scratch);
         if (stored)
         {
             edit.fresh_count = 0;
-            edit.committing = false;
         }
         return stored;
     }
@@ -302,12 +301,11 @@ Status Ext2Filesystem::ReplaceExtentNode(ExtentEdit& edit, const ExtentPath& pat
     }
     else if (count <= capacity && EntryLogical(list, 0) == EntryLogical(at.node, 0))
     {
-        edit.committing = true;
+        edit.commit_tried = true;
         const Status written = WriteTreeNode(edit, at.block, list, 0, count, depth);
         if (written)
         {
             edit.fresh_count = 0;
-            edit.committing = false;
         }
         return written;
     }
@@ -383,7 +381,7 @@ Status Ext2Filesystem::ReplaceExtentNode(ExtentEdit& edit, const ExtentPath& pat
 
 Status Ext2Filesystem::InsertExtent(ExtentEdit& edit, const ExtentPath& path, const Extent& extent)
 {
-    edit.committing = false;
+    edit.commit_tried = false;
     const ExtentLevel& leaf = path.levels[path.depth];
     const std::span<std::uint8_t> list = edit.tree->Blocks(ExtentListBuffers, ListBlocks);
     std::size_t count = leaf.entries;
@@ -420,7 +418,7 @@ Status Ext2Filesystem::InsertExtent(ExtentEdit& edit, const ExtentPath& path, co
 Status Ext2Filesystem::MarkWritten(ExtentEdit& edit, const ExtentPath& path, std::uint64_t logical,
                                    std::uint64_t count)
 {
-    edit.committing = false;
+    edit.commit_tried = false;
     const ExtentLevel& leaf = path.levels[path.depth];
     const std::size_t at = leaf.position;
     const Extent old = ExtentAt(leaf.node, at);
@@ -500,7 +498,7 @@ Status Ext2Filesystem::ShrinkExtents(NodeId node, Inode& inode, std::uint64_t ke
     ExtentPath path{};
     for (;;)
     {
-        edit.committing = false;
+        edit.commit_tried = false;
         if (const Status found = FindExtentPath(inode, ExtentLogicalEnd - 1, path, tree); !found)
         {
             return found;
@@ -748,6 +746,7 @@ Status Ext2Filesystem::WriteExtentFile(NodeId file, Inode& inode, std::uint64_t 
                 hole_end = Smaller(hole_end, EntryLogical(leaf.node, next));
             }
             run = Smaller(Smaller(hole_end - logical, wanted), MaximumInitializedLength);
+            edit.commit_tried = false;
             const Result<AllocatedRun> allocated = AllocateBlocks(
                 static_cast<std::uint32_t>(goal), static_cast<std::uint32_t>(run), edit.bitmap);
             if (!allocated)
@@ -768,8 +767,9 @@ Status Ext2Filesystem::WriteExtentFile(NodeId file, Inode& inode, std::uint64_t 
             }
             if (!status)
             {
-                // Never linked, unless the commit was tried.
-                if (!edit.committing && FreeBlocks(edit.frees, physical, run))
+                // Never linked, unless the commit was tried: it may have reached the disk, or
+                // succeeded.
+                if (!edit.commit_tried && FreeBlocks(edit.frees, physical, run))
                 {
                     ReleaseBytes(inode, run * block_size);
                 }
@@ -833,7 +833,7 @@ Status Ext2Filesystem::AppendExtentBlock(NodeId directory, Inode& inode,
                                .physical = allocated->first,
                                .unwritten = false});
     }
-    if (!status && !edit.committing)
+    if (!status && !edit.commit_tried)
     {
         inode.size = logical * block_size;
         if (FreeBlock(edit.frees, allocated->first))
