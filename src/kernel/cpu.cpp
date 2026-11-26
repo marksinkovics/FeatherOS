@@ -9,9 +9,10 @@ namespace FeatherOS::Cpu
 namespace
 {
 
-struct LocalState
+struct alignas(64) LocalState
 {
     uint32_t index;
+    void* current_task;
 };
 
 LocalState local_states[MaximumCpus];
@@ -40,6 +41,7 @@ void InstallLocalState(uint32_t cpu_index)
     }
     LocalState* state = &local_states[cpu_index];
     state->index = cpu_index;
+    state->current_task = nullptr;
 #if defined(ARCH_x86_64)
     // The kernel's GS base points at this CPU's state. SWAPGS exchanges it with KERNEL_GS_BASE,
     // which holds the user GS base (always 0 here), on every ring 3 <-> ring 0 transition.
@@ -64,6 +66,51 @@ uint32_t CurrentIndex()
     asm volatile("mrs %0, TPIDR_EL1" : "=r"(state));
     return state->index;
 #endif
+}
+
+void* CurrentTask()
+{
+#if defined(ARCH_x86_64)
+    void* task;
+    asm volatile("movq %%gs:%c1, %0" : "=r"(task) : "i"(offsetof(LocalState, current_task)));
+    return task;
+#elif defined(ARCH_aarch64)
+    // Reading TPIDR_EL1 and loading through it are two instructions; masking IRQs keeps the task
+    // from moving to another CPU between them.
+    uint64_t daif;
+    LocalState* state;
+    asm volatile("mrs %0, DAIF\n\tmsr DAIFSet, #2\n\tmrs %1, TPIDR_EL1"
+                 : "=&r"(daif), "=r"(state)
+                 :
+                 : "memory");
+    void* task = state->current_task;
+    asm volatile("msr DAIF, %0" : : "r"(daif) : "memory");
+    return task;
+#endif
+}
+
+void SetCurrentTask(void* task)
+{
+#if defined(ARCH_x86_64)
+    asm volatile("movq %0, %%gs:%c1"
+                 :
+                 : "r"(task), "i"(offsetof(LocalState, current_task))
+                 : "memory");
+#elif defined(ARCH_aarch64)
+    uint64_t daif;
+    LocalState* state;
+    asm volatile("mrs %0, DAIF\n\tmsr DAIFSet, #2\n\tmrs %1, TPIDR_EL1"
+                 : "=&r"(daif), "=r"(state)
+                 :
+                 : "memory");
+    state->current_task = task;
+    asm volatile("msr DAIF, %0" : : "r"(daif) : "memory");
+#endif
+}
+
+void* TaskOfCpu(uint32_t cpu_index)
+{
+    return __atomic_load_n(&local_states[cpu_index].current_task, __ATOMIC_RELAXED);
 }
 
 } // namespace FeatherOS::Cpu

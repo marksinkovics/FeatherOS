@@ -1135,6 +1135,88 @@ void RunSmpWakeTests()
     }
 }
 
+// More runnable tasks than CPUs, preempted anywhere in kernel mode, so tasks keep moving between
+// CPUs. A task that is switched out between reading its CPU's index and its current-task slot
+// would find another task there (R3-05).
+constexpr uint32_t SmpMigrationTasks = 6;
+constexpr uint64_t SmpMigrationTicks = 60;
+constexpr uint32_t SmpMigrationBatch = 1000;
+
+struct SmpMigrationSlot
+{
+    std::atomic<Scheduler::TaskId> id = 0;
+    std::atomic<uint32_t> cpus_seen = 0;
+    std::atomic<uint32_t> mismatches = 0;
+};
+
+SmpMigrationSlot smp_migration_slots[SmpMigrationTasks];
+
+uint64_t SmpMigrationTask(void* argument)
+{
+    auto* slot = static_cast<SmpMigrationSlot*>(argument);
+    Scheduler::TaskId self;
+    while ((self = slot->id.load(std::memory_order_acquire)) == 0)
+    {
+        Sync::CpuRelax();
+    }
+    const uint64_t deadline = Time::TickCount() + SmpMigrationTicks;
+    while (Time::TickCount() < deadline)
+    {
+        for (uint32_t iteration = 0; iteration < SmpMigrationBatch; ++iteration)
+        {
+            if (Scheduler::CurrentTaskId() != self)
+            {
+                slot->mismatches.fetch_add(1U, std::memory_order_relaxed);
+            }
+        }
+        slot->cpus_seen.fetch_or(1U << Cpu::CurrentIndex(), std::memory_order_relaxed);
+    }
+    return 0;
+}
+
+void RunSmpCurrentTaskTests()
+{
+    Scheduler::TaskId task_ids[SmpMigrationTasks];
+    Scheduler::EnablePreemption();
+    bool created = true;
+    for (uint32_t index = 0; index < SmpMigrationTasks && created; ++index)
+    {
+        created =
+            Scheduler::CreateTask(SmpMigrationTask, &smp_migration_slots[index], &task_ids[index]);
+        if (created)
+        {
+            smp_migration_slots[index].id.store(task_ids[index], std::memory_order_release);
+        }
+    }
+    bool finished = created;
+    for (uint32_t index = 0; index < SmpMigrationTasks && finished; ++index)
+    {
+        finished =
+            Scheduler::Wait(task_ids[index], nullptr) && Scheduler::ReapTask(task_ids[index]);
+    }
+    Scheduler::DisablePreemption();
+    if (!finished)
+    {
+        Panic("SMP current-task test tasks did not finish");
+    }
+    uint32_t mismatches = 0;
+    bool migrated = false;
+    for (const SmpMigrationSlot& slot : smp_migration_slots)
+    {
+        mismatches += slot.mismatches.load(std::memory_order_relaxed);
+        const uint32_t seen = slot.cpus_seen.load(std::memory_order_relaxed);
+        migrated = migrated || (seen & (seen - 1)) != 0;
+    }
+    if (mismatches != 0)
+    {
+        Panic("R3-05: a task read another CPU's current task");
+    }
+    if (!migrated)
+    {
+        Panic("SMP current-task test: no task moved between CPUs");
+    }
+}
+
 } // namespace
 
 void RunSmpTests()
@@ -1184,8 +1266,9 @@ void RunSmpTests()
         Panic("Busy CPUs were not counted");
     }
     RunSmpWakeTests();
+    RunSmpCurrentTaskTests();
     Serial::Write("KERN/SMP: tasks ran concurrently on 3 CPUs; locked counter exact; busy CPUs "
-                  "counted; wake-ups across CPUs kept\n");
+                  "counted; wake-ups across CPUs kept; current task stable across migration\n");
 }
 
 namespace

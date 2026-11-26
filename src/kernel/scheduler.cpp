@@ -56,7 +56,6 @@ Task boot_task;
 // Secondary CPUs run their idle task on the stack they started on; only the boot CPU needs one.
 Task idle_tasks[Cpu::MaximumCpus];
 alignas(16) uint8_t boot_idle_stack[Memory::KernelStackSize];
-Task* current_tasks[Cpu::MaximumCpus];
 bool cpu_scheduling[Cpu::MaximumCpus] GUARDED_BY(scheduler_lock);
 // Timer ticks that found the CPU running something other than its idle task.
 volatile uint64_t busy_ticks[Cpu::MaximumCpus];
@@ -67,9 +66,14 @@ volatile bool preemption_enabled = false;
 extern "C" void FeatherOS_Arch_SwitchContext(uint64_t* old_stack_pointer,
                                              uint64_t new_stack_pointer);
 
-Task*& CurrentTask()
+Task* CurrentTask()
 {
-    return current_tasks[Cpu::CurrentIndex()];
+    return static_cast<Task*>(Cpu::CurrentTask());
+}
+
+void SetCurrentTask(Task* task)
+{
+    Cpu::SetCurrentTask(task);
 }
 
 Task& IdleTask()
@@ -146,7 +150,7 @@ void WakeIdleCpu() REQUIRES(scheduler_lock)
     const uint32_t self = Cpu::CurrentIndex();
     for (uint32_t cpu = 0; cpu < Cpu::MaximumCpus; ++cpu)
     {
-        if (cpu != self && cpu_scheduling[cpu] && current_tasks[cpu] == &idle_tasks[cpu])
+        if (cpu != self && cpu_scheduling[cpu] && Cpu::TaskOfCpu(cpu) == &idle_tasks[cpu])
         {
             Arch::Interrupts::SendIpi(cpu);
             return;
@@ -224,7 +228,7 @@ bool Schedule() REQUIRES(scheduler_lock)
     {
         next->state = TaskState::Running;
     }
-    CurrentTask() = next;
+    SetCurrentTask(next);
     next->last_cpu = Cpu::CurrentIndex();
     ActivateTaskAddressSpace(next);
     // Kernel code does not touch these registers, so the next task's can be loaded before the
@@ -323,7 +327,7 @@ bool Initialize()
     idle_task.entry = IdleTaskMain;
     idle_task.state = TaskState::Running;
     PrepareTaskStack(idle_task, boot_idle_stack);
-    CurrentTask() = &boot_task;
+    SetCurrentTask(&boot_task);
     for (bool& scheduling : cpu_scheduling)
     {
         scheduling = false;
@@ -380,7 +384,7 @@ void RunSecondaryCpu()
     ResetTask(idle_task);
     idle_task.entry = IdleTaskMain;
     idle_task.state = TaskState::Running;
-    CurrentTask() = &idle_task;
+    SetCurrentTask(&idle_task);
     cpu_scheduling[Cpu::CurrentIndex()] = true;
     scheduler_lock.Unlock();
     IdleTaskMain(nullptr);
@@ -665,7 +669,8 @@ TaskLocal& CurrentLocal()
 
 void* CurrentUserContext()
 {
-    return CurrentTask() == nullptr ? nullptr : CurrentTask()->user_context;
+    const Task* task = CurrentTask();
+    return task == nullptr ? nullptr : task->user_context;
 }
 
 void* SetCurrentUserContext(void* context)
